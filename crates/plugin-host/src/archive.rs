@@ -168,7 +168,7 @@ fn read_entry(
         .read_to_end(&mut bytes)
         .map_err(|error| {
             tracing::warn!(%error, "a plugin archive's entry didn't read");
-            invalid(format!("The archive's {name} can't be read."))
+            invalid(format!("Noura can't read the archive's {name}."))
         })?;
     if bytes.len() as u64 > limit {
         return Err(too_large());

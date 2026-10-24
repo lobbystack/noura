@@ -167,7 +167,7 @@ impl PluginHost {
             return Err(InstallError::new(
                 InstallErrorCode::DifferentPlugin,
                 format!(
-                    "The release holds the plugin {new}, not {id}, so it can't update {id}.",
+                    "The release holds the plugin {new}. Only a release of {id} can update it.",
                     new = archive.manifest.id
                 ),
             ));

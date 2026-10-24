@@ -223,8 +223,8 @@ impl Releases {
             403 | 429 => {
                 return Err(InstallError::new(
                     InstallErrorCode::DownloadFailed,
-                    "GitHub turned the request down, often because of too many requests. \
-                     Try again later.",
+                    "GitHub refused the request. It allows a set number of requests each \
+                     hour, so try again later.",
                 ));
             }
             status => return Err(failed_status(status)),
@@ -233,24 +233,38 @@ impl Releases {
             tracing::warn!(%error, "GitHub's release details didn't read");
             InstallError::new(
                 InstallErrorCode::DownloadFailed,
-                "GitHub's answer about the release didn't make sense to Noura.",
+                "Noura couldn't read GitHub's details of the release.",
             )
         })?;
         if details.draft {
             return Err(not_found(release));
         }
-        let mut archives = details
+        let archives: Vec<&Asset> = details
             .assets
             .iter()
-            .filter(|asset| asset.name.ends_with(ARCHIVE_SUFFIX));
-        let (Some(asset), None) = (archives.next(), archives.next()) else {
-            return Err(InstallError::new(
-                InstallErrorCode::NoPluginArchive,
-                format!(
-                    "The release needs exactly one file whose name ends in {ARCHIVE_SUFFIX}, \
-                     the plugin's archive."
-                ),
-            ));
+            .filter(|asset| asset.name.ends_with(ARCHIVE_SUFFIX))
+            .collect();
+        let asset = match archives.as_slice() {
+            [asset] => *asset,
+            [] => {
+                return Err(InstallError::new(
+                    InstallErrorCode::NoPluginArchive,
+                    format!(
+                        "The release has no plugin archive, a file whose name ends in \
+                         {ARCHIVE_SUFFIX}."
+                    ),
+                ));
+            }
+            several => {
+                return Err(InstallError::new(
+                    InstallErrorCode::NoPluginArchive,
+                    format!(
+                        "The release has {} plugin archives, files whose names end in \
+                         {ARCHIVE_SUFFIX}. Noura needs one.",
+                        several.len()
+                    ),
+                ));
+            }
         };
         if asset.size > MAX_ARCHIVE_BYTES as u64 || asset.size > MAX_COMPONENT_BYTES {
             return Err(InstallError::new(
