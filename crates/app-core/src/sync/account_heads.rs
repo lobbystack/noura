@@ -1,0 +1,419 @@
+//! The account chain heads a device keeps (docs/workspace-format/sync-v2.md
+//! §7, §15): for each chain of its own account and of every account it
+//! shares a workspace with, the genesis digest, the seqno and the head
+//! digest of the latest head it accepted. The heads live in the app's
+//! application data, under a BLAKE3 keyed hash with the journal key that
+//! the credential store keeps, and the credential store keeps the device's
+//! own-account head too, so a rolled-back application data folder can't
+//! make the device accept a shorter chain of its own account.
+//!
+//! A served chain under a kept genesis must extend the kept head; one that
+//! doesn't reports `sync_account_forked`, and a later link that breaks a
+//! rule reports `sync_account_unauthorized`. Either stops every workspace
+//! the device shares with that account, or every workspace when the
+//! account is its own. A chain under a genesis the device doesn't keep
+//! enters only through an anchor: a verified workspace log that names it
+//! in its genesis, an `add_member` or an `accept_reset`, or, for the
+//! device's own account, the head it verified its chain from.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+use local_core::sync::SyncCredentials;
+use serde::{Deserialize, Serialize};
+use sync_protocol::account::{AccountChain, ChainRefusal, KeptHead, Stops};
+use sync_protocol::crypto::keyed_hash;
+use sync_protocol::policy::PolicyChain;
+use sync_protocol::records::{AccountHead, AccountLink, Signed};
+use sync_protocol::types::{Digest, Id, SecretKey, from_hex, to_hex};
+
+use super::SyncError;
+
+/// The kept heads' file in the device's application data folder.
+pub const KEPT_HEADS_FILE: &str = "account-heads.json";
+
+fn journal_key_name(device: &Id) -> String {
+    format!("noura.sync.v2.journal-key.{}", device.to_hex())
+}
+
+fn own_head_name(device: &Id) -> String {
+    format!("noura.sync.v2.own-account-head.{}", device.to_hex())
+}
+
+fn credential_error(error: impl std::fmt::Display) -> SyncError {
+    SyncError::Invalid(format!("the credential store failed: {error}"))
+}
+
+fn rolled_back() -> SyncError {
+    SyncError::Check("sync_journal_rollback")
+}
+
+/// What lets a chain under a genesis the device doesn't keep enter (§7).
+#[derive(Clone, Copy, Debug)]
+pub enum Anchor<'a> {
+    /// A verified workspace log that names the chain in its genesis, an
+    /// `add_member` or an `accept_reset`.
+    Workspace(&'a PolicyChain),
+    /// For the device's own account: the head it verified its chain from,
+    /// which the chain must reach: the genesis it signed, the approver's
+    /// head of the offer that brought it in, or its kit's account head.
+    Own(&'a AccountHead),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct Stored {
+    heads: Vec<AccountHead>,
+    /// The chain each workspace's policy names for each member account.
+    names: Vec<Named>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+struct Named {
+    workspace: Id,
+    account: Id,
+    genesis: Digest,
+}
+
+/// The heads a device keeps, and the accounts whose chains it refused.
+pub struct KeptHeads {
+    path: PathBuf,
+    device: Id,
+    own: Id,
+    key: SecretKey,
+    heads: BTreeMap<(Id, Digest), KeptHead>,
+    names: BTreeMap<(Id, Id), Digest>,
+    refused: BTreeMap<Id, &'static str>,
+}
+
+impl std::fmt::Debug for KeptHeads {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeptHeads")
+            .field("path", &self.path)
+            .field("heads", &self.heads)
+            .finish_non_exhaustive()
+    }
+}
+
+fn stored_own_head(
+    credentials: &dyn SyncCredentials,
+    device: &Id,
+) -> Result<Option<AccountHead>, SyncError> {
+    let Some(text) = credentials
+        .read_optional(&own_head_name(device))
+        .map_err(credential_error)?
+    else {
+        return Ok(None);
+    };
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|_| SyncError::Invalid("the stored own-account head doesn't parse".into()))
+}
+
+fn journal_key(credentials: &dyn SyncCredentials, device: &Id) -> Result<SecretKey, SyncError> {
+    let name = journal_key_name(device);
+    if let Some(text) = credentials.read_optional(&name).map_err(credential_error)? {
+        let bytes: [u8; 32] = from_hex(&text)
+            .and_then(|b| b.try_into().ok())
+            .ok_or_else(|| SyncError::Invalid("the journal key doesn't parse".into()))?;
+        return Ok(SecretKey(bytes));
+    }
+    let key = SecretKey::random().map_err(|e| SyncError::Invalid(format!("no randomness: {e}")))?;
+    credentials
+        .write(&name, &to_hex(key.expose()))
+        .map_err(credential_error)?;
+    Ok(key)
+}
+
+impl KeptHeads {
+    /// Opens the heads `device` of account `own` keeps in `dir`. A file
+    /// whose keyed hash fails, or whose own-account head lies below the one
+    /// the credential store keeps, reports `sync_journal_rollback`; the
+    /// device then rebuilds its heads with [`KeptHeads::rebuild`].
+    pub fn open(
+        dir: &Path,
+        own: Id,
+        device: Id,
+        credentials: &dyn SyncCredentials,
+    ) -> Result<Self, SyncError> {
+        let key = journal_key(credentials, &device)?;
+        let path = dir.join(KEPT_HEADS_FILE);
+        let stored = match std::fs::read(&path) {
+            Ok(bytes) => parse(&key, &bytes).ok_or_else(rolled_back)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Stored::default(),
+            Err(error) => {
+                return Err(SyncError::Invalid(format!(
+                    "the kept heads can't be read: {error}"
+                )));
+            }
+        };
+        let heads = Self {
+            path,
+            device,
+            own,
+            key,
+            heads: stored
+                .heads
+                .iter()
+                .map(|h| ((h.account, h.genesis), KeptHead::from(h.clone())))
+                .collect(),
+            names: stored
+                .names
+                .into_iter()
+                .map(|n| ((n.workspace, n.account), n.genesis))
+                .collect(),
+            refused: BTreeMap::new(),
+        };
+        if let Some(floor) = stored_own_head(credentials, &device)? {
+            let below = heads
+                .kept(&floor.account, &floor.genesis)
+                .is_none_or(|kept| kept.seqno < floor.seqno);
+            if below {
+                return Err(rolled_back());
+            }
+        }
+        Ok(heads)
+    }
+
+    /// Rebuilds the heads after `sync_journal_rollback`, from the account
+    /// heads that the logs of the device's workspaces record, and the
+    /// own-account head the credential store keeps, which the rebuilt heads
+    /// never fall below.
+    pub fn rebuild(
+        dir: &Path,
+        own: Id,
+        device: Id,
+        recorded: impl IntoIterator<Item = AccountHead>,
+        credentials: &dyn SyncCredentials,
+    ) -> Result<Self, SyncError> {
+        let key = journal_key(credentials, &device)?;
+        let mut heads: BTreeMap<(Id, Digest), KeptHead> = BTreeMap::new();
+        let floor = stored_own_head(credentials, &device)?;
+        for head in recorded.into_iter().chain(floor) {
+            let entry = heads
+                .entry((head.account, head.genesis))
+                .or_insert_with(|| KeptHead::from(head.clone()));
+            if head.seqno > entry.seqno {
+                *entry = KeptHead::from(head);
+            }
+        }
+        let rebuilt = Self {
+            path: dir.join(KEPT_HEADS_FILE),
+            device,
+            own,
+            key,
+            heads,
+            names: BTreeMap::new(),
+            refused: BTreeMap::new(),
+        };
+        rebuilt.save()?;
+        Ok(rebuilt)
+    }
+
+    /// The head kept of `account`'s chain under `genesis`.
+    pub fn kept(&self, account: &Id, genesis: &Digest) -> Option<KeptHead> {
+        self.heads.get(&(*account, *genesis)).copied()
+    }
+
+    /// Every head kept of `account`'s chains.
+    pub fn kept_of(&self, account: &Id) -> Vec<AccountHead> {
+        self.heads
+            .iter()
+            .filter(|((a, _), _)| a == account)
+            .map(|((account, genesis), kept)| AccountHead {
+                account: *account,
+                genesis: *genesis,
+                seqno: kept.seqno,
+                head: kept.head,
+            })
+            .collect()
+    }
+
+    /// The device's own account.
+    pub fn own_account(&self) -> Id {
+        self.own
+    }
+
+    /// Judges a chain the server serves under a genesis the device keeps,
+    /// from its genesis, and keeps its new head. A refusal stops the
+    /// account's workspaces, as [`KeptHeads::stopped`] reports.
+    pub fn accept(
+        &mut self,
+        served: &[Signed<AccountLink>],
+        listed_elsewhere: &BTreeSet<Id>,
+        credentials: &dyn SyncCredentials,
+    ) -> Result<AccountChain, SyncError> {
+        let first = served
+            .first()
+            .ok_or(SyncError::Check("sync_account_forked"))?;
+        let account = first.body.account;
+        let genesis = first.digest();
+        let kept = self
+            .kept(&account, &genesis)
+            .ok_or(SyncError::Check("sync_account_unauthorized"))?;
+        match kept.judge(served, listed_elsewhere) {
+            Ok(chain) => {
+                self.keep(chain.head(), credentials)?;
+                Ok(chain)
+            }
+            Err(refusal) => Err(self.refuse(account, refusal)),
+        }
+    }
+
+    /// Lets a chain under a genesis the device doesn't keep enter through
+    /// `anchor`, and keeps its head. Any other new chain reports
+    /// `sync_account_unauthorized`.
+    pub fn enter(
+        &mut self,
+        chain: &AccountChain,
+        anchor: Anchor<'_>,
+        credentials: &dyn SyncCredentials,
+    ) -> Result<(), SyncError> {
+        let account = chain.account();
+        let anchored = match anchor {
+            Anchor::Workspace(policy) => policy.names_genesis(&account, &chain.genesis()),
+            Anchor::Own(reference) => account == self.own && chain.contains(reference),
+        };
+        if !anchored {
+            return Err(SyncError::Check("sync_account_unauthorized"));
+        }
+        if let Some(kept) = self.kept(&account, &chain.genesis()) {
+            // Already kept: the chain must extend that head.
+            kept.check(chain)
+                .map_err(|_| self.refuse(account, ChainRefusal::Forked))?;
+        }
+        self.keep(chain.head(), credentials)
+    }
+
+    /// Checks a head that a workspace records under a genesis the device
+    /// keeps: it must lie on the kept chain, which `chain` holds verified.
+    pub fn check_recorded(
+        &mut self,
+        chain: &AccountChain,
+        recorded: &AccountHead,
+    ) -> Result<(), SyncError> {
+        let Some(kept) = self.kept(&recorded.account, &recorded.genesis) else {
+            return Ok(());
+        };
+        kept.check_recorded(chain, recorded)
+            .map_err(|_| self.refuse(recorded.account, ChainRefusal::Forked))
+    }
+
+    /// Records the chain a workspace's policy names for a member account.
+    pub fn name(&mut self, workspace: Id, account: Id, genesis: Digest) -> Result<(), SyncError> {
+        if self.names.insert((workspace, account), genesis) != Some(genesis) {
+            self.save()?;
+        }
+        Ok(())
+    }
+
+    /// The accounts of which the device keeps two current chains, because
+    /// two workspaces name different ones; the app alerts you to each.
+    pub fn two_current_chains(&self) -> Vec<Id> {
+        let mut by_account: BTreeMap<Id, BTreeSet<Digest>> = BTreeMap::new();
+        for ((_, account), genesis) in &self.names {
+            by_account.entry(*account).or_default().insert(*genesis);
+        }
+        by_account
+            .into_iter()
+            .filter(|(_, geneses)| geneses.len() > 1)
+            .map(|(account, _)| account)
+            .collect()
+    }
+
+    /// The code that stops a workspace whose members are `members`: the
+    /// refusal of the device's own chain stops every workspace, and that of
+    /// a member's chain stops the workspaces shared with that member.
+    pub fn stopped(&self, members: impl IntoIterator<Item = Id>) -> Option<&'static str> {
+        if let Some(code) = self.refused.get(&self.own) {
+            return Some(code);
+        }
+        members
+            .into_iter()
+            .find_map(|account| self.refused.get(&account).copied())
+    }
+
+    fn refuse(&mut self, account: Id, refusal: ChainRefusal) -> SyncError {
+        let code = refusal.client_code();
+        // Both refusals stop the same workspaces (§7).
+        let _stops: Stops = refusal.stops(account == self.own);
+        self.refused.entry(account).or_insert(code);
+        SyncError::Check(code)
+    }
+
+    /// Keeps `head`, writing the heads durably before the credential store
+    /// takes a new own-account head, so a crash between the two leaves the
+    /// file ahead of the floor.
+    fn keep(
+        &mut self,
+        head: AccountHead,
+        credentials: &dyn SyncCredentials,
+    ) -> Result<(), SyncError> {
+        let key = (head.account, head.genesis);
+        if self
+            .heads
+            .get(&key)
+            .is_some_and(|kept| kept.seqno >= head.seqno)
+        {
+            return Ok(());
+        }
+        self.heads.insert(key, KeptHead::from(head.clone()));
+        self.save()?;
+        if head.account == self.own {
+            let text = serde_json::to_string(&head).map_err(credential_error)?;
+            credentials
+                .write(&own_head_name(&self.device), &text)
+                .map_err(credential_error)?;
+        }
+        Ok(())
+    }
+
+    fn save(&self) -> Result<(), SyncError> {
+        let stored = Stored {
+            heads: self
+                .heads
+                .iter()
+                .map(|((account, genesis), kept)| AccountHead {
+                    account: *account,
+                    genesis: *genesis,
+                    seqno: kept.seqno,
+                    head: kept.head,
+                })
+                .collect(),
+            names: self
+                .names
+                .iter()
+                .map(|((workspace, account), genesis)| Named {
+                    workspace: *workspace,
+                    account: *account,
+                    genesis: *genesis,
+                })
+                .collect(),
+        };
+        let json =
+            serde_json::to_vec_pretty(&stored).map_err(|e| SyncError::Invalid(e.to_string()))?;
+        let mut bytes = keyed_hash(&self.key, &json).to_hex().into_bytes();
+        bytes.push(b'\n');
+        bytes.extend_from_slice(&json);
+        let write = || -> std::io::Result<()> {
+            if let Some(parent) = self.path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut file = atomic_write_file::AtomicWriteFile::open(&self.path)?;
+            file.write_all(&bytes)?;
+            file.commit()
+        };
+        write().map_err(|e| SyncError::Invalid(format!("the kept heads can't be written: {e}")))
+    }
+}
+
+/// The heads in a file whose keyed hash verifies under `key`.
+fn parse(key: &SecretKey, bytes: &[u8]) -> Option<Stored> {
+    let split = bytes.iter().position(|b| *b == b'\n')?;
+    let (mac, json) = (&bytes[..split], &bytes[split + 1..]);
+    let mac = Digest::from_hex(std::str::from_utf8(mac).ok()?)?;
+    if keyed_hash(key, json) != mac {
+        return None;
+    }
+    serde_json::from_slice(json).ok()
+}

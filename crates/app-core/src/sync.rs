@@ -4,12 +4,21 @@
 //! fetches the policy and keys, pulls the operations, checks each one's
 //! signature, policy position, epoch and chain, and decrypts it.
 //!
+//! Account chains come from the server (§7). The service judges each one
+//! against the heads the device keeps ([`account_heads`]), so a server that
+//! forks or rolls back a chain gets caught, and it trusts a workspace only
+//! through an anchor or a change its own account's active device signed
+//! (§8).
+//!
 //! The journal, the outbox and file sync arrive with the desktop sync
-//! client (ticket 48); account chains arrive from the server with ticket 46,
-//! so until then the credentials carry the device's own chain.
+//! client (ticket 48).
+
+pub mod account_heads;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
+use local_core::sync::SyncCredentials;
 use sync_key_envelope::v2::{DeviceKeys, EnvelopeHeader, unwrap, wrap};
 use sync_protocol::account::AccountChain;
 use sync_protocol::chain::{ChainRecord, ChainVerifier, NoFetch};
@@ -20,10 +29,13 @@ use sync_protocol::keys::{
 };
 use sync_protocol::live::{LiveOp, LiveSet};
 use sync_protocol::messages::{
+    ChainAppendRequest, ChainAppendResponse, ChainCursor, ChainsRequest, ChainsResponse,
     EntryRecord, ErrorBody, KeyRecord, KeysResponse, LimitsResponse, MEDIA_TYPE, Page, PageStatus,
     PolicyResponse, PullCursor, PullRequest, PullResponse, PushRequest, PushResponse,
     RESTORE_GENERATION_HEADER, Receipt, RecordRef,
 };
+
+pub use account_heads::{Anchor, KeptHeads};
 use sync_protocol::policy::{AccountChains, PolicyChain};
 use sync_protocol::records::{
     AccountHead, AccountLink, Card, Content, EpochBundle, Operation, Payload, PayloadKind,
@@ -69,7 +81,7 @@ fn random<T>(value: Result<T, sync_protocol::crypto::RandomError>) -> Result<T, 
 }
 
 /// What a device needs to sync: its account, its keys, its session token
-/// and its account chain, with the head from which it verified that chain.
+/// and the head from which it verified its own account chain.
 #[derive(Clone)]
 pub struct DeviceCredentials {
     /// The device's account.
@@ -78,8 +90,6 @@ pub struct DeviceCredentials {
     pub keys: DeviceKeys,
     /// The session token's 43 characters.
     pub session_token: String,
-    /// The device's own account chain, as it accepted it.
-    pub account_chain: Vec<Signed<AccountLink>>,
     /// The head from which the device verified its own chain: the genesis
     /// it signed, or the approver's head of the offer that approved it
     /// (§8, Verifying the chain).
@@ -87,11 +97,6 @@ pub struct DeviceCredentials {
 }
 
 impl DeviceCredentials {
-    fn chain(&self) -> Result<AccountChain, SyncError> {
-        AccountChain::verify(&self.account_chain, &BTreeSet::new())
-            .map_err(|e| SyncError::Check(e.client_code()))
-    }
-
     fn card(&self) -> Card {
         self.keys.card(self.account)
     }
@@ -231,6 +236,68 @@ impl SyncClient {
         );
         self.call(reqwest::Method::GET, &path, None).await
     }
+
+    /// `POST /v2/accounts/chain`: appends links to the session's account
+    /// chain, in order and all or none.
+    pub async fn append_chain(
+        &mut self,
+        links: Vec<Signed<AccountLink>>,
+    ) -> Result<ChainAppendResponse, SyncError> {
+        let body = ChainAppendRequest {
+            links: List(links.into_iter().map(Nested).collect()),
+        }
+        .to_bytes();
+        self.call(reqwest::Method::POST, "/v2/accounts/chain", Some(body))
+            .await
+    }
+
+    /// `POST /v2/accounts/chains`: links after each cursor of the chains the
+    /// session may read.
+    pub async fn read_chains(
+        &mut self,
+        cursors: Vec<ChainCursor>,
+    ) -> Result<ChainsResponse, SyncError> {
+        let body = ChainsRequest {
+            cursors: List(cursors),
+        }
+        .to_bytes();
+        self.call(reqwest::Method::POST, "/v2/accounts/chains", Some(body))
+            .await
+    }
+
+    /// Every link of one chain, page by page: the account's current chain
+    /// when `genesis` is absent. Returns the links and the chain's genesis.
+    pub async fn whole_chain(
+        &mut self,
+        account: Id,
+        genesis: Option<Digest>,
+    ) -> Result<(Vec<Signed<AccountLink>>, Digest), SyncError> {
+        let mut links: Vec<Signed<AccountLink>> = Vec::new();
+        let mut genesis = genesis;
+        loop {
+            let after = links.len() as u64;
+            let response = self
+                .read_chains(vec![ChainCursor {
+                    account,
+                    genesis,
+                    after,
+                }])
+                .await?;
+            let page = response
+                .pages
+                .0
+                .into_iter()
+                .next()
+                .filter(|p| p.account == account && genesis.is_none_or(|g| g == p.genesis))
+                .ok_or_else(|| SyncError::Network("the chain page names another chain".into()))?;
+            genesis = Some(page.genesis);
+            let more = !page.links.0.is_empty();
+            links.extend(page.links.0.into_iter().map(|l| l.0));
+            if links.len() as u64 >= page.head_seqno || !more {
+                return Ok((links, page.genesis));
+            }
+        }
+    }
 }
 
 /// A remote workspace this device created or verified, with its verified
@@ -271,20 +338,153 @@ pub struct RemoteFile {
     pub device: Id,
 }
 
+/// The credential store the sync service keeps the journal key and the
+/// own-account head in.
+pub type Secrets = Arc<dyn SyncCredentials + Send + Sync>;
+
 /// The sync service of one device.
 pub struct SyncService {
     client: SyncClient,
     credentials: DeviceCredentials,
+    heads: KeptHeads,
+    secrets: Secrets,
 }
 
 impl SyncService {
-    /// Connects to the server at `base` with `credentials`.
-    pub async fn connect(base: &str, credentials: DeviceCredentials) -> Result<Self, SyncError> {
+    /// Connects to the server at `base` with `credentials`, judging account
+    /// chains against `heads`, which keeps its own-account head and its key
+    /// in `secrets`.
+    pub async fn connect(
+        base: &str,
+        credentials: DeviceCredentials,
+        heads: KeptHeads,
+        secrets: Secrets,
+    ) -> Result<Self, SyncError> {
         let client = SyncClient::connect(base, &credentials.session_token).await?;
         Ok(Self {
             client,
             credentials,
+            heads,
+            secrets,
         })
+    }
+
+    /// The heads the device keeps.
+    pub fn kept_heads(&self) -> &KeptHeads {
+        &self.heads
+    }
+
+    /// The HTTP client, for routes the service doesn't wrap yet.
+    pub fn client(&mut self) -> &mut SyncClient {
+        &mut self.client
+    }
+
+    /// Appends links this device signed to its account's chain, then takes
+    /// the chain again from the server.
+    pub async fn append_links(
+        &mut self,
+        links: Vec<Signed<AccountLink>>,
+    ) -> Result<AccountChain, SyncError> {
+        self.client.append_chain(links).await?;
+        self.own_chain().await
+    }
+
+    /// The device's own account chain from the server: judged against the
+    /// head the device keeps of it, or, before it keeps one, entered from
+    /// the head it verified its chain from. A refusal stops every
+    /// workspace.
+    pub async fn own_chain(&mut self) -> Result<AccountChain, SyncError> {
+        if let Some(code) = self.heads.stopped([]) {
+            return Err(SyncError::Check(code));
+        }
+        let account = self.credentials.account;
+        let kept = self.heads.kept_of(&account);
+        let genesis = kept.first().map(|h| h.genesis);
+        let (links, _) = self.client.whole_chain(account, genesis).await?;
+        let secrets = self.secrets.clone();
+        if genesis.is_some() {
+            return self.heads.accept(&links, &BTreeSet::new(), &*secrets);
+        }
+        let chain = AccountChain::verify(&links, &BTreeSet::new())
+            .map_err(|e| SyncError::Check(e.client_code()))?;
+        self.heads.enter(
+            &chain,
+            Anchor::Own(&self.credentials.reference_head),
+            &*secrets,
+        )?;
+        Ok(chain)
+    }
+
+    /// Verifies the chains a workspace's policy records, other than the
+    /// device's own: each chain under a kept genesis must extend the kept
+    /// head, and the others enter only when the verified policy names them
+    /// where a new chain may enter (§7).
+    async fn recorded_chains(
+        &mut self,
+        own: &AccountChain,
+        changes: &[Signed<PolicyChange>],
+    ) -> Result<(AccountChains, Vec<AccountChain>), SyncError> {
+        let mut chains = AccountChains::new();
+        chains.insert(own.clone());
+        let recorded: BTreeSet<(Id, Digest)> = changes
+            .iter()
+            .flat_map(|c| c.body.heads.iter())
+            .map(|h| (h.account, h.genesis))
+            .filter(|(account, genesis)| !(*account == own.account() && *genesis == own.genesis()))
+            .collect();
+        let mut fresh = Vec::new();
+        let secrets = self.secrets.clone();
+        for (account, genesis) in recorded {
+            let (links, _) = self.client.whole_chain(account, Some(genesis)).await?;
+            let chain = if self.heads.kept(&account, &genesis).is_some() {
+                self.heads.accept(&links, &BTreeSet::new(), &*secrets)?
+            } else {
+                let chain = AccountChain::verify(&links, &BTreeSet::new())
+                    .map_err(|e| SyncError::Check(e.client_code()))?;
+                fresh.push(chain.clone());
+                chain
+            };
+            chains.insert(chain);
+        }
+        Ok((chains, fresh))
+    }
+
+    /// Keeps the heads a verified policy brings in, checks the heads it
+    /// records under kept geneses, notes the chain it names for each member,
+    /// and refuses a workspace that a refused chain stops.
+    fn take_policy(
+        &mut self,
+        policy: &PolicyChain,
+        chains: &AccountChains,
+        fresh: Vec<AccountChain>,
+    ) -> Result<(), SyncError> {
+        let secrets = self.secrets.clone();
+        for chain in &fresh {
+            self.heads
+                .enter(chain, Anchor::Workspace(policy), &*secrets)?;
+        }
+        let revision = policy.head().0;
+        for head in policy.recorded_heads(revision) {
+            if let Some(chain) = chains.get(&head.account, &head.genesis) {
+                self.heads.check_recorded(chain, head)?;
+            }
+        }
+        let snapshot = policy.head_snapshot();
+        for (account, member) in &snapshot.members {
+            self.heads
+                .name(policy.workspace(), *account, member.head.genesis)?;
+        }
+        self.check_stops(policy)
+    }
+
+    fn check_stops(&self, policy: &PolicyChain) -> Result<(), SyncError> {
+        match self
+            .heads
+            .stopped(policy.head_snapshot().members.keys().copied())
+        {
+            Some(code) => Err(SyncError::Check(code)),
+            None => Ok(()),
+        }
     }
 
     /// Creates a remote workspace named `name`: its genesis records the
@@ -292,7 +492,7 @@ impl SyncService {
     /// workspace domain's first epoch, an envelope for every active card of
     /// the account at that head, and the encrypted profile.
     pub async fn create_workspace(&mut self, name: &str) -> Result<RemoteWorkspace, SyncError> {
-        let chain = self.credentials.chain()?;
+        let chain = self.own_chain().await?;
         let keys = &self.credentials.keys;
         let workspace = random(Id::random())?;
         let domain = random(Id::random())?;
@@ -378,6 +578,8 @@ impl SyncService {
         );
         records.push(RecordRef::Profile(Signed::sign(profile, keys.signing())));
         self.client.create_workspace(records).await?;
+        self.heads
+            .name(workspace, chain.account(), chain.genesis())?;
 
         let mut epochs = EpochChain::new(workspace, domain);
         epochs
@@ -398,21 +600,22 @@ impl SyncService {
         })
     }
 
-    /// Opens a remote workspace from the server: fetches and verifies its
-    /// policy chain, which must record this account's head in a change an
-    /// active device of the account signed, then fetches the workspace
-    /// domain's epoch records and this device's envelope, and checks the
-    /// key.
+    /// Opens a remote workspace from the server: fetches its policy chain
+    /// and every account chain the policy records, judges each chain the
+    /// device keeps a head of against that head, verifies the policy, which
+    /// must record this account's head in a change that a device of the
+    /// account, active at the head the device keeps, signed (§8), then
+    /// fetches the workspace domain's epoch records and this device's
+    /// envelope, and checks the key.
     pub async fn open_workspace(&mut self, workspace: Id) -> Result<RemoteWorkspace, SyncError> {
-        let own = self.credentials.chain()?;
-        let mut chains = AccountChains::new();
-        chains.insert(own.clone());
+        let own = self.own_chain().await?;
         let response = self.client.policy(workspace, 0).await?;
         let changes: Vec<Signed<PolicyChange>> =
             response.changes.0.into_iter().map(|c| c.0).collect();
         if changes.len() as u64 != response.head_revision {
             return Err(SyncError::Check("sync_policy_rollback"));
         }
+        let (chains, fresh) = self.recorded_chains(&own, &changes).await?;
         let policy = PolicyChain::verify(&changes, &chains)
             .map_err(|e| SyncError::Check(e.client_code()))?;
         if policy.workspace() != workspace {
@@ -421,6 +624,7 @@ impl SyncService {
         policy
             .anchored_by(&own, &self.credentials.reference_head)
             .ok_or(SyncError::Check("sync_workspace_unverified"))?;
+        self.take_policy(&policy, &chains, fresh)?;
         let domain = policy.head_snapshot().workspace_domain;
 
         let device = self.credentials.keys.device();
@@ -487,6 +691,7 @@ impl SyncService {
         path: &str,
         bytes: &[u8],
     ) -> Result<Receipt, SyncError> {
+        self.check_stops(&remote.policy)?;
         let path =
             SyncPath::new(path).map_err(|e| SyncError::Invalid(format!("path: {}", e.name())))?;
         let epoch = remote
@@ -559,6 +764,7 @@ impl SyncService {
         &mut self,
         remote: &mut RemoteWorkspace,
     ) -> Result<Vec<RemoteFile>, SyncError> {
+        self.check_stops(&remote.policy)?;
         let response = self
             .client
             .pull(

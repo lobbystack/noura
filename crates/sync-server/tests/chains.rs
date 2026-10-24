@@ -221,7 +221,7 @@ async fn the_server_checks_each_link_as_the_account_fixture_does() {
                 }
                 _ => (link.body.signer, None),
             };
-            if !sessions.contains_key(&key) {
+            if let std::collections::btree_map::Entry::Vacant(slot) = sessions.entry(key) {
                 let client = session(
                     &store,
                     &base,
@@ -232,7 +232,7 @@ async fn the_server_checks_each_link_as_the_account_fixture_does() {
                     },
                 )
                 .await;
-                sessions.insert(key, client);
+                slot.insert(client);
             }
             match append(&sessions[&key], std::slice::from_ref(link)).await {
                 Ok(seqno) => assert_eq!(seqno, link.body.seqno, "{name}"),

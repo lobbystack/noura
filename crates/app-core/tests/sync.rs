@@ -1,78 +1,30 @@
 //! The sync service against the real server on SQLite (seam 4): one client
 //! creates a workspace and pushes an encrypted v2 operation, and a fresh
-//! client with the same device credentials fetches the policy and keys,
-//! pulls the operation, checks its signature and chain, and decrypts it.
+//! client with the same device credentials takes its account chain from the
+//! server, fetches the policy and keys, pulls the operation, checks its
+//! signature and chain, and decrypts it.
+
+mod sync_support;
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::Arc;
 
-use app_core::sync::{DeviceCredentials, SyncError, SyncService};
+use app_core::sync::{DeviceCredentials, KeptHeads, SyncError, SyncService};
 use sync_key_envelope::v2::{DeviceKeys, genesis_link};
 use sync_protocol::codec::Encode;
 use sync_protocol::messages::LimitsResponse;
 use sync_protocol::records::AccountHead;
 use sync_protocol::types::{Id, to_base64url};
-use sync_store::Session;
-
-async fn server() -> (String, DeviceCredentials, tempfile::TempDir) {
-    let dir = tempfile::tempdir().expect("temporary directory");
-    let data = dir.path().join("data");
-    sync_server::migrate(&data).await.expect("migrated");
-    let store = sync_server::open_store(&sync_server::Config::new(
-        data,
-        "127.0.0.1:0".parse().expect("an address"),
-    ))
-    .await
-    .expect("the store opens");
-
-    // Until ticket 46 adds sign-in and the chain routes, the account chain
-    // and the session go straight into the store.
-    let account = Id::random().expect("random");
-    let keys = DeviceKeys::generate().expect("random");
-    let genesis = genesis_link(&keys, account);
-    store
-        .append_account_links(vec![genesis.clone()])
-        .await
-        .expect("the chain is stored");
-    let token: [u8; 32] = sync_protocol::crypto::random_array().expect("random");
-    store
-        .create_session(
-            token,
-            Session {
-                account,
-                device: keys.device(),
-                recovery: None,
-            },
-        )
-        .await
-        .expect("the session is stored");
-    let address = sync_server::spawn(Arc::new(store), "127.0.0.1:0")
-        .await
-        .expect("serving");
-    let credentials = DeviceCredentials {
-        account,
-        keys,
-        session_token: to_base64url(&token),
-        account_chain: vec![genesis.clone()],
-        reference_head: AccountHead {
-            account,
-            genesis: genesis.digest(),
-            seqno: 1,
-            head: genesis.digest(),
-        },
-    };
-    (format!("http://{address}"), credentials, dir)
-}
+use sync_support::{Account, MemorySecrets, Server};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_fresh_client_pulls_and_decrypts_what_another_pushed() {
-    let (base, credentials, dir) = server().await;
+    let server = Server::start().await;
+    let account = Account::new(&server).await;
+    let device = &account.devices[0];
     let note = b"# Field notes\n\nThe first synced note.\n";
 
-    let mut writer = SyncService::connect(&base, credentials.clone())
-        .await
-        .expect("connects");
+    let mut writer = device.connect(&server.base, account.reference()).await;
     let mut created = writer
         .create_workspace("Field notes")
         .await
@@ -84,9 +36,18 @@ async fn a_fresh_client_pulls_and_decrypts_what_another_pushed() {
     assert_eq!(receipt.domain, created.domain);
     assert_eq!(receipt.seq, 3, "after the genesis and epoch entries");
 
-    let mut reader = SyncService::connect(&base, credentials.clone())
-        .await
-        .expect("connects");
+    // A fresh client: the same device credentials, no kept heads yet.
+    let fresh = tempfile::tempdir().unwrap();
+    let secrets = std::sync::Arc::new(MemorySecrets::default());
+    let heads = KeptHeads::open(fresh.path(), account.id, device.id(), &*secrets).unwrap();
+    let mut reader = SyncService::connect(
+        &server.base,
+        device.credentials(account.reference()),
+        heads,
+        secrets,
+    )
+    .await
+    .expect("connects");
     let mut remote = reader
         .open_workspace(created.workspace)
         .await
@@ -100,7 +61,7 @@ async fn a_fresh_client_pulls_and_decrypts_what_another_pushed() {
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].path, "Notes/First.md");
     assert_eq!(files[0].bytes, note);
-    assert_eq!(files[0].device, credentials.keys.device());
+    assert_eq!(files[0].device, device.id());
     assert!(
         reader
             .pull_files(&mut remote)
@@ -108,12 +69,17 @@ async fn a_fresh_client_pulls_and_decrypts_what_another_pushed() {
             .expect("a second pull")
             .is_empty()
     );
+    // The reader keeps its account's head now.
+    assert_eq!(
+        reader.kept_heads().kept_of(&account.id),
+        vec![account.head()]
+    );
 
     // The server stored ciphertext: neither the note, its path nor the
     // workspace name appears in its database.
-    let database = std::fs::read(dir.path().join("data").join(DATABASE)).expect("the database");
-    let wal = std::fs::read(dir.path().join("data").join(format!("{}-wal", DATABASE)))
-        .unwrap_or_default();
+    let data = server.dir.path().join("data");
+    let database = std::fs::read(data.join(DATABASE)).expect("the database");
+    let wal = std::fs::read(data.join(format!("{}-wal", DATABASE))).unwrap_or_default();
     for plaintext in [
         &b"The first synced note"[..],
         b"Notes/First.md",
@@ -158,11 +124,11 @@ async fn the_client_refuses_a_server_without_protocol_2() {
     let keys = DeviceKeys::generate().expect("random");
     let account = Id::random().expect("random");
     let genesis = genesis_link(&keys, account);
+    let device = keys.device();
     let credentials = DeviceCredentials {
         account,
         keys,
         session_token: to_base64url(&[1; 32]),
-        account_chain: vec![genesis.clone()],
         reference_head: AccountHead {
             account,
             genesis: genesis.digest(),
@@ -170,7 +136,11 @@ async fn the_client_refuses_a_server_without_protocol_2() {
             head: genesis.digest(),
         },
     };
-    let result = SyncService::connect(&format!("http://{address}"), credentials).await;
+    let dir = tempfile::tempdir().unwrap();
+    let secrets = std::sync::Arc::new(MemorySecrets::default());
+    let heads = KeptHeads::open(dir.path(), account, device, &*secrets).unwrap();
+    let result =
+        SyncService::connect(&format!("http://{address}"), credentials, heads, secrets).await;
     assert!(
         matches!(result, Err(SyncError::ProtocolUnsupported(1))),
         "the client refuses a v1 server"

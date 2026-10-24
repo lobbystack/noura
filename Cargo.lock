@@ -302,6 +302,7 @@ dependencies = [
  "aho-corasick",
  "app-core",
  "atomic-write-file",
+ "axum",
  "directories",
  "jiff",
  "jsonschema",
@@ -318,6 +319,7 @@ dependencies = [
  "sync-protocol",
  "sync-server",
  "sync-store",
+ "sync-store-sqlite",
  "sys-locale",
  "tempfile",
  "thiserror 2.0.20",
@@ -326,6 +328,7 @@ dependencies = [
  "unicode-normalization",
  "windows-sys 0.61.2",
  "workspace-format",
+ "zeroize",
 ]
 
 [[package]]

@@ -39,6 +39,8 @@ workspace-format = { version = "0.2.0", path = "../workspace-format" }
 
 [dev-dependencies]
 app-core = { path = ".", features = ["test-hooks"] }
+# The sync tests put a tampering proxy between the client and the server.
+axum.workspace = true
 # The tests record which folders each change syncs.
 local-core = { version = "0.2.0", path = "../local-core", features = ["durability-probe"] }
 # Search treats arbitrary typed text as plain words.
@@ -49,8 +51,11 @@ serde_yaml_ng.workspace = true
 # The sync tests run the real server on SQLite in-process.
 sync-server = { version = "0.2.0", path = "../sync-server" }
 sync-store = { version = "0.2.0", path = "../sync-store" }
+sync-store-sqlite = { version = "0.2.0", path = "../sync-store-sqlite" }
 tempfile.workspace = true
 tokio.workspace = true
+# The in-memory credential store of the sync tests.
+zeroize.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }

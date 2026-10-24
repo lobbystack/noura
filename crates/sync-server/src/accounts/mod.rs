@@ -540,47 +540,47 @@ async fn json_body(
     accounts: &Accounts,
     headers: &HeaderMap,
     body: Body,
-) -> Result<Value, Response> {
+) -> Result<Value, Box<Response>> {
     if !same_origin(accounts, headers) {
-        return Err(json_error(
+        return Err(Box::new(json_error(
             StatusCode::FORBIDDEN,
             "forbidden",
             "Passkeys work only from this server's own pages.",
-        ));
+        )));
     }
     if accounts.webauthn.is_none() {
-        return Err(json_error(
+        return Err(Box::new(json_error(
             StatusCode::NOT_FOUND,
             "passkeys_unavailable",
             "This server's address can't hold passkeys. Use an email link.",
-        ));
+        )));
     }
     let bytes = read_body(body).await.ok_or_else(|| {
-        json_error(
+        Box::new(json_error(
             StatusCode::PAYLOAD_TOO_LARGE,
             "too_large",
             "The request is too large.",
-        )
+        ))
     })?;
     serde_json::from_slice(&bytes).map_err(|_| {
-        json_error(
+        Box::new(json_error(
             StatusCode::BAD_REQUEST,
             "bad_request",
             "The request isn't JSON.",
-        )
+        ))
     })
 }
 
-fn json_email(value: &Value) -> Result<String, Response> {
+fn json_email(value: &Value) -> Result<String, Box<Response>> {
     value["email"]
         .as_str()
         .and_then(normalize_email)
         .ok_or_else(|| {
-            json_error(
+            Box::new(json_error(
                 StatusCode::BAD_REQUEST,
                 "email_invalid",
                 "Enter an email address, such as you@example.com.",
-            )
+            ))
         })
 }
 
@@ -617,11 +617,11 @@ async fn sign_up_start<B: Backend>(
     let accounts = &state.accounts;
     let value = match json_body(accounts, &headers, body).await {
         Ok(value) => value,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let email = match json_email(&value) {
         Ok(email) => email,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let account = match state.store.account_id(&email) {
         Ok(account) => account,
@@ -666,7 +666,7 @@ async fn sign_up_finish<B: Backend>(
     let accounts = &state.accounts;
     let value = match json_body(accounts, &headers, body).await {
         Ok(value) => value,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let Some(id) = json_ceremony(&value) else {
         return expired_ceremony();
@@ -723,12 +723,15 @@ async fn sign_up_finish<B: Backend>(
 async fn account_passkeys<B: Backend>(
     store: &Store<B>,
     account: Id,
-) -> Result<Vec<Passkey>, Response> {
-    let rows = store.passkeys(account).await.map_err(json_failure)?;
+) -> Result<Vec<Passkey>, Box<Response>> {
+    let rows = store
+        .passkeys(account)
+        .await
+        .map_err(|e| Box::new(json_failure(e)))?;
     rows.iter()
         .map(|row| serde_json::from_slice::<Passkey>(&row.passkey))
         .collect::<Result<_, _>>()
-        .map_err(|e| json_failure(format!("a stored passkey doesn't parse: {e}")))
+        .map_err(|e| Box::new(json_failure(format!("a stored passkey doesn't parse: {e}"))))
 }
 
 /// `POST /account/passkeys/sign-in/start`: an authentication ceremony for
@@ -741,11 +744,11 @@ async fn sign_in_start<B: Backend>(
     let accounts = &state.accounts;
     let value = match json_body(accounts, &headers, body).await {
         Ok(value) => value,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let email = match json_email(&value) {
         Ok(email) => email,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let account = match state.store.account_id(&email) {
         Ok(account) => account,
@@ -753,7 +756,7 @@ async fn sign_in_start<B: Backend>(
     };
     let passkeys = match account_passkeys(&state.store, account).await {
         Ok(passkeys) => passkeys,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     if passkeys.is_empty() {
         return json_error(
@@ -794,7 +797,7 @@ async fn sign_in_finish<B: Backend>(
     let accounts = &state.accounts;
     let value = match json_body(accounts, &headers, body).await {
         Ok(value) => value,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let Some(id) = json_ceremony(&value) else {
         return expired_ceremony();
@@ -861,7 +864,7 @@ async fn add_start<B: Backend>(
 ) -> Response {
     let accounts = &state.accounts;
     if let Err(response) = json_body(accounts, &headers, body).await {
-        return response;
+        return *response;
     }
     let account = match signed_in(&state.store, &headers).await {
         Ok(Some((account, _))) => account,
@@ -875,7 +878,7 @@ async fn add_start<B: Backend>(
     };
     let existing = match account_passkeys(&state.store, account).await {
         Ok(passkeys) => passkeys.iter().map(|p| p.cred_id().clone()).collect(),
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let webauthn = accounts.webauthn.as_ref().expect("checked in json_body");
     let (options, registration) = match webauthn.start_passkey_registration(
@@ -914,7 +917,7 @@ async fn add_finish<B: Backend>(
     let accounts = &state.accounts;
     let value = match json_body(accounts, &headers, body).await {
         Ok(value) => value,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let account = match signed_in(&state.store, &headers).await {
         Ok(Some((account, _))) => account,

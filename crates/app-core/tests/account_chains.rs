@@ -1,0 +1,774 @@
+//! Account chains on a device (docs/workspace-format/sync-v2.md §7, §8,
+//! §15): the heads it keeps, under a keyed hash in its application data and
+//! with its own-account head in the credential store; the kept-head cases
+//! of `sync-v2-account.json`; rollback and rebuild; and, at seam 4 behind a
+//! tampering proxy, a server that forks a chain at one seqno, cuts it back
+//! below a kept head, records a head in a workspace off the kept chain,
+//! brings back a removed card or reuses a device ID under another card,
+//! each caught with `sync_account_forked` or `sync_account_unauthorized`.
+
+mod sync_support;
+
+use std::collections::BTreeSet;
+use std::sync::Arc;
+
+use app_core::sync::{Anchor, KeptHeads, SyncError};
+use serde_json::Value;
+use sync_key_envelope::v2::{DeviceKeys, next_link};
+use sync_protocol::account::AccountChain;
+use sync_protocol::codec::{Decode, Encode, List, Nested, Sorted};
+use sync_protocol::messages::{ChainsResponse, PolicyEntry, PolicyResponse};
+use sync_protocol::policy::{AccountChains, PolicyChain};
+use sync_protocol::records::{
+    AccountHead, AccountLink, LinkKind, PolicyChange, PolicyKind, Role, Signed,
+};
+use sync_protocol::types::{Digest, Id, from_hex};
+use sync_store::{Backend, WriteTxn};
+use sync_support::{Account, MemorySecrets, Proxy, Server, head_of};
+
+fn fixture() -> Value {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/workspace-format/fixtures/sync-v2-account.json"
+    );
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+fn links_of(doc: &Value, digests: &Value) -> Vec<Signed<AccountLink>> {
+    digests
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            let hex = doc["links"][d.as_str().unwrap()].as_str().unwrap();
+            Signed::<AccountLink>::from_bytes(&from_hex(hex).unwrap()).unwrap()
+        })
+        .collect()
+}
+
+/// Every `kept_head` and `kept_head_extend` case of `sync-v2-account.json`,
+/// through the heads a device keeps: a served chain that doesn't extend the
+/// kept head reports `sync_account_forked`, a later link that breaks a rule
+/// `sync_account_unauthorized`, and either stops the workspaces the device
+/// shares with the account, or every workspace for its own.
+#[test]
+fn kept_heads_reach_each_fixture_cases_outcome() {
+    let doc = fixture();
+    let mut checked = 0;
+    for case in doc["cases"].as_array().unwrap() {
+        let kind = case["kind"].as_str().unwrap();
+        if kind != "kept_head" && kind != "kept_head_extend" {
+            continue;
+        }
+        let name = case["name"].as_str().unwrap();
+        let served = links_of(&doc, &case["links"]);
+        let account = served[0].body.account;
+        let own_account = case["own_account"].as_bool().unwrap_or(false);
+        let own = if own_account {
+            account
+        } else {
+            Id::random().unwrap()
+        };
+        let kept = AccountHead {
+            account,
+            genesis: Digest::from_hex(case["kept"]["genesis"].as_str().unwrap()).unwrap(),
+            seqno: case["kept"]["seqno"].as_u64().unwrap(),
+            head: Digest::from_hex(case["kept"]["head"].as_str().unwrap()).unwrap(),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = MemorySecrets::default();
+        let device = Id::random().unwrap();
+        let mut heads =
+            KeptHeads::rebuild(dir.path(), own, device, [kept.clone()], &secrets).unwrap();
+        let mut outcome = heads.accept(&served, &BTreeSet::new(), &secrets);
+        if let (Ok(chain), Some(_)) = (&outcome, case["recorded"].as_object()) {
+            let recorded: AccountHead = serde_json::from_value(case["recorded"].clone()).unwrap();
+            outcome = heads
+                .check_recorded(chain, &recorded)
+                .map(|()| chain.clone());
+        }
+        let expect = match kind {
+            "kept_head" => case["expect"].as_str().unwrap().to_owned(),
+            _ => case["expect"]["outcome"].as_str().unwrap().to_owned(),
+        };
+        match outcome {
+            Ok(chain) => {
+                assert_eq!(expect, "ok", "{name}");
+                if let Some(seqno) = case["expect"].get("head_seqno").and_then(Value::as_u64) {
+                    assert_eq!(chain.head_seqno(), seqno, "{name}");
+                }
+                assert_eq!(
+                    heads.kept(&account, &kept.genesis).unwrap().seqno,
+                    chain.head_seqno()
+                );
+                assert_eq!(heads.stopped([account]), None);
+            }
+            Err(SyncError::Check(code)) => {
+                assert_eq!(code, expect, "{name}");
+                // The account's workspaces stop; for the device's own
+                // account, every workspace does.
+                assert_eq!(heads.stopped([account]), Some(code), "{name}");
+                let every = heads.stopped([Id::random().unwrap()]).is_some();
+                assert_eq!(every, own_account, "{name}");
+                if let Some(stops) = case["expect"].get("stops").and_then(Value::as_str) {
+                    assert_eq!(stops == "every_workspace", own_account, "{name}");
+                }
+                // The kept head never moves back.
+                assert!(heads.kept(&account, &kept.genesis).unwrap().seqno >= kept.seqno);
+            }
+            Err(other) => panic!("{name}: {other:?}"),
+        }
+        checked += 1;
+    }
+    assert!(checked >= 11, "{checked} cases");
+}
+
+#[test]
+fn a_rolled_back_heads_file_reports_a_journal_rollback_and_rebuilds() {
+    let dir = tempfile::tempdir().unwrap();
+    let secrets = MemorySecrets::default();
+    let keys = DeviceKeys::generate().unwrap();
+    let account = Id::random().unwrap();
+    let genesis = sync_key_envelope::v2::genesis_link(&keys, account);
+    let reference = head_of(std::slice::from_ref(&genesis));
+    let mut heads = KeptHeads::open(dir.path(), account, keys.device(), &secrets).unwrap();
+    let one = AccountChain::verify(std::slice::from_ref(&genesis), &BTreeSet::new()).unwrap();
+    heads
+        .enter(&one, Anchor::Own(&reference), &secrets)
+        .unwrap();
+    let file = dir
+        .path()
+        .join(app_core::sync::account_heads::KEPT_HEADS_FILE);
+    let older = std::fs::read(&file).unwrap();
+
+    // The chain grows, and the device keeps the new head.
+    let second = DeviceKeys::generate().unwrap();
+    let link = next_link(
+        &keys,
+        &reference,
+        LinkKind::AddDevice {
+            card: Nested(second.card(account)),
+            offer: Digest([9; 32]),
+        },
+    );
+    let links = vec![genesis.clone(), link];
+    heads.accept(&links, &BTreeSet::new(), &secrets).unwrap();
+    drop(heads);
+    KeptHeads::open(dir.path(), account, keys.device(), &secrets).expect("current heads open");
+
+    // A restored older file: its own-account head lies below the one the
+    // credential store keeps.
+    std::fs::write(&file, &older).unwrap();
+    let refused = KeptHeads::open(dir.path(), account, keys.device(), &secrets);
+    assert!(matches!(
+        refused,
+        Err(SyncError::Check("sync_journal_rollback"))
+    ));
+    // A file whose keyed hash fails is refused too.
+    let mut tampered = std::fs::read(&file).unwrap();
+    let last = tampered.len() - 2;
+    tampered[last] ^= 1;
+    std::fs::write(&file, &tampered).unwrap();
+    let refused = KeptHeads::open(dir.path(), account, keys.device(), &secrets);
+    assert!(matches!(
+        refused,
+        Err(SyncError::Check("sync_journal_rollback"))
+    ));
+
+    // The device rebuilds the heads from the heads its workspaces' logs
+    // record, which never fall below the credential store's own head.
+    let recorded = [reference.clone()];
+    let rebuilt =
+        KeptHeads::rebuild(dir.path(), account, keys.device(), recorded, &secrets).unwrap();
+    assert_eq!(rebuilt.kept(&account, &genesis.digest()).unwrap().seqno, 2);
+    drop(rebuilt);
+    KeptHeads::open(dir.path(), account, keys.device(), &secrets).expect("rebuilt heads open");
+}
+
+/// A chain under a genesis the device doesn't keep enters only through a
+/// verified log that names it in its genesis, an `add_member` or an
+/// `accept_reset`, or for its own account through its reference head; and
+/// a device that keeps two current chains of one account alerts you.
+#[test]
+fn a_new_chain_enters_only_through_an_anchor() {
+    let owner_keys = DeviceKeys::generate().unwrap();
+    let owner = Id::random().unwrap();
+    let owner_genesis = sync_key_envelope::v2::genesis_link(&owner_keys, owner);
+    let member_keys = DeviceKeys::generate().unwrap();
+    let member = Id::random().unwrap();
+    let member_genesis = sync_key_envelope::v2::genesis_link(&member_keys, member);
+    let owner_chain =
+        AccountChain::verify(std::slice::from_ref(&owner_genesis), &BTreeSet::new()).unwrap();
+    let member_chain =
+        AccountChain::verify(std::slice::from_ref(&member_genesis), &BTreeSet::new()).unwrap();
+    let mut chains = AccountChains::new();
+    chains.insert(owner_chain.clone());
+    chains.insert(member_chain.clone());
+    let workspace = Id::random().unwrap();
+    let genesis = Signed::sign(
+        PolicyChange {
+            workspace,
+            revision: 1,
+            previous: Digest::ZERO,
+            signer: owner_keys.device(),
+            heads: Sorted::new(vec![owner_chain.head()]).unwrap(),
+            kind: PolicyKind::Genesis {
+                workspace_domain: Id::random().unwrap(),
+            },
+        },
+        owner_keys.signing(),
+    );
+    let only_genesis = PolicyChain::verify(std::slice::from_ref(&genesis), &chains).unwrap();
+    let add = Signed::sign(
+        PolicyChange {
+            workspace,
+            revision: 2,
+            previous: genesis.digest(),
+            signer: owner_keys.device(),
+            heads: Sorted::new(vec![owner_chain.head(), member_chain.head()]).unwrap(),
+            kind: PolicyKind::AddMember {
+                account: member,
+                role: Role::Editor,
+                invitation: Id::random().unwrap(),
+            },
+        },
+        owner_keys.signing(),
+    );
+    let with_member = PolicyChain::verify(&[genesis.clone(), add], &chains).unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let secrets = MemorySecrets::default();
+    let mut heads = KeptHeads::open(dir.path(), owner, owner_keys.device(), &secrets).unwrap();
+    // A log that doesn't name the member's chain where it may enter.
+    assert!(matches!(
+        heads.enter(&member_chain, Anchor::Workspace(&only_genesis), &secrets),
+        Err(SyncError::Check("sync_account_unauthorized"))
+    ));
+    heads
+        .enter(&member_chain, Anchor::Workspace(&with_member), &secrets)
+        .unwrap();
+    assert_eq!(heads.kept_of(&member), vec![member_chain.head()]);
+    // The own account's chain enters through the head it verified from,
+    // and never through another account's chain.
+    let stranger = head_of(std::slice::from_ref(&member_genesis));
+    assert!(
+        heads
+            .enter(&owner_chain, Anchor::Own(&stranger), &secrets)
+            .is_err()
+    );
+    heads
+        .enter(&owner_chain, Anchor::Own(&owner_chain.head()), &secrets)
+        .unwrap();
+
+    // Two workspaces naming different chains of one account.
+    assert!(heads.two_current_chains().is_empty());
+    heads
+        .name(workspace, member, member_chain.genesis())
+        .unwrap();
+    heads
+        .name(Id::random().unwrap(), member, Digest([5; 32]))
+        .unwrap();
+    assert_eq!(heads.two_current_chains(), vec![member]);
+}
+
+/// Commits a policy change into the store straight, with its entry in the
+/// workspace domain, as a push of that change will once tickets 47 and 50
+/// add policy pushes.
+async fn inject(server: &Server, domain: Id, change: Signed<PolicyChange>) {
+    let workspace = change.body.workspace;
+    server
+        .store
+        .backend()
+        .write(Box::new(move |txn: &mut sync_store_sqlite::SqliteTxn| {
+            Box::pin(async move {
+                let revision = change.body.revision;
+                let digest = change.digest();
+                txn.insert_policy_change(workspace, revision, digest, &change.to_bytes())
+                    .await?;
+                txn.set_policy_head(workspace, revision, digest).await?;
+                let accounts: Vec<Id> = change.body.heads.iter().map(|h| h.account).collect();
+                txn.record_accounts(workspace, &accounts).await?;
+                let entry = PolicyEntry {
+                    revision,
+                    head: digest,
+                };
+                txn.append_entry(workspace, domain, 9, &entry.to_bytes())
+                    .await?;
+                Ok(())
+            })
+        }))
+        .await
+        .expect("the change is stored");
+}
+
+/// Wraps the workspace domain's epoch 1 key, which the device at `from`
+/// unwraps from its envelope, for the device at `to`, and stores the
+/// envelope, as the push after an `account_heads` change will.
+async fn grant(
+    server: &Server,
+    account: &Account,
+    from: usize,
+    to: usize,
+    workspace: Id,
+    domain: Id,
+) {
+    let wrapper = &account.devices[from];
+    let mut client = app_core::sync::SyncClient::connect(&server.base, &wrapper.token)
+        .await
+        .unwrap();
+    let keys = client.keys(workspace, 0, wrapper.id()).await.unwrap();
+    let own = keys
+        .entries
+        .0
+        .iter()
+        .find_map(|e| match &e.record {
+            sync_protocol::messages::KeyRecord::Envelope(env) => Some(env.clone()),
+            _ => None,
+        })
+        .expect("the wrapper's envelope");
+    let key =
+        sync_key_envelope::v2::unwrap(&own.body, &wrapper.keys, &wrapper.keys.card(account.id))
+            .unwrap();
+    let recipient = account.devices[to].keys.card(account.id);
+    let envelope = sync_key_envelope::v2::wrap(
+        &sync_key_envelope::v2::EnvelopeHeader {
+            workspace,
+            domain,
+            epoch: 1,
+            wrapping_device: wrapper.id(),
+        },
+        &key,
+        &recipient,
+        &wrapper.keys,
+    )
+    .unwrap();
+    server
+        .store
+        .backend()
+        .write(Box::new(move |txn: &mut sync_store_sqlite::SqliteTxn| {
+            Box::pin(async move {
+                txn.append_key_entry(
+                    workspace,
+                    4,
+                    domain,
+                    Some(envelope.body.recipient),
+                    &envelope.to_bytes(),
+                )
+                .await
+                .map(|_| ())
+            })
+        }))
+        .await
+        .unwrap();
+}
+
+/// The policy changes the server holds for a workspace.
+async fn policy_changes(
+    server: &Server,
+    device: &sync_support::Device,
+    workspace: Id,
+) -> Vec<Signed<PolicyChange>> {
+    let mut client = app_core::sync::SyncClient::connect(&server.base, &device.token)
+        .await
+        .unwrap();
+    client
+        .policy(workspace, 0)
+        .await
+        .unwrap()
+        .changes
+        .0
+        .into_iter()
+        .map(|c| c.0)
+        .collect()
+}
+
+fn change(
+    signer: &DeviceKeys,
+    after: &Signed<PolicyChange>,
+    heads: Vec<AccountHead>,
+    kind: PolicyKind,
+) -> Signed<PolicyChange> {
+    Signed::sign(
+        PolicyChange {
+            workspace: after.body.workspace,
+            revision: after.body.revision + 1,
+            previous: after.digest(),
+            signer: signer.device(),
+            heads: Sorted::new(heads).unwrap(),
+            kind,
+        },
+        signer.signing(),
+    )
+}
+
+/// Rewrites the page of `account`'s chain in a chains response.
+fn rewrite_chain(
+    account: Id,
+    edit: impl Fn(&mut Vec<Signed<AccountLink>>) + Send + Sync + 'static,
+) -> sync_support::Tamper {
+    Box::new(move |path, body| {
+        if path != "/v2/accounts/chains" {
+            return body;
+        }
+        let mut response = ChainsResponse::from_bytes(&body).unwrap();
+        for page in response.pages.0.iter_mut() {
+            if page.account != account {
+                continue;
+            }
+            // The proxy serves the whole chain from the cursor's start,
+            // which the client asks from 0.
+            let mut links: Vec<Signed<AccountLink>> =
+                page.links.0.iter().map(|l| l.0.clone()).collect();
+            edit(&mut links);
+            page.head_seqno = links.len() as u64;
+            page.links = List(links.into_iter().map(Nested).collect());
+        }
+        response.to_bytes()
+    })
+}
+
+/// Two accounts: the owner's device creates a workspace that records the
+/// member's account, whose second device the member's first device added.
+struct Shared {
+    server: Server,
+    proxy: Proxy,
+    owner: Account,
+    member: Account,
+    workspace: Id,
+    domain: Id,
+}
+
+async fn shared() -> Shared {
+    let server = Server::start().await;
+    let proxy = Proxy::start(&server.base).await;
+    let owner = Account::new(&server).await;
+    let mut member = Account::new(&server).await;
+    member.add_device(&server).await;
+    let mut service = owner.devices[0]
+        .connect(&proxy.base, owner.reference())
+        .await;
+    let created = service.create_workspace("Shared").await.unwrap();
+    let changes = policy_changes(&server, &owner.devices[0], created.workspace).await;
+    let add = change(
+        &owner.devices[0].keys,
+        changes.last().unwrap(),
+        vec![owner.head(), member.head()],
+        PolicyKind::AddMember {
+            account: member.id,
+            role: Role::Editor,
+            invitation: Id::random().unwrap(),
+        },
+    );
+    inject(&server, created.domain, add).await;
+    Shared {
+        server,
+        proxy,
+        owner,
+        member,
+        workspace: created.workspace,
+        domain: created.domain,
+    }
+}
+
+impl Shared {
+    /// The owner's device with fresh kept heads, which opens the workspace
+    /// once through an honest proxy and so keeps the member's head.
+    async fn owner_device(&self) -> app_core::sync::SyncService {
+        self.proxy.honest();
+        let fresh = sync_support::Device {
+            account: self.owner.id,
+            keys: self.owner.devices[0].keys.clone(),
+            token: self.owner.devices[0].token.clone(),
+            state: tempfile::tempdir().unwrap(),
+            secrets: Arc::new(MemorySecrets::default()),
+        };
+        let mut service = fresh
+            .connect(&self.proxy.base, self.owner.reference())
+            .await;
+        service
+            .open_workspace(self.workspace)
+            .await
+            .expect("an honest open");
+        assert_eq!(
+            service.kept_heads().kept_of(&self.member.id),
+            vec![self.member.head()]
+        );
+        // Keep the folder alive with the service.
+        std::mem::forget(fresh.state);
+        service
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_chain_that_extends_the_kept_head_is_taken() {
+    let mut s = shared().await;
+    let mut device = s.owner_device().await;
+    let third = s.member.add_device(&s.server).await;
+    let _ = third;
+    device
+        .open_workspace(s.workspace)
+        .await
+        .expect("the chain extends the kept head");
+    assert_eq!(
+        device.kept_heads().kept_of(&s.member.id),
+        vec![s.member.head()]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fork_at_one_seqno_is_caught_and_stops_the_shared_workspace() {
+    let s = shared().await;
+    let mut device = s.owner_device().await;
+    // The proxy serves another link at seqno 2, which the member's first
+    // device signed too.
+    let other = DeviceKeys::generate().unwrap();
+    let fork = next_link(
+        &s.member.devices[0].keys,
+        &head_of(&s.member.links[..1]),
+        LinkKind::AddDevice {
+            card: Nested(other.card(s.member.id)),
+            offer: Digest([9; 32]),
+        },
+    );
+    s.proxy.tamper(rewrite_chain(s.member.id, move |links| {
+        links[1] = fork.clone();
+    }));
+    let refused = device.open_workspace(s.workspace).await;
+    assert!(
+        matches!(refused, Err(SyncError::Check("sync_account_forked"))),
+        "{:?}",
+        refused.as_ref().err()
+    );
+    // The workspace it shares with that account stays stopped, even once
+    // the proxy turns honest.
+    s.proxy.honest();
+    let again = device.open_workspace(s.workspace).await;
+    assert!(matches!(
+        again,
+        Err(SyncError::Check("sync_account_forked"))
+    ));
+    // Its own account's chain is unharmed: it still creates a workspace.
+    device
+        .create_workspace("Alone")
+        .await
+        .expect("its own workspaces go on");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_chain_cut_back_below_the_kept_head_is_caught() {
+    let s = shared().await;
+    let mut device = s.owner_device().await;
+    s.proxy
+        .tamper(rewrite_chain(s.member.id, |links| links.truncate(1)));
+    let refused = device.open_workspace(s.workspace).await;
+    assert!(
+        matches!(refused, Err(SyncError::Check("sync_account_forked"))),
+        "{:?}",
+        refused.as_ref().err()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_head_recorded_off_the_kept_chain_is_caught() {
+    let s = shared().await;
+    let mut device = s.owner_device().await;
+    // The proxy adds a change that the member's device signed, recording a
+    // head at seqno 2 that the kept chain doesn't hold.
+    let changes = policy_changes(&s.server, &s.owner.devices[0], s.workspace).await;
+    let off = AccountHead {
+        head: Digest([7; 32]),
+        ..s.member.head()
+    };
+    let extra = change(
+        &s.member.devices[0].keys,
+        changes.last().unwrap(),
+        vec![off],
+        PolicyKind::AccountHeads,
+    );
+    s.proxy.tamper(Box::new(move |path, body| {
+        if !path.ends_with("/policy") {
+            return body;
+        }
+        let mut response = PolicyResponse::from_bytes(&body).unwrap();
+        response.changes.0.push(Nested(extra.clone()));
+        response.head_revision += 1;
+        response.to_bytes()
+    }));
+    let refused = device.open_workspace(s.workspace).await;
+    assert!(
+        matches!(refused, Err(SyncError::Check("sync_account_forked"))),
+        "{:?}",
+        refused.as_ref().err()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_removed_card_brought_back_or_a_device_id_reused_is_caught() {
+    let mut s = shared().await;
+    // The member removes its second device, and the owner's device keeps
+    // the head with the removal.
+    let removed = s.member.devices[1].keys.clone();
+    let link = s.member.link(
+        0,
+        LinkKind::Remove {
+            device: removed.device(),
+            keep: Sorted::default(),
+        },
+    );
+    s.member.send(&s.server, 0, link).await;
+    let mut device = s.owner_device().await;
+    device.open_workspace(s.workspace).await.unwrap();
+    assert_eq!(device.kept_heads().kept_of(&s.member.id)[0].seqno, 3);
+
+    // The proxy serves a link that adds the removed card again.
+    let head = s.member.head();
+    let again = next_link(
+        &s.member.devices[0].keys,
+        &head,
+        LinkKind::AddDevice {
+            card: Nested(removed.card(s.member.id)),
+            offer: Digest([9; 32]),
+        },
+    );
+    s.proxy.tamper(rewrite_chain(s.member.id, move |links| {
+        links.push(again.clone())
+    }));
+    let refused = device.open_workspace(s.workspace).await;
+    assert!(
+        matches!(refused, Err(SyncError::Check("sync_account_unauthorized"))),
+        "{:?}",
+        refused.as_ref().err()
+    );
+
+    // Another device: the proxy serves the removed device ID under another
+    // card, with the same signing key and another X-Wing key.
+    let mut device = s.owner_device().await;
+    let reused = DeviceKeys::from_seeds(
+        &removed.signing().seed(),
+        sync_protocol::types::SecretKey([3; 32]),
+    );
+    assert_eq!(reused.device(), removed.device());
+    assert_ne!(reused.card(s.member.id), removed.card(s.member.id));
+    let other_card = next_link(
+        &s.member.devices[0].keys,
+        &head,
+        LinkKind::AddDevice {
+            card: Nested(reused.card(s.member.id)),
+            offer: Digest([9; 32]),
+        },
+    );
+    s.proxy.tamper(rewrite_chain(s.member.id, move |links| {
+        links.push(other_card.clone())
+    }));
+    let refused = device.open_workspace(s.workspace).await;
+    assert!(
+        matches!(refused, Err(SyncError::Check("sync_account_unauthorized"))),
+        "{:?}",
+        refused.as_ref().err()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fork_of_the_own_chain_stops_every_workspace() {
+    let mut s = shared().await;
+    let second = s.owner.add_device(&s.server).await;
+    let _ = second;
+    let mut device = s.owner_device().await;
+    let other = DeviceKeys::generate().unwrap();
+    let fork = next_link(
+        &s.owner.devices[0].keys,
+        &head_of(&s.owner.links[..1]),
+        LinkKind::AddDevice {
+            card: Nested(other.card(s.owner.id)),
+            offer: Digest([9; 32]),
+        },
+    );
+    s.proxy.tamper(rewrite_chain(s.owner.id, move |links| {
+        links[1] = fork.clone()
+    }));
+    let refused = device.open_workspace(s.workspace).await;
+    assert!(
+        matches!(refused, Err(SyncError::Check("sync_account_forked"))),
+        "{:?}",
+        refused.as_ref().err()
+    );
+    s.proxy.honest();
+    for result in [
+        device.open_workspace(s.workspace).await.map(|_| ()),
+        device.create_workspace("Another").await.map(|_| ()),
+    ] {
+        assert!(matches!(
+            result,
+            Err(SyncError::Check("sync_account_forked"))
+        ));
+    }
+    let _ = s.domain;
+}
+
+/// §8: a device trusts a workspace that no anchor brought it through a
+/// change that a device of its own account, active at the head it keeps,
+/// signed, at or after its reference head; once a link removes that
+/// device, the change confers no trust.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_removed_cards_change_confers_no_trust() {
+    let server = Server::start().await;
+    let mut account = Account::new(&server).await;
+    let mut first = account.devices[0]
+        .connect(&server.base, account.reference())
+        .await;
+    let created = first.create_workspace("Notes").await.unwrap();
+    // A second device approved after the workspace's genesis: its
+    // reference head is the approver's head the add_device follows. The
+    // first device records the new head there and wraps the key for it.
+    let approver_head = account.head();
+    let second = account.add_device(&server).await;
+    let changes = policy_changes(&server, &account.devices[0], created.workspace).await;
+    let heads = change(
+        &account.devices[0].keys,
+        changes.last().unwrap(),
+        vec![account.head()],
+        PolicyKind::AccountHeads,
+    );
+    inject(&server, created.domain, heads).await;
+    grant(
+        &server,
+        &account,
+        0,
+        second,
+        created.workspace,
+        created.domain,
+    )
+    .await;
+    let mut device = account.devices[second]
+        .connect(&server.base, approver_head.clone())
+        .await;
+    device
+        .open_workspace(created.workspace)
+        .await
+        .expect("the genesis that the active first device signed anchors it");
+
+    // The second device removes the first: the genesis it signed confers no
+    // trust on a device that keeps a head with the removal.
+    let remove = account.link(
+        second,
+        LinkKind::Remove {
+            device: account.devices[0].id(),
+            keep: Sorted::default(),
+        },
+    );
+    account.send(&server, second, remove).await;
+    let fresh = sync_support::Device {
+        account: account.id,
+        keys: account.devices[second].keys.clone(),
+        token: account.devices[second].token.clone(),
+        state: tempfile::tempdir().unwrap(),
+        secrets: Arc::new(MemorySecrets::default()),
+    };
+    let mut later = fresh.connect(&server.base, approver_head).await;
+    let refused = later.open_workspace(created.workspace).await;
+    assert!(
+        matches!(refused, Err(SyncError::Check("sync_workspace_unverified"))),
+        "{:?}",
+        refused.as_ref().err()
+    );
+}
