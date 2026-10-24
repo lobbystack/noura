@@ -9,7 +9,7 @@ mod support;
 use app_core::{InputValue, PluginEvent, Target, ViewKind};
 use support::{
     FakeSystem, Fixture, note, open_from_tree,
-    projects::{self, items, listed, name_new_project, project_file, with_projects},
+    projects::{self, items, listed, name_new_project, project_file, text_of, with_projects},
     tasks::{A, B, C, D, E, H, find, property, task_file, with_tasks},
 };
 
@@ -261,6 +261,112 @@ fn the_projects_page_lists_every_project_with_its_status_and_task_count() {
     assert_eq!(
         listed(&app)[0],
         ("Attic".to_owned(), Some("Active · 0 tasks".to_owned()))
+    );
+}
+
+/// The bytes of every task file in the workspace, by path.
+fn task_files(fixture: &Fixture) -> Vec<(String, Option<Vec<u8>>)> {
+    fixture
+        .snapshot()
+        .into_iter()
+        .filter(|(path, bytes)| {
+            bytes.as_deref().is_some_and(|bytes| {
+                matches!(
+                    local_core::parse_markdown(path, bytes),
+                    local_core::ParsedMarkdown::Managed(object) if object.object_type == "task"
+                )
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn deleting_a_project_asks_first_then_trashes_only_its_file() {
+    let fixture = garden();
+    let system = FakeSystem::new();
+    let mut app = fixture.app_with(system.clone());
+    let (Some(_tasks), Some(_projects)) = (with_tasks(&mut app), with_projects(&mut app)) else {
+        return;
+    };
+    let tab = open_from_tree(&mut app, "projects/Garden/Garden.md");
+    projects::panel_with(&mut app, tab, "delete");
+    let tasks_before = task_files(&fixture);
+    assert_eq!(tasks_before.len(), 4);
+    let before = fixture.snapshot();
+
+    // It asks first, and Cancel keeps the project.
+    app.press_panel_button(tab, "delete");
+    support::settle(&mut app);
+    let view = projects::panel(&app, tab);
+    assert_eq!(
+        text_of(view.root(), "delete-warning").as_deref(),
+        Some("The project file moves to the trash. Its tasks stay where they are.")
+    );
+    assert_eq!(fixture.snapshot(), before);
+    app.press_panel_button(tab, "delete-cancel");
+    support::settle(&mut app);
+    assert!(find(projects::panel(&app, tab).root(), "delete-warning").is_none());
+    assert_eq!(fixture.snapshot(), before);
+
+    app.press_panel_button(tab, "delete");
+    support::settle(&mut app);
+    app.press_panel_button(tab, "delete-confirm");
+    support::settle(&mut app);
+
+    assert!(!fixture.exists("projects/Garden/Garden.md"));
+    assert!(system.in_bin("Garden.md").exists());
+    assert_eq!(task_files(&fixture), tasks_before);
+    // The rest of the project's folder stays.
+    let mut expected = before;
+    expected.retain(|(path, _)| path != "projects/Garden/Garden.md");
+    assert_eq!(fixture.snapshot(), expected);
+    support::plugins::wait_until(&mut app, "the page no longer lists Garden", |app| {
+        listed(app).iter().all(|(label, _)| label != "Garden")
+    });
+}
+
+const TASKS_OFF: &str = "Tasks is off. Turn it on in Settings to see this project's tasks.";
+
+#[test]
+fn with_tasks_off_a_project_opens_with_its_status_and_overview_and_says_tasks_is_off() {
+    let fixture = garden();
+    let mut app = fixture.app();
+    let (Some(_tasks), Some(_projects)) = (with_tasks(&mut app), with_projects(&mut app)) else {
+        return;
+    };
+    assert!(app.set_plugin_enabled("tasks", false), "Tasks turns off");
+    support::settle(&mut app);
+
+    let tab = open_from_tree(&mut app, "projects/Garden/Garden.md");
+    let view = projects::panel_with(&mut app, tab, "status");
+
+    assert_eq!(app.note(tab).unwrap().text(), "Grow vegetables.\n");
+    assert!(matches!(
+        find(view.root(), "status").map(|node| &node.kind),
+        Some(ViewKind::Input { value: InputValue::Choice(Some(status)), .. }) if status == "active"
+    ));
+    assert_eq!(text_of(view.root(), "board-off").as_deref(), Some(TASKS_OFF));
+    assert_eq!(text_of(view.root(), "tasks-off").as_deref(), Some(TASKS_OFF));
+    assert_eq!(
+        text_of(view.root(), "dated-off").as_deref(),
+        Some("Tasks is off, so this list leaves out the project's tasks.")
+    );
+    assert!(find(view.root(), "board").is_none());
+    // The project's own dates, notes and files still show.
+    assert_eq!(items(view.root(), "notes").len(), 2);
+    assert_eq!(items(view.root(), "files").len(), 2);
+    // The Projects page lists the projects without task counts.
+    let page = projects::page(&app);
+    assert_eq!(
+        text_of(page.root(), "tasks-off").as_deref(),
+        Some("Tasks is off, so the task counts don't show.")
+    );
+    assert_eq!(
+        listed(&app),
+        [
+            ("Garden".to_owned(), Some("Active".to_owned())),
+            ("Kitchen".to_owned(), Some("Planned".to_owned())),
+        ]
     );
 }
 

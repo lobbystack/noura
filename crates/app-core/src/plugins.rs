@@ -867,6 +867,9 @@ impl Plugins {
             self.stop(id);
             self.problems.remove(id);
         }
+        // What the other plugins show may come from this one's commands,
+        // as a project's tasks come from Tasks.
+        self.draw_again(Some(id));
         self.changed();
         Ok(())
     }
@@ -1428,7 +1431,18 @@ impl Plugins {
             return;
         }
         self.listing_drawn = listing;
-        let ids: Vec<String> = self.running.keys().cloned().collect();
+        self.draw_again(None);
+    }
+
+    /// Have each running plugin but `except` draw its views again, and
+    /// its properties panels the next time they show.
+    fn draw_again(&mut self, except: Option<&str>) {
+        let ids: Vec<String> = self
+            .running
+            .keys()
+            .filter(|id| Some(id.as_str()) != except)
+            .cloned()
+            .collect();
         for id in ids {
             if let Some(running) = self.running.get_mut(&id) {
                 for panel in running.panels.values_mut() {
