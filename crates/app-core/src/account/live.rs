@@ -5,7 +5,7 @@
 //! It remembers the server address in the app's data folder and keeps the
 //! device's secrets only in the credential store it gets.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -558,12 +558,38 @@ impl Driver {
                 self.shared.update(|screen| screen.busy = true);
                 let keep: Vec<Id> = removal.keep.iter().copied().collect();
                 let service = self.service.as_mut().ok_or_else(not_signed_in)?;
-                service
+                let done = service
                     .remove_device(removal.target, &keep, &mut self.workspaces)
                     .await?;
+                let mut names: BTreeMap<Id, String> = removal
+                    .with_it
+                    .iter()
+                    .map(|(device, shown, _)| (*device, shown.clone()))
+                    .collect();
+                names.insert(removal.target, removal.fingerprint.clone());
+                let changes = done
+                    .changes
+                    .iter()
+                    .map(|change| {
+                        let by: String = match names.get(&change.signer) {
+                            Some(shown) => shown.chars().take(9).collect(),
+                            None => change.signer.to_hex().chars().take(8).collect(),
+                        };
+                        let workspace: String = change.workspace.to_hex().chars().take(8).collect();
+                        let undo = match change.undo {
+                            Some(undo) => format!("Your role can undo it with {undo}."),
+                            None => "Your role can't undo it.".to_owned(),
+                        };
+                        format!(
+                            "Device {by} made a change ({}) in workspace {workspace}, and it stays. {undo}",
+                            change.kind
+                        )
+                    })
+                    .collect();
                 self.signed_in(|view| {
                     view.removal = None;
                     view.offer_kit = true;
+                    view.removed_changes = changes;
                 });
                 self.refresh().await?;
             }

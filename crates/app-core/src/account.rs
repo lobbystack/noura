@@ -89,6 +89,9 @@ pub struct SignedInView {
     pub approval: Option<ApprovalView>,
     /// The removal you're about to confirm.
     pub removal: Option<RemovalView>,
+    /// The workspace changes that the devices you removed made, which stay
+    /// in force, one line each with the undo your role allows (§7).
+    pub removed_changes: Vec<String>,
     /// A recovery kit you just exported, with its secret shown once.
     pub kit: Option<KitView>,
     /// Whether the app asks you to export a new kit, after a removal or

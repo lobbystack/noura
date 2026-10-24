@@ -360,6 +360,14 @@ fn signed_in_section(
             });
         });
     }
+    if !view.removed_changes.is_empty() {
+        group(ui, "Changes your removed devices made", |ui| {
+            ui.label("Removing a device leaves its workspace changes in place. Check each one:");
+            for change in &view.removed_changes {
+                ui.label(change);
+            }
+        });
+    }
     group(ui, "Recovery kit", |ui| match &view.kit {
         Some(kit) => {
             ui.label(format!("Noura saved your kit to {}.", kit.path.display()));

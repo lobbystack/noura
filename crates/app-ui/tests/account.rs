@@ -181,6 +181,26 @@ fn signed_in_shows_the_account_its_devices_and_their_actions() {
 }
 
 #[test]
+fn after_a_removal_the_removed_devices_changes_show_with_their_undo() {
+    let app_data = tempfile::tempdir().unwrap();
+    let account = Arc::new(FakeAccount::default());
+    let kept = "Device 1111 2222 made a change (set_role) in workspace 0a0b0c0d, and it stays. Your role can undo it with set_role.";
+    let stuck = "Device 1111 2222 made a change (transfer_owner) in workspace 0a0b0c0d, and it stays. Your role can't undo it.";
+    account.show(signed_in(SignedInView {
+        account_fingerprint: ACCOUNT.into(),
+        devices: devices(),
+        removed_changes: vec![kept.into(), stuck.into()],
+        offer_kit: true,
+        ..SignedInView::default()
+    }));
+    let harness = harness(app_data.path(), account);
+    harness.get_by_role_and_label(Role::Group, "Changes your removed devices made");
+    harness.get_by_label(kept);
+    harness.get_by_label(stuck);
+    harness.get_by_label("Your devices changed. Export a new kit so it covers them.");
+}
+
+#[test]
 fn the_device_list_alerts_and_signs_out_a_device_nobody_approved() {
     let app_data = tempfile::tempdir().unwrap();
     let account = Arc::new(FakeAccount::default());
