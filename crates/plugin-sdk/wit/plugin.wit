@@ -242,6 +242,13 @@ interface navigation {
 // A chat is a folder of Markdown files in the workspace, `chat.md` and one
 // file per message, in the workspace format's chat layout. Noura writes
 // them, and each write is on disk before the call that made it returns.
+//
+// Each request starts with Noura's instructions for the model, followed
+// by the body of the workspace's `AGENTS.md` when it has one. When a
+// chat's messages no longer fit the provider's context window, Noura
+// first asks the provider to summarize the earlier ones, writes the
+// summary to the chat as a context summary, and from then on sends the
+// summary in their place. Their files stay in the chat.
 interface ai {
   use types.{error};
 
@@ -257,12 +264,27 @@ interface ai {
     model: string,
   }
 
+  // How long Noura keeps a chat.
+  enum retention {
+    // Until you delete it. New chats start this way.
+    permanent,
+    // Noura moves the chat's folder to the trash 30 days after the chat
+    // started, but only while every file in it is one Noura wrote and
+    // nothing changed since the 30 days ended.
+    ephemeral,
+  }
+
   // A chat, as its `chat.md` holds it.
   record chat {
     id: string,
     title: string,
     // When it last changed, in RFC 3339.
     updated: string,
+    // The revision of its `chat.md`, which `rename-chat` and
+    // `set-retention` carry. Empty for a chat whose files Noura hasn't
+    // written yet.
+    revision: string,
+    retention: retention,
   }
 
   enum message-kind {
@@ -296,6 +318,8 @@ interface ai {
     error-code: option<string>,
     // When Noura wrote it, in RFC 3339.
     created: string,
+    // The tool a tool call or a tool result names.
+    tool-name: option<string>,
   }
 
   // A tool the model may ask to call.
@@ -354,6 +378,14 @@ interface ai {
     cancelled,
     // The provider or Noura failed. `failure` says why.
     failed,
+    // Noura is asking you whether to run one of the run's tool calls,
+    // after `run-tools`.
+    waiting-for-approval,
+    // A plugin the run relied on was turned off: the plugin that sent it,
+    // or one whose tools it offered. Its failure's code is
+    // `plugin-disabled`, and the answer so far stays in the chat as an
+    // interrupted message.
+    interrupted,
   }
 
   // Why a run failed, in public words. It never holds the provider's own
@@ -389,7 +421,12 @@ interface ai {
   // The workspace's chats, the one changed last first.
   chats: func() -> result<list<chat>, error>;
 
-  // A chat and its messages, oldest first.
+  // A chat and its messages, oldest first. An answer or a tool call that
+  // a crash or a quit left in progress, with no run of this session
+  // behind it, reads as interrupted, and Noura writes it so: a tool call
+  // reads as completed only when the chat holds its result, from the
+  // same run, with the same call ID and tool name. Noura never runs such
+  // a call again by itself.
   read-chat: func(id: string) -> result<tuple<chat, list<message>>, error>;
 
   // Start a chat, titled `New chat` until its first message names it.
@@ -398,6 +435,21 @@ interface ai {
   // then `read-chat` shows it with no messages, and `chats` doesn't list
   // it.
   create-chat: func() -> result<chat, error>;
+
+  // Give the chat a new title. Fails with `revision-conflict` when its
+  // `chat.md` no longer holds `expected-revision`, as after an edit in
+  // another app, and then writes nothing.
+  rename-chat: func(id: string, title: string, expected-revision: string) -> result<chat, error>;
+
+  // Keep the chat until you delete it, or have Noura move it to the
+  // trash 30 days after it started. Fails with `revision-conflict` as
+  // `rename-chat` does.
+  set-retention: func(id: string, retention: retention, expected-revision: string) -> result<chat, error>;
+
+  // The tools that the plugins on in this workspace register under their
+  // `tools` capability, for a request to offer the model. Each is named
+  // `<plugin>__<tool>`, such as `tasks__create`.
+  workspace-tools: func() -> result<list<tool-definition>, error>;
 
   // Send `request`. Noura writes your message and an in-progress answer to
   // the chat before the request leaves this computer, then the answer
@@ -416,6 +468,23 @@ interface ai {
   // request leaves this computer. `tools` are the tools the model may ask
   // to call next.
   answer-tools: func(run: string, results: list<tool-result>, tools: list<tool-definition>) -> result<run, error>;
+
+  // Run the tool calls of a completed run that name workspace tools, one
+  // at a time, then stream the model's next answer into the same run.
+  // For each call Noura asks you, in a prompt of its own that names the
+  // tool, its plugin and its input, and runs the call in that plugin only
+  // if you allow that one call. Meanwhile the run is
+  // `waiting-for-approval`. Each call's result goes to the chat after the
+  // call: the tool's answer, `{"denied":true}` when you deny the call or
+  // close the prompt, or an `error` object. Stop, or opening another
+  // workspace, denies the calls still waiting and ends the run. The next
+  // request offers the tools the run offered whose plugins are still on.
+  run-tools: func(run: string) -> result<run, error>;
+
+  // Answer the chat's last message of yours again, as after a crash or a
+  // quit stopped its answer, with `provider` and `tools`. Noura writes no
+  // new message of yours, and asks for your consent as `send` does.
+  resume: func(chat: string, provider: string, tools: list<tool-definition>) -> result<run, error>;
 
   // The run with this ID, as it stands now. `read-run`, `stop` and
   // `answer-tools` reach only the plugin's own runs: another plugin's run

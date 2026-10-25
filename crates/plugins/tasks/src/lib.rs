@@ -7,7 +7,8 @@
 //! The Inbox's Due today section lists what is due by tonight and adds a
 //! task due today in one step. Other plugins list and change tasks through
 //! its `create`, `update`, `complete`, `reopen` and `list` commands, which
-//! [`commands`] documents.
+//! [`commands`] documents, and AI assistants through its `create` and
+//! `complete` tools, which [`tools`] lists.
 //!
 //! Build it with `crates/plugin-sdk/build-plugins.sh`, then install the
 //! folder holding `plugin.toml` and the built `tasks_plugin.wasm`.
@@ -16,6 +17,7 @@ mod commands;
 mod inbox;
 mod menus;
 mod task;
+mod tools;
 mod views;
 
 use std::{
@@ -25,7 +27,7 @@ use std::{
 
 use jiff::civil::Date;
 use plugin_sdk::{
-    Command, Error, Event, InboxSection, Node, ObjectType, Page, Plugin, Value, View,
+    Command, Error, Event, InboxSection, Node, ObjectType, Page, Plugin, Tool, Value, View,
     navigation::{self, Placement},
     objects::{self, Changes, NewObject},
     workspace,
@@ -178,6 +180,14 @@ impl Plugin for Tasks {
             return Ok(String::new());
         }
         commands::run(&id, &input)
+    }
+
+    fn tools() -> Vec<Tool> {
+        tools::tools()
+    }
+
+    fn call_tool(name: String, arguments: String) -> Result<String, String> {
+        tools::call(&name, &arguments)
     }
 }
 

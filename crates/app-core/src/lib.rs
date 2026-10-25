@@ -58,7 +58,10 @@ mod watch;
 mod workspace;
 mod writes;
 
-pub use ai::{AI_POLICY_VERSION, AiConsentPrompt, AiProviderInput, AiProviderRow, NEW_CHAT_TITLE};
+pub use ai::{
+    AI_POLICY_VERSION, AiConsentPrompt, AiProviderInput, AiProviderRow, AiToolPrompt,
+    DEFAULT_CONTEXT_WINDOW, NEW_CHAT_TITLE,
+};
 pub use app::{
     App, Change, CommandPalette, DragOut, IgnoredFiles, NameDraft, Notice, NoticeKind, Origin,
     Palette, PaletteMode, PluginPlace, Question, QuickOpen, Rename, Screen, Search, UnsavedPrompt,

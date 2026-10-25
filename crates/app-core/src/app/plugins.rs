@@ -565,16 +565,7 @@ impl App {
         name: &str,
         arguments: &str,
     ) -> Result<String, AppError> {
-        let call = self
-            .session
-            .plugins()
-            .tool_call(plugin_id, name, arguments)?;
-        let answer = call.run();
-        let mut plugins = self.session.plugins();
-        plugins.redraw(call.plugin_id());
-        drop(plugins);
-        self.session.wake_all();
-        answer
+        self.session.call_plugin_tool(plugin_id, name, arguments)
     }
 
     /// The properties panel the plugin that holds the type of the object

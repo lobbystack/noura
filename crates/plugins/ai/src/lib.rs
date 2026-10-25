@@ -1,10 +1,14 @@
 //! The AI plugin. It registers the `chat` and `chat-message` object types
 //! with today's v1 fields and adds the AI page: the chats in the sidebar,
 //! the open chat's messages with each answer drawn as Markdown while it
-//! streams in, Stop, and a box to write the next message to the provider
-//! you pick. Noura keeps the providers, their keys and your consent, and
-//! writes the chat files; the plugin reaches them only through the host
-//! AI interface.
+//! streams in, Stop, Resume after a crash or a quit, a menu to rename the
+//! chat or have it removed after 30 days, and a box to write the next
+//! message to the provider you pick. Each message offers the model the
+//! tools of the plugins on in the workspace, and the plugin hands the
+//! calls the model asks for to Noura, which asks you about each one.
+//! Noura keeps the providers, their keys and your consent, and writes the
+//! chat files; the plugin reaches them only through the host AI
+//! interface.
 //!
 //! Build it with `crates/plugin-sdk/build-plugins.sh`, then install the
 //! folder holding `plugin.toml` and the built `ai_plugin.wasm`.
@@ -43,6 +47,8 @@ struct State {
     unsent: BTreeMap<String, String>,
     /// Why the last thing you did failed.
     notice: Option<String>,
+    /// The chat whose sidebar item shows as a field you rename it in.
+    renaming: Option<String>,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -53,6 +59,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     draft: String::new(),
     unsent: BTreeMap::new(),
     notice: None,
+    renaming: None,
 });
 
 fn state() -> std::sync::MutexGuard<'static, State> {

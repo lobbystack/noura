@@ -131,9 +131,10 @@ pub mod navigation {
 /// ```
 pub mod ai {
     pub use crate::noura::plugin::ai::{
-        Chat, Failure, Message, MessageKind, MessageStatus, Provider, Request, Run, RunStatus,
-        ToolCall, ToolDefinition, ToolResult, answer_tools, chats, create_chat, providers,
-        read_chat, read_run, send, stop,
+        Chat, Failure, Message, MessageKind, MessageStatus, Provider, Request, Retention, Run,
+        RunStatus, ToolCall, ToolDefinition, ToolResult, answer_tools, chats, create_chat,
+        providers, read_chat, read_run, rename_chat, resume, run_tools, send, set_retention, stop,
+        workspace_tools,
     };
 }
 

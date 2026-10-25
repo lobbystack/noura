@@ -9,7 +9,9 @@ use std::sync::Arc;
 use local_core::AiStreamer;
 
 use super::{App, Change};
-use crate::{AiConsentPrompt, AiProviderInput, AiProviderRow, AppError, ai::provider_kinds};
+use crate::{
+    AiConsentPrompt, AiProviderInput, AiProviderRow, AiToolPrompt, AppError, ai::provider_kinds,
+};
 
 impl App {
     /// The AI providers set up on this device, with whether each has a key
@@ -95,6 +97,22 @@ impl App {
         self.ai_changed();
     }
 
+    /// The tool call waiting for your answer, if one is: the model asked to
+    /// run a plugin's tool with this input.
+    pub fn ai_tool_prompt(&self) -> Option<AiToolPrompt> {
+        self.session.ai.tool_prompt()
+    }
+
+    /// Answer the prompt about `prompt`'s tool call: run it once, or not.
+    /// Noura writes the call's result to the chat either way, and an answer
+    /// to a prompt that's no longer showing changes nothing.
+    pub fn answer_ai_tool(&mut self, prompt: &AiToolPrompt, allow: bool) {
+        self.session
+            .ai
+            .answer_tool(&prompt.run, &prompt.call, allow);
+        self.ai_changed();
+    }
+
     /// Talk to AI providers through `client` from the next request on.
     /// Noura uses the `genai` client until a client sets another, as tests
     /// do with a fake provider.
@@ -107,8 +125,10 @@ impl App {
         self.listeners.emit(Change::Ai);
     }
 
-    /// Show what changed in the AI service since this window looked.
+    /// Show what changed in the AI service since this window looked. The
+    /// open workspace's expired chats go to the trash once an hour.
     pub(super) fn poll_ai(&mut self) -> bool {
+        self.session.ai.expire_chats_if_due();
         let version = self.session.ai.version();
         if version == self.ai_seen {
             return false;
