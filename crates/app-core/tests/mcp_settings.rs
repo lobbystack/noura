@@ -67,7 +67,7 @@ fn the_section_shows_a_configuration_with_the_binary_and_the_workspace_folder_an
     let mut app = fixture.app_with(system.clone());
     assert_eq!(app.mcp_setup(), None);
 
-    app.set_mcp_server(PROGRAM.into(), FakeProbe::answering(Ok("noura 0.2.0")));
+    app.set_mcp_server(Ok(PROGRAM.into()), FakeProbe::answering(Ok("noura 0.2.0")));
     app.open_settings_at(settings_section::AI_TOOLS);
 
     let titles: Vec<String> = app
@@ -109,7 +109,7 @@ fn test_connection_starts_the_configured_command_and_says_whether_it_works() {
     let fixture = Fixture::new(&[]);
     let mut app = fixture.app();
     let probe = FakeProbe::answering(Ok("noura 0.2.0"));
-    app.set_mcp_server(PROGRAM.into(), probe.clone());
+    app.set_mcp_server(Ok(PROGRAM.into()), probe.clone());
     app.open_settings_at(settings_section::AI_TOOLS);
     assert_eq!(app.mcp_setup().unwrap().test, McpTest::NotRun);
 
@@ -137,7 +137,7 @@ fn test_connection_starts_the_configured_command_and_says_whether_it_works() {
     assert_eq!(app.mcp_setup().unwrap().test, McpTest::NotRun);
 
     let failing = FakeProbe::answering(Err("The server didn't answer within 10 seconds."));
-    app.set_mcp_server(PROGRAM.into(), failing);
+    app.set_mcp_server(Ok(PROGRAM.into()), failing);
     app.test_mcp_connection();
     assert_eq!(
         tested(&mut app),
@@ -154,7 +154,7 @@ fn a_binary_path_the_configuration_cant_hold_shows_why_and_copies_nothing() {
     let system = FakeSystem::new();
     let mut app = fixture.app_with(system.clone());
     let program = PathBuf::from(std::ffi::OsStr::from_bytes(b"/opt/No\xffura/noura"));
-    app.set_mcp_server(program, FakeProbe::answering(Ok("noura 0.2.0")));
+    app.set_mcp_server(Ok(program), FakeProbe::answering(Ok("noura 0.2.0")));
     app.open_settings_at(settings_section::AI_TOOLS);
 
     let error = app.mcp_setup().unwrap().configuration.unwrap_err();
@@ -171,4 +171,31 @@ fn a_binary_path_the_configuration_cant_hold_shows_why_and_copies_nothing() {
             .any(|call| matches!(call, Call::Copy(_)))
     );
     assert_eq!(app.settings().unwrap().notice, None);
+}
+
+#[test]
+fn a_copy_of_noura_without_a_lasting_program_shows_why_and_tests_nothing() {
+    let fixture = Fixture::new(&[]);
+    let system = FakeSystem::new();
+    let mut app = fixture.app_with(system.clone());
+    let probe = FakeProbe::answering(Ok("noura 0.2.0"));
+    let reason = "Noura runs from a temporary folder.";
+    app.set_mcp_server(Err(reason.to_owned()), probe.clone());
+    app.open_settings_at(settings_section::AI_TOOLS);
+
+    assert_eq!(
+        app.mcp_setup().unwrap().configuration,
+        Err(reason.to_owned())
+    );
+    app.copy_mcp_configuration();
+    app.test_mcp_connection();
+
+    assert!(
+        !system
+            .calls()
+            .iter()
+            .any(|call| matches!(call, Call::Copy(_)))
+    );
+    assert_eq!(app.mcp_setup().unwrap().test, McpTest::NotRun);
+    assert!(probe.started.lock().unwrap().is_empty());
 }

@@ -54,7 +54,7 @@ fn opened(program: PathBuf, answer: Result<&str, &str>) -> Opened {
         app_data.path(),
         FakePicker::default(),
         system.clone(),
-        move |app| app.set_mcp_server(program, probe),
+        move |app| app.set_mcp_server(Ok(program), probe),
     );
     settle(&mut harness);
     let root = harness.state().app().workspace().unwrap().root().to_owned();

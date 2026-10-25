@@ -37,8 +37,9 @@ pub trait McpProbe: Send + Sync {
 /// how Settings tests it.
 #[derive(Clone)]
 pub(crate) struct McpServer {
-    /// The installed `noura` binary.
-    pub(crate) program: PathBuf,
+    /// The installed `noura` binary, or why this copy of Noura can't
+    /// name one that keeps working.
+    pub(crate) program: Result<PathBuf, String>,
     pub(crate) probe: Arc<dyn McpProbe>,
 }
 

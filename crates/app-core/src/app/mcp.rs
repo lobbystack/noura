@@ -16,8 +16,11 @@ use crate::{
 impl App {
     /// Offer AI tools outside Noura the MCP server that `program`, the
     /// installed `noura` binary, serves in its `mcp` mode, and test it
-    /// through `probe`. This adds the AI tools section to Settings.
-    pub fn set_mcp_server(&mut self, program: PathBuf, probe: Arc<dyn McpProbe>) {
+    /// through `probe`. This adds the AI tools section to Settings. When
+    /// this copy of Noura can't name a program that keeps working after
+    /// it quits, `program` says why in words, and the section shows that
+    /// instead of a configuration.
+    pub fn set_mcp_server(&mut self, program: Result<PathBuf, String>, probe: Arc<dyn McpProbe>) {
         self.mcp = Some(McpServer { program, probe });
         self.register_settings_section(
             settings_section::AI_TOOLS,
@@ -32,8 +35,12 @@ impl App {
     pub fn mcp_setup(&self) -> Option<McpSetup> {
         let server = self.mcp.as_ref()?;
         let workspace = self.workspace.as_ref()?;
+        let configuration = match &server.program {
+            Ok(program) => mcp_setup::configuration(program, workspace.root()),
+            Err(problem) => Err(problem.clone()),
+        };
         Some(McpSetup {
-            configuration: mcp_setup::configuration(&server.program, workspace.root()),
+            configuration,
             test: self.mcp_test.clone(),
         })
     }
@@ -65,15 +72,16 @@ impl App {
         let (Some(server), Some(workspace)) = (self.mcp.clone(), self.workspace.clone()) else {
             return;
         };
+        let Ok(program) = server.program.clone() else {
+            return;
+        };
         let (sender, answer) = std::sync::mpsc::channel();
         let listeners = self.listeners.clone();
         let arguments = mcp_setup::arguments(workspace.root());
         let started = std::thread::Builder::new()
             .name("mcp-test".into())
             .spawn(move || {
-                let result = server
-                    .probe
-                    .test(&server.program, &arguments, MCP_TEST_WAIT);
+                let result = server.probe.test(&program, &arguments, MCP_TEST_WAIT);
                 let _ = sender.send(result);
                 listeners.emit(Change::Settings);
             });
