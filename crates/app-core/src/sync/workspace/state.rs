@@ -89,6 +89,26 @@ pub struct Log {
     /// Each device's last `policy_revision` and `generation`, which never
     /// decrease along its chain.
     pub last: BTreeMap<Id, (u64, u64)>,
+    /// The policy and epoch entries the device requires in the log, each at
+    /// or below the `head` of the first page it requested after it accepted
+    /// the change or learned the epoch (§8, §9).
+    #[serde(default)]
+    pub wanted: Vec<Wanted>,
+    /// The highest epoch whose entry the log carried.
+    #[serde(default)]
+    pub epoch_entries: u64,
+}
+
+/// A log entry the device requires.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Wanted {
+    /// A policy entry, or an epoch entry.
+    pub epoch: bool,
+    /// Its revision or epoch.
+    pub number: u64,
+    /// The head of the first page requested afterwards, or `u64::MAX`
+    /// before that page.
+    pub by: u64,
 }
 
 /// This device's chain in the domain.

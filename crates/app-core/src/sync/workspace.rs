@@ -44,7 +44,7 @@ use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 
 use capture::{Change, Found};
 pub use capture::{SkipWhy, Skipped};
-use state::{Content as Carried, Log, Object, OpKey, Outgoing, Own, State, StateInfo};
+use state::{Content as Carried, Log, Object, OpKey, Outgoing, Own, State, StateInfo, Wanted};
 
 use super::journal::{self, Journal, STATE_FILE};
 use super::marks::Mark;
@@ -267,6 +267,8 @@ impl WorkspaceSync {
                 verifier: ChainVerifier::new(),
                 live: LiveSet::new(),
                 last: BTreeMap::new(),
+                wanted: Vec::new(),
+                epoch_entries: 0,
             },
             own: Own {
                 next,
@@ -292,6 +294,8 @@ impl WorkspaceSync {
             return Err(SyncError::Check("sync_policy_rollback"));
         }
         let keys = remote.keys.clone();
+        let mut state = state;
+        state.log.wanted = Vec::new();
         let mut sync = Self {
             engine,
             journal,
@@ -307,8 +311,39 @@ impl WorkspaceSync {
             matching: false,
             cache: BTreeMap::new(),
         };
+        sync.want_entries();
         sync.save()?;
         Ok(sync)
+    }
+
+    /// Requires, in the log, the entry of each accepted change and each
+    /// known epoch that the log hasn't carried yet (§8, §9).
+    fn want_entries(&mut self) {
+        let log = &mut self.state.log;
+        let policy_seen = log.judge.latest_policy_entry().unwrap_or(0);
+        for change in &self.state.policy {
+            let number = change.body.revision;
+            let wanted = Wanted {
+                epoch: false,
+                number,
+                by: u64::MAX,
+            };
+            if number > policy_seen && !log.wanted.iter().any(|w| !w.epoch && w.number == number) {
+                log.wanted.push(wanted);
+            }
+        }
+        for epoch in &self.state.epochs {
+            let number = epoch.body.epoch;
+            if number > log.epoch_entries
+                && !log.wanted.iter().any(|w| w.epoch && w.number == number)
+            {
+                log.wanted.push(Wanted {
+                    epoch: true,
+                    number,
+                    by: u64::MAX,
+                });
+            }
+        }
     }
 
     /// Opens the journal of a folder that syncs, as each start of the app
@@ -620,6 +655,7 @@ impl WorkspaceSync {
         }
         self.state.policy = policy_changes(&remote.policy);
         self.state.epochs = remote.epochs_oldest_first().into_iter().cloned().collect();
+        self.want_entries();
         if remote.envelope.is_some() {
             self.state.envelope = remote.envelope.clone();
         }
@@ -1574,10 +1610,17 @@ impl WorkspaceSync {
             .ok_or(SyncError::Check("sync_workspace_unverified"))?;
         let policy = &remote.policy;
         let mut log = self.state.log.clone();
+        for wanted in &mut log.wanted {
+            if wanted.by == u64::MAX {
+                wanted.by = page.head;
+            }
+        }
         let mut records = Vec::new();
         for entry in page.entries.iter() {
             match &entry.record {
                 EntryRecord::Policy(policy_entry) => {
+                    log.wanted
+                        .retain(|w| w.epoch || w.number != policy_entry.revision);
                     let change = policy
                         .change(policy_entry.revision)
                         .ok_or(SyncError::Check("sync_policy_rollback"))?;
@@ -1589,6 +1632,9 @@ impl WorkspaceSync {
                         .map_err(|e| SyncError::Check(e.client_code()))?;
                 }
                 EntryRecord::Epoch(epoch) => {
+                    log.wanted
+                        .retain(|w| !w.epoch || w.number != epoch.body.epoch);
+                    log.epoch_entries = log.epoch_entries.max(epoch.body.epoch);
                     let accepted = remote
                         .epochs
                         .get(epoch.body.epoch)
@@ -1613,6 +1659,21 @@ impl WorkspaceSync {
                     }
                 }
             }
+        }
+        // An entry the log owed by now, as for an accepted change or a
+        // known epoch, is missing (§8, §9).
+        if log.wanted.iter().any(|w| w.by <= page.complete_through) {
+            return Err(SyncError::Check("sync_chain_gap"));
+        }
+        // The server acknowledged this device's records through a sequence
+        // the page claims to cover, so they must be there (§14, Suffix
+        // withholding).
+        let own = self.credentials.keys.device();
+        if let Some((counter, _, seq)) = self.state.own.acked
+            && seq <= page.complete_through
+            && log.verifier.head(&own).counter < counter
+        {
+            return Err(SyncError::Check("sync_chain_gap"));
         }
         Ok(Some(Checked { log, records }))
     }

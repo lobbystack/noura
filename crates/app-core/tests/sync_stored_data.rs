@@ -61,9 +61,10 @@ async fn full_sync<B: Backend>(server: &Server<B>) {
     let mut a = Folder::new(NAME);
     a.write(PATH, &note());
     a.write("Data/blob.bin", &vec![7u8; SIZES[1]]);
-    let mut sync_a = WorkspaceSync::turn_on(&mut laptop.service, a.engine.clone(), NAME, &mut a.registry)
-        .await
-        .expect("sync turns on");
+    let mut sync_a =
+        WorkspaceSync::turn_on(&mut laptop.service, a.engine.clone(), NAME, &mut a.registry)
+            .await
+            .expect("sync turns on");
     sync_a.round(&mut laptop.service, 0).await.expect("a round");
     let mut desktop = approve(
         server,
@@ -80,7 +81,10 @@ async fn full_sync<B: Backend>(server: &Server<B>) {
     )
     .await
     .expect("the download starts");
-    sync_b.round(&mut desktop.service, 0).await.expect("a round");
+    sync_b
+        .round(&mut desktop.service, 0)
+        .await
+        .expect("a round");
     assert_eq!(b.files(), a.files());
 }
 
@@ -96,15 +100,14 @@ fn check(columns: &[Column]) {
     markers.extend(markers.clone().iter().map(|m| hex(m).into_bytes()));
     let mut operations = 0;
     for column in columns {
-        let named_for_time = ["time", "date", "_at", "created", "updated", "expir", "clock"]
-            .iter()
-            .any(|word| column.name.contains(word));
+        let named_for_time = [
+            "time", "date", "_at", "created", "updated", "expir", "clock",
+        ]
+        .iter()
+        .any(|word| column.name.contains(word));
         if (named_for_time || column.timestamp_type) && !TRANSIENT.contains(&column.table.as_str())
         {
-            panic!(
-                "{}.{} dates records",
-                column.table, column.name
-            );
+            panic!("{}.{} dates records", column.table, column.name);
         }
         if column.table == "sessions" {
             assert!(!named_for_time, "sessions hold no expiry");
@@ -132,14 +135,18 @@ fn check(columns: &[Column]) {
                 Value::Text(text) => {
                     for marker in &markers {
                         assert!(
-                            !text.as_bytes().windows(marker.len()).any(|w| w == marker.as_slice()),
+                            !text
+                                .as_bytes()
+                                .windows(marker.len())
+                                .any(|w| w == marker.as_slice()),
                             "{}.{} holds plaintext",
                             column.table,
                             column.name
                         );
                     }
                     assert!(
-                        !["note", "task", "project", "chat", "chat-message"].contains(&text.as_str()),
+                        !["note", "task", "project", "chat", "chat-message"]
+                            .contains(&text.as_str()),
                         "{}.{} names an object type",
                         column.table,
                         column.name
