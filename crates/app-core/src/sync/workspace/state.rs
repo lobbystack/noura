@@ -60,6 +60,13 @@ pub struct State {
     pub held: BTreeMap<Id, Held>,
     /// Unix seconds of the last round that finished without an error.
     pub last_success: Option<u64>,
+    /// Folders whose files wait until you confirm where they go, each at a
+    /// local `.noura-domain` file found without a journal (§9).
+    #[serde(default)]
+    pub held_roots: Vec<String>,
+    /// Versions an earlier journal's review store kept (§15).
+    #[serde(default)]
+    pub archived: Vec<super::rebuild::Archived>,
 }
 
 /// The domain's log as the device followed it.

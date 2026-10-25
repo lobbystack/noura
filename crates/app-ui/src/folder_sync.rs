@@ -5,7 +5,7 @@
 //! what `app-core`'s folder sync screen holds and hands each choice to it.
 
 use app_core::App;
-use app_core::folder_sync::{FolderSyncAction, FolderSyncPhase};
+use app_core::folder_sync::{FolderSyncAction, FolderSyncPhase, HeldChoice};
 use egui::{RichText, Ui, UiBuilder, accesskit::Role};
 
 use crate::common::{muted, primary_button};
@@ -38,6 +38,14 @@ pub(crate) fn pending_text(pending: usize) -> String {
         0 => "Every change is uploaded.".to_owned(),
         1 => "1 change waits to upload.".to_owned(),
         n => format!("{n} changes wait to upload."),
+    }
+}
+
+/// How many people, in words.
+fn people_text(people: usize) -> String {
+    match people {
+        1 => "1 person in this workspace".to_owned(),
+        n => format!("{n} people in this workspace"),
     }
 }
 
@@ -118,12 +126,80 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
                     });
                 }
             });
+            if !screen.held.is_empty() {
+                group(ui, "Versions to check", |ui| {
+                    for held in &screen.held {
+                        ui.label(format!(
+                            "{} differs from the synced version. Choose which to keep:",
+                            held.path
+                        ));
+                        ui.horizontal_wrapped(|ui| {
+                            for (label, choice) in [
+                                ("Keep the synced version", HeldChoice::KeepLive),
+                                ("Keep this computer's version", HeldChoice::KeepMine),
+                                ("Keep both", HeldChoice::KeepBoth),
+                            ] {
+                                if ui.button(label).clicked() {
+                                    actions.push(FolderSyncAction::KeepHeld {
+                                        rid: held.rid,
+                                        choice,
+                                    });
+                                }
+                            }
+                        });
+                    }
+                });
+            }
+            if !screen.held_roots.is_empty() {
+                group(ui, "Folders waiting for you", |ui| {
+                    for root in &screen.held_roots {
+                        let folder = if root.folder.is_empty() {
+                            "The workspace folder"
+                        } else {
+                            root.folder.as_str()
+                        };
+                        ui.label(format!(
+                            "{folder} has a .noura-domain file, so its files wait here. Syncing them shows them to {}:",
+                            people_text(root.people)
+                        ));
+                        for file in &root.files {
+                            ui.label(file);
+                        }
+                        if ui.button(format!("Sync the files in {folder}")).clicked() {
+                            actions.push(FolderSyncAction::ConfirmFolder(root.folder.clone()));
+                        }
+                    }
+                });
+            }
+            if !screen.archived.is_empty() {
+                group(ui, "Versions from an earlier sync", |ui| {
+                    for archived in &screen.archived {
+                        ui.label(&archived.path);
+                        ui.horizontal(|ui| {
+                            if ui.button("Save as a copy").clicked() {
+                                actions.push(FolderSyncAction::RestoreArchived(archived.index));
+                            }
+                            if ui.button("Discard").clicked() {
+                                actions.push(FolderSyncAction::DiscardArchived(archived.index));
+                            }
+                        });
+                    }
+                });
+            }
             if !screen.skipped.is_empty() {
                 group(ui, "Files sync leaves out", |ui| {
                     for line in &screen.skipped {
                         ui.label(line);
                     }
                 });
+            }
+        }
+        FolderSyncPhase::NotConnected => {
+            ui.label(
+                "This folder is a copy of a synced folder. Connect it to sync it, and Noura checks each file against the synced workspace before it uploads anything.",
+            );
+            if primary_button(ui, "Connect this folder", !screen.busy).clicked() {
+                actions.push(FolderSyncAction::Connect);
             }
         }
     }

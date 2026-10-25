@@ -14,7 +14,8 @@ use std::sync::Arc;
 use local_core::WorkspaceEngine;
 
 use crate::folder_sync::{
-    BranchEntry, ConflictEntry, FolderSyncAction, FolderSyncPhase, FolderSyncScreen,
+    ArchivedEntry, BranchEntry, ConflictEntry, FolderSyncAction, FolderSyncPhase, FolderSyncScreen,
+    HeldEntry, HeldRootEntry,
 };
 use crate::sync::registry::Registry;
 use crate::sync::workspace::WorkspaceSync;
@@ -26,6 +27,12 @@ pub(super) struct Folder {
     engine: Option<Arc<WorkspaceEngine>>,
     sync: Option<WorkspaceSync>,
     last_error: Option<String>,
+    /// The folder lost or refused its journal, so it syncs again from the
+    /// server and matches its files at the next round (§15).
+    rebuild: bool,
+    /// The folder's journal holds another replica ID: it waits for you to
+    /// connect it.
+    not_connected: bool,
 }
 
 /// What a failed round or action tells you in the Workspace sync section.
@@ -86,8 +93,35 @@ impl Folder {
                             .collect(),
                     })
                     .collect();
+                screen.held = sync
+                    .held()
+                    .into_iter()
+                    .map(|(rid, path)| HeldEntry { rid, path })
+                    .collect();
+                screen.held_roots = sync
+                    .held_roots()
+                    .into_iter()
+                    .map(|(folder, files, people)| HeldRootEntry {
+                        folder,
+                        files,
+                        people,
+                    })
+                    .collect();
+                screen.archived = sync
+                    .archived()
+                    .iter()
+                    .enumerate()
+                    .map(|(index, a)| ArchivedEntry {
+                        index,
+                        path: a.path.clone(),
+                    })
+                    .collect();
                 screen
             }
+            None if signed_in && self.not_connected => FolderSyncScreen {
+                phase: FolderSyncPhase::NotConnected,
+                ..FolderSyncScreen::default()
+            },
             None if signed_in => FolderSyncScreen {
                 phase: FolderSyncPhase::Off,
                 ..FolderSyncScreen::default()
@@ -109,6 +143,8 @@ impl Folder {
     ) {
         self.sync = None;
         self.last_error = None;
+        self.rebuild = false;
+        self.not_connected = false;
         self.engine = engine;
         self.open(service, store, app_data);
     }
@@ -124,6 +160,14 @@ impl Folder {
             return;
         };
         let Some(entry) = registry.of_folder(engine.root()) else {
+            // A copy of a synced folder carries the journal of this device.
+            let device = service.credentials().keys.device();
+            self.not_connected = crate::sync::workspace::rebuild::journal_workspace(
+                engine.root(),
+                &device,
+                &**store,
+            )
+            .is_some();
             return;
         };
         if !entry.on {
@@ -136,6 +180,10 @@ impl Folder {
             &registry,
         ) {
             Ok(sync) => self.sync = Some(sync),
+            Err(SyncError::Check("sync_journal_lost" | "sync_journal_rollback")) => {
+                self.rebuild = true;
+            }
+            Err(SyncError::Check("sync_folder_not_connected")) => self.not_connected = true,
             Err(error) => self.last_error = Some(folder_message(&error)),
         }
     }
@@ -152,6 +200,21 @@ impl Folder {
             return;
         };
         self.open(Some(service), store, app_data);
+        if self.rebuild
+            && let Some(engine) = self.engine.clone()
+            && let Ok(mut registry) = Registry::open(app_data)
+        {
+            match WorkspaceSync::rebuild(service, engine, &mut registry).await {
+                Ok(sync) => {
+                    self.sync = Some(sync);
+                    self.rebuild = false;
+                }
+                Err(error) => {
+                    self.last_error = Some(folder_message(&error));
+                    return;
+                }
+            }
+        }
         let Some(sync) = self.sync.as_mut() else {
             return;
         };
@@ -237,6 +300,44 @@ impl Folder {
                 if let Some(sync) = self.sync.as_mut() {
                     sync.choose(rid, key)?;
                 }
+            }
+            FolderSyncAction::KeepHeld { rid, choice } => {
+                if let Some(sync) = self.sync.as_mut() {
+                    sync.resolve_held(rid, choice)?;
+                }
+            }
+            FolderSyncAction::ConfirmFolder(folder) => {
+                if let Some(sync) = self.sync.as_mut() {
+                    sync.confirm_held_root(&folder)?;
+                }
+            }
+            FolderSyncAction::RestoreArchived(index) | FolderSyncAction::DiscardArchived(index) => {
+                let restore = matches!(action, FolderSyncAction::RestoreArchived(_));
+                if let Some(sync) = self.sync.as_mut() {
+                    sync.resolve_archived(index, restore)?;
+                }
+            }
+            FolderSyncAction::Connect => {
+                let (Some(engine), Some(service)) = (self.engine.clone(), service) else {
+                    return Err(SyncError::Invalid(
+                        "Sign in to a sync account to sync this workspace.".into(),
+                    ));
+                };
+                let named = match registry.of_folder(engine.root()) {
+                    Some(entry) => Some((entry.server.clone(), entry.account, entry.workspace)),
+                    None => crate::sync::workspace::rebuild::journal_workspace(
+                        engine.root(),
+                        &service.credentials().keys.device(),
+                        &*service.secrets(),
+                    ),
+                };
+                let Some((server, account, workspace)) = named else {
+                    return Err(SyncError::Invalid("This folder doesn't sync.".into()));
+                };
+                registry.connect(&server, account, workspace, engine.root())?;
+                self.sync = Some(WorkspaceSync::rebuild(service, engine, &mut registry).await?);
+                self.not_connected = false;
+                self.last_error = None;
             }
         }
         Ok(())

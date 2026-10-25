@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 pub use local_core::WorkspaceEngine;
 pub use sync_protocol::types::Id;
 
+pub use crate::sync::workspace::rebuild::HeldChoice;
 pub use crate::sync::workspace::state::OpKey;
 use crate::sync::workspace::{SkipWhy, Status};
 
@@ -29,6 +30,9 @@ pub enum FolderSyncPhase {
     On,
     /// You paused sync.
     Paused,
+    /// The folder is a copy of a synced folder, or its journal names
+    /// another replica: it syncs once you connect it (§15).
+    NotConnected,
 }
 
 /// One version of a conflicted file.
@@ -51,6 +55,36 @@ pub struct ConflictEntry {
     pub branches: Vec<BranchEntry>,
 }
 
+/// A local version held after the folder synced without its journal,
+/// waiting for you to choose (§15).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldEntry {
+    /// The object.
+    pub rid: Id,
+    /// Where the file sits.
+    pub path: String,
+}
+
+/// A folder whose files wait until you confirm who may see them (§9).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldRootEntry {
+    /// The folder.
+    pub folder: String,
+    /// The files beneath it.
+    pub files: Vec<String>,
+    /// How many people would see them in the workspace.
+    pub people: usize,
+}
+
+/// A version an earlier journal kept for review (§15).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArchivedEntry {
+    /// Its place in the list, which restoring names.
+    pub index: usize,
+    /// The path the version had.
+    pub path: String,
+}
+
 /// What the Workspace sync section shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FolderSyncScreen {
@@ -60,6 +94,12 @@ pub struct FolderSyncScreen {
     pub pending: usize,
     /// The conflicts waiting for you.
     pub conflicts: Vec<ConflictEntry>,
+    /// The local versions held for review.
+    pub held: Vec<HeldEntry>,
+    /// The folders whose files wait for you.
+    pub held_roots: Vec<HeldRootEntry>,
+    /// The versions an earlier journal kept.
+    pub archived: Vec<ArchivedEntry>,
     /// The files sync leaves out, one line each.
     pub skipped: Vec<String>,
     /// What went wrong last, for you to read.
@@ -81,6 +121,9 @@ impl FolderSyncScreen {
             },
             pending: status.pending,
             conflicts: Vec::new(),
+            held: Vec::new(),
+            held_roots: Vec::new(),
+            archived: Vec::new(),
             skipped: status.skipped.iter().map(skipped_line).collect(),
             last_error: None,
             last_success: status.last_success.map(local_time),
@@ -99,6 +142,7 @@ pub fn skipped_line(skipped: &crate::sync::workspace::Skipped) -> String {
         SkipWhy::NotDownloaded => "it isn't downloaded from the cloud yet",
         SkipWhy::IdentityConflict => "another file has the same ID",
         SkipWhy::TooLarge => "files above 256 KB sync once attachments arrive",
+        SkipWhy::HeldRoot => "it waits until you confirm who may see this folder",
     };
     let path = if skipped.path.is_empty() {
         "The workspace folder"
@@ -135,6 +179,21 @@ pub enum FolderSyncAction {
         /// The version.
         key: OpKey,
     },
+    /// Decide about a held local version.
+    KeepHeld {
+        /// The object.
+        rid: Id,
+        /// What to keep.
+        choice: HeldChoice,
+    },
+    /// Let the files beneath a held folder upload to the workspace.
+    ConfirmFolder(String),
+    /// Save an earlier journal's version as a new file.
+    RestoreArchived(usize),
+    /// Throw an earlier journal's version away.
+    DiscardArchived(usize),
+    /// Connect a copied folder, which then syncs as after a lost journal.
+    Connect,
 }
 
 /// Carries out what you do in the Workspace sync section and reports where

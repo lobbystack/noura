@@ -33,6 +33,9 @@ pub enum SkipWhy {
     IdentityConflict,
     /// The file is above 256 KiB, which attachments sync (ticket 49).
     TooLarge,
+    /// The file sits beneath a local `.noura-domain` file found without a
+    /// journal, and waits until you confirm where it goes (§9).
+    HeldRoot,
 }
 
 /// A file sync leaves out.
@@ -97,6 +100,7 @@ pub(crate) fn changes(
     listing: &SyncedListing,
     objects: &BTreeMap<Id, Object>,
     held: &BTreeSet<Id>,
+    held_root: impl Fn(&str) -> bool,
     mut read: impl FnMut(&str) -> Option<Vec<u8>>,
 ) -> (Vec<Change>, Vec<Skipped>) {
     let mut skipped: Vec<Skipped> = listing
@@ -126,6 +130,14 @@ pub(crate) fn changes(
             skipped.push(Skipped {
                 path: path.to_owned(),
                 why: SkipWhy::PathRules,
+            });
+            present.insert(path.to_owned());
+            continue;
+        }
+        if held_root(path) {
+            skipped.push(Skipped {
+                path: path.to_owned(),
+                why: SkipWhy::HeldRoot,
             });
             present.insert(path.to_owned());
             continue;
@@ -322,9 +334,13 @@ mod tests {
             .iter()
             .map(|(p, b)| ((*p).to_owned(), b.to_vec()))
             .collect();
-        changes(&listing, objects, &BTreeSet::new(), |p| {
-            files.get(p).cloned()
-        })
+        changes(
+            &listing,
+            objects,
+            &BTreeSet::new(),
+            |_| false,
+            |p| files.get(p).cloned(),
+        )
     }
 
     #[test]

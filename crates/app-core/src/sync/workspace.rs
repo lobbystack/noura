@@ -16,6 +16,7 @@
 //! [`SyncService`].
 
 mod capture;
+pub mod rebuild;
 mod settle;
 pub mod state;
 
@@ -110,6 +111,10 @@ pub struct Status {
     pub unreadable: usize,
     /// Local versions held for review.
     pub held: usize,
+    /// Folders whose files wait until you confirm where they go.
+    pub held_roots: usize,
+    /// Versions an earlier journal's review store kept.
+    pub archived: usize,
 }
 
 /// The sync state of one folder.
@@ -130,6 +135,11 @@ pub struct WorkspaceSync {
     stopped: Option<&'static str>,
     /// Whether you paused sync.
     paused: bool,
+    /// Whether a pull only records states, for the matching that follows
+    /// a sync without the journal (§15).
+    matching: bool,
+    /// The files those pulls carried, by revision, until the matching.
+    cache: BTreeMap<Digest, Vec<u8>>,
 }
 
 impl std::fmt::Debug for WorkspaceSync {
@@ -268,7 +278,19 @@ impl WorkspaceSync {
             unreadable: Vec::new(),
             held: BTreeMap::new(),
             last_success: None,
+            held_roots: Vec::new(),
+            archived: Vec::new(),
         };
+        // A device accepts no policy head or epoch below its mark, also
+        // when it starts again without a journal (§15).
+        let epochs = BTreeMap::from([(
+            state.domain,
+            state.epochs.last().map_or(0, |e| e.body.epoch),
+        )]);
+        let revision = state.policy.last().map_or(0, |c| c.body.revision);
+        if mark.above(revision, &epochs) {
+            return Err(SyncError::Check("sync_policy_rollback"));
+        }
         let keys = remote.keys.clone();
         let mut sync = Self {
             engine,
@@ -282,6 +304,8 @@ impl WorkspaceSync {
             skipped: Vec::new(),
             stopped: None,
             paused: false,
+            matching: false,
+            cache: BTreeMap::new(),
         };
         sync.save()?;
         Ok(sync)
@@ -338,6 +362,8 @@ impl WorkspaceSync {
             skipped: Vec::new(),
             stopped: None,
             paused: entry.paused,
+            matching: false,
+            cache: BTreeMap::new(),
             state,
         };
         if let Some(next) = next.get(&sync.state.domain) {
@@ -422,6 +448,8 @@ impl WorkspaceSync {
             last_success: self.state.last_success,
             unreadable: self.state.unreadable.len(),
             held: self.state.held.len(),
+            held_roots: self.state.held_roots.len(),
+            archived: self.state.archived.len(),
         }
     }
 
@@ -692,10 +720,14 @@ impl WorkspaceSync {
         let listing = self.engine.synced_listing().map_err(core)?;
         let held: BTreeSet<Id> = self.state.held.keys().copied().collect();
         let engine = self.engine.clone();
-        let (changes, mut skipped) =
-            capture::changes(&listing, &self.state.objects, &held, |path| {
-                engine.read_synced(path).ok().flatten()
-            });
+        let roots = self.state.held_roots.clone();
+        let (changes, mut skipped) = capture::changes(
+            &listing,
+            &self.state.objects,
+            &held,
+            |path| roots.iter().any(|root| rebuild::beneath(path, root)),
+            |path| engine.read_synced(path).ok().flatten(),
+        );
         let mut signed = 0;
         for change in changes {
             match change {
@@ -1441,8 +1473,10 @@ impl WorkspaceSync {
         };
         let applied = self.apply(checked)?;
         // Objects a file in their way held back before get another try.
-        for rid in self.unsettled() {
-            self.settle(rid, &BTreeMap::new())?;
+        if !self.matching {
+            for rid in self.unsettled() {
+                self.settle(rid, &BTreeMap::new())?;
+            }
         }
         self.state.log.cursor = page.complete_through;
         self.state.log.head = self.state.log.head.max(page.head);
@@ -1600,13 +1634,14 @@ impl WorkspaceSync {
             };
             let object = self.state.objects.entry(op.body.rid).or_default();
             if op.body.device == own {
-                // This device's own record: its file already holds it.
+                object.own_highest = object.own_highest.max(op.body.counter);
+                // This device's own record: its file already holds it,
+                // unless a lost journal forgot it.
                 if let Some(state) = object.states.get_mut(&key) {
                     state.seq = Some(record.seq);
                     state.digest = op.digest();
+                    continue;
                 }
-                object.own_highest = object.own_highest.max(op.body.counter);
-                continue;
             }
             applied += 1;
             let content = match record.payload {
@@ -1640,6 +1675,11 @@ impl WorkspaceSync {
             if !touched.contains(&op.body.rid) {
                 touched.push(op.body.rid);
             }
+        }
+        if self.matching {
+            // The matching after a sync without the journal writes these.
+            self.cache.extend(contents);
+            return Ok(applied);
         }
         for rid in touched {
             self.settle(rid, &contents)?;
