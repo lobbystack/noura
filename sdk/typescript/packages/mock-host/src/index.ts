@@ -388,6 +388,24 @@ export class MockHost {
 				refused('ai');
 			}
 		};
+		// The mock host has no Brave Search key, so web calls fail closed as
+		// Noura's do without one. A refusal comes wrapped as `refused`.
+		const web = (): never => {
+			if (!this.declares('ai')) {
+				throw {
+					tag: 'refused',
+					val: { tag: 'capability-not-declared', val: 'ai' },
+				};
+			}
+			throw {
+				tag: 'failed',
+				val: {
+					code: 'web_search_key_missing',
+					message:
+						'Add a Brave Search key in Settings, under Web search, to search the web.',
+				},
+			};
+		};
 		const providers = () => this.options.providers ?? [];
 		const run = (id: string) => this.runs.get(id) ?? notFound(id);
 		// Noura opens and trashes things only in answer to an event in one
@@ -590,6 +608,12 @@ export class MockHost {
 						found.status = 'cancelled';
 					}
 				},
+				webReady: () => {
+					ai();
+					return false;
+				},
+				webSearch: () => web(),
+				webFetch: () => web(),
 			},
 		};
 	}

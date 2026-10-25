@@ -14,8 +14,26 @@ Noura keeps the providers, their keys and your consent on this device, and no ca
 - `readRun(id)`: the run as it stands now, with the answer so far in `text`.
 - `answerTools(run, results, tools)`: answer the tool calls of a completed run, one result per call, and stream the model's next answer into the same run.
 - `stop(id)`: stop a run. The answer so far stays in the chat as a cancelled message.
+- `webReady()`: whether the model may search the web and read pages in this workspace. It returns `true` once you add a Brave Search key in Settings > Web search and allow web search for the workspace.
+- `webSearch(query, maxResults)`: search the web with Brave Search and get each result's `title`, `url` and `snippet`. Pass from 1 to 10 for `maxResults`, or `undefined` for 10.
+- `webFetch(url)`: read the page at an `https` address and get its `text`, the `url` that answered after redirects, its `contentType` and whether Noura cut the text at its size limit (`truncated`).
 
 `readRun`, `answerTools` and `stop` reach only the plugin's own runs. Another plugin's run is `not-found`.
+
+## Search the web for the model
+
+Offer the model web tools in `send` and `answerTools` only while `webReady()` returns `true`. When a completed run lists a call to one of your web tools, call `webSearch` or `webFetch`, then pass the answer back as that call's result with `answerTools`. Noura writes each call and its result to the chat.
+
+Noura sends each web request for the plugin through its own boundary, so the plugin needs no `network` capability and opens no connection. Your web consent covers one workspace on this device, and it's a separate choice from a provider's consent. Noura asks for it in its own prompt and doesn't ask again before each call.
+
+A web call that fails throws a `web-error`:
+
+- `refused`: Noura refused the call as it refuses the interface's other calls, such as `capability-not-declared` with `ai`.
+- `failed`: the call failed with a `failure`, whose `code` says why, such as `web_search_key_missing`, `web_consent_required`, `web_search_key_rejected`, `web_search_rate_limited`, `web_url_not_https` or `web_url_unsafe_host`. Its `message` holds Noura's own words for the model or for you.
+
+Pass a failure back to the model as the call's result, so the chat goes on without the web. A failure never holds the key or what Brave Search or the site answered.
+
+`webFetch` reads only HTML and plain text, up to 5 MiB. It follows up to three redirects and checks every address each host resolves to. It refuses local and private addresses before it connects, and it cuts the text at 1 MiB.
 
 ## Example
 
@@ -157,3 +175,4 @@ export const view: ViewExports = {
 - A failed run's `failure` holds a stable `code`, such as `provider_request_failed`, and a message. It never holds the provider's own answer, its headers or a key.
 - A chat is a folder of Markdown files in the workspace: `chat.md` and one file per message. A plugin with `workspace-read` reads them like other files, but only `ai` changes them.
 - The mock host asks no provider. Pass `providers` to `createMockHost` to list some. A run there waits for consent until the plugin stops it.
+- The mock host has no Brave Search key. Its `webReady` returns `false`, and `webSearch` and `webFetch` fail with `web_search_key_missing`, as Noura's do before you add a key.

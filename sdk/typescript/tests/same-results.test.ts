@@ -134,6 +134,15 @@ describe.each(HOSTS)(
 			expect(await probe(host, 'list-objects')).toEqual(denied('object-types'));
 			expect(await probe(host, 'ai-providers')).toEqual(denied('ai'));
 			expect(await probe(host, 'ai-new-chat')).toEqual(denied('ai'));
+			expect(await probe(host, 'ai-web-ready')).toEqual(denied('ai'));
+			for (const call of ['ai-web-search', 'ai-web-fetch']) {
+				expect(await probe(host, call)).toEqual({
+					error: {
+						tag: 'refused',
+						val: { tag: 'capability-not-declared', val: 'ai' },
+					},
+				});
+			}
 		});
 
 		test('the clock and the console need no capability, and a tool can’t open a page', async (context) => {
@@ -346,6 +355,23 @@ describe.each(HOSTS)('a plugin that declares ai, on %s', (_name, start) => {
 		expect(await probe(host, 'ai-read-run-missing')).toEqual({
 			error: { tag: 'not-found', val: 'run_missing' },
 		});
+	});
+
+	test('searches and reads nothing on the web before you add a Brave Search key', async (context) => {
+		if (!host) return context.skip();
+		expect(await probe(host, 'ai-web-ready')).toEqual({ ok: false });
+		for (const call of ['ai-web-search', 'ai-web-fetch']) {
+			expect(await probe(host, call)).toEqual({
+				error: {
+					tag: 'failed',
+					val: {
+						code: 'web_search_key_missing',
+						message:
+							'Add a Brave Search key in Settings, under Web search, to search the web.',
+					},
+				},
+			});
+		}
 	});
 
 	test('still reads nothing without workspace-read', async (context) => {
