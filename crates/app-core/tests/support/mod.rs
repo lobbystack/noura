@@ -2,6 +2,7 @@
 
 #![allow(dead_code, reason = "each test file uses a different subset")]
 
+pub mod ai;
 pub mod calendar;
 pub mod plugins;
 pub mod projects;
@@ -49,6 +50,9 @@ pub struct FakeSystem {
     now: Mutex<Option<jiff::Timestamp>>,
     /// The system's time zone, this computer's until a test sets one.
     time_zone: Mutex<Option<jiff::tz::TimeZone>>,
+    /// The system's credential store, in memory, so no test reaches this
+    /// computer's own.
+    pub credentials: Arc<local_core::MemoryCredentials>,
 }
 
 impl FakeSystem {
@@ -80,6 +84,7 @@ impl FakeSystem {
             hour: AtomicU8::new(9),
             now: Mutex::new(None),
             time_zone: Mutex::new(None),
+            credentials: Arc::new(local_core::MemoryCredentials::new()),
         })
     }
 
@@ -178,6 +183,10 @@ impl System for FakeSystem {
             .unwrap()
             .clone()
             .unwrap_or_else(jiff::tz::TimeZone::system)
+    }
+
+    fn credentials(&self) -> Arc<dyn local_core::CredentialStore> {
+        self.credentials.clone()
     }
 }
 

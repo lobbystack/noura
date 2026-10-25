@@ -1,0 +1,354 @@
+//! Seam 3: the host AI interface and the AI plugin in the real host. A
+//! plugin reaches providers and chats only with the `ai` capability, a
+//! provider's failure reaches it as a code and a public message, and the
+//! AI plugin registers the chat and chat-message types with the schemas
+//! the shared fixtures hold.
+
+mod support;
+
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
+
+use plugin_host::{
+    AiChat, AiChats, AiFailure, AiMessage, AiProvider, AiRequest, AiRun, AiRunStatus, AiToolCall,
+    AiToolDefinition, AiToolResult, Capability, ObjectTypes, RunningPlugin, ServiceError, Services,
+    read_manifest,
+};
+use serde_json::Value;
+use support::plugins::{self, FakeObjects};
+use workspace_format::{PropertySchema, WorkspaceObject};
+
+/// The AI plugin's manifest, as its crate ships it.
+const MANIFEST: &str = include_str!("../../plugins/ai/plugin.toml");
+
+const SCHEMAS: &str =
+    include_str!("../../../docs/workspace-format/fixtures/object-envelope-v1.json");
+
+const CONFORMANCE: &str =
+    include_str!("../../../docs/workspace-format/fixtures/conformance-v1.json");
+
+/// An AI service that answers from fixed values and records each call.
+#[derive(Default)]
+struct FakeAi {
+    calls: Mutex<Vec<String>>,
+}
+
+impl FakeAi {
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    fn record(&self, call: impl Into<String>) {
+        self.calls.lock().unwrap().push(call.into());
+    }
+
+    fn run(&self, id: &str) -> AiRun {
+        AiRun {
+            id: id.to_owned(),
+            chat: "chat_01jbcdefghjkmnpqrstvwxyz0a".to_owned(),
+            provider: "local".to_owned(),
+            status: AiRunStatus::Failed,
+            text: "Part of an answer".to_owned(),
+            message: Some("chat-message_01jbcdefghjkmnpqrstvwxyz0b".to_owned()),
+            message_written: true,
+            tool_calls: vec![AiToolCall {
+                id: "call_1".to_owned(),
+                name: "echo".to_owned(),
+                arguments: r#"{"text":"hi"}"#.to_owned(),
+            }],
+            failure: Some(AiFailure {
+                code: "provider_request_failed".to_owned(),
+                message: "The AI provider request failed".to_owned(),
+            }),
+        }
+    }
+}
+
+impl AiChats for FakeAi {
+    fn providers(&self) -> Result<Vec<AiProvider>, ServiceError> {
+        self.record("providers");
+        Ok(vec![AiProvider {
+            id: "local".to_owned(),
+            name: "Local".to_owned(),
+            kind: "ollama".to_owned(),
+            model: "llama3".to_owned(),
+        }])
+    }
+
+    fn chats(&self) -> Result<Vec<AiChat>, ServiceError> {
+        self.record("chats");
+        Ok(Vec::new())
+    }
+
+    fn read_chat(&self, id: &str) -> Result<(AiChat, Vec<AiMessage>), ServiceError> {
+        self.record(format!("read-chat {id}"));
+        Err(ServiceError::NotFound(id.to_owned()))
+    }
+
+    fn create_chat(&self) -> Result<AiChat, ServiceError> {
+        self.record("create-chat");
+        Ok(AiChat {
+            id: "chat_01jbcdefghjkmnpqrstvwxyz0a".to_owned(),
+            title: "New chat".to_owned(),
+            updated: "2026-10-24T10:00:00Z".to_owned(),
+        })
+    }
+
+    fn send(&self, request: AiRequest) -> Result<AiRun, ServiceError> {
+        self.record(format!(
+            "send {} {} {} {}",
+            request.chat,
+            request.provider,
+            request.message,
+            request.tools.len()
+        ));
+        Ok(self.run("run_1"))
+    }
+
+    fn answer_tools(
+        &self,
+        run: &str,
+        results: Vec<AiToolResult>,
+        tools: Vec<AiToolDefinition>,
+    ) -> Result<AiRun, ServiceError> {
+        let results: Vec<String> = results
+            .iter()
+            .map(|result| format!("{}={}", result.call_id, result.content))
+            .collect();
+        self.record(format!(
+            "answer-tools {run} {} {}",
+            results.join(","),
+            tools.len()
+        ));
+        Ok(self.run(run))
+    }
+
+    fn read_run(&self, id: &str) -> Result<AiRun, ServiceError> {
+        self.record(format!("read-run {id}"));
+        Ok(self.run(id))
+    }
+
+    fn stop(&self, id: &str) -> Result<(), ServiceError> {
+        self.record(format!("stop {id}"));
+        Ok(())
+    }
+}
+
+/// The probe, as a plugin holding `capabilities`, with `ai` as its AI
+/// service.
+fn probe(
+    capabilities: &[&str],
+    ai: &Arc<FakeAi>,
+) -> Option<(Arc<RunningPlugin>, [tempfile::TempDir; 2])> {
+    let probe = plugins::built("probe_plugin")?;
+    let service: Arc<dyn AiChats> = ai.clone();
+    Some(plugins::running_as(
+        "chatter",
+        &probe,
+        capabilities,
+        Services {
+            ai: Some(service),
+            ..Services::default()
+        },
+    ))
+}
+
+fn lines(plugin: &RunningPlugin, page: &str) -> Vec<String> {
+    plugins::texts(&plugin.render(page).expect("the probe renders"))
+}
+
+#[test]
+fn a_plugin_without_the_ai_capability_reaches_no_provider_or_chat() {
+    let ai = Arc::new(FakeAi::default());
+    let Some((plugin, _folders)) = probe(&["name = \"views\""], &ai) else {
+        return;
+    };
+
+    for call in [
+        "ai:providers",
+        "ai:chats",
+        "ai:create-chat",
+        "ai:read-chat:chat_01jbcdefghjkmnpqrstvwxyz0a",
+        "ai:send:chat_01jbcdefghjkmnpqrstvwxyz0a:local:Hello",
+        "ai:answer-tools:run_1:{}",
+        "ai:read-run:run_1",
+        "ai:stop:run_1",
+    ] {
+        assert_eq!(
+            lines(&plugin, call),
+            ["error capability-not-declared ai"],
+            "{call}"
+        );
+    }
+    assert_eq!(ai.calls(), Vec::<String>::new());
+}
+
+#[test]
+fn a_plugin_with_the_ai_capability_sends_and_hears_failures_as_public_codes() {
+    let ai = Arc::new(FakeAi::default());
+    let Some((plugin, _folders)) = probe(&["name = \"views\"", "name = \"ai\""], &ai) else {
+        return;
+    };
+
+    assert_eq!(
+        lines(&plugin, "ai:providers"),
+        ["provider local Local ollama llama3"]
+    );
+    let sent = lines(
+        &plugin,
+        "ai:send-with-tool:chat_01jbcdefghjkmnpqrstvwxyz0a:local:What grows in October?",
+    );
+    assert_eq!(
+        sent,
+        [
+            "run run_1 RunStatus::Failed message chat-message_01jbcdefghjkmnpqrstvwxyz0b calls \
+             [call_1=echo({\"text\":\"hi\"})] text Part of an answer failure \
+             provider_request_failed The AI provider request failed"
+        ]
+    );
+    lines(&plugin, "ai:answer-tools:run_1:{\"text\":\"hi\"}");
+    assert_eq!(lines(&plugin, "ai:stop:run_1"), ["stopped"]);
+    assert_eq!(
+        lines(&plugin, "ai:read-chat:chat_01jbcdefghjkmnpqrstvwxyz0z"),
+        ["error not-found chat_01jbcdefghjkmnpqrstvwxyz0z"]
+    );
+    assert_eq!(
+        ai.calls(),
+        [
+            "providers",
+            "send chat_01jbcdefghjkmnpqrstvwxyz0a local What grows in October? 1",
+            "read-run run_1",
+            "answer-tools run_1 call_1={\"text\":\"hi\"} 1",
+            "stop run_1",
+            "read-chat chat_01jbcdefghjkmnpqrstvwxyz0z",
+        ]
+    );
+}
+
+#[test]
+fn a_plugin_holding_ai_with_no_service_hears_that_noura_cant_reach_providers() {
+    let Some(probe) = plugins::built("probe_plugin") else {
+        return;
+    };
+    let (plugin, _folders) = plugins::running_as(
+        "chatter",
+        &probe,
+        &["name = \"views\"", "name = \"ai\""],
+        Services::default(),
+    );
+    assert_eq!(
+        lines(&plugin, "ai:providers"),
+        ["error failed Noura can't reach AI providers here."]
+    );
+}
+
+/// The AI plugin, started with what its manifest declares.
+fn ai_plugin(types: &ObjectTypes) -> Option<(Arc<RunningPlugin>, [tempfile::TempDir; 2])> {
+    let component = plugins::built("ai_plugin")?;
+    let folder = tempfile::tempdir().unwrap();
+    let library = tempfile::tempdir().unwrap();
+    plugins::write_folder(folder.path(), MANIFEST, "ai_plugin.wasm", &component);
+    let host = plugins::host(library.path());
+    host.install(&host.inspect(folder.path()).unwrap()).unwrap();
+    let loaded = host.load("ai").unwrap();
+    let objects: Arc<dyn plugin_host::WorkspaceObjects> = Arc::new(FakeObjects::default());
+    let plugin = host.start(
+        &loaded,
+        &loaded.manifest().capabilities,
+        Services {
+            objects: Some(objects),
+            types: types.clone(),
+            ..Services::default()
+        },
+    );
+    Some((plugin, [folder, library]))
+}
+
+#[test]
+fn the_ai_plugin_declares_the_chat_types_its_page_and_the_ai_capability() {
+    let manifest = read_manifest(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../plugins/ai"
+    )))
+    .expect("the manifest reads");
+    assert_eq!(manifest.id, "ai");
+    assert_eq!(
+        manifest.capabilities,
+        [Capability::ObjectTypes, Capability::Views, Capability::Ai]
+    );
+    let types = ObjectTypes::new();
+    let Some((plugin, _folders)) = ai_plugin(&types) else {
+        return;
+    };
+
+    let registered = plugin.register_object_types().unwrap();
+
+    assert_eq!(
+        registered,
+        [
+            ("chat".to_owned(), Ok(())),
+            ("chat-message".to_owned(), Ok(()))
+        ]
+    );
+    let fixtures: Value = serde_json::from_str(SCHEMAS).unwrap();
+    for object_type in ["chat", "chat-message"] {
+        assert_eq!(types.owner(object_type).as_deref(), Some("ai"));
+        let expected: PropertySchema =
+            serde_json::from_value(fixtures["schemas"][object_type].clone()).unwrap();
+        assert_eq!(
+            types.schemas().schema(object_type),
+            Some(&expected),
+            "{object_type}"
+        );
+    }
+    let pages: Vec<(String, String)> = plugin
+        .pages()
+        .unwrap()
+        .into_iter()
+        .map(|page| (page.id, page.title))
+        .collect();
+    assert_eq!(pages, [("ai".to_owned(), "AI".to_owned())]);
+}
+
+/// Every chat and chat-message conformance fixture that the chat rules
+/// accept fits the AI plugin's schemas. The chat rules refuse the others:
+/// the AI service checks them on each chat it writes, and no plugin writes
+/// a chat through the objects interface.
+#[test]
+fn every_valid_chat_conformance_fixture_fits_the_ai_plugins_schemas() {
+    let types = ObjectTypes::new();
+    let Some((plugin, _folders)) = ai_plugin(&types) else {
+        return;
+    };
+    plugin.register_object_types().unwrap();
+    let fixtures: Value = serde_json::from_str(CONFORMANCE).unwrap();
+    for (section, object_type) in [("chat", "chat"), ("chat_message", "chat-message")] {
+        for fixture in fixtures[section].as_array().unwrap() {
+            let name = fixture["name"].as_str().unwrap();
+            let mut properties = fixture["value"].as_object().unwrap().clone();
+            let id = properties
+                .remove("id")
+                .and_then(|id| id.as_str().map(str::to_owned))
+                .unwrap();
+            properties.remove("type");
+            properties.remove("created");
+            properties.remove("updated");
+            let object = WorkspaceObject {
+                id,
+                object_type: object_type.to_owned(),
+                title: String::new(),
+                body: String::new(),
+                relative_path: "chats/test--000000/chat.md".to_owned(),
+                revision: String::new(),
+                created: None,
+                updated: None,
+                properties: properties.into_iter().collect(),
+            };
+            if fixture["valid"] == true {
+                assert_eq!(types.problem(&object), None, "{name}");
+            }
+        }
+    }
+}

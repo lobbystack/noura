@@ -3,6 +3,7 @@
 //! This crate calls only `app-core`: it draws [`App`]'s view state and sends
 //! it what people do.
 
+mod ai;
 mod chooser;
 mod common;
 mod dates;
@@ -72,6 +73,9 @@ pub struct NouraUi {
     settings: settings::SettingsView,
     plugin_install: plugins::InstallView,
     shipped_plugins: plugins::ShippedView,
+    /// The prompt that asks before a provider receives the workspace's
+    /// content.
+    consent: ai::ConsentView,
     tab_bar: tab_bar::TabBarView,
     palette: palette::PaletteView,
     /// The editors of the notes open in tabs.
@@ -103,6 +107,7 @@ impl NouraUi {
             settings: settings::SettingsView::default(),
             plugin_install: plugins::InstallView::default(),
             shipped_plugins: plugins::ShippedView::default(),
+            consent: ai::ConsentView::default(),
             tab_bar: tab_bar::TabBarView::default(),
             palette: palette::PaletteView::default(),
             notes: note::NoteView::default(),
@@ -332,6 +337,7 @@ impl NouraUi {
         );
         plugins::install_dialog(ui, &mut self.app, &mut self.plugin_install);
         plugins::shipped_dialog(ui, &mut self.app, &mut self.shipped_plugins);
+        ai::consent_prompt(ui, &mut self.app, &mut self.consent);
         palette::show(ui, &mut self.app, &mut self.palette);
         note::unsaved_prompt(ui, &mut self.app);
         self.notes.commit_hidden_drafts(&mut self.app);

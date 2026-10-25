@@ -81,6 +81,9 @@ pub enum Capability {
     Settings,
     /// Offer tools that AI assistants call through MCP.
     Tools,
+    /// Send chats to the AI providers you set up, once you consent for
+    /// each workspace, and keep them in the workspace.
+    Ai,
 }
 
 /// One thing you approved for a plugin that you can revoke on its own: a
@@ -107,6 +110,7 @@ impl Capability {
             Self::InboxSections => "inbox-sections",
             Self::Settings => "settings",
             Self::Tools => "tools",
+            Self::Ai => "ai",
         }
     }
 
@@ -156,6 +160,10 @@ impl Capability {
             Self::InboxSections => whole("Add sections to the Inbox."),
             Self::Settings => whole("Add a page to Settings."),
             Self::Tools => whole("Offer tools that AI assistants can use."),
+            Self::Ai => whole(
+                "Send your messages and chats to the AI providers you set up, once you consent \
+                 for this workspace, and keep the chats in your workspace.",
+            ),
         }
     }
 
@@ -538,6 +546,7 @@ impl RawCapability {
             "inbox-sections" => Ok(Capability::InboxSections),
             "settings" => Ok(Capability::Settings),
             "tools" => Ok(Capability::Tools),
+            "ai" => Ok(Capability::Ai),
             other => Err(located(
                 InstallErrorCode::UnknownCapability,
                 text,
