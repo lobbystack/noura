@@ -291,6 +291,41 @@ async fn a_recipient_handed_another_key_than_the_epochs_is_refused() {
         }))
         .await
         .unwrap();
+    // A recipient keeps the first envelope that passes, so the server
+    // shows the phone the other key alone.
+    let proxy = Proxy::start(&server.base).await;
+    let mut phone = through(&proxy, phone).await;
+    let path = format!("/v2/workspaces/{}/keys/current", w.to_base64url());
+    let recipient = phone.id();
+    proxy.tamper(Box::new(move |route, body| {
+        if route != path {
+            return body;
+        }
+        let keys = KeysResponse::from_bytes(&body).unwrap();
+        let last = keys
+            .entries
+            .0
+            .iter()
+            .filter(|e| matches!(&e.record, KeyRecord::Envelope(env) if env.body.recipient == recipient))
+            .map(|e| e.key_seq)
+            .max();
+        KeysResponse {
+            head_key_seq: keys.head_key_seq,
+            entries: List(
+                keys.entries
+                    .0
+                    .into_iter()
+                    .filter(|e| match &e.record {
+                        KeyRecord::Envelope(env) if env.body.recipient == recipient => {
+                            Some(e.key_seq) == last
+                        }
+                        _ => true,
+                    })
+                    .collect(),
+            ),
+        }
+        .to_bytes()
+    }));
     let refused = phone
         .service
         .refresh_keys(&mut remote)
