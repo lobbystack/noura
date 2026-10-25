@@ -6,10 +6,10 @@ use local_core::{
     ChatRetention, ConflictResolution, CreateChatInput, CreateObjectInput,
     FinishChatAssistantInput, FinishChatToolCallInput, ManagedConflictResolution,
     ManagedConflictResolveInput, ManagedDraftInput, ManagedDraftResult, ManifestUpdateInput,
-    MarkdownLinkTarget, ObjectPatch, ParseStatus, ParsedMarkdown, RawConflictResolveInput,
-    RawRestoreInput, RawSaveInput, RawSaveResult, RenameChatInput, SearchInput,
-    WORKSPACE_MANIFEST_PATH, WorkspaceEngine, WorkspaceEntryKind, WorkspaceManifest, new_object_id,
-    parse_markdown,
+    MarkdownLinkTarget, ObjectFilter, ObjectPatch, ParseStatus, ParsedMarkdown, PropertyValue,
+    RawConflictResolveInput, RawRestoreInput, RawSaveInput, RawSaveResult, RenameChatInput,
+    SearchInput, WORKSPACE_MANIFEST_PATH, WorkspaceEngine, WorkspaceEntryKind, WorkspaceManifest,
+    new_object_id, parse_markdown,
 };
 use tempfile::tempdir;
 
@@ -969,7 +969,7 @@ fn idless_markdown_requires_explicit_adoption() {
 }
 
 #[test]
-fn tasks_projects_calendar_and_kanban_metadata_share_files() {
+fn task_project_dated_and_kanban_properties_share_files_as_ordinary_properties() {
     let (_workspace, _app_data, engine) = engine();
     let project = engine
         .create_object(CreateObjectInput {
@@ -993,11 +993,22 @@ fn tasks_projects_calendar_and_kanban_metadata_share_files() {
             ]),
         })
         .unwrap();
-    assert_eq!(task.value.properties["status"], "todo");
-    assert_eq!(task.value.properties["priority"], "medium");
+    // The kernel adds no task defaults, and its queries name the property.
+    assert!(!task.value.properties.contains_key("status"));
     assert_eq!(
-        engine.calendar("2026-09-01", "2026-10-01").unwrap()[0].source_id,
-        task.value.id
+        engine
+            .query_objects_filtered(&ObjectFilter {
+                property: Some(PropertyValue {
+                    name: "due".into(),
+                    value: serde_json::json!("2026-09-04"),
+                }),
+                ..ObjectFilter::default()
+            })
+            .unwrap()
+            .into_iter()
+            .map(|object| object.id)
+            .collect::<Vec<_>>(),
+        [task.value.id.as_str()]
     );
     let completed = engine
         .update_object(

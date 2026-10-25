@@ -46,8 +46,8 @@ pub use engine::{
 };
 pub use error::{CoreError, ErrorCategory, Result};
 pub use index::{
-    CalendarEntry, IdentityConflict, IndexStore, ObjectFilter, ObjectSummary, ObjectSummaryOrder,
-    ObjectSummaryQuery, SearchInput, SearchResult,
+    IdentityConflict, IndexStore, ObjectFilter, ObjectSummary, ObjectSummaryQuery, PropertyValue,
+    SearchInput, SearchResult,
 };
 pub use markdown::{ParsedMarkdown, parse_markdown, serialize_object, serialize_object_over};
 pub use model::*;

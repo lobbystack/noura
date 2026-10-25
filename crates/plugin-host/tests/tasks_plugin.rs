@@ -19,9 +19,8 @@ use workspace_format::PropertySchema;
 /// The Tasks plugin's manifest, as its crate ships it.
 const MANIFEST: &str = include_str!("../../plugins/tasks/plugin.toml");
 
-/// The shared fixtures that hold today's v1 task schema.
-const FIXTURES: &str =
-    include_str!("../../../docs/workspace-format/fixtures/object-envelope-v1.json");
+/// The Tasks plugin's fixture, which holds today's v1 task schema.
+const FIXTURE: &str = include_str!("../../plugins/tasks/fixtures/task-v1.json");
 
 const TASK_ID: &str = "task_01jbcdefghjkmnpqrstvwxyz0a";
 
@@ -145,9 +144,8 @@ fn the_manifest_declares_the_task_type_with_todays_v1_fields() {
 
     assert_eq!(registered, [("task".to_owned(), Ok(()))]);
     assert_eq!(workspace.types.owner("task").as_deref(), Some("tasks"));
-    let fixtures: serde_json::Value = serde_json::from_str(FIXTURES).unwrap();
-    let expected: PropertySchema =
-        serde_json::from_value(fixtures["schemas"]["task"].clone()).unwrap();
+    let fixture: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
+    let expected: PropertySchema = serde_json::from_value(fixture["schema"].clone()).unwrap();
     assert_eq!(workspace.types.schemas().schema("task"), Some(&expected));
 }
 

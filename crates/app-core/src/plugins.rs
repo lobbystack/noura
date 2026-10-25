@@ -630,6 +630,31 @@ impl Plugins {
         self.version
     }
 
+    /// The object types running plugins hold, with their schemas, and the
+    /// name people see of each plugin that holds one, by plugin ID.
+    pub(crate) fn type_owners(&self) -> (ObjectTypes, BTreeMap<String, String>) {
+        let names = self
+            .types
+            .held()
+            .into_iter()
+            .map(|(_, plugin)| {
+                let name = self
+                    .manifests
+                    .get(&plugin)
+                    .map_or_else(|| plugin.clone(), |manifest| manifest.name.clone());
+                (plugin, name)
+            })
+            .collect();
+        (self.types.clone(), names)
+    }
+
+    /// Counts the times running plugins registered or released an object
+    /// type, so a window can check the workspace's files against their
+    /// schemas again.
+    pub(crate) fn types_generation(&self) -> u64 {
+        self.types.generation()
+    }
+
     fn changed(&mut self) {
         self.version += 1;
     }

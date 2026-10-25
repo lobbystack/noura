@@ -643,7 +643,7 @@ impl App {
     /// what the plugins add when it changed. Returns whether anything did.
     pub(super) fn poll_plugins(&mut self) -> bool {
         let downloaded = self.poll_plugin_download();
-        let (version, pages, settings, acts, openings, working) = {
+        let (version, pages, settings, acts, openings, working, types) = {
             let mut plugins = self.session.plugins();
             plugins.poll();
             (
@@ -653,8 +653,15 @@ impl App {
                 plugins.acts(),
                 plugins.take_openings(self.key),
                 plugins.is_working(),
+                plugins.types_generation(),
             )
         };
+        if types != self.types_seen {
+            // A plugin registered or released a type: the files of that
+            // type are checked against its schema again, or no longer.
+            self.types_seen = types;
+            self.refresh_tree(None);
+        }
         if !working {
             self.settle_name_drafts();
             self.names_sent_while_leaving();

@@ -2,37 +2,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema, PartialEq, Eq)]
-#[ts(export)]
-#[serde(rename_all = "kebab-case")]
-pub enum TaskStatus {
-    Todo,
-    InProgress,
-    Done,
-    Cancelled,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema, PartialEq, Eq)]
-#[ts(export)]
-#[serde(rename_all = "kebab-case")]
-pub enum TaskPriority {
-    Low,
-    Medium,
-    High,
-    Urgent,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema, PartialEq, Eq)]
-#[ts(export)]
-#[serde(rename_all = "kebab-case")]
-pub enum ProjectStatus {
-    Planned,
-    Active,
-    OnHold,
-    Completed,
-    Cancelled,
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, JsonSchema, PartialEq, Eq)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]

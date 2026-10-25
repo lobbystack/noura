@@ -2,15 +2,12 @@
 //! against the shared fixture in
 //! `docs/workspace-format/fixtures/object-envelope-v1.json`.
 
-use std::{
-    collections::BTreeMap,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use workspace_format::{
-    FormatError, ObjectTypeRegistry, ParsedMarkdown, PropertySchema, WorkspaceObject,
-    normalize_project_properties, normalize_task_properties, parse_markdown, serialize_object,
+    ObjectTypeRegistry, ParsedMarkdown, PropertySchema, WorkspaceObject, parse_markdown,
+    serialize_object,
 };
 
 fn fixture() -> Value {
@@ -183,79 +180,6 @@ fn conformance_v1() -> Value {
     .unwrap()
 }
 
-/// Runs one of conformance-v1's property sections through today's built-in
-/// rules and through the declared schema, and requires the same verdicts and
-/// the same properties afterward.
-fn assert_schema_matches_built_in_rules(
-    object_type: &str,
-    section: &str,
-    built_in: fn(&mut BTreeMap<String, Value>) -> Result<(), FormatError>,
-) {
-    let fixture = fixture();
-    let types = registry(&fixture);
-    let conformance = conformance_v1();
-    for case in cases(&conformance, section) {
-        let valid = case["valid"].as_bool().unwrap();
-        let mut built_in_properties: BTreeMap<String, Value> =
-            serde_json::from_value(case["value"].clone()).unwrap();
-        let built_in_result = built_in(&mut built_in_properties);
-        let mut object = object_with(object_type, &case["value"]);
-        let schema_result = types.normalize(&mut object);
-        assert_eq!(
-            built_in_result.is_ok(),
-            valid,
-            "{}: built-in rules",
-            name(case)
-        );
-        assert_eq!(
-            schema_result.is_ok(),
-            valid,
-            "{}: {schema_result:?}",
-            name(case)
-        );
-        if valid {
-            assert_eq!(object.properties, built_in_properties, "{}", name(case));
-        }
-    }
-}
-
-#[test]
-fn a_declared_task_schema_matches_the_task_property_fixtures() {
-    assert_schema_matches_built_in_rules("task", "task_properties", normalize_task_properties);
-}
-
-/// Today's built-in task rules check `due` and `project` only when they hold
-/// a string and don't check `kanban_order`, so they keep these values as
-/// metadata. A declared kind also checks the JSON type and rejects them.
-#[test]
-fn a_declared_task_schema_is_stricter_than_the_built_in_rules_about_json_types() {
-    let fixture = fixture();
-    let types = registry(&fixture);
-    for case in cases(&fixture, "task_schema_differences") {
-        let mut properties: BTreeMap<String, Value> =
-            serde_json::from_value(case["properties"].clone()).unwrap();
-        normalize_task_properties(&mut properties)
-            .unwrap_or_else(|error| panic!("{}: built-in rules: {error}", name(case)));
-        let mut object = object_with("task", &case["properties"]);
-        let error = types.normalize(&mut object).unwrap_err();
-        assert_eq!(
-            serde_json::to_value(error).unwrap(),
-            case["schema_error"],
-            "{}",
-            name(case)
-        );
-    }
-}
-
-#[test]
-fn a_declared_project_schema_matches_the_project_property_fixtures() {
-    assert_schema_matches_built_in_rules(
-        "project",
-        "project_properties",
-        normalize_project_properties,
-    );
-}
-
 /// Serializes, parses and serializes again, and requires the same bytes.
 fn assert_canonical(
     types: &ObjectTypeRegistry,
@@ -409,7 +333,7 @@ fn an_unregistered_type_stays_a_managed_object_with_every_property() {
         assert_eq!(
             text(serialize_object(&object).unwrap()),
             case["canonical"].as_str().unwrap(),
-            "{}: serialize_object writes the same built-in order",
+            "{}: serialize_object writes the same order",
             name(case)
         );
     }
@@ -490,28 +414,6 @@ fn the_format_spec_string_example_is_what_the_serializer_writes() {
     object.updated = None;
     let written = text(serialize_object(&object).unwrap());
     assert!(written.contains(&section[start..end]), "{written}");
-}
-
-#[test]
-fn note_task_and_project_files_serialize_to_the_same_bytes_as_before() {
-    let fixture = fixture();
-    let types = registry(&fixture);
-    for case in cases(&fixture, "existing_serialization") {
-        let object = managed(case);
-        let markdown = case["markdown"].as_str().unwrap();
-        assert_eq!(
-            text(serialize_object(&object).unwrap()),
-            markdown,
-            "{}",
-            name(case)
-        );
-        assert_eq!(
-            text(types.serialize(&object).unwrap()),
-            markdown,
-            "{}: with the declared task and project schemas",
-            name(case)
-        );
-    }
 }
 
 /// A large frontmatter full of line separators, whose last value libyaml
