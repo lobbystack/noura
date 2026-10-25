@@ -77,7 +77,10 @@ fn nothing_goes_to_a_provider_before_you_consent_in_noura_s_prompt() {
     assert_eq!(prompt.workspace, "Garden");
     assert!(ai::lines(&asking.app).contains(&asking_line()));
     assert_eq!(asking.provider.requests().len(), 0);
-    assert_eq!(asking.message_files(), 0, "nothing is written yet");
+    assert!(
+        ai::chat_files(&asking.fixture.root).is_empty(),
+        "nothing is written yet, not even the new chat"
+    );
 
     // Saying no sends and writes nothing, and the message comes back to
     // the box.
@@ -91,7 +94,11 @@ fn nothing_goes_to_a_provider_before_you_consent_in_noura_s_prompt() {
         )
     });
     assert_eq!(asking.provider.requests().len(), 0);
-    assert_eq!(asking.message_files(), 0);
+    assert!(ai::chat_files(&asking.fixture.root).is_empty());
+    assert!(
+        ai::chat_titles(&asking.app).is_empty(),
+        "no empty chat is left"
+    );
     let view = ai::page(&asking.app);
     let composer = ai::find(view.root(), "composer").expect("the message box shows");
     assert!(
@@ -114,6 +121,7 @@ fn nothing_goes_to_a_provider_before_you_consent_in_noura_s_prompt() {
     assert_eq!(asking.app.ai_consent_prompt(), None);
     assert!(asking.app.ai_providers()[0].consented);
     assert_eq!(asking.message_files(), 2);
+    assert_eq!(ai::chat_files(&asking.fixture.root).len(), 3);
 
     // The consent lives in this device's app data, never in the
     // workspace.
@@ -284,5 +292,143 @@ fn revoking_consent_cancels_the_running_request_and_the_next_one_asks_again() {
     ai::press(&mut asking.app, "stop");
     assert_eq!(asking.app.ai_consent_prompt(), None);
     assert_eq!(provider.requests().len(), 1);
+    assert_eq!(asking.message_files(), 2);
+}
+
+/// The message box's text, as the page draws it.
+fn draft(app: &App) -> Option<String> {
+    let view = ai::page(app);
+    let composer = ai::find(view.root(), "composer")?;
+    composer
+        .children
+        .iter()
+        .find_map(|child| match &child.kind {
+            app_core::ViewKind::Input {
+                value: app_core::InputValue::Multiline(text),
+                ..
+            } => Some(text.clone()),
+            _ => None,
+        })
+}
+
+#[test]
+fn removing_a_provider_ends_its_wait_moves_the_prompt_on_and_forgets_its_consent() {
+    let Some(mut asking) = Asking::new() else {
+        return;
+    };
+    let local = asking.id.clone();
+    let cloud = asking
+        .app
+        .save_ai_provider(ai::provider("Cloud", "openai", "gpt-test", None))
+        .unwrap();
+    support::settle(&mut asking.app);
+
+    // A message waits for consent to Local, and one in another chat for
+    // consent to Cloud.
+    ai::send(&mut asking.app, "For Local", &local);
+    assert_eq!(
+        asking
+            .app
+            .ai_consent_prompt()
+            .map(|prompt| prompt.provider_id),
+        Some(local.clone())
+    );
+    ai::new_chat(&mut asking.app);
+    ai::send(&mut asking.app, "For Cloud", &cloud);
+    assert_eq!(
+        asking
+            .app
+            .ai_consent_prompt()
+            .map(|prompt| prompt.provider_id),
+        Some(local.clone())
+    );
+
+    // Local goes: its run ends, and the prompt asks about Cloud.
+    asking.app.remove_ai_provider(&local).unwrap();
+    support::settle(&mut asking.app);
+    assert_eq!(
+        asking
+            .app
+            .ai_consent_prompt()
+            .map(|prompt| prompt.provider_id),
+        Some(cloud.clone())
+    );
+    asking.app.deny_ai_consent();
+    support::settle(&mut asking.app);
+    assert_eq!(asking.app.ai_consent_prompt(), None);
+    ai::wait_until(&mut asking.app, "Cloud's message comes back", |app| {
+        draft(app).as_deref() == Some("For Cloud")
+    });
+    assert_eq!(asking.provider.requests().len(), 0);
+    assert!(ai::chat_files(&asking.fixture.root).is_empty());
+
+    // A provider you add again under the same name asks again: its old
+    // consent went with it.
+    asking.app.grant_ai_consent(&cloud).unwrap();
+    assert!(
+        asking
+            .app
+            .ai_providers()
+            .iter()
+            .any(|row| row.id == cloud && row.consented)
+    );
+    asking.app.remove_ai_provider(&cloud).unwrap();
+    let again = asking
+        .app
+        .save_ai_provider(ai::provider("Cloud", "openai", "gpt-test", None))
+        .unwrap();
+    assert_eq!(again, cloud, "the same name gives the same ID");
+    support::settle(&mut asking.app);
+    assert!(
+        asking
+            .app
+            .ai_providers()
+            .iter()
+            .any(|row| row.id == cloud && !row.consented)
+    );
+    ai::send(&mut asking.app, "For Cloud", &cloud);
+    assert_eq!(
+        asking
+            .app
+            .ai_consent_prompt()
+            .map(|prompt| prompt.provider_id),
+        Some(cloud)
+    );
+    assert_eq!(asking.provider.requests().len(), 0);
+}
+
+/// A new chat waits for its first message to go out before Noura lists
+/// it, and the chats already there stay in the sidebar meanwhile.
+#[test]
+fn a_new_chat_waiting_for_consent_leaves_the_other_chats_listed() {
+    let Some(mut asking) = Asking::new() else {
+        return;
+    };
+    let id = asking.id.clone();
+    ai::send(&mut asking.app, "Plan the garden", &id);
+    asking.app.allow_ai_consent();
+    let provider = asking.provider.clone();
+    ai::wait_until(&mut asking.app, "the request leaves", |_| {
+        provider.requests().len() == 1
+    });
+    provider.finish(0);
+    ai::wait_until(&mut asking.app, "the chat is listed", |app| {
+        ai::chat_titles(app) == ["Plan the garden"] && ai::buttons(app).is_empty()
+    });
+    asking.app.revoke_ai_consent(&id).unwrap();
+
+    ai::new_chat(&mut asking.app);
+    ai::send(&mut asking.app, "Plan the orchard", &id);
+    assert!(asking.app.ai_consent_prompt().is_some());
+    assert!(
+        matches!(asking.app.plugin_sidebar(ai::PAGE), Some(Ok(_))),
+        "the sidebar draws"
+    );
+    assert_eq!(ai::chat_titles(&asking.app), ["Plan the garden"]);
+
+    asking.app.deny_ai_consent();
+    support::settle(&mut asking.app);
+    assert!(matches!(asking.app.plugin_sidebar(ai::PAGE), Some(Ok(_))));
+    assert_eq!(ai::chat_titles(&asking.app), ["Plan the garden"]);
     assert_eq!(asking.message_files(), 2);
 }

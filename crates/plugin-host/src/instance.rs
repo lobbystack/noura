@@ -13,7 +13,8 @@ use wasmtime::{Engine, Store, UpdateDeadline};
 use crate::{
     AiChats, Capability, ClockReading, DeviceClock, EntryKind, Limits, Listed, Navigation,
     NewObject, ObjectChanges, ObjectRead, ObjectRecord, ObjectTypes, PropertyProblem, Router,
-    ServiceError, TypeError, WorkspaceObjects, WorkspacePath, WorkspaceReads,
+    SERVICE_WRITTEN_TYPES, ServiceError, TypeError, WorkspaceObjects, WorkspacePath,
+    WorkspaceReads,
     object_types::type_of_id,
     runtime::{EpochTicker, Failure, StoreLimiter, deadline_ticks},
 };
@@ -269,6 +270,26 @@ impl HostState {
         let object_type = type_of_id(id).unwrap_or_default();
         self.objects(object_type)
     }
+
+    /// The object service for a write to an object of `object_type`.
+    /// Files of a type a host service writes, such as a chat, change only
+    /// through that service, so the write is refused before it reaches
+    /// any file.
+    fn objects_to_write(&self, object_type: &str) -> Result<&dyn WorkspaceObjects, types::Error> {
+        let service = self.objects(object_type)?;
+        if SERVICE_WRITTEN_TYPES.contains(&object_type) {
+            return Err(types::Error::Failed(
+                "Noura writes chats and their messages only through the ai interface.".to_owned(),
+            ));
+        }
+        Ok(service)
+    }
+
+    /// [`Self::objects_to_write`] for the object with the stable ID `id`.
+    fn objects_to_write_for(&self, id: &str) -> Result<&dyn WorkspaceObjects, types::Error> {
+        let object_type = type_of_id(id).unwrap_or_default();
+        self.objects_to_write(object_type)
+    }
 }
 
 impl types::Host for HostState {}
@@ -488,7 +509,7 @@ impl ai::Host for HostState {
 
 impl objects::Host for HostState {
     fn create(&mut self, object: objects::NewObject) -> Result<objects::Object, types::Error> {
-        let service = self.objects(&object.object_type)?;
+        let service = self.objects_to_write(&object.object_type)?;
         let path = object
             .path
             .as_deref()
@@ -526,7 +547,7 @@ impl objects::Host for HostState {
         expected_revision: String,
         changes: objects::Changes,
     ) -> Result<objects::Object, types::Error> {
-        let service = self.objects_for(&id)?;
+        let service = self.objects_to_write_for(&id)?;
         let changes = ObjectChanges {
             body: changes.body,
             properties: json_object(&changes.properties)?,
@@ -544,7 +565,7 @@ impl objects::Host for HostState {
         expected_revision: String,
         path: String,
     ) -> Result<objects::Object, types::Error> {
-        let service = self.objects_for(&id)?;
+        let service = self.objects_to_write_for(&id)?;
         let path = WorkspacePath::new(&path).map_err(wit_error)?;
         service
             .move_to(&id, &expected_revision, &path)
@@ -553,7 +574,7 @@ impl objects::Host for HostState {
     }
 
     fn delete(&mut self, id: String, expected_revision: String) -> Result<(), types::Error> {
-        self.objects_for(&id)?
+        self.objects_to_write_for(&id)?
             .delete(&id, &expected_revision)
             .map_err(wit_error)
     }

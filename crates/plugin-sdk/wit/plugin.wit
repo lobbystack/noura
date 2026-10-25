@@ -375,6 +375,10 @@ interface ai {
     // The ID of the assistant message the answer goes to, once Noura wrote
     // it.
     message: option<string>,
+    // Whether Noura wrote your message to the chat. A run you denied or
+    // stopped while it waited, or one that failed before the write, leaves
+    // your message unwritten, so the plugin can give it back to you.
+    message-written: bool,
     tool-calls: list<tool-call>,
     failure: option<failure>,
   }
@@ -389,6 +393,10 @@ interface ai {
   read-chat: func(id: string) -> result<tuple<chat, list<message>>, error>;
 
   // Start a chat, titled `New chat` until its first message names it.
+  // Noura writes the chat's files once its first message goes out, so a
+  // chat whose first message you don't let go out leaves no file. Until
+  // then `read-chat` shows it with no messages, and `chats` doesn't list
+  // it.
   create-chat: func() -> result<chat, error>;
 
   // Send `request`. Noura writes your message and an in-progress answer to
@@ -409,7 +417,9 @@ interface ai {
   // to call next.
   answer-tools: func(run: string, results: list<tool-result>, tools: list<tool-definition>) -> result<run, error>;
 
-  // The run with this ID, as it stands now.
+  // The run with this ID, as it stands now. `read-run`, `stop` and
+  // `answer-tools` reach only the plugin's own runs: another plugin's run
+  // is `not-found`.
   read-run: func(id: string) -> result<run, error>;
 
   // Stop a run. The provider request ends, and the answer so far stays as
@@ -900,7 +910,10 @@ interface tools {
 // Needs the `object-types` capability. A call about any other type, a
 // note for one, returns `capability-not-declared("object-types")` and
 // reaches no file. Writes carry the content revision the plugin read,
-// and return once the file is durably on disk.
+// and return once the file is durably on disk. Chats and their messages,
+// which the AI plugin registers, change only through the `ai` interface:
+// `create`, `update`, `move-to` and `delete` return `failed` for them and
+// reach no file, while `get` and `list` read them.
 interface objects {
   use types.{error, property-error};
 

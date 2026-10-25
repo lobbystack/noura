@@ -66,11 +66,11 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
         )
     });
     if let Some(run) = &run {
-        // A message you didn't let go out comes back to the message box.
-        if run.status != RunStatus::WaitingForConsent
-            && let Some(message) = state.unsent.remove(&run.id)
-            && run.status == RunStatus::Denied
-        {
+        // A message Noura didn't write to the chat, as when you said no or
+        // the write failed, comes back to the message box.
+        if run.message_written {
+            state.unsent.remove(&run.id);
+        } else if !busy && let Some(message) = state.unsent.remove(&run.id) {
             state.draft = message;
             state.sent += 1;
         }
@@ -209,7 +209,10 @@ pub(crate) fn sidebar(state: &State) -> Vec<Node> {
             for chat in &chats {
                 view.item(list, &chat.id, &chat.title, None);
             }
-            if let Some(chat) = &state.chat {
+            // A new chat isn't listed until its first message goes out.
+            if let Some(chat) = &state.chat
+                && chats.iter().any(|known| &known.id == chat)
+            {
                 view.select(list, chat);
             }
         }
@@ -301,7 +304,7 @@ fn send(state: &mut State, message: String) {
     };
     match ai::send(&request) {
         Ok(run) => {
-            if run.status == RunStatus::WaitingForConsent {
+            if !run.message_written {
                 state.unsent.insert(run.id.clone(), message);
             }
             state.runs.insert(chat, run.id);

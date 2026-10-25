@@ -389,6 +389,9 @@ impl AiFoundation {
         let Some(removed) = values.iter().find(|value| value.id == provider_id).cloned() else {
             return Ok(());
         };
+        // The consents go first: a provider added again under the same ID
+        // asks again, even when the settings write below fails.
+        self.consents.revoke_provider(provider_id)?;
         let next: Vec<AiProviderConfig> = values
             .iter()
             .filter(|value| value.id != provider_id)
@@ -693,6 +696,50 @@ mod tests {
         ai.remove_provider("test").unwrap();
         assert!(credentials.secrets().is_empty());
         assert!(ai.list_providers().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_removed_provider_takes_its_consents_along_so_adding_it_again_asks_again() {
+        let root = tempdir().unwrap();
+        let open = || {
+            AiFoundation::open_with(
+                root.path().join("providers.json"),
+                root.path().join("consents.json"),
+                Arc::new(crate::MemoryCredentials::new()),
+            )
+            .unwrap()
+        };
+        let ai = open();
+        ai.save_provider(enabled_provider()).unwrap();
+        let read = || AiConsentReadInput {
+            provider_id: "test".into(),
+            policy_version: "2026-09".into(),
+        };
+        const A: &str = "workspace_01jbcdefghjkmnpqrstvwxyz0a";
+        const B: &str = "workspace_01jbcdefghjkmnpqrstvwxyz0b";
+        for workspace in [A, B] {
+            ai.grant_consent(
+                workspace,
+                AiConsentGrantInput {
+                    provider_id: "test".into(),
+                    policy_version: "2026-09".into(),
+                    data_category: AiConsentDataCategory::WorkspaceContent,
+                },
+            )
+            .unwrap();
+            assert!(ai.read_consent(workspace, read()).unwrap().is_some());
+        }
+
+        ai.remove_provider("test").unwrap();
+        ai.save_provider(enabled_provider()).unwrap();
+
+        for workspace in [A, B] {
+            assert_eq!(ai.read_consent(workspace, read()).unwrap(), None);
+        }
+        let consents = std::fs::read_to_string(root.path().join("consents.json")).unwrap();
+        assert!(!consents.contains(A), "{consents}");
+        drop(ai);
+        assert_eq!(open().read_consent(A, read()).unwrap(), None);
     }
 
     #[test]

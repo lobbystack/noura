@@ -34,6 +34,13 @@ pub const PLUGIN_TYPES: [(&str, &str); 4] = [
     ("chat-message", "ai"),
 ];
 
+/// Types whose files only a host service writes. The plugin that holds
+/// one reads its objects through the objects interface, but a create,
+/// update, move or delete there is refused: chats and their messages
+/// change through the `ai` interface, which checks the chat rules that
+/// tie a message to its chat, its folder and its kind.
+pub const SERVICE_WRITTEN_TYPES: [&str; 2] = ["chat", "chat-message"];
+
 /// The most types one plugin may register.
 const MAX_TYPES: usize = 64;
 

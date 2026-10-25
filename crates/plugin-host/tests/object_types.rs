@@ -116,6 +116,20 @@ fn a_plugin_registers_its_types_and_the_kernels_note_is_refused() {
                     object_type: "note".into()
                 })
             ),
+            (
+                "chat".to_owned(),
+                Err(TypeError::HeldFor {
+                    object_type: "chat".into(),
+                    plugin: "ai".into()
+                })
+            ),
+            (
+                "chat-message".to_owned(),
+                Err(TypeError::HeldFor {
+                    object_type: "chat-message".into(),
+                    plugin: "ai".into()
+                })
+            ),
         ]
     );
     assert_eq!(types.owner("recipe").as_deref(), Some("recipes"));
@@ -309,6 +323,67 @@ fn a_plugin_writes_only_objects_of_its_own_types() {
         assert_eq!(call(&other, &attempt), [refused], "{attempt}");
     }
     assert!(objects.calls().is_empty(), "{:?}", objects.calls());
+}
+
+/// The plugin that holds `chat` and `chat-message`, as the AI plugin
+/// does, reads chats through the objects interface but can't write one
+/// there: chat files change only through the `ai` interface, which checks
+/// the chat rules. So an assistant message with no provider or model, or
+/// a message outside its chat's folder, never reaches the service.
+#[test]
+fn the_plugin_holding_the_chat_types_reads_chats_but_writes_none_through_objects() {
+    const MESSAGE_ID: &str = "chat-message_01jbcdefghjkmnpqrstvwxyz0b";
+    let types = ObjectTypes::new();
+    let objects = Arc::new(FakeObjects::default());
+    objects.objects.lock().unwrap().push(ObjectRecord {
+        id: MESSAGE_ID.into(),
+        object_type: "chat-message".into(),
+        title: MESSAGE_ID.into(),
+        path: WorkspacePath::new(&format!(
+            "chats/garden--wxyz0a/messages/2026-10-20/{MESSAGE_ID}.md"
+        ))
+        .unwrap(),
+        body: "Plant garlic.\n".into(),
+        properties: r#"{"kind":"assistant","provider_id":"local","model_id":"llama3"}"#.into(),
+        revision: "rev-1".into(),
+        created: Some("2026-10-20T10:00:00Z".into()),
+        updated: Some("2026-10-20T10:00:00Z".into()),
+        problem: None,
+    });
+    let Some((plugin, _folders)) = recipes("ai", &TYPES_AND_VIEWS, &types, &objects) else {
+        return;
+    };
+    plugin.register_object_types().unwrap();
+    assert_eq!(types.owner("chat").as_deref(), Some("ai"));
+    assert_eq!(types.owner("chat-message").as_deref(), Some("ai"));
+
+    let refused =
+        "error\tfailed\tNoura writes chats and their messages only through the ai interface.";
+    let assistant = r#"{"chat_id":"chat_01jbcdefghjkmnpqrstvwxyz0a","run_id":"run_1","kind":"assistant","status":"completed","content_type":"text/markdown","provider_id":null,"model_id":null}"#;
+    for attempt in [
+        format!("create|chat-message||Elsewhere/answer.md|{assistant}|Hi"),
+        "create|chat|Garden|-|{}|".to_owned(),
+        format!(r#"update|{MESSAGE_ID}|rev-1|{{"provider_id":null,"status":"failed"}}"#),
+        format!("body|{MESSAGE_ID}|rev-1|Changed."),
+        format!("remove|{MESSAGE_ID}|rev-1|model_id"),
+        format!("move|{MESSAGE_ID}|rev-1|Elsewhere/answer.md"),
+        format!("delete|{MESSAGE_ID}|rev-1"),
+    ] {
+        assert_eq!(call(&plugin, &attempt), [refused], "{attempt}");
+    }
+    assert!(objects.calls().is_empty(), "{:?}", objects.calls());
+
+    // Reading them still works.
+    let read = call(&plugin, &format!("get|{MESSAGE_ID}"));
+    assert!(
+        read[0].starts_with(&format!("object\t{MESSAGE_ID}\trev-1\t")),
+        "{read:?}"
+    );
+    assert_eq!(call(&plugin, "list|chat-message").len(), 1);
+    assert_eq!(
+        objects.calls(),
+        [format!("get {MESSAGE_ID}"), "list chat-message".to_owned()]
+    );
 }
 
 #[test]

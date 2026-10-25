@@ -52,6 +52,7 @@ impl FakeAi {
             status: AiRunStatus::Failed,
             text: "Part of an answer".to_owned(),
             message: Some("chat-message_01jbcdefghjkmnpqrstvwxyz0b".to_owned()),
+            message_written: true,
             tool_calls: vec![AiToolCall {
                 id: "call_1".to_owned(),
                 name: "echo".to_owned(),
@@ -312,8 +313,9 @@ fn the_ai_plugin_declares_the_chat_types_its_page_and_the_ai_capability() {
 }
 
 /// Every chat and chat-message conformance fixture that the chat rules
-/// accept fits the AI plugin's schemas. The chat rules, which every chat
-/// read and write goes through, refuse the others.
+/// accept fits the AI plugin's schemas. The chat rules refuse the others:
+/// the AI service checks them on each chat it writes, and no plugin writes
+/// a chat through the objects interface.
 #[test]
 fn every_valid_chat_conformance_fixture_fits_the_ai_plugins_schemas() {
     let types = ObjectTypes::new();

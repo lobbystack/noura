@@ -273,7 +273,7 @@ fn an_edit_made_elsewhere_shows_on_the_page_and_wins() {
 }
 
 #[test]
-fn a_deleted_or_stale_index_rebuilds_the_same_chats() {
+fn a_deleted_index_rebuilds_the_same_chats() {
     let fixture = fixture_with(&garden());
     let system = FakeSystem::new();
     let Some((mut app, provider, id, plugin)) = open(&fixture, &system) else {
@@ -320,6 +320,259 @@ fn a_deleted_or_stale_index_rebuilds_the_same_chats() {
         );
     }
     drop(plugin);
+}
+
+#[test]
+fn a_stale_index_left_in_place_catches_up_with_chats_changed_while_noura_was_closed() {
+    let mut files = garden();
+    files.push((
+        format!("chats/garden--wxyz0a/messages/2026-10-20/chat-message_{D}.md"),
+        message(D, A, "user", 3, "Soon gone"),
+    ));
+    let fixture = fixture_with(&files);
+    let system = FakeSystem::new();
+    let Some((mut app, _provider, id, plugin)) = open(&fixture, &system) else {
+        return;
+    };
+    ai::wait_until(&mut app, "the chat is listed", |app| {
+        ai::chat_titles(app) == ["Garden plans"]
+    });
+    ai::open_chat(&mut app, &format!("chat_{A}"));
+    assert!(ai::lines(&app).contains(&"md: Soon gone".to_owned()));
+    let index = index_files(&fixture, &app);
+    assert!(!index.is_empty());
+    drop(app);
+
+    // While Noura is closed, another app renames the chat, adds a message,
+    // removes one and starts a second chat. The index stays as it was.
+    let path = "chats/garden--wxyz0a/chat.md";
+    let renamed = String::from_utf8(fixture.read(path))
+        .unwrap()
+        .replace("title: Garden plans", "title: Kitchen garden");
+    support::write(&fixture.root, path, renamed.as_bytes());
+    support::write(
+        &fixture.root,
+        &format!("chats/garden--wxyz0a/messages/2026-10-21/chat-message_{E}.md"),
+        &message(E, A, "user", 9, "Added elsewhere"),
+    );
+    std::fs::remove_file(fixture.root.join(format!(
+        "chats/garden--wxyz0a/messages/2026-10-20/chat-message_{D}.md"
+    )))
+    .unwrap();
+    const F: &str = "01jbcdefghjkmnpqrstvwxyz0f";
+    support::write(
+        &fixture.root,
+        "chats/soup--wxyz0f/chat.md",
+        &chat(F, "Soup"),
+    );
+    assert!(index.iter().any(|file| file.exists()), "the index stays");
+
+    let mut app = fixture.app_with(system.clone());
+    let provider = FakeProvider::new();
+    app.set_ai_client(provider.clone());
+    ai::wait_until(&mut app, "both chats are listed", |app| {
+        let mut titles = ai::chat_titles(app);
+        titles.sort();
+        titles == ["Kitchen garden", "Soup"]
+    });
+    ai::open_chat(&mut app, &format!("chat_{A}"));
+    let lines = ai::lines(&app);
+    assert!(lines.contains(&"Kitchen garden".to_owned()), "{lines:?}");
+    assert!(
+        lines.contains(&"md: Added elsewhere".to_owned()),
+        "{lines:?}"
+    );
+    assert!(!lines.contains(&"md: Soon gone".to_owned()), "{lines:?}");
+
+    // The chat takes the next message after the one added elsewhere.
+    chat_once(&mut app, &provider, &id, "And when?", "In October.");
+    let request = &provider.requests()[0];
+    assert!(
+        request
+            .messages
+            .contains(&"user: Added elsewhere".to_owned()),
+        "{:?}",
+        request.messages
+    );
+    assert!(
+        !request
+            .messages
+            .iter()
+            .any(|line| line.contains("Soon gone"))
+    );
+    drop(app);
+    drop(plugin);
+}
+
+/// The answer's message changed in another app while the answer streamed
+/// in: that app's change stays, and the answer lands in a new message
+/// beside it.
+#[test]
+fn an_answer_whose_message_changed_elsewhere_lands_in_a_new_message() {
+    let fixture = fixture_with(&garden());
+    let system = FakeSystem::new();
+    let Some((mut app, provider, id, _plugin)) = open(&fixture, &system) else {
+        return;
+    };
+    ai::wait_until(&mut app, "the chat is listed", |app| {
+        ai::chat_titles(app) == ["Garden plans"]
+    });
+    ai::open_chat(&mut app, &format!("chat_{A}"));
+    ai::send(&mut app, "And when?", &id);
+    ai::wait_until(&mut app, "the request leaves", |_| {
+        provider.requests().len() == 1
+    });
+    provider.say(0, "In ");
+
+    // Another app finishes the in-progress answer with words of its own.
+    let (path, text) = ai::chat_files(&fixture.root)
+        .into_iter()
+        .find(|(_, text)| text.contains("status: in-progress"))
+        .expect("the answer is in progress on disk");
+    let edited = format!(
+        "{}Written elsewhere.\n",
+        text.replace("status: in-progress", "status: completed")
+    );
+    support::write(&fixture.root, &path, edited.as_bytes());
+    ai::wait_until(&mut app, "the edit shows", |app| {
+        ai::lines(app).contains(&"md: Written elsewhere.".to_owned())
+    });
+
+    provider.say(0, "October.");
+    provider.finish(0);
+    ai::wait_until(&mut app, "the answer shows", |app| {
+        ai::lines(app).contains(&"md: In October.".to_owned()) && ai::buttons(app).is_empty()
+    });
+    assert_eq!(fixture.read(&path), edited.as_bytes(), "the edit stays");
+    let earlier: Vec<String> = garden().into_iter().map(|(known, _)| known).collect();
+    let answers: Vec<String> = ai::chat_files(&fixture.root)
+        .into_iter()
+        .filter(|(known, text)| {
+            known != &path && !earlier.contains(known) && text.contains("kind: assistant")
+        })
+        .map(|(_, text)| text)
+        .collect();
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    assert!(answers[0].contains("status: completed"), "{}", answers[0]);
+    assert!(answers[0].contains("provider_id: local"), "{}", answers[0]);
+    assert!(answers[0].ends_with("\nIn October.\n"), "{}", answers[0]);
+    let lines = ai::lines(&app);
+    assert!(
+        lines.contains(&"md: Written elsewhere.".to_owned()),
+        "{lines:?}"
+    );
+}
+
+/// The plugin that holds `chat` and `chat-message`, here the recipes test
+/// plugin under the AI plugin's ID, can read chats through the objects
+/// interface but write none there, so no chat file skips the chat rules.
+#[test]
+fn the_plugin_holding_the_chat_types_writes_no_chat_through_objects() {
+    let fixture = fixture_with(&garden());
+    let mut app = fixture.app();
+    let Some(folder) = plugins::PluginFolder::recipes("ai") else {
+        return;
+    };
+    plugins::install_and_enable(&mut app, folder.path(), "ai");
+    let page = "plugin:ai:recipes";
+    let call = |app: &mut App, call: &str| {
+        app.press_plugin_button(page, call);
+        support::settle(app);
+        plugins::texts(app, page).expect("the page draws")
+    };
+    let message_path = format!("chats/garden--wxyz0a/messages/2026-10-20/chat-message_{C}.md");
+    let revision = support::recipes::revision(&fixture.read(&message_path));
+    let chat_revision = support::recipes::revision(&fixture.read("chats/garden--wxyz0a/chat.md"));
+    let before = fixture.snapshot();
+
+    let refused =
+        ["error\tfailed\tNoura writes chats and their messages only through the ai interface."];
+    let assistant = format!(
+        r#"{{"chat_id":"chat_{A}","run_id":"run_2","kind":"assistant","status":"completed","content_type":"text/markdown"}}"#
+    );
+    for attempt in [
+        // An assistant message without a provider or model, outside the
+        // chat's folder.
+        format!("create|chat-message||Elsewhere/answer.md|{assistant}|Hi"),
+        format!(
+            "create|chat-message||chats/garden--wxyz0a/messages/2026-10-24/x.md|{assistant}|Hi"
+        ),
+        "create|chat|Soup|-|{}|".to_owned(),
+        // A failed message without its error code.
+        format!(r#"update|chat-message_{C}|{revision}|{{"status":"failed"}}"#),
+        format!("remove|chat-message_{C}|{revision}|model_id"),
+        format!("body|chat-message_{C}|{revision}|Changed."),
+        format!("move|chat-message_{C}|{revision}|Elsewhere/answer.md"),
+        format!("delete|chat-message_{C}|{revision}"),
+        format!("update|chat_{A}|{chat_revision}|{{\"title\":\"Other\"}}"),
+        format!("delete|chat_{A}|{chat_revision}"),
+    ] {
+        assert_eq!(call(&mut app, &attempt), refused, "{attempt}");
+    }
+    assert_eq!(fixture.snapshot(), before, "no file changed");
+
+    // Reads still work.
+    let read = call(&mut app, &format!("get|chat-message_{C}"));
+    let answer = support::recipes::parse(&read[0]).unwrap_or_else(|| panic!("{read:?}"));
+    assert_eq!(answer.path, message_path);
+    assert_eq!(answer.revision, revision);
+    assert_eq!(answer.properties["provider_id"], "local");
+    assert_eq!(call(&mut app, "list|chat-message").len(), 2);
+}
+
+/// A plugin that holds `ai` and learns another plugin's run ID, which the
+/// chat's files hold, can't read, stop or answer that run.
+#[test]
+fn another_plugin_can_neither_read_nor_stop_a_run_it_didnt_send() {
+    let fixture = fixture_with(&garden());
+    let system = FakeSystem::new();
+    let Some((mut app, provider, id, _plugin)) = open(&fixture, &system) else {
+        return;
+    };
+    let Some(probe) = plugins::folder_for(
+        "probe_plugin",
+        "chatter",
+        &["name = \"views\"", "name = \"ai\""],
+    ) else {
+        return;
+    };
+    plugins::install_and_enable(&mut app, probe.path(), "chatter");
+    ai::wait_until(&mut app, "the chat is listed", |app| {
+        ai::chat_titles(app) == ["Garden plans"]
+    });
+    ai::open_chat(&mut app, &format!("chat_{A}"));
+    ai::send(&mut app, "And when?", &id);
+    ai::wait_until(&mut app, "the request leaves", |_| {
+        provider.requests().len() == 1
+    });
+    // The garden chat's earlier messages hold `run_1`.
+    let run = ai::chat_files(&fixture.root)
+        .into_iter()
+        .find_map(|(_, text)| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("run_id: "))
+                .filter(|run| *run != "run_1")
+                .map(str::to_owned)
+        })
+        .expect("the run's ID is in the chat's files");
+
+    for call in [
+        format!("ai:read-run:{run}"),
+        format!("ai:stop:{run}"),
+        format!("ai:answer-tools:{run}:{{}}"),
+    ] {
+        assert_eq!(
+            press(&mut app, &call),
+            [format!("hello ai error not-found {run}")],
+            "{call}"
+        );
+    }
+    assert!(!provider.cancelled(0), "the answer still streams");
+    provider.say(0, "In October.");
+    provider.finish(0);
+    ai::wait_until(&mut app, "the answer shows", |app| {
+        ai::lines(app).contains(&"md: In October.".to_owned()) && ai::buttons(app).is_empty()
+    });
 }
 
 /// Stop the index from changing its file list, as a full disk or a broken

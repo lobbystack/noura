@@ -36,8 +36,10 @@ struct State {
     /// What the message box holds when it next draws: a message that
     /// didn't go out.
     draft: String,
-    /// The message of each run that waits for your consent, by run ID,
-    /// which comes back to the message box when you say no.
+    /// The message of each run Noura hasn't written to the chat yet, by
+    /// run ID. It comes back to the message box when the run ends without
+    /// writing it: you said no, stopped it while Noura asked, or the write
+    /// failed.
     unsent: BTreeMap<String, String>,
     /// Why the last thing you did failed.
     notice: Option<String>,

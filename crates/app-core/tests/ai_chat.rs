@@ -113,10 +113,10 @@ fn a_message_and_its_answer_reach_the_chat_files_in_order() {
         .into_iter()
         .find(|(path, _)| path.ends_with("/chat.md"))
         .unwrap();
-    // The folder keeps the name it got as a new chat, as renaming a chat
-    // does today.
+    // A new chat's files wait for its first message, so its folder takes
+    // the title too.
     assert!(
-        chat_file.0.starts_with("chats/new-chat--"),
+        chat_file.0.starts_with("chats/plan-the-garden--"),
         "{}",
         chat_file.0
     );
@@ -426,4 +426,55 @@ fn a_failed_answer_shows_a_public_reason_and_records_its_code() {
     }
     assert!(ai::RAW_FAILURE.contains("sk-raw-key"));
     let _ = chat.requests();
+}
+
+/// The message box's text, as the page draws it.
+fn draft(app: &App) -> Option<String> {
+    let view = ai::page(app);
+    let composer = ai::find(view.root(), "composer")?;
+    composer
+        .children
+        .iter()
+        .find_map(|child| match &child.kind {
+            app_core::ViewKind::Input {
+                value: app_core::InputValue::Multiline(text),
+                ..
+            } => Some(text.clone()),
+            _ => None,
+        })
+}
+
+/// When Noura can't write your message to the chat, nothing goes to the
+/// provider and the message comes back to the box.
+#[cfg(unix)]
+#[test]
+fn a_message_noura_couldnt_write_comes_back_to_the_message_box() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(mut chat) = Chatting::new() else {
+        return;
+    };
+    let id = chat.id.clone();
+    // The chats folder takes no new file, as on a full or read-only disk.
+    let chats = chat.fixture.root.join("chats");
+    std::fs::create_dir_all(&chats).unwrap();
+    std::fs::set_permissions(&chats, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    ai::send(&mut chat.app, "Plan the garden", &id);
+    chat.wait("the failure shows", |app| {
+        ai::lines(app)
+            .iter()
+            .any(|line| line.starts_with("The answer failed: "))
+    });
+    std::fs::set_permissions(&chats, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(chat.requests(), 0, "nothing went to the provider");
+    assert!(ai::chat_files(&chat.fixture.root).is_empty());
+    assert_eq!(draft(&chat.app).as_deref(), Some("Plan the garden"));
+
+    // Once the folder takes files again, the message goes out.
+    ai::send(&mut chat.app, "Plan the garden", &id);
+    let provider = chat.provider.clone();
+    chat.wait("the request leaves", |_| provider.requests().len() == 1);
+    assert_eq!(messages(&chat.fixture).len(), 2);
 }

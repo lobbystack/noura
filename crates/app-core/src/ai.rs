@@ -26,7 +26,7 @@
 mod history;
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::Path,
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
@@ -155,6 +155,9 @@ struct Run {
     waiting: Option<(String, Vec<AiToolDefinition>)>,
     /// The stream's operation ID while it streams.
     operation: Option<String>,
+    /// Stop was pressed while the run streamed but before its stream
+    /// started, so the stream stops as soon as it does.
+    stop_requested: bool,
 }
 
 impl Run {
@@ -166,6 +169,7 @@ impl Run {
             status: self.status,
             text: self.text.clone(),
             message: self.message.clone(),
+            message_written: !self.written.is_empty(),
             tool_calls: self.tool_calls.clone(),
             failure: self.failure.clone(),
         }
@@ -186,6 +190,9 @@ struct State {
     /// The runs waiting for your consent, oldest first. The prompt asks
     /// about the first one's provider.
     waiting: VecDeque<String>,
+    /// The chats `create-chat` started whose files aren't written yet:
+    /// their first message hasn't gone out.
+    new_chats: HashSet<String>,
 }
 
 pub(crate) struct Ai {
@@ -321,6 +328,7 @@ impl Ai {
             .collect();
         state.runs.clear();
         state.waiting.clear();
+        state.new_chats.clear();
         state.workspace = workspace;
         drop(state);
         if let Ok(store) = self.store() {
@@ -401,10 +409,34 @@ impl Ai {
         Ok(id)
     }
 
-    /// Remove a provider and its key. Its running requests stop.
+    /// Remove a provider, its key and its consents. Its running requests
+    /// stop, and the runs that waited for consent to it fail, so the
+    /// prompt moves on to the next provider.
     pub(crate) fn remove_provider(&self, id: &str) -> Result<(), AppError> {
         self.store()?.remove_provider(id).map_err(settings_error)?;
+        let plugins: Vec<String> = {
+            let mut state = lock(&self.state);
+            let gone: Vec<String> = state
+                .waiting
+                .iter()
+                .filter(|run| state.runs.get(*run).is_some_and(|run| run.provider == id))
+                .cloned()
+                .collect();
+            state.waiting.retain(|run| !gone.contains(run));
+            gone.iter()
+                .filter_map(|run| {
+                    let run = state.runs.get_mut(run)?;
+                    run.status = AiRunStatus::Failed;
+                    run.failure = Some(failure_of(&provider_missing()));
+                    run.waiting = None;
+                    Some(run.plugin.clone())
+                })
+                .collect()
+        };
         self.changed();
+        for plugin in plugins {
+            self.redraw(&plugin);
+        }
         Ok(())
     }
 
@@ -467,15 +499,20 @@ impl Ai {
     /// The question waiting for your answer, if one is.
     pub(crate) fn prompt(&self) -> Option<AiConsentPrompt> {
         let state = lock(&self.state);
-        let run = state.runs.get(state.waiting.front()?)?;
         let workspace = state.workspace.as_ref()?;
-        let provider = self
-            .store()
-            .ok()?
-            .list_providers()
-            .ok()?
-            .into_iter()
-            .find(|provider| provider.id == run.provider)?;
+        let providers = self.store().ok()?.list_providers().ok()?;
+        // A run whose provider went waits for nothing: the prompt asks
+        // about the next one.
+        let provider = state
+            .waiting
+            .iter()
+            .filter_map(|run| state.runs.get(run))
+            .find_map(|run| {
+                providers
+                    .iter()
+                    .find(|provider| provider.id == run.provider)
+            })?
+            .clone();
         Some(AiConsentPrompt {
             provider_id: provider.id,
             provider_name: provider.display_name,
@@ -565,9 +602,11 @@ impl Ai {
             return Err(ServiceError::Failed("The message is empty.".to_owned()));
         }
         check_tools(&request.tools)?;
-        engine
-            .read_chat(&request.chat)
-            .map_err(|error| chat_error(error, &request.chat))?;
+        if !lock(&self.state).new_chats.contains(&request.chat) {
+            engine
+                .read_chat(&request.chat)
+                .map_err(|error| chat_error(error, &request.chat))?;
+        }
         let id = format!("run_{}", uuid_v4());
         let run = {
             let mut state = lock(&self.state);
@@ -595,6 +634,7 @@ impl Ai {
                 failure: None,
                 waiting: Some((request.message, request.tools)),
                 operation: None,
+                stop_requested: false,
             };
             let public = run.public();
             state.runs.insert(id.clone(), run);
@@ -628,17 +668,34 @@ impl Ai {
         };
         let written = (|| {
             let engine = self.engine().map_err(|_| no_workspace_core())?;
-            let read = engine.read_chat(&chat)?;
-            let names = read.chat.title == NEW_CHAT_TITLE
-                && !read
-                    .messages
-                    .iter()
-                    .any(|message| message.kind == ChatMessageKind::User);
+            // A chat `create-chat` started gets its file now, named after
+            // its first message.
+            let new = lock(&self.state).new_chats.contains(&chat);
+            let (revision, names) = if new {
+                let created = engine.create_chat_with_id(
+                    &chat,
+                    CreateChatInput {
+                        title: chat_title(&message),
+                        retention: None,
+                        retention_days: None,
+                    },
+                )?;
+                lock(&self.state).new_chats.remove(&chat);
+                (created.revision, false)
+            } else {
+                let read = engine.read_chat(&chat)?;
+                let names = read.chat.title == NEW_CHAT_TITLE
+                    && !read
+                        .messages
+                        .iter()
+                        .any(|message| message.kind == ChatMessageKind::User);
+                (read.chat.revision, names)
+            };
             let appended = engine.append_chat_user_message(AppendChatUserMessageInput {
                 chat_id: chat.clone(),
                 run_id: id.to_owned(),
                 content: message.clone(),
-                expected_chat_revision: read.chat.revision,
+                expected_chat_revision: revision,
             })?;
             if let Some(run) = lock(&self.state).runs.get_mut(id) {
                 run.written.push(appended.value.clone());
@@ -731,6 +788,8 @@ impl Ai {
                         chat: chat.clone(),
                         message,
                         begun: begun.revision.clone(),
+                        provider: provider.id.clone(),
+                        model: provider.model.clone(),
                         text: String::new(),
                         calls: Vec::new(),
                     },
@@ -739,22 +798,26 @@ impl Ai {
                 )),
                 Err(error) => {
                     let code = error_code(&error);
-                    finish_answer(
-                        engine,
-                        &chat,
-                        (&message, &begun.revision),
-                        "",
-                        ChatMessageStatus::Failed,
-                        Some(&code),
-                    )?;
+                    let answer = Answer {
+                        chat: chat.clone(),
+                        message,
+                        begun: begun.revision.clone(),
+                        provider: provider.id.clone(),
+                        model: provider.model.clone(),
+                        text: String::new(),
+                        calls: Vec::new(),
+                    };
+                    finish_answer(engine, id, &answer, ChatMessageStatus::Failed, Some(&code))?;
                     Err(error)
                 }
             }
         })();
         match asked {
             Ok((answer, operation, stream)) => {
-                if let Some(run) = lock(&self.state).runs.get_mut(id) {
-                    run.operation = Some(operation);
+                if self.streaming(id, &operation)
+                    && let Ok(store) = self.store()
+                {
+                    let _ = store.cancel_stream(&operation);
                 }
                 let ai = self.clone();
                 let run = id.to_owned();
@@ -770,6 +833,17 @@ impl Ai {
             Err(error) => self.fail(id, &error),
         }
         self.redraw_run(id);
+    }
+
+    /// Record that the run `id` streams as `operation`. Returns whether
+    /// you pressed Stop before the stream started, so it stops now.
+    fn streaming(&self, id: &str, operation: &str) -> bool {
+        let mut state = lock(&self.state);
+        let Some(run) = state.runs.get_mut(id) else {
+            return false;
+        };
+        run.operation = Some(operation.to_owned());
+        std::mem::take(&mut run.stop_requested)
     }
 
     /// Take the run's stream until it ends, then write the answer and its
@@ -823,49 +897,42 @@ impl Ai {
         answer: Answer,
         ended: Ended,
     ) {
-        let Answer {
-            chat,
-            message,
-            begun,
-            text,
-            calls,
-        } = answer;
         let (status, error) = match &ended {
             Ended::Completed => (ChatMessageStatus::Completed, None),
             Ended::Cancelled => (ChatMessageStatus::Cancelled, None),
             Ended::Failed(error) => (ChatMessageStatus::Failed, Some(error_code(error))),
         };
-        let written = finish_answer(
-            engine,
-            &chat,
-            (&message, &begun),
-            &text,
-            status,
-            error.as_deref(),
-        )
-        .and_then(|()| {
-            if !matches!(ended, Ended::Completed) {
-                return Ok(HashMap::new());
-            }
-            let mut messages = HashMap::new();
-            for call in &calls {
-                let read = engine.read_chat(&chat)?;
-                let begun = engine.begin_chat_tool_call(BeginChatToolCallInput {
-                    chat_id: chat.clone(),
-                    run_id: id.to_owned(),
-                    tool_call_id: call.id.clone(),
-                    tool_name: call.name.clone(),
-                    content: call.arguments.clone(),
-                    expected_chat_revision: read.chat.revision,
-                })?;
-                messages.insert(call.id.clone(), begun.value.id);
-            }
-            Ok(messages)
-        });
+        let chat = answer.chat.clone();
+        let calls = answer.calls.clone();
+        let mut holder = None;
+        let written =
+            finish_answer(engine, id, &answer, status, error.as_deref()).and_then(|message| {
+                holder = Some(message);
+                if !matches!(ended, Ended::Completed) {
+                    return Ok(HashMap::new());
+                }
+                let mut messages = HashMap::new();
+                for call in &calls {
+                    let read = engine.read_chat(&chat)?;
+                    let begun = engine.begin_chat_tool_call(BeginChatToolCallInput {
+                        chat_id: chat.clone(),
+                        run_id: id.to_owned(),
+                        tool_call_id: call.id.clone(),
+                        tool_name: call.name.clone(),
+                        content: call.arguments.clone(),
+                        expected_chat_revision: read.chat.revision,
+                    })?;
+                    messages.insert(call.id.clone(), begun.value.id);
+                }
+                Ok(messages)
+            });
         {
             let mut state = lock(&self.state);
             if let Some(run) = state.runs.get_mut(id) {
                 run.operation = None;
+                if holder.is_some() {
+                    run.message = holder;
+                }
                 match (&ended, written) {
                     (_, Err(error)) => {
                         run.status = AiRunStatus::Failed;
@@ -940,6 +1007,7 @@ impl Ai {
                 calls.push((call.clone(), result.content.clone(), message));
             }
             run.status = AiRunStatus::Streaming;
+            run.stop_requested = false;
             (run.chat.clone(), run.provider.clone(), calls)
         };
         let written = (|| {
@@ -1002,6 +1070,10 @@ impl Ai {
                 state.waiting.retain(|waiting| waiting != id);
                 (None, Some(plugin))
             } else {
+                if run.status == AiRunStatus::Streaming && run.operation.is_none() {
+                    // The stream hasn't started yet: it stops as it does.
+                    run.stop_requested = true;
+                }
                 (run.operation.clone(), None)
             }
         };
@@ -1056,6 +1128,9 @@ impl Ai {
 
     fn read_chat(&self, id: &str) -> Result<(AiChat, Vec<AiMessage>), ServiceError> {
         let engine = self.engine()?;
+        if lock(&self.state).new_chats.contains(id) {
+            return Ok((new_chat(id), Vec::new()));
+        }
         let ChatRead { chat, messages } = engine
             .read_chat(id)
             .map_err(|error| chat_error(error, id))?;
@@ -1069,20 +1144,22 @@ impl Ai {
         ))
     }
 
+    /// A new chat, whose files wait for its first message to go out, so
+    /// a chat whose message you don't let go out leaves nothing behind.
     fn create_chat(&self) -> Result<AiChat, ServiceError> {
-        let engine = self.engine()?;
-        let created = engine
-            .create_chat(CreateChatInput {
-                title: NEW_CHAT_TITLE.to_owned(),
-                retention: None,
-                retention_days: None,
-            })
-            .map_err(service_error)?;
-        Ok(AiChat {
-            id: created.value.id,
-            title: created.value.title,
-            updated: created.value.updated,
-        })
+        self.engine()?;
+        let id = local_core::new_object_id("chat");
+        lock(&self.state).new_chats.insert(id.clone());
+        Ok(new_chat(&id))
+    }
+}
+
+/// The chat `id` that `create-chat` started, before its first file.
+fn new_chat(id: &str) -> AiChat {
+    AiChat {
+        id: id.to_owned(),
+        title: NEW_CHAT_TITLE.to_owned(),
+        updated: local_core::now_rfc3339(),
     }
 }
 
@@ -1092,6 +1169,9 @@ struct Answer {
     message: String,
     /// The message's revision as Noura began it.
     begun: String,
+    /// The provider and model that write it.
+    provider: String,
+    model: String,
     text: String,
     calls: Vec<AiToolCall>,
 }
@@ -1136,15 +1216,30 @@ impl AiChats for Access {
         results: Vec<AiToolResult>,
         tools: Vec<AiToolDefinition>,
     ) -> Result<AiRun, ServiceError> {
+        self.own(run)?;
         self.ai.answer_tools(run, results, tools)
     }
 
     fn read_run(&self, id: &str) -> Result<AiRun, ServiceError> {
+        self.own(id)?;
         self.ai.read_run(id)
     }
 
     fn stop(&self, id: &str) -> Result<(), ServiceError> {
+        self.own(id)?;
         self.ai.stop(id)
+    }
+}
+
+impl Access {
+    /// Refuse the run `id` unless this plugin sent it: another plugin's
+    /// run is not found, though its ID is in the chat's files.
+    fn own(&self, id: &str) -> Result<(), ServiceError> {
+        let state = lock(&self.ai.state);
+        match state.runs.get(id) {
+            Some(run) if run.plugin == self.plugin => Ok(()),
+            _ => Err(ServiceError::NotFound(id.to_owned())),
+        }
     }
 }
 
@@ -1165,43 +1260,83 @@ fn consented(store: &AiFoundation, workspace: &str, provider: &str) -> bool {
         .is_some()
 }
 
-/// Finish the assistant message `message` with `content` and `status`,
-/// unless something else finished it. A change to the chat made elsewhere
-/// meanwhile stays: the write reads the files again and tries once more.
+/// Finish the assistant message `answer` began with its text, `status`
+/// and `error_code`, and return the ID of the message that holds the
+/// answer. A change to the chat made elsewhere meanwhile stays: the write
+/// reads the chat again and tries once more. A change to the message
+/// itself, as when another app edited or finished it, stays too, and the
+/// answer goes to a new message after it.
 fn finish_answer(
     engine: &WorkspaceEngine,
-    chat: &str,
-    (message, begun): (&str, &str),
-    content: &str,
+    run: &str,
+    answer: &Answer,
     status: ChatMessageStatus,
     error_code: Option<&str>,
-) -> Result<(), CoreError> {
+) -> Result<String, CoreError> {
     let mut attempts = 0;
     loop {
         attempts += 1;
-        let read = engine.read_chat(chat)?;
+        let read = engine.read_chat(&answer.chat)?;
         // The index may not list the message yet, as after it failed to
-        // record it: the file then still holds what Noura wrote.
-        let revision = match read.messages.iter().find(|known| known.id == message) {
-            Some(current) if current.status != ChatMessageStatus::InProgress => return Ok(()),
-            Some(current) => current.revision.clone(),
-            None => begun.to_owned(),
-        };
+        // record it: the file then still holds what Noura wrote, or the
+        // write finds that it doesn't.
+        let changed = read
+            .messages
+            .iter()
+            .any(|known| known.id == answer.message && known.revision != answer.begun);
+        if changed {
+            return answer_again(engine, run, answer, &read.chat.revision, status, error_code);
+        }
         let finished = engine.finish_chat_assistant(FinishChatAssistantInput {
-            chat_id: chat.to_owned(),
-            message_id: message.to_owned(),
-            content: content.to_owned(),
+            chat_id: answer.chat.clone(),
+            message_id: answer.message.clone(),
+            content: answer.text.clone(),
             status: status.clone(),
             error_code: error_code.map(str::to_owned),
             expected_chat_revision: read.chat.revision.clone(),
-            expected_message_revision: revision,
+            expected_message_revision: answer.begun.clone(),
         });
         match finished {
-            Ok(_) => return Ok(()),
-            Err(error) if error.code == "revision_conflict" && attempts < 2 => {}
+            Ok(_) => return Ok(answer.message.clone()),
+            // The chat changed, or the message did after the read.
+            Err(error)
+                if matches!(
+                    error.code.as_str(),
+                    "revision_conflict" | "chat_message_not_in_progress"
+                ) && attempts < 3 => {}
             Err(error) => return Err(error),
         }
     }
+}
+
+/// Write `answer` as a new assistant message of its chat, since the one
+/// Noura began changed elsewhere. Returns the new message's ID.
+fn answer_again(
+    engine: &WorkspaceEngine,
+    run: &str,
+    answer: &Answer,
+    chat_revision: &str,
+    status: ChatMessageStatus,
+    error_code: Option<&str>,
+) -> Result<String, CoreError> {
+    tracing::warn!("an answer's message changed elsewhere, so the answer went to a new message");
+    let begun = engine.begin_chat_assistant(BeginChatAssistantInput {
+        chat_id: answer.chat.clone(),
+        run_id: run.to_owned(),
+        provider_id: answer.provider.clone(),
+        model_id: answer.model.clone(),
+        expected_chat_revision: chat_revision.to_owned(),
+    })?;
+    engine.finish_chat_assistant(FinishChatAssistantInput {
+        chat_id: answer.chat.clone(),
+        message_id: begun.value.id.clone(),
+        content: answer.text.clone(),
+        status,
+        error_code: error_code.map(str::to_owned),
+        expected_chat_revision: begun.chat_revision.clone().unwrap_or_default(),
+        expected_message_revision: begun.revision.clone(),
+    })?;
+    Ok(begun.value.id)
 }
 
 /// A chat's title from the first line of its first message.
@@ -1329,6 +1464,9 @@ fn failure_of(error: &CoreError) -> AiFailure {
             local_core::ErrorCategory::Provider | local_core::ErrorCategory::Transient => {
                 "The provider couldn't answer. Try again."
             }
+            local_core::ErrorCategory::Filesystem | local_core::ErrorCategory::Permission => {
+                "Noura couldn't write to this chat's files."
+            }
             _ => "Noura couldn't finish this answer.",
         },
     };
@@ -1444,6 +1582,75 @@ mod tests {
         assert_eq!(chat_title("\n\n"), NEW_CHAT_TITLE);
         assert_eq!(chat_title(&"a".repeat(100)).chars().count(), TITLE_CHARS);
         assert_eq!(chat_title("Tabs\tgo"), "Tabsgo");
+    }
+
+    /// A run of `plugin` with `status`, in a service with no workspace.
+    fn service_with(id: &str, plugin: &str, status: AiRunStatus) -> (Arc<Ai>, tempfile::TempDir) {
+        let app_data = tempfile::tempdir().unwrap();
+        let ai = Ai::new(
+            app_data.path(),
+            Arc::new(local_core::MemoryCredentials::new()),
+        );
+        lock(&ai.state).runs.insert(
+            id.to_owned(),
+            Run {
+                id: id.to_owned(),
+                plugin: plugin.to_owned(),
+                chat: "chat_01jbcdefghjkmnpqrstvwxyz0a".to_owned(),
+                provider: "local".to_owned(),
+                status,
+                text: String::new(),
+                message: None,
+                message_revision: String::new(),
+                written: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_messages: HashMap::new(),
+                failure: None,
+                waiting: None,
+                operation: None,
+                stop_requested: false,
+            },
+        );
+        (ai, app_data)
+    }
+
+    /// Stop pressed after a run shows as streaming but before its stream
+    /// started, as when you allow a provider and press Stop at once, stops
+    /// the stream as soon as it starts.
+    #[test]
+    fn stop_before_the_stream_starts_stops_it_once_it_does() {
+        let (ai, _app_data) = service_with("run_1", "ai", AiRunStatus::Streaming);
+
+        ai.access("ai").stop("run_1").unwrap();
+
+        assert!(ai.streaming("run_1", "operation_1"), "the stream stops");
+        assert_eq!(
+            lock(&ai.state).runs["run_1"].operation.as_deref(),
+            Some("operation_1")
+        );
+        // A stop that came once stops one stream.
+        assert!(!ai.streaming("run_1", "operation_2"));
+    }
+
+    #[test]
+    fn a_plugin_reaches_only_its_own_runs() {
+        let (ai, _app_data) = service_with("run_1", "ai", AiRunStatus::Streaming);
+        let other = ai.access("other");
+
+        assert_eq!(
+            other.read_run("run_1"),
+            Err(ServiceError::NotFound("run_1".to_owned()))
+        );
+        assert_eq!(
+            other.stop("run_1"),
+            Err(ServiceError::NotFound("run_1".to_owned()))
+        );
+        assert_eq!(
+            other.answer_tools("run_1", Vec::new(), Vec::new()),
+            Err(ServiceError::NotFound("run_1".to_owned()))
+        );
+        assert!(!lock(&ai.state).runs["run_1"].stop_requested);
+        assert_eq!(ai.access("ai").read_run("run_1").unwrap().id, "run_1");
     }
 
     #[test]
