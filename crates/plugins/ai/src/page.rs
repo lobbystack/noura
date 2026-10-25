@@ -138,15 +138,24 @@ fn hand_over_tool_calls(state: &mut State) {
 }
 
 /// Whether Noura stopped before your last message got its answer, as
-/// after a crash or a quit: the chat's last message is interrupted, with
-/// no code that says a plugin went.
+/// after a crash or a quit: a message after it is interrupted, with no
+/// code that says a plugin went, and no answer completed since.
 fn stopped_before_answering(messages: &[Message]) -> bool {
-    messages
+    let Some(last) = messages
         .iter()
-        .any(|message| message.kind == MessageKind::User)
-        && messages.last().is_some_and(|message| {
-            message.status == MessageStatus::Interrupted && message.error_code.is_none()
-        })
+        .rposition(|message| message.kind == MessageKind::User)
+    else {
+        return false;
+    };
+    let after = &messages[last + 1..];
+    let Some(cut) = after.iter().rposition(|message| {
+        message.status == MessageStatus::Interrupted && message.error_code.is_none()
+    }) else {
+        return false;
+    };
+    !after[cut + 1..].iter().any(|message| {
+        message.kind == MessageKind::Assistant && message.status == MessageStatus::Completed
+    })
 }
 
 /// The chat's title, and how long Noura keeps it when that isn't until
