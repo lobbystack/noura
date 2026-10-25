@@ -61,6 +61,7 @@ fn the_manifest_declares_the_project_type_with_todays_statuses_and_names_tasks_a
             Capability::Commands {
                 targets: vec!["tasks".to_owned()]
             },
+            Capability::Tools,
         ]
     );
     let Some(component) = plugins::built("projects_plugin") else {

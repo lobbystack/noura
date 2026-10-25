@@ -15,8 +15,11 @@
 //! extend. The plugins service installs plugins from folders and the ones
 //! that ship with Noura, keeps this device's approvals, turns plugins on
 //! and off per workspace and runs them through `plugin-host`, each on a
-//! thread of its own.
+//! thread of its own. [`AgentWorkspace`] gives an AI tool outside Noura,
+//! through MCP, the same search, file rules and plugin tools, beside the
+//! app on the same app data.
 
+mod agent;
 mod ai;
 mod app;
 mod calendar_grid;
@@ -26,10 +29,12 @@ mod error;
 mod files;
 mod ignored;
 mod inbox;
+mod items;
 mod keys;
 mod layout;
 mod links;
 mod login;
+mod mcp_setup;
 mod menus;
 mod notes;
 mod objects;
@@ -58,6 +63,7 @@ mod watch;
 mod workspace;
 mod writes;
 
+pub use agent::AgentWorkspace;
 pub use ai::{AI_POLICY_VERSION, AiConsentPrompt, AiProviderInput, AiProviderRow, NEW_CHAT_TITLE};
 pub use app::{
     App, Change, CommandPalette, DragOut, IgnoredFiles, NameDraft, Notice, NoticeKind, Origin,
@@ -77,6 +83,7 @@ pub use inbox::{
     Attention, FileLink, Inbox, InboxSection, InboxSectionProvider, LinkAction, RECENT_NOTES,
     RecentNote,
 };
+pub use items::{Item, NoteChanges};
 pub use keys::{Key, KeyPress, Shortcut};
 pub use layout::{FILES_SECTION, Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
 pub use links::{
@@ -101,6 +108,7 @@ pub mod ai_client {
     };
 }
 pub use login::{LoginItem, NoLoginItem, OpenAtLogin};
+pub use mcp_setup::{MCP_TEST_WAIT, McpProbe, McpSetup, McpTest};
 pub use menus::{Menu, MenuItem, MenuName, SystemItem};
 pub use notes::{
     ConflictChoice, NoteConflict, NoteSession, NoteSync, Property, PropertyValue,

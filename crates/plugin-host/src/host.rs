@@ -123,18 +123,33 @@ impl PluginHost {
         backend: Backend,
         limits: Limits,
     ) -> Result<Self, InstallError> {
+        let host = Self::start_host(library.into(), backend, limits)?;
+        host.remove_leftover_work();
+        Ok(host)
+    }
+
+    /// A host on Cranelift for a library another process installs into,
+    /// as the MCP server runs beside the app. It leaves the work folders
+    /// of installs in progress alone, and only loads what is installed.
+    pub fn shared(library: impl Into<PathBuf>) -> Result<Self, InstallError> {
+        Self::start_host(library.into(), Backend::Cranelift, Limits::default())
+    }
+
+    fn start_host(
+        library: PathBuf,
+        backend: Backend,
+        limits: Limits,
+    ) -> Result<Self, InstallError> {
         let engine = runtime::engine(backend)
             .map_err(|error| InstallError::storage("start the plugin host", &error))?;
         let epochs = EpochTicker::start(engine.clone())
             .map_err(|error| InstallError::storage("start the plugin host", &error))?;
-        let host = Self {
+        Ok(Self {
             engine,
             limits,
             epochs: Arc::new(epochs),
-            library: library.into(),
-        };
-        host.remove_leftover_work();
-        Ok(host)
+            library,
+        })
     }
 
     /// Read the plugin folder `folder` and compile its component, without
@@ -367,7 +382,11 @@ impl PluginHost {
             Some(component) => (component, CodeSource::Cache),
             None => {
                 let component = self.compile(&component_bytes, &manifest.entry)?;
-                self.cache(&folder, &component, &component_bytes)?;
+                // The code runs from memory, so a cache that can't be
+                // written only means the next load compiles again.
+                if let Err(error) = self.cache(&folder, &component, &component_bytes) {
+                    tracing::warn!(error = %error.message, "compiled plugin code wasn't cached");
+                }
                 (component, CodeSource::Compiled)
             }
         };
@@ -462,6 +481,9 @@ impl PluginHost {
 
     /// Write `component`'s compiled code into the plugin folder `folder`,
     /// and remove code compiled from other builds or for other engines.
+    /// The app and the MCP server share the library, so the code goes to
+    /// a file of its own first and takes its name only once it is whole:
+    /// the other process never reads half of it.
     fn cache(
         &self,
         folder: &Path,
@@ -472,8 +494,14 @@ impl PluginHost {
         let code = component
             .serialize()
             .map_err(|error| InstallError::storage("cache the compiled plugin", &error))?;
-        write_durably(&folder.join(&name), &code)
-            .map_err(|error| InstallError::storage("cache the compiled plugin", &error))?;
+        let staged = folder.join(self.work_name());
+        write_durably(&staged, &code)
+            .and_then(|()| std::fs::rename(&staged, folder.join(&name)))
+            .map_err(|error| {
+                let _ = std::fs::remove_file(&staged);
+                InstallError::storage("cache the compiled plugin", &error)
+            })?;
+        sync_folder(folder);
         if let Ok(entries) = std::fs::read_dir(folder) {
             for entry in entries.filter_map(Result::ok) {
                 let path = entry.path();
@@ -536,24 +564,38 @@ impl PluginHost {
     }
 
     fn work_path(&self) -> PathBuf {
-        let n = WORK_COUNTER.fetch_add(1, Ordering::Relaxed);
-        self.library
-            .join(format!("{WORK_PREFIX}{}-{n}", std::process::id()))
+        self.library.join(self.work_name())
     }
 
-    /// Remove work folders an interrupted install or update left.
+    /// A name no other write in this library uses.
+    fn work_name(&self) -> String {
+        let n = WORK_COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("{WORK_PREFIX}{}-{n}", std::process::id())
+    }
+
+    /// Remove the work folders an interrupted install or update left, and
+    /// the compiled code an interrupted cache write left in a plugin's
+    /// folder.
     fn remove_leftover_work(&self) {
         let Ok(entries) = std::fs::read_dir(&self.library) else {
             return;
         };
         for entry in entries.filter_map(Result::ok) {
-            if entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| name.starts_with(WORK_PREFIX))
-                && let Err(error) = std::fs::remove_dir_all(entry.path())
-            {
-                tracing::warn!(%error, "an interrupted plugin install wasn't cleaned up");
+            if is_work(&entry.path()) {
+                if let Err(error) = std::fs::remove_dir_all(entry.path()) {
+                    tracing::warn!(%error, "an interrupted plugin install wasn't cleaned up");
+                }
+                continue;
+            }
+            let Ok(files) = std::fs::read_dir(entry.path()) else {
+                continue;
+            };
+            for file in files.filter_map(Result::ok) {
+                if is_work(&file.path())
+                    && let Err(error) = std::fs::remove_file(file.path())
+                {
+                    tracing::warn!(%error, "an interrupted cache write wasn't cleaned up");
+                }
             }
         }
     }
@@ -617,6 +659,13 @@ fn digest(manifest: &[u8], component: &[u8]) -> String {
     hasher.update(manifest);
     hasher.update(component);
     hasher.finalize().to_hex().to_string()
+}
+
+/// Whether `path` names a work folder or a cache write in progress.
+fn is_work(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(WORK_PREFIX))
 }
 
 fn write_durably(path: &Path, bytes: &[u8]) -> std::io::Result<()> {

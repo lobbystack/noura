@@ -134,6 +134,7 @@ fn the_manifest_declares_the_task_type_with_todays_v1_fields() {
             Capability::Commands {
                 targets: Vec::new()
             },
+            Capability::Tools,
         ]
     );
     let Some(workspace) = Workspace::new("[\"hello\"]") else {
