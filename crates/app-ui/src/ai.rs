@@ -422,6 +422,9 @@ pub(crate) struct ToolPromptView {
     asking: Option<(String, String)>,
 }
 
+/// The tallest the tool prompt draws a call's input before it scrolls.
+const TOOL_INPUT_HEIGHT: f32 = 240.0;
+
 /// The prompt that asks whether a tool call the model wants may run. It
 /// names the tool, its plugin and its input, starts on Deny, and Escape
 /// or a click outside it counts as Deny. It waits while the consent
@@ -456,8 +459,14 @@ pub(crate) fn tool_prompt(ui: &mut Ui, app: &mut App, view: &mut ToolPromptView)
             }
             ui.add_space(8.0);
             ui.label("Input");
-            ui.add(egui::Label::new(RichText::new(&prompt.input).monospace()).wrap())
-                .accessible_name("Input");
+            // A long input scrolls, so Deny and Allow once stay in view.
+            egui::ScrollArea::vertical()
+                .id_salt("ai-tool-input")
+                .max_height(TOOL_INPUT_HEIGHT)
+                .show(ui, |ui| {
+                    ui.add(egui::Label::new(RichText::new(&prompt.input).monospace()).wrap())
+                        .accessible_name("Input");
+                });
             ui.add_space(8.0);
             muted(
                 ui,

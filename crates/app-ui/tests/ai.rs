@@ -358,15 +358,108 @@ fn the_provider_form_labels_each_field_and_hides_the_key() {
             .iter()
             .any(|label| label.contains("sk-ui-test-key"))
     );
+    assert_eq!(context_window(harness, "Cloud"), None);
+}
+
+const CONTEXT_WINDOW: &str = "Context window in tokens (optional)";
+
+/// Open the form for a new provider and fill in `fields`.
+fn add_provider(harness: &mut Ui, fields: &[(&str, &str)]) {
+    harness
+        .get_by_role_and_label(Role::Button, "Add provider")
+        .click();
+    run(harness);
+    for (field, text) in fields {
+        harness
+            .get_by_role_and_label(Role::Form, "Add provider")
+            .get_by_role_and_label(Role::TextInput, field)
+            .focus();
+        run(harness);
+        harness
+            .get_by_role_and_label(Role::Form, "Add provider")
+            .get_by_role_and_label(Role::TextInput, field)
+            .type_text(text);
+        run(harness);
+    }
+    harness
+        .get_by_role_and_label(Role::Form, "Add provider")
+        .get_by_role_and_label(Role::Button, "Save provider")
+        .click_accesskit();
+    run(harness);
+}
+
+/// The context window of the provider `name`, as Noura saved it.
+fn context_window(harness: &Ui, name: &str) -> Option<u32> {
+    harness
+        .state()
+        .app()
+        .ai_providers()
+        .into_iter()
+        .find(|row| row.name == name)
+        .expect("the provider is saved")
+        .context_window
+}
+
+#[test]
+fn the_provider_form_takes_a_context_window_with_or_without_commas() {
+    let Some(mut opened) = opened(false) else {
+        return;
+    };
+    let harness = &mut opened.harness;
+    harness
+        .state_mut()
+        .app_mut()
+        .open_settings_at("ai-providers");
+    run(harness);
+
+    // Text or zero saves nothing, and the form says what it takes.
+    for window in ["lots", "0"] {
+        add_provider(
+            harness,
+            &[
+                ("Name", "Cloud"),
+                ("Model", "gpt-test"),
+                (CONTEXT_WINDOW, window),
+            ],
+        );
+        let form = harness.get_by_role_and_label(Role::Form, "Add provider");
+        assert!(
+            texts(form.query_all(By::new().role(Role::Label))).contains(
+                &"Give the context window as a whole number of tokens, such as 8192.".to_owned()
+            ),
+            "{window}"
+        );
+        assert!(
+            harness
+                .query_by_role_and_label(Role::Group, "Cloud")
+                .is_none()
+        );
+        harness
+            .get_by_role_and_label(Role::Form, "Add provider")
+            .get_by_role_and_label(Role::Button, "Cancel")
+            .click_accesskit();
+        run(harness);
+    }
+
+    add_provider(
+        harness,
+        &[
+            ("Name", "Cloud"),
+            ("Model", "gpt-test"),
+            (CONTEXT_WINDOW, "16,384"),
+        ],
+    );
+    harness.get_by_role_and_label(Role::Group, "Cloud");
+    assert_eq!(context_window(harness, "Cloud"), Some(16_384));
 }
 
 const TASKS_MANIFEST: &str = include_str!("../../plugins/tasks/plugin.toml");
 
-/// A provider whose first answer asks to create the task Water the
-/// tomatoes, and whose later answers say Done.
-#[derive(Default)]
+/// A provider whose first answer asks to create a task with `arguments`,
+/// and whose later answers say Done.
 struct CallsTool {
     requests: AtomicUsize,
+    arguments: serde_json::Value,
 }
 
 impl AiStreamer for CallsTool {
@@ -375,6 +468,7 @@ impl AiStreamer for CallsTool {
         _request: ResolvedAiStreamRequest,
     ) -> Pin<Box<dyn Future<Output = Result<AiProviderEventStream>> + Send + '_>> {
         let first = self.requests.fetch_add(1, Ordering::SeqCst) == 0;
+        let arguments = self.arguments.clone();
         Box::pin(async move {
             let events = if first {
                 vec![Ok(AiProviderStreamEvent::Completed {
@@ -383,7 +477,7 @@ impl AiStreamer for CallsTool {
                     tool_calls: vec![AiToolCall {
                         call_id: "call_1".into(),
                         name: "tasks__create".into(),
-                        arguments: serde_json::json!({ "title": "Water the tomatoes" }),
+                        arguments,
                     }],
                 })]
             } else {
@@ -411,8 +505,14 @@ struct Tooled {
 
 /// A workspace with the Tasks and AI plugins on and the provider Local
 /// allowed, opened on the AI page, with the message sent that makes the
-/// model ask for a tool call.
+/// model ask to create the task Water the tomatoes.
 fn asking_for_a_tool() -> Option<Tooled> {
+    asking_with(serde_json::json!({ "title": "Water the tomatoes" }))
+}
+
+/// As [`asking_for_a_tool`], with the model asking to create a task with
+/// `arguments`.
+fn asking_with(arguments: serde_json::Value) -> Option<Tooled> {
     let component = plugins::built("ai_plugin")?;
     let tasks = plugins::built("tasks_plugin")?;
     let app_data = tempfile::tempdir().unwrap();
@@ -428,7 +528,10 @@ fn asking_for_a_tool() -> Option<Tooled> {
     set_up_provider(app_data.path(), true);
     let system = FakeSystem::new(Platform::current());
     let mut harness = harness_with(app_data.path(), FakePicker::default(), system);
-    let provider = Arc::new(CallsTool::default());
+    let provider = Arc::new(CallsTool {
+        requests: AtomicUsize::new(0),
+        arguments,
+    });
     harness
         .state_mut()
         .app_mut()
@@ -518,4 +621,29 @@ fn tab_and_enter_allow_the_call_once() {
             .join("tasks/Water the tomatoes.md")
             .exists()
     );
+}
+
+#[test]
+fn a_long_input_scrolls_and_keeps_deny_and_allow_once_in_view() {
+    let body = "Water the tomatoes at dawn, before the sun reaches the bed. ".repeat(120);
+    let Some(mut tooled) = asking_with(serde_json::json!({
+        "title": "Water the tomatoes",
+        "body": body,
+    })) else {
+        return;
+    };
+    let harness = &mut tooled.harness;
+    let dialog = harness.get_by_role_and_label(Role::AlertDialog, TOOL_PROMPT);
+    assert!(
+        texts(dialog.query_all(By::new().role(Role::Label)))
+            .iter()
+            .any(|label| label.contains(&body)),
+        "the whole input stays readable"
+    );
+    // The window is 700 points tall.
+    for button in ["Deny", "Allow once"] {
+        let rect = dialog.get_by_role_and_label(Role::Button, button).rect();
+        assert!(rect.max.y <= 700.0, "{button} at {rect:?}");
+    }
+    assert_eq!(focused(harness).as_deref(), Some("Deny"));
 }
