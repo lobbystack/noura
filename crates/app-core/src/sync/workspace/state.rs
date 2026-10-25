@@ -67,6 +67,10 @@ pub struct State {
     /// Versions an earlier journal's review store kept (§15).
     #[serde(default)]
     pub archived: Vec<super::rebuild::Archived>,
+    /// Objects the device refuses to write, such as one at a
+    /// `.noura-domain` path that no domain names as its marker (§9).
+    #[serde(default)]
+    pub refused: Vec<Id>,
 }
 
 /// The profile a device accepted last (§25).

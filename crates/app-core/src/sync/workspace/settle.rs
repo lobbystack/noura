@@ -71,6 +71,11 @@ pub(crate) fn actual_path(root: &std::path::Path, path: &str) -> String {
     parts.join("/")
 }
 
+/// Whether `path`'s last component is a domain marker's name (§9).
+pub(crate) fn is_marker_path(path: &str) -> bool {
+    path.rsplit('/').next() == Some(super::rebuild::MARKER)
+}
+
 /// Whether two paths collide (§16): equal once folded, or one a folder
 /// prefix of the other.
 pub(crate) fn collide(a: &str, b: &str) -> bool {
@@ -106,6 +111,17 @@ pub(crate) fn free_name(path: &str, taken: &dyn Fn(&str) -> bool) -> String {
 }
 
 impl WorkspaceSync {
+    /// Whether a domain of the verified policy names `rid` as its marker.
+    fn is_marker(&self, rid: &Id) -> bool {
+        self.remote.as_ref().is_some_and(|r| {
+            r.policy
+                .head_snapshot()
+                .domains
+                .values()
+                .any(|d| d.marker_rid == Some(*rid))
+        })
+    }
+
     /// Brings `rid`'s file in line with its live set. `contents` holds the
     /// bytes of the files the page carried, by revision.
     pub(super) fn settle(
@@ -189,6 +205,15 @@ impl WorkspaceSync {
         let Some(content) = object.states.get(&target).and_then(|s| s.content.clone()) else {
             return Ok(());
         };
+        // An object at a `.noura-domain` path that no domain names as its
+        // marker would hold files after a sync without the journal: the
+        // device writes none and lists it for review (§9).
+        if !content.delete && is_marker_path(&content.path) && !self.is_marker(&rid) {
+            if !self.state.refused.contains(&rid) {
+                self.state.refused.push(rid);
+            }
+            return self.keep_for_review(&rid, &target, contents);
+        }
         if edited {
             return self.keep_for_review(&rid, &target, contents);
         }

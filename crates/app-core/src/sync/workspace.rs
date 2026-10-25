@@ -117,6 +117,8 @@ pub struct Status {
     pub held_roots: usize,
     /// Versions an earlier journal's review store kept.
     pub archived: usize,
+    /// Objects the device refuses to write.
+    pub refused: usize,
 }
 
 /// The sync state of one folder.
@@ -285,6 +287,7 @@ impl WorkspaceSync {
             last_success: None,
             held_roots: Vec::new(),
             archived: Vec::new(),
+            refused: Vec::new(),
         };
         // A device accepts no policy head or epoch below its mark, also
         // when it starts again without a journal (§15).
@@ -447,6 +450,15 @@ impl WorkspaceSync {
         self.credentials.keys.device()
     }
 
+    /// The object whose file sits at `path` on this device.
+    pub fn rid_at(&self, path: &str) -> Option<Id> {
+        self.state
+            .objects
+            .iter()
+            .find(|(_, o)| o.local.as_ref().is_some_and(|l| l.path == path))
+            .map(|(rid, _)| *rid)
+    }
+
     /// Where `rid`'s file sits on this device, or the path its live state
     /// names when it has none here.
     pub fn local_path(&self, rid: &Id) -> Option<String> {
@@ -488,7 +500,74 @@ impl WorkspaceSync {
             held: self.state.held.len(),
             held_roots: self.state.held_roots.len(),
             archived: self.state.archived.len(),
+            refused: self.state.refused.len(),
         }
+    }
+
+    /// The records that passed every check but didn't open, each as the
+    /// object, its signer and its counter (§13).
+    pub fn unreadable(&self) -> Vec<(Id, Id, u64)> {
+        self.state
+            .unreadable
+            .iter()
+            .map(|u| (u.rid, u.device, u.counter))
+            .collect()
+    }
+
+    /// The objects the device refuses to write, such as one at a
+    /// `.noura-domain` path that no domain names as its marker (§9).
+    pub fn refused_objects(&self) -> &[Id] {
+        &self.state.refused
+    }
+
+    /// Signs a file operation at `path` into the outbox as the client would,
+    /// whatever the scanner reports, for tests that need a record the
+    /// client never writes on its own.
+    #[cfg(feature = "test-hooks")]
+    pub fn sign_file_at(&mut self, path: &str, bytes: &[u8]) -> Result<Id, SyncError> {
+        let rid = random(Id::random())?;
+        self.state.objects.insert(rid, Object::default());
+        let found = Found {
+            file: local_core::SyncedFile {
+                relative_path: path.to_owned(),
+                size: bytes.len() as u64,
+                modified_ns: 0,
+                file_id: None,
+            },
+            revision: hash(bytes),
+            object_id: String::new(),
+            bytes: Some(bytes.to_vec()),
+        };
+        self.sign_file(rid, &found, Vec::new())?;
+        self.state.objects.get_mut(&rid).expect("signed").local = None;
+        self.save()?;
+        Ok(rid)
+    }
+
+    /// Signs into the outbox an operation whose ciphertext opens under no
+    /// key, as a device whose key the server can't see misuses it, for
+    /// tests of unreadable records (§13).
+    #[cfg(feature = "test-hooks")]
+    pub fn sign_unreadable(&mut self, rid: Id) -> Result<(), SyncError> {
+        let covers = self.edit_covers(&rid);
+        let payload = Payload {
+            rid,
+            kind: PayloadKind::Delete {
+                object_id: Text(String::new()),
+                revision: Digest::ZERO,
+                reason: DeleteReason::Deleted,
+                target: None,
+            },
+        };
+        let carried = Carried {
+            path: String::new(),
+            revision: Digest::ZERO,
+            delete: true,
+            object_id: String::new(),
+            kept: None,
+        };
+        self.sign(rid, false, covers, &payload, carried)?;
+        self.save()
     }
 
     /// Why the device stopped writing the domain, if it did.
