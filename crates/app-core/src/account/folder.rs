@@ -296,6 +296,17 @@ impl Folder {
                     sync.round(service, 0).await?;
                 }
             }
+            FolderSyncAction::Rename(name) => {
+                if let (Some(sync), Some(service)) = (self.sync.as_mut(), service) {
+                    match sync.rename(service, &name).await {
+                        Ok(()) => {}
+                        // Only an owner or admin renames a shared workspace;
+                        // the folder keeps its own name.
+                        Err(SyncError::Invalid(_)) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
             FolderSyncAction::Choose { rid, key } => {
                 if let Some(sync) = self.sync.as_mut() {
                     sync.choose(rid, key)?;

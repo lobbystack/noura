@@ -42,8 +42,8 @@ pub struct State {
     pub envelope: Option<Signed<Envelope>>,
     /// The workspace's name, from its profile.
     pub name: String,
-    /// The latest profile's revision and digest the device accepted (§25).
-    pub profile: Option<(u64, Digest)>,
+    /// The latest profile the device accepted (§25).
+    pub profile: Option<ProfileMark>,
     /// The domain's log as the device followed it.
     pub log: Log,
     /// This device's chain in the domain.
@@ -67,6 +67,19 @@ pub struct State {
     /// Versions an earlier journal's review store kept (§15).
     #[serde(default)]
     pub archived: Vec<super::rebuild::Archived>,
+}
+
+/// The profile a device accepted last (§25).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileMark {
+    /// Its `profile_revision`.
+    pub revision: u64,
+    /// Its digest.
+    pub digest: Digest,
+    /// Its `policy_revision`, which a later profile never goes below.
+    pub policy_revision: u64,
+    /// The device that signed it.
+    pub signer: Id,
 }
 
 /// The domain's log as the device followed it.

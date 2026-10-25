@@ -194,6 +194,9 @@ pub enum FolderSyncAction {
     DiscardArchived(usize),
     /// Connect a copied folder, which then syncs as after a lost journal.
     Connect,
+    /// You renamed the workspace: a synced one takes the name in its
+    /// profile, when your role lets you (§25).
+    Rename(String),
 }
 
 /// Carries out what you do in the Workspace sync section and reports where

@@ -81,6 +81,7 @@ macro_rules! conformance_tests {
             replacements_skip_only_their_rotators_epochs,
             rewraps_reach_readers_and_close,
             rewraps_follow_the_fixture_schedule,
+            profile_pushes_follow_section_25,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
@@ -3349,4 +3350,97 @@ pub fn manager(account: Id) -> sync_protocol::records::AccessList {
         level: Level::Manage,
     }])
     .expect("one entry")
+}
+
+/// A pushed profile (§25): an owner or admin device signs it at a policy
+/// revision the server holds, under the workspace domain's current epoch,
+/// one above the latest profile, with a padded ciphertext, and the
+/// workspace list serves the latest.
+pub async fn profile_pushes_follow_section_25<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 1).await;
+    let epoch_record = {
+        let response = world
+            .store
+            .epochs(world.devices[0].session, world.workspace, world.domain, 1)
+            .await
+            .expect("epochs");
+        response.epochs.0[0].0.digest()
+    };
+    let profile = |revision: u64, edit: &dyn Fn(&mut Profile)| {
+        let mut body = Profile {
+            workspace: world.workspace,
+            profile_revision: revision,
+            epoch: 1,
+            policy_revision: world.head.0,
+            policy_head: world.head.1,
+            signer: world.devices[0].id(),
+            nonce: Nonce::ZERO,
+            ciphertext: Bytes(Vec::new()),
+        };
+        body.seal_payload(
+            &ProfilePayload {
+                name: Text("Renamed".into()),
+            },
+            &world.epoch_key,
+            &epoch_record,
+            random_nonce().expect("random"),
+        );
+        edit(&mut body);
+        Signed::sign(body, world.devices[0].keys.signing())
+    };
+    let push = |record: Signed<Profile>| {
+        let body = PushRequest {
+            records: List(vec![RecordRef::Profile(record)]),
+        }
+        .to_bytes();
+        world
+            .store
+            .push(world.devices[0].session, world.workspace, body)
+    };
+    let renamed = profile(2, &|_| {});
+    let response = push(renamed.clone()).await.expect("the profile commits");
+    assert!(
+        response.receipts.0.is_empty(),
+        "a profile makes no log entry"
+    );
+    let listed = world
+        .store
+        .workspaces(world.devices[0].session)
+        .await
+        .expect("listed");
+    let latest = listed.workspaces.0[0].profile.clone().expect("a profile").0;
+    assert_eq!(latest, renamed);
+
+    for (revision, edit, code) in [
+        (
+            2u64,
+            (&|_: &mut Profile| {}) as &dyn Fn(&mut Profile),
+            "profile_conflict",
+        ),
+        (4, &|_: &mut Profile| {}, "profile_conflict"),
+        (3, &|p: &mut Profile| p.policy_revision = 9, "policy_stale"),
+        (
+            3,
+            &|p: &mut Profile| p.policy_head = Digest([3; 32]),
+            "policy_conflict",
+        ),
+        (3, &|p: &mut Profile| p.epoch = 2, "epoch_stale"),
+        (
+            3,
+            &|p: &mut Profile| p.ciphertext = Bytes(vec![0; 300]),
+            "padding_invalid",
+        ),
+    ] {
+        assert_eq!(
+            push_failure(push(profile(revision, edit)).await),
+            (code, 0),
+            "{code}"
+        );
+    }
+    let mut forged = profile(3, &|_| {});
+    forged.sig.0[0] ^= 1;
+    assert_eq!(push_failure(push(forged).await), ("signature_invalid", 0));
+    push(profile(3, &|_| {}))
+        .await
+        .expect("the next revision commits");
 }

@@ -44,7 +44,9 @@ use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 
 use capture::{Change, Found};
 pub use capture::{SkipWhy, Skipped};
-use state::{Content as Carried, Log, Object, OpKey, Outgoing, Own, State, StateInfo, Wanted};
+use state::{
+    Content as Carried, Log, Object, OpKey, Outgoing, Own, ProfileMark, State, StateInfo, Wanted,
+};
 
 use super::journal::{self, Journal, STATE_FILE};
 use super::marks::Mark;
@@ -196,8 +198,9 @@ impl WorkspaceSync {
             engine.root(),
         )?;
         let generation = service.client().restore_generation();
+        let (_, profile) = profile_of(service, &remote).await?;
         Self::start(
-            service, engine, remote, server, replica, generation, name, None,
+            service, engine, remote, server, replica, generation, name, profile,
         )
     }
 
@@ -237,7 +240,7 @@ impl WorkspaceSync {
         replica: Id,
         generation: u64,
         name: &str,
-        profile: Option<(u64, Digest)>,
+        profile: Option<ProfileMark>,
     ) -> Result<Self, SyncError> {
         let credentials = service.credentials().clone();
         let secrets = service.secrets.clone();
@@ -257,7 +260,7 @@ impl WorkspaceSync {
             epochs: remote.epochs_oldest_first().into_iter().cloned().collect(),
             envelope: remote.envelope.clone(),
             name: name.to_owned(),
-            profile: profile.or(Some((1, Digest::ZERO))),
+            profile,
             log: Log {
                 cursor: 0,
                 head: 0,
@@ -625,7 +628,141 @@ impl WorkspaceSync {
         let remote = service.open_workspace(self.state.workspace).await?;
         self.adopt(remote)?;
         self.compare_own_chain(service).await?;
+        self.follow_profile(service).await?;
         self.save()
+    }
+
+    /// Takes the workspace's latest profile, checked against the verified
+    /// policy and the last one the device accepted (§25). When a change
+    /// took the device that signed it out of the workspace, an owner or
+    /// admin device signs the profile again at its accepted head; the
+    /// server keeps the first.
+    async fn follow_profile(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
+        let Some(remote) = self.remote.as_ref() else {
+            return Ok(());
+        };
+        let list = service.client().workspaces().await?;
+        let Some(profile) = list
+            .workspaces
+            .0
+            .into_iter()
+            .find(|w| w.workspace == self.state.workspace)
+            .and_then(|w| w.profile)
+            .map(|p| p.0)
+        else {
+            return Ok(());
+        };
+        let accepted = self.state.profile;
+        let signer_gone = !remote
+            .policy
+            .head_snapshot()
+            .is_device(&profile.body.signer);
+        if signer_gone {
+            // A change took its signer out of the workspace, so the device
+            // shows it no more; an owner or admin device signs the same
+            // name again at its accepted head (§25).
+            let name = check_profile_from(remote, &profile, accepted.as_ref(), false)?;
+            if self.may_rename() {
+                return self
+                    .sign_profile(service, &name, profile.body.profile_revision)
+                    .await;
+            }
+            return Ok(());
+        }
+        let name = check_profile(remote, &profile, accepted.as_ref())?;
+        self.state.name = name;
+        self.state.profile = Some(mark_of(&profile));
+        Ok(())
+    }
+
+    /// Whether this device may change the profile: an owner or admin
+    /// device in the accepted policy.
+    fn may_rename(&self) -> bool {
+        self.remote.as_ref().is_some_and(|r| {
+            let snapshot = r.policy.head_snapshot();
+            snapshot
+                .account_of(&self.credentials.keys.device())
+                .and_then(|account| snapshot.role(&account))
+                .is_some_and(|role| matches!(role, Role::Owner | Role::Admin))
+        })
+    }
+
+    /// Renames the workspace by pushing a new profile, as an owner or admin
+    /// device may (§25).
+    pub async fn rename(&mut self, service: &mut SyncService, name: &str) -> Result<(), SyncError> {
+        if self.remote.is_none() {
+            self.connect(service).await?;
+        }
+        if !self.may_rename() {
+            return Err(SyncError::Invalid(
+                "Only the workspace's owner or an admin can rename it.".into(),
+            ));
+        }
+        let latest = self.state.profile.map_or(0, |p| p.revision);
+        self.sign_profile(service, name, latest).await?;
+        self.save()
+    }
+
+    /// Signs and pushes a profile named `name` one above `latest`, under
+    /// the latest epoch at the accepted policy head. When another device's
+    /// profile took that revision first, the device takes that one.
+    async fn sign_profile(
+        &mut self,
+        service: &mut SyncService,
+        name: &str,
+        latest: u64,
+    ) -> Result<(), SyncError> {
+        let epoch = self
+            .state
+            .epochs
+            .last()
+            .ok_or(SyncError::Check("sync_key_mismatch"))?;
+        let key = self
+            .keys
+            .get(&epoch.body.epoch)
+            .ok_or(SyncError::Check("sync_key_mismatch"))?;
+        let head = self
+            .state
+            .policy
+            .last()
+            .ok_or(SyncError::Check("sync_workspace_unverified"))?;
+        let mut profile = Profile {
+            workspace: self.state.workspace,
+            profile_revision: latest + 1,
+            epoch: epoch.body.epoch,
+            policy_revision: head.body.revision,
+            policy_head: head.digest(),
+            signer: self.credentials.keys.device(),
+            nonce: Nonce::ZERO,
+            ciphertext: Bytes(Vec::new()),
+        };
+        profile.seal_payload(
+            &ProfilePayload {
+                name: Text::new(name).map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
+            },
+            key,
+            &epoch.digest(),
+            random(random_nonce())?,
+        );
+        let signed = Signed::sign(profile, self.credentials.keys.signing());
+        match service
+            .client()
+            .push(
+                self.state.workspace,
+                vec![RecordRef::Profile(signed.clone())],
+            )
+            .await
+        {
+            Ok(_) => {
+                self.state.name = name.to_owned();
+                self.state.profile = Some(mark_of(&signed));
+                Ok(())
+            }
+            Err(SyncError::Refused { code, .. }) if code == "profile_conflict" => {
+                Box::pin(self.follow_profile(service)).await
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Takes a verified remote workspace's policy and keys, which must
@@ -680,7 +817,12 @@ impl WorkspaceSync {
             self.remote = Some(remote);
             return Err(error);
         }
-        self.adopt(remote)
+        let before = self.accepted_revision();
+        self.adopt(remote)?;
+        if self.accepted_revision() != before {
+            self.follow_profile(service).await?;
+        }
+        Ok(())
     }
 
     /// Compares the journal's head of this device's chain with the server's
@@ -2072,7 +2214,7 @@ fn stat(root: &Path, path: &str) -> Option<(u64, i64, Option<u64>)> {
 async fn profile_of(
     service: &mut SyncService,
     remote: &RemoteWorkspace,
-) -> Result<(String, Option<(u64, Digest)>), SyncError> {
+) -> Result<(String, Option<ProfileMark>), SyncError> {
     let list = service.client().workspaces().await?;
     let profile = list
         .workspaces
@@ -2083,10 +2225,16 @@ async fn profile_of(
         .map(|p| p.0)
         .ok_or_else(|| SyncError::Invalid("the workspace has no profile".into()))?;
     let name = check_profile(remote, &profile, None)?;
-    Ok((
-        name,
-        Some((profile.body.profile_revision, profile.digest())),
-    ))
+    Ok((name, Some(mark_of(&profile))))
+}
+
+fn mark_of(profile: &Signed<Profile>) -> ProfileMark {
+    ProfileMark {
+        revision: profile.body.profile_revision,
+        digest: profile.digest(),
+        policy_revision: profile.body.policy_revision,
+        signer: profile.body.signer,
+    }
 }
 
 /// Checks a profile (§25) against the verified policy and the last one the
@@ -2094,13 +2242,26 @@ async fn profile_of(
 pub(crate) fn check_profile(
     remote: &RemoteWorkspace,
     profile: &Signed<Profile>,
-    accepted: Option<(u64, Digest)>,
+    accepted: Option<&ProfileMark>,
+) -> Result<String, SyncError> {
+    check_profile_from(remote, profile, accepted, true)
+}
+
+/// [`check_profile`], leaving out, when `current_signer` is false, the
+/// rule that no later change took its signer out of the workspace: the
+/// device that signs a removed signer's profile again reads its name.
+fn check_profile_from(
+    remote: &RemoteWorkspace,
+    profile: &Signed<Profile>,
+    accepted: Option<&ProfileMark>,
+    current_signer: bool,
 ) -> Result<String, SyncError> {
     let body = &profile.body;
     let policy = &remote.policy;
-    if let Some((revision, digest)) = accepted
-        && (body.profile_revision < revision
-            || (body.profile_revision == revision && profile.digest() != digest))
+    if let Some(accepted) = accepted
+        && (body.profile_revision < accepted.revision
+            || (body.profile_revision == accepted.revision && profile.digest() != accepted.digest)
+            || body.policy_revision < accepted.policy_revision)
     {
         return Err(SyncError::Check("sync_profile_rollback"));
     }
@@ -2127,9 +2288,10 @@ pub(crate) fn check_profile(
     // No change above its revision takes its signer out of the workspace.
     let (head, _) = policy.head();
     for revision in body.policy_revision + 1..=head {
-        if !policy
-            .at(revision)
-            .is_some_and(|s| s.is_device(&body.signer))
+        if current_signer
+            && !policy
+                .at(revision)
+                .is_some_and(|s| s.is_device(&body.signer))
         {
             return Err(SyncError::Check("sync_writer_not_authorized"));
         }

@@ -14,7 +14,9 @@ use sync_protocol::messages::{
 };
 use sync_protocol::padding::is_padded_ciphertext_length;
 use sync_protocol::policy::PolicyChain;
-use sync_protocol::records::{Envelope, EpochBundle, Operation, PolicyChange, Signed};
+use sync_protocol::records::{
+    Envelope, EpochBundle, Operation, PolicyChange, Profile, Role, Signed,
+};
 use sync_protocol::types::{Digest, Id};
 
 pub(crate) use keys::KEY_REWRAP;
@@ -94,15 +96,18 @@ pub(crate) enum Pushed {
     /// An envelope: one the change or the rotation before it needs, or a
     /// lone envelope that answers a re-wrap request.
     Envelope(usize, Signed<Envelope>),
+    /// A new workspace profile from an owner or admin device (§25).
+    Profile(usize, Signed<Profile>),
 }
 
 impl Pushed {
     fn index(&self) -> usize {
         match self {
             Pushed::Op(op) => op.index,
-            Pushed::Change(index, _) | Pushed::Epoch(index, _) | Pushed::Envelope(index, _) => {
-                *index
-            }
+            Pushed::Change(index, _)
+            | Pushed::Epoch(index, _)
+            | Pushed::Envelope(index, _)
+            | Pushed::Profile(index, _) => *index,
         }
     }
 }
@@ -132,12 +137,12 @@ pub(crate) fn decode(body: &[u8], workspace: Id, session: Session) -> Result<Vec
             RecordRef::Envelope(envelope) => {
                 (envelope.body.workspace, envelope.body.wrapping_device)
             }
-            RecordRef::CheckpointBundle(_) | RecordRef::Profile(_) => {
-                // Checkpoints arrive with ticket 58 and profile pushes with
-                // ticket 48.
+            RecordRef::Profile(profile) => (profile.body.workspace, profile.body.signer),
+            RecordRef::CheckpointBundle(_) => {
+                // Checkpoints arrive with ticket 58.
                 return Err(fail(
                     "bad_request",
-                    "this server takes no checkpoint or profile in a push so far",
+                    "this server takes no checkpoint in a push so far",
                 ));
             }
         };
@@ -170,7 +175,16 @@ pub(crate) fn decode(body: &[u8], workspace: Id, session: Session) -> Result<Vec
             RecordRef::Policy(change) => Pushed::Change(index, change),
             RecordRef::EpochBundle(bundle) => Pushed::Epoch(index, bundle),
             RecordRef::Envelope(envelope) => Pushed::Envelope(index, envelope),
-            RecordRef::CheckpointBundle(_) | RecordRef::Profile(_) => unreachable!("refused"),
+            RecordRef::Profile(profile) => {
+                if !is_padded_ciphertext_length(profile.body.ciphertext.len() as u64) {
+                    return Err(fail(
+                        "padding_invalid",
+                        "the profile ciphertext isn't a padded length",
+                    ));
+                }
+                Pushed::Profile(index, profile)
+            }
+            RecordRef::CheckpointBundle(_) => unreachable!("refused"),
         });
     }
     Ok(pushed)
@@ -213,6 +227,7 @@ pub(crate) fn check_signatures(
             Pushed::Change(..) => true,
             Pushed::Epoch(_, bundle) => bundle.epoch.0.verify(key).is_ok(),
             Pushed::Envelope(_, envelope) => envelope.verify(key).is_ok(),
+            Pushed::Profile(_, profile) => profile.verify(key).is_ok(),
         };
         if !valid {
             return Err(failure(
@@ -246,7 +261,7 @@ pub(crate) async fn commit(
         .iter()
         .filter_map(|p| match p {
             Pushed::Op(op) => Some(op.op.body.domain),
-            Pushed::Change(..) => None,
+            Pushed::Change(..) | Pushed::Profile(..) => None,
             Pushed::Epoch(_, bundle) => Some(bundle.epoch.0.body.domain),
             Pushed::Envelope(_, envelope) => Some(envelope.body.domain),
         })
@@ -276,6 +291,20 @@ pub(crate) async fn commit(
         .await?;
         if let Some((_, policy)) = policy::load(txn, cache, workspace).await? {
             domains.extend(policy.head_snapshot().domains.keys().copied());
+        }
+    } else if pushed.iter().any(|p| matches!(p, Pushed::Profile(..))) {
+        // A profile is checked against the workspace domain's epoch, so it
+        // takes that domain's head row, after the shared policy lock.
+        txn.lock(&LockPlan {
+            workspace: Some(workspace),
+            policy_exclusive: false,
+            key_sequence: keys,
+            domains: Vec::new(),
+            blobs: Vec::new(),
+        })
+        .await?;
+        if let Some((_, policy)) = policy::load(txn, cache, workspace).await? {
+            domains.push(policy.head_snapshot().workspace_domain);
         }
     }
     domains.sort();
@@ -316,6 +345,9 @@ pub(crate) async fn commit(
                     .await
                     .map(|()| Vec::new())
             }
+            Pushed::Profile(_, profile) => apply_profile(txn, state.policy(), workspace, profile)
+                .await
+                .map(|()| Vec::new()),
         };
         let created = result.map_err(|e| match e {
             Error::Refused(refusal) => failure(index, refusal),
@@ -334,6 +366,81 @@ pub(crate) async fn commit(
         policy_revision,
         receipts: List(receipts),
     })
+}
+
+/// The checks of §25 for a pushed profile, then its write: an owner or
+/// admin device active in the policy signs it, at a policy revision the
+/// server holds, under the workspace domain's current epoch while no
+/// rotation is pending there, one above the server's latest profile.
+async fn apply_profile(
+    txn: &mut impl WriteTxn,
+    policy: &Arc<PolicyChain>,
+    workspace: Id,
+    profile: &Signed<Profile>,
+) -> Result<()> {
+    let p = &profile.body;
+    let snapshot = policy.head_snapshot();
+    let (head_revision, _) = policy.head();
+    let role = snapshot
+        .account_of(&p.signer)
+        .and_then(|account| snapshot.role(&account));
+    if !matches!(role, Some(Role::Owner | Role::Admin)) {
+        return Err(refuse(
+            "forbidden",
+            "an owner or admin device signs the profile",
+        ));
+    }
+    let at_revision = (p.policy_revision <= head_revision)
+        .then(|| policy.at(p.policy_revision))
+        .flatten();
+    let Some(at_revision) = at_revision else {
+        return Err(refuse(
+            "policy_stale",
+            "the profile names a revision above the head",
+        ));
+    };
+    if at_revision.digest != p.policy_head {
+        return Err(refuse(
+            "policy_conflict",
+            "policy_head isn't the server's change at that revision",
+        ));
+    }
+    let domain = snapshot.workspace_domain;
+    let Some(domain_row) = txn.domain(workspace, domain).await? else {
+        return Err(refuse("not_found", "no such domain"));
+    };
+    if p.epoch != domain_row.epoch {
+        return Err(refuse(
+            "epoch_stale",
+            "the profile's epoch isn't the workspace domain's current one",
+        ));
+    }
+    if policy
+        .rotation_required(&domain, domain_row.epoch_policy_revision, head_revision)
+        .is_some()
+    {
+        return Err(refuse(
+            "rotation_pending",
+            "the workspace domain waits for a rotation",
+        ));
+    }
+    let latest = match txn.latest_profile(workspace).await? {
+        Some(bytes) => {
+            Signed::<Profile>::from_bytes(&bytes)
+                .map_err(Error::internal)?
+                .body
+                .profile_revision
+        }
+        None => 0,
+    };
+    if p.profile_revision != latest + 1 {
+        return Err(refuse(
+            "profile_conflict",
+            "the profile revision isn't one above the latest",
+        ));
+    }
+    txn.insert_profile(workspace, p.profile_revision, &profile.to_bytes())
+        .await
 }
 
 fn chain_conflict(domain: Id, head: Option<ChainHeadRow>) -> Error {

@@ -173,6 +173,12 @@ impl App {
                 // The other windows show the new name too.
                 self.recents_seen = self.session.recents_changed(self.key);
                 self.listeners.emit(Change::Settings);
+                // A synced workspace takes the name in its profile (§25).
+                self.session
+                    .folder_sync()
+                    .act(crate::folder_sync::FolderSyncAction::Rename(
+                        name.to_owned(),
+                    ));
                 true
             }
             Err(error) => {
