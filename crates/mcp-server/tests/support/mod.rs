@@ -5,6 +5,7 @@
 #![allow(dead_code, reason = "each test file uses a different subset")]
 
 use std::{
+    ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -53,11 +54,11 @@ impl Fixture {
     }
 
     /// The app with this workspace open.
-    pub fn app(&self) -> App {
+    pub fn app(&self) -> OpenApp {
         let mut app = App::launch(self.app_data.path());
         settle(&mut app);
         assert!(app.workspace().is_some(), "the workspace didn't open");
-        app
+        OpenApp(Some(app))
     }
 
     /// The workspace as the MCP server opens it, beside the app.
@@ -68,6 +69,36 @@ impl Fixture {
     pub fn read(&self, relative: &str) -> String {
         std::fs::read_to_string(self.root.join(relative))
             .unwrap_or_else(|error| panic!("{relative} can't be read: {error}"))
+    }
+}
+
+/// The open app, dropped where blocking is allowed. Its AI service owns
+/// a tokio runtime, and tokio refuses to drop a runtime inside the async
+/// tests that hold the app.
+pub struct OpenApp(Option<App>);
+
+impl Deref for OpenApp {
+    type Target = App;
+
+    fn deref(&self) -> &App {
+        self.0.as_ref().expect("the app is open")
+    }
+}
+
+impl DerefMut for OpenApp {
+    fn deref_mut(&mut self) -> &mut App {
+        self.0.as_mut().expect("the app is open")
+    }
+}
+
+impl Drop for OpenApp {
+    fn drop(&mut self) {
+        let Some(app) = self.0.take() else {
+            return;
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::task::block_in_place(|| drop(app));
+        }
     }
 }
 
