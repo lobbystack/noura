@@ -97,7 +97,7 @@ function properties(text: string): Record<string, unknown> {
 }
 
 /** A ULID in lowercase, as Noura writes stable IDs: the time in milliseconds, then randomness, in Crockford's base 32. */
-function ulid(): string {
+export function ulid(): string {
 	const alphabet = '0123456789abcdefghjkmnpqrstvwxyz';
 	let time = Date.now();
 	let head = '';
@@ -112,7 +112,7 @@ function ulid(): string {
 }
 
 /** The time now as Noura writes it: in UTC, without the fraction of a second's trailing zeros. */
-function instant(): string {
+export function instant(): string {
 	return new Date().toISOString().replace(/\.?0+Z$/, 'Z');
 }
 

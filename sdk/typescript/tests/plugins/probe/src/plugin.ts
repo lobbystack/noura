@@ -8,6 +8,14 @@ import type {
 	ToolsExports,
 	ViewExports,
 } from '@noura/plugin-types/0.1.0';
+import {
+	chats,
+	createChat,
+	providers,
+	readChat,
+	readRun,
+	send,
+} from 'noura:plugin/ai@0.1.0';
 import { call as callCommand } from 'noura:plugin/command-calls@0.1.0';
 import { now } from 'noura:plugin/clock@0.1.0';
 import { openPage } from 'noura:plugin/navigation@0.1.0';
@@ -118,6 +126,26 @@ const CALLS: Record<string, () => unknown> = {
 	'open-page': () => openPage('probe'),
 	// Noura gives plugins no console: what they write there goes nowhere.
 	console: () => console.log('The probe wrote to the console.'),
+	'ai-providers': () => providers(),
+	'ai-new-chat': () => {
+		const chat = createChat();
+		const [read, messages] = readChat(chat.id);
+		return {
+			id: read.id === chat.id && /^chat_[0-9a-z]{26}$/.test(chat.id),
+			title: read.title,
+			messages: messages.length,
+			listed: chats().some((listed) => listed.id === chat.id),
+		};
+	},
+	'ai-send-unknown': () =>
+		send({
+			chat: createChat().id,
+			provider: 'missing',
+			message: 'Hello.',
+			tools: [],
+		}).id,
+	'ai-read-chat-missing': () => readChat('chat_01j9qv6m0000000000000000cc'),
+	'ai-read-run-missing': () => readRun('run_missing'),
 };
 
 function get(url: string): number {

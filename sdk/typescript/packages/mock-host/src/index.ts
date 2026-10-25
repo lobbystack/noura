@@ -5,8 +5,11 @@
 // `capability-not-declared` and names the capability.
 //
 // What it doesn't do: check views against Noura's drawing rules, check
-// object properties against their schemas, reach the network, or run
-// other plugins. Pass `fetch` and `commands` to answer for those.
+// object properties against their schemas, reach the network, run other
+// plugins, or ask AI providers. Pass `fetch` and `commands` to answer for
+// the network and other plugins. An AI run waits for consent until the
+// plugin stops it, as in Noura before you answer its prompt.
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
@@ -16,7 +19,12 @@ import {
 } from '@noura/plugin-cli';
 
 import { type Exports, type Loaded, load } from './component.js';
-import { type MockObject, MockWorkspace } from './workspace.js';
+import {
+	type MockObject,
+	MockWorkspace,
+	instant,
+	ulid,
+} from './workspace.js';
 
 export type { MockObject, ReadObject } from './workspace.js';
 
@@ -60,6 +68,14 @@ export interface Response {
 	body: Uint8Array;
 }
 
+/** An AI provider set up and turned on in Noura's Settings. */
+export interface Provider {
+	id: string;
+	name: string;
+	kind: string;
+	model: string;
+}
+
 /** Something the plugin asked Noura to show. */
 export type Opening =
 	| { kind: 'object'; id: string; placement: 'preview' | 'new-tab' }
@@ -77,6 +93,8 @@ export interface MockHostOptions {
 	fetch?: (request: Request) => Response;
 	/** Other plugins' commands the plugin may call, by `plugin/command`. A thrown string fails the call. */
 	commands?: Record<string, (input: string) => string>;
+	/** The AI providers that `ai` lists. Defaults to none. */
+	providers?: Provider[];
 }
 
 /** A call the manifest doesn't allow: Noura never makes it. */
@@ -104,18 +122,18 @@ interface Interfaces {
 	'noura:plugin/command-calls': typeof import('noura:plugin/command-calls@0.1.0');
 	'noura:plugin/clock': typeof import('noura:plugin/clock@0.1.0');
 	'noura:plugin/navigation': typeof import('noura:plugin/navigation@0.1.0');
+	'noura:plugin/ai': typeof import('noura:plugin/ai@0.1.0');
 }
+
+type Chat = import('noura:plugin/ai@0.1.0').Chat;
+type Run = import('noura:plugin/ai@0.1.0').Run;
+type ToolDefinition = import('noura:plugin/ai@0.1.0').ToolDefinition;
 
 /**
  * The object types Noura keeps for itself, which no plugin registers. The
  * kit's tests check that this list matches plugin-host's.
  */
-export const KERNEL_TYPES: readonly string[] = [
-	'note',
-	'workspace',
-	'chat',
-	'chat-message',
-];
+export const KERNEL_TYPES: readonly string[] = ['note', 'workspace'];
 
 /**
  * Object types Noura holds for one plugin, by that plugin's ID, which no
@@ -125,10 +143,56 @@ export const KERNEL_TYPES: readonly string[] = [
 export const PLUGIN_TYPES: Readonly<Record<string, string>> = {
 	task: 'tasks',
 	project: 'projects',
+	chat: 'ai',
+	'chat-message': 'ai',
 };
+
+/**
+ * Object types whose files only Noura writes: the plugin that holds one
+ * reads its objects, but `objects` refuses a write to them. Chats change
+ * through the `ai` interface.
+ */
+const SERVICE_WRITTEN_TYPES: readonly string[] = ['chat', 'chat-message'];
 
 function refused(capability: string): never {
 	throw { tag: 'capability-not-declared', val: capability };
+}
+
+function notFound(id: string): never {
+	throw { tag: 'not-found', val: id };
+}
+
+/**
+ * Refuse tool definitions as Noura does: a name that isn't lowercase
+ * letters, digits, hyphens and underscores, a name that repeats, or an
+ * input schema that isn't a JSON Schema.
+ */
+function checkTools(tools: ToolDefinition[]): void {
+	const names = new Set<string>();
+	for (const tool of tools) {
+		if (!/^[a-z0-9_-]{1,64}$/.test(tool.name) || names.has(tool.name)) {
+			throw {
+				tag: 'failed',
+				val: `The tool name “${tool.name}” isn't valid or repeats.`,
+			};
+		}
+		names.add(tool.name);
+		let schema: unknown;
+		try {
+			schema = JSON.parse(tool.inputSchema);
+		} catch {
+			schema = undefined;
+		}
+		const isSchema =
+			typeof schema === 'boolean' ||
+			(typeof schema === 'object' && schema !== null && !Array.isArray(schema));
+		if (!isSchema) {
+			throw {
+				tag: 'failed',
+				val: `The input schema of the tool ${tool.name} isn't a JSON Schema.`,
+			};
+		}
+	}
 }
 
 /** The flat node list a plugin returns, as a tree from its first node. */
@@ -197,6 +261,13 @@ export class MockHost {
 	private types = new Set<string>();
 	/** Whether the call running answers something you did, so navigation acts. */
 	private acting = false;
+	/**
+	 * The chats the plugin started, by ID. A chat gets its files once its
+	 * first message goes out, which no run here reaches.
+	 */
+	private readonly startedChats = new Map<string, Chat>();
+	/** The plugin's AI runs, by ID. */
+	private readonly runs = new Map<string, Run>();
 
 	private constructor(
 		readonly manifest: Manifest,
@@ -298,6 +369,27 @@ export class MockHost {
 			return this.workspace;
 		};
 		const objectsFor = (id: string) => objects(id.split('_')[0] ?? '');
+		// Files of a type only Noura writes, such as a chat, change only
+		// through its service.
+		const objectsToWrite = (objectType: string) => {
+			const store = objects(objectType);
+			if (SERVICE_WRITTEN_TYPES.includes(objectType)) {
+				throw {
+					tag: 'failed',
+					val: 'Noura writes chats and their messages only through the ai interface.',
+				};
+			}
+			return store;
+		};
+		const objectsToWriteFor = (id: string) =>
+			objectsToWrite(id.split('_')[0] ?? '');
+		const ai = () => {
+			if (!this.declares('ai')) {
+				refused('ai');
+			}
+		};
+		const providers = () => this.options.providers ?? [];
+		const run = (id: string) => this.runs.get(id) ?? notFound(id);
 		// Noura opens and trashes things only in answer to an event in one
 		// of the plugin's views or a command you ran from the palette.
 		const navigation = (
@@ -321,18 +413,18 @@ export class MockHost {
 			},
 			'noura:plugin/objects': {
 				create: (object: Parameters<MockWorkspace['create']>[0]) =>
-					objects(object.objectType).create(object),
+					objectsToWrite(object.objectType).create(object),
 				get: (id: string) => objectsFor(id).get(id),
 				list: (objectType: string) => objects(objectType).list(objectType),
 				update: (
 					id: string,
 					revision: string,
 					changes: Parameters<MockWorkspace['update']>[2],
-				) => objectsFor(id).update(id, revision, changes),
+				) => objectsToWriteFor(id).update(id, revision, changes),
 				moveTo: (id: string, revision: string, path: string) =>
-					objectsFor(id).moveTo(id, revision, path),
+					objectsToWriteFor(id).moveTo(id, revision, path),
 				delete: (id: string, revision: string) =>
-					objectsFor(id).delete(id, revision),
+					objectsToWriteFor(id).delete(id, revision),
 			},
 			'noura:plugin/network': {
 				fetch: (request: Request) => {
@@ -413,6 +505,90 @@ export class MockHost {
 					const object = store.get(id);
 					store.delete(id, object.revision);
 					this.openings.push({ kind: 'trash', id });
+				},
+			},
+			// The mock host asks no provider and nobody for consent: a run
+			// waits for consent until the plugin stops it, and writes nothing.
+			'noura:plugin/ai': {
+				providers: () => {
+					ai();
+					return providers().map((provider) => ({ ...provider }));
+				},
+				chats: () => {
+					ai();
+					return [];
+				},
+				readChat: (id: string) => {
+					ai();
+					const chat = this.startedChats.get(id) ?? notFound(id);
+					return [{ ...chat }, []];
+				},
+				createChat: () => {
+					ai();
+					const chat: Chat = {
+						id: `chat_${ulid()}`,
+						title: 'New chat',
+						updated: instant(),
+					};
+					this.startedChats.set(chat.id, chat);
+					return { ...chat };
+				},
+				send: (request) => {
+					ai();
+					if (!providers().some((provider) => provider.id === request.provider)) {
+						notFound(request.provider);
+					}
+					if (request.message.trim() === '') {
+						throw { tag: 'failed', val: 'The message is empty.' };
+					}
+					checkTools(request.tools);
+					if (!this.startedChats.has(request.chat)) {
+						notFound(request.chat);
+					}
+					if (
+						[...this.runs.values()].some(
+							(known) =>
+								known.chat === request.chat &&
+								known.status === 'waiting-for-consent',
+						)
+					) {
+						throw {
+							tag: 'failed',
+							val: 'This chat is still answering your last message.',
+						};
+					}
+					const waiting: Run = {
+						id: `run_${randomUUID()}`,
+						chat: request.chat,
+						provider: request.provider,
+						status: 'waiting-for-consent',
+						text: '',
+						messageWritten: false,
+						toolCalls: [],
+					};
+					this.runs.set(waiting.id, waiting);
+					return { ...waiting };
+				},
+				answerTools: (id, _results, tools) => {
+					ai();
+					checkTools(tools);
+					run(id);
+					// No run here completes, so none waits for tool results.
+					throw {
+						tag: 'failed',
+						val: "This run isn't waiting for tool results.",
+					};
+				},
+				readRun: (id: string) => {
+					ai();
+					return { ...run(id) };
+				},
+				stop: (id: string) => {
+					ai();
+					const found = run(id);
+					if (found.status === 'waiting-for-consent') {
+						found.status = 'cancelled';
+					}
 				},
 			},
 		};

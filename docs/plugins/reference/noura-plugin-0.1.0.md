@@ -12,6 +12,7 @@
     - interface `noura:plugin/command-calls@0.1.0`
     - interface `noura:plugin/clock@0.1.0`
     - interface `noura:plugin/navigation@0.1.0`
+    - interface `noura:plugin/ai@0.1.0`
     - interface `noura:plugin/ui@0.1.0`
  - Exports:
     - interface `noura:plugin/view@0.1.0`
@@ -243,7 +244,10 @@ workspace with a stable ID, properties its schema checks, and a body.
 Needs the `object-types` capability. A call about any other type, a
 note for one, returns `capability-not-declared("object-types")` and
 reaches no file. Writes carry the content revision the plugin read,
-and return once the file is durably on disk.
+and return once the file is durably on disk. Chats and their messages,
+which the AI plugin registers, change only through the `ai` interface:
+`create`, `update`, `move-to` and `delete` return `failed` for them and
+reach no file, while `get` and `list` read them.
 
 ----
 
@@ -651,6 +655,343 @@ capability too.
 ##### Return values
 
 - <a id="trash_object.0"></a> result<_, [`error`](#error)>
+
+## <a id="noura_plugin_ai_0_1_0"></a>Import interface noura:plugin/ai@0.1.0
+
+Chats with the AI providers you set up in Settings. Needs the `ai`
+capability. Providers, their keys and your consent stay on this device,
+and no call returns a key. Before a request carries this workspace's
+content to a provider, Noura asks you in a prompt of its own whether
+that provider may receive it, and it asks again after you change the
+provider's kind, endpoint or model.
+
+A chat is a folder of Markdown files in the workspace, `chat.md` and one
+file per message, in the workspace format's chat layout. Noura writes
+them, and each write is on disk before the call that made it returns.
+
+----
+
+### Types
+
+#### <a id="error"></a>`type error`
+[`error`](#error)
+<p>
+
+#### <a id="provider"></a>`record provider`
+
+A provider you set up and turned on in Settings.
+
+##### Record Fields
+
+- <a id="provider.id"></a>`id`: `string`
+  <p>Unique among your providers.
+
+- <a id="provider.name"></a>`name`: `string`
+  <p>The name you gave it.
+
+- <a id="provider.kind"></a>`kind`: `string`
+  <p>The kind of service, such as `openai`, `anthropic` or `ollama`.
+
+- <a id="provider.model"></a>`model`: `string`
+  <p>The model it answers with.
+
+
+#### <a id="chat"></a>`record chat`
+
+A chat, as its `chat.md` holds it.
+
+##### Record Fields
+
+- <a id="chat.id"></a>`id`: `string`
+- <a id="chat.title"></a>`title`: `string`
+- <a id="chat.updated"></a>`updated`: `string`
+  <p>When it last changed, in RFC 3339.
+
+
+#### <a id="message_kind"></a>`enum message-kind`
+
+
+
+##### Enum Cases
+
+- <a id="message_kind.user"></a>`user`
+- <a id="message_kind.assistant"></a>`assistant`
+- <a id="message_kind.tool_call"></a>`tool-call`
+- <a id="message_kind.tool_result"></a>`tool-result`
+- <a id="message_kind.context_summary"></a>`context-summary`
+
+#### <a id="message_status"></a>`enum message-status`
+
+
+
+##### Enum Cases
+
+- <a id="message_status.in_progress"></a>`in-progress`
+- <a id="message_status.completed"></a>`completed`
+- <a id="message_status.interrupted"></a>`interrupted`
+- <a id="message_status.cancelled"></a>`cancelled`
+- <a id="message_status.failed"></a>`failed`
+
+#### <a id="message"></a>`record message`
+
+A message of a chat.
+
+##### Record Fields
+
+- <a id="message.id"></a>`id`: `string`
+- <a id="message.kind"></a>`kind`: [`message-kind`](#message_kind)
+- <a id="message.status"></a>`status`: [`message-status`](#message_status)
+- <a id="message.content"></a>`content`: `string`
+  <p>Markdown, or JSON text for a tool call or a tool result.
+
+- <a id="message.provider"></a>`provider`: option<`string`>
+  <p>The provider and model that wrote an assistant message.
+
+- <a id="message.model"></a>`model`: option<`string`>
+- <a id="message.error_code"></a>`error-code`: option<`string`>
+  <p>Why a failed or interrupted message ended, as a code such as
+  `provider_request_failed`.
+
+- <a id="message.created"></a>`created`: `string`
+  <p>When Noura wrote it, in RFC 3339.
+
+
+#### <a id="tool_definition"></a>`record tool-definition`
+
+A tool the model may ask to call.
+
+##### Record Fields
+
+- <a id="tool_definition.name"></a>`name`: `string`
+  <p>Lowercase letters, digits, hyphens and underscores.
+
+- <a id="tool_definition.description"></a>`description`: `string`
+  <p>What the tool does, for the model.
+
+- <a id="tool_definition.input_schema"></a>`input-schema`: `string`
+  <p>A JSON Schema, as JSON text, for the tool's arguments.
+
+
+#### <a id="tool_call"></a>`record tool-call`
+
+A tool call the model asked for.
+
+##### Record Fields
+
+- <a id="tool_call.id"></a>`id`: `string`
+  <p>The model's ID for the call, which the call's result names.
+
+- <a id="tool_call.name"></a>`name`: `string`
+- <a id="tool_call.arguments"></a>`arguments`: `string`
+  <p>The arguments, as JSON text.
+
+
+#### <a id="tool_result"></a>`record tool-result`
+
+A tool's answer to a call, for the model.
+
+##### Record Fields
+
+- <a id="tool_result.call_id"></a>`call-id`: `string`
+  <p>The ID of the call it answers.
+
+- <a id="tool_result.name"></a>`name`: `string`
+- <a id="tool_result.content"></a>`content`: `string`
+  <p>The answer, as JSON text.
+
+
+#### <a id="request"></a>`record request`
+
+A message you wrote in a chat, for a provider to answer.
+
+##### Record Fields
+
+- <a id="request.chat"></a>`chat`: `string`
+  <p>The chat's ID.
+
+- <a id="request.provider"></a>`provider`: `string`
+  <p>The provider's ID.
+
+- <a id="request.message"></a>`message`: `string`
+  <p>What you wrote, in Markdown.
+
+- <a id="request.tools"></a>`tools`: list<[`tool-definition`](#tool_definition)>
+  <p>The tools the model may ask to call.
+
+
+#### <a id="run_status"></a>`enum run-status`
+
+
+
+##### Enum Cases
+
+- <a id="run_status.waiting_for_consent"></a>`waiting-for-consent`
+  <p>Noura is asking you whether the provider may receive this
+  workspace's content. Nothing is written or sent yet.
+
+- <a id="run_status.denied"></a>`denied`
+  <p>You said no. Nothing was written or sent.
+
+- <a id="run_status.streaming"></a>`streaming`
+  <p>The answer is streaming in.
+
+- <a id="run_status.completed"></a>`completed`
+  <p>The answer is complete. When the model asked for tools,
+  `tool-calls` lists them.
+
+- <a id="run_status.cancelled"></a>`cancelled`
+  <p>You stopped it, or revoked the provider's consent. The answer so
+  far stays in the chat as a cancelled message.
+
+- <a id="run_status.failed"></a>`failed`
+  <p>The provider or Noura failed. `failure` says why.
+
+
+#### <a id="failure"></a>`record failure`
+
+Why a run failed, in public words. It never holds the provider's own
+answer, its headers or a key.
+
+##### Record Fields
+
+- <a id="failure.code"></a>`code`: `string`
+  <p>A stable code, such as `provider_request_failed`.
+
+- <a id="failure.message"></a>`message`: `string`
+
+#### <a id="run"></a>`record run`
+
+A message you sent and its answer, as it streams in.
+
+##### Record Fields
+
+- <a id="run.id"></a>`id`: `string`
+- <a id="run.chat"></a>`chat`: `string`
+- <a id="run.provider"></a>`provider`: `string`
+- <a id="run.status"></a>`status`: [`run-status`](#run_status)
+- <a id="run.text"></a>`text`: `string`
+  <p>The answer so far, in Markdown.
+
+- <a id="run.message"></a>`message`: option<`string`>
+  <p>The ID of the assistant message the answer goes to, once Noura wrote
+  it.
+
+- <a id="run.message_written"></a>`message-written`: `bool`
+  <p>Whether Noura wrote your message to the chat. A run you denied or
+  stopped while it waited, or one that failed before the write, leaves
+  your message unwritten, so the plugin can give it back to you.
+
+- <a id="run.tool_calls"></a>`tool-calls`: list<[`tool-call`](#tool_call)>
+- <a id="run.failure"></a>`failure`: option<[`failure`](#failure)>
+
+----
+
+### Functions
+
+#### <a id="providers"></a>`providers: func`
+
+The providers you set up and turned on.
+
+##### Return values
+
+- <a id="providers.0"></a> result<list<[`provider`](#provider)>, [`error`](#error)>
+
+#### <a id="chats"></a>`chats: func`
+
+The workspace's chats, the one changed last first.
+
+##### Return values
+
+- <a id="chats.0"></a> result<list<[`chat`](#chat)>, [`error`](#error)>
+
+#### <a id="read_chat"></a>`read-chat: func`
+
+A chat and its messages, oldest first.
+
+##### Params
+
+- <a id="read_chat.id"></a>`id`: `string`
+
+##### Return values
+
+- <a id="read_chat.0"></a> result<([`chat`](#chat), list<[`message`](#message)>), [`error`](#error)>
+
+#### <a id="create_chat"></a>`create-chat: func`
+
+Start a chat, titled `New chat` until its first message names it.
+Noura writes the chat's files once its first message goes out, so a
+chat whose first message you don't let go out leaves no file. Until
+then `read-chat` shows it with no messages, and `chats` doesn't list
+it.
+
+##### Return values
+
+- <a id="create_chat.0"></a> result<[`chat`](#chat), [`error`](#error)>
+
+#### <a id="send"></a>`send: func`
+
+Send `request`. Noura writes your message and an in-progress answer to
+the chat before the request leaves this computer, then the answer
+streams in: `read-run` shows it so far, and Noura draws the plugin's views
+again as text arrives. The answer and its status are on disk before
+the run shows as completed, cancelled or failed. The first message of
+a chat titled `New chat` gives the chat its title. Without your
+consent for this workspace and provider, the run waits while Noura
+asks you. A chat answers one message at a time.
+
+##### Params
+
+- <a id="send.request"></a>`request`: [`request`](#request)
+
+##### Return values
+
+- <a id="send.0"></a> result<[`run`](#run), [`error`](#error)>
+
+#### <a id="answer_tools"></a>`answer-tools: func`
+
+Answer the tool calls of a completed run with `results`, one per call,
+and stream the model's next answer into the same run. Noura wrote each
+call to the chat as in progress before the run showed as completed,
+and it writes each result and completes its call before the next
+request leaves this computer. `tools` are the tools the model may ask
+to call next.
+
+##### Params
+
+- <a id="answer_tools.run"></a>`run`: `string`
+- <a id="answer_tools.results"></a>`results`: list<[`tool-result`](#tool_result)>
+- <a id="answer_tools.tools"></a>`tools`: list<[`tool-definition`](#tool_definition)>
+
+##### Return values
+
+- <a id="answer_tools.0"></a> result<[`run`](#run), [`error`](#error)>
+
+#### <a id="read_run"></a>`read-run: func`
+
+The run with this ID, as it stands now. `read-run`, `stop` and
+`answer-tools` reach only the plugin's own runs: another plugin's run
+is `not-found`.
+
+##### Params
+
+- <a id="read_run.id"></a>`id`: `string`
+
+##### Return values
+
+- <a id="read_run.0"></a> result<[`run`](#run), [`error`](#error)>
+
+#### <a id="stop"></a>`stop: func`
+
+Stop a run. The provider request ends, and the answer so far stays as
+a cancelled message.
+
+##### Params
+
+- <a id="stop.id"></a>`id`: `string`
+
+##### Return values
+
+- <a id="stop.0"></a> result<_, [`error`](#error)>
 
 ## <a id="noura_plugin_ui_0_1_0"></a>Import interface noura:plugin/ui@0.1.0
 

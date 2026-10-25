@@ -232,6 +232,201 @@ interface navigation {
   trash-object: func(id: string) -> result<_, error>;
 }
 
+// Chats with the AI providers you set up in Settings. Needs the `ai`
+// capability. Providers, their keys and your consent stay on this device,
+// and no call returns a key. Before a request carries this workspace's
+// content to a provider, Noura asks you in a prompt of its own whether
+// that provider may receive it, and it asks again after you change the
+// provider's kind, endpoint or model.
+//
+// A chat is a folder of Markdown files in the workspace, `chat.md` and one
+// file per message, in the workspace format's chat layout. Noura writes
+// them, and each write is on disk before the call that made it returns.
+interface ai {
+  use types.{error};
+
+  // A provider you set up and turned on in Settings.
+  record provider {
+    // Unique among your providers.
+    id: string,
+    // The name you gave it.
+    name: string,
+    // The kind of service, such as `openai`, `anthropic` or `ollama`.
+    kind: string,
+    // The model it answers with.
+    model: string,
+  }
+
+  // A chat, as its `chat.md` holds it.
+  record chat {
+    id: string,
+    title: string,
+    // When it last changed, in RFC 3339.
+    updated: string,
+  }
+
+  enum message-kind {
+    user,
+    assistant,
+    tool-call,
+    tool-result,
+    context-summary,
+  }
+
+  enum message-status {
+    in-progress,
+    completed,
+    interrupted,
+    cancelled,
+    failed,
+  }
+
+  // A message of a chat.
+  record message {
+    id: string,
+    kind: message-kind,
+    status: message-status,
+    // Markdown, or JSON text for a tool call or a tool result.
+    content: string,
+    // The provider and model that wrote an assistant message.
+    provider: option<string>,
+    model: option<string>,
+    // Why a failed or interrupted message ended, as a code such as
+    // `provider_request_failed`.
+    error-code: option<string>,
+    // When Noura wrote it, in RFC 3339.
+    created: string,
+  }
+
+  // A tool the model may ask to call.
+  record tool-definition {
+    // Lowercase letters, digits, hyphens and underscores.
+    name: string,
+    // What the tool does, for the model.
+    description: string,
+    // A JSON Schema, as JSON text, for the tool's arguments.
+    input-schema: string,
+  }
+
+  // A tool call the model asked for.
+  record tool-call {
+    // The model's ID for the call, which the call's result names.
+    id: string,
+    name: string,
+    // The arguments, as JSON text.
+    arguments: string,
+  }
+
+  // A tool's answer to a call, for the model.
+  record tool-result {
+    // The ID of the call it answers.
+    call-id: string,
+    name: string,
+    // The answer, as JSON text.
+    content: string,
+  }
+
+  // A message you wrote in a chat, for a provider to answer.
+  record request {
+    // The chat's ID.
+    chat: string,
+    // The provider's ID.
+    provider: string,
+    // What you wrote, in Markdown.
+    message: string,
+    // The tools the model may ask to call.
+    tools: list<tool-definition>,
+  }
+
+  enum run-status {
+    // Noura is asking you whether the provider may receive this
+    // workspace's content. Nothing is written or sent yet.
+    waiting-for-consent,
+    // You said no. Nothing was written or sent.
+    denied,
+    // The answer is streaming in.
+    streaming,
+    // The answer is complete. When the model asked for tools,
+    // `tool-calls` lists them.
+    completed,
+    // You stopped it, or revoked the provider's consent. The answer so
+    // far stays in the chat as a cancelled message.
+    cancelled,
+    // The provider or Noura failed. `failure` says why.
+    failed,
+  }
+
+  // Why a run failed, in public words. It never holds the provider's own
+  // answer, its headers or a key.
+  record failure {
+    // A stable code, such as `provider_request_failed`.
+    code: string,
+    message: string,
+  }
+
+  // A message you sent and its answer, as it streams in.
+  record run {
+    id: string,
+    chat: string,
+    provider: string,
+    status: run-status,
+    // The answer so far, in Markdown.
+    text: string,
+    // The ID of the assistant message the answer goes to, once Noura wrote
+    // it.
+    message: option<string>,
+    // Whether Noura wrote your message to the chat. A run you denied or
+    // stopped while it waited, or one that failed before the write, leaves
+    // your message unwritten, so the plugin can give it back to you.
+    message-written: bool,
+    tool-calls: list<tool-call>,
+    failure: option<failure>,
+  }
+
+  // The providers you set up and turned on.
+  providers: func() -> result<list<provider>, error>;
+
+  // The workspace's chats, the one changed last first.
+  chats: func() -> result<list<chat>, error>;
+
+  // A chat and its messages, oldest first.
+  read-chat: func(id: string) -> result<tuple<chat, list<message>>, error>;
+
+  // Start a chat, titled `New chat` until its first message names it.
+  // Noura writes the chat's files once its first message goes out, so a
+  // chat whose first message you don't let go out leaves no file. Until
+  // then `read-chat` shows it with no messages, and `chats` doesn't list
+  // it.
+  create-chat: func() -> result<chat, error>;
+
+  // Send `request`. Noura writes your message and an in-progress answer to
+  // the chat before the request leaves this computer, then the answer
+  // streams in: `read-run` shows it so far, and Noura draws the plugin's views
+  // again as text arrives. The answer and its status are on disk before
+  // the run shows as completed, cancelled or failed. The first message of
+  // a chat titled `New chat` gives the chat its title. Without your
+  // consent for this workspace and provider, the run waits while Noura
+  // asks you. A chat answers one message at a time.
+  send: func(request: request) -> result<run, error>;
+
+  // Answer the tool calls of a completed run with `results`, one per call,
+  // and stream the model's next answer into the same run. Noura wrote each
+  // call to the chat as in progress before the run showed as completed,
+  // and it writes each result and completes its call before the next
+  // request leaves this computer. `tools` are the tools the model may ask
+  // to call next.
+  answer-tools: func(run: string, results: list<tool-result>, tools: list<tool-definition>) -> result<run, error>;
+
+  // The run with this ID, as it stands now. `read-run`, `stop` and
+  // `answer-tools` reach only the plugin's own runs: another plugin's run
+  // is `not-found`.
+  read-run: func(id: string) -> result<run, error>;
+
+  // Stop a run. The provider request ends, and the answer so far stays as
+  // a cancelled message.
+  stop: func(id: string) -> result<_, error>;
+}
+
 // UI as data. WIT has no recursive types, so a view is a flat list of nodes
 // whose `children` hold indices into the list. The first node is the root.
 //
@@ -715,7 +910,10 @@ interface tools {
 // Needs the `object-types` capability. A call about any other type, a
 // note for one, returns `capability-not-declared("object-types")` and
 // reaches no file. Writes carry the content revision the plugin read,
-// and return once the file is durably on disk.
+// and return once the file is durably on disk. Chats and their messages,
+// which the AI plugin registers, change only through the `ai` interface:
+// `create`, `update`, `move-to` and `delete` return `failed` for them and
+// reach no file, while `get` and `list` read them.
 interface objects {
   use types.{error, property-error};
 
@@ -836,6 +1034,7 @@ world plugin {
   import command-calls;
   import clock;
   import navigation;
+  import ai;
   export view;
   export object-types;
   export commands;

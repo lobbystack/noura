@@ -132,6 +132,8 @@ describe.each(HOSTS)(
 				denied('object-types'),
 			);
 			expect(await probe(host, 'list-objects')).toEqual(denied('object-types'));
+			expect(await probe(host, 'ai-providers')).toEqual(denied('ai'));
+			expect(await probe(host, 'ai-new-chat')).toEqual(denied('ai'));
 		});
 
 		test('the clock and the console need no capability, and a tool can’t open a page', async (context) => {
@@ -307,6 +309,50 @@ describe.each(HOSTS)(
 		});
 	},
 );
+
+describe.each(HOSTS)('a plugin that declares ai, on %s', (_name, start) => {
+	const folder = folderForBlock();
+	let host: Host | undefined;
+	beforeAll(async () => {
+		host = await start(
+			await buildTestPlugin('probe', folder.path(), [
+				'name = "tools"',
+				'name = "ai"',
+			]),
+		);
+	});
+	afterAll(async () => host?.close());
+
+	test('lists no providers before you set one up', async (context) => {
+		if (!host) return context.skip();
+		expect(await probe(host, 'ai-providers')).toEqual({ ok: [] });
+	});
+
+	test('starts a chat that has no messages and no file yet', async (context) => {
+		if (!host) return context.skip();
+		expect(await probe(host, 'ai-new-chat')).toEqual({
+			ok: { id: true, title: 'New chat', messages: 0, listed: false },
+		});
+	});
+
+	test('a provider, chat or run that doesn’t exist is not found', async (context) => {
+		if (!host) return context.skip();
+		expect(await probe(host, 'ai-send-unknown')).toEqual({
+			error: { tag: 'not-found', val: 'missing' },
+		});
+		expect(await probe(host, 'ai-read-chat-missing')).toEqual({
+			error: { tag: 'not-found', val: 'chat_01j9qv6m0000000000000000cc' },
+		});
+		expect(await probe(host, 'ai-read-run-missing')).toEqual({
+			error: { tag: 'not-found', val: 'run_missing' },
+		});
+	});
+
+	test('still reads nothing without workspace-read', async (context) => {
+		if (!host) return context.skip();
+		expect(await probe(host, 'read-file')).toEqual(denied('workspace-read'));
+	});
+});
 
 describe.each(HOSTS)(
 	'a plugin that declares every capability it calls, on %s',

@@ -87,6 +87,7 @@ Each `[[capabilities]]` table asks for one capability:
 | `inbox-sections` | Add sections to the Inbox | [`inbox`](interfaces/inbox.md) |
 | `settings` | Add a page to Settings | [`settings`](interfaces/settings.md) |
 | `tools` | Offer tools to AI assistants | [`tools`](interfaces/tools.md) |
+| `ai` | Chat with the AI providers you set up once you consent for the workspace, and keep the chats in it | [`ai`](interfaces/ai.md) |
 
 A call the manifest doesn't cover fails with `capability-not-declared`, naming the capability, and Noura runs nothing for it. The [`clock`](interfaces/clock.md) needs no capability. You approve each capability, network host and command target on each device, and you can revoke any of them in Settings > Plugins. An update that asks for more waits for your approval.
 
@@ -112,7 +113,7 @@ export const view: ViewExports = {
 
 Each interface has a page with an example that CI builds and runs in Noura:
 
-- Imports: [`workspace`](interfaces/workspace.md), [`objects`](interfaces/objects.md), [`network`](interfaces/network.md), [`command-calls`](interfaces/command-calls.md), [`clock`](interfaces/clock.md) and [`navigation`](interfaces/navigation.md).
+- Imports: [`workspace`](interfaces/workspace.md), [`objects`](interfaces/objects.md), [`network`](interfaces/network.md), [`command-calls`](interfaces/command-calls.md), [`clock`](interfaces/clock.md), [`navigation`](interfaces/navigation.md) and [`ai`](interfaces/ai.md).
 - Exports: [`view`](interfaces/view.md), [`object-types`](interfaces/object-types.md), [`commands`](interfaces/commands.md), [`inbox`](interfaces/inbox.md), [`settings`](interfaces/settings.md) and [`tools`](interfaces/tools.md).
 - Types: [`ui`](interfaces/ui.md), the nodes and events of views, and [`types`](interfaces/types.md), the errors calls throw.
 
@@ -154,6 +155,7 @@ The mock host implements every interface of `noura:plugin` from the same WIT the
 - `clock`: what `now()` reads.
 - `fetch`: answers to the requests that pass the manifest's hosts.
 - `commands`: other plugins' commands, by `plugin/command`.
+- `providers`: the AI providers that `ai` lists.
 
 The host's methods drive each export:
 
@@ -165,7 +167,7 @@ The host's methods drive each export:
 
 `host.objects()` lists the objects the plugin wrote, and `host.openings` what it asked Noura to open. Without its capability, a listing method such as `pages` returns nothing, since Noura never asks, and the other methods throw a `CapabilityError` that names the capability.
 
-The mock host doesn't check views against Noura's drawing rules or properties against their schemas, and it doesn't fill in a schema's defaults. Run the plugin in Noura for those.
+The mock host doesn't check views against Noura's drawing rules or properties against their schemas, and it doesn't fill in a schema's defaults. It asks no AI provider and nobody for consent, so an `ai` run waits for consent until the plugin stops it. Run the plugin in Noura for those.
 
 ## Package it for release
 
