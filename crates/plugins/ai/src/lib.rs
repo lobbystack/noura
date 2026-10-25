@@ -48,9 +48,12 @@ struct State {
     unsent: BTreeMap<String, String>,
     /// Why the last thing you did failed.
     notice: Option<String>,
-    /// The turns of the model's whose tool calls the plugin answered, by
-    /// run ID and call IDs, so a turn's calls go out once.
-    answered: BTreeSet<String>,
+    /// The turns of the model's whose tool calls the plugin couldn't
+    /// answer, by run ID and call IDs, so a failed answer doesn't search
+    /// the web again each time the page draws. An answer that goes in
+    /// leaves no entry: the run streams again, and its next calls are a
+    /// new turn even when the model gives them the same IDs.
+    failed_turns: BTreeSet<String>,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -61,7 +64,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     draft: String::new(),
     unsent: BTreeMap::new(),
     notice: None,
-    answered: BTreeSet::new(),
+    failed_turns: BTreeSet::new(),
 });
 
 fn state() -> std::sync::MutexGuard<'static, State> {

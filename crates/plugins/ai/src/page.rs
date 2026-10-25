@@ -66,10 +66,13 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
             .chain(current.tool_calls.iter().map(|call| call.id.as_str()))
             .collect::<Vec<_>>()
             .join(" ");
-        if state.answered.insert(turn) {
+        if !state.failed_turns.contains(&turn) {
             match web::answer(current) {
                 Ok(next) => run = Some(next),
-                Err(error) => state.notice = Some(reason(&error)),
+                Err(error) => {
+                    state.notice = Some(reason(&error));
+                    state.failed_turns.insert(turn);
+                }
             }
             // The calls' results are in the chat now.
             if let Some(chat) = &state.chat

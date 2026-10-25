@@ -114,12 +114,14 @@ impl Searching {
         self.requests(index + 2);
     }
 
-    /// The result request `index` carried for the call `call_id`, as JSON.
+    /// The last result request `index` carried for the call `call_id`, as
+    /// JSON.
     fn result(&self, index: usize, call_id: &str) -> Value {
         let prefix = format!("tool: result {call_id} ");
         let line = self.provider.requests()[index]
             .messages
             .iter()
+            .rev()
             .find_map(|line| line.strip_prefix(&prefix).map(str::to_owned))
             .unwrap_or_else(|| panic!("request {index} carries no result for {call_id}"));
         serde_json::from_str(&line).unwrap()
@@ -281,6 +283,40 @@ fn a_scripted_search_gets_titles_addresses_and_snippets_and_the_chat_records_eac
             ),
         ]
     );
+}
+
+/// Gemini's adapter numbers its calls again in each answer, so a run's
+/// second search can carry the first one's call ID.
+#[test]
+fn a_model_that_gives_each_turns_calls_the_same_ids_gets_each_answered() {
+    let Some(mut chat) = Searching::new(READY) else {
+        return;
+    };
+    chat.send("Find a tomato guide");
+    chat.requests(1);
+
+    chat.call(0, "call#web_search#0", "web_search", search("tomato care"));
+    assert!(chat.result(1, "call#web_search#0")["results"].is_array());
+    chat.call(
+        1,
+        "call#web_search#0",
+        "web_search",
+        search("tomato pruning"),
+    );
+    assert_eq!(
+        chat.result(2, "call#web_search#0")["query"],
+        "tomato pruning"
+    );
+    chat.answer(2, "Water them weekly.");
+
+    assert_eq!(
+        chat.web.calls(),
+        [
+            WebCall::Search("tomato care".into()),
+            WebCall::Search("tomato pruning".into())
+        ]
+    );
+    assert!(ai::lines(&chat.app).contains(&"md: Water them weekly.".to_owned()));
 }
 
 /// Press the button `node` of the probe installed as `plugin`, and return
