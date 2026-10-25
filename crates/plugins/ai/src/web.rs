@@ -19,11 +19,16 @@ pub(crate) const SEARCH: &str = "web_search";
 pub(crate) const FETCH: &str = "web_fetch";
 
 /// The most calls the plugin answers in one turn of the model's. Each
-/// later one gets an error.
-const MAX_CALLS: usize = 8;
+/// later one gets an error. Each call may wait up to Noura's 15-second
+/// web timeout, and the plugin's call may take two minutes in all.
+const MAX_CALLS: usize = 5;
 
 /// The most results a search asks for.
 const MAX_RESULTS: u64 = 10;
+
+/// The most bytes of a page's text the model gets, about 10,000 tokens,
+/// so one page leaves room in the model's context for the chat.
+const MAX_PAGE_TEXT: usize = 40 * 1024;
 
 /// The tools the model may call: web search and page reads, while Noura
 /// says they work in this workspace, and none otherwise.
@@ -127,13 +132,16 @@ fn call_tool(call: &ToolCall) -> String {
                 return error("tool_arguments_invalid", "A page read needs an address.");
             };
             match ai::web_fetch(url) {
-                Ok(page) => json!({
-                    "url": page.url,
-                    "contentType": page.content_type,
-                    "truncated": page.truncated,
-                    "text": page.text,
-                })
-                .to_string(),
+                Ok(page) => {
+                    let (text, cut) = cut(&page.text, MAX_PAGE_TEXT);
+                    json!({
+                        "url": page.url,
+                        "contentType": page.content_type,
+                        "truncated": page.truncated || cut,
+                        "text": text,
+                    })
+                    .to_string()
+                }
                 Err(failure) => web_error(&failure),
             }
         }
@@ -142,6 +150,19 @@ fn call_tool(call: &ToolCall) -> String {
             &format!("The AI plugin has no tool named {other}."),
         ),
     }
+}
+
+/// `text` cut to at most `limit` bytes at a character boundary, and
+/// whether it was cut.
+fn cut(text: &str, limit: usize) -> (&str, bool) {
+    if text.len() <= limit {
+        return (text, false);
+    }
+    let mut end = limit;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (&text[..end], true)
 }
 
 fn web_error(failure: &WebError) -> String {
@@ -203,4 +224,61 @@ pub(crate) fn shown_result(content: &str) -> Option<Shown> {
         return Some(Shown::Sources(sources));
     }
     (result.get("text").is_some() && result.get("url").is_some()).then_some(Shown::Page)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_text_is_cut_at_a_character_boundary() {
+        assert_eq!(cut("tomato", 10), ("tomato", false));
+        assert_eq!(cut("ééé", 5), ("éé", true));
+        assert_eq!(cut("ééé", 4), ("éé", true));
+    }
+
+    #[test]
+    fn a_web_call_shows_its_query_or_address_and_a_search_its_sources() {
+        assert!(matches!(
+            shown_call(r#"{"query":"tomato care"}"#),
+            Some(Shown::Searched(query)) if query == "tomato care"
+        ));
+        assert!(matches!(
+            shown_call(r#"{"url":"https://garden.example.com/"}"#),
+            Some(Shown::Read(url)) if url == "https://garden.example.com/"
+        ));
+        assert!(shown_call("not json").is_none());
+
+        let Some(Shown::Sources(sources)) = shown_result(
+            r#"{"query":"q","results":[
+                {"title":"Tomatoes","url":"https://garden.example.com/"},
+                {"title":"  ","url":"https://notes.example.com/"},
+                {"title":"No address"}
+            ]}"#,
+        ) else {
+            panic!("a search shows its sources");
+        };
+        assert_eq!(
+            sources,
+            [
+                (
+                    "Tomatoes".to_owned(),
+                    "https://garden.example.com/".to_owned()
+                ),
+                (
+                    "https://notes.example.com/".to_owned(),
+                    "https://notes.example.com/".to_owned()
+                ),
+            ]
+        );
+        assert!(matches!(
+            shown_result(r#"{"error":{"code":"web_consent_required","message":"Allow it."}}"#),
+            Some(Shown::Failed(message)) if message == "Allow it."
+        ));
+        assert!(matches!(
+            shown_result(r#"{"url":"https://garden.example.com/","text":"Grow."}"#),
+            Some(Shown::Page)
+        ));
+        assert!(shown_result(r#"{"echoed":"hi"}"#).is_none());
+    }
 }
