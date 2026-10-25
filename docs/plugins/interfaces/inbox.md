@@ -30,7 +30,7 @@ name = "workspace-read"
 `renderSection` shows a line of text when the folder is empty, and a list otherwise:
 
 ```ts
-import type { InboxExports } from '@noura/plugin-types';
+import type { InboxExports } from '@noura/plugin-types/0.1.0';
 import type { Node } from 'noura:plugin/ui@0.1.0';
 import { listEntries } from 'noura:plugin/workspace@0.1.0';
 

@@ -7,7 +7,7 @@ import type {
 	ObjectTypesExports,
 	ToolsExports,
 	ViewExports,
-} from '@noura/plugin-types';
+} from '@noura/plugin-types/0.1.0';
 import { call as callCommand } from 'noura:plugin/command-calls@0.1.0';
 import { now } from 'noura:plugin/clock@0.1.0';
 import { openPage } from 'noura:plugin/navigation@0.1.0';
@@ -26,6 +26,21 @@ import {
 const KEPT = 'note_01j9qv6m0000000000000000aa';
 /** The note that `Shared/Draft.md` and its copy both hold. */
 const SHARED = 'note_01j9qv6m0000000000000000bb';
+
+/** The properties the probe writes into a recipe, of each kind a property holds. */
+const RECIPE = {
+	tags: ['quick', 'spicy'],
+	cuisine: 'Thai',
+	rating: 4.5,
+	servings: 2,
+	vegetarian: false,
+	source: null,
+	steps: 'Chop.\nFry.',
+	code: '0123',
+	answer: 'yes',
+	empty: '',
+	timing: { prep: 10, cook: 'one hour: or so' },
+};
 
 /** An object without its revision, whose form differs from host to host. */
 function summary(object: WorkspaceObject) {
@@ -75,6 +90,22 @@ const CALLS: Record<string, () => unknown> = {
 			body: '',
 			properties: '{}',
 		}).id.startsWith('probe-note_'),
+	'read-own-file': () => {
+		const object = create({
+			objectType: 'probe-note',
+			title: 'Recipe',
+			body: 'The recipe.\n',
+			properties: JSON.stringify(RECIPE),
+		});
+		// The ID and the time differ from host to host, and their form doesn't.
+		return new TextDecoder()
+			.decode(readFile(object.path).bytes)
+			.replace(`id: ${object.id}\n`, 'id: <id>\n')
+			.replace(
+				/^(created|updated): \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{1,9})?Z$/gm,
+				'$1: <instant>',
+			);
+	},
 	'list-objects': () => list('note').length,
 	'list-own': () => list('probe-note').map((object) => object.path),
 	'update-stale': () => {
@@ -131,7 +162,18 @@ export const view: ViewExports = {
 
 // Noura asks for these only when the manifest declares object-types.
 export const objectTypes: ObjectTypesExports = {
-	types: () => [{ name: 'probe-note', schema: '{"properties":[]}' }],
+	// Noura writes the declared properties first, in this order.
+	types: () => [
+		{
+			name: 'probe-note',
+			schema: JSON.stringify({
+				properties: [
+					{ name: 'rating', kind: 'number' },
+					{ name: 'cuisine', kind: 'string' },
+				],
+			}),
+		},
+	],
 };
 
 export const tools: ToolsExports = {

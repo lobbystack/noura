@@ -29,7 +29,7 @@ name = "workspace-read"
 The schema makes `folder` optional, so the tool counts the whole workspace when the assistant leaves it out:
 
 ```ts
-import type { ToolsExports } from '@noura/plugin-types';
+import type { ToolsExports } from '@noura/plugin-types/0.1.0';
 import { listEntries } from 'noura:plugin/workspace@0.1.0';
 
 export const tools: ToolsExports = {

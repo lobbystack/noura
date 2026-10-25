@@ -36,7 +36,7 @@ name = "views"
 The button sends Tasks the task's title. Tasks answers with the task it wrote, as JSON:
 
 ```ts
-import type { ViewExports } from '@noura/plugin-types';
+import type { ViewExports } from '@noura/plugin-types/0.1.0';
 import { call } from 'noura:plugin/command-calls@0.1.0';
 import type { Event, Node } from 'noura:plugin/ui@0.1.0';
 

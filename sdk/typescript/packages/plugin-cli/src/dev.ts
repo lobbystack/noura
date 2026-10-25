@@ -1,11 +1,11 @@
 // Dev mode: build the plugin, then build it again each time its source or
 // manifest changes. Noura reloads a plugin installed from this folder when
 // a new build lands in it.
-import { join, resolve, sep } from 'node:path';
+import { join, resolve } from 'node:path';
 import { watch } from 'chokidar';
 
 import { BuildError, build, describe } from './build.js';
-import { MANIFEST_FILE, ManifestError, readManifest } from './manifest.js';
+import { MANIFEST_FILE, ManifestError } from './manifest.js';
 import { plain } from './output.js';
 
 /** A dev session, which watches until closed. */
@@ -46,16 +46,9 @@ export async function dev(
 		}
 		building = true;
 		try {
-			const manifest = await readManifest(folder);
-			const entry = resolve(folder, manifest.entry);
-			if (entry === src || entry.startsWith(src + sep)) {
-				// Writing the component there would start the next build.
-				log(
-					`The entry ${manifest.entry} in plugin.toml is inside src, which dev mode watches. Put the component outside src, such as at dist/plugin.wasm.`,
-				);
-			} else {
-				log(describe(await build(folder), folder));
-			}
+			// The build refuses an entry inside src, so writing the
+			// component never starts the next build.
+			log(describe(await build(folder), folder));
 		} catch (error) {
 			log(failure(error));
 		} finally {

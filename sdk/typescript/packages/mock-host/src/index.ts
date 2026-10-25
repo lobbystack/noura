@@ -239,6 +239,7 @@ export class MockHost {
 		if (this.declares('object-types')) {
 			for (const declared of this.call('objectTypes', 'types') as {
 				name: string;
+				schema: string;
 			}[]) {
 				const held = PLUGIN_TYPES[declared.name];
 				if (
@@ -246,6 +247,7 @@ export class MockHost {
 					(held === undefined || held === this.manifest.id)
 				) {
 					this.types.add(declared.name);
+					this.workspace.registerType(declared.name, declared.schema);
 				}
 			}
 		}

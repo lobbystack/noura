@@ -31,7 +31,7 @@ name = "views"
 `render` returns only the list's size. Noura asks `rows` for the rows it shows:
 
 ```ts
-import type { ViewExports } from '@noura/plugin-types';
+import type { ViewExports } from '@noura/plugin-types/0.1.0';
 import type { Event, Node, VirtualRow } from 'noura:plugin/ui@0.1.0';
 
 const COUNT = 10_000;

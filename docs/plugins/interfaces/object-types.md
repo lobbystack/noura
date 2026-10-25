@@ -49,7 +49,7 @@ name = "object-types"
 `renderPanel` reads the recipe's file each time Noura draws the panel. `handlePanelEvent` writes the input that changed, with the revision it read:
 
 ```ts
-import type { ObjectTypesExports } from '@noura/plugin-types';
+import type { ObjectTypesExports } from '@noura/plugin-types/0.1.0';
 import { get, update } from 'noura:plugin/objects@0.1.0';
 import type { Event, Node } from 'noura:plugin/ui@0.1.0';
 

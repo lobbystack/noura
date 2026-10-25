@@ -1,12 +1,12 @@
 // The mock host's workspace: files and folders by path, and the objects of
 // the plugin's own types, all in memory. It answers the `workspace` and
 // `objects` interfaces with the errors Noura gives, though it doesn't check
-// properties against the types' schemas. A Markdown file you seed whose
-// frontmatter holds an `id` and a `type` is an object that `workspace`
-// reads, as in Noura; the `objects` interface works on the objects the
-// plugin writes.
+// properties against the types' schemas or fill in their defaults. A
+// Markdown file you seed whose frontmatter holds an `id` and a `type` is an
+// object that `workspace` reads, as in Noura; the `objects` interface works
+// on the objects the plugin writes, whose files read as Noura writes them.
 import { createHash, randomBytes } from 'node:crypto';
-import { parse as parseYaml } from 'yaml';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 
 /** A WIT `error` variant from noura:plugin/types, which a call throws. */
 export type HostError = { tag: string; val?: unknown };
@@ -111,8 +111,9 @@ function ulid(): string {
 	return head + random;
 }
 
+/** The time now as Noura writes it: in UTC, without the fraction of a second's trailing zeros. */
 function instant(): string {
-	return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+	return new Date().toISOString().replace(/\.?0+Z$/, 'Z');
 }
 
 /** A file's title: its name without the extension. */
@@ -201,6 +202,73 @@ function parseObject(path: string, bytes: Uint8Array): ReadObject | undefined {
 	};
 }
 
+/** The frontmatter fields Noura writes for every object, which no property can name. */
+const MANAGED = new Set(['id', 'type', 'created', 'updated']);
+
+/** Options that make the YAML library write frontmatter as Noura's writer does. */
+const NOURA_YAML = {
+	indentSeq: false,
+	lineWidth: 0,
+	minContentWidth: 0,
+	singleQuote: true,
+} as const;
+
+/**
+ * The file Noura writes for `object`: frontmatter with `id` and `type`, the
+ * properties its type declares in `declared` order, the others sorted by
+ * name, then `created` and `updated`, and the body after it.
+ */
+function serialize(object: MockObject, declared: readonly string[]): string {
+	const values = JSON.parse(object.properties) as Record<string, unknown>;
+	// Noura keeps a property's own fields sorted by name, as it keeps JSON.
+	const sorted = (value: unknown): unknown =>
+		Array.isArray(value)
+			? value.map(sorted)
+			: value && typeof value === 'object'
+				? new Map(
+						Object.keys(value)
+							.sort()
+							.map((name) => [
+								name,
+								sorted((value as Record<string, unknown>)[name]),
+							]),
+					)
+				: value;
+	const names = Object.keys(values).filter((name) => !MANAGED.has(name));
+	const entries: [string, unknown][] = [
+		['id', object.id],
+		['type', object.objectType],
+		...declared
+			.filter((name) => names.includes(name))
+			.map((name): [string, unknown] => [name, sorted(values[name])]),
+		...names
+			.filter((name) => !declared.includes(name))
+			.sort()
+			.map((name): [string, unknown] => [name, sorted(values[name])]),
+	];
+	if (object.created) {
+		entries.push(['created', object.created]);
+	}
+	if (object.updated) {
+		entries.push(['updated', object.updated]);
+	}
+	return `---\n${stringifyYaml(new Map(entries), NOURA_YAML)}---\n${object.body}`;
+}
+
+/** The properties a type's schema declares, in order, or none when it isn't one. */
+function declaredBy(schema: string): string[] {
+	try {
+		const { properties } = JSON.parse(schema) as {
+			properties?: { name?: unknown }[];
+		};
+		return (properties ?? []).flatMap((property) =>
+			typeof property?.name === 'string' ? [property.name] : [],
+		);
+	} catch {
+		return [];
+	}
+}
+
 /** `object` as the `workspace` interface reads it. */
 function readable(object: MockObject): ReadObject {
 	const { id, objectType, title, path, body, properties, revision } = object;
@@ -219,6 +287,8 @@ export class MockWorkspace {
 	readonly files = new Map<string, Uint8Array>();
 	/** The objects of the plugin's types, by ID. */
 	readonly objects = new Map<string, MockObject>();
+	/** The properties each of the plugin's types declares, in order, by type. */
+	private readonly declared = new Map<string, string[]>();
 
 	constructor(files: Record<string, string | Uint8Array> = {}) {
 		for (const [path, content] of Object.entries(files)) {
@@ -230,6 +300,11 @@ export class MockWorkspace {
 					: content,
 			);
 		}
+	}
+
+	/** Take the property order of `objectType` from its schema, as Noura writes its objects. */
+	registerType(objectType: string, schema: string): void {
+		this.declared.set(objectType, declaredBy(schema));
 	}
 
 	private taken(path: string): boolean {
@@ -294,7 +369,10 @@ export class MockWorkspace {
 			(candidate) => candidate.path === path,
 		);
 		if (object) {
-			const text = `---\nid: ${object.id}\ntype: ${object.objectType}\n---\n${object.body}`;
+			const text = serialize(
+				object,
+				this.declared.get(object.objectType) ?? [],
+			);
 			return {
 				path,
 				bytes: new TextEncoder().encode(text),

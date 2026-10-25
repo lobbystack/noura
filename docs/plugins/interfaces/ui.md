@@ -38,7 +38,7 @@ name = "views"
 `add` appends a node and records it as a child of its parent, so the indices stay right as the view grows:
 
 ```ts
-import type { ViewExports } from '@noura/plugin-types';
+import type { ViewExports } from '@noura/plugin-types/0.1.0';
 import type { Event, Node, NodeKind } from 'noura:plugin/ui@0.1.0';
 
 const books = ['The Left Hand of Darkness'];

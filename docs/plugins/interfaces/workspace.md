@@ -31,7 +31,7 @@ name = "views"
 `render` lists the entries, keeps the Markdown files and describes each one. A call that fails throws an error whose `payload` is the error Noura gave:
 
 ```ts
-import type { ViewExports } from '@noura/plugin-types';
+import type { ViewExports } from '@noura/plugin-types/0.1.0';
 import type { Node, NodeKind } from 'noura:plugin/ui@0.1.0';
 import {
 	listEntries,

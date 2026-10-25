@@ -6,9 +6,11 @@ import {
 	access,
 	mkdir,
 	mkdtemp,
+	open,
 	readFile,
 	rename,
 	rm,
+	stat,
 	writeFile,
 } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -112,12 +114,7 @@ export async function build(folder: string): Promise<Built> {
 			`plugin.toml asks for plugin interface ${manifest.interfaceVersion}, which this version of the kit doesn't build.`,
 		);
 	}
-	const component = resolve(folder, manifest.entry);
-	if (!component.startsWith(folder + sep)) {
-		throw new BuildError(
-			`The entry ${manifest.entry} in plugin.toml isn't inside the plugin's folder.`,
-		);
-	}
+	const component = await componentPath(folder, manifest.entry);
 	const work = await mkdtemp(join(tmpdir(), 'noura-plugin-'));
 	try {
 		const entry = join(work, 'entry.ts');
@@ -153,6 +150,69 @@ export function describe(built: Built, folder: string): string {
 	const where = relative(resolve(folder), built.component).split(sep).join('/');
 	const seconds = (built.milliseconds / 1000).toFixed(1);
 	return `Built ${built.manifest.name} ${built.manifest.version} into ${where} in ${seconds} s.`;
+}
+
+/** The first bytes of every WebAssembly module and component. */
+const WASM_MAGIC = Buffer.from([0x00, 0x61, 0x73, 0x6d]);
+
+/**
+ * Where the build writes the component that `entry` names, once it's sure
+ * the build can't write over the plugin's own files: the entry ends in
+ * `.wasm`, lies inside the folder but outside `src`, and doesn't name a
+ * file that holds something other than WebAssembly.
+ */
+async function componentPath(folder: string, entry: string): Promise<string> {
+	const component = resolve(folder, entry);
+	const named = `The entry ${entry} in plugin.toml`;
+	if (!component.startsWith(folder + sep)) {
+		throw new BuildError(`${named} isn't inside the plugin's folder.`);
+	}
+	if (!/\.wasm$/i.test(component)) {
+		throw new BuildError(
+			`${named} doesn't end in .wasm. It names the component the build writes, such as dist/plugin.wasm.`,
+		);
+	}
+	const [top = ''] = relative(folder, component).split(sep);
+	if (top.toLowerCase() === 'src') {
+		throw new BuildError(
+			`${named} is inside src, which holds the plugin's source. Put the component outside src, such as at dist/plugin.wasm.`,
+		);
+	}
+	const head = await firstBytes(component, named);
+	if (head && head.length > 0 && !head.equals(WASM_MAGIC)) {
+		throw new BuildError(
+			`${named} names a file that isn't a component, so the build won't write over it. Move that file, or name another path, such as dist/plugin.wasm.`,
+		);
+	}
+	return component;
+}
+
+/** The first bytes of the file at `path`, or `undefined` when there's none. */
+async function firstBytes(
+	path: string,
+	named: string,
+): Promise<Buffer | undefined> {
+	let found: Awaited<ReturnType<typeof stat>>;
+	try {
+		found = await stat(path);
+	} catch (error) {
+		const { code } = error as NodeJS.ErrnoException;
+		if (code === 'ENOENT' || code === 'ENOTDIR') {
+			return undefined;
+		}
+		throw error;
+	}
+	if (found.isDirectory()) {
+		throw new BuildError(`${named} names a folder.`);
+	}
+	const file = await open(path, 'r');
+	try {
+		const head = Buffer.alloc(WASM_MAGIC.length);
+		const { bytesRead } = await file.read(head, 0, head.length, 0);
+		return head.subarray(0, bytesRead);
+	} finally {
+		await file.close();
+	}
 }
 
 async function exists(path: string): Promise<boolean> {

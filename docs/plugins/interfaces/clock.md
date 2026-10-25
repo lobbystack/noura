@@ -25,7 +25,7 @@ name = "views"
 `render` reads the clock each time Noura draws the page:
 
 ```ts
-import type { ViewExports } from '@noura/plugin-types';
+import type { ViewExports } from '@noura/plugin-types/0.1.0';
 import { now } from 'noura:plugin/clock@0.1.0';
 import type { Node } from 'noura:plugin/ui@0.1.0';
 

@@ -1,6 +1,6 @@
 // A page in Noura's rail that counts the files in your workspace and the
 // times you press its button.
-import type { ViewExports } from '@noura/plugin-types';
+import type { ViewExports } from '@noura/plugin-types/0.1.0';
 import type { Event, Node, NodeKind } from 'noura:plugin/ui@0.1.0';
 import { listEntries } from 'noura:plugin/workspace@0.1.0';
 

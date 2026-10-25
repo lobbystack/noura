@@ -29,7 +29,7 @@ name = "views"
 `run` handles both commands and throws for an ID it doesn't know:
 
 ```ts
-import type { CommandsExports, ViewExports } from '@noura/plugin-types';
+import type { CommandsExports, ViewExports } from '@noura/plugin-types/0.1.0';
 import type { Node } from 'noura:plugin/ui@0.1.0';
 
 let count = 0;

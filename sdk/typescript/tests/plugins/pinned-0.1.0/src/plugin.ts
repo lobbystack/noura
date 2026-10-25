@@ -8,7 +8,7 @@ import type {
 	SettingsExports,
 	ToolsExports,
 	ViewExports,
-} from '@noura/plugin-types';
+} from '@noura/plugin-types/0.1.0';
 import { now } from 'noura:plugin/clock@0.1.0';
 import { call } from 'noura:plugin/command-calls@0.1.0';
 import {

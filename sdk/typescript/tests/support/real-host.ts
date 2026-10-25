@@ -86,12 +86,30 @@ export class RealHost {
 		{ done(value: unknown): void; fail(error: Error): void }
 	>();
 
+	/** Why the host stopped, once it has. */
+	private stopped: Error | undefined;
+
 	private constructor(
 		private readonly child: ChildProcessWithoutNullStreams,
 		private readonly root: string,
 		/** The workspace folder the host opened. */
 		readonly workspace: string,
+		/** What the host wrote to standard error so far. */
+		stderr: () => string,
 	) {
+		// A host that stops fails every request still waiting on it with
+		// what it wrote, rather than leaving the test to time out. Its
+		// streams close after it exits, so the answers it wrote come first.
+		child.stdin.on('error', () => {});
+		child.once('close', (code, signal) => {
+			this.stopped = new Error(
+				`The kit host stopped with ${code ?? signal}: ${stderr()}`,
+			);
+			for (const waiting of this.waiting.values()) {
+				waiting.fail(this.stopped);
+			}
+			this.waiting.clear();
+		});
 		const lines = createInterface({ input: child.stdout });
 		lines.on('line', (line) => {
 			const answer = JSON.parse(line) as {
@@ -115,8 +133,8 @@ export class RealHost {
 	 */
 	static async start(
 		files: Record<string, string> = {},
+		binary: string | undefined = kitHostBinary(),
 	): Promise<RealHost | undefined> {
-		const binary = kitHostBinary();
 		if (!binary) {
 			return undefined;
 		}
@@ -126,13 +144,16 @@ export class RealHost {
 			await mkdir(dirname(join(workspace, path)), { recursive: true });
 			await writeFile(join(workspace, path), text);
 		}
-		const child = spawn(
-			binary,
-			['--app-data', join(root, 'app-data'), '--workspace', workspace],
-			{
-				stdio: ['pipe', 'pipe', 'pipe'],
-			},
-		);
+		const args = [
+			'--app-data',
+			join(root, 'app-data'),
+			'--workspace',
+			workspace,
+		];
+		// A stand-in host for the tests of this file is a Node script.
+		const child = binary.endsWith('.mjs')
+			? spawn(process.execPath, [binary, ...args], { stdio: 'pipe' })
+			: spawn(binary, args, { stdio: 'pipe' });
 		let stderr = '';
 		child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
 		await new Promise<void>((ready, fail) => {
@@ -149,7 +170,7 @@ export class RealHost {
 				fail(new Error(`The kit host stopped with ${code}: ${stderr}`)),
 			);
 		});
-		return new RealHost(child, root, workspace);
+		return new RealHost(child, root, workspace, () => stderr);
 	}
 
 	private request<T>(
@@ -158,6 +179,10 @@ export class RealHost {
 	): Promise<T> {
 		const id = this.next++;
 		return new Promise<T>((done, fail) => {
+			if (this.stopped) {
+				fail(this.stopped);
+				return;
+			}
 			this.waiting.set(id, { done: done as (value: unknown) => void, fail });
 			this.child.stdin.write(`${JSON.stringify({ id, op, ...fields })}\n`);
 		});
@@ -212,8 +237,13 @@ export class RealHost {
 	}
 
 	async close(): Promise<void> {
-		this.child.stdin.end();
-		await new Promise((stopped) => this.child.once('exit', stopped));
+		if (!this.stopped) {
+			const exited = new Promise((stopped) =>
+				this.child.once('close', stopped),
+			);
+			this.child.stdin.end();
+			await exited;
+		}
 		await rm(this.root, { recursive: true, force: true });
 	}
 }

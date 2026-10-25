@@ -9,7 +9,7 @@ The kit is four npm packages:
 - `@noura/plugin-types`: the TypeScript types of Noura's plugin interface, generated from its WIT.
 - `@noura/mock-host`: a mock of Noura that runs a built plugin in your tests.
 
-The kit needs Node 22.12 or later. CI tests it on Node 24.
+The kit needs Node 22.20 or a later 22 release, 24.12 or a later 24 release, or 26 or later. CI tests it on Node 24.
 
 ## Start a plugin
 
@@ -72,7 +72,7 @@ name = "views"
 - `id`: lowercase letters, digits and hyphens, starting with a letter, up to 64 characters.
 - `version`: the plugin's semantic version.
 - `interface-version`: the version of Noura's plugin interface, `noura:plugin`, that the plugin is built against. The build reads the interface of this version.
-- `entry`: where the build writes the component, inside the plugin's folder.
+- `entry`: the path the build writes the component to. It ends in `.wasm` and sits inside the plugin's folder but outside `src`, such as `dist/plugin.wasm`. The build won't replace a file there that isn't a component.
 - `platforms`: `desktop`, and `mobile` once a mobile Noura exists.
 
 Each `[[capabilities]]` table asks for one capability:
@@ -92,10 +92,10 @@ A call the manifest doesn't cover fails with `capability-not-declared`, naming t
 
 ## Write the plugin
 
-`src/plugin.ts` imports what it calls from the modules `noura:plugin/<interface>@0.1.0`, and exports an object for each interface it offers Noura: `view`, `objectTypes`, `commands`, `inbox`, `settings` and `tools`. Each function is optional, since the build fills in one that returns nothing:
+`src/plugin.ts` imports what it calls from the modules `noura:plugin/<interface>@0.1.0`, and exports an object for each interface it offers Noura: `view`, `objectTypes`, `commands`, `inbox`, `settings` and `tools`, typed with `@noura/plugin-types/0.1.0`. Each function is optional, since the build fills in one that returns nothing:
 
 ```ts
-import type { ViewExports } from '@noura/plugin-types';
+import type { ViewExports } from '@noura/plugin-types/0.1.0';
 import type { Node } from 'noura:plugin/ui@0.1.0';
 
 export const view: ViewExports = {
@@ -150,7 +150,7 @@ test('the page counts the files', async () => {
 
 The mock host implements every interface of `noura:plugin` from the same WIT the plugin builds against, and refuses each call the manifest doesn't declare with the error Noura gives. Its options fill in what it can't reach:
 
-- `files`: the workspace's files, by path. A Markdown file with an `id` and a `type` in its frontmatter is an object, and `workspace` reads it as Noura does. The `objects` interface sees only the objects the plugin writes.
+- `files`: the workspace's files, by path. A Markdown file with an `id` and a `type` in its frontmatter is an object, and `workspace` reads it as Noura does. The `objects` interface sees only the objects the plugin writes, and `readFile` gives their files with the frontmatter Noura writes.
 - `clock`: what `now()` reads.
 - `fetch`: answers to the requests that pass the manifest's hosts.
 - `commands`: other plugins' commands, by `plugin/command`.
@@ -165,7 +165,7 @@ The host's methods drive each export:
 
 `host.objects()` lists the objects the plugin wrote, and `host.openings` what it asked Noura to open. Without its capability, a listing method such as `pages` returns nothing, since Noura never asks, and the other methods throw a `CapabilityError` that names the capability.
 
-The mock host doesn't check views against Noura's drawing rules or properties against their schemas. Run the plugin in Noura for those.
+The mock host doesn't check views against Noura's drawing rules or properties against their schemas, and it doesn't fill in a schema's defaults. Run the plugin in Noura for those.
 
 ## Package it for release
 
@@ -182,4 +182,4 @@ Noura reads only those two files and installs nothing from an archive that holds
 
 ## Interface versions
 
-The interface's version is part of every module name, such as `noura:plugin/workspace@0.1.0`, and the manifest's `interface-version` names it. When Noura ships a new version of the interface, it keeps running plugins built against the older ones, and the kit keeps building them. CI builds a plugin against `noura:plugin@0.1.0` and runs it on every change, so a release that would break it fails first.
+The interface's version is part of every module name, such as `noura:plugin/workspace@0.1.0`, and the manifest's `interface-version` names it. When Noura ships a new version of the interface, it keeps running plugins built against the older ones, and the kit keeps building them. `@noura/plugin-types` keeps the types of each version too. Import your plugin's export types from `@noura/plugin-types/<version>`, the version its manifest names, and a kit update leaves them as they were. CI builds a plugin against `noura:plugin@0.1.0` and runs it on every change, so a release that would break it fails first.

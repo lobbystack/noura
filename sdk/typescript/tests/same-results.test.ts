@@ -258,6 +258,57 @@ describe.each(HOSTS)(
 );
 
 describe.each(HOSTS)(
+	'a plugin that declares workspace-read and object-types, on %s',
+	(_name, start) => {
+		const folder = folderForBlock();
+		let host: Host | undefined;
+		beforeAll(async () => {
+			host = await start(
+				await buildTestPlugin('probe', folder.path(), [
+					'name = "tools"',
+					'name = "workspace-read"',
+					'name = "object-types"',
+				]),
+			);
+		});
+		afterAll(async () => host?.close());
+
+		test('reads the file of an object it wrote as Noura writes it', async (context) => {
+			if (!host) return context.skip();
+			expect(await probe(host, 'read-own-file')).toEqual({
+				ok: [
+					'---',
+					'id: <id>',
+					'type: probe-note',
+					'rating: 4.5',
+					'cuisine: Thai',
+					'answer: yes',
+					"code: '0123'",
+					"empty: ''",
+					'servings: 2',
+					'source: null',
+					'steps: |-',
+					'  Chop.',
+					'  Fry.',
+					'tags:',
+					'- quick',
+					'- spicy',
+					'timing:',
+					"  cook: 'one hour: or so'",
+					'  prep: 10',
+					'vegetarian: false',
+					'created: <instant>',
+					'updated: <instant>',
+					'---',
+					'The recipe.',
+					'',
+				].join('\n'),
+			});
+		});
+	},
+);
+
+describe.each(HOSTS)(
 	'a plugin that declares every capability it calls, on %s',
 	(_name, start) => {
 		const folder = folderForBlock();

@@ -38,7 +38,7 @@ name = "views"
 `explain` reads the payload of the error `readFile` throws and turns each case into a sentence:
 
 ```ts
-import type { ViewExports } from '@noura/plugin-types';
+import type { ViewExports } from '@noura/plugin-types/0.1.0';
 import type { Error as NouraError } from 'noura:plugin/types@0.1.0';
 import type { Node } from 'noura:plugin/ui@0.1.0';
 import { readFile } from 'noura:plugin/workspace@0.1.0';

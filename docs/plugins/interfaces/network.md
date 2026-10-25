@@ -31,7 +31,7 @@ name = "tools"
 `callTool` builds the URL from the tool's arguments, sends the request and returns the temperature:
 
 ```ts
-import type { ToolsExports } from '@noura/plugin-types';
+import type { ToolsExports } from '@noura/plugin-types/0.1.0';
 import { fetch } from 'noura:plugin/network@0.1.0';
 
 export const tools: ToolsExports = {

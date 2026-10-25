@@ -35,7 +35,7 @@ name = "views"
 `objectTypes.types` registers the type with its schema. The view reads the objects from their files each time Noura draws it, so it shows edits you make elsewhere:
 
 ```ts
-import type { ObjectTypesExports, ViewExports } from '@noura/plugin-types';
+import type { ObjectTypesExports, ViewExports } from '@noura/plugin-types/0.1.0';
 import { create, get, list, update } from 'noura:plugin/objects@0.1.0';
 import type { Event, Node } from 'noura:plugin/ui@0.1.0';
 

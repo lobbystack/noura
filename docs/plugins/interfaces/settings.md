@@ -32,7 +32,7 @@ name = "views"
 The example keeps the greeting in memory, so it resets when Noura restarts. To keep it, store it in an object of the plugin's own type, as the [`objects`](objects.md) page shows:
 
 ```ts
-import type { SettingsExports, ViewExports } from '@noura/plugin-types';
+import type { SettingsExports, ViewExports } from '@noura/plugin-types/0.1.0';
 import type { Event, Node } from 'noura:plugin/ui@0.1.0';
 
 let greeting = 'Good morning';

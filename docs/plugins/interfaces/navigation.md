@@ -29,7 +29,7 @@ name = "views"
 `handleEvent` answers the press, so Noura opens the page once the call returns:
 
 ```ts
-import type { ViewExports } from '@noura/plugin-types';
+import type { ViewExports } from '@noura/plugin-types/0.1.0';
 import { openPage } from 'noura:plugin/navigation@0.1.0';
 import type { Event, Node } from 'noura:plugin/ui@0.1.0';
 
