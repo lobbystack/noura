@@ -10,8 +10,13 @@ use url::{Host, Url};
 
 use crate::{CoreError, ErrorCategory, Result};
 
+mod brave;
 mod host_requests;
+mod pages;
+#[cfg(test)]
+mod test_server;
 
+pub use brave::{BRAVE_SEARCH_HOST, BraveSearch};
 pub use host_requests::{
     HostRequest, HostRequests, HostResponse, TransportRequest, TransportResponse, WebMethod,
     WebTransport,
@@ -50,11 +55,15 @@ pub struct WebFetchInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebFetchResponse {
+    /// The address that answered, after any redirects.
     pub url: String,
     pub status: u16,
     pub content_type: Option<String>,
+    /// The page as text.
     pub content: String,
     pub response_bytes: usize,
+    /// Whether the text was cut at the content limit.
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -314,16 +323,11 @@ fn validate_fetch_response(
     limits: WebAccessLimits,
     operation: &str,
 ) -> Result<WebFetchResponse> {
+    // The text may hold more bytes than the response, as after decoding a
+    // single-byte character set or adding a link's footnote, so only each
+    // size's own limit applies.
     validate_response_bytes(response.response_bytes, limits, operation)?;
     validate_content_bytes(response.content.len(), limits, operation)?;
-    if response.response_bytes < response.content.len() {
-        return Err(CoreError::new(
-            "web_response_invalid",
-            ErrorCategory::Provider,
-            "The web provider reported an invalid response size",
-            operation,
-        ));
-    }
     response.url = parse_https_url(&response.url, operation)?.into();
     Ok(response)
 }
@@ -510,6 +514,7 @@ mod tests {
             content_type: Some("text/plain".into()),
             content: content.into(),
             response_bytes,
+            truncated: false,
         }
     }
 
