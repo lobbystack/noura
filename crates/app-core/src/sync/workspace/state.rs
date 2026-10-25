@@ -71,6 +71,10 @@ pub struct State {
     /// `.noura-domain` path that no domain names as its marker (§9).
     #[serde(default)]
     pub refused: Vec<Id>,
+    /// Whether the device holds its writes after it learned of a removal
+    /// the workspace hasn't recorded and rotated past (§9).
+    #[serde(default)]
+    pub removal_hold: bool,
 }
 
 /// The profile a device accepted last (§25).

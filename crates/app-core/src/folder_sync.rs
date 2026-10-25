@@ -100,6 +100,12 @@ pub struct FolderSyncScreen {
     pub held_roots: Vec<HeldRootEntry>,
     /// The versions an earlier journal kept.
     pub archived: Vec<ArchivedEntry>,
+    /// The versions from other devices that didn't open, one line each,
+    /// naming the device that signed each (§13).
+    pub unreadable: Vec<String>,
+    /// Whether sync holds your changes after a device left your account,
+    /// until the workspace records it and changes its key (§9).
+    pub removal_hold: bool,
     /// The files sync leaves out, one line each.
     pub skipped: Vec<String>,
     /// What went wrong last, for you to read.
@@ -124,6 +130,8 @@ impl FolderSyncScreen {
             held: Vec::new(),
             held_roots: Vec::new(),
             archived: Vec::new(),
+            unreadable: Vec::new(),
+            removal_hold: false,
             skipped: status.skipped.iter().map(skipped_line).collect(),
             last_error: None,
             last_success: status.last_success.map(local_time),

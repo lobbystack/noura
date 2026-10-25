@@ -235,6 +235,25 @@ fn versions_held_after_a_lost_journal_wait_for_a_choice() {
 }
 
 #[test]
+fn a_held_removal_and_unreadable_versions_show() {
+    let app_data = tempfile::tempdir().unwrap();
+    let sync = Arc::new(FakeSync::default());
+    sync.show(FolderSyncScreen {
+        phase: FolderSyncPhase::On,
+        removal_hold: true,
+        unreadable: vec!["Plan.md: a version from device abababab couldn't be read, so this computer keeps the last version that could.".into()],
+        ..FolderSyncScreen::default()
+    });
+    let harness = harness(app_data.path(), sync);
+    harness.get_by_role_and_label(
+        Role::Alert,
+        "A device left your account. Sync holds your changes until this workspace records it and changes its key.",
+    );
+    harness.get_by_role_and_label(Role::Group, "Versions that couldn't be read");
+    harness.get_by_label("Plan.md: a version from device abababab couldn't be read, so this computer keeps the last version that could.");
+}
+
+#[test]
 fn a_copied_folder_offers_to_connect() {
     let app_data = tempfile::tempdir().unwrap();
     let sync = Arc::new(FakeSync::default());

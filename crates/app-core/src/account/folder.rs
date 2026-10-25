@@ -107,6 +107,18 @@ impl Folder {
                         people,
                     })
                     .collect();
+                screen.unreadable = sync
+                    .unreadable()
+                    .into_iter()
+                    .map(|(rid, device, _)| {
+                        let path = sync.local_path(&rid).unwrap_or_else(|| "A file".into());
+                        format!(
+                            "{path}: a version from device {} couldn't be read, so this computer keeps the last version that could.",
+                            short(&device)
+                        )
+                    })
+                    .collect();
+                screen.removal_hold = sync.removal_hold();
                 screen.archived = sync
                     .archived()
                     .iter()

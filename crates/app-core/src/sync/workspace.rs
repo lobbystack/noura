@@ -288,6 +288,7 @@ impl WorkspaceSync {
             held_roots: Vec::new(),
             archived: Vec::new(),
             refused: Vec::new(),
+            removal_hold: false,
         };
         // A device accepts no policy head or epoch below its mark, also
         // when it starts again without a journal (§15).
@@ -575,6 +576,33 @@ impl WorkspaceSync {
         self.stopped
     }
 
+    /// Takes again whether the device holds its writes after a removal
+    /// the workspace hasn't recorded and rotated past (§9); when the hold
+    /// ends, the device takes the new keys first.
+    pub async fn update_hold(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
+        let was = self.state.removal_hold;
+        if was {
+            // The change that records the head, and the rotation after it,
+            // end the hold: the device takes the policy and keys again.
+            self.refresh(service).await?;
+        }
+        let Some(remote) = self.remote.as_ref() else {
+            return Ok(());
+        };
+        let held = service.removal_hold(remote).await?;
+        self.state.removal_hold = held;
+        if was != held {
+            self.save()?;
+        }
+        Ok(())
+    }
+
+    /// Whether the device holds its writes after it learned of a removal
+    /// the workspace hasn't recorded and rotated past (§9).
+    pub fn removal_hold(&self) -> bool {
+        self.state.removal_hold
+    }
+
     /// The digests of the signed records waiting for the server, in chain
     /// order.
     pub fn outbox(&self) -> Vec<Digest> {
@@ -677,16 +705,26 @@ impl WorkspaceSync {
         service: &mut SyncService,
         wait_seconds: u32,
     ) -> Result<Round, SyncError> {
-        let captured = self.capture()?;
         if self.paused {
+            let captured = self.capture()?;
             return Ok(Round {
                 captured,
                 ..Round::default()
             });
         }
-        if self.remote.is_none() {
-            self.connect(service).await?;
+        let online = async {
+            if self.remote.is_none() {
+                self.connect(service).await?;
+            }
+            self.update_hold(service).await
         }
+        .await;
+        if let Err(error) = online {
+            // Offline, changes still enter the outbox.
+            self.capture()?;
+            return Err(error);
+        }
+        let captured = self.capture()?;
         let pushed = self.push(service).await?;
         let (applied, waiting_for_key) = self.pull(service, wait_seconds).await?;
         // Applying may have written merges; they go out in the next round.
@@ -971,7 +1009,9 @@ impl WorkspaceSync {
     /// reaches the disk before this returns. Works without a network.
     /// Returns how many changes it signed.
     pub fn capture(&mut self) -> Result<usize, SyncError> {
-        if self.stopped.is_some() {
+        // A held domain takes no new encryption; the files keep their
+        // changes until the hold ends (§9).
+        if self.stopped.is_some() || self.state.removal_hold {
             return Ok(0);
         }
         let listing = self.engine.synced_listing().map_err(core)?;
@@ -1408,6 +1448,21 @@ impl WorkspaceSync {
     pub async fn push(&mut self, service: &mut SyncService) -> Result<usize, SyncError> {
         let mut acknowledged = 0;
         let mut attempts = 0;
+        if self.state.removal_hold {
+            return Ok(0);
+        }
+        // Records sealed under an epoch that a rotation since replaced go
+        // out re-sealed under the current one (§9).
+        let latest = self.state.epochs.last().map_or(0, |e| e.body.epoch);
+        if let Some(index) = self
+            .state
+            .outbox
+            .iter()
+            .position(|o| o.record.body.epoch != latest)
+        {
+            self.reseal_from(index, true)?;
+            self.save()?;
+        }
         while !self.state.outbox.is_empty() {
             // At the re-seal cap the device signs nothing more there, but
             // retries the last attempt's bytes (§14).

@@ -76,6 +76,12 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
         }
         FolderSyncPhase::On | FolderSyncPhase::Paused => {
             let paused = screen.phase == FolderSyncPhase::Paused;
+            if screen.removal_hold {
+                alert(
+                    ui,
+                    "A device left your account. Sync holds your changes until this workspace records it and changes its key.",
+                );
+            }
             group(ui, "Status", |ui| {
                 ui.label(if paused {
                     "Sync is paused. Your changes wait on this computer until you resume."
@@ -183,6 +189,13 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
                                 actions.push(FolderSyncAction::DiscardArchived(archived.index));
                             }
                         });
+                    }
+                });
+            }
+            if !screen.unreadable.is_empty() {
+                group(ui, "Versions that couldn't be read", |ui| {
+                    for line in &screen.unreadable {
+                        ui.label(line);
                     }
                 });
             }

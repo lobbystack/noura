@@ -16,6 +16,7 @@ use std::ops::Range;
 use std::time::Duration;
 
 use sync_key_envelope::v2::{EnvelopeHeader, wrap};
+use sync_protocol::account::AccountChain;
 use sync_protocol::codec::{Encode, Nested, Sorted};
 use sync_protocol::crypto::random_nonce;
 use sync_protocol::keys::{EpochParams, build_epoch};
@@ -183,6 +184,46 @@ impl SyncService {
             }
         }
         Ok(pending)
+    }
+
+    /// Whether the device holds its writes in `remote`'s workspace domain
+    /// after it learned of a removal the workspace hasn't recorded (§9): a
+    /// head it accepted of a member account, later than the one the
+    /// workspace records, takes a card out of the workspace, or the change
+    /// that recorded such a head still waits for its rotation. While it
+    /// holds, the device encrypts nothing there.
+    pub async fn removal_hold(&mut self, remote: &RemoteWorkspace) -> Result<bool, SyncError> {
+        let snapshot = remote.policy.head_snapshot().clone();
+        for pending in self.pending_heads(remote).await? {
+            let recorded = snapshot
+                .members
+                .get(&pending.account)
+                .map_or(0, |m| m.head.seqno);
+            if pending.head.seqno <= recorded {
+                continue;
+            }
+            let chain = if pending.own {
+                self.own_chain().await?
+            } else {
+                let (links, _) = self
+                    .client
+                    .whole_chain(pending.account, Some(pending.head.genesis))
+                    .await?;
+                match AccountChain::verify(&links, &BTreeSet::new()) {
+                    Ok(chain) => chain,
+                    Err(error) => return Err(SyncError::Check(error.client_code())),
+                }
+            };
+            let takes_out = snapshot.devices.iter().any(|(device, wd)| {
+                wd.account == pending.account
+                    && chain.card(device).is_some()
+                    && !chain.is_active_at(device, pending.head.seqno)
+            });
+            if takes_out {
+                return Ok(true);
+            }
+        }
+        Ok(self.rotation_pending(remote))
     }
 
     /// Records `pending` in `remote` after its wait, unless another change
