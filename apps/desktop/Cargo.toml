@@ -28,6 +28,9 @@ logroller.workspace = true
 # The native menu bar on macOS and Windows. Linux builds muda's no-op
 # backend and shows no menu bar.
 muda.workspace = true
+# `noura mcp --workspace <folder>` serves the workspace to AI tools, and
+# Settings tests that command.
+noura-mcp = { version = "0.2.0", path = "../../crates/mcp-server" }
 opener.workspace = true
 rfd.workspace = true
 # NSSpellChecker on macOS and ISpellChecker on Windows; nothing on Linux.

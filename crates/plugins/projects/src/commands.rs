@@ -47,6 +47,41 @@ pub(crate) fn run(id: &str, input: &str) -> Result<String, String> {
     Ok(project_json(&project).to_string())
 }
 
+/// Every project, or the projects with the `status` the JSON `input`
+/// names, as `projects`, each as the commands answer with it, without its
+/// body. It writes nothing.
+pub(crate) fn list(input: &str) -> Result<String, String> {
+    let input: Value = serde_json::from_str(input)
+        .map_err(|_| refusal("invalid_input", "The input isn't JSON.", json!({})))?;
+    let Some(input) = input.as_object() else {
+        return Err(refusal(
+            "invalid_input",
+            "The input must be a JSON object.",
+            json!({}),
+        ));
+    };
+    let status = text(input, "status")?;
+    let projects = crate::projects().map_err(|error| failure(&error))?;
+    let projects: Vec<Value> = projects
+        .iter()
+        .filter(|project| {
+            status
+                .as_deref()
+                .is_none_or(|status| project.status == status)
+        })
+        .map(|project| {
+            json!({
+                "id": project.id,
+                "title": project.title,
+                "path": project.path,
+                "revision": project.revision,
+                "properties": project.properties,
+            })
+        })
+        .collect();
+    Ok(json!({ "projects": projects }).to_string())
+}
+
 fn create(input: &Map<String, Value>) -> Result<Object, String> {
     let title = input
         .get("title")

@@ -19,7 +19,7 @@ Use this runbook for contributor and release review of the desktop Local Alpha. 
 2. Run the shared-engine proof by itself when diagnosing Model Context Protocol (MCP) or watcher failures:
 
    ```sh
-   cargo test -p noura-mcp local_app_and_mcp_share_canonical_files_and_rebuilt_projections
+   cargo test -p noura-mcp --test shared_files
    ```
 
 3. Start the desktop app:

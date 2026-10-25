@@ -1,16 +1,15 @@
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    if std::env::args().nth(1).as_deref() == Some("--noura-crdt-worker") {
-        local_core::sync::collaboration::run_worker_stdio()?;
-        return Ok(());
+//! `noura-mcp --workspace <folder>`: Noura's MCP server on its own, as the
+//! desktop binary's `mcp` mode serves it. Stdout carries only MCP, and
+//! warnings go to stderr.
+
+use std::{ffi::OsStr, process::ExitCode};
+
+fn main() -> ExitCode {
+    if std::env::args_os().nth(1).as_deref() == Some(OsStr::new("--noura-crdt-worker")) {
+        return match local_core::sync::collaboration::run_worker_stdio() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(_) => ExitCode::FAILURE,
+        };
     }
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .init();
-    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    let workspace =
-        noura_mcp::workspace_argument(&arguments).ok_or("usage: noura-mcp --workspace <path>")?;
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(noura_mcp::serve_stdio(workspace))
+    noura_mcp::run(std::env::args_os().skip(1))
 }
