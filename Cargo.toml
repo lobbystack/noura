@@ -126,6 +126,9 @@ hkdf = "=0.12.4"
 # Turns a web page the AI reads into plain text, links kept as footnotes.
 # MIT.
 html2text = "0.17.4"
+# Parses a page the AI reads for html2text, which builds on it, so Noura
+# can stop a page nested too deeply while it parses. MIT OR Apache-2.0.
+html5ever = "0.40.1"
 hmac = "=0.12.1"
 # ICU4X names months and weekdays and writes times in the computer's
 # locale on calendar grids, from data compiled into the app. Unicode-3.0.

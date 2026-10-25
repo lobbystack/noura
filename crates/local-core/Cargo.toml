@@ -32,6 +32,7 @@ genai.workspace = true
 ignore.workspace = true
 hmac.workspace = true
 html2text.workspace = true
+html5ever.workspace = true
 jiff.workspace = true
 keyring.workspace = true
 notify.workspace = true

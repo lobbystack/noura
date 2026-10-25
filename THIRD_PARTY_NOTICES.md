@@ -22,7 +22,7 @@ Notable runtime dependencies include the Apache-2.0 licensed official Rust MCP S
 
 Plugin calendar grids name weekdays and months and write times in your locale with ICU4X's `icu_datetime`, `icu_calendar`, `icu_time` and `icu_locale_core` (Unicode-3.0), which compile in CLDR data under the same license. `sys-locale` (MIT/Apache-2.0) reads the locale from the operating system. These are dependencies, not copied donor implementations, and the generated license file carries their license texts.
 
-When the AI reads a web page, `local-core` decodes it with `encoding_rs` ((Apache-2.0 OR MIT) AND BSD-3-Clause) and turns its HTML into text with `html2text` (MIT), which parses with `html5ever` and `markup5ever` (MIT/Apache-2.0). These are dependencies, not copied donor implementations, and the generated license file carries their license texts.
+When the AI reads a web page, `local-core` decodes it with `encoding_rs` ((Apache-2.0 OR MIT) AND BSD-3-Clause), parses its HTML with `html5ever` and `markup5ever` (MIT/Apache-2.0), and turns it into text with `html2text` (MIT). These are dependencies, not copied donor implementations, and the generated license file carries their license texts.
 
 ## atomicwrites 0.4.4 (Windows device settings)
 

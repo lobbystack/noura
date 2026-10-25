@@ -5,10 +5,27 @@
 //! refuses a status that isn't a success and a type that isn't text,
 //! decodes the page in the character set it names, turns HTML into text
 //! with its links as footnotes, and cuts the text at the content limit.
+//! The request's timeout covers the whole read, turning the page into
+//! text included, and a page whose elements nest too deeply is refused
+//! while it parses.
 
-use std::sync::Arc;
+use std::{
+    borrow::Cow,
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    rc::Rc,
+    sync::Arc,
+    time::Instant,
+};
 
 use encoding_rs::{Encoding, UTF_8};
+use html2text::{Handle, RcDom, config::Config, render::TextDecorator};
+use html5ever::{
+    Attribute, ExpandedName, ParseOpts, QualName,
+    interface::{ElementFlags, NodeOrText, QuirksMode, TreeSink},
+    tendril::{StrTendril, TendrilSink},
+    tree_builder::TreeBuilderOpts,
+};
 
 use super::{
     HostRequest, HostRequests, WebFetchRequest, WebFetchResponse, WebMethod, WebTransport,
@@ -35,6 +52,10 @@ const LINE_WIDTH: usize = 1000;
 /// dozen deep; converting one nested this deep takes milliseconds.
 const MAX_NESTING: usize = 1024;
 
+/// How much of a page the parser takes at a time before Noura checks how
+/// deep its elements went and how long it has taken.
+const PARSE_PIECE_BYTES: usize = 4 * 1024;
+
 /// The kinds of page Noura reads.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -47,6 +68,7 @@ pub(crate) async fn fetch(
     transport: Arc<dyn WebTransport>,
     request: WebFetchRequest,
 ) -> Result<WebFetchResponse> {
+    let deadline = Instant::now() + request.limits.request_timeout;
     let requests = HostRequests::new(transport, request.limits)?;
     let response = requests
         .send_public(HostRequest {
@@ -88,7 +110,7 @@ pub(crate) async fn fetch(
     };
     let decoded = decode(&response.body, charset.as_deref(), kind);
     let text = match kind {
-        Kind::Html => html_text(&decoded)?,
+        Kind::Html => html_text(decoded, deadline).await?,
         Kind::Text => decoded,
     };
     let (content, truncated) = cut(text, request.limits.max_content_bytes);
@@ -104,121 +126,286 @@ pub(crate) async fn fetch(
 
 /// The text of an HTML fragment on one line, as for a search result's
 /// title or snippet: tags gone, entities decoded, runs of white space as
-/// one space.
-pub(crate) fn plain_line(fragment: &str) -> String {
-    let text = html2text::config::plain_no_decorate()
-        .allow_width_overflow()
-        .string_from_read(fragment.as_bytes(), LINE_WIDTH)
-        .unwrap_or_else(|_| fragment.to_owned());
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+/// one space. A fragment Noura can't read by `deadline`, or that nests
+/// too deeply, comes back empty.
+pub(crate) fn plain_line(fragment: &str, deadline: Instant) -> String {
+    let config = html2text::config::plain_no_decorate().allow_width_overflow();
+    match convert(&config, fragment, LINE_WIDTH, deadline) {
+        Ok(text) => text.split_whitespace().collect::<Vec<_>>().join(" "),
+        Err(_) => String::new(),
+    }
 }
 
 /// The text of an HTML page, with emphasis marked as in Markdown and its
-/// links as numbered footnotes. The conversion's time grows with the
-/// square of how deeply elements nest, so a page nested past
-/// [`MAX_NESTING`] is refused first.
-fn html_text(html: &str) -> Result<String> {
-    if nesting(html) > MAX_NESTING {
-        tracing::warn!("a page the AI read nests its markup too deeply");
-        return Err(CoreError::new(
-            "web_page_unreadable",
-            ErrorCategory::Provider,
-            "The page's markup nests too deeply for Noura to read",
-            OPERATION,
-        ));
+/// links as numbered footnotes, or an error once `deadline` passes. The
+/// work runs on a thread for blocking work, and the call gives up on it at
+/// `deadline`: the parse checks the time as it goes and stops by itself.
+async fn html_text(html: String, deadline: Instant) -> Result<String> {
+    let converting = tokio::task::spawn_blocking(move || {
+        let config = html2text::config::plain()
+            .allow_width_overflow()
+            .no_table_borders()
+            .no_link_wrapping();
+        convert(&config, &html, TEXT_WIDTH, deadline)
+    });
+    match tokio::time::timeout_at(deadline.into(), converting).await {
+        Ok(Ok(converted)) => converted,
+        Ok(Err(_)) => Err(unreadable("Noura couldn't read the page's text")),
+        Err(_) => {
+            tracing::warn!("a page the AI read took too long to turn into text");
+            Err(super::timeout_error(OPERATION))
+        }
     }
-    html2text::config::plain()
-        .allow_width_overflow()
-        .no_table_borders()
-        .no_link_wrapping()
-        .string_from_read(html.as_bytes(), TEXT_WIDTH)
+}
+
+/// `html` as text through `config`, wrapped at `width`. The parse stops
+/// as soon as an element nests deeper than [`MAX_NESTING`] or `deadline`
+/// passes, since parsing and converting take time that grows with the
+/// square of how deeply elements nest.
+fn convert<D: TextDecorator>(
+    config: &Config<D>,
+    html: &str,
+    width: usize,
+    deadline: Instant,
+) -> Result<String> {
+    let dom = parse(html, deadline)?;
+    if deepest(&dom.document) > MAX_NESTING {
+        return Err(too_deep());
+    }
+    config
+        .dom_to_render_tree(&dom)
+        .and_then(|tree| config.render_to_string(tree, width))
         .map_err(|error| {
             tracing::warn!(%error, "a page the AI read didn't turn into text");
-            CoreError::new(
-                "web_page_unreadable",
-                ErrorCategory::Provider,
-                "Noura couldn't read the page's text",
-                OPERATION,
-            )
+            unreadable("Noura couldn't read the page's text")
         })
 }
 
-/// How deeply the elements of `html` nest, counting only elements that
-/// hold others until their end tag: void elements, self-closing tags and
-/// the elements HTML closes by itself, such as `p` and `li`, don't count,
-/// and comments and the text of `script`, `style`, `textarea` and
-/// `title` are skipped. It reads tags the simple way, so it can only
-/// overcount what a parser would nest.
-fn nesting(html: &str) -> usize {
-    /// Elements that hold no content, or that HTML closes when the next
-    /// one of their kind or their container's end comes.
-    const UNCOUNTED: &[&str] = &[
-        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
-        "source", "track", "wbr", "p", "li", "dt", "dd", "tr", "td", "th", "option", "optgroup",
-        "thead", "tbody", "tfoot", "colgroup", "caption", "rb", "rt", "rtc", "rp", "html", "head",
-        "body",
-    ];
-    /// Elements whose text holds no tags.
-    const RAW_TEXT: &[&str] = &["script", "style", "textarea", "title", "xmp"];
-    let bytes = html.as_bytes();
-    // ASCII lowercase keeps every byte where it was.
-    let lower = html.to_ascii_lowercase();
-    let (mut at, mut depth, mut deepest) = (0, 0_usize, 0);
-    while let Some(offset) = bytes[at..].iter().position(|byte| *byte == b'<') {
-        at += offset + 1;
-        if lower[at..].starts_with("!--") {
-            at = lower[at..]
-                .find("-->")
-                .map_or(bytes.len(), |end| at + end + 3);
-            continue;
+/// `html` parsed as browsers parse it, a few kilobytes at a time. Between
+/// pieces, the parse stops once an element went deeper than
+/// [`MAX_NESTING`] or `deadline` passed.
+fn parse(html: &str, deadline: Instant) -> Result<RcDom> {
+    let opts = ParseOpts {
+        tree_builder: TreeBuilderOpts {
+            scripting_enabled: false,
+            ..TreeBuilderOpts::default()
+        },
+        ..ParseOpts::default()
+    };
+    let mut parser = html5ever::parse_document(Capped::default(), opts);
+    let mut rest = html;
+    while !rest.is_empty() {
+        let mut end = rest.len().min(PARSE_PIECE_BYTES);
+        while !rest.is_char_boundary(end) {
+            end += 1;
         }
-        let closing = bytes.get(at) == Some(&b'/');
-        let name_start = at + usize::from(closing);
-        let name_end = bytes[name_start..]
-            .iter()
-            .position(|byte| !byte.is_ascii_alphanumeric() && *byte != b'-')
-            .map_or(bytes.len(), |end| name_start + end);
-        if name_end == name_start {
-            continue;
+        let (piece, after) = rest.split_at(end);
+        parser.process(StrTendril::from_slice(piece));
+        if parser.tokenizer.sink.sink.too_deep.get() {
+            return Err(too_deep());
         }
-        let name = &lower[name_start..name_end];
-        let (tag_end, self_closing) = tag_end(bytes, name_end);
-        at = tag_end;
-        if UNCOUNTED.contains(&name) {
-            continue;
+        if Instant::now() >= deadline {
+            tracing::warn!("a page the AI read took too long to parse");
+            return Err(super::timeout_error(OPERATION));
         }
-        if RAW_TEXT.contains(&name) {
-            if !closing {
-                let close = format!("</{name}");
-                at = lower[at..].find(&close).map_or(bytes.len(), |end| at + end);
+        rest = after;
+    }
+    let capped = parser.finish();
+    if capped.too_deep.get() {
+        return Err(too_deep());
+    }
+    Ok(capped.dom)
+}
+
+/// How deeply the elements under `root` nest, template contents included,
+/// counted up to just past [`MAX_NESTING`].
+fn deepest(root: &Handle) -> usize {
+    let mut deepest = 0;
+    let mut pending = vec![(root.clone(), 0_usize)];
+    while let Some((node, depth)) = pending.pop() {
+        deepest = deepest.max(depth);
+        if deepest > MAX_NESTING {
+            break;
+        }
+        for child in node.children.borrow().iter() {
+            if matches!(child.data, html2text::Element { .. }) {
+                pending.push((child.clone(), depth + 1));
             }
-        } else if closing {
-            depth = depth.saturating_sub(1);
-        } else if !self_closing {
-            depth += 1;
-            deepest = deepest.max(depth);
+        }
+        if let html2text::Element {
+            template_contents, ..
+        } = &node.data
+            && let Some(contents) = template_contents.borrow().as_ref()
+        {
+            pending.push((contents.clone(), depth));
         }
     }
     deepest
 }
 
-/// Where the tag whose attributes start at `from` ends, past its `>`, and
-/// whether it ends with `/>`. A `>` inside a quoted attribute value
-/// doesn't end it.
-fn tag_end(bytes: &[u8], from: usize) -> (usize, bool) {
-    let mut quote = None;
-    let mut previous = 0;
-    for (index, byte) in bytes.iter().enumerate().skip(from) {
-        match (quote, *byte) {
-            (Some(open), byte) if byte == open => quote = None,
-            (Some(_), _) => {}
-            (None, b'"' | b'\'') => quote = Some(*byte),
-            (None, b'>') => return (index + 1, previous == b'/'),
-            _ => {}
+/// html2text's tree, built by html5ever, that notes when an element goes
+/// in deeper than [`MAX_NESTING`]. It counts each element's depth in the
+/// tree as it goes in, so a stray end tag or an element HTML nests where
+/// it shouldn't can't hide how deep the tree grows, and it counts a
+/// template's contents as inside the template.
+#[derive(Default)]
+struct Capped {
+    dom: RcDom,
+    /// Each template's contents, by address, and the template that holds
+    /// them. Holding the template keeps the address from being reused.
+    templates: RefCell<HashMap<usize, Handle>>,
+    too_deep: Cell<bool>,
+}
+
+impl Capped {
+    /// How deep `node` is in the tree, counted up to just past
+    /// [`MAX_NESTING`].
+    fn depth(&self, node: &Handle) -> usize {
+        let templates = self.templates.borrow();
+        let mut depth = 0;
+        let mut current = node.clone();
+        while depth <= MAX_NESTING {
+            let Some(above) = current
+                .get_parent()
+                .or_else(|| templates.get(&address(&current)).cloned())
+            else {
+                break;
+            };
+            depth += 1;
+            current = above;
         }
-        previous = *byte;
+        depth
     }
-    (bytes.len(), false)
+
+    /// Note an element going in at `depth`.
+    fn entering(&self, child: &NodeOrText<Handle>, depth: impl FnOnce() -> usize) {
+        if !self.too_deep.get()
+            && let NodeOrText::AppendNode(node) = child
+            && matches!(node.data, html2text::Element { .. })
+            && depth() > MAX_NESTING
+        {
+            self.too_deep.set(true);
+        }
+    }
+}
+
+fn address(node: &Handle) -> usize {
+    Rc::as_ptr(node).cast::<()>() as usize
+}
+
+impl TreeSink for Capped {
+    type Handle = Handle;
+    type Output = Self;
+    type ElemName<'a> = ExpandedName<'a>;
+
+    fn finish(self) -> Self {
+        self
+    }
+
+    // html2text reads no parse errors, so none are kept.
+    fn parse_error(&self, _message: Cow<'static, str>) {}
+
+    fn get_document(&self) -> Handle {
+        self.dom.get_document()
+    }
+
+    fn elem_name<'a>(&'a self, target: &'a Handle) -> ExpandedName<'a> {
+        self.dom.elem_name(target)
+    }
+
+    fn create_element(&self, name: QualName, attrs: Vec<Attribute>, flags: ElementFlags) -> Handle {
+        self.dom.create_element(name, attrs, flags)
+    }
+
+    fn create_comment(&self, text: StrTendril) -> Handle {
+        self.dom.create_comment(text)
+    }
+
+    fn create_pi(&self, target: StrTendril, data: StrTendril) -> Handle {
+        self.dom.create_pi(target, data)
+    }
+
+    fn append(&self, parent: &Handle, child: NodeOrText<Handle>) {
+        self.entering(&child, || self.depth(parent) + 1);
+        self.dom.append(parent, child);
+    }
+
+    fn append_based_on_parent_node(
+        &self,
+        element: &Handle,
+        prev_element: &Handle,
+        child: NodeOrText<Handle>,
+    ) {
+        if element.get_parent().is_some() {
+            self.append_before_sibling(element, child);
+        } else {
+            self.append(prev_element, child);
+        }
+    }
+
+    fn append_doctype_to_document(
+        &self,
+        name: StrTendril,
+        public_id: StrTendril,
+        system_id: StrTendril,
+    ) {
+        self.dom
+            .append_doctype_to_document(name, public_id, system_id);
+    }
+
+    fn get_template_contents(&self, target: &Handle) -> Handle {
+        let contents = self.dom.get_template_contents(target);
+        self.templates
+            .borrow_mut()
+            .entry(address(&contents))
+            .or_insert_with(|| target.clone());
+        contents
+    }
+
+    fn same_node(&self, x: &Handle, y: &Handle) -> bool {
+        self.dom.same_node(x, y)
+    }
+
+    fn set_quirks_mode(&self, mode: QuirksMode) {
+        self.dom.set_quirks_mode(mode);
+    }
+
+    fn append_before_sibling(&self, sibling: &Handle, new_node: NodeOrText<Handle>) {
+        self.entering(&new_node, || self.depth(sibling));
+        self.dom.append_before_sibling(sibling, new_node);
+    }
+
+    fn add_attrs_if_missing(&self, target: &Handle, attrs: Vec<Attribute>) {
+        self.dom.add_attrs_if_missing(target, attrs);
+    }
+
+    fn remove_from_parent(&self, target: &Handle) {
+        self.dom.remove_from_parent(target);
+    }
+
+    // A move under another element can make the tree deeper; the check of
+    // the whole tree after the parse finds that.
+    fn reparent_children(&self, node: &Handle, new_parent: &Handle) {
+        self.dom.reparent_children(node, new_parent);
+    }
+
+    fn is_mathml_annotation_xml_integration_point(&self, handle: &Handle) -> bool {
+        self.dom.is_mathml_annotation_xml_integration_point(handle)
+    }
+}
+
+fn too_deep() -> CoreError {
+    tracing::warn!("a page the AI read nests its markup too deeply");
+    unreadable("The page's markup nests too deeply for Noura to read")
+}
+
+fn unreadable(message: &str) -> CoreError {
+    CoreError::new(
+        "web_page_unreadable",
+        ErrorCategory::Provider,
+        message,
+        OPERATION,
+    )
 }
 
 /// A `Content-Type` value's media type, in lowercase, and the character
@@ -595,41 +782,60 @@ mod tests {
         assert!(error.retryable);
     }
 
-    /// Turning markup into text takes time that grows with the square of
-    /// how deeply its elements nest, so a page nested past the limit is
-    /// refused before the conversion starts.
+    /// Parsing markup and turning it into text take time that grows with
+    /// the square of how deeply its elements nest, so a page that nests
+    /// past the limit is refused while it parses, whatever markup builds
+    /// the nesting: end tags the parser ignores, or elements it nests
+    /// wherever they appear.
     #[tokio::test]
     async fn markup_nested_past_the_limit_is_refused_and_ordinary_nesting_reads() {
         let nested = |depth: usize, open: &str, close: &str| {
             format!("{}deep{}", open.repeat(depth), close.repeat(depth))
         };
-        let server = FakeServer::new(vec![
-            (
-                "https://garden.example.com/deep",
-                page("text/html", &nested(200_000, "<div>", "</div>")),
-            ),
-            (
-                "https://garden.example.com/lists",
-                page("text/html", &nested(MAX_NESTING + 1, "<ul><li>", "</ul>")),
-            ),
-            (
-                "https://garden.example.com/unclosed",
-                page("text/html", &"<blockquote>x".repeat(MAX_NESTING + 1)),
-            ),
-            (
-                "https://garden.example.com/fine",
-                page(
-                    "text/html",
-                    &format!(
-                        "<!-- <div><div> --><script>if (a<b) {{ '<div>' }}</script>\
-                         <p>one<p>two<br><img src=x><input>{}",
-                        nested(100, "<div class=\"a>b\">", "</div>")
-                    ),
+        let limit = WebAccessLimits::default().max_response_bytes;
+        let filled = |unit: &str| unit.repeat(limit / unit.len());
+        let deep = [
+            ("divs", nested(200_000, "<div>", "</div>")),
+            ("lists", nested(MAX_NESTING + 1, "<ul><li>", "</ul>")),
+            ("unclosed", "<blockquote>x".repeat(MAX_NESTING + 1)),
+            ("stray-ends", filled("<div></i>")),
+            ("ruby-bases", filled("<rb>")),
+            ("ruby-texts", filled("<rt>")),
+            ("ruby-containers", filled("<rtc>")),
+            ("ruby-parentheses", filled("<rp>")),
+            ("option-groups", filled("<optgroup>")),
+            ("templates", filled("<template>")),
+            ("tables", filled("<table><td>")),
+        ];
+        let mut pages: Vec<(String, super::super::TransportResponse)> = deep
+            .iter()
+            .map(|(path, body)| {
+                (
+                    format!("https://garden.example.com/{path}"),
+                    page("text/html", body),
+                )
+            })
+            .collect();
+        pages.push((
+            "https://garden.example.com/fine".into(),
+            page(
+                "text/html",
+                &format!(
+                    "<!-- <div><div> --><script>if (a<b) {{ '<div>' }}</script>\
+                     <p>one<p>two<br><img src=x><input>{}",
+                    nested(100, "<div class=\"a>b\">", "</div>")
                 ),
             ),
-        ]);
+        ));
+        let server = FakeServer::new(
+            pages
+                .iter()
+                .map(|(url, response)| (url.as_str(), response.clone()))
+                .collect(),
+        );
 
-        for path in ["deep", "lists", "unclosed"] {
+        for (path, body) in &deep {
+            assert!(body.len() <= limit, "{path}");
             let started = std::time::Instant::now();
             let error = read(&server, &format!("https://garden.example.com/{path}"))
                 .await
@@ -643,28 +849,79 @@ mod tests {
         assert!(fine.content.contains("deep"), "{}", fine.content);
     }
 
+    /// A page shallow enough to read but slow to parse, here a thousand
+    /// open elements and a million end tags that each make the parser
+    /// look through all of them, runs into the request's timeout, and the
+    /// parse stops by itself.
+    #[tokio::test]
+    async fn a_page_that_takes_too_long_to_turn_into_text_times_out() {
+        let limits = WebAccessLimits {
+            request_timeout: Duration::from_millis(300),
+            ..WebAccessLimits::default()
+        };
+        let slow = format!(
+            "{}{}",
+            "<div>".repeat(1000),
+            "</p>".repeat((limits.max_response_bytes - 5000) / 4)
+        );
+        let server = FakeServer::new(vec![(
+            "https://garden.example.com/slow",
+            page("text/html", &slow),
+        )]);
+
+        let started = std::time::Instant::now();
+        let error = reader(&server, limits)
+            .fetch(WebFetchInput {
+                url: "https://garden.example.com/slow".into(),
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, "web_request_timeout");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let started = std::time::Instant::now();
+        let Err(error) = parse(&slow, Instant::now()) else {
+            panic!("the parse should stop at its deadline");
+        };
+        assert_eq!(error.code, "web_request_timeout");
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    fn depth(html: &str) -> Result<usize> {
+        parse(html, Instant::now() + Duration::from_secs(10)).map(|dom| deepest(&dom.document))
+    }
+
     #[test]
-    fn nesting_counts_elements_that_contain_others() {
-        assert_eq!(nesting("<div><p>a<p>b</div>"), 1);
+    fn nesting_counts_elements_in_the_tree_the_parser_builds() {
+        // The parser adds `html` and `body`, and closes `p` by itself.
+        assert_eq!(depth("<div><p>a<p>b</div>").unwrap(), 4);
         assert_eq!(
-            nesting("<div><div></div><div><span>x</span></div></div>"),
-            3
+            depth("<div><div></div><div><span>x</span></div></div>").unwrap(),
+            5
         );
-        assert_eq!(nesting("<br><img src=x><hr/><svg><path/></svg>"), 1);
-        assert_eq!(
-            nesting("<style>div > a {}</style><textarea><div></textarea>"),
-            0
-        );
-        assert_eq!(nesting("<!-- <div> --><div title='>'><b>x</b></div>"), 2);
-        assert_eq!(nesting("</div></div><div>"), 1);
+        assert_eq!(depth("<br><img src=x><hr/><svg><path/></svg>").unwrap(), 4);
+        assert_eq!(depth("</div></div><div>").unwrap(), 3);
+        // A stray end tag doesn't close the element it is in.
+        assert_eq!(depth(&"<div></i>".repeat(10)).unwrap(), 12);
+        // A template's contents count as inside it. These go in `head`.
+        assert_eq!(depth(&"<template>".repeat(10)).unwrap(), 12);
+        let shallow = format!("{}x", "<div>".repeat(MAX_NESTING - 2));
+        assert_eq!(depth(&shallow).unwrap(), MAX_NESTING);
+        let deep = format!("{}x", "<div>".repeat(MAX_NESTING - 1));
+        assert_eq!(depth(&deep).unwrap_err().code, "web_page_unreadable");
     }
 
     #[test]
     fn a_snippet_loses_its_markup_and_extra_white_space() {
+        let later = Instant::now() + Duration::from_secs(10);
         assert_eq!(
-            plain_line("Grow <strong>tomatoes</strong> &amp; basil\n  in   sun"),
+            plain_line(
+                "Grow <strong>tomatoes</strong> &amp; basil\n  in   sun",
+                later
+            ),
             "Grow tomatoes & basil in sun"
         );
-        assert_eq!(plain_line(""), "");
+        assert_eq!(plain_line("", later), "");
+        assert_eq!(plain_line(&"<rb>".repeat(5000), later), "");
     }
 }

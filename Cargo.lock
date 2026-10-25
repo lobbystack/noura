@@ -5768,6 +5768,7 @@ dependencies = [
  "genai",
  "hmac 0.12.1",
  "html2text",
+ "html5ever",
  "ignore",
  "jiff",
  "keyring",

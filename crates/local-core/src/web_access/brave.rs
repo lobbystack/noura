@@ -6,7 +6,7 @@
 //! log line or result holds it, nor what Brave Search answered when it
 //! failed.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use serde_json::Value;
 use zeroize::Zeroizing;
@@ -48,6 +48,7 @@ impl BraveSearch {
     }
 
     async fn run_search(&self, request: WebSearchRequest) -> Result<WebSearchResponse> {
+        let deadline = Instant::now() + request.limits.request_timeout;
         let count = request.max_results.to_string();
         let url = url::Url::parse_with_params(
             ENDPOINT,
@@ -91,7 +92,7 @@ impl BraveSearch {
             .map(Vec::as_slice)
             .unwrap_or_default()
             .iter()
-            .filter_map(result)
+            .filter_map(|item| result(item, deadline))
             .take(request.max_results)
             .collect();
         Ok(WebSearchResponse {
@@ -112,14 +113,15 @@ impl WebAccessProvider for BraveSearch {
 }
 
 /// A result of Brave Search's answer, with its title and snippet as plain
-/// text. A result without an HTTPS address on a public host is left out.
-fn result(item: &Value) -> Option<WebSearchResult> {
+/// text, read by `deadline`. A result without an HTTPS address on a
+/// public host is left out.
+fn result(item: &Value, deadline: Instant) -> Option<WebSearchResult> {
     let url = item.get("url").and_then(Value::as_str)?;
     let url = parse_https_url(url, OPERATION).ok()?;
     let text = |field: &str| {
         item.get(field)
             .and_then(Value::as_str)
-            .map(pages::plain_line)
+            .map(|fragment| pages::plain_line(fragment, deadline))
             .unwrap_or_default()
     };
     Some(WebSearchResult {
