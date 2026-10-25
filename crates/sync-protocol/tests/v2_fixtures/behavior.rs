@@ -532,6 +532,17 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
             };
             same(ours, expect.as_str().unwrap().to_owned())
         }
+        "rotation_pending" => {
+            let verified = policy(case);
+            same(
+                json!(verified.rotation_required(
+                    &id_of(&case["domain"]),
+                    u64_of(&case["latest_epoch_policy_revision"]),
+                    u64_of(&case["accepted_head"]),
+                )),
+                expect.clone(),
+            )
+        }
         "envelope_choice" => {
             let verified = policy(case);
             let epoch = Signed::<Epoch>::from_bytes(&hex(&case["epoch"])).unwrap();

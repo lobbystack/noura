@@ -337,6 +337,30 @@ pub fn fixture() -> Fixture {
         None,
         "key_check",
     ));
+    // Review of 0eef7d5: other key holders rotate if the rotation is still
+    // pending there, judged by revision (§9, Epoch authority). A rotation
+    // that committed at the removal's revision before the device saw the
+    // change leaves nothing to rotate, and a backdated epoch whose
+    // policy_revision predates the removal leaves the rotation pending.
+    for (name, epoch_revision, expect) in [
+        (
+            "a_rotation_that_committed_before_the_holder_saw_the_change_leaves_none_pending",
+            4,
+            json!(null),
+        ),
+        ("a_backdated_epoch_leaves_the_rotation_pending", 3, json!(4)),
+    ] {
+        f.case(json!({
+            "kind": "rotation_pending",
+            "name": name,
+            "account_chains": chains_json(&[&w.alice, &w.bob]),
+            "changes": removal_changes,
+            "domain": w.ws_domain.to_hex(),
+            "latest_epoch_policy_revision": epoch_revision,
+            "accepted_head": 4,
+            "expect": expect,
+        }));
+    }
     f.case(json!({
         "kind": "envelope_unwrap",
         "name": "bob_unwraps_epoch_2",
