@@ -6,7 +6,7 @@ use plugin_sdk::{
     ai::{self, Message, MessageKind, MessageStatus, Provider, Request, Run, RunStatus},
 };
 
-use crate::{State, reason};
+use crate::{State, reason, web};
 
 /// The title a chat has until its first message names it.
 const NEW_CHAT: &str = "New chat";
@@ -51,11 +51,34 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
             view.text(View::ROOT, "chat-problem", &reason(&error));
         }
     }
-    let run = state
+    let mut run = state
         .chat
         .as_ref()
         .and_then(|chat| state.runs.get(chat))
         .and_then(|id| ai::read_run(id).ok());
+    // The model's turn ended with calls to the web tools: answer them, and
+    // the model goes on in the same run.
+    if let Some(current) = &run
+        && current.status == RunStatus::Completed
+        && !current.tool_calls.is_empty()
+    {
+        let turn = std::iter::once(current.id.as_str())
+            .chain(current.tool_calls.iter().map(|call| call.id.as_str()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if state.answered.insert(turn) {
+            match web::answer(current) {
+                Ok(next) => run = Some(next),
+                Err(error) => state.notice = Some(reason(&error)),
+            }
+            // The calls' results are in the chat now.
+            if let Some(chat) = &state.chat
+                && let Ok((_, read)) = ai::read_chat(chat)
+            {
+                messages = read;
+            }
+        }
+    }
     for message in &messages {
         draw_message(&mut view, message, run.as_ref(), &providers);
     }
@@ -132,7 +155,46 @@ fn draw_message(view: &mut View, message: &Message, run: Option<&Run>, providers
                 view.text(panel, &format!("{}-status", message.id), note);
             }
         }
-        MessageKind::ToolCall | MessageKind::ToolResult | MessageKind::ContextSummary => {}
+        MessageKind::ToolCall | MessageKind::ToolResult => draw_web_call(view, message),
+        MessageKind::ContextSummary => {}
+    }
+}
+
+/// A web search or page read the model asked for, and what came back:
+/// the query or the address, then the sources a search found.
+fn draw_web_call(view: &mut View, message: &Message) {
+    let shown = match message.kind {
+        MessageKind::ToolCall => web::shown_call(&message.content),
+        _ => web::shown_result(&message.content),
+    };
+    let Some(shown) = shown else {
+        return;
+    };
+    let id = format!("{}-web", message.id);
+    match shown {
+        web::Shown::Searched(query) => {
+            view.text(
+                View::ROOT,
+                &id,
+                &format!("Searched the web for \u{201c}{query}\u{201d}."),
+            );
+        }
+        web::Shown::Read(url) => {
+            view.text(View::ROOT, &id, &format!("Read {url}."));
+        }
+        web::Shown::Sources(sources) if sources.is_empty() => {
+            view.text(View::ROOT, &id, "The search found nothing.");
+        }
+        web::Shown::Sources(sources) => {
+            let list = view.list(View::ROOT, &id, "Sources");
+            for (index, (title, url)) in sources.iter().enumerate() {
+                view.item(list, &format!("{id}-{index}"), title, Some(url));
+            }
+        }
+        web::Shown::Page => {}
+        web::Shown::Failed(reason) => {
+            view.text(View::ROOT, &id, &format!("The web call failed: {reason}"));
+        }
     }
 }
 
@@ -300,7 +362,7 @@ fn send(state: &mut State, message: String) {
         chat: chat.clone(),
         provider: provider.clone(),
         message: message.clone(),
-        tools: Vec::new(),
+        tools: web::tools(),
     };
     match ai::send(&request) {
         Ok(run) => {

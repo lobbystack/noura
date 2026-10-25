@@ -16,6 +16,10 @@
 //! answer and its status reach the chat's files before the run shows as
 //! finished.
 //!
+//! The service also holds web search: the Brave Search key, your web
+//! consent per workspace, and the searches and page reads plugins ask
+//! for, in [`web`].
+//!
 //! [`App`]: crate::App
 
 #![allow(
@@ -24,6 +28,9 @@
 )]
 
 mod history;
+mod web;
+
+pub use web::{WEB_POLICY_VERSION, WEB_SEARCH_PROVIDER_NAME, WebConsentPrompt, WebSearchRow};
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -211,6 +218,8 @@ pub(crate) struct Ai {
     /// The providers or consents changed since the plugins drew, so every
     /// plugin that holds `ai` draws again.
     settings_changed: std::sync::atomic::AtomicBool,
+    /// The web search key and consents.
+    web: web::Web,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -221,6 +230,7 @@ impl Ai {
     /// The service, with provider settings and consents in `app_data` and
     /// keys in `credentials`.
     pub(crate) fn new(app_data: &Path, credentials: Arc<dyn CredentialStore>) -> Arc<Self> {
+        let web = web::Web::new(app_data, credentials.clone());
         let store = AiFoundation::open_with(
             app_data.join(PROVIDERS_FILE),
             app_data.join(CONSENTS_FILE),
@@ -249,6 +259,7 @@ impl Ai {
             wake: Mutex::new(None),
             version: AtomicU64::new(0),
             settings_changed: std::sync::atomic::AtomicBool::new(false),
+            web,
         })
     }
 
@@ -331,6 +342,8 @@ impl Ai {
         state.new_chats.clear();
         state.workspace = workspace;
         drop(state);
+        // The web prompt asked about the workspace that closed.
+        self.web.close_prompt();
         if let Ok(store) = self.store() {
             for operation in operations {
                 let _ = store.cancel_stream(&operation);
@@ -1228,6 +1241,22 @@ impl AiChats for Access {
     fn stop(&self, id: &str) -> Result<(), ServiceError> {
         self.own(id)?;
         self.ai.stop(id)
+    }
+
+    fn web_ready(&self) -> Result<bool, ServiceError> {
+        Ok(self.ai.web_ready())
+    }
+
+    fn web_search(
+        &self,
+        query: &str,
+        max_results: Option<u32>,
+    ) -> Result<Vec<plugin_host::AiWebResult>, AiFailure> {
+        self.ai.web_search(query, max_results)
+    }
+
+    fn web_fetch(&self, url: &str) -> Result<plugin_host::AiWebPage, AiFailure> {
+        self.ai.web_fetch(url)
     }
 }
 

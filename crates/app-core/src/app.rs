@@ -51,6 +51,7 @@ mod preferences;
 mod settings;
 mod view;
 mod viewers;
+mod web;
 
 pub use drops::DragOut;
 pub use file_actions::{Question, Rename};
