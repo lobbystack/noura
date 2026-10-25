@@ -82,10 +82,30 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: sdk/typescript/s7-hello/package-lock.json
+          cache-dependency-path: |
+            sdk/typescript/s7-hello/package-lock.json
+            sdk/typescript/package-lock.json
       - name: Build the trial S7 plugins
         shell: bash
         run: bash crates/plugin-host/trial/build-plugins.sh
+      # Seam 5: the TypeScript author kit under Node. Its tests create,
+      # build, rebuild in dev mode and package plugins, and run them in
+      # the real host, noura-kit-host, which `cargo build --workspace`
+      # built above, and in the mock host.
+      - name: Install the TypeScript author kit
+        working-directory: sdk/typescript
+        run: npm ci --no-audit --no-fund
+      - name: Build the TypeScript author kit
+        working-directory: sdk/typescript
+        run: npm run build
+      - name: Type-check the TypeScript author kit
+        working-directory: sdk/typescript
+        run: npm run check
+      - name: Test the TypeScript author kit against the mock and real hosts
+        working-directory: sdk/typescript
+        run: npm test
+        env:
+          NOURA_REQUIRE_KIT_HOST: '1'
       # The hello plugin and plugin-host's test plugins, which the plugin
       # tests in plugin-host, app-core and app-ui load.
       - name: Build the plugins
@@ -479,3 +499,52 @@ jobs:
       # workspace with lockfiles of their own, and the guest's crates ship
       # inside the app's module.
       - run: scripts/check-collab-sandbox.sh audit
+
+  # The TypeScript author kit's packages as authors get them: their npm
+  # dependencies' licenses and advisories, and the packed archives
+  # installed into a fresh project that checks, tests and packages the
+  # template.
+  typescript-kit-packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: sdk/typescript/package-lock.json
+      - name: Install the TypeScript author kit
+        working-directory: sdk/typescript
+        run: npm ci --no-audit --no-fund
+      # Mirrors deny.toml's allow list, with BlueOak-1.0.0, a permissive
+      # license some npm tools use.
+      - name: Check the kit's npm licenses
+        working-directory: sdk/typescript
+        run: npm run licenses
+      - name: Check the kit's npm advisories
+        working-directory: sdk/typescript
+        run: npm run advisories
+      - name: Pack the kit and build the template from the packed archives
+        working-directory: sdk/typescript
+        run: npm run check:packed
+
+  # The plugin interface reference comes from the WIT's doc comments.
+  plugin-reference:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
+        with: { tool: wit-bindgen-cli@0.63.0 }
+      - name: Check that the reference matches the WIT
+        run: |
+          scripts/plugin-reference.sh
+          # Mark new pages, such as one for a new interface version, so
+          # the diff shows them too.
+          git add --intent-to-add -- docs/plugins/reference
+          git diff --exit-code -- docs/plugins/reference

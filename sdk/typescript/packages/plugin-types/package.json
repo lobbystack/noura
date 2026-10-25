@@ -1,0 +1,35 @@
+{
+	"name": "@noura/plugin-types",
+	"version": "0.1.0",
+	"description": "TypeScript types for Noura's plugin interface, generated from its WIT.",
+	"license": "MIT",
+	"type": "module",
+	"engines": {
+		"node": "^22.20.0 || ^24.12.0 || >=26"
+	},
+	"types": "./index.d.ts",
+	"exports": {
+		".": {
+			"types": "./index.d.ts"
+		},
+		"./*": {
+			"types": "./generated/*/index.d.ts"
+		}
+	},
+	"files": [
+		"/index.d.ts",
+		"generated/"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/lobbystack/noura.git",
+		"directory": "sdk/typescript/packages/plugin-types"
+	},
+	"scripts": {
+		"build": "node scripts/generate.mjs",
+		"prepack": "node scripts/generate.mjs"
+	},
+	"devDependencies": {
+		"@bytecodealliance/jco": "1.39.0"
+	}
+}

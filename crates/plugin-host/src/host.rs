@@ -24,7 +24,8 @@ use wasmtime::Engine;
 use wasmtime::component::Component;
 
 use crate::{
-    Capability, InstallError, InstallErrorCode, PluginManifest, RunningPlugin, Services,
+    Archive, Capability, InstallError, InstallErrorCode, PluginManifest, RunningPlugin, Services,
+    archive::MAX_COMPONENT_BYTES,
     manifest::read_manifest_bytes,
     runtime::{self, Backend, EpochTicker, Limits},
 };
@@ -33,9 +34,6 @@ use crate::{
 const INSTALLED_MANIFEST: &str = "plugin.toml";
 const INSTALLED_COMPONENT: &str = "component.wasm";
 const COMPILED_EXTENSION: &str = "cwasm";
-
-/// The largest component the host installs.
-const MAX_COMPONENT_BYTES: u64 = 64 << 20;
 
 /// Folders being written or replaced start with this, so a crash leaves
 /// nothing that looks installed.
@@ -53,12 +51,13 @@ pub struct PluginHost {
     library: PathBuf,
 }
 
-/// A plugin folder the host read and compiled in memory, waiting for you
-/// to approve its capabilities. Dropping it leaves nothing behind.
+/// A plugin folder or release archive the host read and compiled in
+/// memory, waiting for you to approve its capabilities. Dropping it leaves
+/// nothing behind.
 #[derive(Clone)]
 pub struct Candidate {
     manifest: PluginManifest,
-    folder: PathBuf,
+    folder: Option<PathBuf>,
     manifest_bytes: Vec<u8>,
     component_bytes: Vec<u8>,
     component: Component,
@@ -69,9 +68,9 @@ impl Candidate {
         &self.manifest
     }
 
-    /// The folder it came from.
-    pub fn folder(&self) -> &Path {
-        &self.folder
+    /// The folder it came from, unless it came from a release archive.
+    pub fn folder(&self) -> Option<&Path> {
+        self.folder.as_deref()
     }
 
     /// Names the manifest's and the component's bytes, so a reload can
@@ -143,6 +142,40 @@ impl PluginHost {
     /// ID is installed already.
     pub fn inspect(&self, folder: &Path) -> Result<Candidate, InstallError> {
         let (manifest, manifest_bytes) = read_manifest_bytes(folder)?;
+        self.refuse_installed(&manifest)?;
+        self.candidate(folder, manifest, manifest_bytes)
+    }
+
+    /// Compile the component of the release archive `archive`, as
+    /// [`Self::inspect`] does for a folder. Only the archive's manifest and
+    /// entry component reach the library; its other files, compiled code
+    /// among them, never do.
+    pub fn inspect_archive(&self, archive: Archive) -> Result<Candidate, InstallError> {
+        self.refuse_installed(&archive.manifest)?;
+        self.compiled_candidate(None, archive)
+    }
+
+    /// Compile a release archive that updates the installed plugin `id`,
+    /// as [`Self::inspect_update`] does for a folder. An archive that holds
+    /// another plugin is refused.
+    pub fn inspect_archive_update(
+        &self,
+        id: &str,
+        archive: Archive,
+    ) -> Result<Candidate, InstallError> {
+        if archive.manifest.id != id {
+            return Err(InstallError::new(
+                InstallErrorCode::DifferentPlugin,
+                format!(
+                    "The release holds the plugin {new}. Only a release of {id} can update it.",
+                    new = archive.manifest.id
+                ),
+            ));
+        }
+        self.compiled_candidate(None, archive)
+    }
+
+    fn refuse_installed(&self, manifest: &PluginManifest) -> Result<(), InstallError> {
         if self.is_installed(&manifest.id) {
             return Err(InstallError::new(
                 InstallErrorCode::AlreadyInstalled,
@@ -152,7 +185,7 @@ impl PluginHost {
                 ),
             ));
         }
-        self.candidate(folder, manifest, manifest_bytes)
+        Ok(())
     }
 
     /// Read a new build of the installed plugin `id` from `folder`, as
@@ -217,6 +250,27 @@ impl PluginHost {
     ) -> Result<Candidate, InstallError> {
         let entry = resolve_entry(folder, &manifest.entry)?;
         let component_bytes = read_component(&entry, &manifest.entry)?;
+        self.compiled_candidate(
+            Some(folder),
+            Archive {
+                manifest,
+                manifest_bytes,
+                component_bytes,
+            },
+        )
+    }
+
+    /// Compile the component of a plugin read from `folder` or an archive.
+    fn compiled_candidate(
+        &self,
+        folder: Option<&Path>,
+        read: Archive,
+    ) -> Result<Candidate, InstallError> {
+        let Archive {
+            manifest,
+            manifest_bytes,
+            component_bytes,
+        } = read;
         if Engine::detect_precompiled(&component_bytes).is_some() {
             return Err(InstallError::new(
                 InstallErrorCode::PrecompiledCode,
@@ -230,7 +284,7 @@ impl PluginHost {
         let component = self.compile(&component_bytes, &manifest.entry)?;
         Ok(Candidate {
             manifest,
-            folder: folder.to_owned(),
+            folder: folder.map(Path::to_owned),
             manifest_bytes,
             component_bytes,
             component,

@@ -226,6 +226,31 @@ impl AiConsentStore {
         Ok(keys)
     }
 
+    /// Forget every grant for `provider_id`, in every workspace and under
+    /// every policy, as when the provider is removed. Returns the keys it
+    /// forgot.
+    pub(crate) fn revoke_provider(&self, provider_id: &str) -> Result<Vec<AiConsentKey>> {
+        let mut grants = self
+            .grants
+            .lock()
+            .map_err(|_| consent_storage_error("ai_consent_revoke"))?;
+        let keys = grants
+            .keys()
+            .filter(|key| key.provider_id == provider_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        if keys.is_empty() {
+            return Ok(keys);
+        }
+        let mut next = grants.clone();
+        for key in &keys {
+            next.remove(key);
+        }
+        self.persist(&next, "ai_consent_revoke")?;
+        *grants = next;
+        Ok(keys)
+    }
+
     fn persist(
         &self,
         grants: &HashMap<AiConsentKey, AiConsentGrant>,

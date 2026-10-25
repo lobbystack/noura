@@ -32,6 +32,10 @@ pub(crate) struct SettingsView {
     name: Option<String>,
     /// What the Sync account section remembers.
     account: crate::account::AccountView,
+    /// The AI providers section.
+    ai: crate::ai::AiSettingsView,
+    /// The release address being typed in Plugins.
+    release_address: String,
 }
 
 /// Draw Settings while it is open in the window whose ID salt is
@@ -156,10 +160,13 @@ fn content(
         settings_section::EDITOR => editor(ui, app, spelling),
         settings_section::SHORTCUTS => crate::shortcuts::page(ui, app),
         settings_section::WORKSPACE => workspace(ui, app, view),
-        settings_section::PLUGINS => crate::plugins::section(ui, app, picker),
+        settings_section::PLUGINS => {
+            crate::plugins::section(ui, app, picker, &mut view.release_address);
+        }
         settings_section::SYNC_ACCOUNT => {
             crate::account::section(ui, app, &mut view.account, picker)
         }
+        settings_section::AI => crate::ai::settings(ui, app, &mut view.ai),
         settings_section::ABOUT => about(ui, app),
         settings_section::UPDATES => crate::updates::update_settings(ui, app),
         id if app.is_plugin_settings(id) => crate::plugin_view::show_settings(ui, app, window, id),

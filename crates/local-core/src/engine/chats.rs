@@ -4,11 +4,38 @@ use super::*;
 
 impl WorkspaceEngine {
     pub fn create_chat(&self, input: CreateChatInput) -> Result<MutationResult<Chat>> {
+        self.create_chat_with_id(&new_object_id("chat"), input)
+    }
+
+    /// Create the chat `input` describes under the stable ID `id`, which a
+    /// caller handed out before the chat's first file: a chat ID such as
+    /// [`new_object_id`] makes. Fails with `identity_conflict` when a
+    /// chat already holds the ID.
+    pub fn create_chat_with_id(
+        &self,
+        id: &str,
+        input: CreateChatInput,
+    ) -> Result<MutationResult<Chat>> {
+        if !valid_object_id(id, "chat") {
+            return Err(CoreError::validation(
+                "invalid_chat_id",
+                "The chat stable ID is invalid",
+                "chat_create",
+            ));
+        }
         let title = validate_chat_title(&input.title, "chat_create")?;
         let retention = input.retention.unwrap_or(ChatRetention::Permanent);
         validate_retention(retention, input.retention_days, "chat_create")?;
+        if self.get_object(id)?.is_some() {
+            return Err(CoreError::new(
+                "identity_conflict",
+                ErrorCategory::Conflict,
+                "A chat already holds this stable ID",
+                "chat_create",
+            ));
+        }
         let now = now_rfc3339();
-        let id = new_object_id("chat");
+        let id = id.to_owned();
         let slug = slug::slugify(title);
         let slug = if slug.is_empty() { "untitled" } else { &slug };
         let short_id = id[id.len() - 6..].to_owned();
@@ -116,8 +143,20 @@ impl WorkspaceEngine {
         for object in objects {
             let path = resolve_for_write(&self.root, &object.relative_path, "chat_list")?;
             let bytes = read_downloaded(&path, &object.relative_path, "chat_list")?;
-            let chat = parse_chat(&object.relative_path, &bytes)?;
-            chats.push((parse_chat_timestamp(&chat.updated, "chat_list")?, chat));
+            // A chat file that breaks the chat rules stays as it is and out
+            // of the list, so one file edited by hand hides no other chat.
+            let chat = match parse_chat(&object.relative_path, &bytes) {
+                Ok(chat) => chat,
+                Err(error) if error.code == "invalid_chat_markdown" => {
+                    tracing::warn!(message = %error.message, "a chat file breaks the chat rules");
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let Ok(updated) = parse_chat_timestamp(&chat.updated, "chat_list") else {
+                continue;
+            };
+            chats.push((updated, chat));
         }
         chats.sort_by(|left, right| {
             right
@@ -155,7 +194,16 @@ impl WorkspaceEngine {
         for relative in paths {
             let path = resolve_for_write(&self.root, &relative, "chat_read")?;
             let bytes = read_downloaded(&path, &relative, "chat_read")?;
-            let message = parse_chat_message(&relative, &bytes)?;
+            // A message file that breaks the chat rules stays as it is and
+            // out of the chat, which still reads.
+            let message = match parse_chat_message(&relative, &bytes) {
+                Ok(message) => message,
+                Err(error) if error.code == "invalid_chat_markdown" => {
+                    tracing::warn!(message = %error.message, "a chat message file breaks the chat rules");
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             if message.chat_id != id {
                 continue;
             }

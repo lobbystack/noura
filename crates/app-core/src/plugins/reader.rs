@@ -112,6 +112,8 @@ fn service_error(error: &CoreError, what: &str) -> ServiceError {
         }
         "unsupported_path" | "non_utf8_path" => ServiceError::UnsupportedPath,
         "file_not_found" | "object_not_found" => ServiceError::NotFound(what.to_owned()),
+        // More than one file holds the ID `read_object` asked for.
+        "identity_conflict" => ServiceError::IdentityConflict(what.to_owned()),
         "file_too_large" => ServiceError::Failed("The file is larger than 16 MB.".to_owned()),
         "file_not_downloaded" => ServiceError::Failed(error.message.clone()),
         code => {

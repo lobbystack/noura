@@ -20,6 +20,7 @@ use local_core::ChangeCounts;
 
 use crate::{
     FileTree, PendingWrites, Preferences, Problem, System, Updates, Workspace, WorkspaceService,
+    ai::Ai,
     app::{Change, Listeners},
     links::LinkFiles,
     plugins::{Plugins, SystemClock},
@@ -65,6 +66,8 @@ pub(crate) struct Session {
     plugins: Mutex<Plugins>,
     /// The sync account every window's account screens show.
     account: Mutex<Arc<dyn crate::account::AccountBackend>>,
+    /// The AI providers, consents and runs every window shares.
+    pub(crate) ai: Arc<Ai>,
 }
 
 struct State {
@@ -178,16 +181,26 @@ impl Session {
             let mut plugins = Plugins::new(app_data);
             // A plugin's reload watcher wakes every window once it read a
             // new build.
-            let session = session.clone();
+            let reloaded = session.clone();
             plugins.set_wake(Arc::new(move || {
-                if let Some(session) = session.upgrade() {
+                if let Some(session) = reloaded.upgrade() {
                     session.wake_all();
                 }
             }));
             // Plugins read the time and time zone from the system, which
             // tests fix.
             plugins.set_clock(Arc::new(SystemClock(system.clone())));
-            Self::with(app_data, system, rescans, writes, updates, plugins)
+            // AI runs wake every window as their answers arrive, and keep
+            // provider keys in the system's credential store.
+            let ai = Ai::new(app_data, system.credentials());
+            let woken = session.clone();
+            ai.set_wake(Arc::new(move || {
+                if let Some(session) = woken.upgrade() {
+                    session.wake_all();
+                }
+            }));
+            plugins.set_ai(ai.clone());
+            Self::with(app_data, system, rescans, writes, updates, plugins, ai)
         })
     }
 
@@ -198,6 +211,7 @@ impl Session {
         writes: PendingWrites,
         updates: Updates,
         plugins: Plugins,
+        ai: Arc<Ai>,
     ) -> Self {
         Self {
             app_data: app_data.to_owned(),
@@ -231,6 +245,7 @@ impl Session {
             }),
             plugins: Mutex::new(plugins),
             account: Mutex::new(Arc::new(crate::account::NoAccount::default())),
+            ai,
         }
     }
 

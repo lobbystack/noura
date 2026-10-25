@@ -5,6 +5,7 @@ Use these guides to run Noura, understand its file-backed workspace, and contrib
 - **Run Noura**: follow the [desktop setup instructions](../README.md#try-noura)
 - **Contribute code**: read the [contributor conventions](../AGENTS.md) and [desktop verification guide](testing/local-alpha-acceptance.md)
 - **Work with plugins**: learn the [activation lifecycle and capability contracts](architecture/plugin-runtime.md)
+- **Write a plugin in TypeScript**: start with the [author guide](plugins/README.md), then the [page for each interface](plugins/interfaces/)
 - **Understand workspace files**: read the [workspace format](workspace-format/v1.md) and [local-core architecture](architecture/local-core.md)
 - **Understand AI access**: read about [provider consent, tool approval, and chat persistence](architecture/ai-runtime.md)
 - **Publish a release**: follow the [release guide](releasing.md) to ship signed installers and updates

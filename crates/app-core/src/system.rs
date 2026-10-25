@@ -113,6 +113,11 @@ pub trait System: Send + Sync {
     fn locale(&self) -> Option<String> {
         sys_locale::get_locale()
     }
+
+    /// Where AI provider keys go: this computer's credential store.
+    fn credentials(&self) -> std::sync::Arc<dyn local_core::CredentialStore> {
+        std::sync::Arc::new(local_core::SystemCredentials)
+    }
 }
 
 /// No operating system services: deleted items go to the workspace's trash
@@ -149,6 +154,10 @@ impl System for NoSystem {
 
     fn open_file(&self, _path: &Path) -> io::Result<()> {
         Err(unavailable())
+    }
+
+    fn credentials(&self) -> std::sync::Arc<dyn local_core::CredentialStore> {
+        std::sync::Arc::new(local_core::NoCredentials)
     }
 }
 
