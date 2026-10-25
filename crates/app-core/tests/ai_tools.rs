@@ -463,3 +463,119 @@ fn a_tool_write_with_a_stale_revision_fails_and_keeps_the_file() {
     );
     assert_eq!(tooled.task_file(), edited, "the outside edit stays");
 }
+
+/// The files under the chat's folders whose `kind` is `kind`, once one has
+/// `status`.
+fn message_with(app: &mut App, root: &std::path::Path, kind: &str, status: &str) -> String {
+    let find = |root: &std::path::Path| {
+        ai::message_files(root).into_iter().find(|text| {
+            ai::frontmatter(text, "kind").as_deref() == Some(kind)
+                && ai::frontmatter(text, "status").as_deref() == Some(status)
+        })
+    };
+    ai::wait_until(app, &format!("a {kind} is {status}"), |_| {
+        find(root).is_some()
+    });
+    find(root).unwrap()
+}
+
+const STOPPED: &str = "You turned off a plugin this answer relied on, so the answer stopped.";
+
+#[test]
+fn turning_off_a_plugin_mid_answer_ends_the_run_as_interrupted_and_keeps_its_files() {
+    let Some(mut tooled) = Tooled::new() else {
+        return;
+    };
+    tooled.send("Add a task to water the tomatoes", 0);
+    tooled.create(0, "call_1");
+    let prompt = ai::tool_prompt(&mut tooled.app);
+    tooled.app.answer_ai_tool(&prompt, true);
+    tooled.result("call_1");
+    tooled.wait_for_request(1);
+    tooled.provider.say(1, "I added");
+    ai::wait_until(&mut tooled.app, "the answer streams", |app| {
+        ai::lines(app).contains(&"md: I added".to_owned())
+    });
+
+    assert!(tooled.app.set_plugin_enabled("tasks", false));
+    support::settle(&mut tooled.app);
+
+    let answer = message_with(
+        &mut tooled.app,
+        &tooled.fixture.root,
+        "assistant",
+        "interrupted",
+    );
+    assert_eq!(
+        ai::frontmatter(&answer, "error_code").as_deref(),
+        Some("plugin-disabled")
+    );
+    assert!(answer.ends_with("\nI added\n"), "{answer}");
+    ai::wait_until(&mut tooled.app, "the page says why", |app| {
+        ai::lines(app).contains(&STOPPED.to_owned()) && ai::buttons(app).is_empty()
+    });
+    assert!(tooled.provider.cancelled(1), "the provider saw the request end");
+    assert!(tooled.has_task(), "the plugin's files stay");
+
+    // The next message offers the model no Tasks tool.
+    tooled.send("Thanks", 2);
+    let offered = tooled.provider.requests()[2].tools.clone();
+    assert!(
+        !offered.iter().any(|tool| tool.starts_with("tasks__")),
+        "{offered:?}"
+    );
+}
+
+#[test]
+fn turning_off_a_plugin_while_its_call_waits_interrupts_the_call_and_never_runs_it() {
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app_with(FakeSystem::new());
+    let provider = FakeProvider::new();
+    let Some(probe) = plugins::folder_for(
+        "probe_plugin",
+        "echoer",
+        &["name = \"views\"", "name = \"tools\""],
+    ) else {
+        return;
+    };
+    plugins::install_and_enable(&mut app, probe.path(), "echoer");
+    let Some(_chat) = ai::with_ai(&mut app, &provider) else {
+        return;
+    };
+    let id = app
+        .save_ai_provider(ai::provider("Local", "ollama", "llama3", None))
+        .unwrap();
+    app.grant_ai_consent(&id).unwrap();
+    support::settle(&mut app);
+    ai::send(&mut app, "Echo hi", &id);
+    ai::wait_until(&mut app, "the request leaves", |_| {
+        provider.requests().len() == 1
+    });
+    assert_eq!(provider.requests()[0].tools, ["echoer__echo"]);
+    provider.call_tools(
+        0,
+        vec![AiToolCall {
+            call_id: "call_1".into(),
+            name: "echoer__echo".into(),
+            arguments: serde_json::json!({ "text": "hi" }),
+        }],
+    );
+    let prompt = ai::tool_prompt(&mut app);
+    assert_eq!(prompt.plugin_id, "echoer");
+
+    assert!(app.set_plugin_enabled("echoer", false));
+    support::settle(&mut app);
+
+    let call = message_with(&mut app, &fixture.root, "tool-call", "interrupted");
+    assert_eq!(
+        ai::frontmatter(&call, "error_code").as_deref(),
+        Some("plugin-disabled")
+    );
+    let result = ai::tool_result(&mut app, &fixture.root, "call_1");
+    assert_eq!(result["error"]["code"], "plugin-disabled", "{result}");
+    ai::wait_until(&mut app, "the page says why", |app| {
+        ai::lines(app).contains(&STOPPED.to_owned())
+    });
+    assert_eq!(app.ai_tool_prompt(), None);
+    assert_eq!(provider.requests().len(), 1, "no request follows");
+}
