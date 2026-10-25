@@ -5,30 +5,51 @@
 //! and `notes.update` adapt `app-core`'s workspace services, and each
 //! tool of a plugin the workspace enables becomes `<plugin>.<tool>`, such
 //! as `tasks.list`, which `app-core` runs through the plugin host with
-//! this device's approvals. The server adds no rules of its own: every
-//! change follows the app's file rules and is on disk before the tool
-//! answers. [`test_connection`] starts a configured command as an AI tool
-//! would, for Settings' Test connection.
+//! this device's approvals. The server answers MCP's initialize request
+//! before the plugins finish starting, and a plugin turned off since then
+//! leaves the tool list on its next call. The server adds no rules of its
+//! own: every change follows the app's file rules and is on disk before
+//! the tool answers. [`test_connection`] starts a configured command as an
+//! AI tool would, for Settings' Test connection.
 
 mod probe;
 
-use std::{ffi::OsString, future::Future, path::PathBuf, pin::Pin, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    ffi::OsString,
+    future::Future,
+    path::PathBuf,
+    pin::Pin,
+    sync::{Arc, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard},
+};
 
 use app_core::{AgentWorkspace, AppError, Item, NoteChanges, PluginTool, SearchHit, SearchQuery};
 use rmcp::{
-    ErrorData, ServerHandler,
+    ErrorData, RoleServer, ServerHandler,
     handler::server::{
         router::tool::{ToolRoute, ToolRouter},
         tool::ToolCallContext,
         wrapper::Parameters,
     },
-    model::{CallToolResponse, CallToolResult, ContentBlock, JsonObject, Tool},
-    schemars, tool, tool_handler, tool_router,
+    model::{
+        CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
+        Implementation, JsonObject, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
+        ServerCapabilities, ServerInfo, Tool,
+    },
+    schemars,
+    service::{NotificationContext, Peer, RequestContext},
+    tool, tool_router,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 pub use probe::{Answered, test_connection};
+
+/// What the server tells the AI tool about itself.
+const INSTRUCTIONS: &str = "Search, read and change the notes, tasks and projects of one Noura \
+                            workspace. Read an item before you change it, and pass the revision \
+                            you read. Your changes reach the files at once, without asking the \
+                            person.";
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchParams {
@@ -83,42 +104,106 @@ pub struct UpdateNoteParams {
 #[derive(Clone)]
 pub struct NouraMcp {
     agent: Arc<AgentWorkspace>,
-    tool_router: ToolRouter<Self>,
+    tools: Arc<RwLock<Tools>>,
+    /// Set once the plugins finished starting and their tools joined the
+    /// router.
+    plugins_added: Arc<tokio::sync::OnceCell<()>>,
+    /// The AI tool, told when a plugin's tools go away.
+    peer: Arc<OnceLock<Peer<RoleServer>>>,
+}
+
+/// The tools the server offers.
+struct Tools {
+    router: ToolRouter<NouraMcp>,
+    /// Each plugin's tool names, as the router holds them.
+    by_plugin: BTreeMap<String, Vec<String>>,
 }
 
 impl NouraMcp {
-    /// The server for `agent`'s workspace: the kernel tools, then the
-    /// tools of the plugins that started. A plugin tool whose name a
-    /// kernel tool already uses is left out.
+    /// The server for `agent`'s workspace, with the kernel tools. The
+    /// tools of the plugins that start join them once the plugins finish
+    /// starting, before the first tool list or plugin tool call answers,
+    /// so the server answers MCP's initialize request without waiting for
+    /// plugin code to load. A plugin tool whose name a kernel tool already
+    /// uses is left out.
     pub fn new(agent: Arc<AgentWorkspace>) -> Self {
-        let mut tool_router = Self::tool_router();
-        for tool in agent.plugin_tools() {
+        Self {
+            agent,
+            tools: Arc::new(RwLock::new(Tools {
+                router: Self::tool_router(),
+                by_plugin: BTreeMap::new(),
+            })),
+            plugins_added: Arc::new(tokio::sync::OnceCell::new()),
+            peer: Arc::new(OnceLock::new()),
+        }
+    }
+
+    /// The router with every tool, once the plugins' tools joined it.
+    async fn router(&self) -> ToolRouter<Self> {
+        self.plugins_added
+            .get_or_init(|| self.add_plugin_tools())
+            .await;
+        self.read_tools().router.clone()
+    }
+
+    /// Wait for the plugins to finish starting, and add their tools.
+    async fn add_plugin_tools(&self) {
+        let agent = self.agent.clone();
+        let started = tokio::task::spawn_blocking(move || agent.plugin_tools()).await;
+        let Ok(plugin_tools) = started else {
+            tracing::warn!("the plugins' tools weren't read");
+            return;
+        };
+        let mut tools = self.write_tools();
+        for tool in plugin_tools {
             let name = format!("{}.{}", tool.plugin_id, tool.name);
-            if tool_router.has_route(&name) {
+            if tools.router.has_route(&name) {
                 tracing::warn!(
                     name,
                     "a plugin tool has a kernel tool's name and was left out"
                 );
                 continue;
             }
-            match plugin_route(name, tool) {
-                Some(route) => tool_router.add_route(route),
+            let plugin_id = tool.plugin_id.clone();
+            match plugin_route(name.clone(), tool) {
+                Some(route) => {
+                    tools.router.add_route(route);
+                    tools.by_plugin.entry(plugin_id).or_default().push(name);
+                }
                 None => tracing::warn!("a plugin tool's schema isn't a JSON object"),
             }
         }
-        Self { agent, tool_router }
     }
 
-    /// The names of the tools the server offers, sorted.
-    pub fn tool_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self
-            .tool_router
-            .list_all()
-            .into_iter()
-            .map(|tool| tool.name.into_owned())
-            .collect();
-        names.sort();
-        names
+    /// Take the tools of the plugin `plugin_id` off the list, as after the
+    /// app turned it off, and tell the AI tool the list changed.
+    fn drop_plugin_tools(&self, plugin_id: &str) {
+        let names = {
+            let mut tools = self.write_tools();
+            let names = tools.by_plugin.remove(plugin_id).unwrap_or_default();
+            for name in &names {
+                tools.router.remove_route(name);
+            }
+            names
+        };
+        if names.is_empty() {
+            return;
+        }
+        if let Some(peer) = self.peer.get().cloned() {
+            tokio::spawn(async move {
+                if let Err(error) = peer.notify_tool_list_changed().await {
+                    tracing::warn!(%error, "the AI tool wasn't told the tool list changed");
+                }
+            });
+        }
+    }
+
+    fn read_tools(&self) -> RwLockReadGuard<'_, Tools> {
+        self.tools.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn write_tools(&self) -> RwLockWriteGuard<'_, Tools> {
+        self.tools.write().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Run `work` against the workspace off the async threads, and answer
@@ -228,14 +313,67 @@ impl NouraMcp {
     }
 }
 
-#[tool_handler(
-    router = self.tool_router,
-    name = "noura",
-    instructions = "Search, read and change the notes, tasks and projects of one Noura \
-                    workspace. Read an item before you change it, and pass the revision you \
-                    read. Your changes reach the files at once, without asking the person."
-)]
-impl ServerHandler for NouraMcp {}
+impl ServerHandler for NouraMcp {
+    fn get_info(&self) -> ServerInfo {
+        let capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_tool_list_changed()
+            .build();
+        ServerInfo::new(capabilities)
+            .with_server_info(Implementation::new("noura", env!("CARGO_PKG_VERSION")))
+            .with_instructions(INSTRUCTIONS.to_owned())
+    }
+
+    async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
+        let _ = self.peer.set(context.peer);
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        let mut result = ListToolsResult::with_all_items(self.router().await.list_all());
+        if context
+            .protocol_version()
+            .is_some_and(|version| version >= ProtocolVersion::V_2026_07_28)
+        {
+            // The list changes when a plugin is turned off.
+            result.ttl_ms = Some(0);
+            result.cache_scope = Some(CacheScope::Public);
+        }
+        Ok(result)
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        // A kernel tool answers while the plugins still start.
+        let kernel = {
+            let tools = self.read_tools();
+            (tools.router.has_route(&request.name)
+                && !tools
+                    .by_plugin
+                    .values()
+                    .flatten()
+                    .any(|name| *name == request.name))
+            .then(|| tools.router.clone())
+        };
+        let router = match kernel {
+            Some(router) => router,
+            None => self.router().await,
+        };
+        router
+            .call(ToolCallContext::new(self, request, context))
+            .await
+    }
+
+    fn get_tool(&self, name: &str) -> Option<Tool> {
+        self.read_tools().router.get(name).cloned()
+    }
+}
 
 type ToolFuture<'a> =
     Pin<Box<dyn Future<Output = Result<CallToolResponse, ErrorData>> + Send + 'a>>;
@@ -254,17 +392,27 @@ fn plugin_route(name: String, tool: PluginTool) -> Option<ToolRoute<NouraMcp>> {
     Some(ToolRoute::new_dyn(
         attr,
         move |context: ToolCallContext<'_, NouraMcp>| -> ToolFuture<'_> {
-            let agent = context.service.agent.clone();
+            let server = context.service.clone();
             let arguments = Value::Object(context.arguments.unwrap_or_default()).to_string();
             let (plugin_id, tool_name) = (plugin_id.clone(), tool_name.clone());
             Box::pin(async move {
+                let agent = server.agent.clone();
+                let plugin = plugin_id.clone();
                 let answer = tokio::task::spawn_blocking(move || {
-                    agent.call_plugin_tool(&plugin_id, &tool_name, &arguments)
+                    agent.call_plugin_tool(&plugin, &tool_name, &arguments)
                 })
                 .await;
                 let result = match answer {
                     Ok(Ok(answer)) => CallToolResult::success(vec![ContentBlock::text(answer)]),
                     Ok(Err(error)) => {
+                        // A plugin turned off or uninstalled since the
+                        // server started won't run again here.
+                        if matches!(
+                            error.code.as_str(),
+                            "plugin_disabled" | "plugin_not_installed"
+                        ) {
+                            server.drop_plugin_tools(&plugin_id);
+                        }
                         CallToolResult::error(vec![ContentBlock::text(error_json(&error))])
                     }
                     Err(_) => CallToolResult::error(vec![ContentBlock::text(stopped())]),

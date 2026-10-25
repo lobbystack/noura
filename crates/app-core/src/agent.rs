@@ -8,7 +8,7 @@
 
 use std::{
     path::Path,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
     time::{Duration, Instant},
 };
 
@@ -18,8 +18,8 @@ use crate::{
     watch::{Rescans, Snapshot, Watch},
 };
 
-/// How long opening waits for the enabled plugins to say what they offer.
-/// A plugin that hasn't answered by then offers no tools.
+/// How long the enabled plugins have to say what they offer once their
+/// code loaded. A plugin that hasn't answered by then offers no tools.
 const PLUGIN_START_WAIT: Duration = Duration::from_secs(30);
 
 /// A workspace as an AI tool outside Noura uses it. Searches and reads
@@ -27,17 +27,59 @@ const PLUGIN_START_WAIT: Duration = Duration::from_secs(30);
 /// which reach disk before they return.
 pub struct AgentWorkspace {
     workspace: Arc<Workspace>,
-    plugins: Mutex<Plugins>,
+    plugins: Arc<Mutex<Plugins>>,
+    /// Set once the plugins finished starting, so their tools are known.
+    started: Arc<Started>,
     /// Keeps the index in step with the folder while the app isn't
     /// running.
     _watch: Option<Watch>,
+}
+
+/// Whether the plugins finished starting.
+#[derive(Default)]
+struct Started {
+    done: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl Started {
+    fn finish(&self) {
+        *self.done.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        self.changed.notify_all();
+    }
+
+    fn wait(&self) {
+        let mut done = self.done.lock().unwrap_or_else(PoisonError::into_inner);
+        while !*done {
+            done = self
+                .changed
+                .wait(done)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    fn is_done(&self) -> bool {
+        *self.done.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Marks the start finished when dropped, after a panic too, so nobody
+/// waits for a start that ended.
+struct Finished<'a>(&'a Started);
+
+impl Drop for Finished<'_> {
+    fn drop(&mut self) {
+        self.0.finish();
+    }
 }
 
 impl AgentWorkspace {
     /// Open the workspace in `folder`, with per-device state in
     /// `app_data`, and start the plugins it enables that this device
     /// installed and approved. The folder must hold a workspace already,
-    /// and the recent list stays as it is.
+    /// and the recent list stays as it is. The plugins start on a thread
+    /// of their own, so the workspace answers before their code loads;
+    /// [`Self::plugin_tools`] and [`Self::call_plugin_tool`] wait for them.
     pub fn open(app_data: impl AsRef<Path>, folder: &Path) -> Result<Self, AppError> {
         Self::open_with(app_data, folder, Arc::new(NoSystem))
     }
@@ -67,22 +109,27 @@ impl AgentWorkspace {
         };
         let mut plugins = Plugins::for_agent(app_data);
         plugins.set_clock(Arc::new(SystemClock(system)));
-        plugins.open_workspace(Some(workspace.clone()));
-        let deadline = Instant::now() + PLUGIN_START_WAIT;
-        loop {
-            plugins.poll();
-            if !plugins.is_working() {
-                break;
+        let plugins = Arc::new(Mutex::new(plugins));
+        let started = Arc::new(Started::default());
+        let start = {
+            let (plugins, started, workspace) =
+                (plugins.clone(), started.clone(), workspace.clone());
+            move || {
+                let _finished = Finished(&started);
+                start_plugins(&plugins, workspace);
             }
-            if Instant::now() >= deadline {
-                tracing::warn!("a plugin didn't say what it offers in time");
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
+        };
+        if let Err(error) = std::thread::Builder::new()
+            .name("agent-plugins".into())
+            .spawn(start.clone())
+        {
+            tracing::warn!(%error, "the plugins' thread didn't start");
+            start();
         }
         Ok(Self {
             workspace,
-            plugins: Mutex::new(plugins),
+            plugins,
+            started,
             _watch: watch,
         })
     }
@@ -95,9 +142,16 @@ impl AgentWorkspace {
 
     /// The tools of the plugins that started: each plugin the workspace
     /// enabled when it opened, which holds the `tools` capability on this
-    /// device.
+    /// device. Waits for the plugins to finish starting.
     pub fn plugin_tools(&self) -> Vec<PluginTool> {
+        self.started.wait();
         self.plugins().tools()
+    }
+
+    /// Whether the plugins finished starting, so [`Self::plugin_tools`]
+    /// answers at once.
+    pub fn plugins_started(&self) -> bool {
+        self.started.is_done()
     }
 
     /// Call the tool `name` of the plugin `plugin_id` with JSON
@@ -106,17 +160,45 @@ impl AgentWorkspace {
     /// once the plugin was turned off in the workspace or lost the `tools`
     /// capability on this device. A plugin that crashes or runs past its
     /// limits answers with an error, and its next call starts afresh.
+    /// Waits for the plugins to finish starting.
     pub fn call_plugin_tool(
         &self,
         plugin_id: &str,
         name: &str,
         arguments: &str,
     ) -> Result<String, AppError> {
+        self.started.wait();
         let call = self.plugins().agent_tool_call(plugin_id, name, arguments)?;
         call.run()
     }
 
     fn plugins(&self) -> MutexGuard<'_, Plugins> {
-        self.plugins.lock().unwrap_or_else(PoisonError::into_inner)
+        lock(&self.plugins)
     }
+}
+
+/// Start the plugins `workspace` enables, and wait up to
+/// [`PLUGIN_START_WAIT`] for them to say what they offer. The lock is
+/// taken a moment at a time while they answer.
+fn start_plugins(plugins: &Mutex<Plugins>, workspace: Arc<Workspace>) {
+    lock(plugins).open_workspace(Some(workspace));
+    let deadline = Instant::now() + PLUGIN_START_WAIT;
+    loop {
+        {
+            let mut plugins = lock(plugins);
+            plugins.poll();
+            if !plugins.is_working() {
+                return;
+            }
+        }
+        if Instant::now() >= deadline {
+            tracing::warn!("a plugin didn't say what it offers in time");
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn lock(plugins: &Mutex<Plugins>) -> MutexGuard<'_, Plugins> {
+    plugins.lock().unwrap_or_else(PoisonError::into_inner)
 }

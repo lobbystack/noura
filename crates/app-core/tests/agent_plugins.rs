@@ -81,12 +81,14 @@ fn only_enabled_plugins_approved_for_tools_offer_them_and_calls_stop_once_they_a
             .code,
         "plugin_tool_arguments_invalid"
     );
-    assert_eq!(
-        agent
-            .call_plugin_tool("off", "echo", r#"{"text":"hi"}"#)
-            .unwrap_err()
-            .code,
-        "plugin_disabled"
+    let off = agent
+        .call_plugin_tool("off", "echo", r#"{"text":"hi"}"#)
+        .unwrap_err();
+    assert_eq!(off.code, "plugin_disabled");
+    assert!(
+        off.message.contains("is off in this workspace"),
+        "{}",
+        off.message
     );
 
     // You revoke the tools capability in the app: the next call stops.
@@ -108,12 +110,14 @@ fn only_enabled_plugins_approved_for_tools_offer_them_and_calls_stop_once_they_a
     // The app turns the plugin off: calls stop, and a new agent doesn't
     // list it.
     assert!(app.set_plugin_enabled("probe", false));
-    assert_eq!(
-        agent
-            .call_plugin_tool("probe", "echo", r#"{"text":"hi"}"#)
-            .unwrap_err()
-            .code,
-        "plugin_disabled"
+    let turned_off = agent
+        .call_plugin_tool("probe", "echo", r#"{"text":"hi"}"#)
+        .unwrap_err();
+    assert_eq!(turned_off.code, "plugin_disabled");
+    assert!(
+        turned_off.message.contains("after this connection started"),
+        "{}",
+        turned_off.message
     );
     assert!(
         agent
@@ -121,6 +125,28 @@ fn only_enabled_plugins_approved_for_tools_offer_them_and_calls_stop_once_they_a
             .is_err()
     );
     assert!(self::agent(&fixture).plugin_tools().is_empty());
+}
+
+#[test]
+fn a_plugin_whose_tools_this_device_took_back_offers_none_to_a_new_agent() {
+    let Some(folder) = probe(&["name = \"views\"", "name = \"tools\""]) else {
+        return;
+    };
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app();
+    plugins::install_and_enable(&mut app, folder.path(), "probe");
+    assert!(app.revoke_plugin_grant("probe", &Grant::Capability("tools".into())));
+
+    let agent = agent(&fixture);
+
+    assert!(agent.plugin_tools().is_empty());
+    assert_eq!(
+        agent
+            .call_plugin_tool("probe", "echo", r#"{"text":"hi"}"#)
+            .unwrap_err()
+            .code,
+        "plugin_tools_revoked"
+    );
 }
 
 #[test]

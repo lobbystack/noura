@@ -1,13 +1,17 @@
 //! Seam 1: the MCP server over an in-process connection, against a real
 //! workspace folder and app data, with the app open beside it: the tool
 //! list, the kernel tools, the Tasks and Projects tools, the app's file
-//! rules, and plugin tools that crash.
+//! rules, plugin tools that crash, a plugin turned off while the server
+//! runs, and a plugin whose code is slow to load.
 
 mod support;
 
+use std::time::{Duration, Instant};
+
 use noura_mcp::NouraMcp;
+use rmcp::model::CallToolRequestParams;
 use serde_json::json;
-use support::{Fixture, answer, call, connect, failure, note};
+use support::{Fixture, ListChanges, answer, call, connect, connect_as, failure, note, tool_names};
 
 const A: &str = "01jbcdefghjkmnpqrstvwxyz0a";
 
@@ -249,5 +253,122 @@ async fn a_plugin_tool_that_crashes_or_loops_answers_with_an_error_and_the_serve
         let hits = answer(&call(&client, "workspace.search", json!({ "query": "tomatoes" })).await);
         assert_eq!(hits[0]["path"], "Plan.md", "{tool}");
     }
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_turned_off_after_the_server_started_leaves_the_tool_list() {
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app();
+    let Some(_plugins) = support::with_tasks_and_projects(&mut app) else {
+        return;
+    };
+    let changes = ListChanges::default();
+    let client = connect_as(NouraMcp::new(fixture.agent()), changes.clone()).await;
+    let tools = &client.peer_info().unwrap().capabilities.tools;
+    assert_eq!(tools.as_ref().unwrap().list_changed, Some(true));
+    assert!(
+        tool_names(&client)
+            .await
+            .contains(&"projects.list".to_owned())
+    );
+
+    assert!(app.set_plugin_enabled("projects", false));
+    let refused = failure(&call(&client, "projects.list", json!({})).await);
+
+    assert_eq!(refused["code"], "plugin_disabled");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while changes.count() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the server never said the list changed"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let names = tool_names(&client).await;
+    assert!(
+        !names.iter().any(|name| name.starts_with("projects.")),
+        "{names:?}"
+    );
+    assert!(names.contains(&"tasks.list".to_owned()), "{names:?}");
+    let gone = client
+        .call_tool(CallToolRequestParams::new("projects.list"))
+        .await;
+    assert!(gone.is_err(), "{gone:?}");
+    answer(&call(&client, "tasks.list", json!({})).await);
+    client.cancel().await.unwrap();
+}
+
+/// The server answers MCP's initialize request and runs the kernel tools
+/// while a plugin's code still loads, so Test connection's 10 seconds
+/// don't depend on plugins. The test holds the Tasks plugin's code back
+/// by turning its installed component into a pipe nobody writes to yet.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn the_server_answers_before_a_plugins_code_loads_and_lists_its_tools_once_it_does() {
+    use std::io::Write;
+
+    let fixture = Fixture::new(&[("Plan.md", &note(A, "Plant tomatoes.\n"))]);
+    let mut app = fixture.app();
+    let Some(_plugins) = support::with_tasks_and_projects(&mut app) else {
+        return;
+    };
+    let component = fixture
+        .app_data
+        .path()
+        .join("plugins/library/tasks/component.wasm");
+    let bytes = std::fs::read(&component).unwrap();
+    std::fs::remove_file(&component).unwrap();
+    let made = std::process::Command::new("mkfifo")
+        .arg(&component)
+        .status()
+        .unwrap();
+    assert!(made.success());
+
+    let (app_data, root) = (fixture.app_data.path().to_owned(), fixture.root.clone());
+    let opened = tokio::time::timeout(Duration::from_secs(10), async move {
+        let agent = tokio::task::spawn_blocking(move || {
+            app_core::AgentWorkspace::open(app_data, &root).unwrap()
+        })
+        .await
+        .unwrap();
+        let agent = std::sync::Arc::new(agent);
+        (agent.clone(), connect(NouraMcp::new(agent)).await)
+    })
+    .await;
+    let (agent, client) = opened.expect("the server answered while a plugin's code loaded");
+
+    assert_eq!(
+        client
+            .peer_info()
+            .unwrap()
+            .server_info
+            .as_ref()
+            .unwrap()
+            .name,
+        "noura"
+    );
+    let hits = answer(&call(&client, "workspace.search", json!({ "query": "tomatoes" })).await);
+    assert_eq!(hits[0]["path"], "Plan.md");
+    assert!(!agent.plugins_started());
+
+    // The code arrives: the host reads it from the pipe, and any later
+    // read finds the file again.
+    let writer = std::thread::spawn(move || {
+        let mut pipe = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&component)
+            .unwrap();
+        let staged = component.with_extension("staged");
+        std::fs::write(&staged, &bytes).unwrap();
+        std::fs::rename(&staged, &component).unwrap();
+        pipe.write_all(&bytes).unwrap();
+    });
+    let names = tool_names(&client).await;
+    writer.join().unwrap();
+
+    assert!(names.contains(&"tasks.list".to_owned()), "{names:?}");
+    assert!(names.contains(&"projects.list".to_owned()), "{names:?}");
+    answer(&call(&client, "tasks.list", json!({})).await);
     client.cancel().await.unwrap();
 }

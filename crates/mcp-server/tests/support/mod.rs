@@ -6,16 +6,19 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
 use app_core::{AgentWorkspace, App, WorkspaceService};
 use noura_mcp::NouraMcp;
 use rmcp::{
-    RoleClient, ServiceExt,
+    ClientHandler, RoleClient, ServiceExt,
     model::{CallToolRequestParams, CallToolResult, ContentBlock},
-    service::RunningService,
+    service::{NotificationContext, RunningService},
 };
 use serde_json::Value;
 
@@ -158,16 +161,58 @@ pub type Client = RunningService<RoleClient, ()>;
 
 /// An MCP client connected to `server` in this process.
 pub async fn connect(server: NouraMcp) -> Client {
+    connect_as(server, ()).await
+}
+
+/// An MCP client that handles notifications with `handler`, connected to
+/// `server` in this process.
+pub async fn connect_as<H: ClientHandler>(
+    server: NouraMcp,
+    handler: H,
+) -> RunningService<RoleClient, H> {
     let (client_end, server_end) = tokio::io::duplex(1 << 20);
     tokio::spawn(async move {
         let running = server.serve(server_end).await.unwrap();
         let _ = running.waiting().await;
     });
-    ().serve(client_end).await.unwrap()
+    handler.serve(client_end).await.unwrap()
+}
+
+/// A client that counts the server's notices that its tool list changed.
+#[derive(Clone, Default)]
+pub struct ListChanges(Arc<AtomicUsize>);
+
+impl ListChanges {
+    pub fn count(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+impl ClientHandler for ListChanges {
+    async fn on_tool_list_changed(&self, _context: NotificationContext<RoleClient>) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// The names of the tools the server lists, sorted.
+pub async fn tool_names<H: ClientHandler>(client: &RunningService<RoleClient, H>) -> Vec<String> {
+    let mut names: Vec<String> = client
+        .list_all_tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tool| tool.name.into_owned())
+        .collect();
+    names.sort();
+    names
 }
 
 /// Call the tool `name` with `arguments`.
-pub async fn call(client: &Client, name: &str, arguments: Value) -> CallToolResult {
+pub async fn call<H: ClientHandler>(
+    client: &RunningService<RoleClient, H>,
+    name: &str,
+    arguments: Value,
+) -> CallToolResult {
     let Value::Object(arguments) = arguments else {
         panic!("arguments must be an object");
     };

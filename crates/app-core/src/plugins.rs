@@ -1924,14 +1924,16 @@ impl Plugins {
             AppError::from_core(error, workspace.root(), crate::error::Access::ReadWorkspace)
         })?;
         if !manifest.enabled_plugins.iter().any(|id| id == plugin) {
-            self.stop(plugin);
-            return Err(AppError::new(
-                "plugin_disabled",
+            let message = if self.running.contains_key(plugin) {
                 format!(
                     "You turned {shown} off in this workspace after this connection \
                      started, so Noura didn't run its tool. Nothing changed."
-                ),
-            ));
+                )
+            } else {
+                format!("{shown} is off in this workspace, so Noura didn't run its tool.")
+            };
+            self.stop(plugin);
+            return Err(AppError::new("plugin_disabled", message));
         }
         self.records = self.store.load();
         let Some(record) = self.records.plugins.get(plugin) else {
