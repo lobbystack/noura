@@ -250,6 +250,110 @@ fn an_agent_updates_a_note_only_while_it_holds_the_revision_it_read() {
 }
 
 #[test]
+fn a_note_moved_outside_noura_changes_at_its_new_place_at_once() {
+    let fixture = Fixture::new(&[("Docs/Plan.md", &note(A, "Body\n"))]);
+    let agent = agent(&fixture);
+    let workspace = agent.workspace();
+    let id = format!("note_{A}");
+    let read = workspace.read_item(&id).unwrap();
+
+    // Another program moves the note before the watcher reports it.
+    std::fs::create_dir_all(fixture.root.join("Archive")).unwrap();
+    std::fs::rename(
+        fixture.root.join("Docs/Plan.md"),
+        fixture.root.join("Archive/Plan.md"),
+    )
+    .unwrap();
+    let updated = workspace
+        .update_note(
+            &id,
+            &NoteChanges {
+                body: Some("Moved body\n".into()),
+                expected_revision: read.revision,
+                ..NoteChanges::default()
+            },
+        )
+        .unwrap();
+
+    assert_eq!(updated.relative_path, "Archive/Plan.md");
+    assert!(fixture.read("Archive/Plan.md").ends_with(b"Moved body\n"));
+
+    // And again with a new title, which renames it where it is now.
+    std::fs::rename(
+        fixture.root.join("Archive/Plan.md"),
+        fixture.root.join("Plan.md"),
+    )
+    .unwrap();
+    let renamed = workspace
+        .update_note(
+            &id,
+            &NoteChanges {
+                title: Some("Plan B".into()),
+                expected_revision: updated.revision,
+                ..NoteChanges::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(renamed.relative_path, "Plan B.md");
+    assert!(fixture.read("Plan B.md").ends_with(b"Moved body\n"));
+    assert!(!fixture.exists("Plan.md"));
+}
+
+#[test]
+fn two_files_with_one_id_and_a_broken_note_stay_as_they_are() {
+    let broken = format!(
+        "---\nid: note_{B}\ntype: note\ncolor: [green\n---\nBroken body\n",
+        B = "01jbcdefghjkmnpqrstvwxyz0b"
+    );
+    let fixture = Fixture::new(&[
+        ("Plan.md", &note(A, "One\n")),
+        ("Plan copy.md", &note(A, "Two\n")),
+        ("Broken.md", broken.as_bytes()),
+    ]);
+    let agent = agent(&fixture);
+    let workspace = agent.workspace();
+    let before = fixture.snapshot();
+
+    // Copies that share an ID: Noura won't pick one.
+    let id = format!("note_{A}");
+    assert_eq!(
+        workspace.read_item(&id).unwrap_err().code,
+        "identity_conflict"
+    );
+    let copy = workspace.read_item_at("Plan copy.md").unwrap();
+    assert_eq!(copy.id.as_deref(), Some(id.as_str()));
+    let shared = workspace
+        .update_note(
+            &id,
+            &NoteChanges {
+                body: Some("Changed\n".into()),
+                expected_revision: copy.revision,
+                ..NoteChanges::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(shared.code, "identity_conflict");
+
+    // A note whose properties don't parse reads as plain text, and its ID
+    // finds nothing to change.
+    let read = workspace.read_item_at("Broken.md").unwrap();
+    assert_eq!(read.id, None);
+    assert_eq!(read.body, broken);
+    let refused = workspace
+        .update_note(
+            "note_01jbcdefghjkmnpqrstvwxyz0b",
+            &NoteChanges {
+                body: Some("Changed\n".into()),
+                expected_revision: read.revision,
+                ..NoteChanges::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(refused.code, "object_not_found");
+    assert_eq!(fixture.snapshot(), before);
+}
+
+#[test]
 fn a_folder_without_a_workspace_opens_nothing_and_stays_as_it_is() {
     let fixture = Fixture::new(&[]);
     let plain = fixture.outside();
