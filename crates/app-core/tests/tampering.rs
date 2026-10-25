@@ -2,19 +2,23 @@
 //! §30): a server that inserts its own device key into your chain, plants
 //! a card in a workspace's policy or in another member's chain, reuses a
 //! device ID under another card, lists an extra card in `GET /v2/devices`,
-//! brings back a removed card, swaps the approver's head in an offer, hands
+//! brings back a removed card, swaps the approver's head in an offer, signs
+//! an offer again under its own card, swaps a request's card on the
+//! approver, hands
 //! a recipient a key other than the epoch's, or shows two recipients
 //! different epoch records, gets caught with the error §30 names.
 
 mod sync_support;
 
 use app_core::sync::SyncError;
+use app_core::sync::approval::CandidateStep;
 use app_core::sync::device_list::DeviceAlert;
 use sync_key_envelope::v2::{DeviceKeys, next_link};
 use sync_protocol::codec::{Decode, Encode, List, Nested, Sorted};
 use sync_protocol::keys::{EpochParams, build_epoch};
 use sync_protocol::messages::{
-    ChainsResponse, DeviceInfo, DeviceState, DevicesResponse, OffersResponse, PolicyResponse,
+    ChainsResponse, DeviceInfo, DeviceState, DevicesResponse, OffersResponse, PendingResponse,
+    PolicyResponse,
 };
 use sync_protocol::messages::{EpochsResponse, KeyRecord, KeysResponse};
 use sync_protocol::records::{LinkKind, PolicyChange, PolicyKind, Role, Signed};
@@ -242,6 +246,168 @@ async fn a_swapped_approver_head_shows_another_code() {
         laptop.service.approval_code(&mut offer).await.unwrap(),
         None,
         "no nonce reached the laptop's offer"
+    );
+}
+
+/// A server that signs the offer again under a card of its own (§10, §30)
+/// passes the candidate's signature check, but the candidate's code covers
+/// that offer and the approver's covers its own, so the codes differ; if
+/// you confirm both anyway, the candidate refuses the approver's
+/// `add_device`, which another card than the offer's signed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_offer_signed_again_under_another_card_shows_another_code() {
+    let server = Server::start().await;
+    let proxy = Proxy::start(&server.base).await;
+    let mut laptop = first_desktop(&server, "fay@example.com").await;
+    let account = laptop.credentials.account;
+    let mut phone = new_desktop(&server, account, &proxy.base).await;
+    let pending = laptop.service.pending_devices().await.unwrap();
+    let mut none = Vec::new();
+    let mut offer = laptop
+        .service
+        .offer_approval(&pending[0], &mut none)
+        .await
+        .unwrap();
+    let server_keys = DeviceKeys::generate().unwrap();
+    let server_card = server_keys.card(account);
+    let real = std::sync::Arc::new(std::sync::Mutex::new(None::<Digest>));
+    let seen = real.clone();
+    proxy.tamper(Box::new(move |path, body| {
+        if path != "/v2/approvals" {
+            return body;
+        }
+        let offers = OffersResponse::from_bytes(&body).unwrap();
+        let mut forged = Vec::new();
+        for offer in offers.offers.0 {
+            *seen.lock().unwrap() = Some(offer.0.digest());
+            let mut changed = offer.0.body.clone();
+            changed.approver_card = Nested(server_card.clone());
+            forged.push(Nested(Signed::sign(changed, server_keys.signing())));
+        }
+        OffersResponse {
+            offers: List(forged),
+        }
+        .to_bytes()
+    }));
+    // The server takes the candidate's nonce for its own offer and hands it
+    // on to the approver's.
+    let relay = real.clone();
+    proxy.reroute(Box::new(move |path| {
+        match (path.strip_prefix("/v2/approvals/"), *relay.lock().unwrap()) {
+            (Some(rest), Some(real)) if rest.ends_with("/reveal") => {
+                format!("/v2/approvals/{}/reveal", real.to_base64url())
+            }
+            _ => path.to_owned(),
+        }
+    }));
+    let CandidateStep::Code(phone_code) = phone.candidate.poll().await.unwrap() else {
+        panic!("the forged offer passes the signature check");
+    };
+    let laptop_code = laptop
+        .service
+        .approval_code(&mut offer)
+        .await
+        .unwrap()
+        .expect("the nonce reached the laptop");
+    assert_ne!(phone_code, laptop_code, "the codes differ");
+
+    phone.candidate.confirm();
+    let mut none = Vec::new();
+    laptop
+        .service
+        .confirm_approval(offer, &mut none)
+        .await
+        .unwrap();
+    let joined = phone
+        .candidate
+        .joined(&mut phone.heads, &*phone.secrets)
+        .await;
+    assert!(
+        matches!(joined, Err(SyncError::Check("sync_approval_mismatch"))),
+        "{:?}",
+        joined.as_ref().err()
+    );
+}
+
+/// A server that shows the approver its own card and commitment in place
+/// of your new device's request (§10, §30) gets an offer for that card, and
+/// both ends it controls show one code. Your new device gets no offer, so
+/// it shows no code to compare and another fingerprint than the approver
+/// shows; if you confirm anyway, the `add_device` adds the server's card
+/// and your new device never joins.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_swapped_on_the_approver_never_adds_your_device() {
+    let server = Server::start().await;
+    let proxy = Proxy::start(&server.base).await;
+    let laptop = first_desktop(&server, "gus@example.com").await;
+    let account = laptop.credentials.account;
+    let mut laptop = through(&proxy, laptop).await;
+    let mut phone = new_desktop(&server, account, &server.base).await;
+    // The server's own card, which it enrolls with a session it made.
+    let mut planted = new_desktop(&server, account, &server.base).await;
+    let phone_card = phone.candidate.card();
+    let hidden = phone_card.clone();
+    proxy.tamper(Box::new(move |path, body| {
+        if path != "/v2/approval-requests" {
+            return body;
+        }
+        let mut listed = PendingResponse::from_bytes(&body).unwrap();
+        listed.pending.0.retain(|p| p.card.0 != hidden);
+        listed.to_bytes()
+    }));
+    let pending = laptop.service.pending_devices().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_ne!(
+        pending[0].fingerprint,
+        phone.candidate.fingerprint(),
+        "the approver shows another fingerprint than the new device"
+    );
+    let mut none = Vec::new();
+    let mut offer = laptop
+        .service
+        .offer_approval(&pending[0], &mut none)
+        .await
+        .unwrap();
+    let CandidateStep::Code(planted_code) = planted.candidate.poll().await.unwrap() else {
+        panic!("the server's request gets the offer");
+    };
+    assert_eq!(
+        laptop.service.approval_code(&mut offer).await.unwrap(),
+        Some(planted_code)
+    );
+    assert!(
+        matches!(
+            phone.candidate.poll().await.unwrap(),
+            CandidateStep::Waiting
+        ),
+        "your new device shows no code"
+    );
+
+    planted.candidate.confirm();
+    let mut none = Vec::new();
+    laptop
+        .service
+        .confirm_approval(offer, &mut none)
+        .await
+        .unwrap();
+    proxy.honest();
+    let chain = laptop.service.own_chain().await.unwrap();
+    assert!(chain.card(&planted.candidate.card().device).is_some());
+    assert!(
+        chain.card(&phone_card.device).is_none(),
+        "no add_device names your new device"
+    );
+    assert!(matches!(
+        phone.candidate.poll().await.unwrap(),
+        CandidateStep::Waiting
+    ));
+    assert!(
+        phone
+            .candidate
+            .joined(&mut phone.heads, &*phone.secrets)
+            .await
+            .unwrap()
+            .is_none()
     );
 }
 

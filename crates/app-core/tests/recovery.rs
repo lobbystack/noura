@@ -232,6 +232,95 @@ async fn a_replaced_kit_no_longer_recovers() {
     assert!(matches!(result, Err(SyncError::KitRevoked)));
 }
 
+/// An export first creates the kit file, so a folder you can't write to
+/// stops it before the chain changes and the old kit keeps working; one
+/// that fails after the kit's links committed removes the half-written
+/// file and asks you to export again (§12).
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kit_that_cant_be_saved_leaves_the_old_kit_or_asks_again() {
+    use std::os::unix::fs::PermissionsExt;
+
+    use app_core::sync::recovery::KIT_NOT_SAVED;
+    use sync_protocol::codec::{Encode as _, Text};
+    use sync_protocol::messages::{ErrorBody, server_error_status};
+    use sync_support::{Desktop, Proxy};
+
+    let server = Server::start().await;
+    let laptop = first_desktop(&server, "cy@example.com").await;
+    let proxy = Proxy::start(&server.base).await;
+    let mut laptop = Desktop::connect(
+        &proxy.base,
+        laptop.credentials.clone(),
+        laptop.secrets.clone(),
+        laptop.state,
+    )
+    .await;
+    let mut workspace = laptop.service.create_workspace("Notes").await.unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let first = outside.path().join("First kit");
+    let old = laptop
+        .service
+        .export_kit(&first, &[], std::slice::from_mut(&mut workspace))
+        .await
+        .unwrap();
+    let before = laptop.service.own_chain().await.unwrap().head();
+
+    let locked = outside.path().join("Locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let refused = laptop
+        .service
+        .export_kit(
+            &locked.join("Second kit"),
+            &[],
+            std::slice::from_mut(&mut workspace),
+        )
+        .await;
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let Err(SyncError::Invalid(text)) = refused else {
+        panic!("the export fails: {refused:?}");
+    };
+    assert!(text.contains("couldn't be written"), "{text}");
+    assert_eq!(
+        laptop.service.own_chain().await.unwrap().head(),
+        before,
+        "the chain didn't change"
+    );
+    let kit = open_kit(&first, &old.secret).unwrap();
+    let chain = laptop.service.own_chain().await.unwrap();
+    assert!(
+        chain.is_active_at(&kit.card.0.device, chain.head_seqno()),
+        "the old kit still works"
+    );
+
+    // A server that refuses to record the new head after the links
+    // committed.
+    let body = ErrorBody {
+        code: Text::new("internal").unwrap(),
+        message: Text::new("the database failed").unwrap(),
+        retry_after_seconds: None,
+        detail: None,
+    }
+    .to_bytes();
+    let status = server_error_status("internal").unwrap();
+    proxy.forge(Box::new(move |method, path| {
+        (method == "POST" && path.ends_with("/ops")).then(|| (status, body.clone()))
+    }));
+    let second = outside.path().join("Second kit");
+    let failed = laptop
+        .service
+        .export_kit(&second, &[], std::slice::from_mut(&mut workspace))
+        .await;
+    proxy.honest();
+    let Err(SyncError::Invalid(text)) = failed else {
+        panic!("the export fails: {failed:?}");
+    };
+    assert_eq!(text, KIT_NOT_SAVED);
+    assert!(!second.exists(), "no half-written kit stays");
+    assert_ne!(laptop.service.own_chain().await.unwrap().head(), before);
+}
+
 /// A device that `kit`'s recovery identity recovers on a new computer, as
 /// a recovery's step 4 appends it, while the account's other devices stay.
 async fn recovered_by<B: Backend>(server: &Server<B>, kit: &KitPayload) -> Id {

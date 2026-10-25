@@ -74,7 +74,10 @@ fn inside_workspace(path: &Path) -> bool {
 
 /// Writes the kit to a new file at `path`, readable only by you on Unix,
 /// and makes it durable.
-fn write_kit(path: &Path, bytes: &[u8]) -> Result<(), SyncError> {
+/// Creates the kit file, readable by you alone, before the export changes
+/// your chain: a name that exists or a folder you can't write to stops the
+/// export while the old kit still works.
+fn reserve_kit(path: &Path) -> Result<std::fs::File, SyncError> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -82,7 +85,7 @@ fn write_kit(path: &Path, bytes: &[u8]) -> Result<(), SyncError> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(path).map_err(|e| {
+    let file = options.open(path).map_err(|e| {
         SyncError::Invalid(match e.kind() {
             std::io::ErrorKind::AlreadyExists => {
                 "Choose a new file for the kit; that one exists.".to_owned()
@@ -90,10 +93,14 @@ fn write_kit(path: &Path, bytes: &[u8]) -> Result<(), SyncError> {
             _ => format!("The kit file couldn't be written: {e}"),
         })
     })?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|e| SyncError::Invalid(format!("The kit file couldn't be written: {e}")))
+    file.sync_all()
+        .map_err(|e| SyncError::Invalid(format!("The kit file couldn't be written: {e}")))?;
+    Ok(file)
 }
+
+/// What the screen says when the chain took the new kit but its file
+/// couldn't be written (§12).
+pub const KIT_NOT_SAVED: &str = "Noura added a new recovery kit to your account but couldn't save its file, and an earlier kit no longer works. Export a kit again.";
 
 /// Opens a kit file with the secret you type, ignoring spaces, hyphens and
 /// letter case. A wrong secret or a tampered file reports
@@ -156,9 +163,42 @@ impl SyncService {
                 "Choose a new file for the kit; that one exists.".into(),
             ));
         }
+        let mut file = reserve_kit(path)?;
+        let sealed = self.seal_kit(keep, workspaces).await;
+        let (kit, secret) = match sealed {
+            Ok(sealed) => sealed,
+            Err(Sealed::Before(error)) => {
+                let _ = std::fs::remove_file(path);
+                return Err(error);
+            }
+            Err(Sealed::After(error)) => {
+                tracing::warn!(kind = ?error.code(), "the kit's links committed but its export failed");
+                let _ = std::fs::remove_file(path);
+                return Err(SyncError::Invalid(KIT_NOT_SAVED.into()));
+            }
+        };
+        if let Err(error) = file.write_all(&kit).and_then(|()| file.sync_all()) {
+            tracing::warn!(kind = ?error.kind(), "the kit file couldn't be written");
+            drop(file);
+            let _ = std::fs::remove_file(path);
+            return Err(SyncError::Invalid(KIT_NOT_SAVED.into()));
+        }
+        Ok(KitExport {
+            path: path.to_owned(),
+            secret: Zeroizing::new(kit_secret_text(&secret)),
+        })
+    }
+
+    /// Appends the kit's links, records the head in each workspace and
+    /// seals the kit, returning its bytes and secret.
+    async fn seal_kit(
+        &mut self,
+        keep: &[Id],
+        workspaces: &mut [RemoteWorkspace],
+    ) -> Result<(Vec<u8>, Zeroizing<[u8; KIT_SECRET_LEN]>), Sealed> {
         let account = self.credentials.account;
-        let identity = random(DeviceKeys::generate())?;
-        let chain = self.own_chain().await?;
+        let identity = random(DeviceKeys::generate()).map_err(Sealed::Before)?;
+        let chain = self.own_chain().await.map_err(Sealed::Before)?;
         let mut head = chain.head();
         let mut links = Vec::new();
         if let Some(old) = chain
@@ -173,7 +213,7 @@ impl SyncService {
                 LinkKind::Remove {
                     device: old,
                     keep: Sorted::new(keep.to_vec())
-                        .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
+                        .map_err(|e| Sealed::Before(SyncError::Invalid(e.name().to_owned())))?,
                 },
             );
             head = AccountHead {
@@ -191,16 +231,18 @@ impl SyncService {
                 card: Nested(identity.card(account)),
             },
         ));
-        let chain = self.append_links(links).await?;
+        let chain = self.append_links(links).await.map_err(Sealed::Before)?;
+        let after = Sealed::After;
         let mut anchors = Vec::with_capacity(workspaces.len());
         for remote in workspaces.iter_mut() {
-            self.record_heads(remote, &[]).await?;
+            self.record_heads(remote, &[]).await.map_err(after)?;
             let (revision, head) = remote.policy.head();
             let genesis = remote
                 .policy
                 .change(1)
                 .map(|c| c.digest())
-                .ok_or(SyncError::Check("sync_policy_rollback"))?;
+                .ok_or(SyncError::Check("sync_policy_rollback"))
+                .map_err(after)?;
             anchors.push(KitWorkspace {
                 workspace: remote.workspace,
                 genesis,
@@ -213,34 +255,37 @@ impl SyncService {
                     covered_seq: 0,
                     checkpoint: Digest::ZERO,
                 }])
-                .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
+                .map_err(|e| after(SyncError::Invalid(e.name().to_owned())))?,
             });
         }
         let payload = KitPayload {
-            origin: Text::new(self.client.origin()?)
-                .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
+            origin: Text::new(self.client.origin().map_err(after)?)
+                .map_err(|e| after(SyncError::Invalid(e.name().to_owned())))?,
             account,
             account_head: chain.head(),
             card: Nested(identity.card(account)),
             signing_seed: identity.signing().seed(),
             hpke_secret: identity.hpke_seed().clone(),
             workspaces: Sorted::new(anchors)
-                .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
+                .map_err(|e| after(SyncError::Invalid(e.name().to_owned())))?,
         };
         let secret: Zeroizing<[u8; KIT_SECRET_LEN]> =
-            Zeroizing::new(random(sync_protocol::crypto::random_array())?);
+            Zeroizing::new(random(sync_protocol::crypto::random_array()).map_err(after)?);
         let kit = RecoveryKit::seal(
             &payload,
             &secret,
-            random(Id::random())?,
-            random(random_nonce())?,
+            random(Id::random()).map_err(after)?,
+            random(random_nonce()).map_err(after)?,
         );
-        write_kit(path, &kit.to_bytes())?;
-        Ok(KitExport {
-            path: path.to_owned(),
-            secret: Zeroizing::new(kit_secret_text(&secret)),
-        })
+        Ok((kit.to_bytes(), secret))
     }
+}
+
+/// Where a kit export failed: before its links committed, when the old
+/// kit still works, or after.
+enum Sealed {
+    Before(SyncError),
+    After(SyncError),
 }
 
 /// A link of your chain after the kit's head, for your review (§12).

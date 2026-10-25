@@ -10,13 +10,13 @@ mod sync_support;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use app_core::account::live::LiveAccount;
+use app_core::account::live::{LiveAccount, UNVERIFIED_REMOVAL};
 use app_core::account::{AccountAction, AccountBackend, AccountPhase, AccountScreen};
 use app_core::sync::device::StoredDevice;
 use app_core::sync::{KeptHeads, SyncService};
 use sync_protocol::types::{from_base64url, to_base64url, to_hex};
 use sync_store::{Backend as _, WriteTxn as _};
-use sync_support::{MemorySecrets, Server, first_desktop, new_desktop};
+use sync_support::{MemorySecrets, Proxy, Server, first_desktop, new_desktop};
 
 fn wait_for(
     account: &LiveAccount,
@@ -318,7 +318,22 @@ fn the_device_secrets_reach_no_workspace_file_index_log_or_diagnostics() {
             kit_secret.replace(' ', "").into_bytes(),
         ),
     ];
-    for (name, seed) in [("the signing seed", signing), ("the X-Wing seed", hpke)] {
+    // The kit's recovery identity, and the kit file itself.
+    let payload = app_core::sync::recovery::open_kit(&kit, &kit_secret).unwrap();
+    let kit_signing = *payload.signing_seed.expose();
+    let kit_hpke = *payload.hpke_secret.expose();
+    let kit_bytes = std::fs::read(&kit).unwrap();
+    needles.push(("the kit file", kit_bytes.clone()));
+    needles.push((
+        "the kit file's last 64 bytes",
+        kit_bytes[kit_bytes.len() - 64..].to_vec(),
+    ));
+    for (name, seed) in [
+        ("the signing seed", signing),
+        ("the X-Wing seed", hpke),
+        ("the kit's signing seed", kit_signing),
+        ("the kit's X-Wing secret", kit_hpke),
+    ] {
         needles.push((name, seed.to_vec()));
         needles.push((name, to_hex(&seed).into_bytes()));
         needles.push((name, to_base64url(&seed).into_bytes()));
@@ -435,6 +450,115 @@ fn a_lost_session_offers_to_try_again_and_signing_in_keeps_the_device() {
     drop(runtime);
 }
 
+/// A server that answers `device_removed` when no link removed this
+/// computer (§7): the account stays, sync stops with the failed check, and
+/// the screen never says that another device removed it, whether the
+/// answer names a link that removes nobody or names none. Once the server
+/// answers honestly again, the device connects as before.
+#[test]
+fn a_forged_device_removed_answer_keeps_the_account() {
+    use sync_protocol::codec::{Bytes, Encode as _, Text};
+    use sync_protocol::messages::{DeviceRemovedDetail, ErrorBody, server_error_status};
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (server, proxy) = runtime.block_on(Proxy::in_front());
+    let account_id = runtime.block_on(server.person("di@example.com"));
+    let app_data = tempfile::tempdir().unwrap();
+    let secrets = Arc::new(MemorySecrets::default());
+    let start = || {
+        LiveAccount::start(
+            app_data.path().to_owned(),
+            secrets.clone(),
+            Arc::new(|_| Ok(())),
+        )
+    };
+    let account = start();
+    account.act(AccountAction::SetServer(proxy.base.clone()));
+    wait_for(&account, "the address", |s| s.server == proxy.base);
+    account.act(AccountAction::SignIn);
+    let screen = wait_for(&account, "the sign-in code", |s| {
+        matches!(s.phase, AccountPhase::SigningIn { .. })
+    });
+    let AccountPhase::SigningIn { user_code } = screen.phase else {
+        unreachable!()
+    };
+    runtime
+        .block_on(
+            server
+                .store
+                .decide_device_grant(account_id, &user_code, true),
+        )
+        .unwrap();
+    wait_for(
+        &account,
+        "the signed-in account",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if !view.devices.is_empty()),
+    );
+    let genesis = StoredDevice::load(&*secrets, &proxy.base)
+        .unwrap()
+        .unwrap()
+        .credentials()
+        .unwrap()
+        .unwrap()
+        .reference_head
+        .genesis;
+    // Every route but the chain reads, which a removed session keeps,
+    // answers device_removed.
+    let forge = |detail: Option<Vec<u8>>| -> sync_support::Forge {
+        let body = ErrorBody {
+            code: Text::new("device_removed").unwrap(),
+            message: Text::new("a device removed this device").unwrap(),
+            retry_after_seconds: None,
+            detail: detail.map(Bytes),
+        }
+        .to_bytes();
+        let status = server_error_status("device_removed").unwrap();
+        Box::new(move |_, path| {
+            (path != "/v2/accounts/chains" && path != "/v2/limits").then(|| (status, body.clone()))
+        })
+    };
+
+    // The backend's next refresh meets an answer naming the genesis link,
+    // which removes nobody.
+    proxy.forge(forge(Some(
+        DeviceRemovedDetail { genesis, seqno: 1 }.to_bytes(),
+    )));
+    let screen = wait_for(&account, "the failed check", |s| {
+        s.problem.as_deref() == Some(UNVERIFIED_REMOVAL)
+    });
+    assert!(
+        matches!(screen.phase, AccountPhase::SignedIn(_)),
+        "{screen:?}"
+    );
+    drop(account);
+    std::thread::sleep(Duration::from_secs(3));
+
+    // On the next launch, an answer that names no link.
+    proxy.forge(forge(None));
+    let account = start();
+    let screen = wait_for(&account, "the offer to try again", |s| s.can_retry);
+    assert_eq!(screen.problem.as_deref(), Some(UNVERIFIED_REMOVAL));
+    assert!(
+        !matches!(screen.phase, AccountPhase::Removed { .. }),
+        "{screen:?}"
+    );
+    assert!(
+        StoredDevice::load(&*secrets, &proxy.base)
+            .unwrap()
+            .is_some(),
+        "the device keeps its keys"
+    );
+    proxy.honest();
+    account.act(AccountAction::Retry);
+    wait_for(
+        &account,
+        "the account again",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if !view.devices.is_empty()),
+    );
+    drop(account);
+    drop(runtime);
+}
+
 /// Recovering through the account backend (§12): the review shows the
 /// changes since the kit, the members of the workspace the kit doesn't
 /// list and the devices the recovery removes, then the account signs in on
@@ -534,6 +658,100 @@ fn the_recovery_review_shows_unlisted_workspaces_with_their_members() {
     assert!(view.devices.iter().any(|d| d.this_device && !d.removed));
     drop(account);
     drop(laptop);
+    drop(runtime);
+}
+
+/// A server that can't be reached for a while leaves the browser sign-in
+/// waiting, and it signs in once the server answers again; a confirmed
+/// approval that fails to commit leaves the screen, since confirming
+/// spent its offer (§7, §10).
+#[test]
+fn a_sign_in_outlasts_an_unreachable_server_and_a_failed_approval_leaves_the_screen() {
+    use sync_protocol::codec::{Encode as _, Text};
+    use sync_protocol::messages::{ErrorBody, server_error_status};
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (server, proxy) = runtime.block_on(Proxy::in_front());
+    let account_id = runtime.block_on(server.person("flo@example.com"));
+    let app_data = tempfile::tempdir().unwrap();
+    let account = LiveAccount::start(
+        app_data.path().to_owned(),
+        Arc::new(MemorySecrets::default()),
+        Arc::new(|_| Ok(())),
+    );
+    account.act(AccountAction::SetServer(proxy.base.clone()));
+    wait_for(&account, "the address", |s| s.server == proxy.base);
+    account.act(AccountAction::SignIn);
+    let screen = wait_for(&account, "the sign-in code", |s| {
+        matches!(s.phase, AccountPhase::SigningIn { .. })
+    });
+    let AccountPhase::SigningIn { user_code } = screen.phase else {
+        unreachable!()
+    };
+    // A gateway that answers outside the protocol.
+    proxy.forge(Box::new(|_, path| {
+        (path == "/v2/device/token").then(|| (502, b"bad gateway".to_vec()))
+    }));
+    let screen = wait_for(&account, "the unreachable server", |s| {
+        s.problem
+            .as_deref()
+            .is_some_and(|p| p.contains("can't be reached"))
+    });
+    assert!(
+        matches!(screen.phase, AccountPhase::SigningIn { .. }),
+        "{screen:?}"
+    );
+    proxy.honest();
+    runtime
+        .block_on(
+            server
+                .store
+                .decide_device_grant(account_id, &user_code, true),
+        )
+        .unwrap();
+    let screen = wait_for(
+        &account,
+        "the signed-in account",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if !view.devices.is_empty()),
+    );
+    assert_eq!(screen.problem, None, "the problem went with the outage");
+
+    let mut phone = runtime.block_on(new_desktop(&server, account_id, &server.base));
+    wait_for(
+        &account,
+        "the request",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if view.requests.len() == 1),
+    );
+    account.act(AccountAction::Approve(0));
+    wait_for(
+        &account,
+        "the open approval",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if view.approval.is_some()),
+    );
+    runtime.block_on(phone.candidate.poll()).unwrap();
+    wait_for(&account, "the approval code", |s| {
+        matches!(&s.phase, AccountPhase::SignedIn(view)
+            if view.approval.as_ref().is_some_and(|a| a.code.is_some()))
+    });
+    let body = ErrorBody {
+        code: Text::new("internal").unwrap(),
+        message: Text::new("the database failed").unwrap(),
+        retry_after_seconds: None,
+        detail: None,
+    }
+    .to_bytes();
+    let status = server_error_status("internal").unwrap();
+    proxy.forge(Box::new(move |method, path| {
+        (method == "POST" && path == "/v2/accounts/chain").then(|| (status, body.clone()))
+    }));
+    account.act(AccountAction::ConfirmApproval);
+    let screen = wait_for(&account, "the failed approval", |s| s.problem.is_some());
+    assert!(
+        matches!(&screen.phase, AccountPhase::SignedIn(view) if view.approval.is_none()),
+        "{screen:?}"
+    );
+    proxy.honest();
+    drop(account);
     drop(runtime);
 }
 

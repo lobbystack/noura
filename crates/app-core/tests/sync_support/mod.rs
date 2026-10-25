@@ -318,26 +318,95 @@ impl Account {
 /// response body and returns the body to send.
 pub type Tamper = Box<dyn Fn(&str, Vec<u8>) -> Vec<u8> + Send + Sync>;
 
+/// Answers a request in the server's place: given the method and path, the
+/// status and body to send, or `None` to forward the request.
+pub type Forge = Box<dyn Fn(&str, &str) -> Option<(u16, Vec<u8>)> + Send + Sync>;
+
+/// Rewrites a request's path and query before the proxy forwards it.
+pub type Reroute = Box<dyn Fn(&str) -> String + Send + Sync>;
+
 /// A proxy between a client and the server that forwards every request
-/// and lets a test rewrite responses, as a malicious server or relay
-/// would.
+/// and lets a test rewrite responses, or answer in the server's place, as
+/// a malicious server or relay would.
 pub struct Proxy {
     pub base: String,
     tamper: Arc<Mutex<Option<Tamper>>>,
+    forge: Arc<Mutex<Option<Forge>>>,
+    reroute: Arc<Mutex<Option<Reroute>>>,
+    upstream: Arc<Mutex<String>>,
 }
 
 impl Proxy {
     pub async fn start(upstream: &str) -> Self {
+        let proxy = Self::listen().await;
+        *proxy.upstream.lock().unwrap() = upstream.to_owned();
+        proxy
+    }
+
+    /// The real server on SQLite behind a proxy whose address the server
+    /// takes as its origin, as a relay in front of it would: the device
+    /// page and enrollment name the proxy's address, and the server's
+    /// `base` is the proxy's, so every client goes through it.
+    pub async fn in_front() -> (Server, Self) {
+        let proxy = Self::listen().await;
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let data = dir.path().join("data");
+        sync_server::migrate(&data).await.expect("migrated");
+        let store = Arc::new(
+            sync_server::open_store(&sync_server::Config::new(
+                data,
+                "127.0.0.1:0".parse().expect("an address"),
+            ))
+            .await
+            .expect("the store opens"),
+        );
+        let origin = sync_server::PublicOrigin::parse(&proxy.base).expect("an origin");
+        let address = sync_server::spawn_with(store.clone(), "127.0.0.1:0", move |_| {
+            sync_server::Accounts::local(origin)
+        })
+        .await
+        .expect("serving");
+        *proxy.upstream.lock().unwrap() = format!("http://localhost:{}", address.port());
+        // Every client reaches the server through the proxy.
+        let server = Server {
+            base: proxy.base.clone(),
+            store,
+            dir,
+            postgres: None,
+        };
+        (server, proxy)
+    }
+
+    async fn listen() -> Self {
         let tamper: Arc<Mutex<Option<Tamper>>> = Arc::new(Mutex::new(None));
+        let forge: Arc<Mutex<Option<Forge>>> = Arc::new(Mutex::new(None));
+        let reroute: Arc<Mutex<Option<Reroute>>> = Arc::new(Mutex::new(None));
+        let upstream: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
         let shared = tamper.clone();
-        let upstream = upstream.to_owned();
+        let forged = forge.clone();
+        let rerouted = reroute.clone();
+        let target = upstream.clone();
         let http = reqwest::Client::new();
         let app = axum::Router::new().fallback(move |request: axum::extract::Request| {
             let shared = shared.clone();
-            let upstream = upstream.clone();
+            let forged = forged.clone();
+            let rerouted = rerouted.clone();
+            let upstream = target.lock().unwrap().clone();
             let http = http.clone();
             async move {
                 let (parts, body) = request.into_parts();
+                let answer = forged
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .and_then(|forge| forge(parts.method.as_str(), parts.uri.path()));
+                if let Some((status, bytes)) = answer {
+                    return axum::response::Response::builder()
+                        .status(status)
+                        .header("content-type", "application/octet-stream")
+                        .body(axum::body::Body::from(bytes))
+                        .unwrap();
+                }
                 let body = axum::body::to_bytes(body, 2 << 20)
                     .await
                     .unwrap_or_default();
@@ -346,6 +415,10 @@ impl Proxy {
                     .path_and_query()
                     .map_or("/", |p| p.as_str())
                     .to_owned();
+                let path = match rerouted.lock().unwrap().as_ref() {
+                    Some(reroute) => reroute(&path),
+                    None => path,
+                };
                 let mut forward = http.request(parts.method.clone(), format!("{upstream}{path}"));
                 for (name, value) in &parts.headers {
                     if name != "host" {
@@ -377,9 +450,21 @@ impl Proxy {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("a port");
-        let base = format!("http://{}", listener.local_addr().unwrap());
+        let base = format!("http://localhost:{}", listener.local_addr().unwrap().port());
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        Self { base, tamper }
+        Self {
+            base,
+            tamper,
+            forge,
+            reroute,
+            upstream,
+        }
+    }
+
+    /// Answers every later request that `forge` picks in the server's
+    /// place.
+    pub fn forge(&self, forge: Forge) {
+        *self.forge.lock().unwrap() = Some(forge);
     }
 
     /// Rewrites every later response with `tamper`.
@@ -387,9 +472,16 @@ impl Proxy {
         *self.tamper.lock().unwrap() = Some(tamper);
     }
 
-    /// Forwards every later response unchanged.
+    /// Sends every later request to the path `reroute` gives it.
+    pub fn reroute(&self, reroute: Reroute) {
+        *self.reroute.lock().unwrap() = Some(reroute);
+    }
+
+    /// Forwards every later request and response unchanged.
     pub fn honest(&self) {
         *self.tamper.lock().unwrap() = None;
+        *self.forge.lock().unwrap() = None;
+        *self.reroute.lock().unwrap() = None;
     }
 }
 

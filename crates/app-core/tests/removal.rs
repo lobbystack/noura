@@ -81,7 +81,7 @@ async fn removal<B: Backend>(server: Server<B>) {
     assert_eq!(code, "device_removed");
     let by = phone
         .service
-        .verify_removal(&detail.expect("a detail"))
+        .verify_removal(Some(&detail.expect("a detail")))
         .await
         .expect("the removal verifies");
     assert_eq!(by.signer, laptop.id());

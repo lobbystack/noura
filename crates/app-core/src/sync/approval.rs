@@ -367,12 +367,15 @@ impl SyncService {
         mut offer: OutstandingOffer,
         workspaces: &mut [RemoteWorkspace],
     ) -> Result<AccountHead, SyncError> {
-        if self.approval_code(&mut offer).await?.is_none() {
+        // Confirming spends the offer whatever happens next, so the device
+        // takes another request.
+        let code = self.approval_code(&mut offer).await;
+        self.outstanding = None;
+        if code?.is_none() {
             return Err(SyncError::Invalid(
                 "the new device hasn't shown its code yet".into(),
             ));
         }
-        self.outstanding = None;
         let link = next_link(
             &self.credentials.keys,
             &offer.offer.body.approver_head,

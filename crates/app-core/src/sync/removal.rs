@@ -184,10 +184,13 @@ impl SyncService {
 
     /// Verifies a `device_removed` answer (§7): the removed session still
     /// reads its account's chain, whose link at the detail's seqno must
-    /// remove this card. Returns the device that signed that link.
-    pub async fn verify_removal(&mut self, detail: &[u8]) -> Result<RemovedBy, SyncError> {
-        let detail = DeviceRemovedDetail::from_bytes(detail)
-            .map_err(|_| SyncError::Network("the device_removed detail doesn't decode".into()))?;
+    /// remove this card. Returns the device that signed that link. An
+    /// answer with no detail, or one that doesn't decode, names no link the
+    /// chain could confirm, so it fails with `sync_account_forked`.
+    pub async fn verify_removal(&mut self, detail: Option<&[u8]>) -> Result<RemovedBy, SyncError> {
+        let detail = detail
+            .and_then(|bytes| DeviceRemovedDetail::from_bytes(bytes).ok())
+            .ok_or(SyncError::Check("sync_account_forked"))?;
         let chain = self.own_chain().await?;
         let device = self.credentials.keys.device();
         let removed_at = chain.card(&device).and_then(|s| s.removed_at);

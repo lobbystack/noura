@@ -178,6 +178,10 @@ struct Driver {
 }
 
 /// What a failed action tells you.
+/// What the screen says when the server answers `device_removed` but the
+/// account chain shows no such removal (§7).
+pub const UNVERIFIED_REMOVAL: &str = "The sync server says a device removed this computer, but your account's device list doesn't show it. Sync stopped, and this computer keeps its keys.";
+
 fn message(error: &SyncError) -> String {
     match error {
         SyncError::SignIn(end) => end.to_string(),
@@ -349,6 +353,17 @@ impl Driver {
         });
     }
 
+    /// Clears the problem a server that couldn't be reached left, once it
+    /// answers again.
+    fn reachable(&self) {
+        let unreachable = message(&SyncError::Network(String::new()));
+        self.shared.update(|screen| {
+            if screen.problem.as_deref() == Some(unreachable.as_str()) {
+                screen.problem = None;
+            }
+        });
+    }
+
     fn remember(&self) {
         let bytes = serde_json::to_vec(&Remembered {
             server: self.server.clone(),
@@ -414,6 +429,9 @@ impl Driver {
         self.service = Some(service);
         let connected = match self.open_workspaces().await {
             Ok(()) => self.refresh().await,
+            Err(SyncError::Refused { code, detail, .. }) if code == "device_removed" => {
+                self.removed(detail).await
+            }
             Err(error) => Err(error),
         };
         if connected.is_err() {
@@ -438,6 +456,31 @@ impl Driver {
         Ok(())
     }
 
+    /// Answers `device_removed` (§7): only a removal that the account
+    /// chain confirms stops sync and shows who removed this computer. A
+    /// forged answer keeps the account and shows the failed check.
+    async fn removed(&mut self, detail: Option<Vec<u8>>) -> Result<(), SyncError> {
+        let Some(service) = self.service.as_mut() else {
+            return Ok(());
+        };
+        let by = match service.verify_removal(detail.as_deref()).await {
+            Ok(by) => fingerprint(&by.signer_fingerprint),
+            Err(error @ SyncError::Check(_)) => {
+                tracing::warn!(kind = ?error.code(), "a device_removed answer didn't verify");
+                return Err(SyncError::Invalid(UNVERIFIED_REMOVAL.into()));
+            }
+            Err(error) => return Err(error),
+        };
+        self.service = None;
+        self.workspaces.clear();
+        self.shared.update(|screen| {
+            screen.busy = false;
+            screen.can_retry = false;
+            screen.phase = AccountPhase::Removed { by };
+        });
+        Ok(())
+    }
+
     /// Reads the device list and the requests again and shows them.
     async fn refresh(&mut self) -> Result<(), SyncError> {
         self.last_refresh = Some(Instant::now());
@@ -447,20 +490,7 @@ impl Driver {
         let list = match service.device_list(&self.workspaces).await {
             Ok(list) => list,
             Err(SyncError::Refused { code, detail, .. }) if code == "device_removed" => {
-                let by = match detail {
-                    Some(detail) => service
-                        .verify_removal(&detail)
-                        .await
-                        .map(|by| fingerprint(&by.signer_fingerprint))
-                        .unwrap_or_default(),
-                    None => String::new(),
-                };
-                self.service = None;
-                self.shared.update(|screen| {
-                    screen.busy = false;
-                    screen.phase = AccountPhase::Removed { by };
-                });
-                return Ok(());
+                return self.removed(detail).await;
             }
             Err(error) => return Err(error),
         };
@@ -616,10 +646,11 @@ impl Driver {
                     .take()
                     .ok_or_else(|| SyncError::Invalid("No approval is open.".into()))?;
                 let service = self.service.as_mut().ok_or_else(not_signed_in)?;
-                service
-                    .confirm_approval(offer, &mut self.workspaces)
-                    .await?;
+                // Confirming spends the offer, so the approval leaves the
+                // screen whether or not it commits.
+                let confirmed = service.confirm_approval(offer, &mut self.workspaces).await;
                 self.signed_in(|view| view.approval = None);
+                confirmed?;
                 self.refresh().await?;
             }
             AccountAction::CancelApproval => {
@@ -858,6 +889,7 @@ impl Driver {
         {
             match pending.grant.poll_once().await {
                 Ok(Some(signed_in)) => {
+                    self.reachable();
                     let purpose = self.sign_in.take().map(|p| p.purpose);
                     match purpose {
                         Some(Purpose::Recover(kit)) => self.begin_recovery(signed_in, *kit).await?,
@@ -867,6 +899,14 @@ impl Driver {
                 Ok(None) => {
                     pending.next_poll =
                         Instant::now() + Duration::from_secs(pending.grant.interval());
+                    self.reachable();
+                }
+                // A server it can't reach leaves the grant for the next
+                // poll.
+                Err(error @ SyncError::Network(_)) => {
+                    pending.next_poll =
+                        Instant::now() + Duration::from_secs(pending.grant.interval());
+                    return Err(error);
                 }
                 Err(error) => {
                     self.sign_in = None;
@@ -885,6 +925,9 @@ impl Driver {
                     }
                 }),
                 Ok(CandidateStep::Waiting) => {}
+                // A server it can't reach leaves the request for the next
+                // poll.
+                Err(error @ SyncError::Network(_)) => return Err(error),
                 Err(error) => {
                     self.candidate = None;
                     self.shared
