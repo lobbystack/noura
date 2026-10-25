@@ -165,6 +165,10 @@ pub struct Object {
     pub states: BTreeMap<OpKey, StateInfo>,
     /// The highest counter this device signed on the object.
     pub own_highest: u64,
+    /// Whether this device's next state operation covers every live
+    /// branch, as one the server refused with `conflict_limit` does.
+    #[serde(default)]
+    pub cover_all: bool,
 }
 
 /// A file on this device, as sync last left or saw it.

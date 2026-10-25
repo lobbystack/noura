@@ -846,6 +846,9 @@ impl WorkspaceSync {
             return Vec::new();
         };
         let mut view: BTreeSet<OpKey> = BTreeSet::new();
+        if object.cover_all {
+            view.extend(self.live_states(rid));
+        }
         if let Some(base) = object.base {
             view.insert(base);
             let base_content = object.states.get(&base).and_then(|s| s.content.clone());
@@ -941,6 +944,7 @@ impl WorkspaceSync {
         object.local = Some(found.local());
         object.object_id = found.object_id.clone();
         object.base = Some(key);
+        object.cover_all = false;
         Ok(())
     }
 
@@ -1184,7 +1188,10 @@ impl WorkspaceSync {
         let mut acknowledged = 0;
         let mut attempts = 0;
         while !self.state.outbox.is_empty() {
-            if self.stopped.is_some() {
+            // At the re-seal cap the device signs nothing more there, but
+            // retries the last attempt's bytes (§14).
+            let at_cap = self.stopped == Some("sync_reseal_limit");
+            if self.stopped.is_some() && !at_cap {
                 return Ok(acknowledged);
             }
             attempts += 1;
@@ -1235,15 +1242,22 @@ impl WorkspaceSync {
                         }
                     }
                     acknowledged += sent;
+                    if at_cap {
+                        self.stopped = None;
+                    }
                     self.save()?;
                     let accepted = self.state.policy.last().map_or(0, |c| c.body.revision);
                     if response.policy_revision > accepted {
                         self.refresh(service).await?;
                     }
                 }
+                Err(SyncError::Refused { .. }) if at_cap => {
+                    return Err(SyncError::Check("sync_reseal_limit"));
+                }
                 Err(SyncError::Refused { code, detail, .. }) => {
-                    self.refused(service, &code, detail.as_deref()).await?;
+                    let handled = self.refused(service, &code, detail.as_deref()).await;
                     self.save()?;
+                    handled?;
                 }
                 Err(error) => return Err(error),
             }
@@ -1358,6 +1372,7 @@ impl WorkspaceSync {
                 }
                 let rejected = self.state.outbox.remove(index);
                 self.forget_own(&rejected.record);
+                self.keep_local(&rejected.record, record_code == "conflict_limit");
                 self.reseal_replacing(index, &rejected.record)
             }
             "forbidden" => {
@@ -1411,6 +1426,27 @@ impl WorkspaceSync {
             true,
             Some((rejected.body.counter, rejected.digest())),
         )
+    }
+
+    /// Keeps the change a refused record carried in its file, so the next
+    /// capture signs it again: after `conflict_limit` as a resolution that
+    /// covers every live branch (§14).
+    fn keep_local(&mut self, record: &Signed<Operation>, cover_all: bool) {
+        let rid = record.body.rid;
+        let live = self.live_states(&rid);
+        let Some(object) = self.state.objects.get_mut(&rid) else {
+            return;
+        };
+        if let Some(local) = object.local.as_mut() {
+            local.revision = Digest::ZERO;
+            local.size = u64::MAX;
+        }
+        if object.base.is_none() {
+            object.base = live
+                .into_iter()
+                .max_by_key(|key| object.states.get(key).and_then(|s| s.seq).unwrap_or(0));
+        }
+        object.cover_all |= cover_all;
     }
 
     /// Forgets a record of this device that never reached the server.
