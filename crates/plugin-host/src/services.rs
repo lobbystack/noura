@@ -4,6 +4,8 @@
 
 use std::fmt;
 
+use crate::{AiChat, AiMessage, AiProvider, AiRequest, AiRun, AiToolDefinition, AiToolResult};
+
 /// A workspace-relative path that crossed the plugin boundary: not empty,
 /// with `/` between its parts, and no `.`, `..`, `\` or control
 /// characters. The service still resolves it inside the workspace and
@@ -262,4 +264,41 @@ pub trait Navigation: Send + Sync {
     /// types, to the trash as the file tree's Move to Trash does. The host
     /// checks the type before it asks.
     fn trash_object(&self, id: &str) -> Result<(), ServiceError>;
+}
+
+/// Chats with the AI providers you set up, for plugins that hold the `ai`
+/// capability. The app keeps the providers, their keys and your consent on
+/// this device, asks for your consent before a request carries the
+/// workspace's content to a provider, and returns no key from any call.
+pub trait AiChats: Send + Sync {
+    /// The providers you set up and turned on.
+    fn providers(&self) -> Result<Vec<AiProvider>, ServiceError>;
+
+    /// The workspace's chats, the one changed last first.
+    fn chats(&self) -> Result<Vec<AiChat>, ServiceError>;
+
+    /// A chat and its messages, oldest first.
+    fn read_chat(&self, id: &str) -> Result<(AiChat, Vec<AiMessage>), ServiceError>;
+
+    /// A new chat, titled `New chat`.
+    fn create_chat(&self) -> Result<AiChat, ServiceError>;
+
+    /// Write the message and an in-progress answer, then ask the provider,
+    /// once you consent.
+    fn send(&self, request: AiRequest) -> Result<AiRun, ServiceError>;
+
+    /// Answer the tool calls of the completed run `run` with `results`,
+    /// and ask the provider again.
+    fn answer_tools(
+        &self,
+        run: &str,
+        results: Vec<AiToolResult>,
+        tools: Vec<AiToolDefinition>,
+    ) -> Result<AiRun, ServiceError>;
+
+    /// The run `id` as it stands now.
+    fn read_run(&self, id: &str) -> Result<AiRun, ServiceError>;
+
+    /// Stop the run `id`.
+    fn stop(&self, id: &str) -> Result<(), ServiceError>;
 }

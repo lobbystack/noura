@@ -40,3 +40,26 @@ pub struct Message<'a> {
     pub heading: &'a str,
     pub text: &'a str,
 }
+
+/// The device page (§7): where a signed-in person enters the user code
+/// that the desktop app shows.
+#[derive(Template)]
+#[template(path = "device.html")]
+pub struct Device<'a> {
+    pub error: &'a str,
+}
+
+/// The device page before you sign in.
+#[derive(Template)]
+#[template(path = "device_sign_in.html")]
+pub struct DeviceSignIn;
+
+/// The device page's confirmation: the code again, with approve and deny.
+#[derive(Template)]
+#[template(path = "device_confirm.html")]
+pub struct DeviceConfirm<'a> {
+    pub email: &'a str,
+    pub code: &'a str,
+    pub expires: u64,
+    pub confirmation: &'a str,
+}

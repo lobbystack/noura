@@ -1,7 +1,10 @@
 //! A test plugin for seams 1 and 3 that owns the `recipe` object type.
 //!
 //! It registers `recipe`, and also `note`, which Noura keeps for itself,
-//! so a test sees that registration refused. Its `recipes` page runs the
+//! so a test sees that registration refused, and `chat` and
+//! `chat-message`, which are held for the AI plugin: run under the ID
+//! `ai`, it holds them, so a test sees that writes of chats through the
+//! objects interface are refused. Its `recipes` page runs the
 //! call a pressed node ID names and shows the answer, one text node per
 //! line, with tabs between the fields:
 //!
@@ -98,6 +101,14 @@ impl Plugin for Recipes {
             },
             ObjectType {
                 name: "note".into(),
+                schema: r#"{"properties":[]}"#.into(),
+            },
+            ObjectType {
+                name: "chat".into(),
+                schema: r#"{"properties":[]}"#.into(),
+            },
+            ObjectType {
+                name: "chat-message".into(),
                 schema: r#"{"properties":[]}"#.into(),
             },
         ]

@@ -1,0 +1,39 @@
+{
+	"name": "@noura/plugin-cli",
+	"version": "0.1.0",
+	"description": "Builds, rebuilds on save and packages TypeScript plugins for Noura.",
+	"license": "MIT",
+	"type": "module",
+	"engines": {
+		"node": "^22.20.0 || ^24.12.0 || >=26"
+	},
+	"bin": {
+		"noura-plugin": "./dist/cli.js"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist/",
+		"wit/"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/lobbystack/noura.git",
+		"directory": "sdk/typescript/packages/plugin-cli"
+	},
+	"scripts": {
+		"build": "tsc -p . && node scripts/copy-wit.mjs",
+		"freeze-wit": "node scripts/copy-wit.mjs --freeze",
+		"prepack": "npm run build"
+	},
+	"dependencies": {
+		"@bytecodealliance/jco": "1.39.0",
+		"chokidar": "5.0.0",
+		"fflate": "0.8.3",
+		"smol-toml": "1.9.1"
+	}
+}

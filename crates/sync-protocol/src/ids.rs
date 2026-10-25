@@ -71,6 +71,40 @@ pub fn passkey_user_handle(server_secret: &SecretKey, account: &Id) -> [u8; 16] 
     first_16(&keyed_hash(&key, &account.0))
 }
 
+/// The confirmation that the device page's decision form carries (§7):
+/// `BLAKE3.keyed_hash(derive_key("noura.sync.v2 device confirmation",
+/// secret), account || BLAKE3(user code) || u64(expires_at))`, over the
+/// account that entered the code, the code's 8 letters in upper case and
+/// the second the confirmation expires. A decision needs one, so only a
+/// code entry, which the page counts, leads to it.
+pub fn device_confirmation(
+    server_secret: &SecretKey,
+    account: &Id,
+    user_code: &str,
+    expires_at: u64,
+) -> Digest {
+    let key = derive_key(context::DEVICE_CONFIRMATION, server_secret.expose());
+    let code = crate::crypto::hash(user_code.as_bytes());
+    let mut input = Vec::with_capacity(16 + 32 + 8);
+    input.extend_from_slice(&account.0);
+    input.extend_from_slice(&code.0);
+    input.extend_from_slice(&expires_at.to_be_bytes());
+    keyed_hash(&key, &input)
+}
+
+/// Whether `confirmation` is [`device_confirmation`] for these values,
+/// compared in constant time.
+pub fn device_confirmation_matches(
+    server_secret: &SecretKey,
+    account: &Id,
+    user_code: &str,
+    expires_at: u64,
+    confirmation: &[u8; 32],
+) -> bool {
+    let expected = device_confirmation(server_secret, account, user_code, expires_at);
+    blake3::Hash::from_bytes(expected.0) == blake3::Hash::from_bytes(*confirmation)
+}
+
 /// The yrs client ID of a document load (§22): `card_index × 2^29 + load`,
 /// for a card index from 1 to 2^24 − 1 and a load number from 1 to
 /// 2^29 − 1, which keeps every client ID below 2^53. Client ID 0 belongs to

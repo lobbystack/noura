@@ -11,9 +11,10 @@ use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Engine, Store, UpdateDeadline};
 
 use crate::{
-    Capability, ClockReading, DeviceClock, EntryKind, Limits, Listed, Navigation, NewObject,
-    ObjectChanges, ObjectRead, ObjectRecord, ObjectTypes, PropertyProblem, Router, ServiceError,
-    TypeError, WorkspaceObjects, WorkspacePath, WorkspaceReads,
+    AiChats, Capability, ClockReading, DeviceClock, EntryKind, Limits, Listed, Navigation,
+    NewObject, ObjectChanges, ObjectRead, ObjectRecord, ObjectTypes, PropertyProblem, Router,
+    SERVICE_WRITTEN_TYPES, ServiceError, TypeError, WorkspaceObjects, WorkspacePath,
+    WorkspaceReads,
     object_types::type_of_id,
     runtime::{EpochTicker, Failure, StoreLimiter, deadline_ticks},
 };
@@ -36,6 +37,12 @@ use bindings::exports::noura::plugin::{
     commands as commands_export, inbox as inbox_export, object_types as types_export,
     settings as settings_export, tools as tools_export, view as view_export,
 };
+pub use bindings::noura::plugin::ai::{
+    Chat as AiChat, Failure as AiFailure, Message as AiMessage, MessageKind as AiMessageKind,
+    MessageStatus as AiMessageStatus, Provider as AiProvider, Request as AiRequest, Run as AiRun,
+    RunStatus as AiRunStatus, ToolCall as AiToolCall, ToolDefinition as AiToolDefinition,
+    ToolResult as AiToolResult,
+};
 pub use bindings::noura::plugin::navigation::Placement;
 pub(crate) use bindings::noura::plugin::types::Error as CallError;
 pub use bindings::noura::plugin::ui::{
@@ -44,7 +51,7 @@ pub use bindings::noura::plugin::ui::{
     Submission, Table, Target, Value, VirtualList, VirtualRow,
 };
 use bindings::noura::plugin::{
-    clock, command_calls, navigation, network, objects, types, workspace,
+    ai, clock, command_calls, navigation, network, objects, types, workspace,
 };
 
 /// The capability behind object types, their panels and object writes.
@@ -120,6 +127,9 @@ pub struct Services {
     /// Opens objects and the plugin's pages in the window you acted in,
     /// for `views`. Without one, every request fails.
     pub navigation: Option<Arc<dyn Navigation>>,
+    /// Chats with the AI providers you set up, for `ai`. Without one,
+    /// every call fails.
+    pub ai: Option<Arc<dyn AiChats>>,
 }
 
 /// How long the current call has run.
@@ -233,11 +243,52 @@ impl HostState {
         })
     }
 
+    /// The AI service, when the plugin holds `ai`.
+    fn ai(&self) -> Result<Arc<dyn AiChats>, types::Error> {
+        if !self.holds("ai") {
+            return Err(types::Error::CapabilityNotDeclared("ai".to_owned()));
+        }
+        self.services
+            .ai
+            .clone()
+            .ok_or_else(|| types::Error::Failed("Noura can't reach AI providers here.".to_owned()))
+    }
+
+    /// Run `call` on the AI service. Reading and writing chat files is
+    /// waiting, which the call's deadline doesn't count.
+    fn with_ai<R>(
+        &mut self,
+        call: impl FnOnce(&dyn AiChats) -> Result<R, ServiceError>,
+    ) -> Result<R, types::Error> {
+        let ai = self.ai()?;
+        self.waiting(|_| call(ai.as_ref())).map_err(wit_error)
+    }
+
     /// The object service for the object with the stable ID `id`, whose
     /// type is its prefix.
     fn objects_for(&self, id: &str) -> Result<&dyn WorkspaceObjects, types::Error> {
         let object_type = type_of_id(id).unwrap_or_default();
         self.objects(object_type)
+    }
+
+    /// The object service for a write to an object of `object_type`.
+    /// Files of a type a host service writes, such as a chat, change only
+    /// through that service, so the write is refused before it reaches
+    /// any file.
+    fn objects_to_write(&self, object_type: &str) -> Result<&dyn WorkspaceObjects, types::Error> {
+        let service = self.objects(object_type)?;
+        if SERVICE_WRITTEN_TYPES.contains(&object_type) {
+            return Err(types::Error::Failed(
+                "Noura writes chats and their messages only through the ai interface.".to_owned(),
+            ));
+        }
+        Ok(service)
+    }
+
+    /// [`Self::objects_to_write`] for the object with the stable ID `id`.
+    fn objects_to_write_for(&self, id: &str) -> Result<&dyn WorkspaceObjects, types::Error> {
+        let object_type = type_of_id(id).unwrap_or_default();
+        self.objects_to_write(object_type)
     }
 }
 
@@ -417,9 +468,48 @@ impl navigation::Host for HostState {
     }
 }
 
+impl ai::Host for HostState {
+    fn providers(&mut self) -> Result<Vec<ai::Provider>, types::Error> {
+        self.with_ai(|ai| ai.providers())
+    }
+
+    fn chats(&mut self) -> Result<Vec<ai::Chat>, types::Error> {
+        self.with_ai(|ai| ai.chats())
+    }
+
+    fn read_chat(&mut self, id: String) -> Result<(ai::Chat, Vec<ai::Message>), types::Error> {
+        self.with_ai(|ai| ai.read_chat(&id))
+    }
+
+    fn create_chat(&mut self) -> Result<ai::Chat, types::Error> {
+        self.with_ai(|ai| ai.create_chat())
+    }
+
+    fn send(&mut self, request: ai::Request) -> Result<ai::Run, types::Error> {
+        self.with_ai(|ai| ai.send(request))
+    }
+
+    fn answer_tools(
+        &mut self,
+        run: String,
+        results: Vec<ai::ToolResult>,
+        tools: Vec<ai::ToolDefinition>,
+    ) -> Result<ai::Run, types::Error> {
+        self.with_ai(|ai| ai.answer_tools(&run, results, tools))
+    }
+
+    fn read_run(&mut self, id: String) -> Result<ai::Run, types::Error> {
+        self.with_ai(|ai| ai.read_run(&id))
+    }
+
+    fn stop(&mut self, id: String) -> Result<(), types::Error> {
+        self.with_ai(|ai| ai.stop(&id))
+    }
+}
+
 impl objects::Host for HostState {
     fn create(&mut self, object: objects::NewObject) -> Result<objects::Object, types::Error> {
-        let service = self.objects(&object.object_type)?;
+        let service = self.objects_to_write(&object.object_type)?;
         let path = object
             .path
             .as_deref()
@@ -457,7 +547,7 @@ impl objects::Host for HostState {
         expected_revision: String,
         changes: objects::Changes,
     ) -> Result<objects::Object, types::Error> {
-        let service = self.objects_for(&id)?;
+        let service = self.objects_to_write_for(&id)?;
         let changes = ObjectChanges {
             body: changes.body,
             properties: json_object(&changes.properties)?,
@@ -475,7 +565,7 @@ impl objects::Host for HostState {
         expected_revision: String,
         path: String,
     ) -> Result<objects::Object, types::Error> {
-        let service = self.objects_for(&id)?;
+        let service = self.objects_to_write_for(&id)?;
         let path = WorkspacePath::new(&path).map_err(wit_error)?;
         service
             .move_to(&id, &expected_revision, &path)
@@ -484,7 +574,7 @@ impl objects::Host for HostState {
     }
 
     fn delete(&mut self, id: String, expected_revision: String) -> Result<(), types::Error> {
-        self.objects_for(&id)?
+        self.objects_to_write_for(&id)?
             .delete(&id, &expected_revision)
             .map_err(wit_error)
     }

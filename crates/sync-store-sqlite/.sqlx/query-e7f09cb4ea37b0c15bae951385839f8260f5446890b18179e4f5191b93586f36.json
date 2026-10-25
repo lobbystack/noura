@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT domain, epoch, device, key_seq FROM rewrap_requests\n             WHERE workspace = ?1 ORDER BY domain, epoch, device",
+  "describe": {
+    "columns": [
+      {
+        "name": "domain",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "rewrap_requests",
+            "name": "domain"
+          }
+        }
+      },
+      {
+        "name": "epoch",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rewrap_requests",
+            "name": "epoch"
+          }
+        }
+      },
+      {
+        "name": "device",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "rewrap_requests",
+            "name": "device"
+          }
+        }
+      },
+      {
+        "name": "key_seq",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rewrap_requests",
+            "name": "key_seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e7f09cb4ea37b0c15bae951385839f8260f5446890b18179e4f5191b93586f36"
+}

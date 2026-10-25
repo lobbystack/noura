@@ -1,0 +1,17 @@
+[package]
+name = "kit-host"
+description = "The real host that the TypeScript author kit's tests drive: app-core's plugin service, over JSON lines on stdin and stdout."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "noura-kit-host"
+path = "src/main.rs"
+
+[dependencies]
+app-core = { version = "0.2.0", path = "../app-core" }
+plugin-host = { version = "0.2.0", path = "../plugin-host" }
+serde_json.workspace = true

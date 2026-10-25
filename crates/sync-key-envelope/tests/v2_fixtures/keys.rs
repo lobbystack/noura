@@ -337,6 +337,30 @@ pub fn fixture() -> Fixture {
         None,
         "key_check",
     ));
+    // Review of 0eef7d5: other key holders rotate if the rotation is still
+    // pending there, judged by revision (§9, Epoch authority). A rotation
+    // that committed at the removal's revision before the device saw the
+    // change leaves nothing to rotate, and a backdated epoch whose
+    // policy_revision predates the removal leaves the rotation pending.
+    for (name, epoch_revision, expect) in [
+        (
+            "a_rotation_that_committed_before_the_holder_saw_the_change_leaves_none_pending",
+            4,
+            json!(null),
+        ),
+        ("a_backdated_epoch_leaves_the_rotation_pending", 3, json!(4)),
+    ] {
+        f.case(json!({
+            "kind": "rotation_pending",
+            "name": name,
+            "account_chains": chains_json(&[&w.alice, &w.bob]),
+            "changes": removal_changes,
+            "domain": w.ws_domain.to_hex(),
+            "latest_epoch_policy_revision": epoch_revision,
+            "accepted_head": 4,
+            "expect": expect,
+        }));
+    }
     f.case(json!({
         "kind": "envelope_unwrap",
         "name": "bob_unwraps_epoch_2",
@@ -490,5 +514,168 @@ pub fn fixture() -> Fixture {
         }));
     }
     let _: Policy = policy;
+
+    // Review of 0eef7d5: a card brought in after the current epoch accepted
+    // no earlier epoch, so when its first envelope fails it asks for a
+    // re-wrap at once; here Bob, a malicious member who recorded Alice's
+    // later head, wrapped another key for her new tablet, and Alice's
+    // laptop answered the tablet's request with a lone envelope, which the
+    // tablet keeps because it is the first that passes.
+    let tablet = Actor::new("alice", "alice tablet");
+    f.actor(&tablet);
+    let mut alice = w.alice.clone();
+    alice.add_device(&w.alice_laptop, &tablet);
+    let mut recorded = w.policy.clone();
+    recorded.push(
+        &w.bob_laptop,
+        vec![alice.head(), w.bob.head()],
+        PolicyKind::AccountHeads,
+    );
+    let header = |wrapper: &Actor| EnvelopeHeader {
+        workspace: w.workspace,
+        domain: w.ws_domain,
+        epoch: 2,
+        wrapping_device: wrapper.device(),
+    };
+    let wrong = secret("a member's wrong key");
+    let from_bob = wrap_with_rng(
+        &header(&w.bob_laptop),
+        &wrong,
+        &tablet.card(),
+        &w.bob_laptop.keys,
+        &mut SeededRng::new("bob to tablet"),
+    )
+    .unwrap();
+    let from_alice = wrap_with_rng(
+        &header(&w.alice_laptop),
+        &w.ws_key2,
+        &tablet.card(),
+        &w.alice_laptop.keys,
+        &mut SeededRng::new("alice laptop to tablet"),
+    )
+    .unwrap();
+    for (name, envelopes, earlier, expect) in [
+        (
+            "a_new_card_whose_first_envelope_fails_asks_for_a_rewrap",
+            vec![(&from_bob, &wrong)],
+            false,
+            json!({"accepted": null, "then": "rewrap"}),
+        ),
+        (
+            "a_newly_added_card_rewrapped_after_a_malicious_members_failing_envelope",
+            vec![(&from_bob, &wrong), (&from_alice, &w.ws_key2)],
+            false,
+            json!({"accepted": 1, "then": null}),
+        ),
+        (
+            "a_device_that_accepted_an_earlier_epoch_replaces_it_instead",
+            vec![(&from_bob, &wrong)],
+            true,
+            json!({"accepted": null, "then": "replace"}),
+        ),
+    ] {
+        f.case(json!({
+            "kind": "envelope_choice",
+            "name": name,
+            "account_chains": chains_json(&[&alice, &w.bob]),
+            "changes": hexes(&recorded.changes),
+            "epoch": to_hex(&w.ws_epoch2.to_bytes()),
+            "recipient": "alice tablet",
+            "recipient_card": to_hex(&tablet.card().to_bytes()),
+            "envelopes": envelopes.iter().map(|(e, _)| to_hex(&e.to_bytes())).collect::<Vec<_>>(),
+            "unwrapped_keys": envelopes.iter().map(|(_, k)| to_hex(k.expose())).collect::<Vec<_>>(),
+            "accepted_head": recorded.changes.len(),
+            "accepted_earlier_epoch": earlier,
+            "expect": expect,
+        }));
+    }
+
+    // Re-wrap requests on the server (§9), replayed by the store
+    // conformance suite against each store.
+    f.case(rewrap_schedule());
     f
+}
+
+/// A server's re-wrap requests over one schedule (§9, §26): which requests
+/// it takes, which lone envelopes answer them, what `keys` and
+/// `keys/current` list to each device, and when a request closes. The
+/// steps hold no records: a store's conformance suite builds the setup
+/// with its own keys and replays the steps against the store.
+fn rewrap_schedule() -> Value {
+    let rewrap = |device: &str, domain: &str, epoch: u64, expect: &str| json!({"action": "rewrap", "device": device, "domain": domain, "epoch": epoch, "expect": expect});
+    let answer = |wrapper: &str, recipient: &str, domain: &str, epoch: u64, expect: &str| json!({"action": "answer", "wrapper": wrapper, "recipient": recipient, "domain": domain, "epoch": epoch, "expect": expect});
+    let listed = |action: &str, device: &str, requests: &[(&str, &str, u64)]| {
+        json!({
+            "action": action,
+            "device": device,
+            "expect": requests.iter().map(|(d, r, e)| json!({"domain": d, "device": r, "epoch": e})).collect::<Vec<_>>(),
+        })
+    };
+    let steps = vec![
+        rewrap("alice 5", "workspace", 2, "epoch_stale"),
+        rewrap("alice 5", "workspace", 1, "ok"),
+        rewrap("alice 5", "workspace", 1, "ok"),
+        rewrap("bob 1", "workspace", 1, "forbidden"),
+        rewrap("bob 1", "restricted", 1, "forbidden"),
+        rewrap("alice 2", "restricted", 1, "ok"),
+        listed(
+            "current_rewraps",
+            "alice 1",
+            &[("workspace", "alice 5", 1), ("restricted", "alice 2", 1)],
+        ),
+        listed("current_rewraps", "bob 1", &[("workspace", "alice 5", 1)]),
+        listed("keys_rewraps", "bob 1", &[("workspace", "alice 5", 1)]),
+        answer("alice 1", "alice 5", "workspace", 1, "ok"),
+        answer("alice 1", "alice 5", "workspace", 1, "forbidden"),
+        answer("alice 2", "alice 5", "workspace", 1, "ok"),
+        answer("alice 3", "alice 5", "workspace", 1, "ok"),
+        answer("alice 4", "alice 5", "workspace", 1, "forbidden"),
+        json!({"action": "fetch_keys", "device": "alice 5"}),
+        listed(
+            "current_rewraps",
+            "alice 1",
+            &[("restricted", "alice 2", 1)],
+        ),
+        answer("alice 4", "alice 5", "workspace", 1, "forbidden"),
+        rewrap("alice 5", "workspace", 1, "ok"),
+        answer("alice 1", "alice 2", "restricted", 1, "ok"),
+        json!({"action": "current_keys", "device": "alice 2"}),
+        listed("current_rewraps", "alice 1", &[("workspace", "alice 5", 1)]),
+        json!({"action": "remove", "signer": "alice 1", "device": "alice 4", "expect": "ok"}),
+        rewrap("alice 3", "workspace", 1, "rotation_pending"),
+        listed("current_rewraps", "alice 1", &[("workspace", "alice 5", 1)]),
+        json!({"action": "rotate", "signer": "alice 1", "domain": "workspace", "expect": "ok"}),
+        listed("current_rewraps", "alice 1", &[]),
+        answer("alice 2", "alice 5", "workspace", 1, "epoch_stale"),
+        answer("alice 2", "alice 5", "workspace", 2, "forbidden"),
+        rewrap("alice 5", "workspace", 1, "epoch_stale"),
+    ];
+    json!({
+        "kind": "rewrap_schedule",
+        "name": "rewrap_requests_take_three_answers_and_close_on_a_fetch_or_the_next_epoch",
+        "setup": {
+            "accounts": {
+                "alice": ["alice 1", "alice 2", "alice 3", "alice 4", "alice 5"],
+                "bob": ["bob 1"],
+            },
+            "workspace": "alice 1 creates it with an epoch 1 envelope for each device of alice, then adds bob as an editor with a change that carries no envelope, so the server took none for bob 1",
+            "restricted": {
+                "access": {"alice": "manage"},
+                "created_by": "alice 1",
+                "envelopes": ["alice 1", "alice 2"],
+            },
+        },
+        "steps": steps,
+        "actions": {
+            "rewrap": "the device sends POST .../domains/{domain}/rewrap for the epoch",
+            "answer": "the wrapper pushes a lone envelope of that epoch's key for the recipient",
+            "current_rewraps": "the open re-wrap requests that the device's keys/current read lists, in key-sequence order",
+            "keys_rewraps": "the open re-wrap requests that the device's keys read from 0 lists, in key-sequence order",
+            "fetch_keys": "the device reads keys from 0, then again after the head key sequence that read returned",
+            "current_keys": "the device reads keys/current",
+            "remove": "the signer appends a remove link naming the device and pushes an account_heads change recording that head",
+            "rotate": "the signer pushes the domain's next epoch for its readers, with an envelope for each",
+        },
+        "expect_values": "ok, or the §26 error code the server answers",
+    })
 }

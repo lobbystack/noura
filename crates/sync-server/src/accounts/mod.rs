@@ -218,7 +218,164 @@ pub fn routes<B: Backend>() -> Router<AppState<B>> {
         .route("/account/passkeys/add/start", post(add_start::<B>))
         .route("/account/passkeys/add/finish", post(add_finish::<B>))
         .route("/account/assets/{file}", get(asset::<B>))
+        .route("/device", get(device_page::<B>).post(device_code::<B>))
+        .route("/device/decide", post(device_decide::<B>))
         .layer(middleware::from_fn(page_headers))
+}
+
+/// `GET /device`: the device page (§7), where you enter the code the
+/// desktop app shows once you're signed in.
+async fn device_page<B: Backend>(State(state): State<AppState<B>>, headers: HeaderMap) -> Response {
+    match signed_in(&state.store, &headers).await {
+        Ok(Some(_)) => html(StatusCode::OK, &pages::Device { error: "" }),
+        Ok(None) => html(StatusCode::OK, &pages::DeviceSignIn),
+        Err(error) => failure(error),
+    }
+}
+
+fn unknown_code() -> Response {
+    html(
+        StatusCode::BAD_REQUEST,
+        &pages::Device {
+            error: "That code doesn't work. Check it against your computer, or sign in again there for a new code. A code works once, within 10 minutes.",
+        },
+    )
+}
+
+/// How many user codes one signed-in account may enter on the device page
+/// per window (RFC 8628 §5.1).
+const DEVICE_CODE_ENTRIES: sync_store::Limit = sync_store::Limit {
+    allowance: 10,
+    window: std::time::Duration::from_secs(600),
+};
+
+/// `POST /device`: checks the entered code and asks you to confirm it.
+async fn device_code<B: Backend>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if !same_origin(&state.accounts, &headers) {
+        return cross_origin();
+    }
+    let account = match signed_in(&state.store, &headers).await {
+        Ok(Some((account, _))) => account,
+        Ok(None) => return html(StatusCode::OK, &pages::DeviceSignIn),
+        Err(error) => return failure(error),
+    };
+    // RFC 8628 §5.1: each signed-in account tries a few codes per window,
+    // so nobody guesses another computer's code.
+    let mut key = b"device-code:".to_vec();
+    key.extend_from_slice(&account.0);
+    let limiter = state.store.backend().limiter();
+    match sync_store::Limiter::take(&*limiter, &key, 1, DEVICE_CODE_ENTRIES).await {
+        Ok(sync_store::Taken::Allowed) => {}
+        Ok(sync_store::Taken::Refused { .. }) => {
+            return html(
+                StatusCode::TOO_MANY_REQUESTS,
+                &pages::Device {
+                    error: "You entered too many codes. Wait 10 minutes, then enter the code your computer shows.",
+                },
+            );
+        }
+        Err(error) => return failure(error),
+    }
+    let Some(code) = read_body(body)
+        .await
+        .and_then(|b| field(&b, "user_code"))
+        .and_then(|c| sync_store::devices::normalize_user_code(&c))
+    else {
+        return unknown_code();
+    };
+    match state.store.device_grant_waits(&code).await {
+        Ok(true) => {}
+        Ok(false) => return unknown_code(),
+        Err(error) => return failure(error),
+    }
+    let email = match state.store.account_email(account).await {
+        Ok(Some(email)) => email,
+        Ok(None) => return html(StatusCode::OK, &pages::DeviceSignIn),
+        Err(error) => return failure(error),
+    };
+    // The decision form carries a confirmation of this entry, so a
+    // decision always follows a code entry that the limit above counted.
+    let expires = state.store.clock().now() + sync_store::SIGN_IN_TTL;
+    let confirmation = match state.store.device_confirmation(account, &code, expires) {
+        Ok(confirmation) => to_base64url(&confirmation.0),
+        Err(error) => return failure(error),
+    };
+    html(
+        StatusCode::OK,
+        &pages::DeviceConfirm {
+            email: &email,
+            code: &sync_store::devices::user_code_text(&code),
+            expires,
+            confirmation: &confirmation,
+        },
+    )
+}
+
+/// `POST /device/decide`: approves or refuses the code's sign-in.
+async fn device_decide<B: Backend>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if !same_origin(&state.accounts, &headers) {
+        return cross_origin();
+    }
+    let account = match signed_in(&state.store, &headers).await {
+        Ok(Some((account, _))) => account,
+        Ok(None) => return html(StatusCode::OK, &pages::DeviceSignIn),
+        Err(error) => return failure(error),
+    };
+    let Some(body) = read_body(body).await else {
+        return unknown_code();
+    };
+    let (Some(code), Some(decision)) = (
+        field(&body, "user_code").and_then(|c| sync_store::devices::normalize_user_code(&c)),
+        field(&body, "decision"),
+    ) else {
+        return unknown_code();
+    };
+    let approve = match decision.as_str() {
+        "approve" => true,
+        "deny" => false,
+        _ => return unknown_code(),
+    };
+    // Only a code entered on the page, which counts against its limit,
+    // leads to a decision (RFC 8628 §5.1).
+    let expires = field(&body, "expires").and_then(|e| e.parse::<u64>().ok());
+    let confirmation = field(&body, "confirmation").and_then(|c| from_base64url::<32>(&c).ok());
+    let (Some(expires), Some(confirmation)) = (expires, confirmation) else {
+        return unknown_code();
+    };
+    match state
+        .store
+        .device_confirmed(account, &code, expires, &confirmation)
+    {
+        Ok(true) => {}
+        Ok(false) => return unknown_code(),
+        Err(error) => return failure(error),
+    }
+    match state
+        .store
+        .decide_device_grant(account, &code, approve)
+        .await
+    {
+        Ok(true) if approve => message(
+            StatusCode::OK,
+            "Device signed in",
+            "Go back to Noura on your computer. You can close this page.",
+        ),
+        Ok(true) => message(
+            StatusCode::OK,
+            "Sign-in refused",
+            "Noura on that computer stays signed out.",
+        ),
+        Ok(false) => unknown_code(),
+        Err(error) => failure(error),
+    }
 }
 
 /// Sets the content security policy and the other page headers on every

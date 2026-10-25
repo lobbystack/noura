@@ -106,6 +106,37 @@ pub mod navigation {
     pub use crate::noura::plugin::navigation::{Placement, open_object, open_page, trash_object};
 }
 
+/// Chats with the AI providers you set up in Settings, which Noura keeps
+/// as Markdown files in the workspace. Needs the `ai` capability. Noura
+/// asks you for consent before a request carries the workspace's content
+/// to a provider, and no call returns a provider's key.
+///
+/// ```no_run
+/// use plugin_sdk::ai::{self, Request, RunStatus};
+///
+/// let provider = ai::providers().unwrap().remove(0);
+/// let chat = ai::create_chat().unwrap();
+/// let run = ai::send(&Request {
+///     chat: chat.id,
+///     provider: provider.id,
+///     message: "What should I plant in October?".into(),
+///     tools: Vec::new(),
+/// })
+/// .unwrap();
+/// // Noura draws the plugin's views again as the answer streams in.
+/// let now = ai::read_run(&run.id).unwrap();
+/// if now.status == RunStatus::Streaming {
+///     ai::stop(&run.id).unwrap();
+/// }
+/// ```
+pub mod ai {
+    pub use crate::noura::plugin::ai::{
+        Chat, Failure, Message, MessageKind, MessageStatus, Provider, Request, Run, RunStatus,
+        ToolCall, ToolDefinition, ToolResult, answer_tools, chats, create_chat, providers,
+        read_chat, read_run, send, stop,
+    };
+}
+
 /// What a plugin adds to Noura. Noura calls each method only when the
 /// plugin holds the capability it needs; the defaults add nothing.
 pub trait Plugin {

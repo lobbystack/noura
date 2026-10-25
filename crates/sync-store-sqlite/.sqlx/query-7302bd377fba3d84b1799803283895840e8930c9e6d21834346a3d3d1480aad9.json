@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE device_grants SET account = ?2, denied = ?3, poll_interval = ?4, next_poll = ?5\n             WHERE device_code_hash = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "7302bd377fba3d84b1799803283895840e8930c9e6d21834346a3d3d1480aad9"
+}

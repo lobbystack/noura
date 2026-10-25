@@ -120,6 +120,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sync-server",
+ "sync-store",
+ "sync-store-sqlite",
  "tempfile",
  "tokio",
  "wasm-bindgen",
@@ -264,6 +266,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ai-plugin"
+version = "0.2.0"
+dependencies = [
+ "plugin-sdk",
+ "serde_json",
+]
+
+[[package]]
 name = "alloc-no-stdlib"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -333,6 +343,7 @@ dependencies = [
  "atomic-write-file",
  "axum",
  "directories",
+ "futures",
  "hayro",
  "jiff",
  "jsonschema",
@@ -358,9 +369,12 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-normalization",
+ "url",
+ "uuid",
  "windows-sys 0.61.2",
  "workspace-format",
  "zeroize",
+ "zip",
 ]
 
 [[package]]
@@ -375,6 +389,7 @@ dependencies = [
  "egui",
  "egui_extras",
  "egui_kittest",
+ "futures",
  "icu_calendar",
  "icu_datetime",
  "icu_locale_core",
@@ -5997,6 +6012,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
+name = "kit-host"
+version = "0.2.0"
+dependencies = [
+ "app-core",
+ "plugin-host",
+ "serde_json",
+]
+
+[[package]]
 name = "kit-plugin"
 version = "0.2.0"
 dependencies = [
@@ -6187,6 +6211,7 @@ dependencies = [
  "ignore",
  "jiff",
  "keyring",
+ "keyring-core",
  "libc",
  "notify",
  "parking_lot",
@@ -7753,17 +7778,21 @@ dependencies = [
  "libc",
  "local-core",
  "parking_lot",
+ "plugin-host",
  "semver",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.20",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
+ "url",
  "wasmtime",
  "wat",
  "windows-sys 0.61.2",
  "workspace-format",
+ "zip",
 ]
 
 [[package]]
@@ -8056,6 +8085,16 @@ name = "profiling"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
+
+[[package]]
+name = "projects-plugin"
+version = "0.2.0"
+dependencies = [
+ "jiff",
+ "plugin-sdk",
+ "proptest",
+ "serde_json",
+]
 
 [[package]]
 name = "proptest"
@@ -10871,6 +10910,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6af6ae20167a9ece4bcb41af5b80f8a1f1df981f6391189ce00fd257af04126a"
 
 [[package]]
+name = "typed-path"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54ec2755506471f54baf5e4bb5499d8e510cc1caf271270e778a736bd2d7336c"
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13324,6 +13369,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "zip"
+version = "9.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "indexmap 2.14.0",
+ "memchr",
+ "nix",
+ "typed-path",
 ]
 
 [[package]]

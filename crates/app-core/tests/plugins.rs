@@ -119,7 +119,8 @@ fn the_install_dialog_lists_every_capability_before_any_code_runs() {
     assert_eq!(review.name, "Hello");
     assert_eq!(review.id, "hello");
     assert_eq!(review.version, "0.1.0");
-    assert_eq!(review.folder, folder.path().to_str().unwrap());
+    assert_eq!(review.source, folder.path().to_str().unwrap());
+    assert!(!review.from_github);
     assert_eq!(review.capabilities, hello_capabilities());
     // Nothing is installed or running yet.
     assert!(installed(&app).is_empty());
@@ -201,6 +202,9 @@ fn approving_installs_the_plugin_on_this_device_and_changes_no_workspace_file() 
             failed: false,
             problem: None,
             update: Vec::new(),
+            release: None,
+            newer: None,
+            update_check: None,
         }]
     );
     assert_eq!(everything(&fixture), before);
@@ -361,6 +365,9 @@ fn a_fresh_device_shows_the_plugin_enabled_but_not_installed_and_runs_none_of_it
             failed: false,
             problem: None,
             update: Vec::new(),
+            release: None,
+            newer: None,
+            update_check: None,
         }
     );
     assert_eq!(rail_titles(&app), ["Inbox", "Files"]);
@@ -406,6 +413,129 @@ fn uninstalling_removes_code_cache_and_approvals_and_leaves_the_workspace_byte_i
     assert_eq!(rail_titles(&app), ["Inbox", "Files"]);
     // The folder it came from keeps its files.
     assert!(folder.path().join("hello_plugin.wasm").is_file());
+}
+
+/// Write a release archive to `path` holding `manifest` as `plugin.toml`
+/// and `component` at `entry`, as the author kit's package command does.
+fn write_archive(path: &std::path::Path, manifest: &str, entry: &str, component: &[u8]) {
+    use std::io::Write;
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    let options = zip::write::SimpleFileOptions::default();
+    zip.start_file("plugin.toml", options).unwrap();
+    zip.write_all(manifest.as_bytes()).unwrap();
+    zip.start_file(entry, options).unwrap();
+    zip.write_all(component).unwrap();
+    zip.finish().unwrap();
+}
+
+#[test]
+fn a_release_archive_installs_and_runs_without_the_archive_or_a_watch_on_it() {
+    let (Some(hello), Some(probe)) = (
+        plugins::built("hello_plugin"),
+        plugins::built("probe_plugin"),
+    ) else {
+        return;
+    };
+    let downloads = tempfile::tempdir().unwrap();
+    let archive = downloads.path().join("hello-0.1.0.zip");
+    write_archive(
+        &archive,
+        plugins::HELLO_MANIFEST,
+        "hello_plugin.wasm",
+        &hello,
+    );
+    let fixture = Fixture::new(&[("Plan.md", b"plan")]);
+    let mut app = fixture.app();
+
+    app.review_plugin_archive(archive.clone());
+
+    let review = app.plugin_install().expect("the install dialog opens");
+    assert_eq!(review.problem, None);
+    assert_eq!(review.id, "hello");
+    assert_eq!(review.source, archive.to_str().unwrap());
+    assert!(!review.from_github);
+    assert_eq!(review.capabilities, hello_capabilities());
+    assert!(installed(&app).is_empty());
+    assert!(app.approve_plugin_install());
+    assert!(app.set_plugin_enabled("hello", true));
+    settle(&mut app);
+    assert_eq!(rail_titles(&app), ["Inbox", "Files", "Hello"]);
+    app.open_page(HELLO_PAGE, OpenAs::Kept);
+    settle(&mut app);
+    let shown = plugins::texts(&app, HELLO_PAGE);
+    assert!(shown.is_ok(), "{shown:?}");
+
+    // A new build written over the archive changes nothing: Noura runs
+    // the copy it installed and doesn't watch the archive. A folder
+    // install reloads a new build well within this wait.
+    write_archive(
+        &archive,
+        plugins::HELLO_MANIFEST,
+        "hello_plugin.wasm",
+        &probe,
+    );
+    let waited = std::time::Instant::now();
+    while waited.elapsed() < std::time::Duration::from_millis(1_500) {
+        settle(&mut app);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(plugins::texts(&app, HELLO_PAGE), shown);
+
+    // The installed copy runs on after a relaunch without the archive.
+    std::fs::remove_file(&archive).unwrap();
+    drop(app);
+    let mut app = fixture.app();
+    plugins::wait_until(&mut app, "the plugin runs again", |app| {
+        rail_titles(app).contains(&"Hello".to_owned())
+    });
+    app.open_page(HELLO_PAGE, OpenAs::Kept);
+    settle(&mut app);
+    assert_eq!(plugins::texts(&app, HELLO_PAGE), shown);
+    let rows = installed(&app);
+    assert!(row(&rows, "hello").running);
+    assert_eq!(row(&rows, "hello").problem, None);
+    // It came from neither a folder Noura watches nor a release to check.
+    assert_eq!(row(&rows, "hello").folder, None);
+    assert_eq!(row(&rows, "hello").release, None);
+}
+
+#[test]
+fn an_archive_file_larger_than_a_release_download_installs_nothing() {
+    let downloads = tempfile::tempdir().unwrap();
+    let archive = downloads.path().join("large.noura-plugin.zip");
+    // A sparse file: only its size is read.
+    std::fs::File::create(&archive)
+        .unwrap()
+        .set_len(plugin_host::MAX_ARCHIVE_BYTES as u64 + 1)
+        .unwrap();
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app();
+
+    app.review_plugin_archive(archive);
+
+    let review = app.plugin_install().expect("the install dialog opens");
+    assert!(
+        review.problem.as_deref().unwrap().contains("larger than"),
+        "{review:?}"
+    );
+    assert!(!app.approve_plugin_install());
+    assert!(installed(&app).is_empty());
+}
+
+#[test]
+fn an_archive_the_host_refuses_shows_why_and_installs_nothing() {
+    let downloads = tempfile::tempdir().unwrap();
+    let archive = downloads.path().join("broken.zip");
+    std::fs::write(&archive, b"not a zip archive").unwrap();
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app();
+
+    app.review_plugin_archive(archive);
+
+    let review = app.plugin_install().expect("the install dialog opens");
+    assert!(review.problem.as_deref().unwrap().contains("zip"));
+    assert!(!app.approve_plugin_install());
+    assert!(installed(&app).is_empty());
 }
 
 #[test]

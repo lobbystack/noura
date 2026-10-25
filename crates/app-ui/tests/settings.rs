@@ -139,7 +139,9 @@ fn the_rail_s_settings_button_opens_settings_with_its_sections_by_group() {
                 vec![
                     "General".to_owned(),
                     "Editor".to_owned(),
-                    "Keyboard shortcuts".to_owned()
+                    "Keyboard shortcuts".to_owned(),
+                    "Sync account".to_owned(),
+                    "AI providers".to_owned()
                 ]
             ),
             (
@@ -201,6 +203,7 @@ fn every_section_and_control_carries_a_label() {
         "General",
         "Editor",
         "Keyboard shortcuts",
+        "AI providers",
         "Name and location",
         "Plugins",
         "About Noura",

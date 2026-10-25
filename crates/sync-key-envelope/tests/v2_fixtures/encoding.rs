@@ -389,6 +389,7 @@ pub fn fixture() -> Fixture {
         "device_token_response",
         &DeviceTokenResponse {
             session_token: Text::new(Key([8; 32]).to_base64url()).unwrap(),
+            account: Id([0x0a; 16]),
         },
     );
     body(
@@ -607,6 +608,7 @@ pub fn fixture() -> Fixture {
                 KeyEntry {
                     key_seq: 4,
                     record: KeyRecord::Rewrap(RewrapRequest {
+                        domain: w.ws_domain,
                         device: w.bob_laptop.device(),
                         epoch: 2,
                     }),
@@ -1065,6 +1067,72 @@ pub fn fixture() -> Fixture {
         }));
     }
     f.case(json!({"kind": "records_frame_action", "cursor": 0, "previous_seq": 0, "first": 1, "last": 1, "expect": "apply"}));
+
+    // What an approval request asks for (§10, §26): it names at most one
+    // of an invitation and a workspace, else `bad_request`, and only the
+    // account's own new device's request, which names neither and carries
+    // no account head, reaches `GET /v2/approval-requests`.
+    let head = Some(w.bob.head());
+    let request = |account: Option<AccountHead>,
+                   invitation: Option<Id>,
+                   invite_proof: Option<Digest>,
+                   workspace: Option<Id>| ApprovalRequest {
+        commit: Digest([1; 32]),
+        account,
+        invitation,
+        invite_proof,
+        workspace,
+    };
+    let proof = Some(Digest([2; 32]));
+    for (name, body, expect) in [
+        (
+            "the_accounts_own_new_device",
+            request(None, None, None, None),
+            json!({"target": "own_device", "listed_for_own_account": true}),
+        ),
+        (
+            "an_invited_device",
+            request(head.clone(), Some(id("invitation")), proof, None),
+            json!({"target": "invitation", "listed_for_own_account": false}),
+        ),
+        (
+            "a_reset_device",
+            request(head.clone(), None, None, Some(id("reset workspace"))),
+            json!({"target": "reset", "listed_for_own_account": false}),
+        ),
+        (
+            "an_invitation_and_a_workspace",
+            request(
+                head.clone(),
+                Some(id("invitation")),
+                proof,
+                Some(id("reset workspace")),
+            ),
+            json!({"error": "bad_request"}),
+        ),
+        (
+            "neither_with_an_account_head",
+            request(head.clone(), None, None, None),
+            json!({"error": "bad_request"}),
+        ),
+        (
+            "a_workspace_without_an_account_head",
+            request(None, None, None, Some(id("reset workspace"))),
+            json!({"error": "bad_request"}),
+        ),
+        (
+            "an_invitation_without_its_proof",
+            request(head.clone(), Some(id("invitation")), None, None),
+            json!({"error": "bad_request"}),
+        ),
+    ] {
+        f.case(json!({
+            "kind": "approval_request_target",
+            "name": name,
+            "request": to_hex(&body.to_bytes()),
+            "expect": expect,
+        }));
+    }
     let _ = Id::ZERO;
     f
 }

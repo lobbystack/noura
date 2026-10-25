@@ -329,6 +329,7 @@ pub(crate) async fn commit(
         domain,
         &EpochRow {
             epoch: 1,
+            seq: epoch_seq,
             digest: epoch_digest,
             previous: Digest::ZERO,
             record: epoch_bytes.clone(),
@@ -337,13 +338,14 @@ pub(crate) async fn commit(
         &epoch.to_bytes(),
     )
     .await?;
-    txn.append_key_entry(workspace, KEY_EPOCH, domain, None, &epoch_bytes)
+    txn.append_key_entry(workspace, KEY_EPOCH, domain, 1, None, &epoch_bytes)
         .await?;
     for envelope in &envelopes {
         txn.append_key_entry(
             workspace,
             KEY_ENVELOPE,
             domain,
+            1,
             Some(envelope.body.recipient),
             &envelope.to_bytes(),
         )

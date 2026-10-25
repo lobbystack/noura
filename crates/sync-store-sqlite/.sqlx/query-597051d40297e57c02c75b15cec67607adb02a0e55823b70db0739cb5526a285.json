@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT device, card FROM cards WHERE account = ?1 ORDER BY device",
+  "describe": {
+    "columns": [
+      {
+        "name": "device",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "cards",
+            "name": "device"
+          }
+        }
+      },
+      {
+        "name": "card",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "cards",
+            "name": "card"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "597051d40297e57c02c75b15cec67607adb02a0e55823b70db0739cb5526a285"
+}

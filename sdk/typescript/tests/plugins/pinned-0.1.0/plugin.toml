@@ -1,0 +1,35 @@
+# A plugin built against noura:plugin@0.1.0, which CI builds and runs in
+# Noura on every change. Keep it on 0.1.0: when a newer interface version
+# lands, Noura and the kit must keep running and building this one.
+id = "pinned"
+name = "Pinned to 0.1.0"
+version = "0.1.0"
+interface-version = "0.1.0"
+entry = "dist/pinned.wasm"
+platforms = ["desktop"]
+
+[[capabilities]]
+name = "workspace-read"
+
+[[capabilities]]
+name = "object-types"
+
+[[capabilities]]
+name = "views"
+
+[[capabilities]]
+name = "network"
+hosts = ["api.example.com"]
+
+[[capabilities]]
+name = "commands"
+targets = ["tasks"]
+
+[[capabilities]]
+name = "inbox-sections"
+
+[[capabilities]]
+name = "settings"
+
+[[capabilities]]
+name = "tools"

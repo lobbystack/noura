@@ -326,6 +326,72 @@ mod durability_tests {
     }
 
     #[test]
+    fn each_chat_write_of_an_ai_run_syncs_its_folders_before_it_returns() {
+        let (_workspace, _app_data, engine) = engine();
+        let (created, synced) = durability_probe::record(|| {
+            engine.create_chat(crate::CreateChatInput {
+                title: "New chat".into(),
+                retention: None,
+                retention_days: None,
+            })
+        });
+        let chat = created.unwrap().value;
+        let folder = chat.relative_path.trim_end_matches("/chat.md").to_owned();
+        assert_synced(&engine, &synced, &["", "chats", &folder]);
+
+        let (appended, synced) = durability_probe::record(|| {
+            engine.append_chat_user_message(crate::AppendChatUserMessageInput {
+                chat_id: chat.id.clone(),
+                run_id: "run_1".into(),
+                content: "Hello".into(),
+                expected_chat_revision: chat.revision.clone(),
+            })
+        });
+        let appended = appended.unwrap();
+        let day = appended
+            .value
+            .relative_path
+            .rsplit_once('/')
+            .unwrap()
+            .0
+            .to_owned();
+        assert_synced(
+            &engine,
+            &synced,
+            &[&folder, &format!("{folder}/messages"), &day],
+        );
+
+        let (begun, synced) = durability_probe::record(|| {
+            engine.begin_chat_assistant(crate::BeginChatAssistantInput {
+                chat_id: chat.id.clone(),
+                run_id: "run_1".into(),
+                provider_id: "local".into(),
+                model_id: "llama3".into(),
+                expected_chat_revision: appended.chat_revision.clone().unwrap(),
+            })
+        });
+        let begun = begun.unwrap();
+        assert_synced(&engine, &synced, &[&folder, &day]);
+
+        let (finished, synced) = durability_probe::record(|| {
+            engine.finish_chat_assistant(crate::FinishChatAssistantInput {
+                chat_id: chat.id.clone(),
+                message_id: begun.value.id.clone(),
+                content: "Hi.".into(),
+                status: crate::ChatMessageStatus::Completed,
+                error_code: None,
+                expected_chat_revision: begun.chat_revision.clone().unwrap(),
+                expected_message_revision: begun.revision.clone(),
+            })
+        });
+        finished.unwrap();
+        assert_synced(&engine, &synced, &[&folder, &day]);
+        let written =
+            std::fs::read_to_string(engine.root().join(&begun.value.relative_path)).unwrap();
+        assert!(written.contains("status: completed") && written.ends_with("\nHi.\n"));
+    }
+
+    #[test]
     fn moves_copies_and_new_folders_sync_every_folder_they_create() {
         let (_workspace, _app_data, engine) = engine();
         write(&engine, "Plan.md", b"plan");

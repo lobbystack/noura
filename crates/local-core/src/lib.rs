@@ -6,6 +6,7 @@
 mod ai;
 mod chat;
 mod consent;
+mod credentials;
 #[cfg(any(test, feature = "durability-probe"))]
 pub mod durability_probe;
 mod durable_settings;
@@ -34,6 +35,7 @@ pub use consent::{
     AiConsentDataCategory, AiConsentGrant, AiConsentGrantInput, AiConsentReadInput,
     AiConsentRevokeInput, AiConsentRevokeOutcome,
 };
+pub use credentials::{CredentialStore, MemoryCredentials, NoCredentials, SystemCredentials};
 pub use engine::{
     ChangeCounts, ConflictResolution, CreateObjectInput, DraftReconcileInput, DraftReconcileResult,
     ImportResult, ManagedConflictResolution, ManagedConflictResolveInput, ManagedDraftInput,

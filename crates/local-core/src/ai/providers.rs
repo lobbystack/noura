@@ -16,20 +16,22 @@ pub(super) fn provider_fingerprint(provider: &AiProviderConfig) -> String {
     fingerprint.finalize().to_hex().to_string()
 }
 
-pub(super) fn credential_for(
-    provider: &AiProviderConfig,
-    operation: &str,
-) -> Result<Option<String>> {
-    provider
-        .credential_ref
-        .as_ref()
-        .map(|reference| {
-            keyring::Entry::new("org.noura.ai", reference)
-                .and_then(|entry| entry.get_password())
-                .map_err(|_| credential_error(operation))
-        })
-        .transpose()
-}
+/// The provider kinds Noura offers, each with the name Settings shows, in
+/// the order it lists them. Each is one that `genai` connects to.
+pub const AI_PROVIDER_KINDS: [(&str, &str); 12] = [
+    ("openai", "OpenAI"),
+    ("anthropic", "Anthropic"),
+    ("gemini", "Google Gemini"),
+    ("ollama", "Ollama"),
+    ("groq", "Groq"),
+    ("deepseek", "DeepSeek"),
+    ("xai", "xAI"),
+    ("together", "Together AI"),
+    ("fireworks", "Fireworks AI"),
+    ("cohere", "Cohere"),
+    ("open_router", "OpenRouter"),
+    ("openai_resp", "OpenAI Responses"),
+];
 
 pub(super) fn validate_provider(provider: &AiProviderConfig, operation: &str) -> Result<()> {
     if provider.id.is_empty()
@@ -146,12 +148,7 @@ pub(super) fn provider_error(operation: &str) -> CoreError {
 }
 
 pub(super) fn credential_error(operation: &str) -> CoreError {
-    CoreError::new(
-        "credential_store_error",
-        ErrorCategory::Credential,
-        "The operating system credential store operation failed",
-        operation,
-    )
+    crate::credentials::credential_error(operation)
 }
 
 pub(super) fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {

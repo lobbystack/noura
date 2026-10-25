@@ -27,6 +27,11 @@ use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 
 use crate::{Backend, Error, LockPlan, Refusal, Session, Store, WriteTxn};
 
+mod devices;
+mod keys;
+pub use devices::*;
+pub use keys::*;
+
 /// Declares one `#[tokio::test]` per conformance case. `$open` is an async
 /// function returning a fresh store and a guard that keeps its database
 /// alive for the test.
@@ -66,6 +71,16 @@ macro_rules! conformance_tests {
             a_retired_chain_the_workspace_names_reads_in_full,
             recovery_proofs_consume_their_challenge,
             approval_requests_open_the_invitees_chain,
+            device_grants_follow_rfc_8628,
+            enrollment_binds_the_session_to_its_card,
+            removing_links_end_sessions,
+            active_devices_end_a_pending_cards_sessions,
+            approval_requests_offers_and_reveals,
+            account_heads_changes_carry_their_envelopes,
+            rotations_follow_the_policy,
+            replacements_skip_only_their_rotators_epochs,
+            rewraps_reach_readers_and_close,
+            rewraps_follow_the_fixture_schedule,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
@@ -92,6 +107,7 @@ macro_rules! instance_tests {
             limits_hold_across_instances,
             geneses_at_once_start_one_chain,
             enrollments_at_once_take_one_card,
+            chain_appends_race_pushes_recording_the_head,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
@@ -444,12 +460,13 @@ impl<B: Backend> World<B> {
                         epoch: Nested(epoch.clone()),
                         recipients: Sorted::new(recipients.into_iter().collect()).expect("sorted"),
                     };
-                    txn.append_entry(workspace, domain, 8, &record).await?;
+                    let seq = txn.append_entry(workspace, domain, 8, &record).await?;
                     txn.insert_epoch(
                         workspace,
                         domain,
                         &crate::EpochRow {
                             epoch: epoch.body.epoch,
+                            seq,
                             digest: epoch.digest(),
                             previous: epoch.body.previous,
                             record: record.clone(),
@@ -458,7 +475,7 @@ impl<B: Backend> World<B> {
                         &bundle.to_bytes(),
                     )
                     .await?;
-                    txn.append_key_entry(workspace, 3, domain, None, &record)
+                    txn.append_key_entry(workspace, 3, domain, epoch.body.epoch, None, &record)
                         .await?;
                     Ok(())
                 })
@@ -546,12 +563,13 @@ pub async fn inject_change<B: Backend>(
                 }
                 if let Some((domain, epoch)) = new_domain {
                     let bytes = epoch.to_bytes();
-                    txn.append_entry(workspace, domain, 8, &bytes).await?;
+                    let seq = txn.append_entry(workspace, domain, 8, &bytes).await?;
                     txn.insert_epoch(
                         workspace,
                         domain,
                         &crate::EpochRow {
                             epoch: 1,
+                            seq,
                             digest: epoch.digest(),
                             previous: Digest::ZERO,
                             record: bytes.clone(),

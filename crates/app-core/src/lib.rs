@@ -17,6 +17,8 @@
 //! and off per workspace and runs them through `plugin-host`, each on a
 //! thread of its own.
 
+pub mod account;
+mod ai;
 mod app;
 mod calendar_grid;
 mod commands;
@@ -58,6 +60,7 @@ mod watch;
 mod workspace;
 mod writes;
 
+pub use ai::{AI_POLICY_VERSION, AiConsentPrompt, AiProviderInput, AiProviderRow, NEW_CHAT_TITLE};
 pub use app::{
     App, Change, CommandPalette, DragOut, IgnoredFiles, NameDraft, Notice, NoticeKind, Origin,
     Palette, PaletteMode, PluginPlace, Question, QuickOpen, Rename, Screen, Search, UnsavedPrompt,
@@ -83,9 +86,22 @@ pub use links::{
     MAX_IMAGE_BYTES, NoteEmbed, NoteEmbedState, NoteImage, NoteLinks, PdfEmbedState,
     is_external_link, is_image, is_remote_image,
 };
-pub use local_core::RemoteImage;
 #[cfg(feature = "test-hooks")]
 pub use local_core::WatchFault;
+pub use local_core::{
+    AI_PROVIDER_KINDS, AiStreamer, CredentialStore, MemoryCredentials, RemoteImage,
+};
+
+/// What a client passes to [`App::set_ai_client`] talks to providers in
+/// these terms. Noura uses `genai`'s client unless a client sets another,
+/// as tests do with a fake provider.
+pub mod ai_client {
+    pub use local_core::{
+        AiContentPart, AiProviderConfig, AiProviderEventStream, AiProviderStreamEvent,
+        AiStopReason, AiStreamer, AiToolCall, AiTransportMessage, AiUsage, CoreError,
+        ErrorCategory, ResolvedAiStreamRequest, Result,
+    };
+}
 pub use login::{LoginItem, NoLoginItem, OpenAtLogin};
 pub use menus::{Menu, MenuItem, MenuName, SystemItem};
 pub use notes::{
@@ -100,6 +116,10 @@ pub use pdf::{
 };
 #[cfg(feature = "test-hooks")]
 pub use pdf::{PdfDrawFailure, PdfRenderHold};
+/// A stand-in for GitHub's release servers, for
+/// [`App::set_plugin_release_transport`].
+#[cfg(feature = "test-hooks")]
+pub use plugin_host::fake_github;
 pub use plugin_host::{
     CalendarMode, Check as PluginCheck, Choice, Column, ColumnPress, Event as PluginEvent, Field,
     Grant, Move as PluginMove, Naming as PluginNaming, SortOrder, Submission, Target,
@@ -107,7 +127,7 @@ pub use plugin_host::{
 };
 pub use plugin_inputs::{date_time_fields, date_time_value, date_value};
 pub use plugins::{
-    CapabilityLine, PluginInstall, PluginRow, PluginTool, PluginView, ShippedPlugin,
+    CapabilityLine, PluginInstall, PluginRow, PluginTool, PluginView, ShippedPlugin, UpdateCheck,
 };
 pub use preferences::{ACTUAL_SIZE, Appearance, LineWidth, Preferences, TextSize, ZOOM_LEVELS};
 pub use problems::Problem;

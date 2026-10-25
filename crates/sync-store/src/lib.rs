@@ -18,6 +18,7 @@
 mod accounts;
 mod chains;
 mod create;
+pub mod devices;
 mod hub;
 pub mod limiter;
 mod live;
@@ -77,6 +78,8 @@ pub struct Refusal {
     pub message: String,
     /// The code's structured detail.
     pub detail: Option<Vec<u8>>,
+    /// When to retry, for `rate_limited`.
+    pub retry_after_seconds: Option<u64>,
 }
 
 impl Refusal {
@@ -86,7 +89,14 @@ impl Refusal {
             code,
             message: message.into(),
             detail: None,
+            retry_after_seconds: None,
         }
+    }
+
+    /// This refusal, telling the client to retry after `seconds`.
+    pub fn retry_after(mut self, seconds: u64) -> Self {
+        self.retry_after_seconds = Some(seconds);
+        self
     }
 
     /// The HTTP status §26 gives the code.
@@ -99,7 +109,7 @@ impl Refusal {
         ErrorBody {
             code: Text(self.code.to_owned()),
             message: Text(truncate(&self.message, 1_024)),
-            retry_after_seconds: None,
+            retry_after_seconds: self.retry_after_seconds,
             detail: self.detail.clone().map(Bytes),
         }
     }
@@ -140,6 +150,24 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 pub(crate) fn refuse(code: &'static str, message: impl Into<String>) -> Error {
     Error::Refused(Refusal::new(code, message))
+}
+
+/// `device_removed`, whose detail names the link that removed the
+/// session's card (§7, §26).
+pub(crate) fn device_removed(link: RemovedBy) -> Error {
+    use sync_protocol::codec::Encode as _;
+    Error::Refused(Refusal {
+        code: "device_removed",
+        message: "a link of the account chain removed this device".into(),
+        retry_after_seconds: None,
+        detail: Some(
+            sync_protocol::messages::DeviceRemovedDetail {
+                genesis: link.genesis,
+                seqno: link.seqno,
+            }
+            .to_bytes(),
+        ),
+    })
 }
 
 /// A signed-in device: the account and device a session belongs to.
@@ -227,8 +255,7 @@ pub struct PasskeyRow {
     pub passkey: Vec<u8>,
 }
 
-/// A stored approval request (§10): what the chain read route needs of it
-/// (§7). Tickets 47 and 50 add the rest of a request.
+/// A stored approval request (§10).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApprovalRequestRow {
     /// The request's commitment, which identifies it.
@@ -237,13 +264,96 @@ pub struct ApprovalRequestRow {
     pub account: Id,
     /// The card that posted it.
     pub device: Id,
+    /// That card's encoding.
+    pub card: Vec<u8>,
+    /// The candidate's account head, for an invitation or a reset.
+    pub candidate_head: Option<AccountHead>,
     /// The invitation it names, if any.
     pub invitation: Option<Id>,
+    /// The invitation proof.
+    pub invite_proof: Option<Digest>,
     /// The workspace that invitation invites to, or that a reset asks to be
     /// accepted in.
     pub workspace: Option<Id>,
+    /// The encoded request, so a retry with identical bytes gets the
+    /// original result.
+    pub request: Vec<u8>,
     /// When it expires, in Unix seconds.
     pub expires_at: u64,
+}
+
+/// The link that removed a session's card: the `device_removed` detail
+/// (§26).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemovedBy {
+    /// The chain's genesis digest.
+    pub genesis: Digest,
+    /// The removing link's seqno.
+    pub seqno: u64,
+}
+
+/// A stored session: its account and device, and the link that removed its
+/// card, if one did (§7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SessionRow {
+    /// The session.
+    pub session: Session,
+    /// The link that removed the session's card.
+    pub removed: Option<RemovedBy>,
+}
+
+/// A device authorization grant (RFC 8628, §7) until it's used or expires.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeviceGrantRow {
+    /// `BLAKE3` of the device code's text.
+    pub device_code_hash: Digest,
+    /// `BLAKE3` of the user code's 8 characters.
+    pub user_code_hash: Digest,
+    /// The account that approved it on the device page.
+    pub account: Option<Id>,
+    /// Whether the person refused it.
+    pub denied: bool,
+    /// The polling interval in seconds.
+    pub interval: u64,
+    /// The earliest Unix second the next poll may arrive.
+    pub next_poll: u64,
+    /// When it expires, in Unix seconds.
+    pub expires_at: u64,
+}
+
+/// A stored approval offer (§10).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OfferRow {
+    /// The offer's digest.
+    pub offer_digest: Digest,
+    /// The commitment it answers.
+    pub commit: Digest,
+    /// `BLAKE3` of the candidate's card.
+    pub candidate_card_digest: Digest,
+    /// The approving device.
+    pub approver: Id,
+    /// The approving device's account.
+    pub account: Id,
+    /// The signed offer.
+    pub offer: Vec<u8>,
+    /// The candidate's nonce, once it revealed it.
+    pub nc: Option<sync_protocol::types::Key>,
+    /// When it expires, in Unix seconds.
+    pub expires_at: u64,
+}
+
+/// An open re-wrap request (§9): a device asks for a new envelope of one
+/// epoch of a domain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RewrapRow {
+    /// The domain.
+    pub domain: Id,
+    /// The epoch.
+    pub epoch: u64,
+    /// The requesting device.
+    pub device: Id,
+    /// The key sequence of the request's key stream row.
+    pub key_seq: u64,
 }
 
 /// A workspace's row.
@@ -325,6 +435,8 @@ pub struct KeyRow {
 pub struct EpochRow {
     /// The epoch number.
     pub epoch: u64,
+    /// The sequence of its entry in the domain's log.
+    pub seq: u64,
     /// The record's digest.
     pub digest: Digest,
     /// The digest its `previous` names.
@@ -393,7 +505,75 @@ pub trait ReadTxn: Send {
     fn session(
         &mut self,
         token_hash: Digest,
-    ) -> impl Future<Output = Result<Option<Session>>> + Send;
+    ) -> impl Future<Output = Result<Option<SessionRow>>> + Send;
+    /// The device grant whose device code hashes to `code_hash`.
+    fn device_grant(
+        &mut self,
+        code_hash: Digest,
+    ) -> impl Future<Output = Result<Option<DeviceGrantRow>>> + Send;
+    /// The device grant whose user code hashes to `user_code_hash`.
+    fn device_grant_by_user_code(
+        &mut self,
+        user_code_hash: Digest,
+    ) -> impl Future<Output = Result<Option<DeviceGrantRow>>> + Send;
+    /// The account's enrolled cards, by device ID.
+    fn enrolled_cards(
+        &mut self,
+        account: Id,
+    ) -> impl Future<Output = Result<Vec<(Id, Vec<u8>)>>> + Send;
+    /// How many sessions that no link removed each device of the account
+    /// holds, by device ID; a session whose device hasn't enrolled counts
+    /// under the zero ID.
+    fn session_counts(
+        &mut self,
+        account: Id,
+    ) -> impl Future<Output = Result<Vec<(Id, u64)>>> + Send;
+    /// The account's stored approval requests, by commitment.
+    fn approval_requests(
+        &mut self,
+        account: Id,
+    ) -> impl Future<Output = Result<Vec<ApprovalRequestRow>>> + Send;
+    /// The approval request with this commitment.
+    fn approval_request(
+        &mut self,
+        commit: Digest,
+    ) -> impl Future<Output = Result<Option<ApprovalRequestRow>>> + Send;
+    /// The approval offer with this digest.
+    fn approval_offer(
+        &mut self,
+        offer_digest: Digest,
+    ) -> impl Future<Output = Result<Option<OfferRow>>> + Send;
+    /// The approval offers that name this candidate card digest, by digest.
+    fn approval_offers_for(
+        &mut self,
+        card_digest: Digest,
+    ) -> impl Future<Output = Result<Vec<OfferRow>>> + Send;
+    /// The open re-wrap requests of a workspace, by domain, epoch and
+    /// device.
+    fn rewrap_requests(
+        &mut self,
+        workspace: Id,
+    ) -> impl Future<Output = Result<Vec<RewrapRow>>> + Send;
+    /// The devices that answered one re-wrap request, with the key sequence
+    /// of each answer.
+    fn rewrap_answers(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        epoch: u64,
+        device: Id,
+    ) -> impl Future<Output = Result<Vec<(Id, u64)>>> + Send;
+    /// The devices that signed operations with a sequence in (`after`,
+    /// `before`) of a domain's log.
+    fn writers_between(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        after: u64,
+        before: u64,
+    ) -> impl Future<Output = Result<Vec<Id>>> + Send;
+    /// Every profile record of a workspace, by profile revision.
+    fn profiles(&mut self, workspace: Id) -> impl Future<Output = Result<Vec<Vec<u8>>>> + Send;
     /// The genesis digest of the account's current chain.
     fn current_genesis(
         &mut self,
@@ -695,16 +875,89 @@ pub trait WriteTxn: ReadTxn {
         policy_revision: u64,
         bundle: &[u8],
     ) -> impl Future<Output = Result<()>> + Send;
-    /// Appends a key stream row at the workspace's next key sequence, under
-    /// its key sequence row, and returns that sequence.
+    /// Appends a key stream row of one epoch of a domain at the workspace's
+    /// next key sequence, under its key sequence row, and returns that
+    /// sequence.
     fn append_key_entry(
         &mut self,
         workspace: Id,
         record_type: u8,
         domain: Id,
+        epoch: u64,
         recipient: Option<Id>,
         record: &[u8],
     ) -> impl Future<Output = Result<u64>> + Send;
+    /// Deletes a domain's envelopes and re-wrap requests of epochs below
+    /// `epoch`, with their key stream rows, once epoch `epoch` committed
+    /// (§9).
+    fn drop_old_epochs(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        epoch: u64,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Stores a re-wrap request.
+    fn insert_rewrap_request(
+        &mut self,
+        workspace: Id,
+        row: &RewrapRow,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Records a lone envelope that answered a re-wrap request.
+    fn insert_rewrap_answer(
+        &mut self,
+        workspace: Id,
+        request: &RewrapRow,
+        wrapper: Id,
+        key_seq: u64,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Closes a re-wrap request: deletes it, its answers and its key stream
+    /// row.
+    fn close_rewrap(
+        &mut self,
+        workspace: Id,
+        request: &RewrapRow,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Stores a device grant.
+    fn insert_device_grant(
+        &mut self,
+        row: &DeviceGrantRow,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Replaces a device grant's state.
+    fn update_device_grant(
+        &mut self,
+        row: &DeviceGrantRow,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Deletes a device grant.
+    fn delete_device_grant(&mut self, code_hash: Digest)
+    -> impl Future<Output = Result<()>> + Send;
+    /// Binds a session to the card its device enrolled.
+    fn bind_session(
+        &mut self,
+        token_hash: Digest,
+        device: Id,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Marks every session of the account's `devices` removed by `link`.
+    fn remove_sessions(
+        &mut self,
+        account: Id,
+        devices: &[Id],
+        link: RemovedBy,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Deletes every session of one device of the account and returns how
+    /// many it deleted.
+    fn delete_device_sessions(
+        &mut self,
+        account: Id,
+        device: Id,
+    ) -> impl Future<Output = Result<u64>> + Send;
+    /// Stores an approval offer.
+    fn insert_approval_offer(&mut self, row: &OfferRow) -> impl Future<Output = Result<()>> + Send;
+    /// Records the nonce the candidate revealed for an offer.
+    fn set_reveal(
+        &mut self,
+        offer_digest: Digest,
+        nc: sync_protocol::types::Key,
+    ) -> impl Future<Output = Result<()>> + Send;
     /// Stores a profile record.
     fn insert_profile(
         &mut self,
@@ -810,9 +1063,9 @@ pub trait WriteTxn: ReadTxn {
         &mut self,
         token_hash: Digest,
     ) -> impl Future<Output = Result<Option<PendingPasskeyRow>>> + Send;
-    /// Deletes every magic link, waiting passkey, ceremony, challenge and
-    /// approval request that expires at or before `now`, and returns how
-    /// many it deleted.
+    /// Deletes every magic link, waiting passkey, ceremony, challenge,
+    /// device grant, approval request and approval offer that expires at or
+    /// before `now`, and returns how many it deleted.
     fn delete_expired(&mut self, now: u64) -> impl Future<Output = Result<u64>> + Send;
 }
 
@@ -982,25 +1235,43 @@ impl<B: Backend> Store<B> {
         }
     }
 
-    /// The session a bearer token names, or `unauthorized`.
+    /// The session a bearer token names, or `unauthorized`, or
+    /// `device_removed` for a session whose card a link removed.
     pub async fn session(&self, token: &str) -> Result<Session> {
         Ok(self.session_and_hash(token).await?.0)
     }
 
     /// The session a bearer token names and the token's hash, or
-    /// `unauthorized`.
+    /// `unauthorized`, or `device_removed` for a session whose card a link
+    /// removed (§7).
     pub async fn session_and_hash(&self, token: &str) -> Result<(Session, Digest)> {
+        let (row, hash) = self.session_row(token).await?;
+        if let Some(link) = row.removed {
+            return Err(device_removed(link));
+        }
+        Ok((row.session, hash))
+    }
+
+    /// The session a bearer token names, also when a link removed its card:
+    /// such a session keeps one right, reading its account's chains (§7).
+    pub async fn session_reading_chains(&self, token: &str) -> Result<Session> {
+        Ok(self.session_row(token).await?.0.session)
+    }
+
+    /// The stored session a bearer token names and the token's hash, or
+    /// `unauthorized`.
+    pub async fn session_row(&self, token: &str) -> Result<(SessionRow, Digest)> {
         let bytes: [u8; 32] = sync_protocol::types::from_base64url(token)
             .map_err(|_| refuse("unauthorized", "no valid session"))?;
         let hash = sync_protocol::crypto::hash(&bytes);
-        let session = self
+        let row = self
             .backend
             .read(Box::new(move |txn: &mut B::Read| {
                 Box::pin(async move { txn.session(hash).await })
             }))
             .await?
             .ok_or_else(|| refuse("unauthorized", "no valid session"))?;
-        Ok((session, hash))
+        Ok((row, hash))
     }
 
     /// `POST /v2/accounts/chain`: appends links to the session account's
@@ -1017,6 +1288,25 @@ impl<B: Backend> Store<B> {
             }))
             .await?;
         Ok(ChainAppendResponse { seqno })
+    }
+
+    /// `POST /v2/accounts/chains` for a stored session: a session whose card
+    /// a link removed reads only its own account's chains, and a cursor for
+    /// any other account answers `device_removed` (§7).
+    pub async fn read_chains_as(
+        &self,
+        row: SessionRow,
+        request: ChainsRequest,
+    ) -> Result<ChainsResponse> {
+        if let Some(link) = row.removed
+            && request
+                .cursors
+                .iter()
+                .any(|cursor| cursor.account != row.session.account)
+        {
+            return Err(device_removed(link));
+        }
+        self.read_chains(row.session, request).await
     }
 
     /// `POST /v2/accounts/chains`: the links of the chains the session may
@@ -1127,6 +1417,46 @@ impl<B: Backend> Store<B> {
         Ok(sync_protocol::ids::passkey_user_handle(secret, &account))
     }
 
+    /// The confirmation the device page's decision form carries for the
+    /// code `account` entered, valid until `expires_at` (§7).
+    pub fn device_confirmation(
+        &self,
+        account: Id,
+        user_code: &str,
+        expires_at: u64,
+    ) -> Result<Digest> {
+        let secret = self
+            .secret
+            .as_ref()
+            .ok_or_else(|| Error::internal("the store has no server secret"))?;
+        Ok(sync_protocol::ids::device_confirmation(
+            secret, &account, user_code, expires_at,
+        ))
+    }
+
+    /// Whether `confirmation` is the device page's confirmation for the
+    /// code `account` entered, and it hasn't expired (§7).
+    pub fn device_confirmed(
+        &self,
+        account: Id,
+        user_code: &str,
+        expires_at: u64,
+        confirmation: &[u8; 32],
+    ) -> Result<bool> {
+        let secret = self
+            .secret
+            .as_ref()
+            .ok_or_else(|| Error::internal("the store has no server secret"))?;
+        Ok(expires_at > self.clock.now()
+            && sync_protocol::ids::device_confirmation_matches(
+                secret,
+                &account,
+                user_code,
+                expires_at,
+                confirmation,
+            ))
+    }
+
     /// Stores a session for `token`, the 32 random bytes a sign-in returns,
     /// as their BLAKE3 hash. Until ticket 47 adds the device grant that signs
     /// a device in, tests and tools create device sessions this way.
@@ -1201,10 +1531,108 @@ impl<B: Backend> Store<B> {
         recipient: Id,
     ) -> Result<KeysResponse> {
         let cache = self.policies.clone();
-        self.backend
+        let (response, acknowledged) = self
+            .backend
             .read(Box::new(move |txn: &mut B::Read| {
                 Box::pin(async move {
-                    reads::keys(txn, &cache, session, workspace, after, recipient).await
+                    let response =
+                        reads::keys(txn, &cache, session, workspace, after, recipient).await?;
+                    let acknowledged =
+                        reads::acknowledged_rewraps(txn, workspace, recipient, after).await?;
+                    Ok((response, acknowledged))
+                })
+            }))
+            .await?;
+        // A fetch that passed an answer to the device's re-wrap request
+        // acknowledges it, and the server closes the request (§9).
+        if !acknowledged.is_empty() {
+            self.backend
+                .write(Box::new(move |txn: &mut B::Write| {
+                    Box::pin(async move {
+                        txn.lock(&LockPlan {
+                            workspace: Some(workspace),
+                            policy_exclusive: false,
+                            key_sequence: true,
+                            domains: Vec::new(),
+                            blobs: Vec::new(),
+                        })
+                        .await?;
+                        for request in
+                            reads::acknowledged_rewraps(txn, workspace, recipient, after).await?
+                        {
+                            txn.close_rewrap(workspace, &request).await?;
+                        }
+                        Ok(())
+                    })
+                }))
+                .await?;
+        }
+        Ok(response)
+    }
+
+    /// `GET /v2/workspaces/{w}/keys/current?recipient={device}`.
+    pub async fn current_keys(
+        &self,
+        session: Session,
+        workspace: Id,
+        recipient: Id,
+    ) -> Result<KeysResponse> {
+        let cache = self.policies.clone();
+        let (response, acknowledged) = self
+            .backend
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move {
+                    let response =
+                        reads::current_keys(txn, &cache, session, workspace, recipient).await?;
+                    // The fetch hands the device every answer to its
+                    // requests, which acknowledges them (§9).
+                    let acknowledged = reads::acknowledged_rewraps(
+                        txn,
+                        workspace,
+                        recipient,
+                        response.head_key_seq,
+                    )
+                    .await?;
+                    Ok((response, acknowledged))
+                })
+            }))
+            .await?;
+        if !acknowledged.is_empty() {
+            self.backend
+                .write(Box::new(move |txn: &mut B::Write| {
+                    Box::pin(async move {
+                        txn.lock(&LockPlan {
+                            workspace: Some(workspace),
+                            policy_exclusive: false,
+                            key_sequence: true,
+                            domains: Vec::new(),
+                            blobs: Vec::new(),
+                        })
+                        .await?;
+                        for request in acknowledged {
+                            txn.close_rewrap(workspace, &request).await?;
+                        }
+                        Ok(())
+                    })
+                }))
+                .await?;
+        }
+        Ok(response)
+    }
+
+    /// `POST /v2/workspaces/{w}/domains/{d}/rewrap`.
+    pub async fn rewrap(
+        &self,
+        session: Session,
+        workspace: Id,
+        domain: Id,
+        epoch: u64,
+    ) -> Result<()> {
+        let cache = self.policies.clone();
+        self.backend
+            .write(Box::new(move |txn: &mut B::Write| {
+                Box::pin(async move {
+                    reads::rewrap(txn, &cache, session, workspace, domain, epoch).await
                 })
             }))
             .await

@@ -455,6 +455,31 @@ pub enum EnvelopeVerdict {
     Wait,
 }
 
+/// What a device does when no envelope it holds for a domain's current
+/// epoch passes [`check_envelope`] (§9, Re-wrapping). It keeps the first
+/// envelope that passes, in key order, so a failing one ahead of a good one
+/// costs nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailedEnvelopes {
+    /// It accepted an earlier epoch of the domain, so it signs a
+    /// replacement that names that epoch.
+    Replace,
+    /// It accepted no earlier epoch, such as a card brought in after the
+    /// current one, so it asks for a re-wrap at once.
+    Rewrap,
+}
+
+/// The step after every envelope failed, for a device that did or didn't
+/// accept an earlier epoch of the domain (§9).
+pub fn after_failed_envelopes(accepted_earlier_epoch: bool) -> FailedEnvelopes {
+    if accepted_earlier_epoch {
+        FailedEnvelopes::Replace
+    } else {
+        FailedEnvelopes::Rewrap
+    }
+}
+
 /// Checks an envelope a recipient unwrapped. `key` is the unwrapped key,
 /// `epoch` the accepted record of the envelope's epoch, `recipient` the
 /// recipient's own card. The wrapping device must be a device of the

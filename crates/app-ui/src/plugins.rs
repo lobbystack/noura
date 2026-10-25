@@ -1,18 +1,24 @@
 //! Settings' Plugins section, the install dialog and the first-run screen
 //! for the plugins that ship with Noura.
 //!
-//! The section lists each plugin installed on this device or turned on in
-//! the workspace, with its version, where it came from, and each
-//! capability, network host and command target you approved, with a
-//! button to revoke it. The install dialog lists every capability a plugin
-//! folder declares before any of its code runs; its keyboard starts on
-//! Cancel.
+//! The section installs a plugin from a folder or from the address of a
+//! release on GitHub, and lists each plugin installed on this device or
+//! turned on in the workspace, with its version, where it came from, and
+//! each capability, network host and command target you approved, with a
+//! button to revoke it. A plugin from GitHub checks for a newer release
+//! from its row. The install dialog lists every capability a plugin
+//! declares before any of its code runs, and warns that nobody reviewed a
+//! plugin from GitHub; its keyboard starts on Cancel.
 
-use app_core::{App, CapabilityLine, Grant, PluginRow};
+use app_core::{App, CapabilityLine, Grant, PluginRow, UpdateCheck};
 use egui::{
-    Button, Checkbox, Frame, Id, Margin, Modal, RichText, ScrollArea, Stroke, Ui, UiBuilder,
-    accesskit::Role,
+    Button, Checkbox, Frame, Id, Key, Margin, Modal, RichText, ScrollArea, Spinner, Stroke,
+    TextEdit, Ui, UiBuilder, accesskit::Role,
 };
+
+/// What the install dialog says about a plugin from GitHub.
+const UNREVIEWED: &str = "Nobody reviewed this plugin. Anyone can publish a release on GitHub, \
+                          so install it if you trust its author.";
 
 use crate::{
     FolderPicker,
@@ -25,10 +31,18 @@ use crate::{
 pub(crate) struct InstallView {
     /// The dialog showed last frame.
     open: bool,
+    /// The dialog showed a release downloading last frame.
+    downloading: bool,
 }
 
-/// The Plugins section's content.
-pub(crate) fn section(ui: &mut Ui, app: &mut App, picker: &mut dyn FolderPicker) {
+/// The Plugins section's content. `address` holds what you typed in the
+/// release address field.
+pub(crate) fn section(
+    ui: &mut Ui,
+    app: &mut App,
+    picker: &mut dyn FolderPicker,
+    address: &mut String,
+) {
     let mut pick = false;
     group(ui, "Install from a folder", |ui| {
         muted(
@@ -40,6 +54,29 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App, picker: &mut dyn FolderPicker)
     });
     if pick && let Some(folder) = picker.pick_folder("Choose a plugin folder") {
         app.review_plugin_folder(folder);
+    }
+    let mut download = false;
+    group(ui, "Install from GitHub", |ui| {
+        muted(
+            ui,
+            "Paste the address of a plugin's release on GitHub. Noura shows what the plugin \
+             asks for before it installs anything.",
+        );
+        let field = ui
+            .add(
+                TextEdit::singleline(address)
+                    .hint_text("https://github.com/owner/plugin/releases/tag/v1.0.0")
+                    .desired_width(f32::INFINITY),
+            )
+            .accessible_name("Release address");
+        let typed = !address.trim().is_empty();
+        download = typed && field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
+        download |= ui
+            .add_enabled(typed, Button::new("Install from GitHub\u{2026}"))
+            .clicked();
+    });
+    if download {
+        app.review_plugin_release(address);
     }
     let rows = app.plugins();
     if rows.is_empty() {
@@ -59,6 +96,7 @@ enum RowAction {
     Allow(Grant),
     ApproveUpdate,
     DeclineUpdate,
+    CheckForUpdates,
     Restart,
     Uninstall,
 }
@@ -86,6 +124,9 @@ fn plugin(ui: &mut Ui, app: &mut App, row: &PluginRow, workspace_open: bool) {
                     }
                     if row.shipped {
                         muted(ui, "Ships with Noura");
+                    } else if let Some(release) = &row.release {
+                        muted(ui, "From GitHub, not reviewed");
+                        ui.add(egui::Label::new(release).selectable(true).wrap());
                     } else if let Some(folder) = &row.folder {
                         ui.add(egui::Label::new(folder).selectable(true).wrap());
                     }
@@ -116,7 +157,11 @@ fn plugin(ui: &mut Ui, app: &mut App, row: &PluginRow, workspace_open: bool) {
                     if row.failed && ui.button("Start again").clicked() {
                         action = Some(RowAction::Restart);
                     }
-                    if !row.update.is_empty() {
+                    if row.release.is_some() {
+                        if let Some(update) = release_update(ui, row) {
+                            action = Some(update);
+                        }
+                    } else if !row.update.is_empty() {
                         ui.add_space(4.0);
                         ui.label("A new build is waiting. It also asks to:");
                         capabilities(ui, &row.update);
@@ -133,6 +178,15 @@ fn plugin(ui: &mut Ui, app: &mut App, row: &PluginRow, workspace_open: bool) {
                     ui.horizontal(|ui| {
                         if workspace_open {
                             ui.add(Checkbox::new(&mut enabled, "On in this workspace"));
+                        }
+                        let checking = row.update_check == Some(UpdateCheck::Checking);
+                        if row.installed
+                            && row.release.is_some()
+                            && ui
+                                .add_enabled(!checking, Button::new("Check for updates"))
+                                .clicked()
+                        {
+                            action = Some(RowAction::CheckForUpdates);
                         }
                         if row.installed && ui.button("Uninstall").clicked() {
                             action = Some(RowAction::Uninstall);
@@ -156,6 +210,9 @@ fn plugin(ui: &mut Ui, app: &mut App, row: &PluginRow, workspace_open: bool) {
         }
         Some(RowAction::DeclineUpdate) => {
             app.decline_plugin_update(&row.id);
+        }
+        Some(RowAction::CheckForUpdates) => {
+            app.check_plugin_update(&row.id);
         }
         Some(RowAction::Restart) => {
             app.restart_plugin(&row.id);
@@ -190,6 +247,49 @@ fn grant_lines(ui: &mut Ui, lines: &[CapabilityLine], verb: &str) -> Option<Gran
         });
     }
     pressed
+}
+
+/// Where checking GitHub for a newer release of `row`'s plugin stands, and
+/// a newer release that waits, with only what it adds. Returns what you
+/// pressed.
+fn release_update(ui: &mut Ui, row: &PluginRow) -> Option<RowAction> {
+    match &row.update_check {
+        Some(UpdateCheck::Checking) => {
+            ui.horizontal(|ui| {
+                ui.add(Spinner::new());
+                muted(ui, "Checking for updates\u{2026}");
+            });
+        }
+        Some(UpdateCheck::Newest(version)) => {
+            muted(ui, &format!("Version {version} is the newest release."));
+        }
+        Some(UpdateCheck::Failed(problem)) => alert(ui, problem),
+        None => {}
+    }
+    let newer = row.newer.as_ref()?;
+    let mut action = None;
+    ui.add_space(4.0);
+    ui.label(format!("Version {newer} is available."));
+    let install = if row.update.is_empty() {
+        format!("Install version {newer}")
+    } else {
+        ui.label("It also asks to:");
+        capabilities(ui, &row.update);
+        format!("Allow and install version {newer}")
+    };
+    ui.horizontal(|ui| {
+        if ui.button(install).clicked() {
+            action = Some(RowAction::ApproveUpdate);
+        }
+        let keep = match &row.version {
+            Some(version) => format!("Keep version {version}"),
+            None => "Keep the installed version".to_owned(),
+        };
+        if ui.button(keep).clicked() {
+            action = Some(RowAction::DeclineUpdate);
+        }
+    });
+    action
 }
 
 /// The first-run screen: the plugins that ship with Noura and what each
@@ -265,10 +365,15 @@ pub(crate) struct ShippedView {
 pub(crate) fn install_dialog(ui: &mut Ui, app: &mut App, view: &mut InstallView) {
     let Some(install) = app.plugin_install().cloned() else {
         view.open = false;
+        view.downloading = false;
         return;
     };
     let opened = !view.open;
     view.open = true;
+    // The dialog's content changes once the download is in, so the
+    // keyboard goes back to Cancel.
+    let downloaded = view.downloading && !install.downloading;
+    view.downloading = install.downloading;
     let mut cancel = false;
     let mut approve = false;
     let modal = Modal::new(Id::unique("plugin-install")).show(ui.ctx(), |ui| {
@@ -279,29 +384,26 @@ pub(crate) fn install_dialog(ui: &mut Ui, app: &mut App, view: &mut InstallView)
             ui.set_width(420.0);
             let title = match &install.problem {
                 Some(_) => "Noura can't install this plugin".to_owned(),
+                None if install.downloading => "Downloading the plugin\u{2026}".to_owned(),
                 None => format!("Install {}?", install.name),
             };
             ui.label(RichText::new(title).size(TITLE_SIZE).strong());
-            if install.problem.is_none() {
+            if install.problem.is_none() && !install.downloading {
                 muted(ui, &format!("Version {}", install.version));
             }
-            ui.add(egui::Label::new(&install.folder).selectable(true).wrap());
+            ui.add(egui::Label::new(&install.source).selectable(true).wrap());
             ui.add_space(8.0);
             match &install.problem {
                 Some(problem) => alert(ui, problem),
-                None if install.capabilities.is_empty() => {
-                    ui.label("It asks for no capabilities.");
+                None if install.downloading => {
+                    ui.add(Spinner::new());
                 }
-                None => {
-                    ui.label("It asks to:");
-                    capabilities(ui, &install.capabilities);
-                    ui.add_space(4.0);
-                    muted(
-                        ui,
-                        "Noura runs none of its code until you install it, and gives it only \
-                         these capabilities.",
-                    );
+                None if install.from_github => {
+                    warning(ui, UNREVIEWED);
+                    ui.add_space(8.0);
+                    capability_list(ui, &install.capabilities);
                 }
+                None => capability_list(ui, &install.capabilities),
             }
             ui.add_space(12.0);
             ui.horizontal(|ui| {
@@ -311,11 +413,11 @@ pub(crate) fn install_dialog(ui: &mut Ui, app: &mut App, view: &mut InstallView)
                     "Cancel"
                 };
                 let cancel_button = ui.add(Button::new(label));
-                if opened {
+                if opened || downloaded {
                     cancel_button.request_focus();
                 }
                 cancel = cancel_button.clicked();
-                if install.problem.is_none() {
+                if install.problem.is_none() && !install.downloading {
                     approve = primary_button(ui, "Install", true).clicked();
                 }
             });
@@ -326,6 +428,34 @@ pub(crate) fn install_dialog(ui: &mut Ui, app: &mut App, view: &mut InstallView)
     } else if cancel || modal.should_close() {
         app.cancel_plugin_install();
     }
+}
+
+/// What a plugin asks for, and that it gets nothing more.
+fn capability_list(ui: &mut Ui, lines: &[CapabilityLine]) {
+    if lines.is_empty() {
+        ui.label("It asks for no capabilities.");
+        return;
+    }
+    ui.label("It asks to:");
+    capabilities(ui, lines);
+    ui.add_space(4.0);
+    muted(
+        ui,
+        "Noura runs none of its code until you install it, and gives it only these \
+         capabilities.",
+    );
+}
+
+/// A caution in a frame of its own.
+fn warning(ui: &mut Ui, text: &str) {
+    let palette = Palette::of(ui.ctx());
+    Frame::new()
+        .stroke(Stroke::new(1.0, palette.destructive))
+        .corner_radius(radius(1.0))
+        .inner_margin(Margin::same(8))
+        .show(ui, |ui| {
+            ui.add(egui::Label::new(text).wrap());
+        });
 }
 
 /// Each capability's description, with its manifest name beside it.

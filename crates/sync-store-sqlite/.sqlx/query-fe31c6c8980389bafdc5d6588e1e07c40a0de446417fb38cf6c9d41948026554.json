@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT DISTINCT device FROM operations\n             WHERE workspace = ?1 AND domain = ?2 AND seq > ?3 AND seq < ?4 ORDER BY device",
+  "describe": {
+    "columns": [
+      {
+        "name": "device",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "device"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "fe31c6c8980389bafdc5d6588e1e07c40a0de446417fb38cf6c9d41948026554"
+}

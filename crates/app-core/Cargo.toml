@@ -6,9 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-# Lets tests force the native watcher to fail or deliver chosen events.
-# Never enabled in a shipped build; the tests turn it on below.
-test-hooks = ["local-core/test-hooks"]
+# Lets tests force the native watcher to fail or deliver chosen events, and
+# download plugin releases from a stand-in for GitHub. Never enabled in a
+# shipped build; the tests turn it on below.
+test-hooks = ["local-core/test-hooks", "plugin-host/test-hooks"]
 
 [dependencies]
 # Finds the workspace's names in log lines for Copy diagnostics.
@@ -34,8 +35,16 @@ sync-protocol = { version = "0.2.0", path = "../sync-protocol" }
 # The locale calendar grids name months, weekdays and times in.
 sys-locale.workspace = true
 thiserror.workspace = true
+# Drives the requests to AI providers and streams their answers. The
+# sync service also waits on it between device-grant polls and before
+# the pushes it schedules, on the runtime reqwest runs on.
+tokio.workspace = true
 tracing.workspace = true
+# Tells a loopback server address from one that must use HTTPS.
+url.workspace = true
 unicode-normalization.workspace = true
+# Names AI runs and the provider requests they make.
+uuid.workspace = true
 # The workspace format's date and date-time rules, which plugin input
 # values follow.
 workspace-format = { version = "0.2.0", path = "../workspace-format" }
@@ -46,6 +55,8 @@ zeroize.workspace = true
 app-core = { path = ".", features = ["test-hooks"] }
 # The sync tests put a tampering proxy between the client and the server.
 axum.workspace = true
+# The fake AI provider streams what each test tells it to.
+futures.workspace = true
 # The tests record which folders each change syncs.
 local-core = { version = "0.2.0", path = "../local-core", features = ["durability-probe"] }
 # Search treats arbitrary typed text as plain words.
@@ -56,13 +67,15 @@ serde_yaml_ng.workspace = true
 # The sync tests run the real server in-process, on SQLite and on a
 # throwaway PostgreSQL cluster.
 sync-server = { version = "0.2.0", path = "../sync-server" }
-sync-store = { version = "0.2.0", path = "../sync-store" }
+sync-store = { version = "0.2.0", path = "../sync-store", features = ["conformance"] }
 sync-store-postgres = { version = "0.2.0", path = "../sync-store-postgres", features = ["testing"] }
 sync-store-sqlite = { version = "0.2.0", path = "../sync-store-sqlite" }
 tempfile.workspace = true
 tokio.workspace = true
 # A test reads every log line to check that a PDF's password stays out.
 tracing-subscriber.workspace = true
+# Writes plugin release archives for the install tests.
+zip.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }

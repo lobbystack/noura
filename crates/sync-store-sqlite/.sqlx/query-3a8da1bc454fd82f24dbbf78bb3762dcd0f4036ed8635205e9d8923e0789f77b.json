@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT wrapper, key_seq FROM rewrap_answers\n             WHERE workspace = ?1 AND domain = ?2 AND epoch = ?3 AND device = ?4\n             ORDER BY key_seq",
+  "describe": {
+    "columns": [
+      {
+        "name": "wrapper",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "rewrap_answers",
+            "name": "wrapper"
+          }
+        }
+      },
+      {
+        "name": "key_seq",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "rewrap_answers",
+            "name": "key_seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "3a8da1bc454fd82f24dbbf78bb3762dcd0f4036ed8635205e9d8923e0789f77b"
+}

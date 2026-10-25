@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM key_entries WHERE workspace = ?1 AND key_seq = ?2 AND record_type = 5",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "6568888d555afc0c75a22d6e176fb22fd99a9bb597d829d0305a3e145e61807b"
+}

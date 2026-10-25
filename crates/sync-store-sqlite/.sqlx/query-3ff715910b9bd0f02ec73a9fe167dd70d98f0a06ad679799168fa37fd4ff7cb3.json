@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE approval_offers SET nc = ?2 WHERE offer_digest = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "3ff715910b9bd0f02ec73a9fe167dd70d98f0a06ad679799168fa37fd4ff7cb3"
+}

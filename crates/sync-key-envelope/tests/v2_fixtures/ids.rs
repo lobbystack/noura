@@ -2,7 +2,7 @@
 
 use serde_json::json;
 use sync_protocol::codec::Encode;
-use sync_protocol::ids::{account_id, device_id, secret_check};
+use sync_protocol::ids::{account_id, device_confirmation, device_id, secret_check};
 use sync_protocol::messages::LiveCursor;
 use sync_protocol::types::{Digest, Id, Key, SecretKey, to_base64url, to_hex};
 
@@ -136,6 +136,32 @@ pub fn fixture() -> Fixture {
         account_id(&server_secret, "Åsa@example.se"),
         account_id(&server_secret, "åsa@example.se")
     );
+    // The device page's confirmation (§7) binds the account, the code in
+    // upper case and the expiry.
+    let ada = account_id(&server_secret, "ada@example.com");
+    for (name, code, expires_at) in [
+        ("device_confirmation", "BCDFGHJK", 1_790_000_600u64),
+        (
+            "device_confirmation_of_another_code",
+            "BCDFGHJL",
+            1_790_000_600,
+        ),
+        (
+            "device_confirmation_of_another_expiry",
+            "BCDFGHJK",
+            1_790_000_601,
+        ),
+    ] {
+        f.case(json!({
+            "kind": "device_confirmation",
+            "name": name,
+            "secret": to_hex(server_secret.expose()),
+            "account": ada.to_hex(),
+            "user_code": code,
+            "expires_at": expires_at,
+            "expect": to_hex(&device_confirmation(&server_secret, &ada, code, expires_at).0),
+        }));
+    }
     f.set(
         "random_ids",
         json!({

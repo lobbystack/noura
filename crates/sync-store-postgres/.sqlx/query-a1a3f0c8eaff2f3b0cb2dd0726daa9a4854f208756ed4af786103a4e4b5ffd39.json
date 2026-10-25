@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT domain, epoch, device, key_seq FROM rewrap_requests\n             WHERE workspace = $1 ORDER BY domain, epoch, device",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "domain",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "rewrap_requests",
+            "name": "domain"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "epoch",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rewrap_requests",
+            "name": "epoch"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "device",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "rewrap_requests",
+            "name": "device"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "key_seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rewrap_requests",
+            "name": "key_seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "a1a3f0c8eaff2f3b0cb2dd0726daa9a4854f208756ed4af786103a4e4b5ffd39"
+}

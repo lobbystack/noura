@@ -767,6 +767,146 @@ impl PolicyChain {
     }
 }
 
+/// Where a recovery with a kit stands, for the workspaces the kit doesn't
+/// list (§12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryStage {
+    /// Step 3: the device verifies each such workspace against the
+    /// confirmed head and shows it to you.
+    Review,
+    /// From step 4's `recover_device` until step 5's `remove` links commit.
+    Removing,
+    /// After the flow, or a device that isn't recovering.
+    Done,
+}
+
+/// A change that a removed card signed, which stays in force (§7, §30),
+/// with the undo the viewer's role allows now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemovedCardChange {
+    /// The change's revision.
+    pub revision: u64,
+    /// The removed device that signed it.
+    pub signer: Id,
+    /// The change's kind, as §8 names it.
+    pub kind: &'static str,
+    /// The undo the viewer's role allows, as §8 names that change, if any.
+    pub undo: Option<&'static str>,
+}
+
+/// The undo of `kind` that `role` allows (§8, Roles and authority):
+/// `target_role` is the role a member that `kind` names holds now, and
+/// `manages` whether the viewer manages the domain a `set_access` or
+/// `create_domain` names.
+fn undo_for(
+    kind: &PolicyKind,
+    role: Option<Role>,
+    target_role: Option<Role>,
+    manages: bool,
+) -> Option<&'static str> {
+    let admin = matches!(role, Some(Role::Owner | Role::Admin));
+    // An owner changes any member but the owner; an admin, editors and
+    // viewers.
+    let reaches = match role {
+        Some(Role::Owner) => target_role.is_some() && target_role != Some(Role::Owner),
+        Some(Role::Admin) => matches!(target_role, Some(Role::Editor | Role::Viewer)),
+        _ => false,
+    };
+    match kind {
+        PolicyKind::AddMember { .. } | PolicyKind::AcceptReset { .. } => {
+            reaches.then_some("remove_member")
+        }
+        PolicyKind::SetRole { .. } => reaches.then_some("set_role"),
+        PolicyKind::SetAccess { .. } => manages.then_some("set_access"),
+        PolicyKind::CreateDomain { .. } => (admin || manages).then_some("delete_domain"),
+        _ => None,
+    }
+}
+
+impl PolicyChain {
+    /// The changes other than `account_heads` that a card in `cards`
+    /// signed, each with the undo that `viewer`'s role allows at the head
+    /// (§7, Removing a device).
+    pub fn removed_card_changes(
+        &self,
+        viewer: &Id,
+        cards: &BTreeSet<Id>,
+    ) -> Vec<RemovedCardChange> {
+        let snapshot = self.head_snapshot();
+        let role = snapshot.role(viewer);
+        self.changes
+            .iter()
+            .filter(|change| cards.contains(&change.body.signer))
+            .filter(|change| !matches!(change.body.kind, PolicyKind::AccountHeads))
+            .map(|change| {
+                let kind = &change.body.kind;
+                let target_role = match kind {
+                    PolicyKind::AddMember { account, .. }
+                    | PolicyKind::SetRole { account, .. }
+                    | PolicyKind::AcceptReset { account } => snapshot.role(account),
+                    _ => None,
+                };
+                let manages = match kind {
+                    PolicyKind::SetAccess { domain, .. }
+                    | PolicyKind::CreateDomain { domain, .. } => snapshot.manages(viewer, domain),
+                    _ => false,
+                };
+                RemovedCardChange {
+                    revision: change.body.revision,
+                    signer: change.body.signer,
+                    kind: kind.name(),
+                    undo: undo_for(kind, role, target_role, manages),
+                }
+            })
+            .collect()
+    }
+
+    /// The revision at which a recovering device trusts this log, which
+    /// its kit doesn't list (§12): in step 3 and after the flow, as
+    /// [`PolicyChain::anchored_by`] with the kit's `account_head` as the
+    /// reference and `own` at the confirmed head or the head the device
+    /// keeps; between step 4 and the commit of step 5's links, never, so
+    /// the device reports `sync_workspace_unverified`.
+    pub fn recovery_anchor(
+        &self,
+        own: &AccountChain,
+        kit_head: &AccountHead,
+        stage: RecoveryStage,
+    ) -> Option<u64> {
+        match stage {
+            RecoveryStage::Removing => None,
+            RecoveryStage::Review | RecoveryStage::Done => self.anchored_by(own, kit_head),
+        }
+    }
+
+    /// The revisions after `trusted_after` whose changes the device list
+    /// alerts on (§7, Device list): every change other than
+    /// `account_heads` that a device of `own`'s account other than
+    /// `this_device` signed. `trusted_after` is the revision of the
+    /// approval anchor or kit the device first trusted the log at, 1 for a
+    /// log whose genesis it signed, and 0 for a log it first trusted
+    /// through another device's change, whose earlier changes it alerts on
+    /// too.
+    pub fn alerted_changes(
+        &self,
+        own: &AccountChain,
+        this_device: &Id,
+        trusted_after: u64,
+    ) -> Vec<u64> {
+        self.changes
+            .iter()
+            .filter(|change| change.body.revision > trusted_after)
+            .filter(|change| {
+                let signer = &change.body.signer;
+                signer != this_device
+                    && own.card(signer).is_some()
+                    && !matches!(change.body.kind, PolicyKind::AccountHeads)
+            })
+            .map(|change| change.body.revision)
+            .collect()
+    }
+}
+
 impl PolicyChain {
     /// Whether this verified log names `account`'s chain under `genesis` at
     /// a place where a chain the device doesn't keep may enter (§7): in the

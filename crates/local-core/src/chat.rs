@@ -543,61 +543,66 @@ pub(crate) fn validate_retention(
     }
 }
 
+/// The frontmatter and the content of a chat file, read through the
+/// workspace format's envelope, so a chat reads as the index reads it.
 fn frontmatter(
     bytes: &[u8],
     operation: &str,
 ) -> Result<(BTreeMap<String, serde_json::Value>, String)> {
-    let text = std::str::from_utf8(bytes)
-        .map_err(|_| invalid("Chat Markdown must be UTF-8", operation))?
-        .replace("\r\n", "\n");
-    if !text.starts_with("---\n") {
-        return Err(invalid(
-            "Chat Markdown requires YAML frontmatter",
-            operation,
-        ));
+    let object = match markdown::parse_markdown("chat.md", bytes) {
+        markdown::ParsedMarkdown::Managed(object) => object,
+        markdown::ParsedMarkdown::Unmanaged {
+            frontmatter: None, ..
+        } => {
+            return Err(invalid(
+                "Chat Markdown requires YAML frontmatter",
+                operation,
+            ));
+        }
+        markdown::ParsedMarkdown::Unmanaged { .. } => {
+            return Err(invalid("id is required", operation));
+        }
+        markdown::ParsedMarkdown::Malformed { .. } => {
+            return Err(invalid("Chat frontmatter is invalid", operation));
+        }
+    };
+    let mut properties = object.properties;
+    properties.insert("id".into(), object.id.into());
+    properties.insert("type".into(), object.object_type.into());
+    for (key, value) in [("created", object.created), ("updated", object.updated)] {
+        if let Some(value) = value {
+            properties.insert(key.into(), value.into());
+        }
     }
-    let end = text[4..]
-        .find("\n---\n")
-        .map(|index| index + 4)
-        .ok_or_else(|| invalid("Chat frontmatter has no closing delimiter", operation))?;
-    let properties = serde_yaml_ng::from_str(&text[4..end])
-        .map_err(|_| invalid("Chat frontmatter is invalid", operation))?;
+    let content = object.body;
     Ok((
         properties,
-        text[end + 5..]
+        content
             .strip_prefix('\n')
-            .unwrap_or(&text[end + 5..])
+            .unwrap_or(&content)
             .trim_end_matches('\n')
             .to_owned(),
     ))
 }
 
+/// A chat file: its frontmatter, `known` keys first in that order and the
+/// other keys after them by key, then the content after a blank line.
 fn serialize_frontmatter(
     mut fields: BTreeMap<String, serde_json::Value>,
     known: &[&str],
     content: String,
 ) -> Result<Vec<u8>> {
-    let mut mapping = serde_yaml_ng::Mapping::new();
-    for key in known {
-        let value = fields.remove(*key).unwrap_or(serde_json::Value::Null);
-        mapping.insert(
-            serde_yaml_ng::Value::String((*key).into()),
-            serde_yaml_ng::to_value(value).map_err(|_| {
-                invalid("Chat frontmatter could not be serialized", "chat_serialize")
-            })?,
-        );
-    }
-    for (key, value) in fields {
-        mapping.insert(
-            serde_yaml_ng::Value::String(key),
-            serde_yaml_ng::to_value(value).map_err(|_| {
-                invalid("Chat frontmatter could not be serialized", "chat_serialize")
-            })?,
-        );
-    }
-    let yaml = serde_yaml_ng::to_string(&mapping)
+    let mut entries: Vec<(&str, serde_json::Value)> = known
+        .iter()
+        .map(|key| (*key, fields.remove(*key).unwrap_or(serde_json::Value::Null)))
+        .collect();
+    entries.extend(
+        fields
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.clone())),
+    );
+    let mut output = workspace_format::frontmatter_block(&entries)
         .map_err(|_| invalid("Chat frontmatter could not be serialized", "chat_serialize"))?;
-    let mut output = format!("---\n{yaml}---\n");
     if !content.is_empty() {
         output.push('\n');
         output.push_str(content.trim_end());
@@ -733,6 +738,39 @@ mod tests {
         let parsed = parse_chat_message(&message.relative_path, &bytes).unwrap();
         assert_eq!(parsed.properties["future_field"], true);
         assert_eq!(serialize_chat_message(&parsed).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_title_ending_in_a_line_separator_reads_back_as_written() {
+        for ending in ['\u{2028}', '\u{2029}'] {
+            let chat = Chat {
+                id: "chat_01j00000000000000000000000".into(),
+                title: format!("Plans{ending}"),
+                retention: ChatRetention::Permanent,
+                retention_days: None,
+                relative_path: "chats/plans--000000/chat.md".into(),
+                revision: String::new(),
+                created: "2026-09-02T12:00:00Z".into(),
+                updated: "2026-09-02T12:00:00Z".into(),
+                properties: BTreeMap::new(),
+            };
+            let bytes = serialize_chat(&chat).unwrap();
+            let parsed = parse_chat(&chat.relative_path, &bytes).unwrap();
+            assert_eq!(parsed.title, chat.title);
+        }
+    }
+
+    #[test]
+    fn a_block_scalar_written_last_reads_as_the_index_reads_it() {
+        let bytes = b"---\nid: chat-message_01j00000000000000000000000\ntype: chat-message\nchat_id: chat_01j00000000000000000000000\nrun_id: run_1\nkind: user\nstatus: completed\ncontent_type: text/markdown\ncreated: 2026-09-02T12:00:00Z\nupdated: 2026-09-02T12:00:00Z\nnote: |\n  first line\n---\n\nHello\n";
+        let message = parse_chat_message("messages/m.md", bytes).unwrap();
+        assert_eq!(message.properties["note"], "first line\n");
+        assert_eq!(message.content, "Hello");
+        let markdown::ParsedMarkdown::Managed(indexed) = markdown::parse_markdown("m.md", bytes)
+        else {
+            panic!("the message is a managed object");
+        };
+        assert_eq!(indexed.properties["note"], message.properties["note"]);
     }
 
     #[test]

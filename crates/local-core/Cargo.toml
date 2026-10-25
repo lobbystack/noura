@@ -61,10 +61,16 @@ trash.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 atomicwrites = "=0.4.4"
+# The v2 device secrets need Credential Manager entries that stay on this
+# machine (`CRED_PERSIST_LOCAL_MACHINE`), which keyring's own entries don't
+# offer; keyring 4 builds on this crate.
+keyring-core = "=1.0.0"
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
-security-framework = "=3.7.0"
+# The data protection keychain (`kSecUseDataProtectionKeychain`) holds the v2
+# device secrets; it needs the macOS 10.15 API.
+security-framework = { version = "=3.7.0", features = ["OSX_10_15"] }

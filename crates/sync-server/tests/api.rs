@@ -365,11 +365,12 @@ async fn operation_refusals_carry_the_status_the_fixture_pins() {
     let reply = owner.post(&ops, push_body(&[next(&world, &|_| {})])).await;
     assert_eq!(reply.push_failure(), ("rotation_pending".to_owned(), 0));
     assert_eq!(reply.status.as_u16(), statuses["rotation_pending"]);
+    // The link that removed the second device ended its session (§7).
     let reply = client(&world, &base, 1)
         .post(&ops, push_body(&[world.op(1, |_| {})]))
         .await;
-    assert_eq!(reply.error().code.as_str(), "forbidden");
-    assert_eq!(reply.status.as_u16(), statuses["forbidden"]);
+    assert_eq!(reply.error().code.as_str(), "device_removed");
+    assert_eq!(reply.status.as_u16(), statuses["device_removed"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

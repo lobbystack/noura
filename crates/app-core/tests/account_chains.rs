@@ -459,6 +459,7 @@ async fn grant(
                     workspace,
                     4,
                     domain,
+                    1,
                     Some(envelope.body.recipient),
                     &envelope.to_bytes(),
                 )

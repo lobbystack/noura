@@ -36,6 +36,8 @@ use crate::{
     workspace::identity_changed,
 };
 
+mod account;
+mod ai;
 mod commands;
 mod drops;
 mod file_actions;
@@ -116,6 +118,8 @@ pub enum Change {
     Notice,
     /// The update status changed.
     Update,
+    /// The sync account screens changed.
+    Account,
     /// Settings or the Ignored files page changed.
     Settings,
     /// The appearance, text size or zoom changed.
@@ -147,6 +151,9 @@ pub enum Change {
     Problems,
     /// The Inbox's recent notes or plugin sections changed.
     Inbox,
+    /// The AI providers, your consent for them, or the consent prompt
+    /// changed.
+    Ai,
 }
 
 type Listener = Box<dyn Fn(Change) + Send + Sync>;
@@ -231,6 +238,8 @@ pub struct App {
     preferences_seen: u64,
     /// The version of the plugins service this window shows.
     plugins_seen: u64,
+    /// The version of the AI service this window shows.
+    ai_seen: u64,
     /// How many times running plugins ran code that may write files, as
     /// far as this window's open notes looked at their files.
     plugin_acts_seen: u64,
@@ -262,6 +271,8 @@ pub struct App {
     settings: Option<Settings>,
     /// The plugin install dialog, while it is open.
     plugin_install: Option<PluginInstall>,
+    /// Brings the install dialog of a release that is downloading.
+    plugin_download: Option<Receiver<PluginInstall>>,
     /// Settings' sections, in the order they registered.
     settings_sections: Vec<SettingsSection>,
     /// The system's apps that open at login.
@@ -365,6 +376,7 @@ impl App {
             recents_seen: 0,
             preferences_seen: 0,
             plugins_seen: 0,
+            ai_seen: 0,
             plugin_acts_seen: 0,
             closed: false,
             opened_windows: Vec::new(),
@@ -385,6 +397,7 @@ impl App {
             ignored_files: None,
             settings: None,
             plugin_install: None,
+            plugin_download: None,
             settings_sections: kernel_sections(),
             login_item: Arc::new(NoLoginItem),
             log_folder: crate::log_folder(&session.app_data),
@@ -521,6 +534,7 @@ impl App {
         self.viewers.clear();
         self.leaving = None;
         self.plugin_install = None;
+        self.plugin_download = None;
         self.listeners.emit(Change::Screen);
     }
 
@@ -758,6 +772,7 @@ impl App {
         let preferences = self.poll_preferences();
         let departing = self.poll_departure();
         let plugins = self.poll_plugins();
+        let ai = self.poll_ai();
         let viewed = self.poll_viewers();
         saved
             | updated
@@ -769,6 +784,7 @@ impl App {
             | preferences
             | departing
             | plugins
+            | ai
             | viewed
     }
 
@@ -917,6 +933,7 @@ impl App {
         self.restore_view(windows.next().unwrap_or_default());
         // The workspace's plugins start, and their pages bring back the
         // tabs that waited for them.
+        self.session.ai.open_workspace(Some(workspace.clone()));
         self.session.plugins().open_workspace(Some(workspace));
         self.poll_plugins();
         self.notice = None;

@@ -102,7 +102,9 @@ fn settings_lists_its_sections_under_this_computer_workspace_and_app() {
                 vec![
                     "General".to_owned(),
                     "Editor".to_owned(),
-                    "Keyboard shortcuts".to_owned()
+                    "Keyboard shortcuts".to_owned(),
+                    "Sync account".to_owned(),
+                    "AI providers".to_owned()
                 ]
             ),
             (

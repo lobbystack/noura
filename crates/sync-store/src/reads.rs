@@ -1,14 +1,14 @@
 //! The read routes of §26, and the trusted account chain writes that tests
 //! use to set up a store.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use sync_protocol::account::AccountChain;
 use sync_protocol::codec::{Decode, Encode, List, Nested, Sorted};
 use sync_protocol::messages::{
     EpochsResponse, HeadResponse, KeyEntry, KeyRecord, KeysResponse, MAX_BODY, PolicyResponse,
-    WorkspaceInfo, WorkspacesResponse,
+    RewrapRequest, WorkspaceInfo, WorkspacesResponse,
 };
 use sync_protocol::policy::PolicyChain;
 use sync_protocol::records::{AccountLink, Envelope, Epoch, PolicyChange, Profile, Role, Signed};
@@ -16,16 +16,16 @@ use sync_protocol::types::Id;
 
 use crate::policy::{self, ChainCache, PolicyCache};
 use crate::pull::entry;
-use crate::push::{KEY_ENVELOPE, KEY_EPOCH};
-use crate::{Error, LinkRow, ReadTxn, Result, Session, WorkspaceRow, WriteTxn, refuse};
+use crate::push::{KEY_ENVELOPE, KEY_EPOCH, KEY_REWRAP};
+use crate::{Error, LinkRow, ReadTxn, Result, RewrapRow, Session, WorkspaceRow, WriteTxn, refuse};
 
 /// Key stream rows read per query.
 const CHUNK: u32 = 256;
 
 /// The session device's account chain: its account's current chain, in
-/// which the device's card must be active at the head. A card that a link
-/// removed gets `forbidden` until ticket 47 answers it with
-/// `device_removed`.
+/// which the device's card must be active at the head. A session whose card
+/// a link removed answers `device_removed` before it gets here, and one
+/// whose device hasn't enrolled or joined the chain yet gets `forbidden`.
 pub(crate) async fn session_chain(
     txn: &mut impl ReadTxn,
     chains: &ChainCache,
@@ -89,6 +89,7 @@ pub(crate) async fn append_account_links(
     if new_chain {
         txn.set_current_genesis(account, chain.genesis()).await?;
     }
+    crate::chains::end_removed_sessions(txn, &chain, start).await?;
     Ok(chain.head_seqno())
 }
 
@@ -248,6 +249,9 @@ pub(crate) async fn keys(
                 KEY_ENVELOPE if reads && row.recipient == Some(recipient) => KeyRecord::Envelope(
                     Signed::<Envelope>::from_bytes(&row.record).map_err(Error::internal)?,
                 ),
+                KEY_REWRAP if reads => KeyRecord::Rewrap(
+                    RewrapRequest::from_bytes(&row.record).map_err(Error::internal)?,
+                ),
                 _ => continue,
             };
             let size = 8 + 1 + 4 + row.record.len();
@@ -265,6 +269,214 @@ pub(crate) async fn keys(
         head_key_seq,
         entries: List(entries),
     })
+}
+
+/// `GET .../keys/current?recipient={device}`: the current epoch record of
+/// each domain the device reads, its envelopes for those epochs and the
+/// open re-wrap requests of those epochs, in key-sequence order, with the
+/// key sequence to continue from, at most 1 MiB (§9, §18).
+pub(crate) async fn current_keys(
+    txn: &mut impl ReadTxn,
+    cache: &PolicyCache,
+    session: Session,
+    workspace: Id,
+    recipient: Id,
+) -> Result<KeysResponse> {
+    let (_, policy) = authorize(txn, cache, session, workspace).await?;
+    if recipient != session.device && Some(recipient) != session.recovery {
+        return Err(refuse(
+            "forbidden",
+            "a session reads only its own device's envelopes",
+        ));
+    }
+    let snapshot = policy.head_snapshot();
+    let mut current = BTreeMap::new();
+    for domain in snapshot.domains.keys() {
+        if snapshot.can_read(&recipient, domain)
+            && let Some(row) = txn.domain(workspace, *domain).await?
+        {
+            current.insert(*domain, row.epoch);
+        }
+    }
+    let head_key_seq = txn.key_head(workspace).await?;
+    let mut budget = MAX_BODY.saturating_sub(8 + 4);
+    let mut entries = Vec::new();
+    let mut cursor = 0;
+    'read: loop {
+        let rows = txn.key_entries(workspace, cursor, CHUNK).await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            cursor = row.key_seq;
+            let Some(epoch) = current.get(&row.domain).copied() else {
+                continue;
+            };
+            let record = match row.record_type {
+                KEY_EPOCH => {
+                    let record =
+                        Signed::<Epoch>::from_bytes(&row.record).map_err(Error::internal)?;
+                    if record.body.epoch != epoch {
+                        continue;
+                    }
+                    KeyRecord::Epoch(record)
+                }
+                KEY_ENVELOPE if row.recipient == Some(recipient) => {
+                    let envelope =
+                        Signed::<Envelope>::from_bytes(&row.record).map_err(Error::internal)?;
+                    if envelope.body.epoch != epoch {
+                        continue;
+                    }
+                    KeyRecord::Envelope(envelope)
+                }
+                KEY_REWRAP => {
+                    let request =
+                        RewrapRequest::from_bytes(&row.record).map_err(Error::internal)?;
+                    if request.epoch != epoch {
+                        continue;
+                    }
+                    KeyRecord::Rewrap(request)
+                }
+                _ => continue,
+            };
+            let size = 8 + 1 + 4 + row.record.len();
+            if size > budget {
+                break 'read;
+            }
+            budget -= size;
+            entries.push(KeyEntry {
+                key_seq: row.key_seq,
+                record,
+            });
+        }
+    }
+    Ok(KeysResponse {
+        head_key_seq,
+        entries: List(entries),
+    })
+}
+
+/// The open re-wrap requests of `device` that an answer at or below key
+/// sequence `after` acknowledges: the device's key fetch passed that
+/// envelope, so the server closes the request (§9).
+pub(crate) async fn acknowledged_rewraps(
+    txn: &mut impl ReadTxn,
+    workspace: Id,
+    device: Id,
+    after: u64,
+) -> Result<Vec<RewrapRow>> {
+    let mut acknowledged = Vec::new();
+    for request in txn.rewrap_requests(workspace).await? {
+        if request.device != device {
+            continue;
+        }
+        let answers = txn
+            .rewrap_answers(workspace, request.domain, request.epoch, device)
+            .await?;
+        if answers.iter().any(|(_, key_seq)| *key_seq <= after) {
+            acknowledged.push(request);
+        }
+    }
+    Ok(acknowledged)
+}
+
+/// `POST .../domains/{d}/rewrap`: a device that the current policy lets read
+/// the domain, and for which the server took an envelope of the domain's
+/// current epoch, asks for a new one (§9). The request reaches the
+/// domain's readers in the key stream; one per device and epoch, and a
+/// repeated request returns the original result. None while the domain
+/// waits for a rotation, which hands out a new key anyway.
+pub(crate) async fn rewrap(
+    txn: &mut impl WriteTxn,
+    cache: &PolicyCache,
+    session: Session,
+    workspace: Id,
+    domain: Id,
+    epoch: u64,
+) -> Result<()> {
+    txn.lock(&crate::LockPlan {
+        workspace: Some(workspace),
+        policy_exclusive: false,
+        key_sequence: true,
+        domains: vec![domain],
+        blobs: Vec::new(),
+    })
+    .await?;
+    let policy = authorize_domain(txn, cache, session, workspace, domain).await?;
+    let snapshot = policy.head_snapshot();
+    let device = reader(snapshot, session).unwrap_or(session.device);
+    let row = txn
+        .domain(workspace, domain)
+        .await?
+        .ok_or_else(|| refuse("not_found", "no such domain"))?;
+    if epoch != row.epoch {
+        return Err(refuse(
+            "epoch_stale",
+            "a re-wrap asks for the domain's current epoch",
+        ));
+    }
+    let (head_revision, _) = policy.head();
+    if policy
+        .rotation_required(&domain, row.epoch_policy_revision, head_revision)
+        .is_some()
+    {
+        return Err(refuse(
+            "rotation_pending",
+            "the domain waits for a rotation, which wraps a new key",
+        ));
+    }
+    if txn
+        .rewrap_requests(workspace)
+        .await?
+        .iter()
+        .any(|r| r.domain == domain && r.epoch == epoch && r.device == device)
+    {
+        return Ok(());
+    }
+    let mut accepted = false;
+    let mut cursor = 0;
+    loop {
+        let rows = txn.key_entries(workspace, cursor, CHUNK).await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            cursor = row.key_seq;
+            if row.record_type == KEY_ENVELOPE
+                && row.domain == domain
+                && row.recipient == Some(device)
+            {
+                let envelope =
+                    Signed::<Envelope>::from_bytes(&row.record).map_err(Error::internal)?;
+                accepted |= envelope.body.epoch == epoch;
+            }
+        }
+    }
+    if !accepted {
+        return Err(refuse(
+            "forbidden",
+            "the server took no envelope of this epoch for the device",
+        ));
+    }
+    let record = RewrapRequest {
+        domain,
+        device,
+        epoch,
+    }
+    .to_bytes();
+    let key_seq = txn
+        .append_key_entry(workspace, KEY_REWRAP, domain, epoch, None, &record)
+        .await?;
+    txn.insert_rewrap_request(
+        workspace,
+        &RewrapRow {
+            domain,
+            epoch,
+            device,
+            key_seq,
+        },
+    )
+    .await
 }
 
 /// `GET .../domains/{d}/epochs/{epoch}`: that epoch record and the ones its

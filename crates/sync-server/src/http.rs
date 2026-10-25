@@ -16,11 +16,13 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use sync_protocol::codec::{Bytes, Decode, Encode, Text};
 use sync_protocol::messages::{
-    ChainAppendRequest, ChainsRequest, ErrorBody, MAX_BODY, MEDIA_TYPE, PullRequest,
-    RESTORE_GENERATION_HEADER, RecoveryRequest,
+    ChainAppendRequest, ChainsRequest, DeviceTokenRequest, EnrollRequest, ErrorBody, MAX_BODY,
+    MEDIA_TYPE, OfferRequest, PullRequest, RESTORE_GENERATION_HEADER, RecoveryRequest, RevealBody,
+    RewrapBody,
 };
 use sync_protocol::types::{Digest, Id, from_decimal};
-use sync_store::{Backend, Error, Refusal, Session, Store};
+use sync_store::devices::UNBOUND;
+use sync_store::{Backend, Error, Refusal, Session, SessionRow, Store};
 
 /// A failed request: a refusal the protocol names, or a store failure.
 pub struct ApiError(pub Error);
@@ -101,6 +103,40 @@ pub struct Auth(pub Session);
 /// The signed-in device a bearer token names, with the token's hash.
 pub struct AuthWithHash(pub Session, pub Digest);
 
+/// The signed-in device a bearer token names, also when a link removed its
+/// card: such a session keeps the right to read its account's chains (§7).
+pub struct ChainReader(pub SessionRow);
+
+/// A session from the device grant before its device enrolled, with the
+/// token's hash: only the challenge and enrollment routes take one, so a
+/// device code nobody enrolled reads nothing (§7).
+pub struct Enrolling(pub Session, pub Digest);
+
+/// Refuses a session that holds no card yet.
+fn bound(session: Session) -> Result<Session, ApiError> {
+    if session.device == UNBOUND {
+        return Err(refused(
+            "forbidden",
+            "enroll this device before the session reads or writes anything",
+        ));
+    }
+    Ok(session)
+}
+
+impl<B: Backend> FromRequestParts<AppState<B>> for ChainReader {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState<B>,
+    ) -> Result<Self, Self::Rejection> {
+        let token = bearer(parts)?;
+        let row = state.store.session_row(token).await?.0;
+        bound(row.session)?;
+        Ok(ChainReader(row))
+    }
+}
+
 fn bearer(parts: &Parts) -> Result<&str, ApiError> {
     parts
         .headers
@@ -118,7 +154,20 @@ impl<B: Backend> FromRequestParts<AppState<B>> for Auth {
         state: &AppState<B>,
     ) -> Result<Self, Self::Rejection> {
         let token = bearer(parts)?;
-        Ok(Auth(state.store.session(token).await?))
+        Ok(Auth(bound(state.store.session(token).await?)?))
+    }
+}
+
+impl<B: Backend> FromRequestParts<AppState<B>> for Enrolling {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState<B>,
+    ) -> Result<Self, Self::Rejection> {
+        let token = bearer(parts)?;
+        let (session, hash) = state.store.session_and_hash(token).await?;
+        Ok(Enrolling(session, hash))
     }
 }
 
@@ -131,7 +180,7 @@ impl<B: Backend> FromRequestParts<AppState<B>> for AuthWithHash {
     ) -> Result<Self, Self::Rejection> {
         let token = bearer(parts)?;
         let (session, hash) = state.store.session_and_hash(token).await?;
-        Ok(AuthWithHash(session, hash))
+        Ok(AuthWithHash(bound(session)?, hash))
     }
 }
 
@@ -244,6 +293,34 @@ async fn keys<B: Backend>(
         .await?))
 }
 
+async fn current_keys<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments(workspace): Segments<String>,
+    RawQuery(raw): RawQuery,
+) -> Result<Response, ApiError> {
+    let parameters = query(raw.as_deref())?;
+    let recipient = parameters
+        .get("recipient")
+        .map_or(Ok(session.device), |r| id(r))?;
+    Ok(ok(&store
+        .current_keys(session, id(&workspace)?, recipient)
+        .await?))
+}
+
+async fn rewrap<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments((workspace, domain)): Segments<(String, String)>,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let request: RewrapBody = decode(&body(request).await?)?;
+    store
+        .rewrap(session, id(&workspace)?, id(&domain)?, request.epoch)
+        .await?;
+    Ok(empty())
+}
+
 async fn epochs<B: Backend>(
     State(store): State<Arc<Store<B>>>,
     Auth(session): Auth,
@@ -314,16 +391,16 @@ async fn append_chain<B: Backend>(
 
 async fn read_chains<B: Backend>(
     State(store): State<Arc<Store<B>>>,
-    Auth(session): Auth,
+    ChainReader(row): ChainReader,
     request: Body,
 ) -> Result<Response, ApiError> {
     let request: ChainsRequest = decode(&body(request).await?)?;
-    Ok(ok(&store.read_chains(session, request).await?))
+    Ok(ok(&store.read_chains_as(row, request).await?))
 }
 
 async fn challenge<B: Backend>(
     State(store): State<Arc<Store<B>>>,
-    Auth(session): Auth,
+    Enrolling(session, _): Enrolling,
 ) -> Result<Response, ApiError> {
     Ok(ok(&store.challenge(session).await?))
 }
@@ -344,6 +421,120 @@ async fn recovery<B: Backend>(
         )
         .await?;
     Ok(encoded(StatusCode::OK, Vec::new()))
+}
+
+fn empty() -> Response {
+    encoded(StatusCode::OK, Vec::new())
+}
+
+fn digest(text: &str) -> Result<Digest, ApiError> {
+    Digest::from_base64url(text)
+        .map_err(|_| refused("bad_request", "a digest isn't 43 characters of base64url"))
+}
+
+async fn device_authorize<B: Backend>(
+    State(state): State<AppState<B>>,
+) -> Result<Response, ApiError> {
+    let uri = format!("{}/device", state.accounts.origin().as_str());
+    Ok(ok(&state.store.authorize_device(&uri).await?))
+}
+
+async fn device_token<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let request: DeviceTokenRequest = decode(&body(request).await?)?;
+    Ok(ok(&store
+        .poll_device_token(request.device_code.as_str())
+        .await?))
+}
+
+async fn enroll<B: Backend>(
+    State(state): State<AppState<B>>,
+    Enrolling(session, hash): Enrolling,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let request: EnrollRequest = decode(&body(request).await?)?;
+    state
+        .store
+        .enroll_device(
+            session,
+            hash,
+            state.accounts.origin().as_str(),
+            request.enroll.0.to_bytes(),
+        )
+        .await?;
+    Ok(empty())
+}
+
+async fn devices<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store.devices(session).await?))
+}
+
+async fn end_device<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments(device): Segments<String>,
+) -> Result<Response, ApiError> {
+    store.end_device_sessions(session, id(&device)?).await?;
+    Ok(empty())
+}
+
+async fn post_approval_request<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    request: Body,
+) -> Result<Response, ApiError> {
+    store
+        .post_approval_request(session, body(request).await?)
+        .await?;
+    Ok(empty())
+}
+
+async fn approval_requests<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store.own_approval_requests(session).await?))
+}
+
+async fn post_offer<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let request: OfferRequest = decode(&body(request).await?)?;
+    store.post_offer(session, request.offer.0).await?;
+    Ok(empty())
+}
+
+async fn offers<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store.offers(session).await?))
+}
+
+async fn reveal<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments(offer): Segments<String>,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let request: RevealBody = decode(&body(request).await?)?;
+    store.reveal(session, digest(&offer)?, request.nc).await?;
+    Ok(empty())
+}
+
+async fn read_reveal<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments(offer): Segments<String>,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store.read_reveal(session, digest(&offer)?).await?))
 }
 
 async fn not_found() -> ApiError {
@@ -383,6 +574,22 @@ pub fn router<B: Backend>(state: AppState<B>) -> Router {
         .route("/v2/accounts/chain", post(append_chain::<B>))
         .route("/v2/accounts/chains", post(read_chains::<B>))
         .route("/v2/devices/challenge", post(challenge::<B>))
+        .route("/v2/device/authorize", post(device_authorize::<B>))
+        .route("/v2/device/token", post(device_token::<B>))
+        .route("/v2/devices", get(devices::<B>).post(enroll::<B>))
+        .route(
+            "/v2/devices/{device}",
+            axum::routing::delete(end_device::<B>),
+        )
+        .route(
+            "/v2/approval-requests",
+            get(approval_requests::<B>).post(post_approval_request::<B>),
+        )
+        .route("/v2/approvals", get(offers::<B>).post(post_offer::<B>))
+        .route(
+            "/v2/approvals/{offer}/reveal",
+            get(read_reveal::<B>).post(reveal::<B>),
+        )
         .route("/v2/recovery", post(recovery::<B>))
         .merge(crate::accounts::routes::<B>())
         .route(
@@ -391,6 +598,8 @@ pub fn router<B: Backend>(state: AppState<B>) -> Router {
         )
         .route("/v2/workspaces/{w}/policy", get(policy::<B>))
         .route("/v2/workspaces/{w}/keys", get(keys::<B>))
+        .route("/v2/workspaces/{w}/keys/current", get(current_keys::<B>))
+        .route("/v2/workspaces/{w}/domains/{d}/rewrap", post(rewrap::<B>))
         .route("/v2/workspaces/{w}/ops", post(push::<B>))
         .route("/v2/workspaces/{w}/pull", post(pull::<B>))
         .route(

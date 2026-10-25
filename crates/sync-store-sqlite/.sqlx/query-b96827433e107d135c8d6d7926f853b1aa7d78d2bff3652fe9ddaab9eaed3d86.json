@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO key_entries\n                 (workspace, key_seq, record_type, domain, epoch, recipient, record)\n             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "b96827433e107d135c8d6d7926f853b1aa7d78d2bff3652fe9ddaab9eaed3d86"
+}

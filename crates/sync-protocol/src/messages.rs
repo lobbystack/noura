@@ -464,8 +464,10 @@ crate::wire_struct! {
 
 crate::wire_struct! {
     /// A re-wrap request in the key stream: a device asks for a new
-    /// envelope of an epoch.
+    /// envelope of a domain's epoch.
     pub struct RewrapRequest {
+        /// The domain.
+        pub domain: Id,
         /// The requesting device.
         pub device: Id,
         /// The epoch.
@@ -769,6 +771,9 @@ crate::wire_struct! {
     pub struct DeviceTokenResponse {
         /// The session token's 43 characters.
         pub session_token: Text,
+        /// The account the person who approved the code signed in to, which
+        /// the device's card names.
+        pub account: Id,
     }
 }
 
@@ -853,6 +858,78 @@ crate::wire_struct! {
         pub invite_proof: Option<Digest>,
         /// The workspace a reset asks to be accepted in.
         pub workspace: Option<Id>,
+    }
+}
+
+/// What an approval request asks for (§10, §26).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestTarget {
+    /// The account's own new device: no invitation, no workspace and no
+    /// account head. Only these reach `GET /v2/approval-requests`.
+    OwnDevice,
+    /// An invited account's device, with the invitation, its proof and the
+    /// candidate's account head.
+    Invitation,
+    /// A reset account's device asking a workspace to accept it, with the
+    /// candidate's account head.
+    Reset,
+}
+
+/// Why the server refuses an approval request's shape with `bad_request`
+/// (§26).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestShapeError {
+    /// It names both an invitation and a workspace.
+    InvitationAndWorkspace,
+    /// It carries an invitation proof without its invitation, or an
+    /// invitation without its proof.
+    ProofWithoutInvitation,
+    /// It names neither but carries an account head.
+    OwnDeviceWithHead,
+    /// It names an invitation or a workspace without the candidate's
+    /// account head.
+    MissingHead,
+}
+
+impl RequestShapeError {
+    /// What the refusal says.
+    pub fn message(&self) -> &'static str {
+        match self {
+            RequestShapeError::InvitationAndWorkspace => {
+                "a request names at most one of an invitation and a workspace"
+            }
+            RequestShapeError::ProofWithoutInvitation => {
+                "an invitation proof comes with its invitation"
+            }
+            RequestShapeError::OwnDeviceWithHead => {
+                "a request of the account's own device carries no account head"
+            }
+            RequestShapeError::MissingHead => {
+                "an invitation or reset request carries the candidate's account head"
+            }
+        }
+    }
+}
+
+impl ApprovalRequest {
+    /// What the request asks for, or why its shape gets `bad_request`: it
+    /// names at most one of an invitation and a workspace, an invitation
+    /// comes with its proof, and only a request that names one of them
+    /// carries the candidate's account head (§10, §26).
+    pub fn target(&self) -> Result<RequestTarget, RequestShapeError> {
+        if self.invitation.is_some() && self.workspace.is_some() {
+            return Err(RequestShapeError::InvitationAndWorkspace);
+        }
+        if self.invite_proof.is_some() != self.invitation.is_some() {
+            return Err(RequestShapeError::ProofWithoutInvitation);
+        }
+        match (self.invitation, self.workspace, &self.account) {
+            (None, None, None) => Ok(RequestTarget::OwnDevice),
+            (None, None, Some(_)) => Err(RequestShapeError::OwnDeviceWithHead),
+            (_, _, None) => Err(RequestShapeError::MissingHead),
+            (Some(_), _, Some(_)) => Ok(RequestTarget::Invitation),
+            (None, Some(_), Some(_)) => Ok(RequestTarget::Reset),
+        }
     }
 }
 

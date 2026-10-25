@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT wrapper, key_seq FROM rewrap_answers\n             WHERE workspace = $1 AND domain = $2 AND epoch = $3 AND device = $4\n             ORDER BY key_seq",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "wrapper",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "rewrap_answers",
+            "name": "wrapper"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "key_seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rewrap_answers",
+            "name": "key_seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Int8",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "06f578d451e05f97e57d6692ac32b1db3275c36bfc1405aab39c3561d199e83e"
+}
