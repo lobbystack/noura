@@ -143,6 +143,70 @@ fn a_run_lists_the_tool_calls_and_carries_their_results_to_the_model() {
     assert!(line.ends_with("calls [] text hi"), "{line}");
 }
 
+#[test]
+fn a_call_to_a_workspace_tool_the_run_didn_t_offer_fails_without_a_prompt() {
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app_with(FakeSystem::new());
+    let provider = FakeProvider::new();
+    app.set_ai_client(provider.clone());
+    let Some(_tasks) = tasks::with_tasks(&mut app) else {
+        return;
+    };
+    let Some(probe) = plugins::folder_for(
+        "probe_plugin",
+        "chatter",
+        &["name = \"views\"", "name = \"ai\""],
+    ) else {
+        return;
+    };
+    plugins::install_and_enable(&mut app, probe.path(), "chatter");
+    let id = app
+        .save_ai_provider(ai::provider("Local", "ollama", "llama3", None))
+        .unwrap();
+    app.grant_ai_consent(&id).unwrap();
+
+    // The probe offers the model no tool, and the model asks for the
+    // Tasks plugin's anyway.
+    let created = press(&mut app, "ai:create-chat");
+    let chat = id_after(&created[0], "hello ai chat ").to_owned();
+    let sent = press(&mut app, &format!("ai:send:{chat}:{id}:Add a task"));
+    let run = id_after(&sent[0], "hello ai run ").to_owned();
+    plugins::wait_until(&mut app, "the request leaves", |_| {
+        provider.requests().len() == 1
+    });
+    assert!(provider.requests()[0].tools.is_empty());
+    provider.call_tools(
+        0,
+        vec![AiToolCall {
+            call_id: "call_1".into(),
+            name: "tasks__create".into(),
+            arguments: serde_json::json!({ "title": "Water the tomatoes" }),
+        }],
+    );
+    let completed = format!("hello ai run {run} RunStatus::Completed message");
+    let mut line = String::new();
+    for _ in 0..200 {
+        line = press(&mut app, &format!("ai:read-run:{run}"))
+            .pop()
+            .unwrap_or_default();
+        if line.starts_with(&completed) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(line.contains("calls [call_1=tasks__create("), "{line}");
+
+    press(&mut app, &format!("ai:run-tools:{run}"));
+    assert_eq!(app.ai_tool_prompt(), None, "Noura asks about nothing");
+    let result = ai::tool_result(&mut app, &fixture.root, "call_1");
+    assert_eq!(result["error"]["code"], "tool-not-found", "{result}");
+    plugins::wait_until(&mut app, "the model hears so", |_| {
+        provider.requests().len() == 2
+    });
+    assert_eq!(app.ai_tool_prompt(), None);
+    assert!(!fixture.exists("tasks/Water the tomatoes.md"));
+}
+
 /// The Tasks plugin and the AI plugin on, with the provider Local allowed
 /// for the workspace. The app comes first, so it closes before its
 /// folders go.

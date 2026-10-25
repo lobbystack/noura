@@ -60,10 +60,12 @@ pub(super) fn instructions(engine: &WorkspaceEngine) -> String {
 /// instructions, then the chat's messages oldest first.
 ///
 /// The newest context summary stands in for the messages up to the one it
-/// names. After your last message, only the messages of `run` count, so a
-/// resumed run answers that message again. A tool call goes only with its
-/// result, and a result only with its call. Messages in progress, failed
-/// or interrupted answers and empty messages stay out.
+/// names. After your last message, only the messages of `run` count, and
+/// the tool calls and results of the runs before it, so a resumed run
+/// answers that message again and knows what already ran. A tool call goes
+/// only with its result, and a result only with its call: the same run,
+/// call ID and tool name. Messages in progress, failed or interrupted
+/// answers and empty messages stay out.
 pub(super) fn request(
     instructions: &str,
     messages: &[ChatMessage],
@@ -80,10 +82,10 @@ pub(super) fn request(
 }
 
 /// The messages a summary would cover: those before your last message,
-/// after the newest summary. Returns the ID of the
-/// last of them, which the summary names, and the request that asks for
-/// the summary. None when nothing before your last message is left to
-/// summarize.
+/// after the newest summary. Returns the ID of the last of them, which the
+/// summary names, and the request that asks for the summary. None when
+/// nothing before your last message is left to summarize, as when a
+/// summary written after that message covers them all already.
 pub(super) fn summary_request(
     instructions: &str,
     messages: &[ChatMessage],
@@ -91,10 +93,15 @@ pub(super) fn summary_request(
     let last_user = messages
         .iter()
         .rposition(|message| message.kind == ChatMessageKind::User)?;
-    let earlier = &messages[..last_user];
-    let through = earlier.last()?.id.clone();
-    let (summary, rest) = summarized(earlier);
-    let covered = conversation(rest, "", None);
+    let through = messages[..last_user].last()?.id.clone();
+    // The newest summary may come after your last message, as when an
+    // earlier step of the same answer wrote it.
+    let (summary, rest) = summarized(messages);
+    let start = messages.len() - rest.len();
+    let earlier = rest
+        .get(..last_user.saturating_sub(start))
+        .unwrap_or_default();
+    let covered = conversation(earlier, "", None);
     if covered.is_empty() {
         return None;
     }
@@ -142,7 +149,11 @@ fn conversation(
         message.id != answering
             && message.kind != ChatMessageKind::ContextSummary
             && (run.is_none_or(|run| message.run_id == run)
-                || last_user.is_none_or(|last| index <= last))
+                || last_user.is_none_or(|last| index <= last)
+                || matches!(
+                    message.kind,
+                    ChatMessageKind::ToolCall | ChatMessageKind::ToolResult
+                ))
     };
     let kept: Vec<&ChatMessage> = messages
         .iter()
@@ -150,16 +161,14 @@ fn conversation(
         .filter(|(index, message)| counts(*index, message))
         .map(|(_, message)| message)
         .collect();
-    let calls: Vec<&str> = kept
-        .iter()
-        .filter(|message| message.kind == ChatMessageKind::ToolCall)
-        .filter_map(|message| message.tool_call_id.as_deref())
-        .collect();
-    let results: Vec<&str> = kept
-        .iter()
-        .filter(|message| message.kind == ChatMessageKind::ToolResult)
-        .filter_map(|message| message.tool_call_id.as_deref())
-        .collect();
+    let pairs = |kind: ChatMessageKind| -> Vec<(&str, &str, &str)> {
+        kept.iter()
+            .filter(|message| message.kind == kind)
+            .filter_map(|message| pair_key(message))
+            .collect()
+    };
+    let calls = pairs(ChatMessageKind::ToolCall);
+    let results = pairs(ChatMessageKind::ToolResult);
     let mut transport: Vec<AiTransportMessage> = Vec::new();
     for message in kept {
         match message.kind {
@@ -181,7 +190,7 @@ fn conversation(
                 else {
                     continue;
                 };
-                if !results.contains(&call_id.as_str()) {
+                if !pair_key(message).is_some_and(|key| results.contains(&key)) {
                     continue;
                 }
                 let arguments =
@@ -205,7 +214,7 @@ fn conversation(
                 let Some(call_id) = &message.tool_call_id else {
                     continue;
                 };
-                if !calls.contains(&call_id.as_str()) {
+                if !pair_key(message).is_some_and(|key| calls.contains(&key)) {
                     continue;
                 }
                 transport.push(AiTransportMessage {
@@ -221,6 +230,16 @@ fn conversation(
         }
     }
     transport
+}
+
+/// What pairs a tool call with its result: the run, the call ID and the
+/// tool name.
+fn pair_key(message: &ChatMessage) -> Option<(&str, &str, &str)> {
+    Some((
+        message.run_id.as_str(),
+        message.tool_call_id.as_deref()?,
+        message.tool_name.as_deref()?,
+    ))
 }
 
 /// The size of `request` in characters, as [`estimate`] counts them.
@@ -377,6 +396,76 @@ mod tests {
         assert_eq!(
             lines(&request("Be kind.", &messages, "", "run_2")),
             ["system: Be kind.", "user: Plan", "assistant: Again"]
+        );
+    }
+
+    #[test]
+    fn a_resumed_run_knows_the_calls_that_ran_before_it() {
+        let tool = |id: &str, run: &str, kind: ChatMessageKind, call: &str| {
+            let mut message = message(id, run, kind, "{}");
+            message.tool_call_id = Some(call.to_owned());
+            message
+        };
+        let mut waiting = tool("c", "run_1", ChatMessageKind::ToolCall, "call_2");
+        waiting.status = ChatMessageStatus::Interrupted;
+        let mut stopped = message("e", "run_1", ChatMessageKind::Assistant, "Part");
+        stopped.status = ChatMessageStatus::Interrupted;
+        let messages = [
+            message("u", "run_1", ChatMessageKind::User, "Plan"),
+            tool("a", "run_1", ChatMessageKind::ToolCall, "call_1"),
+            tool("b", "run_1", ChatMessageKind::ToolResult, "call_1"),
+            waiting,
+            // The same call ID and tool name, from another run.
+            tool("d", "run_3", ChatMessageKind::ToolResult, "call_2"),
+            stopped,
+        ];
+
+        assert_eq!(
+            lines(&request("Be kind.", &messages, "", "run_2")),
+            [
+                "system: Be kind.",
+                "user: Plan",
+                "assistant: call call_1",
+                "tool: result call_1"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_summary_written_after_your_last_message_leaves_nothing_more_to_summarize() {
+        let mut summary = message("s", "run_2", ChatMessageKind::ContextSummary, "We planned.");
+        summary.summarizes_through_message_id = Some("a".to_owned());
+        let mut call = message("c", "run_2", ChatMessageKind::ToolCall, "{}");
+        call.tool_call_id = Some("call_1".to_owned());
+        let mut result = message("r", "run_2", ChatMessageKind::ToolResult, "{}");
+        result.tool_call_id = Some("call_1".to_owned());
+        let mut messages = vec![
+            message("u", "run_1", ChatMessageKind::User, "Plan"),
+            message("a", "run_1", ChatMessageKind::Assistant, "Planned"),
+            message("v", "run_2", ChatMessageKind::User, "Next"),
+            summary,
+            call,
+            result,
+        ];
+
+        assert_eq!(summary_request("Be kind.", &messages), None);
+
+        // Your next message leaves more to cover after the summary.
+        messages.push(message("w", "run_2", ChatMessageKind::Assistant, "Done"));
+        messages.push(message("x", "run_3", ChatMessageKind::User, "And then?"));
+        let (through, asked) = summary_request("Be kind.", &messages).unwrap();
+        assert_eq!(through, "w");
+        assert_eq!(
+            lines(&asked),
+            [
+                "system: Be kind.".to_owned(),
+                "system: ## Summary of the earlier conversation\nWe planned.".to_owned(),
+                "user: Next".to_owned(),
+                "assistant: call call_1".to_owned(),
+                "tool: result call_1".to_owned(),
+                "assistant: Done".to_owned(),
+                format!("user: {SUMMARY_REQUEST}"),
+            ]
         );
     }
 

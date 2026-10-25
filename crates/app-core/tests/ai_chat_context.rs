@@ -9,6 +9,7 @@ mod support;
 use std::sync::Arc;
 
 use app_core::App;
+use local_core::AiToolCall;
 use support::{
     FakeSystem, Fixture,
     ai::{self, FakeProvider},
@@ -173,4 +174,74 @@ fn a_chat_that_outgrows_the_context_window_sends_a_summary_in_place_of_its_earli
             "user: d".to_owned()
         ]
     );
+}
+
+#[test]
+fn a_tool_round_after_a_summary_asks_for_no_second_summary() {
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app_with(FakeSystem::new());
+    let provider = FakeProvider::new();
+    let Some(probe) = plugins::folder_for(
+        "probe_plugin",
+        "echoer",
+        &["name = \"views\"", "name = \"tools\""],
+    ) else {
+        return;
+    };
+    plugins::install_and_enable(&mut app, probe.path(), "echoer");
+    let Some(_chat) = ai::with_ai(&mut app, &provider) else {
+        return;
+    };
+    let mut input = ai::provider("Local", "ollama", "llama3", None);
+    input.context_window = Some(300);
+    let id = app.save_ai_provider(input).unwrap();
+    app.grant_ai_consent(&id).unwrap();
+    support::settle(&mut app);
+    ai::chat_once(&mut app, &provider, &id, &"a".repeat(100), &"b".repeat(200));
+
+    // A message that doesn't fit even after the summary.
+    let long = "c".repeat(1200);
+    ai::send(&mut app, &long, &id);
+    ai::wait_until(&mut app, "the summary is asked for", |_| {
+        provider.requests().len() == 2
+    });
+    provider.say(1, "You asked about a, and I answered b.");
+    provider.finish(1);
+    ai::wait_until(&mut app, "the answer is asked for", |_| {
+        provider.requests().len() == 3
+    });
+    provider.call_tools(
+        2,
+        vec![AiToolCall {
+            call_id: "call_1".into(),
+            name: "echoer__echo".into(),
+            arguments: serde_json::json!({ "text": "hi" }),
+        }],
+    );
+    let prompt = ai::tool_prompt(&mut app);
+    app.answer_ai_tool(&prompt, true);
+
+    // The next request answers, with the summary it has.
+    ai::wait_until(&mut app, "the next request leaves", |_| {
+        provider.requests().len() == 4
+    });
+    let next = provider.requests()[3].clone();
+    assert_eq!(
+        next.system[1],
+        "## Summary of the earlier conversation\nYou asked about a, and I answered b."
+    );
+    assert_eq!(next.messages[0], format!("user: {long}"));
+    assert!(
+        next.messages[2].starts_with("tool: result call_1"),
+        "{:?}",
+        next.messages
+    );
+    assert_eq!(next.tools, ["echoer__echo"]);
+    let summaries = ai::message_files(&fixture.root)
+        .into_iter()
+        .filter(|text| ai::frontmatter(text, "kind").as_deref() == Some("context-summary"))
+        .count();
+    assert_eq!(summaries, 1);
+    drop(app);
+    drop(probe);
 }

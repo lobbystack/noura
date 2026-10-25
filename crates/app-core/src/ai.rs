@@ -183,8 +183,9 @@ struct PendingCall {
     call: AiToolCall,
     /// Its tool-call message.
     message: Option<String>,
-    /// The registered tool it names, when a plugin on in the workspace
-    /// offered it when the call was handed over.
+    /// The registered tool it names, when the run offered it to the model
+    /// and a plugin on in the workspace still offered it when the call was
+    /// handed over.
     target: Option<Target>,
     /// Your answer to the prompt about it, once you gave one.
     answer: Option<bool>,
@@ -1645,7 +1646,7 @@ impl Ai {
                 Decision::Deny => Settled::Denied,
                 Decision::Unknown => Settled::Failed {
                     code: TOOL_NOT_FOUND,
-                    message: "No plugin on in this workspace offers this tool.".to_owned(),
+                    message: "This chat offers no tool by this name.".to_owned(),
                 },
                 Decision::Disabled => Settled::Disabled,
             };
@@ -1933,7 +1934,9 @@ impl Ai {
 }
 
 /// The tool calls of `run` for a round, each with the registered tool it
-/// names among `offered`, and that tool's plugin named as `names` says.
+/// names among `offered`, and that tool's plugin named as `names` says. A
+/// call names no tool unless the run offered it to the model, whatever
+/// else the workspace's plugins register.
 fn pending_calls(
     run: &Run,
     offered: &[crate::PluginTool],
@@ -1944,15 +1947,21 @@ fn pending_calls(
         .map(|call| PendingCall {
             call: call.clone(),
             message: run.tool_messages.get(&call.id).cloned(),
-            target: tools::find(&call.name, offered).map(|tool| Target {
-                plugin: tool.plugin_id.clone(),
-                plugin_name: names
-                    .get(&tool.plugin_id)
-                    .cloned()
-                    .unwrap_or_else(|| tool.plugin_id.clone()),
-                tool: tool.name.clone(),
-                description: tool.description.clone(),
-            }),
+            target: run
+                .tools
+                .iter()
+                .any(|tool| tool.name == call.name)
+                .then(|| tools::find(&call.name, offered))
+                .flatten()
+                .map(|tool| Target {
+                    plugin: tool.plugin_id.clone(),
+                    plugin_name: names
+                        .get(&tool.plugin_id)
+                        .cloned()
+                        .unwrap_or_else(|| tool.plugin_id.clone()),
+                    tool: tool.name.clone(),
+                    description: tool.description.clone(),
+                }),
             answer: None,
         })
         .collect()
@@ -1965,7 +1974,8 @@ enum Decision {
     /// You denied it or closed the prompt, the run stopped, or the
     /// workspace closed.
     Deny,
-    /// No plugin on in the workspace offers its tool.
+    /// The run didn't offer its tool, or no plugin on in the workspace
+    /// offers it.
     Unknown,
     /// A plugin the run relied on was turned off.
     Disabled,

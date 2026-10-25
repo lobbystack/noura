@@ -54,7 +54,7 @@ fn stops_mid_stream() {
     });
     let id = app.ai_providers()[0].id.clone();
     if mode == "tool" {
-        ai::send(&mut app, "Echo hi twice", &id);
+        ai::send(&mut app, "Echo hi three times", &id);
         ai::wait_until(&mut app, "the request leaves", |_| {
             provider.requests().len() == 1
         });
@@ -63,7 +63,7 @@ fn stops_mid_stream() {
             name: "echoer__echo".into(),
             arguments: serde_json::json!({ "text": "hi" }),
         };
-        provider.call_tools(0, vec![echo("call_1"), echo("call_2")]);
+        provider.call_tools(0, vec![echo("call_1"), echo("call_2"), echo("call_3")]);
         ai::tool_prompt(&mut app);
     } else {
         ai::send(&mut app, "Plan the garden", &id);
@@ -226,17 +226,21 @@ fn a_tool_call_reopens_as_completed_only_beside_its_own_result_and_never_runs_ag
     };
     stop_mid_stream(stopped.fixture.app_data.path(), "tool");
     let calls = stopped.messages("tool-call");
-    assert_eq!(calls.len(), 2);
+    assert_eq!(calls.len(), 3);
     assert!(stopped.messages("tool-result").is_empty());
     // As a crash just after Noura wrote a call's result leaves it: the
-    // first call's result names its run, its call and its tool, and the
-    // second's names another tool.
-    for (call, tool) in [("call_1", "echoer__echo"), ("call_2", "echoer__other")] {
+    // first call's result names its run, its call and its tool, the
+    // second's names another tool, and the third's another run.
+    for (call, tool, run) in [
+        ("call_1", "echoer__echo", None),
+        ("call_2", "echoer__other", None),
+        ("call_3", "echoer__echo", Some("run_other")),
+    ] {
         let text = calls
             .iter()
             .find(|text| ai::frontmatter(text, "tool_call_id").as_deref() == Some(call))
             .unwrap();
-        result_beside(&stopped.fixture.root, text, tool);
+        result_beside(&stopped.fixture.root, text, tool, run);
     }
 
     let provider = FakeProvider::new();
@@ -257,28 +261,36 @@ fn a_tool_call_reopens_as_completed_only_beside_its_own_result_and_never_runs_ag
     };
     assert_eq!(status("call_1").as_deref(), Some("completed"));
     assert_eq!(status("call_2").as_deref(), Some("interrupted"));
+    assert_eq!(status("call_3").as_deref(), Some("interrupted"));
     assert_eq!(app.ai_tool_prompt(), None, "Noura asks about nothing");
     assert_eq!(ai::buttons(&app), ["Resume"]);
     std::thread::sleep(Duration::from_millis(200));
     assert!(provider.requests().is_empty(), "nothing resumes by itself");
-    assert_eq!(stopped.messages("tool-result").len(), 2);
+    assert_eq!(stopped.messages("tool-result").len(), 3);
 
+    // The resumed request tells the model what already ran, so it doesn't
+    // ask for the first call again, and leaves out the calls without
+    // their own result.
     ai::press(&mut app, "resume");
     ai::wait_until(&mut app, "the request leaves", |_| {
         provider.requests().len() == 1
     });
-    let carried = provider.requests()[0].messages.clone();
-    assert_eq!(carried[0], "user: Echo hi twice");
-    assert!(
-        !carried.iter().any(|line| line.contains("call_2")),
-        "a call without its own result stays out: {carried:?}"
+    assert_eq!(
+        provider.requests()[0].messages,
+        [
+            "user: Echo hi three times",
+            "assistant: call call_1 echoer__echo {\"text\":\"hi\"}",
+            "tool: result call_1 {\"text\":\"hi\"}",
+        ]
     );
 }
 
 /// Write a completed result for the tool call `call`, a tool-call file's
-/// text, beside it in its chat, naming `tool`.
-fn result_beside(root: &Path, call: &str, tool: &str) {
+/// text, beside it in its chat, naming `tool`, and the run `run` when
+/// given, or the call's own.
+fn result_beside(root: &Path, call: &str, tool: &str, run: Option<&str>) {
     let field = |key: &str| ai::frontmatter(call, key).unwrap();
+    let run = run.map_or_else(|| field("run_id"), str::to_owned);
     let id = local_core::new_object_id("chat-message");
     let now = jiff::Timestamp::now().to_string();
     let text = format!(
@@ -288,7 +300,7 @@ fn result_beside(root: &Path, call: &str, tool: &str) {
          summarizes_through_message_id: null\ncreated: {now}\nupdated: {now}\n---\n\n\
          {{\"text\":\"hi\"}}\n",
         field("chat_id"),
-        field("run_id"),
+        run,
         field("tool_call_id"),
     );
     let folder = ai::chat_files(root)
