@@ -17,17 +17,29 @@ use workspace_format::{ObjectTypeRegistry, PropertySchema, RegistrationError, Wo
 use crate::PropertyProblem;
 
 /// The types the kernel keeps for itself. No plugin may register them.
-/// Tasks belong to the Tasks plugin and projects to the Projects plugin.
-/// Chats and chat messages move to the AI plugin with ticket 36.
-pub const KERNEL_TYPES: [&str; 4] = ["note", "workspace", "chat", "chat-message"];
+/// Tasks belong to the Tasks plugin, projects to the Projects plugin, and
+/// chats and their messages to the AI plugin.
+pub const KERNEL_TYPES: [&str; 2] = ["note", "workspace"];
 
 /// Types held for one plugin, by the plugin's ID, which no other plugin
 /// may register even while that one is off. Files of these types already
 /// fill workspaces, so a plugin that took one could rewrite every one of
-/// them. The Tasks plugin, which ships with Noura, holds tasks, and the
-/// Projects plugin holds projects; other plugins change them through
-/// their commands.
-pub const PLUGIN_TYPES: [(&str, &str); 2] = [("task", "tasks"), ("project", "projects")];
+/// them. The Tasks plugin, which ships with Noura, holds tasks, the
+/// Projects plugin holds projects, and the AI plugin chats and their
+/// messages; other plugins change them through their commands.
+pub const PLUGIN_TYPES: [(&str, &str); 4] = [
+    ("task", "tasks"),
+    ("project", "projects"),
+    ("chat", "ai"),
+    ("chat-message", "ai"),
+];
+
+/// Types whose files only a host service writes. The plugin that holds
+/// one reads its objects through the objects interface, but a create,
+/// update, move or delete there is refused: chats and their messages
+/// change through the `ai` interface, which checks the chat rules that
+/// tie a message to its chat, its folder and its kind.
+pub const SERVICE_WRITTEN_TYPES: [&str; 2] = ["chat", "chat-message"];
 
 /// The most types one plugin may register.
 const MAX_TYPES: usize = 64;

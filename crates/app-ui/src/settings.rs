@@ -30,6 +30,8 @@ pub(crate) struct SettingsView {
     return_focus: Option<Id>,
     /// The name being typed in Name and location, once you start typing.
     name: Option<String>,
+    /// The AI providers section.
+    ai: crate::ai::AiSettingsView,
     /// The release address being typed in Plugins.
     release_address: String,
 }
@@ -159,6 +161,7 @@ fn content(
         settings_section::PLUGINS => {
             crate::plugins::section(ui, app, picker, &mut view.release_address);
         }
+        settings_section::AI => crate::ai::settings(ui, app, &mut view.ai),
         settings_section::ABOUT => about(ui, app),
         settings_section::UPDATES => crate::updates::update_settings(ui, app),
         settings_section::AI_TOOLS => ai_tools(ui, app),

@@ -128,6 +128,9 @@ pub struct FakeSystem {
     pub calls: Mutex<Vec<String>>,
     hour: AtomicU8,
     now: Mutex<Option<jiff::Timestamp>>,
+    /// Keys the AI providers' settings save, in memory, so no test reaches
+    /// this computer's credential store.
+    pub credentials: Arc<app_core::MemoryCredentials>,
 }
 
 impl FakeSystem {
@@ -137,6 +140,7 @@ impl FakeSystem {
             calls: Mutex::new(Vec::new()),
             hour: AtomicU8::new(9),
             now: Mutex::new(None),
+            credentials: Arc::new(app_core::MemoryCredentials::new()),
         })
     }
 
@@ -220,6 +224,10 @@ impl System for FakeSystem {
 
     fn locale(&self) -> Option<String> {
         Some("en-US".to_owned())
+    }
+
+    fn credentials(&self) -> Arc<dyn app_core::CredentialStore> {
+        self.credentials.clone()
     }
 }
 

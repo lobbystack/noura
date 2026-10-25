@@ -774,6 +774,13 @@ fn envelope_frontmatter(object: &WorkspaceObject, leading: &[&str]) -> Result<St
     Ok(format!("---\n{yaml}---\n"))
 }
 
+/// Writes `entries` as a frontmatter block, in order, with its closing
+/// `---` line, as the managed-object envelope writes its own. Chats keep a
+/// key order of their own and write their frontmatter with this.
+pub fn frontmatter_block(entries: &[(&str, serde_json::Value)]) -> Result<String, FormatError> {
+    Ok(format!("---\n{}---\n", frontmatter_yaml(entries)?))
+}
+
 /// Writes frontmatter entries as a YAML mapping, in order, as libyaml writes
 /// it, with one exception.
 ///

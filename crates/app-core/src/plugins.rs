@@ -47,7 +47,7 @@ use plugin_host::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AppError, Workspace, plugin_objects::ObjectStore, session::WindowKey, store::JsonStore,
+    AppError, Workspace, ai::Ai, plugin_objects::ObjectStore, session::WindowKey, store::JsonStore,
 };
 use navigation::{Navigator, Openings};
 pub(crate) use navigation::{Opening, SystemClock};
@@ -517,6 +517,8 @@ pub(crate) struct Plugins {
     /// removes plugins and watches their folders, so this service leaves
     /// the library and the folders alone.
     agent: bool,
+    /// The AI service plugins that hold `ai` chat through.
+    ai: Option<Arc<Ai>>,
 }
 
 impl Plugins {
@@ -562,6 +564,7 @@ impl Plugins {
             wake: None,
             version: 0,
             agent: false,
+            ai: None,
         }
     }
 
@@ -574,6 +577,12 @@ impl Plugins {
             agent: true,
             ..Self::new(app_data)
         }
+    }
+
+    /// Let plugins that hold `ai` chat through `ai`, from the next start
+    /// on.
+    pub(crate) fn set_ai(&mut self, ai: Arc<Ai>) {
+        self.ai = Some(ai);
     }
 
     pub(crate) fn set_wake(&mut self, wake: Wake) {
@@ -855,6 +864,7 @@ impl Plugins {
             router: Arc::downgrade(&self.router),
             clock: self.clock.clone(),
             navigation: Some(navigation),
+            ai: self.ai.as_ref().map(|ai| ai.access(id)),
         };
         let plugin = host.start(&loaded, &record.approved, services);
         self.manifests
@@ -937,6 +947,28 @@ impl Plugins {
         }
     }
 
+    /// Read the release archive file `archive`, as `noura-plugin package`
+    /// writes it, for the install dialog, without running any of its code.
+    /// It goes through the same checks as a release downloaded from GitHub.
+    pub(crate) fn review_archive(&mut self, archive: &Path) -> PluginInstall {
+        let shown = archive.to_string_lossy().into_owned();
+        let Some(path) = archive.to_str() else {
+            return PluginInstall::refused(shown, false, AppError::unsupported_path().message);
+        };
+        let host = match self.host() {
+            Ok(host) => host,
+            Err(error) => return PluginInstall::refused(shown, false, error.message),
+        };
+        let bytes = match read_archive_file(archive) {
+            Ok(bytes) => bytes,
+            Err(problem) => return PluginInstall::refused(shown, false, problem),
+        };
+        match Archive::read(&bytes).and_then(|archive| host.inspect_archive(archive)) {
+            Ok(candidate) => PluginInstall::ready(path.to_owned(), false, candidate),
+            Err(error) => PluginInstall::refused(shown, false, error.message),
+        }
+    }
+
     /// Start reading the release at `address` on GitHub for the install
     /// dialog. An address that isn't a release on GitHub is refused at
     /// once, and nothing is fetched. Otherwise the dialog says the release
@@ -1005,8 +1037,12 @@ impl Plugins {
         let source = Some(install.source.as_str());
         if install.from_github {
             self.install_candidate(candidate, None, source, false)
-        } else {
+        } else if candidate.folder().is_some() {
             self.install_candidate(candidate, source, None, false)
+        } else {
+            // A release archive from a file holds one build, so there is
+            // no folder to watch and no release to check.
+            self.install_candidate(candidate, None, None, false)
         }
     }
 
@@ -1394,6 +1430,30 @@ impl Plugins {
         let called: Vec<String> = self.called.try_iter().collect();
         for id in called {
             self.acts += 1;
+            self.send(&id, Job::Redraw);
+        }
+        // A plugin's AI run wrote to its chat or streamed more of its
+        // answer.
+        let mut answered = self
+            .ai
+            .as_ref()
+            .map(|ai| ai.take_redraws())
+            .unwrap_or_default();
+        // The providers or your consent changed: every plugin that chats
+        // draws again.
+        if self
+            .ai
+            .as_ref()
+            .is_some_and(|ai| ai.take_settings_changed())
+        {
+            answered.extend(
+                self.running
+                    .iter()
+                    .filter(|(_, running)| Capability::holds(&running.plugin.granted(), "ai"))
+                    .map(|(id, _)| id.clone()),
+            );
+        }
+        for id in answered {
             self.send(&id, Job::Redraw);
         }
     }
@@ -2221,6 +2281,33 @@ fn from_install(error: &InstallError) -> AppError {
         "a plugin couldn't be installed or loaded"
     );
     AppError::new(error.code.as_str(), error.message.clone())
+}
+
+/// The bytes of the release archive file `archive`, refused past the size
+/// a release download may have.
+fn read_archive_file(archive: &Path) -> Result<Vec<u8>, String> {
+    let unreadable = |error: std::io::Error| {
+        tracing::warn!(%error, "a plugin archive file didn't read");
+        "Noura couldn't read the archive.".to_owned()
+    };
+    let too_large = || {
+        format!(
+            "The archive is larger than {} MB.",
+            plugin_host::MAX_ARCHIVE_BYTES >> 20
+        )
+    };
+    let file = std::fs::File::open(archive).map_err(unreadable)?;
+    let limit = plugin_host::MAX_ARCHIVE_BYTES as u64;
+    if file.metadata().map_err(unreadable)?.len() > limit {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::Read::take(file, limit + 1), &mut bytes)
+        .map_err(unreadable)?;
+    if bytes.len() as u64 > limit {
+        return Err(too_large());
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]

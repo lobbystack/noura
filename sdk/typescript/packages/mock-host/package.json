@@ -1,0 +1,36 @@
+{
+	"name": "@noura/mock-host",
+	"version": "0.1.0",
+	"description": "Runs a built Noura plugin in Node against a mock of Noura, for tests.",
+	"license": "MIT",
+	"type": "module",
+	"engines": {
+		"node": "^22.20.0 || ^24.12.0 || >=26"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist/"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/lobbystack/noura.git",
+		"directory": "sdk/typescript/packages/mock-host"
+	},
+	"scripts": {
+		"build": "tsc -p .",
+		"prepack": "npm run build"
+	},
+	"dependencies": {
+		"@bytecodealliance/jco": "1.39.0",
+		"@noura/plugin-cli": "0.1.0",
+		"yaml": "2.9.1"
+	},
+	"devDependencies": {
+		"@noura/plugin-types": "0.1.0"
+	}
+}

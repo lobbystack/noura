@@ -41,6 +41,8 @@ zeroize.workspace = true
 # The tests hold the PDF threads to watch the window draw meanwhile.
 app-core = { version = "0.2.0", path = "../app-core", features = ["test-hooks"] }
 egui_kittest.workspace = true
+# The fake AI provider streams an answer, then waits.
+futures.workspace = true
 # A test breaks the index to see search say it isn't available.
 rusqlite.workspace = true
 tempfile.workspace = true

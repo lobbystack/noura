@@ -1,0 +1,14 @@
+id = "{{id}}"
+name = "{{name}}"
+version = "0.1.0"
+interface-version = "0.1.0"
+entry = "dist/plugin.wasm"
+platforms = ["desktop"]
+
+# Counts the files in the workspace.
+[[capabilities]]
+name = "workspace-read"
+
+# Adds a page to the rail.
+[[capabilities]]
+name = "views"
