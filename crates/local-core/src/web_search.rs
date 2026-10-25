@@ -91,6 +91,12 @@ impl WebFoundation {
     }
 
     /// [`WebFoundation::open`] with the key in `credentials`.
+    ///
+    /// A file Noura can't read moves aside, to the same name with
+    /// `.unreadable` added, and Noura starts again without it: with no
+    /// key, or with no web consent, so web calls fail closed until you set
+    /// them up again. A file a newer version of Noura wrote stays where it
+    /// is, and opening fails.
     pub fn open_with(
         settings_path: impl AsRef<Path>,
         consent_path: impl AsRef<Path>,
@@ -98,27 +104,38 @@ impl WebFoundation {
     ) -> Result<Self> {
         let settings_path = settings_path.as_ref().to_owned();
         let consent_path = consent_path.as_ref().to_owned();
-        let settings: SettingsFile = read(&settings_path)?.unwrap_or_default();
-        if settings.version > SETTINGS_VERSION
-            || settings
-                .brave_search_key
-                .as_deref()
-                .is_some_and(|reference| !valid_reference(reference))
-        {
-            return Err(invalid());
-        }
-        let grants = match read::<ConsentFile>(&consent_path)? {
-            None => Vec::new(),
-            Some(file) if file.version == CONSENT_VERSION => file.grants,
-            Some(_) => return Err(invalid()),
+        let settings = match read::<SettingsFile>(&settings_path)? {
+            Read::Missing => SettingsFile::default(),
+            Read::Value(file) if file.version > SETTINGS_VERSION => return Err(invalid()),
+            Read::Value(file) if file.brave_search_key.as_deref().is_none_or(valid_reference) => {
+                file
+            }
+            Read::Value(_) | Read::Unreadable => {
+                set_aside(&settings_path)?;
+                SettingsFile::default()
+            }
         };
-        for grant in &grants {
-            validate(
-                &grant.workspace_id,
-                &grant.policy_version,
-                "web_consent_load",
-            )?;
-        }
+        let grants = match read::<ConsentFile>(&consent_path)? {
+            Read::Missing => Vec::new(),
+            Read::Value(file) if file.version > CONSENT_VERSION => return Err(invalid()),
+            Read::Value(file)
+                if file.version == CONSENT_VERSION
+                    && file.grants.iter().all(|grant| {
+                        validate(
+                            &grant.workspace_id,
+                            &grant.policy_version,
+                            "web_consent_load",
+                        )
+                        .is_ok()
+                    }) =>
+            {
+                file.grants
+            }
+            Read::Value(_) | Read::Unreadable => {
+                set_aside(&consent_path)?;
+                Vec::new()
+            }
+        };
         Ok(Self {
             settings_path,
             consent_path,
@@ -252,6 +269,13 @@ impl WebFoundation {
             .await
     }
 
+    /// Fail as a web call for the workspace `workspace_id` would without
+    /// the key or your consent, and succeed once both are there.
+    pub fn check_ready(&self, workspace_id: &str, policy_version: &str) -> Result<()> {
+        self.key_reference(workspace_id, policy_version, "web_access")
+            .map(|_| ())
+    }
+
     /// The web access boundary with a provider for your key, once the key
     /// and your consent for the workspace are both there. Without either,
     /// nothing reaches `client`.
@@ -262,6 +286,27 @@ impl WebFoundation {
         client: &dyn WebClient,
         operation: &str,
     ) -> Result<WebAccessService> {
+        let reference = self.key_reference(workspace_id, policy_version, operation)?;
+        let key = zeroize::Zeroizing::new(self.credentials.get(&reference)?);
+        let mut service = WebAccessService::new(self.limits)?;
+        service.configure(
+            WebAccessProviderConfig {
+                id: WEB_SEARCH_PROVIDER.to_owned(),
+                user_consent_granted: true,
+            },
+            client.provider(&key),
+        )?;
+        Ok(service)
+    }
+
+    /// The credential store's reference to the key, once the key and your
+    /// consent for the workspace are both there.
+    fn key_reference(
+        &self,
+        workspace_id: &str,
+        policy_version: &str,
+        operation: &str,
+    ) -> Result<String> {
         let reference = lock(&self.key).clone().ok_or_else(|| {
             CoreError::new(
                 "web_search_key_missing",
@@ -278,16 +323,7 @@ impl WebFoundation {
                 operation,
             ));
         }
-        let key = zeroize::Zeroizing::new(self.credentials.get(&reference)?);
-        let mut service = WebAccessService::new(self.limits)?;
-        service.configure(
-            WebAccessProviderConfig {
-                id: WEB_SEARCH_PROVIDER.to_owned(),
-                user_consent_granted: true,
-            },
-            client.provider(&key),
-        )?;
-        Ok(service)
+        Ok(reference)
     }
 
     fn write_settings(&self, reference: Option<&str>) -> Result<()> {
@@ -313,16 +349,34 @@ impl WebFoundation {
     }
 }
 
-/// The value the file at `path` holds, or none when there is no file.
-fn read<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Option<T>> {
+/// What reading a settings file found.
+enum Read<T> {
+    /// There is no file.
+    Missing,
+    Value(T),
+    /// The file holds something that isn't the value.
+    Unreadable,
+}
+
+/// What the file at `path` holds.
+fn read<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Read<T>> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Read::Missing),
         Err(_) => return Err(storage_error("web_settings_load")),
     };
-    serde_json::from_slice(&bytes)
-        .map(Some)
-        .map_err(|_| invalid())
+    Ok(serde_json::from_slice(&bytes).map_or(Read::Unreadable, Read::Value))
+}
+
+/// Move the unreadable file at `path` aside, to the same name with
+/// `.unreadable` added, in place of an earlier one.
+fn set_aside(path: &Path) -> Result<()> {
+    let mut aside = path.as_os_str().to_owned();
+    aside.push(".unreadable");
+    std::fs::rename(path, &aside).map_err(|_| storage_error("web_settings_load"))?;
+    let file = path.file_name().unwrap_or_default().to_string_lossy();
+    tracing::warn!(%file, "Noura set aside web search settings it couldn't read");
+    Ok(())
 }
 
 fn write(path: &Path, value: &impl Serialize) -> Result<()> {
@@ -513,11 +567,19 @@ mod tests {
         web.grant(A, POLICY).unwrap();
         let error = web.search(A, POLICY, &fake, query()).await.unwrap_err();
         assert_eq!(error.code, "web_search_key_missing");
+        assert_eq!(
+            web.check_ready(A, POLICY).unwrap_err().code,
+            "web_search_key_missing"
+        );
 
         web.revoke(A).unwrap();
         web.set_key(KEY).unwrap();
         let error = web.search(A, POLICY, &fake, query()).await.unwrap_err();
         assert_eq!(error.code, "web_consent_required");
+        assert_eq!(
+            web.check_ready(A, POLICY).unwrap_err().code,
+            "web_consent_required"
+        );
         let error = web
             .fetch(
                 A,
@@ -534,6 +596,7 @@ mod tests {
         assert!(fake.searches.lock().unwrap().is_empty());
 
         web.grant(A, POLICY).unwrap();
+        web.check_ready(A, POLICY).unwrap();
         let found = web.search(A, POLICY, &fake, query()).await.unwrap();
         assert_eq!(found.results[0].title, "Tomatoes");
         assert_eq!(*fake.keys.lock().unwrap(), [KEY.to_owned()]);
@@ -545,42 +608,72 @@ mod tests {
         assert_eq!(fake.searches.lock().unwrap().len(), 1);
     }
 
+    /// A file Noura can't read moves aside and Noura starts again without
+    /// it, so web calls fail closed until you set them up again. A file
+    /// from a newer version stays, and opening fails without its contents.
     #[test]
-    fn malformed_settings_fail_without_their_contents() {
-        for (file, text) in [
-            ("ai/web.json", "not json BSA-secret"),
+    fn unreadable_settings_move_aside_and_newer_ones_stay() {
+        for (file, text, opens) in [
+            ("ai/web.json", "not json BSA-secret", true),
             (
                 "ai/web.json",
                 r#"{"version":1,"braveSearchKey":"BSA-secret"}"#,
+                true,
             ),
             (
                 "ai/web-consents.json",
                 r#"{"version":1,"grants":[{"workspaceId":"../x","providerId":"brave-search","policyVersion":"1","grantedAt":"t"}]}"#,
+                true,
             ),
-            ("ai/web-consents.json", r#"{"version":9,"grants":[]}"#),
+            ("ai/web-consents.json", "[BSA-secret", true),
+            ("ai/web-consents.json", r#"{"version":0,"grants":[]}"#, true),
+            ("ai/web.json", r#"{"version":9}"#, false),
+            (
+                "ai/web-consents.json",
+                r#"{"version":9,"grants":[]}"#,
+                false,
+            ),
         ] {
             let root = tempdir().unwrap();
             std::fs::create_dir_all(root.path().join("ai")).unwrap();
-            std::fs::write(root.path().join(file), text).unwrap();
+            let path = root.path().join(file);
+            std::fs::write(&path, text).unwrap();
+            let aside = root.path().join(format!("{file}.unreadable"));
 
-            let Err(error) = WebFoundation::open_with(
+            let opened = WebFoundation::open_with(
                 root.path().join("ai/web.json"),
                 root.path().join("ai/web-consents.json"),
                 Arc::new(MemoryCredentials::new()),
-            ) else {
-                panic!("{text} should be refused");
-            };
-
-            assert!(
-                matches!(
-                    error.code.as_str(),
-                    "web_settings_invalid" | "invalid_workspace_id"
-                ),
-                "{}",
-                error.code
             );
-            assert!(!error.message.contains("BSA-secret"));
-            assert!(error.details.is_none());
+
+            match opened {
+                Ok(foundation) => {
+                    assert!(opens, "{text} should stay where it is");
+                    assert!(!path.exists(), "{text}");
+                    assert_eq!(std::fs::read_to_string(&aside).unwrap(), text);
+                    assert!(!foundation.has_key(), "{text}");
+                    assert_eq!(foundation.consent(A, POLICY).unwrap(), None, "{text}");
+                    // The next change writes a fresh file.
+                    foundation.grant(A, POLICY).unwrap();
+                    foundation.set_key("BSA-new").unwrap();
+                    let reopened = WebFoundation::open_with(
+                        root.path().join("ai/web.json"),
+                        root.path().join("ai/web-consents.json"),
+                        Arc::new(MemoryCredentials::new()),
+                    )
+                    .unwrap();
+                    assert!(reopened.has_key());
+                    assert!(reopened.consent(A, POLICY).unwrap().is_some());
+                }
+                Err(error) => {
+                    assert!(!opens, "{text} should move aside: {}", error.code);
+                    assert_eq!(error.code, "web_settings_invalid");
+                    assert!(!error.message.contains("BSA-secret"));
+                    assert!(error.details.is_none());
+                    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+                    assert!(!aside.exists());
+                }
+            }
         }
     }
 }
