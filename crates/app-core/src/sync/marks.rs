@@ -104,6 +104,10 @@ impl Mark {
         else {
             return Ok(None);
         };
+        // A store that can't delete leaves an empty item.
+        if text.is_empty() {
+            return Ok(None);
+        }
         serde_json::from_str(&text)
             .map(Some)
             .map_err(|_| SyncError::Invalid("the stored sync mark doesn't parse".into()))

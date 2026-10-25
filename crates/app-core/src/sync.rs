@@ -974,9 +974,28 @@ impl SyncService {
                     (Some(_), false) => RecoveryStage::Review,
                     (Some(_), true) => RecoveryStage::Removing,
                 };
-                policy
+                if policy
                     .recovery_anchor(&own, &self.credentials.reference_head, stage)
-                    .ok_or(SyncError::Check("sync_workspace_unverified"))?;
+                    .is_none()
+                {
+                    // The policy head in the credential store's mark anchors
+                    // a workspace the device trusted before, also once the
+                    // sibling whose change it trusted is gone (§8, §15): the
+                    // hash chain fixes the prefix up to it.
+                    let mark = marks::Mark::read(
+                        &*self.secrets,
+                        &self.credentials.keys.device(),
+                        &workspace,
+                    )?;
+                    let anchored = mark.is_some_and(|mark| {
+                        mark.policy_revision > 0
+                            && policy.change(mark.policy_revision).map(|c| c.digest())
+                                == Some(mark.policy_head)
+                    });
+                    if !anchored {
+                        return Err(SyncError::Check("sync_workspace_unverified"));
+                    }
+                }
                 let created = policy
                     .change(1)
                     .is_some_and(|genesis| genesis.body.signer == self.credentials.keys.device());
