@@ -124,6 +124,92 @@ fn a_cache_that_is_gone_compiles_again_on_load() {
     );
 }
 
+/// The app and the MCP server share one library. When both find the
+/// compiled code gone, as after an engine update, each compiles and caches
+/// it at once, and neither reads the other's half-written file.
+#[test]
+fn hosts_that_share_a_library_cache_the_same_code_at_once_and_each_runs_it() {
+    let Some(hello) = plugins::built("hello_plugin") else {
+        return;
+    };
+    let setup = Setup::new();
+    plugins::write_folder(
+        setup.folder.path(),
+        HELLO_MANIFEST,
+        "hello_plugin.wasm",
+        &hello,
+    );
+    let host = setup.host();
+    host.install(&host.inspect(setup.folder.path()).unwrap())
+        .unwrap();
+    drop(host);
+
+    for _ in 0..2 {
+        for file in setup.library_files() {
+            if file.ends_with(".cwasm") {
+                std::fs::remove_file(setup.library.path().join(file)).unwrap();
+            }
+        }
+        let loads: Vec<_> = (0..3)
+            .map(|_| {
+                let library = setup.library.path().to_owned();
+                std::thread::spawn(move || {
+                    let host = plugins::host(&library);
+                    let loaded = host.load("hello").expect("the plugin loads");
+                    let instance = host.start(
+                        &loaded,
+                        &loaded.manifest().capabilities,
+                        Services::default(),
+                    );
+                    instance.pages().unwrap()[0].title.clone()
+                })
+            })
+            .collect();
+        for load in loads {
+            assert_eq!(load.join().unwrap(), "Hello");
+        }
+        let files = setup.library_files();
+        assert_eq!(
+            files.iter().filter(|file| file.ends_with(".cwasm")).count(),
+            1,
+            "{files:?}"
+        );
+        assert!(
+            !files.iter().any(|file| file.contains(".work-")),
+            "{files:?}"
+        );
+        assert_eq!(
+            setup.host().load("hello").unwrap().source(),
+            CodeSource::Cache
+        );
+    }
+}
+
+#[test]
+fn a_start_removes_the_compiled_code_an_interrupted_cache_write_left() {
+    let Some(hello) = plugins::built("hello_plugin") else {
+        return;
+    };
+    let setup = Setup::new();
+    plugins::write_folder(
+        setup.folder.path(),
+        HELLO_MANIFEST,
+        "hello_plugin.wasm",
+        &hello,
+    );
+    let host = setup.host();
+    host.install(&host.inspect(setup.folder.path()).unwrap())
+        .unwrap();
+    drop(host);
+    let leftover = setup.library.path().join("hello/.work-1-1");
+    std::fs::write(&leftover, b"half of the code").unwrap();
+
+    let host = setup.host();
+
+    assert!(!leftover.exists());
+    assert_eq!(host.load("hello").unwrap().source(), CodeSource::Cache);
+}
+
 #[test]
 fn a_changed_component_compiles_again_and_runs_the_new_code() {
     let (Some(hello), Some(probe)) = (
