@@ -162,7 +162,9 @@ impl Capability {
             Self::Tools => whole("Offer tools that AI assistants can use."),
             Self::Ai => whole(
                 "Send your messages and chats to the AI providers you set up, once you consent \
-                 for this workspace, and keep the chats in your workspace.",
+                 for this workspace, and keep the chats in your workspace. Once you allow web \
+                 search for the workspace, search the web with Brave Search and read public web \
+                 pages when the AI asks to.",
             ),
         }
     }

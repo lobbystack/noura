@@ -6,7 +6,10 @@
 //! asks for it in a prompt it draws itself, keeps it on this device, and
 //! asks nothing before each call. A search or a page read fails closed,
 //! with nothing sent, until the key and the consent for the open
-//! workspace are both there. The requests go out from here through
+//! workspace are both there. Even then, a plugin's search or page read
+//! goes out only to answer a call its model made: a run the plugin sent
+//! completed asking for `web_search` with that query, or `web_fetch`
+//! with that address. The requests go out from here through
 //! `local-core`'s web access boundary, so the plugin opens no connection
 //! of its own, and nothing a plugin gets back holds the key or what Brave
 //! Search or a site answered.
@@ -24,14 +27,18 @@ use local_core::{
     BraveClient, CoreError, CredentialStore, WebClient, WebFetchInput, WebFoundation,
     WebSearchInput,
 };
-use plugin_host::{AiFailure, AiWebPage, AiWebResult};
+use plugin_host::{AiFailure, AiRunStatus, AiWebPage, AiWebResult};
 
 use super::{Ai, lock};
 use crate::AppError;
 
 /// The version of what Noura tells you before the AI searches the web.
 /// Consent holds for one version, so a new one asks again.
-pub const WEB_POLICY_VERSION: &str = "2026-10";
+pub const WEB_POLICY_VERSION: &str = "2026-10-24";
+
+/// The tools whose calls a plugin's web searches and page reads answer.
+const SEARCH_TOOL: &str = "web_search";
+const FETCH_TOOL: &str = "web_fetch";
 
 /// The name of the web search provider, as Noura shows it.
 pub const WEB_SEARCH_PROVIDER_NAME: &str = "Brave Search";
@@ -222,23 +229,22 @@ impl Ai {
             .is_ok_and(|store| store.has_key() && self.web_consented(store))
     }
 
+    /// Search the web for `query` for the plugin `plugin`, whose model
+    /// asked for that search.
     pub(super) fn web_search(
         &self,
+        plugin: &str,
         query: &str,
         max_results: Option<u32>,
     ) -> Result<Vec<AiWebResult>, AiFailure> {
-        let workspace = self.workspace().ok_or_else(no_workspace)?;
-        let store = self
-            .web
-            .store()
-            .map_err(|_| web_failure_code("web_settings_invalid"))?;
+        let (workspace, store) = self.web_call(plugin, SEARCH_TOOL, "query", query)?;
         let client = lock(&self.web.client).clone();
         let input = WebSearchInput {
             query: query.to_owned(),
             max_results: max_results.map(|count| usize::try_from(count).unwrap_or(usize::MAX)),
         };
         let found = self
-            .block_on(store.search(workspace.id(), WEB_POLICY_VERSION, client.as_ref(), input))
+            .block_on(store.search(&workspace, WEB_POLICY_VERSION, client.as_ref(), input))
             .map_err(|error| web_failure(&error))?;
         Ok(found
             .results
@@ -251,24 +257,70 @@ impl Ai {
             .collect())
     }
 
-    pub(super) fn web_fetch(&self, url: &str) -> Result<AiWebPage, AiFailure> {
-        let workspace = self.workspace().ok_or_else(no_workspace)?;
-        let store = self
-            .web
-            .store()
-            .map_err(|_| web_failure_code("web_settings_invalid"))?;
+    /// Read the page at `url` for the plugin `plugin`, whose model asked
+    /// to read it.
+    pub(super) fn web_fetch(&self, plugin: &str, url: &str) -> Result<AiWebPage, AiFailure> {
+        let (workspace, store) = self.web_call(plugin, FETCH_TOOL, "url", url)?;
         let client = lock(&self.web.client).clone();
         let input = WebFetchInput {
             url: url.to_owned(),
         };
         let page = self
-            .block_on(store.fetch(workspace.id(), WEB_POLICY_VERSION, client.as_ref(), input))
+            .block_on(store.fetch(&workspace, WEB_POLICY_VERSION, client.as_ref(), input))
             .map_err(|error| web_failure(&error))?;
         Ok(AiWebPage {
             url: page.url,
             content_type: page.content_type.unwrap_or_default(),
             text: page.content,
             truncated: page.truncated,
+        })
+    }
+
+    /// The open workspace's ID and the web settings, for a web call the
+    /// plugin `plugin` makes to answer its model's call to `tool` with
+    /// `argument` set to `value`. Without the key or your consent the call
+    /// fails as it always does, and a call that answers no call of the
+    /// model's fails with nothing sent.
+    fn web_call(
+        &self,
+        plugin: &str,
+        tool: &str,
+        argument: &str,
+        value: &str,
+    ) -> Result<(String, &WebFoundation), AiFailure> {
+        let workspace = self.workspace().ok_or_else(no_workspace)?.id().to_owned();
+        let store = self
+            .web
+            .store()
+            .map_err(|_| web_failure_code("web_settings_invalid"))?;
+        store
+            .check_ready(&workspace, WEB_POLICY_VERSION)
+            .map_err(|error| web_failure(&error))?;
+        if !self.model_asked(plugin, tool, argument, value) {
+            tracing::warn!(%plugin, %tool, "a plugin's web call answered no call of its model's");
+            return Err(web_failure_code("web_call_not_requested"));
+        }
+        Ok((workspace, store))
+    }
+
+    /// Whether a run the plugin `plugin` sent completed asking for `tool`
+    /// with `argument` set to `value`, so the call waits for its answer.
+    fn model_asked(&self, plugin: &str, tool: &str, argument: &str, value: &str) -> bool {
+        lock(&self.state).runs.values().any(|run| {
+            run.plugin == plugin
+                && run.status == AiRunStatus::Completed
+                && run.tool_calls.iter().any(|call| {
+                    call.name == tool
+                        && serde_json::from_str::<serde_json::Value>(&call.arguments)
+                            .ok()
+                            .and_then(|arguments| {
+                                arguments
+                                    .get(argument)?
+                                    .as_str()
+                                    .map(|asked| asked == value)
+                            })
+                            .unwrap_or(false)
+                })
         })
     }
 
@@ -321,6 +373,10 @@ fn web_message<'a>(code: &str, error: Option<&'a CoreError>) -> &'a str {
         }
         "web_consent_required" => {
             "Allow web search for this workspace in Settings, under Web search."
+        }
+        "web_call_not_requested" => {
+            "Noura searches the web or reads a page only when the model asks for that query or \
+             address."
         }
         "web_search_key_rejected" => {
             "Brave Search didn't accept the key. Check it in Settings, under Web search."

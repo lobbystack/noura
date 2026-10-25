@@ -112,7 +112,9 @@ pub mod navigation {
 /// to a provider, and no call returns a provider's key. Once you add a
 /// Brave Search key and allow web search for the workspace, `web_search`
 /// and `web_fetch` search the web and read pages for the model, and
-/// `web_ready` says whether they work.
+/// `web_ready` says whether they work. Each one answers a call the model
+/// made: a run of the plugin's completed with a `web_search` call for
+/// that query, or a `web_fetch` call for that address.
 ///
 /// ```no_run
 /// use plugin_sdk::ai::{self, Request, RunStatus};

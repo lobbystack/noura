@@ -101,6 +101,14 @@ fn the_key_field_hides_the_key_and_noura_s_prompt_names_brave_search_and_what_le
         ),
         "{said:?}"
     );
+    assert!(
+        said.contains(
+            &"Plugins you allowed to send chats to AI providers can then search the web in \
+              Garden too, when the AI asks them to."
+                .to_owned()
+        ),
+        "{said:?}"
+    );
     assert_eq!(focused(&harness).as_deref(), Some("Deny"));
 
     // Escape counts as Deny.

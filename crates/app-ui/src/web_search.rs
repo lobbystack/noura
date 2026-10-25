@@ -138,6 +138,11 @@ pub(crate) fn consent_prompt(ui: &mut Ui, app: &mut App, view: &mut WebConsentVi
                  this computer.",
                 prompt.workspace, prompt.provider_name
             ));
+            ui.label(format!(
+                "Plugins you allowed to send chats to AI providers can then search the web in {} \
+                 too, when the AI asks them to.",
+                prompt.workspace
+            ));
             muted(
                 ui,
                 "Noura doesn't ask again before each search. To take this back, open Settings, \

@@ -4,7 +4,9 @@
 //! workspace in Noura's own prompt, apart from a provider's consent.
 //! Until both are there, web calls fail closed and the fake web provider
 //! gets nothing. Once they are, the model's searches and page reads reach
-//! it, and the chat records each call and its sources. Revoking web
+//! it, and the chat records each call and its sources. A plugin's search
+//! or page read goes out only to answer a call its own model made, for
+//! the query or address the model named. Revoking web
 //! consent fails the next call and the chat goes on, and failures reach
 //! the chat as public errors without the key or what Brave Search
 //! answered.
@@ -19,7 +21,7 @@ use serde_json::{Value, json};
 use support::{
     FakeSystem, Fixture,
     ai::{self, FakeProvider},
-    plugins::PluginFolder,
+    plugins::{self, PluginFolder},
     web::{FakeWeb, FakeWebClient, RAW_WEB_FAILURE, WebCall},
 };
 
@@ -279,6 +281,146 @@ fn a_scripted_search_gets_titles_addresses_and_snippets_and_the_chat_records_eac
             ),
         ]
     );
+}
+
+/// Press the button `node` of the probe installed as `plugin`, and return
+/// the lines its `events` page added.
+fn press(app: &mut App, plugin: &str, node: &str) -> Vec<String> {
+    let events = format!("plugin:{plugin}:events");
+    let seen = plugins::texts(app, &events).unwrap().len();
+    app.press_plugin_button(&format!("plugin:{plugin}:hello"), node);
+    support::settle(app);
+    plugins::texts(app, &events).unwrap()[seen..].to_vec()
+}
+
+/// The probe plugin installed as `id`, holding `ai`.
+fn probe(app: &mut App, id: &str) -> Option<PluginFolder> {
+    let folder = plugins::folder_for("probe_plugin", id, &["name = \"views\"", "name = \"ai\""])?;
+    plugins::install_and_enable(app, folder.path(), id);
+    Some(folder)
+}
+
+/// A plugin holding `ai` can't use web search to send what it likes to a
+/// site of its choosing: Noura searches and reads pages only to answer a
+/// call the plugin's own model made, for the query or address it named.
+#[test]
+fn a_plugin_reaches_the_web_only_to_answer_its_own_models_call() {
+    let Some(mut chat) = Searching::new(READY) else {
+        return;
+    };
+    let (Some(_asker), Some(_other)) =
+        (probe(&mut chat.app, "asker"), probe(&mut chat.app, "other"))
+    else {
+        return;
+    };
+    let refused = |plugin: &str| {
+        format!(
+            "hello ai web-failed web_call_not_requested Noura searches the web or reads a page \
+             only when the model asks for that query or address. ({plugin})"
+        )
+    };
+    let shown = |lines: Vec<String>, plugin: &str| {
+        lines
+            .into_iter()
+            .map(|line| format!("{line} ({plugin})"))
+            .collect::<Vec<_>>()
+    };
+
+    // No model asked for anything yet.
+    for plugin in ["asker", "other"] {
+        assert_eq!(
+            shown(
+                press(&mut chat.app, plugin, "ai:web-search:tomato care"),
+                plugin
+            ),
+            [refused(plugin)]
+        );
+        assert_eq!(
+            shown(
+                press(
+                    &mut chat.app,
+                    plugin,
+                    "ai:web-fetch:https://collector.example.com/?chat=secret"
+                ),
+                plugin
+            ),
+            [refused(plugin)]
+        );
+    }
+
+    // The asker's model asks for a search.
+    let created = press(&mut chat.app, "asker", "ai:create-chat");
+    let id = created[0]
+        .strip_prefix("hello ai chat ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap()
+        .to_owned();
+    let provider = chat.id.clone();
+    let sent = press(
+        &mut chat.app,
+        "asker",
+        &format!("ai:send:{id}:{provider}:Find tomatoes"),
+    );
+    let run = sent[0]
+        .strip_prefix("hello ai run ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap()
+        .to_owned();
+    chat.requests(1);
+    chat.provider.call_tools(
+        0,
+        vec![AiToolCall {
+            call_id: "call_1".into(),
+            name: "web_search".into(),
+            arguments: search("tomato care"),
+        }],
+    );
+    let completed = format!("hello ai run {run} RunStatus::Completed");
+    let mut line = String::new();
+    for _ in 0..200 {
+        line = press(&mut chat.app, "asker", &format!("ai:read-run:{run}"))
+            .pop()
+            .unwrap_or_default();
+        if line.starts_with(&completed) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(line.starts_with(&completed), "{line}");
+
+    // Only the asker, and only for that query, reaches the web.
+    assert_eq!(
+        shown(
+            press(&mut chat.app, "other", "ai:web-search:tomato care"),
+            "other"
+        ),
+        [refused("other")]
+    );
+    assert_eq!(
+        shown(
+            press(&mut chat.app, "asker", "ai:web-search:tomato secrets"),
+            "asker"
+        ),
+        [refused("asker")]
+    );
+    assert_eq!(
+        shown(
+            press(
+                &mut chat.app,
+                "asker",
+                "ai:web-fetch:https://garden.example.com/tomatoes"
+            ),
+            "asker"
+        ),
+        [refused("asker")]
+    );
+    assert!(chat.web.calls().is_empty());
+    let found = press(&mut chat.app, "asker", "ai:web-search:tomato care");
+    assert!(
+        found[0].starts_with("hello ai web-result tomato care guide https://garden.example.com/"),
+        "{found:?}"
+    );
+    assert_eq!(chat.web.calls(), [WebCall::Search("tomato care".into())]);
 }
 
 #[test]

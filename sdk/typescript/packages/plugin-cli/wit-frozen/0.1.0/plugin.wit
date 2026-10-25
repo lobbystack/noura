@@ -249,6 +249,12 @@ interface navigation {
 // Brave Search key in Settings and allow web search for the workspace in
 // Noura's own prompt, which is a separate choice from a provider's
 // consent. Noura asks nothing per call.
+//
+// Noura sends a search or a page read only to answer the model. One of
+// the plugin's runs must have completed with a call to the `web_search`
+// tool whose `query` argument matches, or to `web_fetch` whose `url`
+// argument matches, and still wait for `answer-tools`. Any other call
+// fails with `web_call_not_requested`, and nothing leaves the device.
 interface ai {
   use types.{error};
 
@@ -464,9 +470,10 @@ interface ai {
     refused(error),
     // Noura or the web refused or failed. The code says why, such as
     // `web_search_key_missing`, `web_consent_required`,
-    // `web_search_key_rejected`, `web_search_rate_limited`,
-    // `web_url_not_https` or `web_url_unsafe_host`. The failure never
-    // holds the key or what Brave Search or the site answered.
+    // `web_call_not_requested`, `web_search_key_rejected`,
+    // `web_search_rate_limited`, `web_url_not_https` or
+    // `web_url_unsafe_host`. The failure never holds the key or what
+    // Brave Search or the site answered.
     failed(failure),
   }
 
@@ -477,15 +484,18 @@ interface ai {
 
   // Search the web with Brave Search for `query`, for at most
   // `max-results` results, from 1 to 10. Without a limit Noura asks for
-  // 10. Noura leaves out results without an `https` address.
+  // 10. Noura leaves out results without an `https` address. The query
+  // must be one the model asked for in a `web_search` call.
   web-search: func(query: string, max-results: option<u32>) -> result<list<web-result>, web-error>;
 
-  // Read the page at `url`, an `https` address on a public host. Noura
-  // follows up to three redirects, checks every address each host
-  // resolves to, and refuses a local or private address before it
-  // connects. It reads only HTML and plain text, up to 5 MiB, and cuts the
-  // text at 1 MiB. The time spent waiting doesn't count toward the call's
-  // deadline.
+  // Read the page at `url`, an `https` address on a public host that the
+  // model asked for in a `web_fetch` call. Noura follows up to three
+  // redirects, checks every address each host resolves to, and refuses a
+  // local or private address before it connects. It reads only HTML and
+  // plain text, up to 5 MiB, and cuts the text at 1 MiB. It gives up on a
+  // page after 15 seconds, turning it into text included, and refuses a
+  // page whose elements nest more than 1,024 deep. The time spent waiting
+  // doesn't count toward the call's deadline.
   web-fetch: func(url: string) -> result<web-page, web-error>;
 }
 

@@ -1252,11 +1252,11 @@ impl AiChats for Access {
         query: &str,
         max_results: Option<u32>,
     ) -> Result<Vec<plugin_host::AiWebResult>, AiFailure> {
-        self.ai.web_search(query, max_results)
+        self.ai.web_search(&self.plugin, query, max_results)
     }
 
     fn web_fetch(&self, url: &str) -> Result<plugin_host::AiWebPage, AiFailure> {
-        self.ai.web_fetch(url)
+        self.ai.web_fetch(&self.plugin, url)
     }
 }
 
