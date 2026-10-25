@@ -7,7 +7,7 @@
 //! beside an object of its own type. Every window shares the session's
 //! plugins service and shows what the plugins it runs add.
 
-use std::{ops::Range, path::PathBuf};
+use std::{ops::Range, path::PathBuf, sync::mpsc::TryRecvError};
 
 use jiff::{civil::Date, tz::TimeZone};
 use plugin_host::{Event, Naming, ViewKind, ViewNode, VirtualRow};
@@ -62,7 +62,69 @@ impl App {
     pub fn review_plugin_folder(&mut self, folder: PathBuf) {
         let review = self.session.plugins().review(&folder);
         self.plugin_install = Some(review);
+        self.plugin_download = None;
         self.listeners.emit(Change::Plugins);
+    }
+
+    /// Open the install dialog for the release at `address` on GitHub. An
+    /// address that isn't a release on GitHub is refused with a message,
+    /// and nothing is fetched. Otherwise the dialog shows the release as
+    /// downloading, then lists what the plugin declares, with a warning
+    /// that nobody reviewed it, once [`App::poll`] takes the download.
+    /// None of the plugin's code runs until you approve.
+    pub fn review_plugin_release(&mut self, address: &str) {
+        let (review, download) = self.session.plugins().review_release(address);
+        self.plugin_install = Some(review);
+        self.plugin_download = download;
+        self.listeners.emit(Change::Plugins);
+    }
+
+    /// Show the release that finished downloading in the install dialog.
+    fn poll_plugin_download(&mut self) -> bool {
+        let Some(download) = &self.plugin_download else {
+            return false;
+        };
+        let review = match download.try_recv() {
+            Ok(review) => review,
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) => {
+                let source = self
+                    .plugin_install
+                    .as_ref()
+                    .map(|install| install.source.clone())
+                    .unwrap_or_default();
+                PluginInstall::download_stopped(source)
+            }
+        };
+        self.plugin_download = None;
+        if self
+            .plugin_install
+            .as_ref()
+            .is_some_and(|install| install.downloading)
+        {
+            self.plugin_install = Some(review);
+        }
+        self.listeners.emit(Change::Plugins);
+        true
+    }
+
+    /// Check GitHub for a release of the plugin `id` newer than the one
+    /// installed. Its row says how the check went; a newer release waits
+    /// there until you install or decline it. Returns whether the check
+    /// started.
+    pub fn check_plugin_update(&mut self, id: &str) -> bool {
+        let started = self.session.plugins().check_update(id);
+        self.plugin_result(started, "Couldn't check for updates")
+    }
+
+    /// Download plugin releases through `transport` in place of the
+    /// network, as tests do with a stand-in for GitHub.
+    #[cfg(feature = "test-hooks")]
+    pub fn set_plugin_release_transport(
+        &mut self,
+        transport: std::sync::Arc<dyn local_core::WebTransport>,
+    ) {
+        self.session.plugins().set_release_transport(transport);
     }
 
     /// The install dialog, while it is open.
@@ -77,7 +139,7 @@ impl App {
         let Some(install) = self.plugin_install.clone() else {
             return false;
         };
-        if install.problem.is_some() {
+        if install.problem.is_some() || install.downloading {
             return false;
         }
         let installed = self.session.plugins().install(&install);
@@ -97,8 +159,10 @@ impl App {
         }
     }
 
-    /// Close the install dialog without installing anything.
+    /// Close the install dialog without installing anything. A download
+    /// still running is dropped when it ends.
     pub fn cancel_plugin_install(&mut self) {
+        self.plugin_download = None;
         if self.plugin_install.take().is_some() {
             self.listeners.emit(Change::Plugins);
         }
@@ -212,7 +276,8 @@ impl App {
     /// hasn't shown yet. Plugin calls run off the window's thread, so a
     /// slow or broken plugin never holds up a frame.
     pub fn is_plugin_work_pending(&self) -> bool {
-        self.session.plugins().is_working()
+        let plugins = self.session.plugins();
+        self.plugin_download.is_some() || plugins.is_working() || plugins.is_checking()
     }
 
     /// What the plugin page `page_id` shows: the view its plugin drew, or
@@ -566,6 +631,7 @@ impl App {
     /// Take new plugin builds and the running plugins' answers, and show
     /// what the plugins add when it changed. Returns whether anything did.
     pub(super) fn poll_plugins(&mut self) -> bool {
+        let downloaded = self.poll_plugin_download();
         let (version, pages, settings, acts, openings, working) = {
             let mut plugins = self.session.plugins();
             plugins.poll();
@@ -591,7 +657,7 @@ impl App {
         let opened = !openings.is_empty();
         if version == self.plugins_seen {
             self.open_for_plugins(openings);
-            return acted || opened;
+            return downloaded || acted || opened;
         }
         self.plugins_seen = version;
         self.show_plugin_pages(&pages);

@@ -114,6 +114,10 @@ pub use pdf::{
 };
 #[cfg(feature = "test-hooks")]
 pub use pdf::{PdfDrawFailure, PdfRenderHold};
+/// A stand-in for GitHub's release servers, for
+/// [`App::set_plugin_release_transport`].
+#[cfg(feature = "test-hooks")]
+pub use plugin_host::fake_github;
 pub use plugin_host::{
     CalendarMode, Check as PluginCheck, Choice, Column, ColumnPress, Event as PluginEvent, Field,
     Grant, Move as PluginMove, Naming as PluginNaming, SortOrder, Submission, Target,
@@ -121,7 +125,7 @@ pub use plugin_host::{
 };
 pub use plugin_inputs::{date_time_fields, date_time_value, date_value};
 pub use plugins::{
-    CapabilityLine, PluginInstall, PluginRow, PluginTool, PluginView, ShippedPlugin,
+    CapabilityLine, PluginInstall, PluginRow, PluginTool, PluginView, ShippedPlugin, UpdateCheck,
 };
 pub use preferences::{ACTUAL_SIZE, Appearance, LineWidth, Preferences, TextSize, ZOOM_LEVELS};
 pub use problems::Problem;

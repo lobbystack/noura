@@ -32,6 +32,8 @@ pub(crate) struct SettingsView {
     name: Option<String>,
     /// The AI providers section.
     ai: crate::ai::AiSettingsView,
+    /// The release address being typed in Plugins.
+    release_address: String,
 }
 
 /// Draw Settings while it is open in the window whose ID salt is
@@ -156,7 +158,9 @@ fn content(
         settings_section::EDITOR => editor(ui, app, spelling),
         settings_section::SHORTCUTS => crate::shortcuts::page(ui, app),
         settings_section::WORKSPACE => workspace(ui, app, view),
-        settings_section::PLUGINS => crate::plugins::section(ui, app, picker),
+        settings_section::PLUGINS => {
+            crate::plugins::section(ui, app, picker, &mut view.release_address);
+        }
         settings_section::AI => crate::ai::settings(ui, app, &mut view.ai),
         settings_section::ABOUT => about(ui, app),
         settings_section::UPDATES => crate::updates::update_settings(ui, app),

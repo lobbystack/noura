@@ -208,6 +208,10 @@ wasm-bindgen = "0.2.127"
 webauthn-rs = "0.5"
 x25519-dalek = "=2.0.1"
 js-sys = "0.3.104"
+# Reads plugin release archives. Without default features it reads stored
+# and deflated entries only, inflated by zlib-rs, with no encryption and no
+# other compression format. Pinned: 9.0 had four patch releases in a week.
+zip = { version = "=9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 # Line tables keep backtraces readable at a fraction of full debug info's disk
 # cost, which matters with several worktrees building at once.
