@@ -29,7 +29,9 @@ use sync_key_envelope::v2::unwrap;
 use sync_protocol::chain::{ChainFetcher, ChainRecord, ChainVerdict, ChainVerifier, Fetched};
 use sync_protocol::codec::{Bytes, Decode, Encode, Sorted, Text};
 use sync_protocol::crypto::{hash, random_nonce};
-use sync_protocol::keys::{LogJudge, key_matches, walk_lineage};
+use sync_protocol::keys::{
+    LogJudge, SkippedEpochRecord, judge_skipped_epoch_record, key_matches, walk_lineage,
+};
 use sync_protocol::live::{LiveOp, LiveSet};
 use sync_protocol::messages::{
     ChainConflictDetail, EntryRecord, MAX_BODY, Page, PageStatus, PullCursor, PushFailureDetail,
@@ -144,6 +146,12 @@ pub struct WorkspaceSync {
     matching: bool,
     /// The files those pulls carried, by revision, until the matching.
     cache: BTreeMap<Digest, Vec<u8>>,
+    /// The latest policy entry before an epoch entry the device hasn't
+    /// accepted yet, from the page that carried it (§9, Envelopes).
+    entry_hint: Option<u64>,
+    /// The log entries the device required before it sent the current
+    /// pull, which that pull's page owes.
+    armed: BTreeSet<(bool, u64)>,
 }
 
 impl std::fmt::Debug for WorkspaceSync {
@@ -274,6 +282,7 @@ impl WorkspaceSync {
                 last: BTreeMap::new(),
                 wanted: Vec::new(),
                 epoch_entries: 0,
+                skipped_rotators: BTreeMap::new(),
             },
             own: Own {
                 next,
@@ -289,6 +298,8 @@ impl WorkspaceSync {
             archived: Vec::new(),
             refused: Vec::new(),
             removal_hold: false,
+            ended_epochs: Vec::new(),
+            rewrite_epochs: Vec::new(),
         };
         // A device accepts no policy head or epoch below its mark, also
         // when it starts again without a journal (§15).
@@ -317,6 +328,8 @@ impl WorkspaceSync {
             paused: false,
             matching: false,
             cache: BTreeMap::new(),
+            entry_hint: None,
+            armed: BTreeSet::new(),
         };
         sync.want_entries();
         sync.save()?;
@@ -406,6 +419,8 @@ impl WorkspaceSync {
             paused: entry.paused,
             matching: false,
             cache: BTreeMap::new(),
+            entry_hint: None,
+            armed: BTreeSet::new(),
             state,
         };
         if let Some(next) = next.get(&sync.state.domain) {
@@ -724,10 +739,15 @@ impl WorkspaceSync {
             self.capture()?;
             return Err(error);
         }
-        let captured = self.capture()?;
-        let pushed = self.push(service).await?;
+        let mut captured = self.capture()?;
+        let mut pushed = self.push(service).await?;
         let (applied, waiting_for_key) = self.pull(service, wait_seconds).await?;
-        // Applying may have written merges; they go out in the next round.
+        // A replacement the pull brought ends epochs whose records this
+        // device writes again at once (§9); merges go out next round.
+        if !self.state.rewrite_epochs.is_empty() {
+            captured += self.capture()?;
+            pushed += self.push(service).await?;
+        }
         self.state.last_success = Some(unix_now());
         self.save()?;
         Ok(Round {
@@ -770,6 +790,18 @@ impl WorkspaceSync {
             return Ok(());
         };
         let accepted = self.state.profile;
+        if remote.epochs.ended_at(profile.body.epoch).is_some() {
+            // A replacement skipped the epoch the profile was signed under:
+            // the device that signed it signs it again under the current
+            // epoch (§25); others keep the name they accepted.
+            if profile.body.signer == self.credentials.keys.device() && self.may_rename() {
+                let name = self.state.name.clone();
+                return self
+                    .sign_profile(service, &name, profile.body.profile_revision)
+                    .await;
+            }
+            return Ok(());
+        }
         let signer_gone = !remote
             .policy
             .head_snapshot()
@@ -908,7 +940,28 @@ impl WorkspaceSync {
             }
         }
         self.state.policy = policy_changes(&remote.policy);
-        self.state.epochs = remote.epochs_oldest_first().into_iter().cloned().collect();
+        let epochs: Vec<_> = remote.epochs_oldest_first().into_iter().cloned().collect();
+        // Epochs this device accepted that a replacement ended: its own
+        // records under them are written again (§9).
+        let ended: Vec<_> = self
+            .state
+            .epochs
+            .iter()
+            .filter(|e| remote.epochs.ended_at(e.body.epoch).is_some())
+            .cloned()
+            .collect();
+        for record in &ended {
+            if !self
+                .state
+                .ended_epochs
+                .iter()
+                .any(|e| e.digest() == record.digest())
+            {
+                self.state.ended_epochs.push(record.clone());
+                self.state.rewrite_epochs.push(record.body.epoch);
+            }
+        }
+        self.state.epochs = epochs;
         self.want_entries();
         if remote.envelope.is_some() {
             self.state.envelope = remote.envelope.clone();
@@ -925,18 +978,19 @@ impl WorkspaceSync {
             Some(remote) => remote,
             None => service.open_workspace(self.state.workspace).await?,
         };
+        let hint = self.entry_hint;
         let refreshed = async {
             service.refresh_policy(&mut remote).await?;
-            service.refresh_keys(&mut remote).await
+            service.refresh_keys_at(&mut remote, hint).await
         }
         .await;
         if let Err(error) = refreshed {
             self.remote = Some(remote);
             return Err(error);
         }
-        let before = self.accepted_revision();
+        let before = (self.accepted_revision(), self.state.ended_epochs.len());
         self.adopt(remote)?;
-        if self.accepted_revision() != before {
+        if (self.accepted_revision(), self.state.ended_epochs.len()) != before {
             self.follow_profile(service).await?;
         }
         Ok(())
@@ -1014,6 +1068,7 @@ impl WorkspaceSync {
         if self.stopped.is_some() || self.state.removal_hold {
             return Ok(0);
         }
+        let rewritten = self.rewrite_skipped()?;
         let listing = self.engine.synced_listing().map_err(core)?;
         let held: BTreeSet<Id> = self.state.held.keys().copied().collect();
         let engine = self.engine.clone();
@@ -1025,7 +1080,7 @@ impl WorkspaceSync {
             |path| roots.iter().any(|root| rebuild::beneath(path, root)),
             |path| engine.read_synced(path).ok().flatten(),
         );
-        let mut signed = 0;
+        let mut signed = rewritten;
         for change in changes {
             match change {
                 Change::Touch { rid, found } => {
@@ -1267,6 +1322,7 @@ impl WorkspaceSync {
         self.state.own.next = counter + 1;
         self.state.own.head = Some((counter, signed.digest()));
         let key = OpKey { device, counter };
+        let epoch = signed.body.epoch;
         let object = self.state.objects.entry(rid).or_default();
         object.own_highest = counter;
         object.states.insert(
@@ -1276,11 +1332,13 @@ impl WorkspaceSync {
                 seq: None,
                 covers,
                 content: Some(carried),
+                epoch,
             },
         );
         self.state.outbox.push(Outgoing {
             record: signed,
             reseals: 0,
+            rewrite: false,
         });
         Ok(key)
     }
@@ -1370,6 +1428,7 @@ impl WorkspaceSync {
                 .state
                 .epochs
                 .iter()
+                .chain(self.state.ended_epochs.iter())
                 .find(|e| e.body.epoch == old.body.epoch)
                 .map(|e| e.digest())
                 .ok_or(SyncError::Check("sync_key_mismatch"))?;
@@ -1411,6 +1470,7 @@ impl WorkspaceSync {
             if let Some(object) = self.state.objects.get_mut(&old.body.rid) {
                 if let Some(mut state) = object.states.remove(&old_key) {
                     state.digest = resealed.digest();
+                    state.epoch = resealed.body.epoch;
                     object.states.insert(new_key, state);
                 }
                 if object.base == Some(old_key) {
@@ -1589,6 +1649,13 @@ impl WorkspaceSync {
                     Err(refused())
                 }
             }
+            "supersedes_unknown" if self.state.outbox[index].rewrite => {
+                // A rewrite keeps its cover or writes nothing; the version
+                // waits for review (§9).
+                let rejected = self.state.outbox.remove(index);
+                self.forget_own(&rejected.record);
+                self.reseal_replacing_or_end(index, &rejected.record)
+            }
             "supersedes_unknown" => {
                 // Drop the covers the server can't return (§14).
                 let record = self.state.outbox[index].record.clone();
@@ -1725,6 +1792,83 @@ impl WorkspaceSync {
         object.cover_all |= cover_all;
     }
 
+    /// Puts the next record, if any, at a dropped record's position.
+    fn reseal_replacing_or_end(
+        &mut self,
+        index: usize,
+        rejected: &Signed<Operation>,
+    ) -> Result<(), SyncError> {
+        if index < self.state.outbox.len() {
+            return self.reseal_replacing(index, rejected);
+        }
+        self.state.own.head = self
+            .state
+            .outbox
+            .last()
+            .map(|o| (o.record.body.counter, o.record.digest()))
+            .or(self.state.own.acked.map(|(c, d, _)| (c, d)));
+        Ok(())
+    }
+
+    /// Writes again, under the current epoch, each object where this
+    /// device's own record under an epoch a replacement skipped is live, as
+    /// a state operation covering that record and its own highest live
+    /// operation on the object, so the server neither counts it as a patch
+    /// nor answers `supersedes_incomplete` (§9).
+    fn rewrite_skipped(&mut self) -> Result<usize, SyncError> {
+        if self.state.rewrite_epochs.is_empty() {
+            return Ok(0);
+        }
+        let epochs: BTreeSet<u64> = self.state.rewrite_epochs.drain(..).collect();
+        let own = self.credentials.keys.device();
+        let rids: Vec<Id> = self.state.objects.keys().copied().collect();
+        let mut written = 0;
+        for rid in rids {
+            let live: BTreeSet<OpKey> = self.live_states(&rid).into_iter().collect();
+            let object = &self.state.objects[&rid];
+            let Some((key, content)) = live.iter().find_map(|key| {
+                let info = object.states.get(key)?;
+                (key.device == own && epochs.contains(&info.epoch))
+                    .then(|| info.content.clone().map(|c| (*key, c)))?
+            }) else {
+                continue;
+            };
+            let mut view = BTreeSet::from([key]);
+            view.extend(live.iter().filter(|k| k.device == own).copied());
+            let covers = self.covers_of(&rid, &view);
+            let before = self.state.outbox.len();
+            if content.delete {
+                self.sign_delete(rid, covers)?;
+            } else {
+                let bytes = self.content_bytes(&rid, &key, &BTreeMap::new())?;
+                let path = self.state.objects[&rid]
+                    .local
+                    .as_ref()
+                    .map_or(content.path.clone(), |l| l.path.clone());
+                let found = match self.found_at(&path, bytes.clone()) {
+                    Ok(found) => found,
+                    Err(_) => Found {
+                        file: local_core::SyncedFile {
+                            relative_path: content.path.clone(),
+                            size: bytes.len() as u64,
+                            modified_ns: 0,
+                            file_id: None,
+                        },
+                        revision: hash(&bytes),
+                        object_id: content.object_id.clone(),
+                        bytes: Some(bytes),
+                    },
+                };
+                self.sign_file(rid, &found, covers)?;
+            }
+            for outgoing in &mut self.state.outbox[before..] {
+                outgoing.rewrite = true;
+            }
+            written += 1;
+        }
+        Ok(written)
+    }
+
     /// Forgets a record of this device that never reached the server.
     fn forget_own(&mut self, record: &Signed<Operation>) {
         let key = OpKey {
@@ -1753,6 +1897,16 @@ impl WorkspaceSync {
         service: &mut SyncService,
         wait_seconds: u32,
     ) -> Result<(usize, bool), SyncError> {
+        // An entry the device learned of before this request is owed by
+        // the head of the page it answers; one it learns of while handling
+        // the page, by the next page's (§8, §9).
+        self.armed = self
+            .state
+            .log
+            .wanted
+            .iter()
+            .map(|w| (w.epoch, w.number))
+            .collect();
         let response = service
             .client()
             .pull(
@@ -1804,12 +1958,32 @@ impl WorkspaceSync {
             EntryRecord::Operation(op) => !self.keys.contains_key(&op.body.epoch),
             _ => false,
         });
+        // The latest policy entry before the first epoch entry the device
+        // hasn't accepted, which judges its envelope's wrapper (§9).
+        self.entry_hint = None;
+        let mut latest_entry = self.state.log.judge.latest_policy_entry();
+        for entry in page.entries.iter() {
+            match &entry.record {
+                EntryRecord::Policy(policy) => latest_entry = Some(policy.revision),
+                EntryRecord::Epoch(epoch)
+                    if !self
+                        .state
+                        .epochs
+                        .iter()
+                        .any(|accepted| accepted.digest() == epoch.digest()) =>
+                {
+                    self.entry_hint = latest_entry;
+                    break;
+                }
+                _ => {}
+            }
+        }
         if above || unknown_epoch || self.remote.is_none() {
             match self.refresh(service).await {
                 Ok(()) => {}
                 // An envelope still on its way isn't a failure: the device
                 // holds its cursor until the key arrives (§9, §13).
-                Err(SyncError::Check("sync_key_mismatch")) if unknown_epoch => {
+                Err(SyncError::KeyMissing) if unknown_epoch => {
                     return Ok((0, true));
                 }
                 Err(error) => return Err(error),
@@ -1921,9 +2095,15 @@ impl WorkspaceSync {
             .as_ref()
             .ok_or(SyncError::Check("sync_workspace_unverified"))?;
         let policy = &remote.policy;
+        let ended: BTreeMap<u64, Digest> = self
+            .state
+            .ended_epochs
+            .iter()
+            .map(|e| (e.body.epoch, e.digest()))
+            .collect();
         let mut log = self.state.log.clone();
         for wanted in &mut log.wanted {
-            if wanted.by == u64::MAX {
+            if wanted.by == u64::MAX && self.armed.contains(&(wanted.epoch, wanted.number)) {
                 wanted.by = page.head;
             }
         }
@@ -1956,6 +2136,8 @@ impl WorkspaceSync {
                             // A replacement ended it; its records are judged
                             // as records under a skipped epoch.
                             log.judge.epoch_entry(&epoch.body);
+                            log.skipped_rotators
+                                .insert(epoch.body.epoch, epoch.body.rotating_device);
                             continue;
                         }
                         return Ok(None);
@@ -1964,7 +2146,9 @@ impl WorkspaceSync {
                 }
                 EntryRecord::Checkpoint(_) => {}
                 EntryRecord::Operation(op) => {
-                    match check_operation(remote, &self.keys, &mut log, op, entry.seq, fetcher)? {
+                    match check_operation(
+                        remote, &self.keys, &ended, &mut log, op, entry.seq, fetcher,
+                    )? {
                         Judged::Record(record) => records.push(record),
                         Judged::Ignored => {}
                         Judged::NoKey => return Ok(None),
@@ -2013,6 +2197,7 @@ impl WorkspaceSync {
                 if let Some(state) = object.states.get_mut(&key) {
                     state.seq = Some(record.seq);
                     state.digest = op.digest();
+                    state.epoch = op.body.epoch;
                     continue;
                 }
             }
@@ -2042,6 +2227,7 @@ impl WorkspaceSync {
                         seq: Some(record.seq),
                         covers: op.body.supersedes.to_vec(),
                         content,
+                        epoch: op.body.epoch,
                     },
                 );
             }
@@ -2214,6 +2400,7 @@ enum Judged {
 fn check_operation(
     remote: &RemoteWorkspace,
     keys: &BTreeMap<u64, SecretKey>,
+    ended: &BTreeMap<u64, Digest>,
     log: &mut Log,
     op: &Signed<Operation>,
     seq: u64,
@@ -2245,9 +2432,32 @@ fn check_operation(
         .verifier
         .process_one(&ChainRecord::from_operation(op, seq), fetcher)
         .map_err(|e| SyncError::Check(e.client_code()))?;
-    // The key of its epoch, from an envelope or a later key's lineage.
-    let (Some(epoch), Some(key)) = (remote.epochs.get(body.epoch), keys.get(&body.epoch)) else {
-        return Ok(Judged::NoKey);
+    // The key of its epoch, from an envelope or a later key's lineage, or
+    // an epoch this device accepted before a replacement ended it.
+    let epoch_record = remote
+        .epochs
+        .get(body.epoch)
+        .map(|e| e.digest)
+        .or_else(|| ended.get(&body.epoch).copied());
+    let opened = match (epoch_record, keys.get(&body.epoch)) {
+        (Some(digest), Some(key)) => Some((digest, key)),
+        _ => match remote.epochs.ended_at(body.epoch) {
+            // An epoch a replacement skipped and this device never
+            // accepted: its rotator's records, and those of a device that
+            // lost read access by the replacement, count as unreadable; any
+            // other is one an honest server refused (§9).
+            Some(revision) => match judge_skipped_epoch_record(
+                policy,
+                &remote.domain,
+                &body.device,
+                log.skipped_rotators.get(&body.epoch),
+                revision,
+            ) {
+                SkippedEpochRecord::Unreadable => None,
+                SkippedEpochRecord::Hold => return Err(SyncError::Check("sync_key_mismatch")),
+            },
+            None => return Ok(Judged::NoKey),
+        },
     };
     let live = LiveOp::from_operation(op, seq);
     let class = match verdict {
@@ -2262,7 +2472,7 @@ fn check_operation(
         .insert(body.device, (body.policy_revision, body.generation));
     // A record that passes every check but doesn't open counts as applied
     // and unreadable (§13).
-    let payload = op.body.open_payload(key, &epoch.digest, class).ok();
+    let payload = opened.and_then(|(digest, key)| op.body.open_payload(key, &digest, class).ok());
     Ok(Judged::Record(CheckedRecord {
         op: op.clone(),
         seq,
@@ -2368,6 +2578,7 @@ fn mark_of(profile: &Signed<Profile>) -> ProfileMark {
         digest: profile.digest(),
         policy_revision: profile.body.policy_revision,
         signer: profile.body.signer,
+        epoch: profile.body.epoch,
     }
 }
 

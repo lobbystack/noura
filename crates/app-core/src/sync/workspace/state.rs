@@ -75,6 +75,13 @@ pub struct State {
     /// the workspace hasn't recorded and rotated past (§9).
     #[serde(default)]
     pub removal_hold: bool,
+    /// Epoch records the device accepted that a replacement ended since
+    /// (§9), kept to open its own records under them.
+    #[serde(default)]
+    pub ended_epochs: Vec<Signed<Epoch>>,
+    /// Those epochs whose records this device still writes again (§9).
+    #[serde(default)]
+    pub rewrite_epochs: Vec<u64>,
 }
 
 /// The profile a device accepted last (§25).
@@ -88,6 +95,9 @@ pub struct ProfileMark {
     pub policy_revision: u64,
     /// The device that signed it.
     pub signer: Id,
+    /// The epoch whose key encrypts it.
+    #[serde(default)]
+    pub epoch: u64,
 }
 
 /// The domain's log as the device followed it.
@@ -118,6 +128,10 @@ pub struct Log {
     /// The highest epoch whose entry the log carried.
     #[serde(default)]
     pub epoch_entries: u64,
+    /// The rotator of each epoch whose entry the log carried after a
+    /// replacement ended it, for judging records under it (§9).
+    #[serde(default)]
+    pub skipped_rotators: BTreeMap<u64, Id>,
 }
 
 /// A log entry the device requires.
@@ -217,6 +231,9 @@ pub struct StateInfo {
     pub covers: Vec<Cover>,
     /// What it carries, or `None` when it didn't open.
     pub content: Option<Content>,
+    /// The epoch whose key encrypts it.
+    #[serde(default)]
+    pub epoch: u64,
 }
 
 /// What a state operation carries.
@@ -242,6 +259,10 @@ pub struct Outgoing {
     /// The re-seals at this position that no newer epoch or policy change
     /// forced (§14).
     pub reseals: u32,
+    /// Whether it writes again a record under an epoch a replacement
+    /// skipped, which keeps its cover or writes nothing (§9).
+    #[serde(default)]
+    pub rewrite: bool,
 }
 
 /// A record that passed every check but didn't open.

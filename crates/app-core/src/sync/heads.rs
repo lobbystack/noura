@@ -94,16 +94,38 @@ impl SyncService {
     /// accepted last must still be in the chain, or a replacement must have
     /// ended it.
     pub async fn refresh_keys(&mut self, remote: &mut RemoteWorkspace) -> Result<(), SyncError> {
+        self.refresh_keys_at(remote, None).await
+    }
+
+    /// [`SyncService::refresh_keys`], with the latest policy entry before
+    /// the current epoch's entry once a pulled page carried it (§9). When
+    /// the device can't accept the latest epoch record, or the key its
+    /// envelope carries fails, after a verified check and while it holds an
+    /// earlier epoch, it signs a replacement; when the server refuses that
+    /// with `epoch_conflict`, it asks for a re-wrap and waits.
+    pub(crate) async fn refresh_keys_at(
+        &mut self,
+        remote: &mut RemoteWorkspace,
+        entry_revision: Option<u64>,
+    ) -> Result<(), SyncError> {
         let recipient = self.credentials.keys.clone();
-        let (epochs, keys, envelope) = self
-            .load_keys(
+        let loaded = self
+            .load_keys_at(
                 remote.workspace,
                 remote.domain,
                 &remote.policy,
                 &recipient,
                 !remote.keys.is_empty(),
+                entry_revision,
             )
-            .await?;
+            .await;
+        let (epochs, keys, envelope) = match loaded {
+            Ok(loaded) => loaded,
+            Err(SyncError::Check("sync_key_mismatch")) if remote.epochs.latest().is_some() => {
+                return self.replace_or_rewrap(remote).await;
+            }
+            Err(error) => return Err(error),
+        };
         if let Some(old) = remote.epochs.latest() {
             let number = old.record.body.epoch;
             let kept = epochs.get(number).is_some_and(|e| e.digest == old.digest)
@@ -437,6 +459,25 @@ impl SyncService {
     /// with the previous key in its lineage, and an envelope for each
     /// reader, in one push.
     pub async fn rotate(&mut self, remote: &mut RemoteWorkspace) -> Result<(), SyncError> {
+        let number = remote
+            .epochs
+            .latest()
+            .ok_or(SyncError::Check("sync_key_mismatch"))?
+            .record
+            .body
+            .epoch
+            + 1;
+        self.rotate_from(remote, number).await
+    }
+
+    /// A rotation to epoch `number` from the latest epoch the device
+    /// accepted: the next epoch, or a replacement when `number` lies
+    /// further on (§9).
+    async fn rotate_from(
+        &mut self,
+        remote: &mut RemoteWorkspace,
+        number: u64,
+    ) -> Result<(), SyncError> {
         let keys = self.credentials.keys.clone();
         let latest = remote
             .epochs
@@ -448,7 +489,6 @@ impl SyncService {
         let domain = remote.domain;
         let readers: BTreeSet<Id> = snapshot.readers(&domain);
         let key = random(SecretKey::random())?;
-        let number = latest.record.body.epoch + 1;
         let epoch = Signed::sign(
             build_epoch(
                 &EpochParams {
@@ -472,6 +512,7 @@ impl SyncService {
             recipients: Sorted::new(readers.iter().copied().collect())
                 .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
         })];
+        let mut own_envelope = None;
         for reader in &readers {
             let envelope = wrap(
                 &EnvelopeHeader {
@@ -485,6 +526,9 @@ impl SyncService {
                 &keys,
             )
             .map_err(|e| SyncError::Invalid(e.to_string()))?;
+            if *reader == keys.device() {
+                own_envelope = Some(envelope.clone());
+            }
             records.push(RecordRef::Envelope(envelope));
         }
         self.client.push(remote.workspace, records).await?;
@@ -494,7 +538,53 @@ impl SyncService {
             .map_err(|e| SyncError::Check(e.client_code()))?;
         remote.keys.insert(number, key.clone());
         remote.key = key;
+        if own_envelope.is_some() {
+            remote.envelope = own_envelope;
+        }
         Ok(())
+    }
+
+    /// Signs a replacement of the workspace domain's latest epoch, which
+    /// this device can't accept (§9, Replacing an epoch): an epoch record
+    /// one above the latest, whose `previous` names the last epoch record
+    /// it accepted and whose lineage holds that record's key, at the
+    /// accepted policy head, with an envelope for every reader. When the
+    /// server refuses it with `epoch_conflict`, because another device used
+    /// a skipped epoch, the device asks for a re-wrap instead and waits.
+    async fn replace_or_rewrap(&mut self, remote: &mut RemoteWorkspace) -> Result<(), SyncError> {
+        let current = self
+            .client
+            .current_keys(remote.workspace, self.credentials.keys.device())
+            .await?;
+        let latest = current
+            .entries
+            .0
+            .iter()
+            .find_map(|e| match &e.record {
+                KeyRecord::Epoch(epoch) if epoch.body.domain == remote.domain => {
+                    Some(epoch.body.epoch)
+                }
+                _ => None,
+            })
+            .ok_or(SyncError::KeyMissing)?;
+        let accepted = remote
+            .epochs
+            .latest()
+            .ok_or(SyncError::Check("sync_key_mismatch"))?
+            .clone();
+        if latest <= accepted.record.body.epoch {
+            return Err(SyncError::Check("sync_key_mismatch"));
+        }
+        match self.rotate_from(remote, latest + 1).await {
+            Ok(()) => Ok(()),
+            Err(SyncError::Refused { code, .. }) if code == "epoch_conflict" => {
+                self.client
+                    .rewrap(remote.workspace, remote.domain, latest)
+                    .await?;
+                Err(SyncError::KeyMissing)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Whether a rotation of the workspace domain is pending in the

@@ -89,6 +89,11 @@ pub enum SyncError {
     /// A sign-in through the browser ended without a session (§7).
     #[error("{0}")]
     SignIn(device::SignInEnd),
+    /// The key of a domain's current epoch hasn't reached this device yet,
+    /// such as an envelope still on its way: no verified check failed, and
+    /// the device holds its cursor until the key arrives (§9, §13).
+    #[error("the key of the current epoch hasn't arrived yet")]
+    KeyMissing,
     /// A device removed the recovery kit's identity, so the kit can't
     /// recover; you reset your devices instead (§12).
     #[error(
@@ -372,6 +377,14 @@ fn verify_served(
     }
     Ok(chain)
 }
+
+/// The epoch records a device accepted for a domain, their keys, and the
+/// envelope of the latest epoch.
+pub(crate) type LoadedKeys = (
+    EpochChain,
+    BTreeMap<u64, SecretKey>,
+    Option<Signed<Envelope>>,
+);
 
 /// The chains a workspace's log records, as [`SyncService::recorded_chains`]
 /// judged them.
@@ -1050,14 +1063,26 @@ impl SyncService {
         policy: &PolicyChain,
         recipient: &DeviceKeys,
         accepted_earlier: bool,
-    ) -> Result<
-        (
-            EpochChain,
-            BTreeMap<u64, SecretKey>,
-            Option<Signed<Envelope>>,
-        ),
-        SyncError,
-    > {
+    ) -> Result<LoadedKeys, SyncError> {
+        self.load_keys_at(workspace, domain, policy, recipient, accepted_earlier, None)
+            .await
+    }
+
+    /// [`SyncService::load_keys`], with the revision of the latest policy
+    /// entry before the current epoch's entry, once a pulled page carried
+    /// it: an envelope whose wrapper could read the domain there passes
+    /// even when it can't at the accepted head (§9, Envelopes). A missing
+    /// envelope, or one that waits for that entry, is no failure:
+    /// [`SyncError::KeyMissing`].
+    pub(crate) async fn load_keys_at(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        policy: &PolicyChain,
+        recipient: &DeviceKeys,
+        accepted_earlier: bool,
+        entry_revision: Option<u64>,
+    ) -> Result<LoadedKeys, SyncError> {
         let card = recipient.card(self.credentials.account);
         let current = self
             .client
@@ -1076,12 +1101,17 @@ impl SyncService {
                 _ => {}
             }
         }
-        let record = record.ok_or(SyncError::Check("sync_key_mismatch"))?;
+        let record = record.ok_or(SyncError::KeyMissing)?;
         let envelopes: Vec<Signed<Envelope>> = envelopes
             .into_iter()
             .filter(|e| e.body.epoch == record.body.epoch)
             .collect();
-        // The first envelope that passes, in key order (§9).
+        if envelopes.is_empty() {
+            return Err(SyncError::KeyMissing);
+        }
+        // The first envelope that passes, in key order (§9). One whose
+        // wrapper waits for the epoch's entry isn't a failure yet.
+        let mut waiting = false;
         let accepted = envelopes.iter().find_map(|envelope| {
             let key = unwrap(&envelope.body, recipient, &card).ok()?;
             let verdict = check_envelope(
@@ -1091,15 +1121,17 @@ impl SyncService {
                 &card,
                 policy,
                 policy.head().0,
-                None,
+                entry_revision,
             )
             .ok()?;
+            waiting |= verdict == EnvelopeVerdict::Wait;
             (verdict == EnvelopeVerdict::Accept).then(|| (key, envelope.clone()))
         });
         let Some((key, envelope)) = accepted else {
-            if !envelopes.is_empty()
-                && after_failed_envelopes(accepted_earlier) == FailedEnvelopes::Rewrap
-            {
+            if waiting {
+                return Err(SyncError::KeyMissing);
+            }
+            if after_failed_envelopes(accepted_earlier) == FailedEnvelopes::Rewrap {
                 self.client
                     .rewrap(workspace, domain, record.body.epoch)
                     .await?;
