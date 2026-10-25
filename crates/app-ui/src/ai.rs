@@ -314,7 +314,7 @@ fn thousands(number: u32) -> String {
     let digits = number.to_string();
     let mut grouped = String::new();
     for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
             grouped.push(',');
         }
         grouped.push(digit);
