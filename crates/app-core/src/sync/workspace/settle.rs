@@ -39,6 +39,38 @@ pub(crate) fn fold(path: &str) -> String {
         .collect()
 }
 
+/// `path` as the file system names it: each component as its folder lists
+/// it, which differs in case on a file system that ignores case.
+pub(crate) fn actual_path(root: &std::path::Path, path: &str) -> String {
+    let mut folder = root.to_owned();
+    let mut parts = Vec::new();
+    for component in path.split('/') {
+        let exact = folder.join(component);
+        let name = if std::fs::symlink_metadata(&exact).is_ok() {
+            std::fs::read_dir(&folder)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|entry| entry.file_name().into_string().ok())
+                .find(|name| name == component)
+                .or_else(|| {
+                    std::fs::read_dir(&folder)
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                        .filter_map(|entry| entry.file_name().into_string().ok())
+                        .find(|name| fold(name) == fold(component))
+                })
+                .unwrap_or_else(|| component.to_owned())
+        } else {
+            component.to_owned()
+        };
+        folder = folder.join(&name);
+        parts.push(name);
+    }
+    parts.join("/")
+}
+
 /// Whether two paths collide (§16): equal once folded, or one a folder
 /// prefix of the other.
 pub(crate) fn collide(a: &str, b: &str) -> bool {
@@ -179,7 +211,13 @@ impl WorkspaceSync {
             return Ok(());
         }
         let bytes = self.content_bytes(&rid, &target, contents)?;
-        let path = self.destination(&rid, &target, &content.path);
+        let (path, displaced) = self.destination(&rid, &target, &content.path);
+        for other in displaced {
+            if let Err(error) = self.move_aside(&other) {
+                tracing::warn!(%error, "a file that yields its path couldn't move aside");
+                return self.keep_for_review(&rid, &target, contents);
+            }
+        }
         match self.place(&rid, &path, &bytes) {
             Ok(()) => {
                 self.state.objects.get_mut(&rid).expect("present").base = Some(target);
@@ -228,10 +266,14 @@ impl WorkspaceSync {
                 Err(error) => return Err(core(error)),
             },
         }
-        let (size, modified_ns, file_id) = stat(self.engine.root(), path)
+        // A folder that differs only in case on a file system that ignores
+        // case keeps its own name: the journal records the file where the
+        // walk will find it.
+        let path = actual_path(self.engine.root(), path);
+        let (size, modified_ns, file_id) = stat(self.engine.root(), &path)
             .ok_or_else(|| SyncError::Invalid("the written file went away".into()))?;
         self.state.objects.get_mut(rid).expect("present").local = Some(Local {
-            path: path.to_owned(),
+            path,
             revision,
             size,
             modified_ns,
@@ -419,31 +461,70 @@ impl WorkspaceSync {
     /// when it collides with another object's and yields, the first free
     /// `name (n).ext`. The yielding object's author moves it with an
     /// operation in its next round; other devices only show it there (§16).
-    fn destination(&self, rid: &Id, key: &OpKey, path: &str) -> String {
+    /// Also returns the objects at colliding paths that yield to this one,
+    /// which move aside first.
+    fn destination(&self, rid: &Id, key: &OpKey, path: &str) -> (String, Vec<Id>) {
         let digest = self.state.objects[rid].states[key].digest;
-        let root = self.engine.root().to_owned();
-        let others: Vec<(String, Digest)> = self
-            .state
+        let others = self.current_paths(rid);
+        let colliding: Vec<&(Id, String, Digest)> = others
+            .iter()
+            .filter(|(_, other, _)| collide(path, other))
+            .collect();
+        if colliding.iter().any(|(_, _, current)| digest > *current) {
+            return (self.free_for(rid, path), Vec::new());
+        }
+        let displaced = colliding.iter().map(|(other, _, _)| *other).collect();
+        (path.to_owned(), displaced)
+    }
+
+    /// The other objects' local paths with the digests of their current
+    /// state operations.
+    fn current_paths(&self, rid: &Id) -> Vec<(Id, String, Digest)> {
+        self.state
             .objects
             .iter()
             .filter(|(other, _)| *other != rid)
-            .filter_map(|(_, o)| {
+            .filter_map(|(other, o)| {
                 let local = o.local.as_ref()?;
                 let current = o.base.and_then(|b| o.states.get(&b)).map(|s| s.digest)?;
-                Some((local.path.clone(), current))
+                Some((*other, local.path.clone(), current))
             })
-            .collect();
-        let yields = others
-            .iter()
-            .any(|(other, current)| collide(path, other) && digest > *current);
-        if !yields {
-            return path.to_owned();
-        }
+            .collect()
+    }
+
+    /// The first free `name (n).ext` for `rid` at `path`.
+    fn free_for(&self, rid: &Id, path: &str) -> String {
+        let root = self.engine.root().to_owned();
+        let others = self.current_paths(rid);
         let taken = |candidate: &str| {
-            others.iter().any(|(other, _)| collide(candidate, other))
+            others.iter().any(|(_, other, _)| collide(candidate, other))
                 || root.join(candidate).exists()
         };
         free_name(path, &taken)
+    }
+
+    /// Moves `rid`'s file aside to the first free name, as an object that
+    /// yields its path does; when this device wrote its current state, it
+    /// signs the move in its next capture (§16).
+    fn move_aside(&mut self, rid: &Id) -> Result<(), SyncError> {
+        let Some(local) = self.state.objects.get(rid).and_then(|o| o.local.clone()) else {
+            return Ok(());
+        };
+        let free = self.free_for(rid, &local.path);
+        self.engine
+            .move_synced(&local.path, &free, &local.revision.to_hex())
+            .map_err(core)?;
+        let free = actual_path(self.engine.root(), &free);
+        let (size, modified_ns, file_id) = stat(self.engine.root(), &free)
+            .ok_or_else(|| SyncError::Invalid("the moved file went away".into()))?;
+        self.state.objects.get_mut(rid).expect("present").local = Some(Local {
+            path: free,
+            revision: local.revision,
+            size,
+            modified_ns,
+            file_id,
+        });
+        Ok(())
     }
 
     /// Objects whose live state this device yields to another object's
@@ -458,7 +539,7 @@ impl WorkspaceSync {
                 let base = object.base?;
                 let local = object.local.as_ref()?;
                 let content = object.states.get(&base)?.content.as_ref()?;
-                (base.device == own && !content.delete && content.path != local.path)
+                (base.device == own && !content.delete && fold(&content.path) != fold(&local.path))
                     .then_some(*rid)
             })
             .collect()

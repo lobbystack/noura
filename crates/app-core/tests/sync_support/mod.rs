@@ -586,6 +586,25 @@ impl Desktop {
     pub fn id(&self) -> Id {
         self.credentials.keys.device()
     }
+
+    /// Another connection of this desktop's device, through `base`, such as
+    /// a proxy.
+    pub async fn connect_through(&self, base: &str) -> SyncService {
+        let heads = KeptHeads::open(
+            self.state.path(),
+            self.credentials.account,
+            self.credentials.keys.device(),
+            &*self.secrets,
+        )
+        .expect("the kept heads open");
+        SyncService::connect(base, self.credentials.clone(), heads, self.secrets.clone())
+            .await
+            .expect("connects")
+    }
+
+    pub fn secrets(&self) -> Secrets {
+        self.secrets.clone()
+    }
 }
 
 /// The first device of a new account: it signs in through the device
@@ -771,4 +790,74 @@ impl Folder {
         self.registry =
             app_core::sync::registry::Registry::open(self.app_data.path()).expect("the registry");
     }
+}
+
+/// A laptop whose sync goes through a proxy that can cut it off, a
+/// workspace it synced, and a second desktop of the account that holds a
+/// copy.
+pub struct Pair<B: Backend> {
+    pub server: Server<B>,
+    pub proxy: Proxy,
+    pub laptop: Desktop,
+    pub service: app_core::sync::SyncService,
+    pub a: Folder,
+    pub sync_a: app_core::sync::workspace::WorkspaceSync,
+    pub desktop: Desktop,
+    pub b: Folder,
+    pub sync_b: app_core::sync::workspace::WorkspaceSync,
+}
+
+pub async fn pair() -> Pair<SqliteBackend> {
+    let server = Server::start().await;
+    let proxy = Proxy::start(&server.base).await;
+    let mut laptop = first_desktop(&server, "ana@example.com").await;
+    let mut service = laptop.connect_through(&proxy.base).await;
+    let mut a = Folder::new("Field notes");
+    a.write("Plan.md", b"# Plan\n");
+    let mut sync_a = app_core::sync::workspace::WorkspaceSync::turn_on(
+        &mut service,
+        a.engine.clone(),
+        "Field notes",
+        &mut a.registry,
+    )
+    .await
+    .expect("sync turns on");
+    sync_a.round(&mut service, 0).await.expect("a round");
+    let mut desktop = approve(
+        &server,
+        &mut laptop,
+        std::slice::from_mut(sync_a.remote_mut().expect("connected")),
+    )
+    .await;
+    let mut b = Folder::new("Copy");
+    let mut sync_b = app_core::sync::workspace::WorkspaceSync::download(
+        &mut desktop.service,
+        b.engine.clone(),
+        sync_a.workspace(),
+        &mut b.registry,
+    )
+    .await
+    .expect("the download starts");
+    sync_b
+        .round(&mut desktop.service, 0)
+        .await
+        .expect("a round");
+    sync_a.round(&mut service, 0).await.expect("a round");
+    assert_eq!(b.files(), a.files());
+    Pair {
+        server,
+        proxy,
+        laptop,
+        service,
+        a,
+        sync_a,
+        desktop,
+        b,
+        sync_b,
+    }
+}
+
+/// Answers every request with a 503, as a server you can't reach would.
+pub fn cut_off(proxy: &Proxy) {
+    proxy.forge(Box::new(|_, _| Some((503, Vec::new()))));
 }

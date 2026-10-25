@@ -128,6 +128,8 @@ pub struct WorkspaceSync {
     /// Why the device stopped writing the domain, such as
     /// `sync_reseal_limit` (§14).
     stopped: Option<&'static str>,
+    /// Whether you paused sync.
+    paused: bool,
 }
 
 impl std::fmt::Debug for WorkspaceSync {
@@ -279,6 +281,7 @@ impl WorkspaceSync {
             remote: Some(remote),
             skipped: Vec::new(),
             stopped: None,
+            paused: false,
         };
         sync.save()?;
         Ok(sync)
@@ -302,6 +305,9 @@ impl WorkspaceSync {
             .of_folder(engine.root())
             .ok_or_else(|| SyncError::Invalid("this folder doesn't sync".into()))?
             .clone();
+        if !entry.on {
+            return Err(SyncError::Invalid("sync is off for this folder".into()));
+        }
         let device = credentials.keys.device();
         let journal = Journal::open(engine.root(), &device, &*secrets)?;
         let state: State = journal
@@ -331,6 +337,7 @@ impl WorkspaceSync {
             remote: None,
             skipped: Vec::new(),
             stopped: None,
+            paused: entry.paused,
             state,
         };
         if let Some(next) = next.get(&sync.state.domain) {
@@ -404,6 +411,71 @@ impl WorkspaceSync {
         self.stopped
     }
 
+    /// The digests of the signed records waiting for the server, in chain
+    /// order.
+    pub fn outbox(&self) -> Vec<Digest> {
+        self.state
+            .outbox
+            .iter()
+            .map(|o| o.record.digest())
+            .collect()
+    }
+
+    /// The accepted policy head's revision.
+    pub fn policy_revision(&self) -> u64 {
+        self.accepted_revision()
+    }
+
+    /// Whether you paused sync for this folder.
+    pub fn paused(&self) -> bool {
+        self.paused
+    }
+
+    /// Pauses or resumes sync: while paused, rounds capture changes into
+    /// the outbox and send nothing; the pause holds across relaunch, and
+    /// the round after Resume uploads what queued.
+    pub fn set_paused(&mut self, registry: &mut Registry, paused: bool) -> Result<(), SyncError> {
+        registry.update(
+            &self.state.server,
+            &self.state.account,
+            &self.state.workspace,
+            |entry| entry.paused = paused,
+        )?;
+        self.paused = paused;
+        Ok(())
+    }
+
+    /// Turns sync off for this folder: no more traffic, and every file stays
+    /// in place and editable. The journal stays, so turning sync on again
+    /// with [`WorkspaceSync::turn_on_again`] continues the same remote
+    /// workspace.
+    pub fn turn_off(self, registry: &mut Registry) -> Result<(), SyncError> {
+        registry.update(
+            &self.state.server,
+            &self.state.account,
+            &self.state.workspace,
+            |entry| entry.on = false,
+        )
+    }
+
+    /// Turns sync on again for a folder whose sync you turned off, as
+    /// [`WorkspaceSync::open`] does at each start.
+    pub fn turn_on_again(
+        engine: Arc<WorkspaceEngine>,
+        credentials: DeviceCredentials,
+        secrets: Secrets,
+        registry: &mut Registry,
+    ) -> Result<Self, SyncError> {
+        let entry = registry
+            .of_folder(engine.root())
+            .ok_or_else(|| SyncError::Invalid("this folder doesn't sync".into()))?
+            .clone();
+        registry.update(&entry.server, &entry.account, &entry.workspace, |e| {
+            e.on = true
+        })?;
+        Self::open(engine, credentials, secrets, registry)
+    }
+
     fn save(&mut self) -> Result<(), SyncError> {
         self.journal.write(STATE_FILE, &self.state)?;
         // The mark follows the journal, never ahead of it (§15).
@@ -442,6 +514,12 @@ impl WorkspaceSync {
         wait_seconds: u32,
     ) -> Result<Round, SyncError> {
         let captured = self.capture()?;
+        if self.paused {
+            return Ok(Round {
+                captured,
+                ..Round::default()
+            });
+        }
         if self.remote.is_none() {
             self.connect(service).await?;
         }
