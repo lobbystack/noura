@@ -7,6 +7,7 @@ members = [
     "crates/app-ui",
     "crates/editor-core",
     "crates/editor-egui",
+    "crates/kit-host",
     "crates/local-core",
     "crates/mcp-server",
     "crates/plugin-host",

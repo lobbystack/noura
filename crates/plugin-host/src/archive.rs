@@ -153,10 +153,15 @@ fn read_entry(
     if entry.is_dir() {
         return Ok(None);
     }
+    // The manifest's limit is 64 KB, the component's 64 MB.
+    let shown_limit = if limit < 1 << 20 {
+        format!("{} KB", limit >> 10)
+    } else {
+        format!("{} MB", limit >> 20)
+    };
     let too_large = || {
         invalid(format!(
-            "The archive's {name} is larger than {} MB.",
-            limit.div_ceil(1 << 20)
+            "The archive's {name} is larger than {shown_limit}."
         ))
     };
     if entry.size() > limit {
