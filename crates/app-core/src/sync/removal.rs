@@ -17,6 +17,7 @@ use sync_key_envelope::v2::next_link;
 use sync_protocol::account::AccountChain;
 use sync_protocol::codec::{Decode, Sorted};
 use sync_protocol::messages::DeviceRemovedDetail;
+use sync_protocol::policy::PolicyChain;
 use sync_protocol::records::{Card, LinkKind, PolicyKind, Role};
 use sync_protocol::types::{Digest, Id};
 
@@ -125,6 +126,45 @@ fn undo_for(
     }
 }
 
+/// The changes of the verified `policy` other than `account_heads` that a
+/// card in `cards` signed, each with the undo that `viewer`'s role there
+/// allows now (§7, §8 Roles and authority).
+pub fn removed_card_changes(
+    policy: &PolicyChain,
+    viewer: Id,
+    cards: &BTreeSet<Id>,
+) -> Vec<RemovedCardChange> {
+    let snapshot = policy.head_snapshot();
+    let role = snapshot.role(&viewer);
+    (1..=policy.head().0)
+        .filter_map(|revision| policy.change(revision))
+        .filter(|change| cards.contains(&change.body.signer))
+        .filter(|change| !matches!(change.body.kind, PolicyKind::AccountHeads))
+        .map(|change| {
+            let kind = &change.body.kind;
+            let target_role = match kind {
+                PolicyKind::AddMember { account, .. }
+                | PolicyKind::SetRole { account, .. }
+                | PolicyKind::AcceptReset { account } => snapshot.role(account),
+                _ => None,
+            };
+            let manages = match kind {
+                PolicyKind::SetAccess { domain, .. } | PolicyKind::CreateDomain { domain, .. } => {
+                    snapshot.manages(&viewer, domain)
+                }
+                _ => false,
+            };
+            RemovedCardChange {
+                workspace: policy.workspace(),
+                revision: change.body.revision,
+                signer: change.body.signer,
+                kind: kind_name(kind),
+                undo: undo_for(kind, role, target_role, manages),
+            }
+        })
+        .collect()
+}
+
 impl SyncService {
     /// What removing `target` from the account would take down (§7).
     pub async fn removal_preview(&mut self, target: Id) -> Result<RemovalPreview, SyncError> {
@@ -201,35 +241,7 @@ impl SyncService {
         remote: &RemoteWorkspace,
         cards: &BTreeSet<Id>,
     ) -> Vec<RemovedCardChange> {
-        let snapshot = remote.policy.head_snapshot();
-        let role = snapshot.role(&self.credentials.account);
-        let account = self.credentials.account;
-        (1..=remote.policy.head().0)
-            .filter_map(|revision| remote.policy.change(revision))
-            .filter(|change| cards.contains(&change.body.signer))
-            .filter(|change| !matches!(change.body.kind, PolicyKind::AccountHeads))
-            .map(|change| {
-                let kind = &change.body.kind;
-                let target_role = match kind {
-                    PolicyKind::AddMember { account, .. }
-                    | PolicyKind::SetRole { account, .. }
-                    | PolicyKind::AcceptReset { account } => snapshot.role(account),
-                    _ => None,
-                };
-                let manages = match kind {
-                    PolicyKind::SetAccess { domain, .. }
-                    | PolicyKind::CreateDomain { domain, .. } => snapshot.manages(&account, domain),
-                    _ => false,
-                };
-                RemovedCardChange {
-                    workspace: remote.workspace,
-                    revision: change.body.revision,
-                    signer: change.body.signer,
-                    kind: kind_name(kind),
-                    undo: undo_for(kind, role, target_role, manages),
-                }
-            })
-            .collect()
+        removed_card_changes(&remote.policy, self.credentials.account, cards)
     }
 
     /// Verifies a `device_removed` answer (§7): the removed session still
@@ -272,19 +284,29 @@ impl SyncService {
     }
 
     /// Signs this device out (§7): it first finishes the pending rotation of
-    /// each workspace's domain it reads, skipping a workspace whose
-    /// rotation it can't commit, then appends a `remove` link that names
-    /// itself, which ends its sessions, and deletes its keys, session token
-    /// and journal key from `store`. Workspace files stay as they are.
+    /// each workspace's domain it reads, then appends a `remove` link that
+    /// names itself, which ends its sessions, and deletes its keys, session
+    /// token and journal key from `store`. Workspace files stay as they are.
+    ///
+    /// It skips a workspace whose sync is stopped, whose checks refuse what
+    /// the server serves, and a domain whose rotation it can't commit, such
+    /// as one where its envelope failed and it holds no key, and leaves
+    /// those to the readers that remain. Any other failure, such as a server
+    /// it can't reach, stops the sign-out before the link, so you can try
+    /// again.
     pub async fn sign_out(
-        mut self,
+        &mut self,
         workspaces: &mut [RemoteWorkspace],
         store: &dyn SyncCredentials,
     ) -> Result<(), SyncError> {
         for remote in workspaces.iter_mut() {
-            // A stopped workspace, or a domain whose key the device lost,
-            // stays with the readers that remain.
-            let _ = self.rotate_if_pending(remote).await;
+            match self.rotate_if_pending(remote).await {
+                Ok(_) => {}
+                Err(error) if skips_sign_out_rotation(&error) => {
+                    tracing::info!(kind = ?error.code(), "signing out left a rotation to the remaining readers");
+                }
+                Err(error) => return Err(error),
+            }
         }
         let chain = self.own_chain().await?;
         let device = self.credentials.keys.device();
@@ -307,6 +329,25 @@ impl SyncService {
     }
 }
 
+/// Whether signing out leaves a workspace's rotation to the readers that
+/// remain after `error` (§7): a client check that stops the workspace or
+/// fails its key, or a refusal that means the device can't commit that
+/// rotation.
+pub fn skips_sign_out_rotation(error: &SyncError) -> bool {
+    match error {
+        SyncError::Check(_) => true,
+        SyncError::Refused { code, .. } => matches!(
+            code.as_str(),
+            "forbidden"
+                | "not_found"
+                | "rotation_not_due"
+                | "recipients_invalid"
+                | "epoch_conflict"
+        ),
+        _ => false,
+    }
+}
+
 /// Whether `device` is the only active device of `chain`, a recovery
 /// identity aside.
 pub fn last_device(chain: &AccountChain, device: &Id) -> bool {
@@ -316,4 +357,378 @@ pub fn last_device(chain: &AccountChain, device: &Id) -> bool {
         .iter()
         .filter(|s| !s.recovery)
         .all(|s| s.card.device == *device)
+}
+
+#[cfg(test)]
+mod tests {
+    //! The list of a removed card's policy changes, with the undo each role
+    //! of the viewer's account allows (§7, §8 Roles and authority). The
+    //! server takes these change kinds through ticket 50, so the policies
+    //! here are built and verified locally.
+
+    use std::collections::BTreeSet;
+
+    use sync_key_envelope::v2::{DeviceKeys, genesis_link, next_link};
+    use sync_protocol::account::AccountChain;
+    use sync_protocol::codec::{Nested, Sorted};
+    use sync_protocol::policy::{AccountChains, PolicyChain};
+    use sync_protocol::records::{
+        Access, AccountHead, AccountLink, Level, LinkKind, PolicyChange, PolicyKind, Role, Signed,
+    };
+    use sync_protocol::types::{Digest, Id};
+
+    use super::removed_card_changes;
+
+    /// An account with its devices and chain links.
+    struct Person {
+        account: Id,
+        devices: Vec<DeviceKeys>,
+        links: Vec<Signed<AccountLink>>,
+    }
+
+    impl Person {
+        fn new(byte: u8) -> Self {
+            let account = Id([byte; 16]);
+            let first = DeviceKeys::generate().unwrap();
+            let links = vec![genesis_link(&first, account)];
+            Self {
+                account,
+                devices: vec![first],
+                links,
+            }
+        }
+
+        fn head(&self) -> AccountHead {
+            self.chain().head()
+        }
+
+        fn chain(&self) -> AccountChain {
+            AccountChain::verify(&self.links, &BTreeSet::new()).unwrap()
+        }
+
+        /// Adds a device through the first device.
+        fn add(&mut self) -> usize {
+            let keys = DeviceKeys::generate().unwrap();
+            let link = next_link(
+                &self.devices[0],
+                &self.head(),
+                LinkKind::AddDevice {
+                    card: Nested(keys.card(self.account)),
+                    offer: Digest([7; 32]),
+                },
+            );
+            self.links.push(link);
+            self.devices.push(keys);
+            self.devices.len() - 1
+        }
+
+        fn device(&self, index: usize) -> &DeviceKeys {
+            &self.devices[index]
+        }
+    }
+
+    /// A workspace's changes as one device after another signs them.
+    struct Log {
+        workspace: Id,
+        changes: Vec<Signed<PolicyChange>>,
+    }
+
+    impl Log {
+        fn new(byte: u8, owner: &Person) -> Self {
+            let mut log = Self {
+                workspace: Id([byte; 16]),
+                changes: Vec::new(),
+            };
+            log.push(
+                owner.device(0),
+                vec![owner.head()],
+                PolicyKind::Genesis {
+                    workspace_domain: Id([byte + 1; 16]),
+                },
+            );
+            log
+        }
+
+        fn push(&mut self, signer: &DeviceKeys, heads: Vec<AccountHead>, kind: PolicyKind) {
+            let previous = self.changes.last().map_or(Digest::ZERO, |c| c.digest());
+            let change = PolicyChange {
+                workspace: self.workspace,
+                revision: self.changes.len() as u64 + 1,
+                previous,
+                signer: signer.device(),
+                heads: Sorted::new(heads).unwrap(),
+                kind,
+            };
+            self.changes.push(Signed::sign(change, signer.signing()));
+        }
+
+        fn verify(&self, people: &[&Person]) -> PolicyChain {
+            let mut chains = AccountChains::new();
+            for person in people {
+                chains.insert(person.chain());
+            }
+            PolicyChain::verify(&self.changes, &chains).unwrap()
+        }
+    }
+
+    fn access(grants: &[(&Person, Level)]) -> sync_protocol::records::AccessList {
+        Sorted::new(
+            grants
+                .iter()
+                .map(|(person, level)| Access {
+                    account: person.account,
+                    level: *level,
+                })
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    fn add_member(role: Role, who: &Person) -> PolicyKind {
+        PolicyKind::AddMember {
+            account: who.account,
+            role,
+            invitation: Id([0x51; 16]),
+        }
+    }
+
+    /// (revision, kind, undo) for each listed change.
+    fn listed(
+        policy: &PolicyChain,
+        viewer: Id,
+        removed: Id,
+    ) -> Vec<(u64, &'static str, Option<&'static str>)> {
+        removed_card_changes(policy, viewer, &BTreeSet::from([removed]))
+            .into_iter()
+            .map(|change| {
+                assert_eq!(change.workspace, policy.workspace());
+                assert_eq!(change.signer, removed);
+                (change.revision, change.kind, change.undo)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_removed_cards_changes_list_with_the_undo_each_role_allows() {
+        let mut alice = Person::new(0xa1);
+        let phone = alice.add();
+        let mut bob = Person::new(0xb0);
+        bob.add();
+        let carol = Person::new(0xc0);
+        let removed = alice.device(phone).device();
+
+        // Alice owns the workspace; her phone, removed since, added members,
+        // changed a role, created a domain and changed its access.
+        let mut owned = Log::new(0x10, &alice);
+        let domain = Id([0x1d; 16]);
+        owned.push(
+            alice.device(phone),
+            vec![alice.head(), bob.head()],
+            add_member(Role::Editor, &bob),
+        );
+        owned.push(
+            alice.device(phone),
+            vec![alice.head(), carol.head()],
+            add_member(Role::Viewer, &carol),
+        );
+        owned.push(
+            alice.device(phone),
+            vec![alice.head()],
+            PolicyKind::SetRole {
+                account: carol.account,
+                role: Role::Editor,
+            },
+        );
+        owned.push(
+            alice.device(phone),
+            vec![alice.head()],
+            PolicyKind::CreateDomain {
+                domain,
+                marker_rid: Id([0x1e; 16]),
+                access: access(&[(&alice, Level::Manage)]),
+            },
+        );
+        owned.push(
+            alice.device(phone),
+            vec![alice.head()],
+            PolicyKind::SetAccess {
+                domain,
+                access: access(&[(&alice, Level::Manage), (&bob, Level::Read)]),
+            },
+        );
+        // Neither an account_heads change nor a change by a device that
+        // stays shows.
+        alice.add();
+        owned.push(
+            alice.device(phone),
+            vec![alice.head()],
+            PolicyKind::AccountHeads,
+        );
+        owned.push(
+            alice.device(0),
+            vec![alice.head()],
+            PolicyKind::SetRole {
+                account: bob.account,
+                role: Role::Viewer,
+            },
+        );
+        let policy = owned.verify(&[&alice, &bob, &carol]);
+        assert_eq!(
+            listed(&policy, alice.account, removed),
+            vec![
+                (2, "add_member", Some("remove_member")),
+                (3, "add_member", Some("remove_member")),
+                (4, "set_role", Some("set_role")),
+                (5, "create_domain", Some("delete_domain")),
+                (6, "set_access", Some("set_access")),
+            ],
+            "an owner undoes each of them"
+        );
+
+        // Alice is an admin of Bob's workspace. Her phone added Carol and
+        // made her a viewer, then Bob made Carol an admin, whom an admin
+        // can't remove or demote.
+        let mut admin = Log::new(0x20, &bob);
+        admin.push(
+            bob.device(0),
+            vec![bob.head(), alice.head()],
+            add_member(Role::Admin, &alice),
+        );
+        admin.push(
+            alice.device(phone),
+            vec![alice.head(), carol.head()],
+            add_member(Role::Editor, &carol),
+        );
+        admin.push(
+            alice.device(phone),
+            vec![alice.head()],
+            PolicyKind::SetRole {
+                account: carol.account,
+                role: Role::Viewer,
+            },
+        );
+        admin.push(
+            alice.device(phone),
+            vec![alice.head()],
+            PolicyKind::CreateDomain {
+                domain: Id([0x2d; 16]),
+                marker_rid: Id([0x2e; 16]),
+                access: access(&[(&alice, Level::Manage)]),
+            },
+        );
+        let policy = admin.verify(&[&alice, &bob, &carol]);
+        assert_eq!(
+            listed(&policy, alice.account, removed),
+            vec![
+                (3, "add_member", Some("remove_member")),
+                (4, "set_role", Some("set_role")),
+                (5, "create_domain", Some("delete_domain")),
+            ],
+            "an admin undoes changes to editors and viewers"
+        );
+        admin.push(
+            bob.device(0),
+            vec![bob.head()],
+            PolicyKind::SetRole {
+                account: carol.account,
+                role: Role::Admin,
+            },
+        );
+        let policy = admin.verify(&[&alice, &bob, &carol]);
+        assert_eq!(
+            listed(&policy, alice.account, removed),
+            vec![
+                (3, "add_member", None),
+                (4, "set_role", None),
+                (5, "create_domain", Some("delete_domain")),
+            ],
+            "an admin can't undo what reaches another admin"
+        );
+
+        // Alice edits Bob's workspace and manages one of its domains, whose
+        // access her phone changed.
+        let mut editor = Log::new(0x30, &bob);
+        let managed = Id([0x3d; 16]);
+        editor.push(
+            bob.device(0),
+            vec![bob.head(), alice.head()],
+            add_member(Role::Editor, &alice),
+        );
+        editor.push(
+            bob.device(0),
+            vec![bob.head(), carol.head()],
+            add_member(Role::Viewer, &carol),
+        );
+        editor.push(
+            bob.device(0),
+            vec![bob.head()],
+            PolicyKind::CreateDomain {
+                domain: managed,
+                marker_rid: Id([0x3e; 16]),
+                access: access(&[(&alice, Level::Manage), (&bob, Level::Manage)]),
+            },
+        );
+        editor.push(
+            alice.device(phone),
+            vec![alice.head()],
+            PolicyKind::SetAccess {
+                domain: managed,
+                access: access(&[
+                    (&alice, Level::Manage),
+                    (&bob, Level::Manage),
+                    (&carol, Level::Read),
+                ]),
+            },
+        );
+        let policy = editor.verify(&[&alice, &bob, &carol]);
+        assert_eq!(
+            listed(&policy, alice.account, removed),
+            vec![(5, "set_access", Some("set_access"))],
+            "an editor who manages the domain undoes its access change"
+        );
+        editor.push(
+            bob.device(0),
+            vec![bob.head()],
+            PolicyKind::SetAccess {
+                domain: managed,
+                access: access(&[(&bob, Level::Manage), (&carol, Level::Read)]),
+            },
+        );
+        let policy = editor.verify(&[&alice, &bob, &carol]);
+        assert_eq!(
+            listed(&policy, alice.account, removed),
+            vec![(5, "set_access", None)],
+            "an editor who no longer manages it can't"
+        );
+    }
+}
+
+#[cfg(test)]
+mod sign_out_tests {
+    use super::{SyncError, skips_sign_out_rotation};
+
+    #[test]
+    fn signing_out_skips_only_rotations_it_cant_commit() {
+        assert!(skips_sign_out_rotation(&SyncError::Check(
+            "sync_policy_rollback"
+        )));
+        assert!(skips_sign_out_rotation(&SyncError::Check(
+            "sync_key_mismatch"
+        )));
+        for code in ["forbidden", "rotation_not_due", "epoch_conflict"] {
+            assert!(skips_sign_out_rotation(&SyncError::Refused {
+                code: code.into(),
+                status: 409,
+                detail: None,
+            }));
+        }
+        assert!(!skips_sign_out_rotation(&SyncError::Network(
+            "connection refused".into()
+        )));
+        assert!(!skips_sign_out_rotation(&SyncError::Refused {
+            code: "unauthorized".into(),
+            status: 401,
+            detail: None,
+        }));
+    }
 }

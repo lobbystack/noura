@@ -119,7 +119,7 @@ pub(crate) async fn apply_change(
         } else if !next.rotations.contains(domain) {
             return Err(refuse(
                 "forbidden",
-                "a device that reads the domain records a head that brings cards into it",
+                "a device that can't read the domain records a head that brings cards in without making it due for rotation",
             ));
         }
     }

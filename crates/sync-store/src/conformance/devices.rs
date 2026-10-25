@@ -413,6 +413,22 @@ pub async fn removing_links_end_sessions<B: Backend>(store: Store<B>) {
         .await
         .expect("read");
     assert_eq!(read, 4);
+    // Only its own account's chains: a cursor for another account answers
+    // device_removed.
+    let (row, _) = store.session_row(&phone_bearer).await.expect("the row");
+    let elsewhere = store
+        .read_chains_as(
+            row,
+            sync_protocol::messages::ChainsRequest {
+                cursors: sync_protocol::codec::List(vec![sync_protocol::messages::ChainCursor {
+                    account: Id::random().expect("random"),
+                    genesis: None,
+                    after: 0,
+                }]),
+            },
+        )
+        .await;
+    assert_eq!(refusal(elsewhere).code, "device_removed");
     store
         .session(&to_base64url(&laptop_token))
         .await

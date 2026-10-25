@@ -14,7 +14,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use sync_protocol::account::CardState;
-use sync_protocol::messages::DeviceState;
 use sync_protocol::records::{Card, LinkKind, PolicyKind};
 use sync_protocol::types::{Digest, Id};
 
@@ -187,13 +186,17 @@ impl SyncService {
             Ok(pending) => pending.pending.iter().map(|p| p.card.0.device).collect(),
             Err(_) => BTreeSet::new(),
         };
+        // The device judges each listed card against its chain, whatever
+        // state the server reports: a card the chain doesn't hold byte for
+        // byte, such as one that reuses a listed device ID under other keys,
+        // alerts. A card without sessions alerts too, so a server can't hide
+        // a card it planted by reporting none; only ending its sessions
+        // waits for one.
         for device in enrolled.devices.iter() {
-            // A card whose sessions ended holds nothing more to end.
-            if device.state == DeviceState::Enrolled
-                && device.sessions > 0
-                && !requested.contains(&device.card.0.device)
-                && chain.card(&device.card.0.device).is_none()
-            {
+            let listed = chain
+                .card(&device.card.0.device)
+                .is_some_and(|state| state.card == device.card.0);
+            if !listed && !requested.contains(&device.card.0.device) {
                 alerts.push(DeviceAlert::UnknownCard {
                     card: device.card.0.clone(),
                     sessions: device.sessions,

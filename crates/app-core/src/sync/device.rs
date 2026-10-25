@@ -222,10 +222,13 @@ impl DeviceSignIn {
         let mut client = SyncClient::anonymous(server).await?;
         let grant = client.device_authorize().await?;
         let verification_uri = grant.verification_uri.as_str().to_owned();
-        // The browser opens only a web page.
-        if !crate::settings::is_web_link(&verification_uri) {
+        // The browser opens only the device page on the server's own
+        // origin, never a page the server names elsewhere (§7).
+        if !crate::settings::is_web_link(&verification_uri)
+            || verification_uri != format!("{}/device", client.origin()?)
+        {
             return Err(SyncError::Invalid(
-                "the server named a device page that isn't a web address".into(),
+                "the server named a device page outside its own address".into(),
             ));
         }
         open_browser(&verification_uri)
@@ -320,6 +323,11 @@ pub enum Joined {
     /// The account had no chain: this device signed its genesis and is the
     /// account's first device.
     First(DeviceCredentials),
+    /// The device joined its chain before and its session ended without a
+    /// link removing its card, such as after a server restore lost the
+    /// session's row: it enrolled again with its existing card, which the
+    /// server bound to the new session, and keeps its reference head (§7).
+    Again(DeviceCredentials),
     /// The account has a chain: this device waits for approval from a
     /// device you already hold (§10).
     NeedsApproval {
@@ -330,20 +338,69 @@ pub enum Joined {
     },
 }
 
-/// Enrolls a signed-in device with fresh keys, keeps its secrets in
-/// `store`, and, for an account without a chain, signs the genesis (§7).
+/// The credential store item that keeps aside the secrets of a device whose
+/// card a link removed or a reset retired, so signing in again never
+/// overwrites them.
+pub fn retired_item(server: &str, device: &Id) -> String {
+    format!("{}.retired.{}", device_item(server), device.to_hex())
+}
+
+/// What a signed-in device enrolls with: the device the credential store
+/// already holds for this server and account, or fresh keys.
+enum Enrolled {
+    /// The stored device's card, bound to the new session.
+    Existing(StoredDevice, DeviceKeys),
+    /// Fresh keys, kept in the credential store before they enrolled.
+    Fresh(StoredDevice, DeviceKeys),
+}
+
+/// Enrolls a signed-in device and keeps its secrets in `store` (§7). A
+/// device the store already holds for this server and account enrolls
+/// again with its existing card, keeps its keys and reference head, and
+/// takes the new session token, so signing in again after a lost session
+/// never replaces an active card's keys. A card a link removed or a reset
+/// retired gets `id_conflict`; its secrets move to [`retired_item`] and
+/// the device enrolls fresh keys. A joined device of another account on
+/// this server stays as it is, and the sign-in fails. For an account
+/// without a chain, the device signs the genesis.
 pub async fn join(signed_in: &SignedIn, store: &dyn SyncCredentials) -> Result<Joined, SyncError> {
-    let keys =
-        DeviceKeys::generate().map_err(|e| SyncError::Invalid(format!("no randomness: {e}")))?;
-    let mut stored = StoredDevice::new(
-        &signed_in.server,
-        signed_in.account,
-        &keys,
-        &signed_in.session_token,
-    );
-    stored.save(store)?;
     let mut client = SyncClient::connect(&signed_in.server, &signed_in.session_token).await?;
-    enroll_card(&mut client, &keys, signed_in.account).await?;
+    let enrolled = match StoredDevice::load(store, &signed_in.server)? {
+        Some(mut stored) if stored.account == signed_in.account => {
+            let keys = stored.keys()?;
+            match enroll_card(&mut client, &keys, signed_in.account).await {
+                Ok(()) => {
+                    stored.session_token = signed_in.session_token.clone();
+                    stored.save(store)?;
+                    Enrolled::Existing(stored, keys)
+                }
+                Err(SyncError::Refused { code, .. }) if code == "id_conflict" => {
+                    let text =
+                        Zeroizing::new(serde_json::to_string(&stored).map_err(credential_error)?);
+                    store
+                        .write(&retired_item(&signed_in.server, &keys.device()), &text)
+                        .map_err(credential_error)?;
+                    fresh(&mut client, signed_in, store).await?
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Some(stored) if stored.reference_head.is_some() => {
+            return Err(SyncError::Invalid(
+                "This computer already holds a device of another account on this server. Sign out of that account first.".into(),
+            ));
+        }
+        _ => fresh(&mut client, signed_in, store).await?,
+    };
+    let (mut stored, keys) = match enrolled {
+        Enrolled::Existing(stored, keys) => {
+            if let Some(credentials) = stored.credentials()? {
+                return Ok(Joined::Again(credentials));
+            }
+            (stored, keys)
+        }
+        Enrolled::Fresh(stored, keys) => (stored, keys),
+    };
     match client.whole_chain(signed_in.account, None).await {
         Err(SyncError::Refused { code, .. }) if code == "not_found" => {
             let genesis = genesis_link(&keys, signed_in.account);
@@ -359,6 +416,25 @@ pub async fn join(signed_in: &SignedIn, store: &dyn SyncCredentials) -> Result<J
         Ok(_) => Ok(Joined::NeedsApproval { keys, client }),
         Err(error) => Err(error),
     }
+}
+
+/// Generates fresh keys, keeps them in `store`, then enrolls them.
+async fn fresh(
+    client: &mut SyncClient,
+    signed_in: &SignedIn,
+    store: &dyn SyncCredentials,
+) -> Result<Enrolled, SyncError> {
+    let keys =
+        DeviceKeys::generate().map_err(|e| SyncError::Invalid(format!("no randomness: {e}")))?;
+    let stored = StoredDevice::new(
+        &signed_in.server,
+        signed_in.account,
+        &keys,
+        &signed_in.session_token,
+    );
+    stored.save(store)?;
+    enroll_card(client, &keys, signed_in.account).await?;
+    Ok(Enrolled::Fresh(stored, keys))
 }
 
 /// Enrolls `keys` as a device of `account` with a fresh challenge (§7).

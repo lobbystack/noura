@@ -21,7 +21,8 @@ use sync_protocol::messages::{
     RewrapBody,
 };
 use sync_protocol::types::{Digest, Id, from_decimal};
-use sync_store::{Backend, Error, Refusal, Session, Store};
+use sync_store::devices::UNBOUND;
+use sync_store::{Backend, Error, Refusal, Session, SessionRow, Store};
 
 /// A failed request: a refusal the protocol names, or a store failure.
 pub struct ApiError(pub Error);
@@ -104,7 +105,23 @@ pub struct AuthWithHash(pub Session, pub Digest);
 
 /// The signed-in device a bearer token names, also when a link removed its
 /// card: such a session keeps the right to read its account's chains (§7).
-pub struct ChainReader(pub Session);
+pub struct ChainReader(pub SessionRow);
+
+/// A session from the device grant before its device enrolled, with the
+/// token's hash: only the challenge and enrollment routes take one, so a
+/// device code nobody enrolled reads nothing (§7).
+pub struct Enrolling(pub Session, pub Digest);
+
+/// Refuses a session that holds no card yet.
+fn bound(session: Session) -> Result<Session, ApiError> {
+    if session.device == UNBOUND {
+        return Err(refused(
+            "forbidden",
+            "enroll this device before the session reads or writes anything",
+        ));
+    }
+    Ok(session)
+}
 
 impl<B: Backend> FromRequestParts<AppState<B>> for ChainReader {
     type Rejection = ApiError;
@@ -114,9 +131,9 @@ impl<B: Backend> FromRequestParts<AppState<B>> for ChainReader {
         state: &AppState<B>,
     ) -> Result<Self, Self::Rejection> {
         let token = bearer(parts)?;
-        Ok(ChainReader(
-            state.store.session_reading_chains(token).await?,
-        ))
+        let row = state.store.session_row(token).await?.0;
+        bound(row.session)?;
+        Ok(ChainReader(row))
     }
 }
 
@@ -137,7 +154,20 @@ impl<B: Backend> FromRequestParts<AppState<B>> for Auth {
         state: &AppState<B>,
     ) -> Result<Self, Self::Rejection> {
         let token = bearer(parts)?;
-        Ok(Auth(state.store.session(token).await?))
+        Ok(Auth(bound(state.store.session(token).await?)?))
+    }
+}
+
+impl<B: Backend> FromRequestParts<AppState<B>> for Enrolling {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState<B>,
+    ) -> Result<Self, Self::Rejection> {
+        let token = bearer(parts)?;
+        let (session, hash) = state.store.session_and_hash(token).await?;
+        Ok(Enrolling(session, hash))
     }
 }
 
@@ -150,7 +180,7 @@ impl<B: Backend> FromRequestParts<AppState<B>> for AuthWithHash {
     ) -> Result<Self, Self::Rejection> {
         let token = bearer(parts)?;
         let (session, hash) = state.store.session_and_hash(token).await?;
-        Ok(AuthWithHash(session, hash))
+        Ok(AuthWithHash(bound(session)?, hash))
     }
 }
 
@@ -361,16 +391,16 @@ async fn append_chain<B: Backend>(
 
 async fn read_chains<B: Backend>(
     State(store): State<Arc<Store<B>>>,
-    ChainReader(session): ChainReader,
+    ChainReader(row): ChainReader,
     request: Body,
 ) -> Result<Response, ApiError> {
     let request: ChainsRequest = decode(&body(request).await?)?;
-    Ok(ok(&store.read_chains(session, request).await?))
+    Ok(ok(&store.read_chains_as(row, request).await?))
 }
 
 async fn challenge<B: Backend>(
     State(store): State<Arc<Store<B>>>,
-    Auth(session): Auth,
+    Enrolling(session, _): Enrolling,
 ) -> Result<Response, ApiError> {
     Ok(ok(&store.challenge(session).await?))
 }
@@ -421,7 +451,7 @@ async fn device_token<B: Backend>(
 
 async fn enroll<B: Backend>(
     State(state): State<AppState<B>>,
-    AuthWithHash(session, hash): AuthWithHash,
+    Enrolling(session, hash): Enrolling,
     request: Body,
 ) -> Result<Response, ApiError> {
     let request: EnrollRequest = decode(&body(request).await?)?;

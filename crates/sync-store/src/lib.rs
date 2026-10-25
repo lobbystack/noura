@@ -1290,6 +1290,25 @@ impl<B: Backend> Store<B> {
         Ok(ChainAppendResponse { seqno })
     }
 
+    /// `POST /v2/accounts/chains` for a stored session: a session whose card
+    /// a link removed reads only its own account's chains, and a cursor for
+    /// any other account answers `device_removed` (§7).
+    pub async fn read_chains_as(
+        &self,
+        row: SessionRow,
+        request: ChainsRequest,
+    ) -> Result<ChainsResponse> {
+        if let Some(link) = row.removed
+            && request
+                .cursors
+                .iter()
+                .any(|cursor| cursor.account != row.session.account)
+        {
+            return Err(device_removed(link));
+        }
+        self.read_chains(row.session, request).await
+    }
+
     /// `POST /v2/accounts/chains`: the links of the chains the session may
     /// read, after each cursor (§7).
     pub async fn read_chains(

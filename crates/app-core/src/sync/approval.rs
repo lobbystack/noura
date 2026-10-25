@@ -116,6 +116,12 @@ impl Candidate {
             None => match offers.as_slice() {
                 [] => Ok(CandidateStep::Waiting),
                 [offer] => {
+                    // An offer the approver's card didn't sign as served,
+                    // such as one whose head a server swapped, gets no
+                    // nonce.
+                    offer
+                        .verify(&offer.body.approver_card.0.signing_public)
+                        .map_err(|_| mismatch())?;
                     check_offer(&offer.body, &card, None, &self.nc).map_err(|_| mismatch())?;
                     let digest = offer.digest();
                     self.client.reveal(digest, self.nc).await?;

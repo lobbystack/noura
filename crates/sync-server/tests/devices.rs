@@ -257,9 +257,39 @@ async fn a_desktop_signs_in_through_the_device_page() {
         (StatusCode::BAD_REQUEST, "expired_token".into()),
         "a device code works once"
     );
-    // The session works before its device enrolls.
-    let workspaces = site.client(Some(token.clone())).get("/v2/workspaces").await;
-    assert_eq!(workspaces.status, StatusCode::OK);
+    // Until its device enrolls, the session takes only the challenge and
+    // the enrollment, so a code nobody enrolled reads nothing.
+    let unbound = site.client(Some(token.clone()));
+    for path in ["/v2/workspaces", "/v2/devices", "/v2/approval-requests"] {
+        assert_eq!(
+            error_code(&unbound.get(path).await),
+            (StatusCode::FORBIDDEN, "forbidden".into()),
+            "{path} before enrollment"
+        );
+    }
+    let chains = unbound
+        .post(
+            "/v2/accounts/chains",
+            ChainsRequest {
+                cursors: List(vec![ChainCursor {
+                    account: email_account,
+                    genesis: None,
+                    after: 0,
+                }]),
+            }
+            .to_bytes(),
+        )
+        .await;
+    assert_eq!(
+        error_code(&chains),
+        (StatusCode::FORBIDDEN, "forbidden".into())
+    );
+    let challenge = unbound.post("/v2/devices/challenge", Vec::new()).await;
+    assert_eq!(
+        challenge.status,
+        StatusCode::OK,
+        "the challenge comes first"
+    );
 
     let raw: [u8; 32] = sync_protocol::types::from_base64url(&token).unwrap();
     let database = std::fs::read(site.data.join(DATABASE_FILE)).unwrap();
@@ -536,4 +566,29 @@ async fn the_approval_routes_carry_one_attempt() {
     assert_eq!(revealed.status, StatusCode::OK, "{:?}", revealed.error());
     let read: RevealBody = laptop_client.get(&path).await.decode();
     assert_eq!(read.nc, nc);
+}
+
+/// The device page takes 10 codes per signed-in account in 10 minutes, so
+/// nobody guesses another computer's code (RFC 8628 §5.1).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_device_page_limits_code_entries() {
+    let site = site().await;
+    let (_, cookie) = site.signed_in("bea@example.com").await;
+    for _ in 0..10 {
+        let (status, _) = site
+            .form("/device", &[("user_code", "BBBB-BBBB")], &cookie)
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    let (status, page) = site
+        .form("/device", &[("user_code", "BBBB-BBBB")], &cookie)
+        .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(page.contains("too many codes"), "{page}");
+    // Another account still enters its codes.
+    let (_, other) = site.signed_in("cai@example.com").await;
+    let (status, _) = site
+        .form("/device", &[("user_code", "BBBB-BBBB")], &other)
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }

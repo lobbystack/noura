@@ -359,7 +359,7 @@ impl SyncService {
                 Ok(Vec::new())
             } else {
                 Err(SyncError::Invalid(
-                    "a device that reads the domain records this head".into(),
+                    "only a device that reads the domain records this head, since it brings cards in without a rotation".into(),
                 ))
             };
         }

@@ -242,6 +242,13 @@ fn unknown_code() -> Response {
     )
 }
 
+/// How many user codes one signed-in account may enter on the device page
+/// per window (RFC 8628 §5.1).
+const DEVICE_CODE_ENTRIES: sync_store::Limit = sync_store::Limit {
+    allowance: 10,
+    window: std::time::Duration::from_secs(600),
+};
+
 /// `POST /device`: checks the entered code and asks you to confirm it.
 async fn device_code<B: Backend>(
     State(state): State<AppState<B>>,
@@ -256,6 +263,23 @@ async fn device_code<B: Backend>(
         Ok(None) => return html(StatusCode::OK, &pages::DeviceSignIn),
         Err(error) => return failure(error),
     };
+    // RFC 8628 §5.1: each signed-in account tries a few codes per window,
+    // so nobody guesses another computer's code.
+    let mut key = b"device-code:".to_vec();
+    key.extend_from_slice(&account.0);
+    let limiter = state.store.backend().limiter();
+    match sync_store::Limiter::take(&*limiter, &key, 1, DEVICE_CODE_ENTRIES).await {
+        Ok(sync_store::Taken::Allowed) => {}
+        Ok(sync_store::Taken::Refused { .. }) => {
+            return html(
+                StatusCode::TOO_MANY_REQUESTS,
+                &pages::Device {
+                    error: "You entered too many codes. Wait 10 minutes, then enter the code your computer shows.",
+                },
+            );
+        }
+        Err(error) => return failure(error),
+    }
     let Some(code) = read_body(body)
         .await
         .and_then(|b| field(&b, "user_code"))

@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use sync_protocol::records::fingerprint_text;
 use sync_protocol::types::Digest;
 pub use sync_protocol::types::Id;
+use zeroize::Zeroizing;
 
 /// A fingerprint as the screens show it: 64 lowercase hexadecimal
 /// characters in 16 groups of 4 (§7).
@@ -39,6 +40,9 @@ pub struct AccountScreen {
     pub busy: bool,
     /// What the last action did wrong, for you to read.
     pub problem: Option<String>,
+    /// Whether this computer holds a device that couldn't connect, such as
+    /// when the server can't be reached, so you can try again.
+    pub can_retry: bool,
 }
 
 /// Where this device's account stands.
@@ -92,8 +96,14 @@ pub struct SignedInView {
     /// The workspace changes that the devices you removed made, which stay
     /// in force, one line each with the undo your role allows (§7).
     pub removed_changes: Vec<String>,
+    /// The kit replacement you're about to confirm, which takes down the
+    /// devices the old kit recovered unless you keep them (§12).
+    pub kit_replacement: Option<KitReplacementView>,
     /// A recovery kit you just exported, with its secret shown once.
     pub kit: Option<KitView>,
+    /// The members a recovery found added to your workspaces after the
+    /// kit's heads, one line each, for you to check (§12).
+    pub added_members: Vec<String>,
     /// Whether the app asks you to export a new kit, after a removal or
     /// after you join a workspace.
     pub offer_kit: bool,
@@ -158,13 +168,25 @@ pub struct RemovalView {
     pub keep: BTreeSet<Id>,
 }
 
+/// A new kit you're about to export over the active one (§12).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KitReplacementView {
+    /// The new kit file.
+    pub path: PathBuf,
+    /// The devices the old kit recovered, which replacing it takes down
+    /// unless you keep them, with their fingerprints.
+    pub devices: Vec<(Id, String)>,
+    /// The devices you chose to keep.
+    pub keep: BTreeSet<Id>,
+}
+
 /// A recovery kit you just exported.
 #[derive(Clone, PartialEq, Eq)]
 pub struct KitView {
     /// The kit file.
     pub path: PathBuf,
-    /// The secret, as 8 groups of 4.
-    pub secret: String,
+    /// The secret, as 8 groups of 4, wiped from memory when the view goes.
+    pub secret: Zeroizing<String>,
 }
 
 impl std::fmt::Debug for KitView {
@@ -187,6 +209,12 @@ pub struct SignOutView {
 pub struct RecoveryView {
     /// What changed since the kit, one line each.
     pub changes: Vec<String>,
+    /// The members of each workspace the kit doesn't list, one line per
+    /// workspace.
+    pub members: Vec<String>,
+    /// The workspaces of your account the recovery couldn't verify, one
+    /// line each with the error; the recovery leaves them out.
+    pub unverified: Vec<String>,
     /// Your other devices, which the recovery removes unless you keep one
     /// you still hold, with their fingerprints.
     pub devices: Vec<(Id, String)>,
@@ -203,6 +231,8 @@ pub enum AccountAction {
     SignIn,
     /// Stop signing in.
     CancelSignIn,
+    /// Connect the device this computer holds again, after it couldn't.
+    Retry,
     /// The approval codes match, on this new device.
     ConfirmCode,
     /// Approve the request at this index of the list.
@@ -224,6 +254,11 @@ pub enum AccountAction {
     EndSessions(Id),
     /// Export a recovery kit to this new file.
     ExportKit(PathBuf),
+    /// Replace the active kit, taking down the devices it recovered except
+    /// the ones you keep.
+    ConfirmExportKit,
+    /// Keep the active kit.
+    CancelExportKit,
     /// You wrote the secret down.
     DismissKit,
     /// Recover your account with a kit and its secret.
@@ -253,6 +288,7 @@ impl std::fmt::Debug for AccountAction {
             AccountAction::SetServer(server) => f.debug_tuple("SetServer").field(server).finish(),
             AccountAction::SignIn => f.write_str("SignIn"),
             AccountAction::CancelSignIn => f.write_str("CancelSignIn"),
+            AccountAction::Retry => f.write_str("Retry"),
             AccountAction::ConfirmCode => f.write_str("ConfirmCode"),
             AccountAction::Approve(index) => f.debug_tuple("Approve").field(index).finish(),
             AccountAction::ConfirmApproval => f.write_str("ConfirmApproval"),
@@ -263,6 +299,8 @@ impl std::fmt::Debug for AccountAction {
             AccountAction::CancelRemove => f.write_str("CancelRemove"),
             AccountAction::EndSessions(id) => f.debug_tuple("EndSessions").field(id).finish(),
             AccountAction::ExportKit(path) => f.debug_tuple("ExportKit").field(path).finish(),
+            AccountAction::ConfirmExportKit => f.write_str("ConfirmExportKit"),
+            AccountAction::CancelExportKit => f.write_str("CancelExportKit"),
             AccountAction::DismissKit => f.write_str("DismissKit"),
             AccountAction::ConfirmRecovery => f.write_str("ConfirmRecovery"),
             AccountAction::SignOut => f.write_str("SignOut"),

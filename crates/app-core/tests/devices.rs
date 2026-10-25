@@ -9,10 +9,13 @@ mod sync_support;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use app_core::sync::SyncError;
-use app_core::sync::device::{DeviceSignIn, Joined, Pause, SignInEnd, StoredDevice, join};
-use sync_store::Backend;
-use sync_support::{MemorySecrets, Server};
+use app_core::sync::device::{
+    DeviceSignIn, Joined, Pause, SignInEnd, StoredDevice, join, retired_item,
+};
+use app_core::sync::{KeptHeads, SyncClient, SyncError, SyncService};
+use local_core::sync::SyncCredentials as _;
+use sync_store::{Backend, WriteTxn as _};
+use sync_support::{MemorySecrets, Server, approve, first_desktop};
 
 /// What runs before the poll that follows a wait: it may start a task the
 /// wait then finishes.
@@ -124,7 +127,7 @@ async fn the_first_device_signs_in_through_the_browser_and_starts_the_chain() {
     let secrets = Arc::new(MemorySecrets::default());
     let credentials = match join(&signed_in, &*secrets).await.expect("enrolled") {
         Joined::First(credentials) => credentials,
-        Joined::NeedsApproval { .. } => panic!("the first device starts the chain"),
+        _ => panic!("the first device starts the chain"),
     };
     let stored = StoredDevice::load(&*secrets, &server.base)
         .unwrap()
@@ -248,6 +251,149 @@ async fn polling_slows_down_and_a_refused_or_expired_code_fails_clearly() {
     let expired = sign_in.finish(&clock).await.expect_err("expired");
     assert!(matches!(expired, SyncError::SignIn(SignInEnd::Expired)));
     assert!(expired.to_string().contains("expired"));
+}
+
+/// A device whose session row a server restore lost signs in again: it
+/// enrolls its existing card, which the server binds to the new session, and
+/// keeps its keys, its reference head and its workspaces (§7, §14).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_whose_session_was_lost_enrolls_its_card_again() {
+    let server = Server::start().await;
+    let account = person(&server, "cy@example.com").await;
+    let signed_in = server.sign_in(account, &server.base).await;
+    let secrets = Arc::new(MemorySecrets::default());
+    let first = match join(&signed_in, &*secrets).await.expect("enrolled") {
+        Joined::First(credentials) => credentials,
+        _ => panic!("the first device starts the chain"),
+    };
+    let device = first.keys.device();
+    let state = tempfile::tempdir().unwrap();
+    let mut service = SyncService::connect(
+        &server.base,
+        first.clone(),
+        KeptHeads::open(state.path(), account, device, &*secrets).unwrap(),
+        secrets.clone(),
+    )
+    .await
+    .unwrap();
+    let mut workspace = service.create_workspace("Notes").await.unwrap();
+    service
+        .push_file(&mut workspace, "Kept.md", b"# Kept\n")
+        .await
+        .unwrap();
+    drop(service);
+
+    // A restore loses the session's row.
+    server
+        .store
+        .backend()
+        .write(Box::new(move |txn: &mut sync_store_sqlite::SqliteTxn| {
+            Box::pin(async move {
+                txn.delete_device_sessions(account, device)
+                    .await
+                    .map(|_| ())
+            })
+        }))
+        .await
+        .unwrap();
+    let refused = SyncClient::connect(&server.base, &first.session_token)
+        .await
+        .unwrap()
+        .workspaces()
+        .await
+        .expect_err("the session is gone");
+    assert_eq!(refused.code(), Some("unauthorized"));
+
+    // Signing in again binds a new session to the same card.
+    let again = server.sign_in(account, &server.base).await;
+    let credentials = match join(&again, &*secrets).await.expect("enrolled again") {
+        Joined::Again(credentials) => credentials,
+        _ => panic!("the device keeps its card"),
+    };
+    assert_eq!(credentials.keys.device(), device);
+    assert_eq!(
+        credentials.keys.signing().seed().expose(),
+        first.keys.signing().seed().expose()
+    );
+    assert_eq!(credentials.reference_head, first.reference_head);
+    assert_eq!(credentials.session_token, again.session_token);
+    assert_ne!(credentials.session_token, first.session_token);
+    let stored = StoredDevice::load(&*secrets, &server.base)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.session_token(), again.session_token);
+
+    let mut service = SyncService::connect(
+        &server.base,
+        credentials,
+        KeptHeads::open(state.path(), account, device, &*secrets).unwrap(),
+        secrets.clone(),
+    )
+    .await
+    .unwrap();
+    let chain = service.own_chain().await.unwrap();
+    assert_eq!(
+        chain.active_at(chain.head_seqno()).len(),
+        1,
+        "no new card joined the chain"
+    );
+    let mut remote = service.open_workspace(workspace.workspace).await.unwrap();
+    let files = service.pull_files(&mut remote).await.unwrap();
+    assert!(files.iter().any(|f| f.bytes == b"# Kept\n"));
+    let listed = service.client().devices().await.unwrap();
+    assert_eq!(listed.devices.0.len(), 1);
+    assert_eq!(listed.devices.0[0].sessions, 1, "the new session alone");
+}
+
+/// Signing in again never overwrites a stored device's keys: a card a link
+/// removed keeps its secrets aside and the device enrolls fresh keys, and a
+/// joined device of another account stays as it is (§7).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn signing_in_again_never_overwrites_a_stored_device() {
+    let server = Server::start().await;
+    let mut laptop = first_desktop(&server, "dee@example.com").await;
+    let account = laptop.credentials.account;
+    let phone = approve(&server, &mut laptop, &mut []).await;
+    let old = StoredDevice::load(&*phone.secrets, &server.base)
+        .unwrap()
+        .expect("the phone's device");
+    laptop
+        .service
+        .remove_device(phone.id(), &[], &mut [])
+        .await
+        .unwrap();
+
+    // The removed phone signs in again: its card gets id_conflict, so its
+    // secrets move aside and it enrolls a new card that waits for approval.
+    let signed_in = server.sign_in(account, &server.base).await;
+    let keys = match join(&signed_in, &*phone.secrets).await.expect("enrolled") {
+        Joined::NeedsApproval { keys, .. } => keys,
+        _ => panic!("a new card waits for approval"),
+    };
+    assert_ne!(keys.device(), phone.id());
+    let retired = phone
+        .secrets
+        .read_optional(&retired_item(&server.base, &phone.id()))
+        .unwrap()
+        .expect("the removed card's secrets stay");
+    assert!(retired.contains(old.session_token()));
+    let stored = StoredDevice::load(&*phone.secrets, &server.base)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.card().unwrap().device, keys.device());
+
+    // A computer whose device belongs to another account keeps it.
+    let other = person(&server, "eli@example.com").await;
+    let signed_in = server.sign_in(other, &server.base).await;
+    let refused = join(&signed_in, &*laptop.secrets)
+        .await
+        .err()
+        .expect("another account's device stays");
+    assert!(refused.to_string().contains("another account"), "{refused}");
+    let kept = StoredDevice::load(&*laptop.secrets, &server.base)
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept.card().unwrap().device, laptop.id());
 }
 
 /// Every file under `dir`.

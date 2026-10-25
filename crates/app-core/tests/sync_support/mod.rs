@@ -507,7 +507,7 @@ pub async fn first_desktop<B: Backend>(server: &Server<B>, email: &str) -> Deskt
         .expect("enrolled")
     {
         app_core::sync::device::Joined::First(credentials) => credentials,
-        app_core::sync::device::Joined::NeedsApproval { .. } => panic!("a first device"),
+        _ => panic!("a first device"),
     };
     Desktop::connect(
         &server.base,
@@ -537,7 +537,7 @@ pub async fn new_desktop<B: Backend>(server: &Server<B>, account: Id, base: &str
         .expect("enrolled")
     {
         app_core::sync::device::Joined::NeedsApproval { keys, client } => (keys, client),
-        app_core::sync::device::Joined::First(_) => panic!("the account has a chain"),
+        _ => panic!("the account has a chain"),
     };
     let client = if base == server.base {
         client

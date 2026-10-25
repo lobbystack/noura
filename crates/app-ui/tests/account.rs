@@ -8,9 +8,12 @@ mod support;
 
 use std::sync::{Arc, Mutex};
 
+use std::collections::BTreeSet;
+
 use app_core::account::{
     AccountAction, AccountBackend, AccountPhase, AccountScreen, AlertEntry, ApprovalView,
-    DeviceEntry, Id, KitView, RequestEntry, SignOutView, SignedInView,
+    DeviceEntry, Id, KitReplacementView, KitView, RecoveryView, RequestEntry, SignOutView,
+    SignedInView,
 };
 use app_core::sync::recovery::KIT_WARNING;
 use app_core::{App, settings_section};
@@ -205,7 +208,7 @@ fn the_device_list_alerts_and_signs_out_a_device_nobody_approved() {
     let app_data = tempfile::tempdir().unwrap();
     let account = Arc::new(FakeAccount::default());
     let unknown = format!("A device that nobody approved signed in to your account: {PHONE}.");
-    let changed = "Device 1111 2222 changed a workspace (set_role).";
+    let changed = "Device 1111 2222 changed workspace 0a0b0c0d at revision 4 (set_role).";
     account.show(signed_in(SignedInView {
         account_fingerprint: ACCOUNT.into(),
         devices: devices(),
@@ -362,7 +365,7 @@ fn the_export_screen_asks_you_to_keep_the_kit_and_secret_apart() {
         devices: devices(),
         kit: Some(KitView {
             path: folder.path().join("Noura recovery kit.noura-kit"),
-            secret: "ABCD EFGH IJKL MNOP QRST UVWX YZ23 4567".into(),
+            secret: zeroize::Zeroizing::new("ABCD EFGH IJKL MNOP QRST UVWX YZ23 4567".into()),
         }),
         ..SignedInView::default()
     }));
@@ -396,4 +399,134 @@ fn signing_out_the_last_device_warns_first() {
         .click_accesskit();
     harness.run();
     assert_eq!(account.taken(), vec![AccountAction::CancelSignOut]);
+}
+
+#[test]
+fn a_device_that_couldnt_connect_offers_to_try_again() {
+    let app_data = tempfile::tempdir().unwrap();
+    let account = Arc::new(FakeAccount::default());
+    let problem = "This computer's session with the sync server ended. Sign in again with your browser, and this device keeps its keys.";
+    account.show(AccountScreen {
+        server: "https://sync.example.com".into(),
+        problem: Some(problem.into()),
+        can_retry: true,
+        ..AccountScreen::default()
+    });
+    let mut harness = harness(app_data.path(), account.clone());
+    harness.get_by_role_and_label(Role::Alert, problem);
+    harness
+        .get_by_role_and_label(Role::Button, "Try again")
+        .click_accesskit();
+    harness.run();
+    harness
+        .get_by_role_and_label(Role::Button, "Sign in with your browser")
+        .click_accesskit();
+    harness.run();
+    assert_eq!(
+        account.taken(),
+        vec![AccountAction::Retry, AccountAction::SignIn]
+    );
+    assert!(harness.unnamed_widgets().is_empty());
+}
+
+#[test]
+fn a_removed_computer_signs_in_as_a_new_device() {
+    let app_data = tempfile::tempdir().unwrap();
+    let account = Arc::new(FakeAccount::default());
+    account.show(AccountScreen {
+        server: "https://sync.example.com".into(),
+        phase: AccountPhase::Removed { by: LAPTOP.into() },
+        ..AccountScreen::default()
+    });
+    let mut harness = harness(app_data.path(), account.clone());
+    harness.get_by_label(LAPTOP);
+    harness
+        .get_by_role_and_label(Role::Button, "Sign in as a new device")
+        .click_accesskit();
+    harness.run();
+    assert_eq!(account.taken(), vec![AccountAction::SignIn]);
+}
+
+#[test]
+fn the_recovery_review_shows_members_unverified_workspaces_and_your_devices() {
+    let app_data = tempfile::tempdir().unwrap();
+    let account = Arc::new(FakeAccount::default());
+    let change = "Your account: add_device by device 22222222.";
+    let members = "Workspace 33333333 has these members: your account, account 55555555.";
+    let unverified = "Noura couldn't verify workspace 66666666 (sync_workspace_unverified), so the recovery leaves it out.";
+    account.show(AccountScreen {
+        server: "https://sync.example.com".into(),
+        phase: AccountPhase::Recovering(RecoveryView {
+            changes: vec![change.into()],
+            members: vec![members.into()],
+            unverified: vec![unverified.into()],
+            devices: vec![(Id([2; 16]), PHONE.into())],
+            keep: BTreeSet::new(),
+        }),
+        ..AccountScreen::default()
+    });
+    let mut harness = harness(app_data.path(), account.clone());
+    harness.get_by_label(change);
+    harness.get_by_role_and_label(Role::Group, "Workspaces your kit doesn't list");
+    harness.get_by_label(members);
+    harness.get_by_role_and_label(Role::Alert, unverified);
+    harness
+        .get_by_role_and_label(Role::CheckBox, &format!("Keep {PHONE}"))
+        .click_accesskit();
+    harness.run();
+    harness
+        .get_by_role_and_label(Role::Button, "Recover this account")
+        .click_accesskit();
+    harness.run();
+    assert_eq!(
+        account.taken(),
+        vec![
+            AccountAction::ToggleKeep(Id([2; 16])),
+            AccountAction::ConfirmRecovery
+        ]
+    );
+    assert!(harness.unnamed_widgets().is_empty());
+}
+
+#[test]
+fn replacing_a_kit_lists_the_devices_it_recovered_with_keep_choices() {
+    let app_data = tempfile::tempdir().unwrap();
+    let account = Arc::new(FakeAccount::default());
+    let added = "Account 77777777 joined workspace 33333333 after you exported the kit.";
+    account.show(signed_in(SignedInView {
+        account_fingerprint: ACCOUNT.into(),
+        devices: devices(),
+        added_members: vec![added.into()],
+        kit_replacement: Some(KitReplacementView {
+            path: app_data.path().join("Noura recovery kit.noura-kit"),
+            devices: vec![(Id([2; 16]), PHONE.into())],
+            keep: BTreeSet::new(),
+        }),
+        ..SignedInView::default()
+    }));
+    let mut harness = harness(app_data.path(), account.clone());
+    harness.get_by_role_and_label(Role::Group, "Members added since your kit");
+    harness.get_by_label(added);
+    harness.get_by_role_and_label(Role::Group, "Replace your recovery kit");
+    harness
+        .get_by_role_and_label(Role::CheckBox, &format!("Keep {PHONE}"))
+        .click_accesskit();
+    harness.run();
+    harness
+        .get_by_role_and_label(Role::Button, "Export the new kit")
+        .click_accesskit();
+    harness.run();
+    harness
+        .get_by_role_and_label(Role::Button, "Keep the current kit")
+        .click_accesskit();
+    harness.run();
+    assert_eq!(
+        account.taken(),
+        vec![
+            AccountAction::ToggleKeep(Id([2; 16])),
+            AccountAction::ConfirmExportKit,
+            AccountAction::CancelExportKit
+        ]
+    );
+    assert!(harness.unnamed_widgets().is_empty());
 }

@@ -325,6 +325,15 @@ impl Recovery {
         if !identity.matches(&kit.card) {
             return Err(kit_invalid());
         }
+        // A device this computer already holds for the server keeps its
+        // keys: recovering never replaces them.
+        if StoredDevice::load(&*store, &signed_in.server)?
+            .is_some_and(|stored| stored.reference_head.is_some())
+        {
+            return Err(SyncError::Invalid(
+                "This computer already holds a device of an account on this server. Sign in with it, or sign it out, before you recover.".into(),
+            ));
+        }
         let keys = random(DeviceKeys::generate())?;
         let mut stored = StoredDevice::new(
             &signed_in.server,

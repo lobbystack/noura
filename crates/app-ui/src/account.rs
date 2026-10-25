@@ -144,6 +144,16 @@ pub(crate) fn section(
                     ui.label("Removed by the device with this fingerprint:");
                     fingerprint_line(ui, by);
                 }
+                muted(
+                    ui,
+                    "To sync here again, sign in as a new device and approve it from a device you hold.",
+                );
+                if ui
+                    .add_enabled(!screen.busy, Button::new("Sign in as a new device"))
+                    .clicked()
+                {
+                    actions.push(AccountAction::SignIn);
+                }
             });
         }
     }
@@ -178,6 +188,20 @@ fn signed_out(
             alert(ui, problem);
         }
     });
+    if screen.can_retry {
+        group(ui, "Connect again", |ui| {
+            muted(
+                ui,
+                "This computer holds a device of your account that couldn't connect.",
+            );
+            if ui
+                .add_enabled(!screen.busy, Button::new("Try again"))
+                .clicked()
+            {
+                actions.push(AccountAction::Retry);
+            }
+        });
+    }
     group(ui, "Sign in", |ui| {
         muted(
             ui,
@@ -230,6 +254,21 @@ fn recovering(ui: &mut Ui, review: &RecoveryView, actions: &mut Vec<AccountActio
             ui.label(change);
         }
     });
+    if !review.members.is_empty() {
+        group(ui, "Workspaces your kit doesn't list", |ui| {
+            ui.label("Noura checked these workspaces against your account. Recover only if you know every member:");
+            for line in &review.members {
+                ui.label(line);
+            }
+        });
+    }
+    if !review.unverified.is_empty() {
+        group(ui, "Workspaces Noura couldn't check", |ui| {
+            for line in &review.unverified {
+                alert(ui, line);
+            }
+        });
+    }
     group(ui, "Your other devices", |ui| {
         ui.label("Recovering removes these devices. Keep the ones you still hold.");
         for (device, fingerprint) in &review.devices {
@@ -368,11 +407,44 @@ fn signed_in_section(
             }
         });
     }
+    if !view.added_members.is_empty() {
+        group(ui, "Members added since your kit", |ui| {
+            ui.label("These accounts joined your workspaces after you exported the kit. Check that you know each one:");
+            for line in &view.added_members {
+                ui.label(line);
+            }
+        });
+    }
+    if let Some(replacement) = &view.kit_replacement {
+        group(ui, "Replace your recovery kit", |ui| {
+            ui.label("Your current kit recovered these devices. A new kit removes them, unless you keep the ones you hold:");
+            for (device, fingerprint) in &replacement.devices {
+                let mut keep = replacement.keep.contains(device);
+                if ui
+                    .checkbox(&mut keep, format!("Keep {fingerprint}"))
+                    .changed()
+                {
+                    actions.push(AccountAction::ToggleKeep(*device));
+                }
+            }
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(!screen.busy, Button::new("Export the new kit"))
+                    .clicked()
+                {
+                    actions.push(AccountAction::ConfirmExportKit);
+                }
+                if ui.button("Keep the current kit").clicked() {
+                    actions.push(AccountAction::CancelExportKit);
+                }
+            });
+        });
+    }
     group(ui, "Recovery kit", |ui| match &view.kit {
         Some(kit) => {
             ui.label(format!("Noura saved your kit to {}.", kit.path.display()));
             ui.label("Write this secret down now. Noura won't show it again:");
-            code(ui, &kit.secret);
+            code(ui, kit.secret.as_str());
             if ui.button("I wrote it down").clicked() {
                 actions.push(AccountAction::DismissKit);
             }

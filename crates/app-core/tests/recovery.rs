@@ -12,10 +12,15 @@ mod sync_support;
 
 use std::sync::Arc;
 
-use app_core::sync::SyncError;
+use app_core::sync::device::enroll_card;
 use app_core::sync::recovery::{Recovery, open_kit};
+use app_core::sync::{SyncClient, SyncError};
+use sync_key_envelope::v2::{DeviceKeys, next_link, recovery_proof};
+use sync_protocol::codec::Nested;
+use sync_protocol::records::{KitPayload, LinkKind};
+use sync_protocol::types::Id;
 use sync_store::Backend;
-use sync_support::{MemorySecrets, Server, approve, first_desktop};
+use sync_support::{MemorySecrets, Server, approve, first_desktop, head_of};
 
 fn retyped(secret: &str) -> String {
     // Lowercase, with hyphens for spaces, as you might type it back.
@@ -225,6 +230,111 @@ async fn a_replaced_kit_no_longer_recovers() {
     )
     .await;
     assert!(matches!(result, Err(SyncError::KitRevoked)));
+}
+
+/// A device that `kit`'s recovery identity recovers on a new computer, as
+/// a recovery's step 4 appends it, while the account's other devices stay.
+async fn recovered_by<B: Backend>(server: &Server<B>, kit: &KitPayload) -> Id {
+    let account = kit.account;
+    let signed_in = server.sign_in(account, &server.base).await;
+    let identity = DeviceKeys::from_seeds(&kit.signing_seed, kit.hpke_secret.clone());
+    let keys = DeviceKeys::generate().unwrap();
+    let mut client = SyncClient::connect(&server.base, &signed_in.session_token)
+        .await
+        .unwrap();
+    enroll_card(&mut client, &keys, account).await.unwrap();
+    let challenge = client.challenge().await.unwrap().challenge;
+    let origin = client.origin().unwrap();
+    client
+        .prove_recovery(recovery_proof(
+            &identity,
+            &origin,
+            &keys.card(account),
+            challenge,
+        ))
+        .await
+        .unwrap();
+    let (links, _) = client.whole_chain(account, None).await.unwrap();
+    let link = next_link(
+        &identity,
+        &head_of(&links),
+        LinkKind::RecoverDevice {
+            card: Nested(keys.card(account)),
+        },
+    );
+    client.append_chain(vec![link]).await.unwrap();
+    keys.device()
+}
+
+/// Replacing a kit removes the old identity, which takes down the devices it
+/// recovered, so the app lists them first and keeps the ones you choose
+/// (§12).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replacing_a_kit_lists_the_devices_it_recovered_and_keeps_your_choice() {
+    let server = Server::start().await;
+    let mut laptop = first_desktop(&server, "cy@example.com").await;
+    let mut workspace = laptop.service.create_workspace("Notes").await.unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let first = outside.path().join("First kit");
+    let export = laptop
+        .service
+        .export_kit(&first, &[], std::slice::from_mut(&mut workspace))
+        .await
+        .unwrap();
+    let kept = recovered_by(&server, &open_kit(&first, &export.secret).unwrap()).await;
+    let listed: Vec<Id> = laptop
+        .service
+        .kit_replacement()
+        .await
+        .unwrap()
+        .iter()
+        .map(|card| card.device)
+        .collect();
+    assert_eq!(listed, vec![kept], "the device the kit recovered");
+
+    // You keep it: the new kit's remove link spares it.
+    let second = outside.path().join("Second kit");
+    let export = laptop
+        .service
+        .export_kit(&second, &[kept], std::slice::from_mut(&mut workspace))
+        .await
+        .expect("replaced, keeping the device");
+    let chain = laptop.service.own_chain().await.unwrap();
+    assert!(chain.is_active_at(&kept, chain.head_seqno()));
+    assert!(
+        laptop.service.kit_replacement().await.unwrap().is_empty(),
+        "the new kit recovered nothing yet"
+    );
+
+    // Without keeping, the next replacement takes its recovered device down.
+    let gone = recovered_by(&server, &open_kit(&second, &export.secret).unwrap()).await;
+    let listed: Vec<Id> = laptop
+        .service
+        .kit_replacement()
+        .await
+        .unwrap()
+        .iter()
+        .map(|card| card.device)
+        .collect();
+    assert_eq!(listed, vec![gone]);
+    laptop
+        .service
+        .export_kit(
+            &outside.path().join("Third kit"),
+            &[],
+            std::slice::from_mut(&mut workspace),
+        )
+        .await
+        .expect("replaced");
+    let chain = laptop.service.own_chain().await.unwrap();
+    let head = chain.head_seqno();
+    assert!(!chain.is_active_at(&gone, head));
+    assert!(chain.is_active_at(&kept, head));
+    assert!(chain.is_active_at(&laptop.id(), head));
+    assert_eq!(
+        chain.active_at(head).iter().filter(|s| s.recovery).count(),
+        1
+    );
 }
 
 fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
