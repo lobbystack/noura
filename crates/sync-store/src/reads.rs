@@ -458,7 +458,12 @@ pub(crate) async fn rewrap(
             "the server took no envelope of this epoch for the device",
         ));
     }
-    let record = RewrapRequest { device, epoch }.to_bytes();
+    let record = RewrapRequest {
+        domain,
+        device,
+        epoch,
+    }
+    .to_bytes();
     let key_seq = txn
         .append_key_entry(workspace, KEY_REWRAP, domain, epoch, None, &record)
         .await?;

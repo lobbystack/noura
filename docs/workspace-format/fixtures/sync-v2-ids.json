@@ -195,6 +195,33 @@
 			"kind": "account_id",
 			"name": "account_id_of_åsa@example.se",
 			"secret": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e"
+		},
+		{
+			"account": "805195eefc6c3885569d8ba6aff6a9f9",
+			"expect": "fddd7e520fe564e3416bfc8eecef33143d4c5e8f1793285768bdc8426a5b33c1",
+			"expires_at": 1790000600,
+			"kind": "device_confirmation",
+			"name": "device_confirmation",
+			"secret": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+			"user_code": "BCDFGHJK"
+		},
+		{
+			"account": "805195eefc6c3885569d8ba6aff6a9f9",
+			"expect": "77a8f809a7c2e59cc5fc6c5a0fb1d374dddd97e1db7c61430238abd0eb38dd67",
+			"expires_at": 1790000600,
+			"kind": "device_confirmation",
+			"name": "device_confirmation_of_another_code",
+			"secret": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+			"user_code": "BCDFGHJL"
+		},
+		{
+			"account": "805195eefc6c3885569d8ba6aff6a9f9",
+			"expect": "091d91ae908533c0ec7aa50e48e7b84f4ad74ac74ed895bc556aa4eba4bffb73",
+			"expires_at": 1790000601,
+			"kind": "device_confirmation",
+			"name": "device_confirmation_of_another_expiry",
+			"secret": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+			"user_code": "BCDFGHJK"
 		}
 	],
 	"chains": {

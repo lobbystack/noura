@@ -464,8 +464,10 @@ crate::wire_struct! {
 
 crate::wire_struct! {
     /// A re-wrap request in the key stream: a device asks for a new
-    /// envelope of an epoch.
+    /// envelope of a domain's epoch.
     pub struct RewrapRequest {
+        /// The domain.
+        pub domain: Id,
         /// The requesting device.
         pub device: Id,
         /// The epoch.

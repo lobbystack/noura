@@ -107,6 +107,25 @@ impl Site {
         (response.status(), response.text().await.expect("a body"))
     }
 
+    /// Sends the device page's decision form that `confirm`, the page
+    /// shown after a code entry, holds, with `decision`.
+    async fn decide(&self, confirm: &str, decision: &str, cookie: &str) -> (StatusCode, String) {
+        let user_code = hidden(confirm, "user_code");
+        let expires = hidden(confirm, "expires");
+        let confirmation = hidden(confirm, "confirmation");
+        self.form(
+            "/device/decide",
+            &[
+                ("user_code", &user_code),
+                ("expires", &expires),
+                ("confirmation", &confirmation),
+                ("decision", decision),
+            ],
+            cookie,
+        )
+        .await
+    }
+
     /// Signs a desktop in through the device page as `cookie`'s account and
     /// returns its session token.
     async fn device_sign_in(&self, cookie: &str) -> DeviceTokenResponse {
@@ -123,16 +142,7 @@ impl Site {
             )
             .await;
         assert!(confirm.contains(grant.user_code.as_str()), "{confirm}");
-        let (status, done) = self
-            .form(
-                "/device/decide",
-                &[
-                    ("user_code", grant.user_code.as_str()),
-                    ("decision", "approve"),
-                ],
-                cookie,
-            )
-            .await;
+        let (status, done) = self.decide(&confirm, "approve", cookie).await;
         assert_eq!(status, StatusCode::OK, "{done}");
         poll(&anonymous, &grant.device_code).await.decode()
     }
@@ -239,13 +249,7 @@ async fn a_desktop_signs_in_through_the_device_page() {
         .await;
     assert!(confirm.contains(&user_code), "{confirm}");
     assert!(confirm.contains("ada@example.com"), "{confirm}");
-    let (_, done) = site
-        .form(
-            "/device/decide",
-            &[("user_code", &user_code), ("decision", "approve")],
-            &cookie,
-        )
-        .await;
+    let (_, done) = site.decide(&confirm, "approve", &cookie).await;
     assert!(done.contains("Device signed in"), "{done}");
 
     let signed_in: DeviceTokenResponse = poll(&anonymous, &grant.device_code).await.decode();
@@ -323,16 +327,14 @@ async fn polling_answers_the_rfc_8628_errors() {
         error_code(&poll(&anonymous, &grant.device_code).await),
         (StatusCode::BAD_REQUEST, "slow_down".into())
     );
-    let (_, refused) = site
+    let (_, confirm) = site
         .form(
-            "/device/decide",
-            &[
-                ("user_code", grant.user_code.as_str()),
-                ("decision", "deny"),
-            ],
+            "/device",
+            &[("user_code", grant.user_code.as_str())],
             &cookie,
         )
         .await;
+    let (_, refused) = site.decide(&confirm, "deny", &cookie).await;
     assert!(refused.contains("Sign-in refused"), "{refused}");
     assert_eq!(
         error_code(&poll(&anonymous, &grant.device_code).await),
@@ -566,6 +568,83 @@ async fn the_approval_routes_carry_one_attempt() {
     assert_eq!(revealed.status, StatusCode::OK, "{:?}", revealed.error());
     let read: RevealBody = laptop_client.get(&path).await.decode();
     assert_eq!(read.nc, nc);
+}
+
+/// The value of the hidden form field `name` on `page`.
+fn hidden(page: &str, name: &str) -> String {
+    let marker = format!("name=\"{name}\" value=\"");
+    let start = page
+        .find(&marker)
+        .unwrap_or_else(|| panic!("no {name} on {page}"))
+        + marker.len();
+    let end = start + page[start..].find('"').expect("a closing quote");
+    page[start..end].to_owned()
+}
+
+/// A decision on the device page needs the confirmation that the page
+/// showed after you entered that code as that account, before it expired
+/// (RFC 8628 §5.1): sending the decision form straight away, with
+/// guessed codes, another account's confirmation or a changed expiry,
+/// signs nothing in, however often it's tried.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_decision_needs_the_confirmation_of_a_code_entry() {
+    let site = site().await;
+    let anonymous = site.client(None);
+    let (_, cookie) = site.signed_in("bea@example.com").await;
+    let grant: DeviceAuthorizeResponse = anonymous
+        .post("/v2/device/authorize", Vec::new())
+        .await
+        .decode();
+    let code = grant.user_code.as_str();
+    for _ in 0..12 {
+        let (status, page) = site
+            .form(
+                "/device/decide",
+                &[("user_code", code), ("decision", "approve")],
+                &cookie,
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(page.contains("That code"), "{page}");
+    }
+    let (_, confirm) = site.form("/device", &[("user_code", code)], &cookie).await;
+    let expires = hidden(&confirm, "expires");
+    let confirmation = hidden(&confirm, "confirmation");
+    // Another account can't use bea's confirmation.
+    let (_, other) = site.signed_in("cai@example.com").await;
+    let (status, _) = site.decide(&confirm, "approve", &other).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // A later expiry or another code breaks it.
+    let later = (expires.parse::<u64>().unwrap() + 600).to_string();
+    for fields in [
+        [code, later.as_str(), confirmation.as_str()],
+        ["BBBB-BBBB", expires.as_str(), confirmation.as_str()],
+    ] {
+        let (status, _) = site
+            .form(
+                "/device/decide",
+                &[
+                    ("user_code", fields[0]),
+                    ("expires", fields[1]),
+                    ("confirmation", fields[2]),
+                    ("decision", "approve"),
+                ],
+                &cookie,
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    assert_eq!(
+        error_code(&poll(&anonymous, &grant.device_code).await).1,
+        "authorization_pending",
+        "nothing decided the grant"
+    );
+    // Past its 10 minutes the confirmation stops working.
+    site.store
+        .clock()
+        .advance(std::time::Duration::from_secs(601));
+    let (status, _) = site.decide(&confirm, "approve", &cookie).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 /// The device page takes 10 codes per signed-in account in 10 minutes, so

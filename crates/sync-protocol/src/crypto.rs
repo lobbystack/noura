@@ -38,9 +38,11 @@ pub mod context {
     pub const SECRET_CHECK: &str = "noura.sync.v2 secret check";
     /// The passkey user handle key, from the server's secret.
     pub const PASSKEY_USER: &str = "noura.sync.v2 passkey user";
+    /// The device page's confirmation key, from the server's secret.
+    pub const DEVICE_CONFIRMATION: &str = "noura.sync.v2 device confirmation";
 
     /// Every context, in the order of §32.
-    pub const ALL: [&str; 13] = [
+    pub const ALL: [&str; 14] = [
         OPERATION_KEY,
         LINEAGE_KEY,
         KEY_CHECK,
@@ -54,6 +56,7 @@ pub mod context {
         ACCOUNT_ID,
         SECRET_CHECK,
         PASSKEY_USER,
+        DEVICE_CONFIRMATION,
     ];
 }
 

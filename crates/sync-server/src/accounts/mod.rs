@@ -297,11 +297,20 @@ async fn device_code<B: Backend>(
         Ok(None) => return html(StatusCode::OK, &pages::DeviceSignIn),
         Err(error) => return failure(error),
     };
+    // The decision form carries a confirmation of this entry, so a
+    // decision always follows a code entry that the limit above counted.
+    let expires = state.store.clock().now() + sync_store::SIGN_IN_TTL;
+    let confirmation = match state.store.device_confirmation(account, &code, expires) {
+        Ok(confirmation) => to_base64url(&confirmation.0),
+        Err(error) => return failure(error),
+    };
     html(
         StatusCode::OK,
         &pages::DeviceConfirm {
             email: &email,
             code: &sync_store::devices::user_code_text(&code),
+            expires,
+            confirmation: &confirmation,
         },
     )
 }
@@ -323,7 +332,10 @@ async fn device_decide<B: Backend>(
     let Some(body) = read_body(body).await else {
         return unknown_code();
     };
-    let (Some(code), Some(decision)) = (field(&body, "user_code"), field(&body, "decision")) else {
+    let (Some(code), Some(decision)) = (
+        field(&body, "user_code").and_then(|c| sync_store::devices::normalize_user_code(&c)),
+        field(&body, "decision"),
+    ) else {
         return unknown_code();
     };
     let approve = match decision.as_str() {
@@ -331,6 +343,21 @@ async fn device_decide<B: Backend>(
         "deny" => false,
         _ => return unknown_code(),
     };
+    // Only a code entered on the page, which counts against its limit,
+    // leads to a decision (RFC 8628 §5.1).
+    let expires = field(&body, "expires").and_then(|e| e.parse::<u64>().ok());
+    let confirmation = field(&body, "confirmation").and_then(|c| from_base64url::<32>(&c).ok());
+    let (Some(expires), Some(confirmation)) = (expires, confirmation) else {
+        return unknown_code();
+    };
+    match state
+        .store
+        .device_confirmed(account, &code, expires, &confirmation)
+    {
+        Ok(true) => {}
+        Ok(false) => return unknown_code(),
+        Err(error) => return failure(error),
+    }
     match state
         .store
         .decide_device_grant(account, &code, approve)

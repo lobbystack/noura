@@ -1417,6 +1417,46 @@ impl<B: Backend> Store<B> {
         Ok(sync_protocol::ids::passkey_user_handle(secret, &account))
     }
 
+    /// The confirmation the device page's decision form carries for the
+    /// code `account` entered, valid until `expires_at` (§7).
+    pub fn device_confirmation(
+        &self,
+        account: Id,
+        user_code: &str,
+        expires_at: u64,
+    ) -> Result<Digest> {
+        let secret = self
+            .secret
+            .as_ref()
+            .ok_or_else(|| Error::internal("the store has no server secret"))?;
+        Ok(sync_protocol::ids::device_confirmation(
+            secret, &account, user_code, expires_at,
+        ))
+    }
+
+    /// Whether `confirmation` is the device page's confirmation for the
+    /// code `account` entered, and it hasn't expired (§7).
+    pub fn device_confirmed(
+        &self,
+        account: Id,
+        user_code: &str,
+        expires_at: u64,
+        confirmation: &[u8; 32],
+    ) -> Result<bool> {
+        let secret = self
+            .secret
+            .as_ref()
+            .ok_or_else(|| Error::internal("the store has no server secret"))?;
+        Ok(expires_at > self.clock.now()
+            && sync_protocol::ids::device_confirmation_matches(
+                secret,
+                &account,
+                user_code,
+                expires_at,
+                confirmation,
+            ))
+    }
+
     /// Stores a session for `token`, the 32 random bytes a sign-in returns,
     /// as their BLAKE3 hash. Until ticket 47 adds the device grant that signs
     /// a device in, tests and tools create device sessions this way.

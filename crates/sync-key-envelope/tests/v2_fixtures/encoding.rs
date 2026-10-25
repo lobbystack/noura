@@ -608,6 +608,7 @@ pub fn fixture() -> Fixture {
                 KeyEntry {
                     key_seq: 4,
                     record: KeyRecord::Rewrap(RewrapRequest {
+                        domain: w.ws_domain,
                         device: w.bob_laptop.device(),
                         epoch: 2,
                     }),

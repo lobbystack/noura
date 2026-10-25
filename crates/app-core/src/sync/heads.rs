@@ -543,7 +543,8 @@ impl SyncService {
             .into_iter()
             .filter_map(|entry| match entry.record {
                 KeyRecord::Rewrap(request)
-                    if request.device != device
+                    if request.domain == remote.domain
+                        && request.device != device
                         && request.epoch == epoch
                         && snapshot.can_read(&request.device, &remote.domain) =>
                 {
@@ -563,7 +564,7 @@ impl SyncService {
     ) -> Result<RewrapAnswer, SyncError> {
         // The device holds the verified key of the current epoch alone; an
         // older request closed when the next epoch committed.
-        if request.epoch != remote.epoch() {
+        if request.domain != remote.domain || request.epoch != remote.epoch() {
             return Ok(RewrapAnswer::Refused(request.device));
         }
         let snapshot = remote.policy.head_snapshot();

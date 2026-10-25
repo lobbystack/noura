@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde_json::{Value, json};
 use sync_key_envelope::v2::{DeviceKeys, EnvelopeHeader, next_link, wrap};
 use sync_protocol::codec::{Encode, List, Nested, Sorted};
 use sync_protocol::keys::{EpochParams, build_epoch};
@@ -18,7 +19,7 @@ use sync_protocol::records::{
 use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 
 use super::{Device, World, head_of, push_failure, random_token, refusal};
-use crate::{Backend, Session, Store};
+use crate::{Backend, Error, Session, Store, WriteTxn};
 
 impl<B: Backend> World<B> {
     /// Pushes `records` from `device`.
@@ -722,4 +723,352 @@ pub async fn chain_appends_race_pushes_recording_the_head<B: Backend>(
     .await
     .expect("no deadlock");
     assert!(finished >= 1, "some pushes recorded a later head");
+}
+
+/// The re-wrap schedule of `sync-v2-keys.json` (§9, §26), replayed against
+/// the store: which requests the server takes, the three answers it
+/// takes for each, what `keys` and `keys/current` list to each device, and
+/// how a request closes, on the requester's fetch or with the domain's
+/// next epoch.
+pub async fn rewraps_follow_the_fixture_schedule<B: Backend>(store: Store<B>) {
+    let doc = super::fixture("sync-v2-keys.json");
+    let case = doc["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|c| c["kind"] == "rewrap_schedule")
+        .expect("a re-wrap schedule");
+    let setup = &case["setup"];
+    let alice_names: Vec<&str> = setup["accounts"]["alice"]
+        .as_array()
+        .expect("alice's devices")
+        .iter()
+        .map(|n| n.as_str().expect("a name"))
+        .collect();
+    let mut world = World::new(store, alice_names.len()).await;
+    let mut names: Vec<String> = alice_names.iter().map(|n| (*n).to_owned()).collect();
+
+    // Bob joins as an editor through a change that carries no envelope.
+    let (bob, bob_keys, bob_links) = super::account(1);
+    world
+        .store
+        .append_account_links(bob_links.clone())
+        .await
+        .expect("bob's chain");
+    let add = world.change(
+        0,
+        vec![head_of(&world.links), head_of(&bob_links)],
+        PolicyKind::AddMember {
+            account: bob,
+            role: sync_protocol::records::Role::Editor,
+            invitation: Id::random().expect("random"),
+        },
+    );
+    let domain = world.domain;
+    world.inject_policy(add, vec![domain], None).await;
+    for keys in bob_keys {
+        let session = Session::new(bob, keys.device());
+        let token = random_token();
+        world
+            .store
+            .create_session(token, session)
+            .await
+            .expect("a session");
+        world.devices.push(Device {
+            keys,
+            session,
+            token,
+        });
+    }
+    names.push(
+        setup["accounts"]["bob"][0]
+            .as_str()
+            .expect("bob's device")
+            .to_owned(),
+    );
+
+    // The restricted domain, which only alice's devices read, with the
+    // envelopes the setup lists.
+    let restricted = Id::random().expect("random");
+    let creator = names
+        .iter()
+        .position(|n| n == setup["restricted"]["created_by"].as_str().expect("a name"))
+        .expect("the creator");
+    let create = world.change(
+        creator,
+        vec![head_of(&world.links)],
+        PolicyKind::CreateDomain {
+            domain: restricted,
+            marker_rid: Id::random().expect("random"),
+            access: super::manager(world.account),
+        },
+    );
+    let restricted_key = SecretKey::random().expect("random");
+    let alice_devices: BTreeSet<Id> = world.devices[..alice_names.len()]
+        .iter()
+        .map(|d| d.id())
+        .collect();
+    let restricted_epoch = Signed::sign(
+        build_epoch(
+            &EpochParams {
+                workspace: world.workspace,
+                domain: restricted,
+                epoch: 1,
+                previous: Digest::ZERO,
+                policy_revision: world.head.0 + 1,
+                policy_head: create.digest(),
+                rotating_device: world.devices[creator].id(),
+                recipients: alice_devices,
+            },
+            &restricted_key,
+            None,
+            Nonce::ZERO,
+        ),
+        world.devices[creator].keys.signing(),
+    );
+    world
+        .inject_policy(
+            create,
+            vec![domain],
+            Some((restricted, restricted_epoch.clone())),
+        )
+        .await;
+    let mut rows = vec![(crate::push::KEY_EPOCH, None, restricted_epoch.to_bytes())];
+    for holder in setup["restricted"]["envelopes"]
+        .as_array()
+        .expect("envelopes")
+    {
+        let at = names
+            .iter()
+            .position(|n| n == holder.as_str().expect("a name"))
+            .expect("a device");
+        let device = &world.devices[at];
+        let envelope = wrap(
+            &EnvelopeHeader {
+                workspace: world.workspace,
+                domain: restricted,
+                epoch: 1,
+                wrapping_device: world.devices[creator].id(),
+            },
+            &restricted_key,
+            &device.keys.card(world.account),
+            &world.devices[creator].keys,
+        )
+        .expect("wraps");
+        rows.push((
+            crate::push::KEY_ENVELOPE,
+            Some(device.id()),
+            envelope.to_bytes(),
+        ));
+    }
+    let workspace = world.workspace;
+    world
+        .store
+        .backend()
+        .write(Box::new(move |txn: &mut B::Write| {
+            Box::pin(async move {
+                txn.lock(&crate::LockPlan {
+                    workspace: Some(workspace),
+                    policy_exclusive: false,
+                    key_sequence: true,
+                    domains: vec![restricted],
+                    blobs: Vec::new(),
+                })
+                .await?;
+                for (kind, recipient, record) in rows {
+                    txn.append_key_entry(workspace, kind, restricted, 1, recipient, &record)
+                        .await?;
+                }
+                Ok(())
+            })
+        }))
+        .await
+        .expect("the restricted domain's key rows");
+
+    // The replay.
+    let at = |name: &Value| -> usize {
+        let name = name.as_str().expect("a device name");
+        names
+            .iter()
+            .position(|n| n == name)
+            .unwrap_or_else(|| panic!("no device {name}"))
+    };
+    let domain_of = |name: &Value| -> Id {
+        match name.as_str().expect("a domain name") {
+            "workspace" => domain,
+            "restricted" => restricted,
+            other => panic!("no domain {other}"),
+        }
+    };
+    let domain_name = |id: Id| {
+        if id == domain {
+            "workspace"
+        } else {
+            "restricted"
+        }
+    };
+    let outcome = |result: crate::Result<()>| -> String {
+        match result {
+            Ok(()) => "ok".to_owned(),
+            Err(Error::Refused(refusal)) => refusal.code.to_owned(),
+            Err(other) => panic!("a store failure: {other:?}"),
+        }
+    };
+    let mut workspace_epochs: Vec<(Signed<Epoch>, SecretKey)> =
+        vec![(world.first_epoch().await, world.epoch_key.clone())];
+    let mut removed: BTreeSet<Id> = BTreeSet::new();
+    for (index, step) in case["steps"].as_array().expect("steps").iter().enumerate() {
+        let label = format!("step {index}: {step}");
+        let device = step.get("device").map(at);
+        match step["action"].as_str().expect("an action") {
+            "rewrap" => {
+                let device = &world.devices[device.expect("a device")];
+                let result = world
+                    .store
+                    .rewrap(
+                        device.session,
+                        workspace,
+                        domain_of(&step["domain"]),
+                        step["epoch"].as_u64().expect("an epoch"),
+                    )
+                    .await;
+                assert_eq!(outcome(result), step["expect"], "{label}");
+            }
+            "answer" => {
+                let wrapper = at(&step["wrapper"]);
+                let recipient = &world.devices[at(&step["recipient"])];
+                let target = domain_of(&step["domain"]);
+                let epoch = step["epoch"].as_u64().expect("an epoch");
+                let key = if target == restricted {
+                    restricted_key.clone()
+                } else {
+                    workspace_epochs[epoch as usize - 1].1.clone()
+                };
+                let envelope = wrap(
+                    &EnvelopeHeader {
+                        workspace,
+                        domain: target,
+                        epoch,
+                        wrapping_device: world.devices[wrapper].id(),
+                    },
+                    &key,
+                    &recipient.keys.card(recipient.session.account),
+                    &world.devices[wrapper].keys,
+                )
+                .expect("wraps");
+                let result = world
+                    .push_records(wrapper, vec![RecordRef::Envelope(envelope)])
+                    .await
+                    .map(|_| ());
+                assert_eq!(outcome(result), step["expect"], "{label}");
+            }
+            kind @ ("current_rewraps" | "keys_rewraps") => {
+                let device = &world.devices[device.expect("a device")];
+                let response = if kind == "current_rewraps" {
+                    world
+                        .store
+                        .current_keys(device.session, workspace, device.id())
+                        .await
+                } else {
+                    world
+                        .store
+                        .keys(device.session, workspace, 0, device.id())
+                        .await
+                }
+                .expect("a key read");
+                let listed: Vec<Value> = response
+                    .entries
+                    .iter()
+                    .filter_map(|e| match &e.record {
+                        KeyRecord::Rewrap(r) => Some(json!({
+                            "domain": domain_name(r.domain),
+                            "device": names[world.devices.iter().position(|d| d.id() == r.device).expect("a device")],
+                            "epoch": r.epoch,
+                        })),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(json!(listed), step["expect"], "{label}");
+            }
+            "fetch_keys" => {
+                let device = &world.devices[device.expect("a device")];
+                let head = world
+                    .store
+                    .keys(device.session, workspace, 0, device.id())
+                    .await
+                    .expect("keys")
+                    .head_key_seq;
+                world
+                    .store
+                    .keys(device.session, workspace, head, device.id())
+                    .await
+                    .expect("the fetch after the head");
+            }
+            "current_keys" => {
+                let device = &world.devices[device.expect("a device")];
+                world
+                    .store
+                    .current_keys(device.session, workspace, device.id())
+                    .await
+                    .expect("keys/current");
+            }
+            "remove" => {
+                let signer = at(&step["signer"]);
+                let gone = world.devices[at(&step["device"])].id();
+                let head = world
+                    .append_link(
+                        signer,
+                        LinkKind::Remove {
+                            device: gone,
+                            keep: Sorted::default(),
+                        },
+                    )
+                    .await;
+                let change = world.change(signer, vec![head], PolicyKind::AccountHeads);
+                let result = world
+                    .push_records(signer, vec![RecordRef::Policy(change.clone())])
+                    .await
+                    .map(|_| ());
+                assert_eq!(outcome(result), step["expect"], "{label}");
+                world.head = (change.body.revision, change.digest());
+                removed.insert(gone);
+            }
+            "rotate" => {
+                assert_eq!(
+                    step["domain"], "workspace",
+                    "{label}: rotations of the workspace domain"
+                );
+                let signer = at(&step["signer"]);
+                let readers: BTreeSet<Id> = world
+                    .devices
+                    .iter()
+                    .map(|d| d.id())
+                    .filter(|id| !removed.contains(id))
+                    .collect();
+                let (previous, previous_key) = workspace_epochs.last().expect("an epoch").clone();
+                let key = SecretKey::random().expect("random");
+                let next = world.epoch_after(
+                    signer,
+                    previous.body.epoch + 1,
+                    &previous,
+                    &previous_key,
+                    &key,
+                    &readers,
+                );
+                let mut records = vec![world.bundle(&next, &readers)];
+                for reader in world.devices.iter().filter(|d| readers.contains(&d.id())) {
+                    records.push(RecordRef::Envelope(world.envelope(
+                        signer,
+                        &reader.keys.card(reader.session.account),
+                        next.body.epoch,
+                        &key,
+                    )));
+                }
+                let result = world.push_records(signer, records).await.map(|_| ());
+                assert_eq!(outcome(result), step["expect"], "{label}");
+                workspace_epochs.push((next, key));
+            }
+            other => panic!("unknown action {other}"),
+        }
+    }
 }

@@ -691,6 +691,279 @@
 			"unwrapped_keys": [
 				"bbe659bc568bf2aa1bf7f84b2296fc466c856692fc67c6787e75a2d86ffdb2e4"
 			]
+		},
+		{
+			"actions": {
+				"answer": "the wrapper pushes a lone envelope of that epoch's key for the recipient",
+				"current_keys": "the device reads keys/current",
+				"current_rewraps": "the open re-wrap requests that the device's keys/current read lists, in key-sequence order",
+				"fetch_keys": "the device reads keys from 0, then again after the head key sequence that read returned",
+				"keys_rewraps": "the open re-wrap requests that the device's keys read from 0 lists, in key-sequence order",
+				"remove": "the signer appends a remove link naming the device and pushes an account_heads change recording that head",
+				"rewrap": "the device sends POST .../domains/{domain}/rewrap for the epoch",
+				"rotate": "the signer pushes the domain's next epoch for its readers, with an envelope for each"
+			},
+			"expect_values": "ok, or the §26 error code the server answers",
+			"kind": "rewrap_schedule",
+			"name": "rewrap_requests_take_three_answers_and_close_on_a_fetch_or_the_next_epoch",
+			"setup": {
+				"accounts": {
+					"alice": [
+						"alice 1",
+						"alice 2",
+						"alice 3",
+						"alice 4",
+						"alice 5"
+					],
+					"bob": [
+						"bob 1"
+					]
+				},
+				"restricted": {
+					"access": {
+						"alice": "manage"
+					},
+					"created_by": "alice 1",
+					"envelopes": [
+						"alice 1",
+						"alice 2"
+					]
+				},
+				"workspace": "alice 1 creates it with an epoch 1 envelope for each device of alice, then adds bob as an editor with a change that carries no envelope, so the server took none for bob 1"
+			},
+			"steps": [
+				{
+					"action": "rewrap",
+					"device": "alice 5",
+					"domain": "workspace",
+					"epoch": 2,
+					"expect": "epoch_stale"
+				},
+				{
+					"action": "rewrap",
+					"device": "alice 5",
+					"domain": "workspace",
+					"epoch": 1,
+					"expect": "ok"
+				},
+				{
+					"action": "rewrap",
+					"device": "alice 5",
+					"domain": "workspace",
+					"epoch": 1,
+					"expect": "ok"
+				},
+				{
+					"action": "rewrap",
+					"device": "bob 1",
+					"domain": "workspace",
+					"epoch": 1,
+					"expect": "forbidden"
+				},
+				{
+					"action": "rewrap",
+					"device": "bob 1",
+					"domain": "restricted",
+					"epoch": 1,
+					"expect": "forbidden"
+				},
+				{
+					"action": "rewrap",
+					"device": "alice 2",
+					"domain": "restricted",
+					"epoch": 1,
+					"expect": "ok"
+				},
+				{
+					"action": "current_rewraps",
+					"device": "alice 1",
+					"expect": [
+						{
+							"device": "alice 5",
+							"domain": "workspace",
+							"epoch": 1
+						},
+						{
+							"device": "alice 2",
+							"domain": "restricted",
+							"epoch": 1
+						}
+					]
+				},
+				{
+					"action": "current_rewraps",
+					"device": "bob 1",
+					"expect": [
+						{
+							"device": "alice 5",
+							"domain": "workspace",
+							"epoch": 1
+						}
+					]
+				},
+				{
+					"action": "keys_rewraps",
+					"device": "bob 1",
+					"expect": [
+						{
+							"device": "alice 5",
+							"domain": "workspace",
+							"epoch": 1
+						}
+					]
+				},
+				{
+					"action": "answer",
+					"domain": "workspace",
+					"epoch": 1,
+					"expect": "ok",
+					"recipient": "alice 5",
+					"wrapper": "alice 1"
+				},
+				{
+					"action": "answer",
+					"domain": "workspace",
+					"epoch": 1,
+					"expect": "forbidden",
+					"recipient": "alice 5",
+					"wrapper": "alice 1"
+				},
+				{
+					"action": "answer",
+					"domain": "workspace",
+					"epoch": 1,
+					"expect": "ok",
+					"recipient": "alice 5",
+					"wrapper": "alice 2"
+				},
+				{
+					"action": "answer",
+					"domain": "workspace",
+					"epoch": 1,
+					"expect": "ok",
+					"recipient": "alice 5",
+					"wrapper": "alice 3"
+				},
+				{
+					"action": "answer",
+					"domain": "workspace",
+					"epoch": 1,
+					"expect": "forbidden",
+					"recipient": "alice 5",
+					"wrapper": "alice 4"
+				},
+				{
+					"action": "fetch_keys",
+					"device": "alice 5"
+				},
+				{
+					"action": "current_rewraps",
+					"device": "alice 1",
+					"expect": [
+						{
+							"device": "alice 2",
+							"domain": "restricted",
+							"epoch": 1
+						}
+					]
+				},
+				{
+					"action": "answer",
+					"domain": "workspace",
+					"epoch": 1,
+					"expect": "forbidden",
+					"recipient": "alice 5",
+					"wrapper": "alice 4"
+				},
+				{
+					"action": "rewrap",
+					"device": "alice 5",
+					"domain": "workspace",
+					"epoch": 1,
+					"expect": "ok"
+				},
+				{
+					"action": "answer",
+					"domain": "restricted",
+					"epoch": 1,
+					"expect": "ok",
+					"recipient": "alice 2",
+					"wrapper": "alice 1"
+				},
+				{
+					"action": "current_keys",
+					"device": "alice 2"
+				},
+				{
+					"action": "current_rewraps",
+					"device": "alice 1",
+					"expect": [
+						{
+							"device": "alice 5",
+							"domain": "workspace",
+							"epoch": 1
+						}
+					]
+				},
+				{
+					"action": "remove",
+					"device": "alice 4",
+					"expect": "ok",
+					"signer": "alice 1"
+				},
+				{
+					"action": "rewrap",
+					"device": "alice 3",
+					"domain": "workspace",
+					"epoch": 1,
+					"expect": "rotation_pending"
+				},
+				{
+					"action": "current_rewraps",
+					"device": "alice 1",
+					"expect": [
+						{
+							"device": "alice 5",
+							"domain": "workspace",
+							"epoch": 1
+						}
+					]
+				},
+				{
+					"action": "rotate",
+					"domain": "workspace",
+					"expect": "ok",
+					"signer": "alice 1"
+				},
+				{
+					"action": "current_rewraps",
+					"device": "alice 1",
+					"expect": []
+				},
+				{
+					"action": "answer",
+					"domain": "workspace",
+					"epoch": 1,
+					"expect": "epoch_stale",
+					"recipient": "alice 5",
+					"wrapper": "alice 2"
+				},
+				{
+					"action": "answer",
+					"domain": "workspace",
+					"epoch": 2,
+					"expect": "forbidden",
+					"recipient": "alice 5",
+					"wrapper": "alice 2"
+				},
+				{
+					"action": "rewrap",
+					"device": "alice 5",
+					"domain": "workspace",
+					"epoch": 1,
+					"expect": "epoch_stale"
+				}
+			]
 		}
 	],
 	"chains": {

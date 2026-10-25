@@ -13,7 +13,10 @@ use sync_protocol::blob::{
 use sync_protocol::chain::{ChainFetcher, ChainRecord, ChainVerifier, Fetched};
 use sync_protocol::codec::{Bytes, Decode, Encode};
 use sync_protocol::crypto::{derive_key, hash};
-use sync_protocol::ids::{account_id, device_id, secret_check, text_lineage_id, yrs_client_id};
+use sync_protocol::ids::{
+    account_id, device_confirmation, device_confirmation_matches, device_id, secret_check,
+    text_lineage_id, yrs_client_id,
+};
 use sync_protocol::keys::{
     EnvelopeVerdict, EpochAcceptance, EpochChain, LogJudge, after_failed_envelopes, check_envelope,
     judge_skipped_epoch_record, key_check, key_matches, open_lineage, recipients_digest,
@@ -250,6 +253,28 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
             account_id(&secret_of(&case["secret"]), case["email"].as_str().unwrap()),
             id_of(expect),
         ),
+        "device_confirmation" => {
+            let secret = secret_of(&case["secret"]);
+            let account = id_of(&case["account"]);
+            let code = case["user_code"].as_str().unwrap();
+            let expires_at = u64_of(&case["expires_at"]);
+            let confirmation = device_confirmation(&secret, &account, code, expires_at);
+            same(confirmation, digest_of(expect))?;
+            same(
+                device_confirmation_matches(&secret, &account, code, expires_at, &confirmation.0),
+                true,
+            )?;
+            same(
+                device_confirmation_matches(
+                    &secret,
+                    &account,
+                    code,
+                    expires_at + 1,
+                    &confirmation.0,
+                ),
+                false,
+            )
+        }
 
         // Devices.
         "fingerprint" => {
@@ -1064,6 +1089,9 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
             )),
             expect.clone(),
         ),
+        // Re-wrap schedules need a server, so the store conformance suite
+        // replays them.
+        "rewrap_schedule" => Ok(()),
         // The collaboration sandbox's cases need its guest module, so
         // crates/collab-sandbox runs them.
         "verdict" | "client_round_trip" | "surrogate" | "allowance" | "trap" | "pending"

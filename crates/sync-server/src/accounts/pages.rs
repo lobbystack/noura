@@ -60,4 +60,6 @@ pub struct DeviceSignIn;
 pub struct DeviceConfirm<'a> {
     pub email: &'a str,
     pub code: &'a str,
+    pub expires: u64,
+    pub confirmation: &'a str,
 }

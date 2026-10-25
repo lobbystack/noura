@@ -168,6 +168,7 @@ impl SyncService {
             }
             Task::Rewrap { device, epoch, .. } => {
                 let request = RewrapRequest {
+                    domain: remote.domain,
                     device: *device,
                     epoch: *epoch,
                 };

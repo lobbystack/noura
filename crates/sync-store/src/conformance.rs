@@ -80,6 +80,7 @@ macro_rules! conformance_tests {
             rotations_follow_the_policy,
             replacements_skip_only_their_rotators_epochs,
             rewraps_reach_readers_and_close,
+            rewraps_follow_the_fixture_schedule,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
