@@ -13,6 +13,14 @@
 //!   a JSON object, of the object with that ID and revision.
 //! - `fetch:<url>`: send a GET request to `url`.
 //! - `call:<plugin>/<command>:<input>`: run another plugin's command.
+//! - `ai:providers`, `ai:chats`, `ai:create-chat`, `ai:read-chat:<id>`,
+//!   `ai:send:<chat>:<provider>:<message>`,
+//!   `ai:send-with-tool:<chat>:<provider>:<message>`, which offers the
+//!   `echo` tool, `ai:answer-tools:<run>:<content>`, which answers each
+//!   call of the run with `content`, `ai:read-run:<id>` and `ai:stop:<id>`:
+//!   call the host AI interface, one line per provider, chat, message or
+//!   run. A press on a node whose ID is `ai:<call>` makes the call too, and
+//!   the `events` page shows each line as `<page> ai <line>`.
 //! - `clock`: the clock's reading, as `now <instant> <time zone>`.
 //! - `markdown`: a Markdown node with a heading, emphasis, a link, a
 //!   list and a remote image.
@@ -54,7 +62,8 @@ use std::sync::Mutex;
 use plugin_sdk::{
     Calendar, CalendarEntry, CalendarMode, Choice, Column, Command, Error, Event, InboxSection,
     Input, Item, ItemList, MenuItem, NameField, Node, NodeKind, Page, Plugin, Table, Tool, Value,
-    View, VirtualList, VirtualRow, clock, command_calls, navigation, network, objects, workspace,
+    View, VirtualList, VirtualRow, ai, clock, command_calls, navigation, network, objects,
+    workspace,
 };
 
 static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -141,6 +150,8 @@ impl Plugin for Probe {
             vec![fetch(url)]
         } else if let Some(call) = page.strip_prefix("call:") {
             vec![relay(call)]
+        } else if let Some(call) = page.strip_prefix("ai:") {
+            ai_call(call)
         } else if page == "clock" {
             let now = clock::now();
             vec![format!("now {} {}", now.instant, now.time_zone)]
@@ -179,6 +190,14 @@ impl Plugin for Probe {
             && let Some(call) = node.strip_prefix("call:")
         {
             record(format!("{page} call {}", relay(call)));
+            return;
+        }
+        if let Event::Pressed(node) = &event
+            && let Some(call) = node.strip_prefix("ai:")
+        {
+            for line in ai_call(call) {
+                record(format!("{page} ai {line}"));
+            }
             return;
         }
         if let Event::Pressed(node) = &event
@@ -289,6 +308,103 @@ impl Plugin for Probe {
             _ => Err(format!("The probe has no tool {name}.")),
         }
     }
+}
+
+/// Call the host AI interface as `call` says, one line per result.
+fn ai_call(call: &str) -> Vec<String> {
+    let echo = || ai::ToolDefinition {
+        name: "echo".into(),
+        description: "Repeats the text it gets.".into(),
+        input_schema: ECHO_SCHEMA.into(),
+    };
+    let (name, rest) = call.split_once(':').unwrap_or((call, ""));
+    let lines = match name {
+        "providers" => ai::providers().map(|providers| {
+            providers
+                .iter()
+                .map(|p| format!("provider {} {} {} {}", p.id, p.name, p.kind, p.model))
+                .collect()
+        }),
+        "chats" => ai::chats().map(|chats| chats.iter().map(chat_line).collect()),
+        "create-chat" => ai::create_chat().map(|chat| vec![chat_line(&chat)]),
+        "read-chat" => ai::read_chat(rest).map(|(chat, messages)| {
+            std::iter::once(chat_line(&chat))
+                .chain(messages.iter().map(|message| {
+                    format!(
+                        "message {:?} {:?} {} {} {} {}",
+                        message.kind,
+                        message.status,
+                        message.provider.as_deref().unwrap_or("-"),
+                        message.model.as_deref().unwrap_or("-"),
+                        message.error_code.as_deref().unwrap_or("-"),
+                        message.content
+                    )
+                }))
+                .collect()
+        }),
+        "send" | "send-with-tool" => {
+            let mut parts = rest.splitn(3, ':');
+            let chat = parts.next().unwrap_or_default().to_owned();
+            let provider = parts.next().unwrap_or_default().to_owned();
+            let message = parts.next().unwrap_or_default().to_owned();
+            let tools = if name == "send-with-tool" {
+                vec![echo()]
+            } else {
+                Vec::new()
+            };
+            ai::send(&ai::Request {
+                chat,
+                provider,
+                message,
+                tools,
+            })
+            .map(|run| vec![run_line(&run)])
+        }
+        "answer-tools" => {
+            let (run, content) = rest.split_once(':').unwrap_or((rest, "{}"));
+            ai::read_run(run).and_then(|current| {
+                let results: Vec<ai::ToolResult> = current
+                    .tool_calls
+                    .iter()
+                    .map(|call| ai::ToolResult {
+                        call_id: call.id.clone(),
+                        name: call.name.clone(),
+                        content: content.to_owned(),
+                    })
+                    .collect();
+                ai::answer_tools(run, &results, &[echo()]).map(|run| vec![run_line(&run)])
+            })
+        }
+        "read-run" => ai::read_run(rest).map(|run| vec![run_line(&run)]),
+        "stop" => ai::stop(rest).map(|()| vec!["stopped".to_owned()]),
+        other => Ok(vec![format!("no ai call {other}")]),
+    };
+    lines.unwrap_or_else(|error| vec![describe(&error)])
+}
+
+fn chat_line(chat: &ai::Chat) -> String {
+    format!("chat {} {}", chat.id, chat.title)
+}
+
+fn run_line(run: &ai::Run) -> String {
+    let calls: Vec<String> = run
+        .tool_calls
+        .iter()
+        .map(|call| format!("{}={}({})", call.id, call.name, call.arguments))
+        .collect();
+    let failure = run
+        .failure
+        .as_ref()
+        .map(|failure| format!(" failure {} {}", failure.code, failure.message))
+        .unwrap_or_default();
+    format!(
+        "run {} {:?} message {} calls [{}] text {}{failure}",
+        run.id,
+        run.status,
+        run.message.as_deref().unwrap_or("-"),
+        calls.join(","),
+        run.text
+    )
 }
 
 fn record(event: String) {

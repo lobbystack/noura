@@ -239,6 +239,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ai-plugin"
+version = "0.2.0"
+dependencies = [
+ "plugin-sdk",
+ "serde_json",
+]
+
+[[package]]
 name = "alloc-no-stdlib"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -307,6 +315,7 @@ dependencies = [
  "app-core",
  "atomic-write-file",
  "directories",
+ "futures",
  "hayro",
  "jiff",
  "jsonschema",
@@ -320,9 +329,11 @@ dependencies = [
  "serde_yaml_ng",
  "sys-locale",
  "tempfile",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "unicode-normalization",
+ "uuid",
  "windows-sys 0.61.2",
  "workspace-format",
  "zeroize",
@@ -340,6 +351,7 @@ dependencies = [
  "egui",
  "egui_extras",
  "egui_kittest",
+ "futures",
  "icu_calendar",
  "icu_datetime",
  "icu_locale_core",
