@@ -47,8 +47,9 @@ struct State {
     unsent: BTreeMap<String, String>,
     /// Why the last thing you did failed.
     notice: Option<String>,
-    /// The chat whose sidebar item shows as a field you rename it in.
-    renaming: Option<String>,
+    /// The chat whose sidebar item shows as a field you rename it in, and
+    /// the revision of its `chat.md` when you chose Rename.
+    renaming: Option<(String, String)>,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {

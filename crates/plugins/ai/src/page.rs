@@ -25,7 +25,9 @@ const RESUME: &str = "resume";
 const CHAT_NAME: &str = "chat-name";
 
 /// The menu items of a chat in the sidebar, each followed by the chat's
-/// ID.
+/// ID, a colon and the revision of its `chat.md` the menu showed, which
+/// the change carries: a chat that changed elsewhere since keeps that
+/// change.
 const RENAME: &str = "rename:";
 const KEEP: &str = "keep:";
 const EPHEMERAL: &str = "ephemeral:";
@@ -164,17 +166,18 @@ fn draw_title(view: &mut View, chat: &Chat) {
 /// keeps it.
 fn draw_chat_menu(view: &mut View, item: u32, chat: &Chat) {
     let menu = view.menu(item, &format!("menu:{}", chat.id), "Chat options");
-    view.menu_item(menu, &format!("{RENAME}{}", chat.id), "Rename", true);
+    let item = |action: &str| format!("{action}{}:{}", chat.id, chat.revision);
+    view.menu_item(menu, &item(RENAME), "Rename", true);
     view.separator(menu, &format!("separator:{}", chat.id));
     view.menu_item(
         menu,
-        &format!("{KEEP}{}", chat.id),
+        &item(KEEP),
         "Keep until I delete it",
         chat.retention != Retention::Permanent,
     );
     view.menu_item(
         menu,
-        &format!("{EPHEMERAL}{}", chat.id),
+        &item(EPHEMERAL),
         "Remove after 30 days",
         chat.retention != Retention::Ephemeral,
     );
@@ -355,7 +358,11 @@ pub(crate) fn sidebar(state: &State) -> Vec<Node> {
                 let detail =
                     (chat.retention == Retention::Ephemeral).then_some("Removed after 30 days");
                 let item = view.item(list, &chat.id, &chat.title, detail);
-                if state.renaming.as_deref() == Some(chat.id.as_str()) {
+                if state
+                    .renaming
+                    .as_ref()
+                    .is_some_and(|(renaming, _)| renaming == &chat.id)
+                {
                     view.name_field(item, CHAT_NAME, "Chat name", &chat.title);
                 } else {
                     draw_chat_menu(&mut view, item, chat);
@@ -396,12 +403,17 @@ pub(crate) fn handle(state: &mut State, event: Event) {
         }
         Event::Pressed(node) if node == RESUME => resume(state),
         Event::Chosen(node) => {
-            if let Some(chat) = node.strip_prefix(RENAME) {
-                state.renaming = Some(chat.to_owned());
-            } else if let Some(chat) = node.strip_prefix(KEEP) {
-                keep(state, chat, Retention::Permanent);
-            } else if let Some(chat) = node.strip_prefix(EPHEMERAL) {
-                keep(state, chat, Retention::Ephemeral);
+            let chosen = |action: &str| {
+                node.strip_prefix(action)
+                    .and_then(|rest| rest.split_once(':'))
+                    .map(|(chat, revision)| (chat.to_owned(), revision.to_owned()))
+            };
+            if let Some(chat) = chosen(RENAME) {
+                state.renaming = Some(chat);
+            } else if let Some((chat, revision)) = chosen(KEEP) {
+                keep(state, &chat, &revision, Retention::Permanent);
+            } else if let Some((chat, revision)) = chosen(EPHEMERAL) {
+                keep(state, &chat, &revision, Retention::Ephemeral);
             }
         }
         Event::Named(naming) if naming.node == CHAT_NAME => rename(state, &naming.name),
@@ -433,21 +445,21 @@ pub(crate) fn handle(state: &mut State, event: Event) {
 }
 
 /// Give the chat you rename the name `title`. A chat that changed
-/// elsewhere keeps that change, and the page says so.
+/// elsewhere since you chose Rename keeps that change, and the page says
+/// so.
 fn rename(state: &mut State, title: &str) {
-    let Some(id) = state.renaming.take() else {
+    let Some((chat, revision)) = state.renaming.take() else {
         return;
     };
-    state.notice = ai::read_chat(&id)
-        .and_then(|(chat, _)| ai::rename_chat(&chat.id, title, &chat.revision))
+    state.notice = ai::rename_chat(&chat, title, &revision)
         .err()
         .map(|error| reason(&error));
 }
 
-/// Keep the chat `id` as `retention` says.
-fn keep(state: &mut State, id: &str, retention: Retention) {
-    state.notice = ai::read_chat(id)
-        .and_then(|(chat, _)| ai::set_retention(&chat.id, retention, &chat.revision))
+/// Keep the chat `chat` as `retention` says, unless it changed elsewhere
+/// since its `chat.md` held `revision`.
+fn keep(state: &mut State, chat: &str, revision: &str, retention: Retention) {
+    state.notice = ai::set_retention(chat, retention, revision)
         .err()
         .map(|error| reason(&error));
 }

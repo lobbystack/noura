@@ -514,7 +514,10 @@ fn turning_off_a_plugin_mid_answer_ends_the_run_as_interrupted_and_keeps_its_fil
     ai::wait_until(&mut tooled.app, "the page says why", |app| {
         ai::lines(app).contains(&STOPPED.to_owned()) && ai::buttons(app).is_empty()
     });
-    assert!(tooled.provider.cancelled(1), "the provider saw the request end");
+    assert!(
+        tooled.provider.cancelled(1),
+        "the provider saw the request end"
+    );
     assert!(tooled.has_task(), "the plugin's files stay");
 
     // The next message offers the model no Tasks tool.

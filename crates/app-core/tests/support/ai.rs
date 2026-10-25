@@ -481,3 +481,97 @@ pub fn tool_result(app: &mut App, root: &std::path::Path, call: &str) -> serde_j
     let text = tool_message(app, root, "tool-result", call);
     serde_json::from_str(body(&text).trim()).unwrap_or_else(|_| panic!("not JSON: {text}"))
 }
+
+/// The ID of the menu item in the sidebar whose ID starts with `prefix`,
+/// such as `rename:` and a chat's ID, and whether it's enabled.
+pub fn menu_item(app: &App, prefix: &str) -> Option<(String, bool)> {
+    let Some(Ok(view)) = app.plugin_sidebar(PAGE) else {
+        return None;
+    };
+    find_menu_item(view.root(), prefix)
+}
+
+fn find_menu_item(node: &ViewNode, prefix: &str) -> Option<(String, bool)> {
+    if let ViewKind::MenuItem { enabled, .. } = &node.kind
+        && node.id.starts_with(prefix)
+    {
+        return Some((node.id.clone(), *enabled));
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_menu_item(child, prefix))
+}
+
+/// Choose the sidebar's menu item whose ID starts with `prefix`.
+pub fn choose(app: &mut App, prefix: &str) {
+    let (item, enabled) = menu_item(app, prefix).unwrap_or_else(|| panic!("no menu item {prefix}"));
+    assert!(enabled, "{prefix} is enabled");
+    app.send_plugin_sidebar_event(PAGE, &PluginEvent::Chosen(item));
+    super::settle(app);
+}
+
+/// The name field the sidebar shows to rename a chat, with what it holds.
+pub fn name_field(app: &App) -> Option<String> {
+    let Some(Ok(view)) = app.plugin_sidebar(PAGE) else {
+        return None;
+    };
+    match &find(view.root(), "chat-name")?.kind {
+        ViewKind::NameField { value, .. } => Some(value.clone()),
+        _ => None,
+    }
+}
+
+/// Name the chat whose sidebar item shows the name field `name`, as Enter
+/// in the field does.
+pub fn name_chat(app: &mut App, name: &str) {
+    app.send_plugin_sidebar_event(
+        PAGE,
+        &PluginEvent::Named(app_core::PluginNaming {
+            node: "chat-name".to_owned(),
+            name: name.to_owned(),
+        }),
+    );
+    super::settle(app);
+}
+
+/// The detail the sidebar shows under each chat, top to bottom.
+pub fn chat_details(app: &App) -> Vec<Option<String>> {
+    let Some(Ok(view)) = app.plugin_sidebar(PAGE) else {
+        return Vec::new();
+    };
+    find(view.root(), "chats")
+        .map(|list| {
+            list.children
+                .iter()
+                .filter_map(|item| match &item.kind {
+                    ViewKind::Item { detail, .. } => Some(detail.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The path and text of the only chat's `chat.md` in `root`.
+pub fn chat_file(root: &std::path::Path) -> (String, String) {
+    chat_files(root)
+        .into_iter()
+        .find(|(path, _)| path.ends_with("/chat.md"))
+        .expect("the chat has its chat.md")
+}
+
+/// Send `text` from the page, stream `answer` back, and wait until it
+/// shows.
+pub fn chat_once(app: &mut App, provider: &FakeProvider, id: &str, text: &str, answer: &str) {
+    let sent = provider.requests().len();
+    send(app, text, id);
+    wait_until(app, "the request leaves", |_| {
+        provider.requests().len() == sent + 1
+    });
+    provider.say(sent, answer);
+    provider.finish(sent);
+    let shown = format!("md: {answer}");
+    wait_until(app, "the answer shows", |app| {
+        lines(app).contains(&shown) && buttons(app).is_empty()
+    });
+}
