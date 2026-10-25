@@ -165,6 +165,14 @@ impl Workspace {
     pub fn inject_watch_rescan_request(&self) {
         self.engine.inject_watch_rescan_request();
     }
+
+    /// Test hook: fail the next `times` writes of a chat change's `target`
+    /// file, `chat` or `message`, as a crash between a chat change's two
+    /// files would stop it.
+    pub fn fail_chat_writes(&self, target: &str, times: usize) {
+        self.engine
+            .fail_chat_mutation_write_for_testing(target, times);
+    }
 }
 
 /// Creates and opens workspaces, and keeps the recent list. Per-device
