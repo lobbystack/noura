@@ -631,9 +631,9 @@ impl SyncService {
             .clone()
             .ok_or_else(|| SyncError::Invalid("no recovery identity".into()))?;
         let domain = policy.head_snapshot().workspace_domain;
-        let (epochs, keys) = self
+        let (epochs, keys, envelope) = self
             .load_keys(workspace, domain, &policy, &identity, true)
             .await?;
-        RemoteWorkspace::from_parts(workspace, domain, policy, epochs, keys)
+        RemoteWorkspace::from_parts(workspace, domain, policy, epochs, keys, envelope)
     }
 }

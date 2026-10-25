@@ -6,9 +6,9 @@
 use sync_protocol::codec::{Encode, Nested, Text};
 use sync_protocol::messages::{
     ApprovalRequest, ChallengeResponse, DeviceAuthorizeResponse, DeviceTokenRequest,
-    DeviceTokenResponse, DevicesResponse, EnrollRequest, EpochsResponse, KeysResponse,
-    OfferRequest, OffersResponse, PendingResponse, RecoveryRequest, RevealBody, RewrapBody,
-    WorkspacesResponse,
+    DeviceTokenResponse, DevicesResponse, EnrollRequest, Entry, EpochsResponse, HeadResponse,
+    KeysResponse, OfferRequest, OffersResponse, PendingResponse, RecoveryRequest, RevealBody,
+    RewrapBody, WorkspacesResponse,
 };
 use sync_protocol::records::{Enroll, Offer, RecoveryProof, Signed};
 use sync_protocol::types::{Digest, Id, Key};
@@ -213,5 +213,50 @@ impl SyncClient {
             Some(RewrapBody { epoch }.to_bytes()),
         )
         .await
+    }
+
+    /// `GET /v2/workspaces/{w}/domains/{d}/heads/{device}`: the server's
+    /// chain head for a device, or `None` when it holds no record of that
+    /// device in the domain.
+    pub async fn chain_head(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        device: Id,
+    ) -> Result<Option<HeadResponse>, SyncError> {
+        let path = format!(
+            "/v2/workspaces/{}/domains/{}/heads/{}",
+            workspace.to_base64url(),
+            domain.to_base64url(),
+            device.to_base64url()
+        );
+        match self.call(reqwest::Method::GET, &path, None).await {
+            Ok(head) => Ok(Some(head)),
+            Err(SyncError::Refused { code, .. }) if code == "not_found" => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// `GET /v2/workspaces/{w}/domains/{d}/chain/{device}/{counter}`: the
+    /// device's record at `counter`, or its next record above it, or `None`
+    /// when it has none there.
+    pub async fn chain_position(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        device: Id,
+        counter: u64,
+    ) -> Result<Option<Entry>, SyncError> {
+        let path = format!(
+            "/v2/workspaces/{}/domains/{}/chain/{}/{counter}",
+            workspace.to_base64url(),
+            domain.to_base64url(),
+            device.to_base64url()
+        );
+        match self.call(reqwest::Method::GET, &path, None).await {
+            Ok(entry) => Ok(Some(entry)),
+            Err(SyncError::Refused { code, .. }) if code == "not_found" => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 }

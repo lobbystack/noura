@@ -1,0 +1,1955 @@
+//! The desktop sync client of one folder (docs/workspace-format/sync-v2.md
+//! §13 to §16, §25): it keeps a workspace's files in step with your other
+//! desktops over sync v2.
+//!
+//! Turning sync on creates the remote workspace in one request and uploads
+//! the folder. Every change to the workspace's files, from Noura or from
+//! another program, becomes a padded, encrypted operation signed into this
+//! device's chain, persisted in the journal's outbox before anything is
+//! sent, and pushed one push at a time. One pull per round fetches the
+//! domain, checks each record before it decrypts it, applies the changes
+//! through `local-core`'s checked writes and only then advances the
+//! cursor. Conflicts keep both versions.
+//!
+//! [`WorkspaceSync`] holds the folder's state and needs no network to
+//! capture changes; the calls that reach the server take the device's
+//! [`SyncService`].
+
+mod capture;
+mod settle;
+pub mod state;
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+use std::sync::Arc;
+
+use local_core::WorkspaceEngine;
+use sync_key_envelope::v2::unwrap;
+use sync_protocol::chain::{ChainFetcher, ChainRecord, ChainVerdict, ChainVerifier, Fetched};
+use sync_protocol::codec::{Bytes, Decode, Encode, Sorted, Text};
+use sync_protocol::crypto::{hash, random_nonce};
+use sync_protocol::keys::{LogJudge, key_matches, walk_lineage};
+use sync_protocol::live::{LiveOp, LiveSet};
+use sync_protocol::messages::{
+    ChainConflictDetail, EntryRecord, MAX_BODY, Page, PageStatus, PullCursor, PushFailureDetail,
+    RecordRef,
+};
+use sync_protocol::policy::PolicyChain;
+use sync_protocol::records::{
+    Content, Cover, DeleteReason, OpClass, Operation, Payload, PayloadKind, Profile,
+    ProfilePayload, Role, Signed, SyncPath,
+};
+use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
+
+use capture::{Change, Found};
+pub use capture::{SkipWhy, Skipped};
+use state::{Content as Carried, Log, Object, OpKey, Outgoing, Own, State, StateInfo};
+
+use super::journal::{self, Journal, STATE_FILE};
+use super::marks::Mark;
+use super::registry::Registry;
+use super::{DeviceCredentials, RemoteWorkspace, Secrets, SyncError, SyncService, random};
+
+/// The longest a pull waits for new records (§15).
+pub const PULL_WAIT_SECONDS: u32 = 25;
+/// The re-seals per chain position that no newer epoch or policy change
+/// forces (§14, §27).
+pub const RESEAL_LIMIT: u32 = 3;
+/// How far below 1 MiB a push stays, for its framing.
+const PUSH_MARGIN: usize = 4_096;
+
+/// What one round did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Round {
+    /// The local changes it signed into the outbox.
+    pub captured: usize,
+    /// The records the server acknowledged.
+    pub pushed: usize,
+    /// The other devices' records it applied.
+    pub applied: usize,
+    /// Whether the pull waits for a key before it goes on (§13).
+    pub waiting_for_key: bool,
+}
+
+/// One branch of a conflict, as the review lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Branch {
+    /// The device that wrote it.
+    pub device: Id,
+    /// Its path, or `None` for a delete.
+    pub path: Option<String>,
+    /// Whether the local file holds it.
+    pub on_disk: bool,
+    /// Its position, which choosing names.
+    pub key: OpKey,
+}
+
+/// An object whose live set holds two or more different states (§16).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Conflict {
+    /// The object.
+    pub rid: Id,
+    /// Its branches, lowest operation digest first.
+    pub branches: Vec<Branch>,
+}
+
+/// What sync shows of a folder (§30, Settings).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Status {
+    /// The workspace's name.
+    pub name: String,
+    /// Records signed and not yet acknowledged.
+    pub pending: usize,
+    /// Objects in conflict.
+    pub conflicts: usize,
+    /// Files sync leaves out.
+    pub skipped: Vec<Skipped>,
+    /// Unix seconds of the last round without an error.
+    pub last_success: Option<u64>,
+    /// Records that didn't open, attributed to their signers.
+    pub unreadable: usize,
+    /// Local versions held for review.
+    pub held: usize,
+}
+
+/// The sync state of one folder.
+pub struct WorkspaceSync {
+    engine: Arc<WorkspaceEngine>,
+    journal: Journal,
+    state: State,
+    mark: Mark,
+    credentials: DeviceCredentials,
+    secrets: Secrets,
+    /// The epoch keys the device holds, by epoch.
+    keys: BTreeMap<u64, SecretKey>,
+    /// The verified policy and keys, once the device reached the server.
+    remote: Option<RemoteWorkspace>,
+    skipped: Vec<Skipped>,
+    /// Why the device stopped writing the domain, such as
+    /// `sync_reseal_limit` (§14).
+    stopped: Option<&'static str>,
+}
+
+impl std::fmt::Debug for WorkspaceSync {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkspaceSync")
+            .field("workspace", &self.state.workspace)
+            .finish_non_exhaustive()
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn core(error: local_core::CoreError) -> SyncError {
+    SyncError::Invalid(format!("{}: {}", error.code, error.message))
+}
+
+/// Whether the folder at `folder` holds nothing, apart from the files the
+/// system leaves in any folder.
+pub fn is_empty_folder(folder: &Path) -> Result<bool, SyncError> {
+    let entries = std::fs::read_dir(folder)
+        .map_err(|e| SyncError::Invalid(format!("the folder can't be read: {e}")))?;
+    Ok(entries.flatten().all(|entry| {
+        matches!(
+            entry.file_name().to_str(),
+            Some(".DS_Store" | "desktop.ini")
+        )
+    }))
+}
+
+impl WorkspaceSync {
+    /// Turns sync on for the workspace that `engine` opened: creates the
+    /// remote workspace named `name` in one request (its genesis, the
+    /// workspace domain's first epoch, an envelope for every active card of
+    /// the account and the profile), starts this folder's journal and
+    /// records the folder in `registry`. The first round uploads the
+    /// files.
+    pub async fn turn_on(
+        service: &mut SyncService,
+        engine: Arc<WorkspaceEngine>,
+        name: &str,
+        registry: &mut Registry,
+    ) -> Result<Self, SyncError> {
+        let remote = service.create_workspace(name).await?;
+        let server = service.client().base().to_owned();
+        let credentials = service.credentials().clone();
+        let replica = registry.connect(
+            &server,
+            credentials.account,
+            remote.workspace,
+            engine.root(),
+        )?;
+        let generation = service.client().restore_generation();
+        Self::start(
+            service, engine, remote, server, replica, generation, name, None,
+        )
+    }
+
+    /// Downloads the remote workspace `workspace` into the folder `engine`
+    /// opened, which must be empty apart from its new `.noura` folder: the
+    /// device verifies the workspace, records the folder in `registry`, and
+    /// the first round pulls every file from sequence 0 (§15, §18).
+    pub async fn download(
+        service: &mut SyncService,
+        engine: Arc<WorkspaceEngine>,
+        workspace: Id,
+        registry: &mut Registry,
+    ) -> Result<Self, SyncError> {
+        let listing = engine.synced_listing().map_err(core)?;
+        if !listing.files.is_empty() {
+            return Err(SyncError::Invalid(
+                "Choose an empty folder to download the workspace into.".into(),
+            ));
+        }
+        let remote = service.open_workspace(workspace).await?;
+        let (name, profile) = profile_of(service, &remote).await?;
+        let server = service.client().base().to_owned();
+        let credentials = service.credentials().clone();
+        let replica = registry.connect(&server, credentials.account, workspace, engine.root())?;
+        let generation = service.client().restore_generation();
+        Self::start(
+            service, engine, remote, server, replica, generation, &name, profile,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn start(
+        service: &mut SyncService,
+        engine: Arc<WorkspaceEngine>,
+        remote: RemoteWorkspace,
+        server: String,
+        replica: Id,
+        generation: u64,
+        name: &str,
+        profile: Option<(u64, Digest)>,
+    ) -> Result<Self, SyncError> {
+        let credentials = service.credentials().clone();
+        let secrets = service.secrets.clone();
+        let device = credentials.keys.device();
+        let journal = Journal::open(engine.root(), &device, &*secrets)?;
+        let mut mark = Mark::read(&*secrets, &device, &remote.workspace)?.unwrap_or_default();
+        let next = mark.start().get(&remote.domain).copied().unwrap_or(1);
+        let state = State {
+            version: state::VERSION,
+            replica,
+            server,
+            account: credentials.account,
+            workspace: remote.workspace,
+            domain: remote.domain,
+            generation,
+            policy: policy_changes(&remote.policy),
+            epochs: remote.epochs_oldest_first().into_iter().cloned().collect(),
+            envelope: remote.envelope.clone(),
+            name: name.to_owned(),
+            profile: profile.or(Some((1, Digest::ZERO))),
+            log: Log {
+                cursor: 0,
+                head: 0,
+                checkpoint_seq: 0,
+                retention_floor: 0,
+                judge: LogJudge::new(remote.domain),
+                verifier: ChainVerifier::new(),
+                live: LiveSet::new(),
+                last: BTreeMap::new(),
+            },
+            own: Own {
+                next,
+                head: None,
+                acked: None,
+            },
+            objects: BTreeMap::new(),
+            outbox: Vec::new(),
+            unreadable: Vec::new(),
+            held: BTreeMap::new(),
+            last_success: None,
+        };
+        let keys = remote.keys.clone();
+        let mut sync = Self {
+            engine,
+            journal,
+            state,
+            mark,
+            credentials,
+            secrets,
+            keys,
+            remote: Some(remote),
+            skipped: Vec::new(),
+            stopped: None,
+        };
+        sync.save()?;
+        Ok(sync)
+    }
+
+    /// Opens the journal of a folder that syncs, as each start of the app
+    /// does, with no network: the device can capture and sign changes into
+    /// its outbox before it reaches the server. Each start raises the
+    /// counter reservation by one block (§14). A journal whose keyed hash
+    /// fails, or that lies below the credential store's mark, reports
+    /// `sync_journal_rollback`; a journal that holds another replica ID
+    /// than `registry` gives this folder doesn't sync until you connect it
+    /// (§15).
+    pub fn open(
+        engine: Arc<WorkspaceEngine>,
+        credentials: DeviceCredentials,
+        secrets: Secrets,
+        registry: &Registry,
+    ) -> Result<Self, SyncError> {
+        let entry = registry
+            .of_folder(engine.root())
+            .ok_or_else(|| SyncError::Invalid("this folder doesn't sync".into()))?
+            .clone();
+        let device = credentials.keys.device();
+        let journal = Journal::open(engine.root(), &device, &*secrets)?;
+        let state: State = journal
+            .read(STATE_FILE)?
+            .ok_or(SyncError::Check("sync_journal_lost"))?;
+        if state.replica != entry.replica || state.workspace != entry.workspace {
+            return Err(SyncError::Check("sync_folder_not_connected"));
+        }
+        let mut mark = Mark::read(&*secrets, &device, &state.workspace)?.unwrap_or_default();
+        let epochs: BTreeMap<Id, u64> = BTreeMap::from([(
+            state.domain,
+            state.epochs.last().map_or(0, |e| e.body.epoch),
+        )]);
+        let revision = state.policy.last().map_or(0, |c| c.body.revision);
+        if mark.above(revision, &epochs) {
+            return Err(SyncError::Check("sync_journal_rollback"));
+        }
+        let next = mark.start();
+        mark.write(&*secrets, &device, &state.workspace)?;
+        let mut sync = Self {
+            engine,
+            journal,
+            keys: BTreeMap::new(),
+            mark,
+            credentials,
+            secrets,
+            remote: None,
+            skipped: Vec::new(),
+            stopped: None,
+            state,
+        };
+        if let Some(next) = next.get(&sync.state.domain) {
+            sync.state.own.next = sync.state.own.next.max(*next);
+        }
+        sync.keys = sync.offline_keys()?;
+        sync.save()?;
+        Ok(sync)
+    }
+
+    /// The epoch keys from the journal alone: this device's envelope of the
+    /// latest epoch, unwrapped with its X-Wing secret and checked against
+    /// the record's `key_check`, and every earlier key through lineage.
+    fn offline_keys(&self) -> Result<BTreeMap<u64, SecretKey>, SyncError> {
+        let (Some(latest), Some(envelope)) = (self.state.epochs.last(), &self.state.envelope)
+        else {
+            return Ok(BTreeMap::new());
+        };
+        let card = self.credentials.card();
+        let key = unwrap(&envelope.body, &self.credentials.keys, &card)
+            .map_err(|_| SyncError::Check("sync_key_mismatch"))?;
+        if envelope.body.epoch != latest.body.epoch || !key_matches(&latest.body, &key) {
+            return Err(SyncError::Check("sync_key_mismatch"));
+        }
+        let newest_first: Vec<_> = self.state.epochs.iter().rev().cloned().collect();
+        let mut keys = BTreeMap::from([(latest.body.epoch, key.clone())]);
+        // Lineage reaches the older keys when the chain is unbroken.
+        if let Ok(derived) = walk_lineage(&newest_first, &key) {
+            for (record, key) in newest_first.iter().zip(derived) {
+                keys.insert(record.body.epoch, key);
+            }
+        }
+        Ok(keys)
+    }
+
+    /// The workspace this folder syncs.
+    pub fn workspace(&self) -> Id {
+        self.state.workspace
+    }
+
+    /// The workspace's name, from its profile.
+    pub fn name(&self) -> &str {
+        &self.state.name
+    }
+
+    /// The folder's engine.
+    pub fn engine(&self) -> &Arc<WorkspaceEngine> {
+        &self.engine
+    }
+
+    /// The verified remote workspace, once the device reached the server.
+    pub fn remote_mut(&mut self) -> Option<&mut RemoteWorkspace> {
+        self.remote.as_mut()
+    }
+
+    /// What Settings shows.
+    pub fn status(&self) -> Status {
+        Status {
+            name: self.state.name.clone(),
+            pending: self.state.outbox.len(),
+            conflicts: self.conflicts().len(),
+            skipped: self.skipped.clone(),
+            last_success: self.state.last_success,
+            unreadable: self.state.unreadable.len(),
+            held: self.state.held.len(),
+        }
+    }
+
+    /// Why the device stopped writing the domain, if it did.
+    pub fn stopped(&self) -> Option<&'static str> {
+        self.stopped
+    }
+
+    fn save(&mut self) -> Result<(), SyncError> {
+        self.journal.write(STATE_FILE, &self.state)?;
+        // The mark follows the journal, never ahead of it (§15).
+        let revision = self.state.policy.last().map_or(0, |c| c.body.revision);
+        let head = self
+            .state
+            .policy
+            .last()
+            .map_or(Digest::ZERO, |c| c.digest());
+        let domain = self.mark.domains.entry(self.state.domain).or_default();
+        let (epoch, record) = self
+            .state
+            .epochs
+            .last()
+            .map_or((0, Digest::ZERO), |e| (e.body.epoch, e.digest()));
+        if revision != self.mark.policy_revision || epoch != domain.epoch {
+            domain.epoch = epoch;
+            domain.epoch_record = record;
+            self.mark.policy_revision = revision;
+            self.mark.policy_head = head;
+            self.mark.write(
+                &*self.secrets,
+                &self.credentials.keys.device(),
+                &self.state.workspace,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// One round: captures local changes into the outbox, connects when it
+    /// hasn't yet, pushes the outbox, and pulls once, waiting up to
+    /// `wait_seconds` for new records.
+    pub async fn round(
+        &mut self,
+        service: &mut SyncService,
+        wait_seconds: u32,
+    ) -> Result<Round, SyncError> {
+        let captured = self.capture()?;
+        if self.remote.is_none() {
+            self.connect(service).await?;
+        }
+        let pushed = self.push(service).await?;
+        let (applied, waiting_for_key) = self.pull(service, wait_seconds).await?;
+        // Applying may have written merges; they go out in the next round.
+        self.state.last_success = Some(unix_now());
+        self.save()?;
+        Ok(Round {
+            captured,
+            pushed,
+            applied,
+            waiting_for_key,
+        })
+    }
+
+    /// Verifies the workspace on the server and takes its policy and keys,
+    /// which must extend what the journal accepted (§8, §9), then compares
+    /// this device's chain with the server's head (§14).
+    pub async fn connect(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
+        let remote = service.open_workspace(self.state.workspace).await?;
+        self.adopt(remote)?;
+        self.compare_own_chain(service).await?;
+        self.save()
+    }
+
+    /// Takes a verified remote workspace's policy and keys, which must
+    /// extend the journal's: the same change at each accepted revision and
+    /// the accepted epochs, or a replacement that ended them.
+    fn adopt(&mut self, remote: RemoteWorkspace) -> Result<(), SyncError> {
+        let (revision, _) = remote.policy.head();
+        if let Some(accepted) = self.state.policy.last() {
+            let at = accepted.body.revision;
+            if revision < at {
+                return Err(SyncError::Check("sync_policy_rollback"));
+            }
+            if remote.policy.change(at).map(|c| c.digest()) != Some(accepted.digest()) {
+                return Err(SyncError::Check("sync_policy_forked"));
+            }
+        }
+        if let Some(accepted) = self.state.epochs.last() {
+            let number = accepted.body.epoch;
+            let kept = remote
+                .epochs
+                .get(number)
+                .is_some_and(|e| e.digest == accepted.digest())
+                || remote.epochs.ended_at(number).is_some();
+            if !kept {
+                return Err(SyncError::Check("sync_key_mismatch"));
+            }
+        }
+        self.state.policy = policy_changes(&remote.policy);
+        self.state.epochs = remote.epochs_oldest_first().into_iter().cloned().collect();
+        if remote.envelope.is_some() {
+            self.state.envelope = remote.envelope.clone();
+        }
+        self.keys.extend(remote.keys.clone());
+        self.remote = Some(remote);
+        Ok(())
+    }
+
+    /// Takes the policy and keys again after a push response, a pull or a
+    /// refusal named a revision above the accepted head (§9).
+    async fn refresh(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
+        let mut remote = match self.remote.take() {
+            Some(remote) => remote,
+            None => service.open_workspace(self.state.workspace).await?,
+        };
+        let refreshed = async {
+            service.refresh_policy(&mut remote).await?;
+            service.refresh_keys(&mut remote).await
+        }
+        .await;
+        if let Err(error) = refreshed {
+            self.remote = Some(remote);
+            return Err(error);
+        }
+        self.adopt(remote)
+    }
+
+    /// Compares the journal's head of this device's chain with the server's
+    /// (§14): a server head above it means the journal lost records the
+    /// device sent, which it takes back after checking its own signature on
+    /// each; a head below one the server acknowledged means the server went
+    /// back.
+    async fn compare_own_chain(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
+        let device = self.credentials.keys.device();
+        let head = service
+            .client()
+            .chain_head(self.state.workspace, self.state.domain, device)
+            .await?;
+        let acked = self.state.own.acked.map_or(0, |(c, _, _)| c);
+        let server = head.as_ref().map_or(0, |h| h.counter);
+        if server < acked {
+            return Err(SyncError::Check("sync_server_rollback"));
+        }
+        if server == acked {
+            return Ok(());
+        }
+        // Records the journal lost: take each back, oldest first.
+        let mut counter = acked + 1;
+        let mut previous = self.state.own.acked.map_or(Digest::ZERO, |(_, d, _)| d);
+        while counter <= server {
+            let Some(entry) = service
+                .client()
+                .chain_position(self.state.workspace, self.state.domain, device, counter)
+                .await?
+            else {
+                return Err(SyncError::Check("sync_chain_gap"));
+            };
+            let EntryRecord::Operation(op) = &entry.record else {
+                return Err(SyncError::Check("sync_chain_gap"));
+            };
+            if op.body.device != device
+                || op.body.previous != previous
+                || op
+                    .verify(
+                        &self
+                            .credentials
+                            .keys
+                            .card(self.credentials.account)
+                            .signing_public,
+                    )
+                    .is_err()
+            {
+                return Err(SyncError::Check("sync_chain_forked"));
+            }
+            previous = op.digest();
+            self.state.own.acked = Some((op.body.counter, previous, entry.seq));
+            counter = op.body.counter + 1;
+        }
+        // The outbox's first record follows the server's head now.
+        let acked = self.state.own.acked.expect("taken back");
+        if self.state.own.head.is_none_or(|(c, _)| c < acked.0) {
+            self.state.own.head = Some((acked.0, acked.1));
+        }
+        self.state.own.next = self.state.own.next.max(acked.0 + 1);
+        if !self.state.outbox.is_empty() {
+            self.reseal_from(0, true)?;
+        }
+        Ok(())
+    }
+
+    /// Finds the local changes and signs each into the outbox, which
+    /// reaches the disk before this returns. Works without a network.
+    /// Returns how many changes it signed.
+    pub fn capture(&mut self) -> Result<usize, SyncError> {
+        if self.stopped.is_some() {
+            return Ok(0);
+        }
+        let listing = self.engine.synced_listing().map_err(core)?;
+        let held: BTreeSet<Id> = self.state.held.keys().copied().collect();
+        let engine = self.engine.clone();
+        let (changes, mut skipped) =
+            capture::changes(&listing, &self.state.objects, &held, |path| {
+                engine.read_synced(path).ok().flatten()
+            });
+        let mut signed = 0;
+        for change in changes {
+            match change {
+                Change::Touch { rid, found } => {
+                    if let Some(object) = self.state.objects.get_mut(&rid) {
+                        object.local = Some(found.local());
+                    }
+                }
+                Change::Create(found) => {
+                    if !capture::fits_inline(
+                        &found.file.relative_path,
+                        &found.object_id,
+                        found.file.size,
+                    ) {
+                        skipped.push(Skipped {
+                            path: found.file.relative_path.clone(),
+                            why: SkipWhy::TooLarge,
+                        });
+                        continue;
+                    }
+                    let rid = random(Id::random())?;
+                    self.state.objects.insert(
+                        rid,
+                        Object {
+                            object_id: found.object_id.clone(),
+                            ..Object::default()
+                        },
+                    );
+                    self.sign_file(rid, &found, Vec::new())?;
+                    signed += 1;
+                }
+                Change::Update { rid, found } => {
+                    if !capture::fits_inline(
+                        &found.file.relative_path,
+                        &found.object_id,
+                        found.file.size,
+                    ) {
+                        skipped.push(Skipped {
+                            path: found.file.relative_path.clone(),
+                            why: SkipWhy::TooLarge,
+                        });
+                        continue;
+                    }
+                    let covers = self.edit_covers(&rid);
+                    self.sign_file(rid, &found, covers)?;
+                    signed += 1;
+                }
+                Change::Delete { rid } => {
+                    let covers = self.edit_covers(&rid);
+                    self.sign_delete(rid, covers)?;
+                    signed += 1;
+                }
+            }
+        }
+        // An object this device wrote that yields its path to another
+        // object moves to the name it shows (§16).
+        for rid in self.yielded_moves() {
+            let Some(local) = self.state.objects[&rid].local.clone() else {
+                continue;
+            };
+            let Ok(Some(bytes)) = self.engine.read_synced(&local.path) else {
+                continue;
+            };
+            let found = self.found_at(&local.path, bytes)?;
+            let covers = self.edit_covers(&rid);
+            self.sign_file(rid, &found, covers)?;
+            signed += 1;
+        }
+        skipped.sort();
+        self.skipped = skipped;
+        self.save()?;
+        Ok(signed)
+    }
+
+    /// The covers of an edit to `rid` (§13, §16): the state the local file
+    /// holds and every live state identical to it, and this device's own
+    /// earlier records, so the other branches of a conflict stay live.
+    fn edit_covers(&self, rid: &Id) -> Vec<Cover> {
+        let Some(object) = self.state.objects.get(rid) else {
+            return Vec::new();
+        };
+        let mut view: BTreeSet<OpKey> = BTreeSet::new();
+        if let Some(base) = object.base {
+            view.insert(base);
+            let base_content = object.states.get(&base).and_then(|s| s.content.clone());
+            if let Some(base_content) = base_content {
+                for key in self.live_states(rid) {
+                    let same = object
+                        .states
+                        .get(&key)
+                        .and_then(|s| s.content.as_ref())
+                        .is_some_and(|c| same_state(c, &base_content));
+                    if same {
+                        view.insert(key);
+                    }
+                }
+            }
+        }
+        self.covers_of(rid, &view)
+    }
+
+    /// Covers naming each device's highest operation in `view`, and this
+    /// device's highest record on `rid`, so it leaves none of its own
+    /// earlier states live.
+    fn covers_of(&self, rid: &Id, view: &BTreeSet<OpKey>) -> Vec<Cover> {
+        let own = self.credentials.keys.device();
+        let mut highest: BTreeMap<Id, u64> = BTreeMap::new();
+        for key in view {
+            let entry = highest.entry(key.device).or_default();
+            *entry = (*entry).max(key.counter);
+        }
+        if let Some(object) = self.state.objects.get(rid)
+            && object.own_highest > 0
+        {
+            let entry = highest.entry(own).or_default();
+            *entry = (*entry).max(object.own_highest);
+        }
+        let mut covers: Vec<Cover> = highest
+            .into_iter()
+            .map(|(device, counter)| Cover { device, counter })
+            .collect();
+        covers.sort_by_key(|c| c.device);
+        covers.truncate(sync_protocol::records::MAX_COVERS);
+        covers
+    }
+
+    /// The live state operations on `rid`, in log order.
+    fn live_states(&self, rid: &Id) -> Vec<OpKey> {
+        self.state
+            .log
+            .live
+            .live(rid)
+            .into_iter()
+            .filter(|(_, class)| *class == OpClass::State)
+            .map(|(op, _)| OpKey {
+                device: op.device,
+                counter: op.counter,
+            })
+            .collect()
+    }
+
+    fn sign_file(&mut self, rid: Id, found: &Found, covers: Vec<Cover>) -> Result<(), SyncError> {
+        let bytes = match &found.bytes {
+            Some(bytes) => bytes.clone(),
+            None => self
+                .engine
+                .read_synced(&found.file.relative_path)
+                .map_err(core)?
+                .ok_or_else(|| SyncError::Invalid("the file went away".into()))?,
+        };
+        let path = SyncPath::new(found.file.relative_path.clone())
+            .map_err(|e| SyncError::Invalid(format!("path: {}", e.name())))?;
+        let payload = Payload {
+            rid,
+            kind: PayloadKind::File {
+                object_id: Text::new(found.object_id.clone())
+                    .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
+                path,
+                revision: found.revision,
+                content: Content::Inline {
+                    bytes: Bytes(bytes),
+                },
+                origin: None,
+            },
+        };
+        let carried = Carried {
+            path: found.file.relative_path.clone(),
+            revision: found.revision,
+            delete: false,
+            object_id: found.object_id.clone(),
+            kept: None,
+        };
+        let key = self.sign(rid, false, covers, &payload, carried)?;
+        let object = self.state.objects.get_mut(&rid).expect("signed for it");
+        object.local = Some(found.local());
+        object.object_id = found.object_id.clone();
+        object.base = Some(key);
+        Ok(())
+    }
+
+    fn sign_delete(&mut self, rid: Id, covers: Vec<Cover>) -> Result<(), SyncError> {
+        let object = &self.state.objects[&rid];
+        let revision = object.local.as_ref().map_or(Digest::ZERO, |l| l.revision);
+        let payload = Payload {
+            rid,
+            kind: PayloadKind::Delete {
+                object_id: Text::new(object.object_id.clone())
+                    .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
+                revision,
+                reason: DeleteReason::Deleted,
+                target: None,
+            },
+        };
+        let carried = Carried {
+            path: String::new(),
+            revision,
+            delete: true,
+            object_id: object.object_id.clone(),
+            kept: None,
+        };
+        let key = self.sign(rid, true, covers, &payload, carried)?;
+        let object = self.state.objects.get_mut(&rid).expect("signed for it");
+        object.local = None;
+        object.base = Some(key);
+        Ok(())
+    }
+
+    /// Seals `payload` under the latest epoch and signs it into this
+    /// device's chain at its next counter, raising the reservation first
+    /// when the counter lies past it, and appends it to the outbox.
+    fn sign(
+        &mut self,
+        rid: Id,
+        delete: bool,
+        covers: Vec<Cover>,
+        payload: &Payload,
+        carried: Carried,
+    ) -> Result<OpKey, SyncError> {
+        let counter = self.state.own.next;
+        let device = self.credentials.keys.device();
+        if self.mark.needs_block(&self.state.domain, counter) {
+            self.mark.reserve(&self.state.domain, counter);
+            self.mark
+                .write(&*self.secrets, &device, &self.state.workspace)?;
+        }
+        let previous = self.state.own.head.map_or(Digest::ZERO, |(_, d)| d);
+        let signed = self.seal(
+            counter,
+            previous,
+            Digest::ZERO,
+            rid,
+            delete,
+            covers.clone(),
+            payload,
+        )?;
+        self.state.own.next = counter + 1;
+        self.state.own.head = Some((counter, signed.digest()));
+        let key = OpKey { device, counter };
+        let object = self.state.objects.entry(rid).or_default();
+        object.own_highest = counter;
+        object.states.insert(
+            key,
+            StateInfo {
+                digest: signed.digest(),
+                seq: None,
+                covers,
+                content: Some(carried),
+            },
+        );
+        self.state.outbox.push(Outgoing {
+            record: signed,
+            reseals: 0,
+        });
+        Ok(key)
+    }
+
+    /// Seals and signs an operation at `counter` under the latest epoch and
+    /// the accepted policy head.
+    #[allow(clippy::too_many_arguments)]
+    fn seal(
+        &self,
+        counter: u64,
+        previous: Digest,
+        previous_attempt: Digest,
+        rid: Id,
+        delete: bool,
+        covers: Vec<Cover>,
+        payload: &Payload,
+    ) -> Result<Signed<Operation>, SyncError> {
+        let epoch = self
+            .state
+            .epochs
+            .last()
+            .ok_or(SyncError::Check("sync_key_mismatch"))?;
+        let key = self
+            .keys
+            .get(&epoch.body.epoch)
+            .ok_or(SyncError::Check("sync_key_mismatch"))?;
+        let head = self
+            .state
+            .policy
+            .last()
+            .ok_or(SyncError::Check("sync_workspace_unverified"))?;
+        let mut op = Operation {
+            workspace: self.state.workspace,
+            domain: self.state.domain,
+            device: self.credentials.keys.device(),
+            counter,
+            previous,
+            epoch: epoch.body.epoch,
+            policy_revision: head.body.revision,
+            policy_head: head.digest(),
+            previous_attempt,
+            generation: self.state.generation,
+            checkpoint_seq: 0,
+            checkpoint: Digest::ZERO,
+            rid,
+            delete,
+            supersedes: Sorted::new(covers).map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
+            blobs: Sorted::default(),
+            nonce: Nonce::ZERO,
+            ciphertext: Bytes(Vec::new()),
+        };
+        op.seal_payload(payload, key, &epoch.digest(), random(random_nonce())?)
+            .map_err(|e| SyncError::Invalid(e.to_string()))?;
+        Ok(Signed::sign(op, self.credentials.keys.signing()))
+    }
+
+    /// Re-seals the outbox's records from `index` on at their own
+    /// positions, under the latest epoch and policy head, each naming the
+    /// attempt it replaces in `previous_attempt`; the later records' links
+    /// change with it (§14). A re-seal that a newer epoch or policy change
+    /// doesn't force counts toward the cap of 3 at its position.
+    fn reseal_from(&mut self, index: usize, forced: bool) -> Result<(), SyncError> {
+        self.reseal(index, forced, None)
+    }
+
+    /// [`Self::reseal_from`], with `replacing` putting the first record at
+    /// the position a rejected record held, naming that record (§14).
+    fn reseal(
+        &mut self,
+        index: usize,
+        forced: bool,
+        replacing: Option<(u64, Digest)>,
+    ) -> Result<(), SyncError> {
+        let own = self.credentials.keys.device();
+        let mut previous = if index == 0 {
+            self.state.own.acked.map_or(Digest::ZERO, |(_, d, _)| d)
+        } else {
+            self.state.outbox[index - 1].record.digest()
+        };
+        for i in index..self.state.outbox.len() {
+            let old = self.state.outbox[i].record.clone();
+            let key = self
+                .keys
+                .get(&old.body.epoch)
+                .ok_or(SyncError::Check("sync_key_mismatch"))?;
+            let epoch_record = self
+                .state
+                .epochs
+                .iter()
+                .find(|e| e.body.epoch == old.body.epoch)
+                .map(|e| e.digest())
+                .ok_or(SyncError::Check("sync_key_mismatch"))?;
+            // This device writes only state operations until text mode
+            // arrives (ticket 55).
+            let payload = old
+                .body
+                .open_payload(key, &epoch_record, OpClass::State)
+                .map_err(|_| SyncError::Check("sync_record_unreadable"))?;
+            if i == index && !forced {
+                self.state.outbox[i].reseals += 1;
+                if self.state.outbox[i].reseals > RESEAL_LIMIT {
+                    self.stopped = Some("sync_reseal_limit");
+                    return Err(SyncError::Check("sync_reseal_limit"));
+                }
+            }
+            let (counter, attempt) = match replacing {
+                Some((counter, rejected)) if i == index => (counter, rejected),
+                _ => (old.body.counter, old.digest()),
+            };
+            let resealed = self.seal(
+                counter,
+                previous,
+                attempt,
+                old.body.rid,
+                old.body.delete,
+                old.body.supersedes.to_vec(),
+                &payload,
+            )?;
+            previous = resealed.digest();
+            let old_key = OpKey {
+                device: own,
+                counter: old.body.counter,
+            };
+            let new_key = OpKey {
+                device: own,
+                counter,
+            };
+            if let Some(object) = self.state.objects.get_mut(&old.body.rid) {
+                if let Some(mut state) = object.states.remove(&old_key) {
+                    state.digest = resealed.digest();
+                    object.states.insert(new_key, state);
+                }
+                if object.base == Some(old_key) {
+                    object.base = Some(new_key);
+                }
+            }
+            self.state.outbox[i].record = resealed;
+            self.recount_own(&old.body.rid);
+        }
+        if let Some(last) = self.state.outbox.last() {
+            self.state.own.head = Some((last.record.body.counter, last.record.digest()));
+        }
+        Ok(())
+    }
+
+    /// Sets `rid`'s highest own counter from the states the journal keeps,
+    /// after records of this device left or moved.
+    fn recount_own(&mut self, rid: &Id) {
+        let own = self.credentials.keys.device();
+        if let Some(object) = self.state.objects.get_mut(rid) {
+            object.own_highest = object
+                .states
+                .keys()
+                .filter(|k| k.device == own)
+                .map(|k| k.counter)
+                .max()
+                .unwrap_or(0);
+        }
+    }
+
+    /// Pushes the outbox in order, one push at a time, each at most 1 MiB,
+    /// until it's empty or the server refuses a record that waits (§15).
+    /// The same bytes go out on every retry. Returns how many records the
+    /// server acknowledged.
+    pub async fn push(&mut self, service: &mut SyncService) -> Result<usize, SyncError> {
+        let mut acknowledged = 0;
+        let mut attempts = 0;
+        while !self.state.outbox.is_empty() {
+            if self.stopped.is_some() {
+                return Ok(acknowledged);
+            }
+            attempts += 1;
+            if attempts > 64 {
+                return Err(SyncError::Network(
+                    "the server keeps refusing the push".into(),
+                ));
+            }
+            let mut size = 0;
+            let mut batch = Vec::new();
+            for outgoing in &self.state.outbox {
+                let record = RecordRef::Operation(outgoing.record.clone());
+                let len = record.to_bytes().len();
+                if !batch.is_empty() && size + len > MAX_BODY - PUSH_MARGIN {
+                    break;
+                }
+                size += len;
+                batch.push(record);
+            }
+            let sent = batch.len();
+            match service.client().push(self.state.workspace, batch).await {
+                Ok(response) => {
+                    for (outgoing, receipt) in self
+                        .state
+                        .outbox
+                        .drain(..sent)
+                        .zip(response.receipts.0.iter())
+                    {
+                        let record = &outgoing.record;
+                        if receipt.record_digest != record.digest() {
+                            return Err(SyncError::Network(
+                                "the push returned another record's receipt".into(),
+                            ));
+                        }
+                        self.state.own.acked =
+                            Some((record.body.counter, record.digest(), receipt.seq));
+                        let key = OpKey {
+                            device: record.body.device,
+                            counter: record.body.counter,
+                        };
+                        if let Some(state) = self
+                            .state
+                            .objects
+                            .get_mut(&record.body.rid)
+                            .and_then(|o| o.states.get_mut(&key))
+                        {
+                            state.seq = Some(receipt.seq);
+                        }
+                    }
+                    acknowledged += sent;
+                    self.save()?;
+                    let accepted = self.state.policy.last().map_or(0, |c| c.body.revision);
+                    if response.policy_revision > accepted {
+                        self.refresh(service).await?;
+                    }
+                }
+                Err(SyncError::Refused { code, detail, .. }) => {
+                    self.refused(service, &code, detail.as_deref()).await?;
+                    self.save()?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(acknowledged)
+    }
+
+    /// Handles a refused push (§14): checks the reason against what the
+    /// device can verify, then re-seals, replaces, drops or keeps the
+    /// failing record. Returns an error when the record waits.
+    async fn refused(
+        &mut self,
+        service: &mut SyncService,
+        code: &str,
+        detail: Option<&[u8]>,
+    ) -> Result<(), SyncError> {
+        let failure = detail.and_then(|d| PushFailureDetail::from_bytes(d).ok());
+        let (index, record_code, record_detail) = match &failure {
+            Some(f) => (
+                f.record_index as usize,
+                f.code.0.as_str(),
+                f.record_detail.as_ref().map(|d| d.0.clone()),
+            ),
+            None => (0, code, None),
+        };
+        if index >= self.state.outbox.len() {
+            return Err(SyncError::Refused {
+                code: code.to_owned(),
+                status: 0,
+                detail: None,
+            });
+        }
+        let refused = || SyncError::Refused {
+            code: record_code.to_owned(),
+            status: 409,
+            detail: None,
+        };
+        match record_code {
+            "epoch_stale" | "rotation_pending" => {
+                let before = self.accepted_epoch();
+                let revision = self.accepted_revision();
+                self.refresh(service).await?;
+                if let Some(remote) = self.remote.as_mut()
+                    && service.rotation_pending(remote)
+                {
+                    service.rotate_if_pending(remote).await?;
+                    let remote = self.remote.take().expect("just used");
+                    self.adopt(remote)?;
+                }
+                if self.accepted_epoch() != before || self.accepted_revision() != revision {
+                    self.reseal_from(index, true)
+                } else {
+                    Err(refused())
+                }
+            }
+            "supersedes_unknown" => {
+                // Drop the covers the server can't return (§14).
+                let record = self.state.outbox[index].record.clone();
+                let mut kept = Vec::new();
+                for cover in record.body.supersedes.iter() {
+                    let found = service
+                        .client()
+                        .chain_position(
+                            self.state.workspace,
+                            self.state.domain,
+                            cover.device,
+                            cover.counter,
+                        )
+                        .await?;
+                    let exists = found.is_some_and(|entry| match entry.record {
+                        EntryRecord::Operation(op) => {
+                            op.body.counter == cover.counter && op.body.rid == record.body.rid
+                        }
+                        _ => false,
+                    }) || self.state.outbox[..index].iter().any(|o| {
+                        o.record.body.device == cover.device
+                            && o.record.body.counter == cover.counter
+                    });
+                    if exists {
+                        kept.push(cover.clone());
+                    }
+                }
+                if kept.len() == record.body.supersedes.len() {
+                    return Err(refused());
+                }
+                self.recover(index, kept)
+            }
+            "policy_regressed" => {
+                self.refresh(service).await?;
+                self.reseal_from(index, false)
+            }
+            "chain_conflict" => {
+                let head = record_detail
+                    .as_deref()
+                    .and_then(|d| ChainConflictDetail::from_bytes(d).ok());
+                let acked = self.state.own.acked.map_or(0, |(c, _, _)| c);
+                match head {
+                    Some(head) if head.counter > acked => {
+                        self.compare_own_chain(service).await?;
+                        Ok(())
+                    }
+                    Some(head) if head.counter < acked => {
+                        Err(SyncError::Check("sync_server_rollback"))
+                    }
+                    _ => Err(refused()),
+                }
+            }
+            "conflict_limit" | "quota_exceeded" | "snapshot_required" => {
+                // The change stays local; the next record takes its place.
+                if index + 1 >= self.state.outbox.len() {
+                    return Err(refused());
+                }
+                let rejected = self.state.outbox.remove(index);
+                self.forget_own(&rejected.record);
+                self.reseal_replacing(index, &rejected.record)
+            }
+            "forbidden" => {
+                // The device's write access is gone: drop what waits; the
+                // files keep their changes (§14).
+                let dropped: Vec<_> = self.state.outbox.drain(index..).collect();
+                for outgoing in &dropped {
+                    self.forget_own(&outgoing.record);
+                }
+                self.state.own.head = self
+                    .state
+                    .outbox
+                    .last()
+                    .map(|o| (o.record.body.counter, o.record.digest()))
+                    .or(self.state.own.acked.map(|(c, d, _)| (c, d)));
+                Ok(())
+            }
+            _ => Err(refused()),
+        }
+    }
+
+    fn accepted_epoch(&self) -> Option<Digest> {
+        self.state.epochs.last().map(|e| e.digest())
+    }
+
+    fn accepted_revision(&self) -> u64 {
+        self.state.policy.last().map_or(0, |c| c.body.revision)
+    }
+
+    /// Re-seals the record at `index` with other covers, then the later
+    /// ones, which counts toward the cap.
+    fn recover(&mut self, index: usize, covers: Vec<Cover>) -> Result<(), SyncError> {
+        let mut record = self.state.outbox[index].record.clone();
+        record.body.supersedes =
+            Sorted::new(covers).map_err(|e| SyncError::Invalid(e.name().to_owned()))?;
+        self.state.outbox[index].record = record;
+        self.reseal_from(index, false)
+    }
+
+    /// Puts the outbox's record at `index`, the one after a rejected
+    /// record, at the rejected record's position, naming it in
+    /// `previous_attempt`, then re-seals the later ones (§14). The
+    /// replacement doesn't count toward the cap.
+    fn reseal_replacing(
+        &mut self,
+        index: usize,
+        rejected: &Signed<Operation>,
+    ) -> Result<(), SyncError> {
+        self.reseal(
+            index,
+            true,
+            Some((rejected.body.counter, rejected.digest())),
+        )
+    }
+
+    /// Forgets a record of this device that never reached the server.
+    fn forget_own(&mut self, record: &Signed<Operation>) {
+        let key = OpKey {
+            device: record.body.device,
+            counter: record.body.counter,
+        };
+        if let Some(object) = self.state.objects.get_mut(&record.body.rid) {
+            object.states.remove(&key);
+            if object.base == Some(key) {
+                object.base = None;
+            }
+        }
+        self.recount_own(&record.body.rid);
+    }
+
+    /// Pulls the domain once (§15): checks the page against the cursor,
+    /// fetches the policy and keys first when the page names a revision or
+    /// an epoch the device hasn't accepted, checks every record before it
+    /// decrypts it, applies the changes, and only then advances the cursor.
+    /// A failed check applies nothing and keeps the cursor. A record under
+    /// an epoch whose key the device doesn't hold yet holds the cursor
+    /// without counting it as unreadable (§13). Returns how many other
+    /// devices' records it applied, and whether it waits for a key.
+    pub async fn pull(
+        &mut self,
+        service: &mut SyncService,
+        wait_seconds: u32,
+    ) -> Result<(usize, bool), SyncError> {
+        let response = service
+            .client()
+            .pull(
+                self.state.workspace,
+                vec![PullCursor {
+                    domain: self.state.domain,
+                    after: self.state.log.cursor,
+                }],
+                wait_seconds,
+            )
+            .await?;
+        let page = response
+            .pages
+            .0
+            .into_iter()
+            .find(|p| p.domain == self.state.domain)
+            .ok_or(SyncError::Check("sync_chain_gap"))?;
+        self.check_page(&page)?;
+        match page.status {
+            PageStatus::Ok => {}
+            PageStatus::Forbidden | PageStatus::NotFound => {
+                self.refresh(service).await?;
+                return Err(SyncError::Refused {
+                    code: format!("{:?}", page.status).to_lowercase(),
+                    status: 200,
+                    detail: None,
+                });
+            }
+            PageStatus::Compacted | PageStatus::BeforeHistoryFloor => {
+                // Bootstrapping from a checkpoint arrives with ticket 58.
+                return Err(SyncError::Refused {
+                    code: "cursor_compacted".into(),
+                    status: 200,
+                    detail: None,
+                });
+            }
+        }
+        let accepted = self.accepted_revision();
+        let above = page.policy_revision > accepted
+            || page.entries.iter().any(
+                |e| matches!(&e.record, EntryRecord::Policy(entry) if entry.revision > accepted),
+            );
+        let unknown_epoch = page.entries.iter().any(|e| match &e.record {
+            EntryRecord::Epoch(epoch) => !self
+                .state
+                .epochs
+                .iter()
+                .any(|accepted| accepted.digest() == epoch.digest()),
+            EntryRecord::Operation(op) => !self.keys.contains_key(&op.body.epoch),
+            _ => false,
+        });
+        if above || unknown_epoch || self.remote.is_none() {
+            match self.refresh(service).await {
+                Ok(()) => {}
+                // An envelope still on its way isn't a failure: the device
+                // holds its cursor until the key arrives (§9, §13).
+                Err(SyncError::Check("sync_key_mismatch")) if unknown_epoch => {
+                    return Ok((0, true));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let checked = match self.judge_page(service, &page).await? {
+            Some(checked) => checked,
+            None => return Ok((0, true)),
+        };
+        let applied = self.apply(checked)?;
+        // Objects a file in their way held back before get another try.
+        for rid in self.unsettled() {
+            self.settle(rid, &BTreeMap::new())?;
+        }
+        self.state.log.cursor = page.complete_through;
+        self.state.log.head = self.state.log.head.max(page.head);
+        self.state.log.checkpoint_seq = self.state.log.checkpoint_seq.max(page.checkpoint_seq);
+        self.state.log.retention_floor = self.state.log.retention_floor.max(page.retention_floor);
+        self.save()?;
+        Ok((applied, false))
+    }
+
+    /// Checks a page's shape and its positions against what the server
+    /// reported before in this generation (§14, §15).
+    fn check_page(&mut self, page: &Page) -> Result<(), SyncError> {
+        if page.restore_generation < self.state.generation {
+            return Err(SyncError::Check("sync_server_rollback"));
+        }
+        if page.restore_generation > self.state.generation {
+            // A restore: the comparison of §14 arrives with ticket 60, so
+            // the device stops writing until then.
+            self.stopped = Some("sync_restore_lost");
+            return Err(SyncError::Check("sync_restore_lost"));
+        }
+        if page.status == PageStatus::Ok {
+            if page.head < self.state.log.cursor
+                || page.head < self.state.log.head
+                || page.checkpoint_seq < self.state.log.checkpoint_seq
+            {
+                return Err(SyncError::Check("sync_server_rollback"));
+            }
+            if page.retention_floor < self.state.log.retention_floor {
+                return Err(SyncError::Check("sync_manifest_rollback"));
+            }
+        }
+        page.check_shape()
+            .map_err(|_| SyncError::Network("the pull page breaks §15".into()))
+    }
+
+    /// Judges every record of `page` on copies of the log's state; returns
+    /// the checked page, or `None` when a record's key hasn't arrived.
+    async fn judge_page(
+        &mut self,
+        service: &mut SyncService,
+        page: &Page,
+    ) -> Result<Option<Checked>, SyncError> {
+        let mut cache: BTreeMap<(Id, u64), Fetched> = BTreeMap::new();
+        for _ in 0..64 {
+            let mut fetcher = Cached {
+                cache: &cache,
+                misses: Vec::new(),
+            };
+            let outcome = self.judge_with(page, &mut fetcher);
+            let misses = std::mem::take(&mut fetcher.misses);
+            match outcome {
+                Err(error) if !misses.is_empty() => {
+                    let _ = error;
+                    for (device, counter) in misses {
+                        let fetched = match service
+                            .client()
+                            .chain_position(
+                                self.state.workspace,
+                                self.state.domain,
+                                device,
+                                counter,
+                            )
+                            .await
+                        {
+                            Ok(Some(entry)) => match &entry.record {
+                                EntryRecord::Operation(op) => {
+                                    Fetched::Record(ChainRecord::from_operation(op, entry.seq))
+                                }
+                                _ => Fetched::NotFound,
+                            },
+                            Ok(None) => Fetched::NotFound,
+                            Err(SyncError::Refused { code, .. }) if code == "pruned" => {
+                                Fetched::Pruned
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        cache.insert((device, counter), fetched);
+                    }
+                }
+                other => return other,
+            }
+        }
+        Err(SyncError::Check("sync_chain_gap"))
+    }
+
+    fn judge_with(
+        &self,
+        page: &Page,
+        fetcher: &mut Cached<'_>,
+    ) -> Result<Option<Checked>, SyncError> {
+        let remote = self
+            .remote
+            .as_ref()
+            .ok_or(SyncError::Check("sync_workspace_unverified"))?;
+        let policy = &remote.policy;
+        let mut log = self.state.log.clone();
+        let mut records = Vec::new();
+        for entry in page.entries.iter() {
+            match &entry.record {
+                EntryRecord::Policy(policy_entry) => {
+                    let change = policy
+                        .change(policy_entry.revision)
+                        .ok_or(SyncError::Check("sync_policy_rollback"))?;
+                    if change.digest() != policy_entry.head {
+                        return Err(SyncError::Check("sync_policy_forked"));
+                    }
+                    log.judge
+                        .policy_entry(policy_entry.revision, policy)
+                        .map_err(|e| SyncError::Check(e.client_code()))?;
+                }
+                EntryRecord::Epoch(epoch) => {
+                    let accepted = remote
+                        .epochs
+                        .get(epoch.body.epoch)
+                        .filter(|a| a.digest == epoch.digest());
+                    let Some(accepted) = accepted else {
+                        if remote.epochs.ended_at(epoch.body.epoch).is_some() {
+                            // A replacement ended it; its records are judged
+                            // as records under a skipped epoch.
+                            log.judge.epoch_entry(&epoch.body);
+                            continue;
+                        }
+                        return Ok(None);
+                    };
+                    log.judge.epoch_entry(&accepted.record.body);
+                }
+                EntryRecord::Checkpoint(_) => {}
+                EntryRecord::Operation(op) => {
+                    match check_operation(remote, &self.keys, &mut log, op, entry.seq, fetcher)? {
+                        Judged::Record(record) => records.push(record),
+                        Judged::Ignored => {}
+                        Judged::NoKey => return Ok(None),
+                    }
+                }
+            }
+        }
+        Ok(Some(Checked { log, records }))
+    }
+
+    /// Applies a checked page: records each state in the journal, then
+    /// brings each touched object's file in line with its live set.
+    fn apply(&mut self, checked: Checked) -> Result<usize, SyncError> {
+        let own = self.credentials.keys.device();
+        let Checked { log, records } = checked;
+        self.state.log = log;
+        let mut touched: Vec<Id> = Vec::new();
+        let mut contents: BTreeMap<Digest, Vec<u8>> = BTreeMap::new();
+        let mut applied = 0;
+        for record in records {
+            let op = &record.op;
+            let key = OpKey {
+                device: op.body.device,
+                counter: op.body.counter,
+            };
+            let object = self.state.objects.entry(op.body.rid).or_default();
+            if op.body.device == own {
+                // This device's own record: its file already holds it.
+                if let Some(state) = object.states.get_mut(&key) {
+                    state.seq = Some(record.seq);
+                    state.digest = op.digest();
+                }
+                object.own_highest = object.own_highest.max(op.body.counter);
+                continue;
+            }
+            applied += 1;
+            let content = match record.payload {
+                Some(payload) => carried(&payload, &mut contents),
+                None => {
+                    self.state.unreadable.push(state::Unreadable {
+                        rid: op.body.rid,
+                        device: op.body.device,
+                        counter: op.body.counter,
+                        seq: record.seq,
+                    });
+                    None
+                }
+            };
+            if let Some(content) = &content
+                && object.object_id.is_empty()
+            {
+                object.object_id = content.object_id.clone();
+            }
+            if record.class == OpClass::State {
+                object.states.insert(
+                    key,
+                    StateInfo {
+                        digest: op.digest(),
+                        seq: Some(record.seq),
+                        covers: op.body.supersedes.to_vec(),
+                        content,
+                    },
+                );
+            }
+            if !touched.contains(&op.body.rid) {
+                touched.push(op.body.rid);
+            }
+        }
+        for rid in touched {
+            self.settle(rid, &contents)?;
+        }
+        Ok(applied)
+    }
+
+    /// Lists the objects in conflict (§16).
+    pub fn conflicts(&self) -> Vec<Conflict> {
+        let mut conflicts = Vec::new();
+        for (rid, object) in &self.state.objects {
+            let branches = self.branches(rid, object);
+            if branches.len() > 1 {
+                conflicts.push(Conflict {
+                    rid: *rid,
+                    branches,
+                });
+            }
+        }
+        conflicts
+    }
+
+    /// The distinct live states of `rid`, one per state, lowest operation
+    /// digest first, identical states folded together.
+    fn branches(&self, rid: &Id, object: &Object) -> Vec<Branch> {
+        let mut distinct: Vec<(Digest, Branch, Carried)> = Vec::new();
+        for key in self.live_states(rid) {
+            let Some(info) = object.states.get(&key) else {
+                continue;
+            };
+            let Some(content) = &info.content else {
+                continue;
+            };
+            if let Some(existing) = distinct.iter_mut().find(|(_, _, c)| same_state(c, content)) {
+                if info.digest < existing.0 {
+                    existing.0 = info.digest;
+                    existing.1.key = key;
+                    existing.1.device = key.device;
+                }
+                continue;
+            }
+            let on_disk = object.local.as_ref().is_some_and(|l| {
+                !content.delete && l.path == content.path && l.revision == content.revision
+            }) || (content.delete && object.local.is_none());
+            distinct.push((
+                info.digest,
+                Branch {
+                    device: key.device,
+                    path: (!content.delete).then(|| content.path.clone()),
+                    on_disk,
+                    key,
+                },
+                content.clone(),
+            ));
+        }
+        distinct.sort_by_key(|(digest, _, _)| *digest);
+        distinct.into_iter().map(|(_, b, _)| b).collect()
+    }
+
+    /// Resolves the conflict on `rid` with the branch at `chosen`: writes it
+    /// to disk and signs a state operation that covers every branch (§16).
+    /// The operation goes out in the next round.
+    pub fn choose(&mut self, rid: Id, chosen: OpKey) -> Result<(), SyncError> {
+        let object = self
+            .state
+            .objects
+            .get(&rid)
+            .ok_or_else(|| SyncError::Invalid("no such object".into()))?;
+        let content = object
+            .states
+            .get(&chosen)
+            .and_then(|s| s.content.clone())
+            .ok_or_else(|| SyncError::Invalid("no such branch".into()))?;
+        let view: BTreeSet<OpKey> = self.live_states(&rid).into_iter().collect();
+        let covers = self.covers_of(&rid, &view);
+        if content.delete {
+            if let Some(local) = object.local.clone() {
+                self.engine
+                    .delete_synced(&local.path, &local.revision.to_hex())
+                    .map_err(core)?;
+            }
+            self.state.objects.get_mut(&rid).expect("checked").local = None;
+            self.sign_delete(rid, covers)?;
+        } else {
+            let bytes = self.content_bytes(&rid, &chosen, &BTreeMap::new())?;
+            self.place(&rid, &content.path, &bytes)?;
+            let found = self.found_at(&content.path, bytes)?;
+            self.sign_file(rid, &found, covers)?;
+        }
+        self.save()
+    }
+
+    /// The bytes of a file the journal saw at `path`, as the walk would
+    /// find them.
+    fn found_at(&self, path: &str, bytes: Vec<u8>) -> Result<Found, SyncError> {
+        let (size, modified_ns, file_id) = stat(self.engine.root(), path)
+            .ok_or_else(|| SyncError::Invalid("the file went away".into()))?;
+        Ok(Found {
+            file: local_core::SyncedFile {
+                relative_path: path.to_owned(),
+                size,
+                modified_ns,
+                file_id,
+            },
+            revision: hash(&bytes),
+            object_id: capture::object_id_of(path, &bytes),
+            bytes: Some(bytes),
+        })
+    }
+}
+
+/// A record that passed every check.
+struct CheckedRecord {
+    op: Signed<Operation>,
+    seq: u64,
+    class: OpClass,
+    /// The payload, or `None` when the record didn't open.
+    payload: Option<Payload>,
+}
+
+/// A page whose records all passed.
+struct Checked {
+    log: Log,
+    records: Vec<CheckedRecord>,
+}
+
+/// Serves chain positions the device fetched, and notes the ones it
+/// hasn't, which the next pass fetches.
+struct Cached<'a> {
+    cache: &'a BTreeMap<(Id, u64), Fetched>,
+    misses: Vec<(Id, u64)>,
+}
+
+impl ChainFetcher for Cached<'_> {
+    fn fetch(&mut self, device: &Id, counter: u64) -> Fetched {
+        match self.cache.get(&(*device, counter)) {
+            Some(fetched) => *fetched,
+            None => {
+                self.misses.push((*device, counter));
+                Fetched::NotFound
+            }
+        }
+    }
+}
+
+/// What the checks of one operation found.
+enum Judged {
+    /// It passed, and the device applies it.
+    Record(CheckedRecord),
+    /// It repeats a position the device applied, or an earlier attempt.
+    Ignored,
+    /// The device doesn't hold the key of its epoch yet, which holds the
+    /// cursor (§13).
+    NoKey,
+}
+
+/// The client checks of §13 on one operation, before it decrypts it, then
+/// its decryption.
+fn check_operation(
+    remote: &RemoteWorkspace,
+    keys: &BTreeMap<u64, SecretKey>,
+    log: &mut Log,
+    op: &Signed<Operation>,
+    seq: u64,
+    fetcher: &mut Cached<'_>,
+) -> Result<Judged, SyncError> {
+    let body = &op.body;
+    let policy = &remote.policy;
+    let device = policy
+        .at(body.policy_revision)
+        .and_then(|snapshot| snapshot.devices.get(&body.device))
+        .ok_or(SyncError::Check("sync_writer_not_authorized"))?;
+    op.verify(&device.card.signing_public)
+        .map_err(|_| SyncError::Check("sync_writer_not_authorized"))?;
+    let change = policy
+        .change(body.policy_revision)
+        .ok_or(SyncError::Check("sync_writer_not_authorized"))?;
+    if change.digest() != body.policy_head {
+        return Err(SyncError::Check("sync_policy_forked"));
+    }
+    if let Some((revision, generation)) = log.last.get(&body.device)
+        && (body.policy_revision < *revision || body.generation < *generation)
+    {
+        return Err(SyncError::Check("sync_policy_regressed"));
+    }
+    log.judge
+        .check_operation(&body.device, body.policy_revision, body.epoch, policy)
+        .map_err(|e| SyncError::Check(e.client_code()))?;
+    let verdict = log
+        .verifier
+        .process_one(&ChainRecord::from_operation(op, seq), fetcher)
+        .map_err(|e| SyncError::Check(e.client_code()))?;
+    // The key of its epoch, from an envelope or a later key's lineage.
+    let (Some(epoch), Some(key)) = (remote.epochs.get(body.epoch), keys.get(&body.epoch)) else {
+        return Ok(Judged::NoKey);
+    };
+    let live = LiveOp::from_operation(op, seq);
+    let class = match verdict {
+        ChainVerdict::Ignore => return Ok(Judged::Ignored),
+        ChainVerdict::Replace { replaced } => {
+            log.live.remove(&body.rid, &replaced);
+            log.live.apply(live)
+        }
+        ChainVerdict::Accept => log.live.apply(live),
+    };
+    log.last
+        .insert(body.device, (body.policy_revision, body.generation));
+    // A record that passes every check but doesn't open counts as applied
+    // and unreadable (§13).
+    let payload = op.body.open_payload(key, &epoch.digest, class).ok();
+    Ok(Judged::Record(CheckedRecord {
+        op: op.clone(),
+        seq,
+        class,
+        payload,
+    }))
+}
+
+/// What a payload carries, keeping a file's bytes in `contents` by the
+/// revision they hash to.
+fn carried(payload: &Payload, contents: &mut BTreeMap<Digest, Vec<u8>>) -> Option<Carried> {
+    match &payload.kind {
+        PayloadKind::File {
+            object_id,
+            path,
+            revision,
+            content: Content::Inline { bytes },
+            ..
+        } => {
+            if hash(&bytes.0) != *revision {
+                return None;
+            }
+            contents.insert(*revision, bytes.0.clone());
+            Some(Carried {
+                path: path.as_str().to_owned(),
+                revision: *revision,
+                delete: false,
+                object_id: object_id.0.clone(),
+                kept: None,
+            })
+        }
+        PayloadKind::Delete {
+            object_id,
+            revision,
+            ..
+        } => Some(Carried {
+            path: String::new(),
+            revision: *revision,
+            delete: true,
+            object_id: object_id.0.clone(),
+            kept: None,
+        }),
+        // Attachments (ticket 49) and text mode (ticket 55) come later.
+        _ => None,
+    }
+}
+
+/// Whether two states are the same: both deletes, or the same decrypted
+/// path and revision (§16).
+pub(crate) fn same_state(a: &Carried, b: &Carried) -> bool {
+    (a.delete && b.delete)
+        || (!a.delete && !b.delete && a.path == b.path && a.revision == b.revision)
+}
+
+fn policy_changes(policy: &PolicyChain) -> Vec<Signed<sync_protocol::records::PolicyChange>> {
+    (1..=policy.head().0)
+        .filter_map(|revision| policy.change(revision).cloned())
+        .collect()
+}
+
+/// A file's size, modification time and file ID, as the listing reports
+/// them.
+fn stat(root: &Path, path: &str) -> Option<(u64, i64, Option<u64>)> {
+    let metadata = std::fs::symlink_metadata(root.join(path)).ok()?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|value| value.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0);
+    #[cfg(unix)]
+    let file_id = {
+        use std::os::unix::fs::MetadataExt;
+        Some(metadata.ino())
+    };
+    #[cfg(not(unix))]
+    let file_id = None;
+    Some((metadata.len(), modified, file_id))
+}
+
+/// The name in the workspace's latest profile, checked as §25 says, with
+/// its revision and digest.
+async fn profile_of(
+    service: &mut SyncService,
+    remote: &RemoteWorkspace,
+) -> Result<(String, Option<(u64, Digest)>), SyncError> {
+    let list = service.client().workspaces().await?;
+    let profile = list
+        .workspaces
+        .0
+        .into_iter()
+        .find(|w| w.workspace == remote.workspace)
+        .and_then(|w| w.profile)
+        .map(|p| p.0)
+        .ok_or_else(|| SyncError::Invalid("the workspace has no profile".into()))?;
+    let name = check_profile(remote, &profile, None)?;
+    Ok((
+        name,
+        Some((profile.body.profile_revision, profile.digest())),
+    ))
+}
+
+/// Checks a profile (§25) against the verified policy and the last one the
+/// device accepted, and returns its name.
+pub(crate) fn check_profile(
+    remote: &RemoteWorkspace,
+    profile: &Signed<Profile>,
+    accepted: Option<(u64, Digest)>,
+) -> Result<String, SyncError> {
+    let body = &profile.body;
+    let policy = &remote.policy;
+    if let Some((revision, digest)) = accepted
+        && (body.profile_revision < revision
+            || (body.profile_revision == revision && profile.digest() != digest))
+    {
+        return Err(SyncError::Check("sync_profile_rollback"));
+    }
+    let snapshot = policy
+        .at(body.policy_revision)
+        .ok_or(SyncError::Check("sync_policy_rollback"))?;
+    if snapshot.digest != body.policy_head {
+        return Err(SyncError::Check("sync_policy_forked"));
+    }
+    let signer = snapshot
+        .devices
+        .get(&body.signer)
+        .ok_or(SyncError::Check("sync_writer_not_authorized"))?;
+    let admin = snapshot
+        .account_of(&body.signer)
+        .and_then(|account| snapshot.role(&account))
+        .is_some_and(|role| matches!(role, Role::Owner | Role::Admin));
+    if !admin {
+        return Err(SyncError::Check("sync_writer_not_authorized"));
+    }
+    profile
+        .verify(&signer.card.signing_public)
+        .map_err(|_| SyncError::Check("sync_writer_not_authorized"))?;
+    // No change above its revision takes its signer out of the workspace.
+    let (head, _) = policy.head();
+    for revision in body.policy_revision + 1..=head {
+        if !policy
+            .at(revision)
+            .is_some_and(|s| s.is_device(&body.signer))
+        {
+            return Err(SyncError::Check("sync_writer_not_authorized"));
+        }
+    }
+    // Its epoch passes the writer rule: no change at or below its revision
+    // requires the workspace domain to rotate past it.
+    let epoch = remote
+        .epochs
+        .get(body.epoch)
+        .ok_or(SyncError::Check("sync_key_mismatch"))?;
+    if policy
+        .rotation_required(
+            &remote.domain,
+            epoch.record.body.policy_revision,
+            body.policy_revision,
+        )
+        .is_some()
+    {
+        return Err(SyncError::Check("sync_epoch_stale"));
+    }
+    let key = remote
+        .keys
+        .get(&body.epoch)
+        .ok_or(SyncError::Check("sync_key_mismatch"))?;
+    let payload: ProfilePayload = body
+        .open_payload(key, &epoch.digest)
+        .map_err(|_| SyncError::Check("sync_record_unreadable"))?;
+    Ok(payload.name.0)
+}
+
+impl RemoteWorkspace {
+    /// The accepted epoch records, oldest first.
+    pub(crate) fn epochs_oldest_first(&self) -> Vec<&Signed<sync_protocol::records::Epoch>> {
+        (1..=self.epochs.latest().map_or(0, |e| e.record.body.epoch))
+            .filter_map(|epoch| self.epochs.get(epoch).map(|e| &e.record))
+            .collect()
+    }
+}
+
+/// The workspaces your account syncs, by the names their encrypted
+/// profiles carry (§25), for a second computer to pick from.
+pub async fn synced_workspaces(service: &mut SyncService) -> Result<Vec<(Id, String)>, SyncError> {
+    let list = service.client().workspaces().await?;
+    let mut named = Vec::new();
+    for info in list.workspaces.0 {
+        let Ok(remote) = service.open_workspace(info.workspace).await else {
+            continue;
+        };
+        let Some(profile) = info.profile.map(|p| p.0) else {
+            continue;
+        };
+        if let Ok(name) = check_profile(&remote, &profile, None) {
+            named.push((info.workspace, name));
+        }
+    }
+    Ok(named)
+}

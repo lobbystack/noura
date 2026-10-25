@@ -71,7 +71,7 @@ impl LiveOp {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct RidState {
     /// Every operation on the `rid` the store retains, in log order, with
     /// the class the server gave it.
@@ -131,8 +131,9 @@ impl LiveError {
     }
 }
 
-/// The live sets of one domain.
-#[derive(Clone, Debug, Default)]
+/// The live sets of one domain. It serializes, so a client's journal can
+/// keep it (§15).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct LiveSet {
     rids: BTreeMap<Id, RidState>,
 }
@@ -183,6 +184,18 @@ impl LiveSet {
 
     fn insert(&mut self, op: LiveOp, class: OpClass) {
         self.rids.entry(op.rid).or_default().ops.push((op, class));
+    }
+
+    /// Takes out the operation on `rid` whose digest is `digest`, as a
+    /// client does when a later attempt at its chain position replaces it
+    /// (§14, Verifier rule 1). Returns whether it held one.
+    pub fn remove(&mut self, rid: &Id, digest: &Digest) -> bool {
+        let Some(state) = self.rids.get_mut(rid) else {
+            return false;
+        };
+        let before = state.ops.len();
+        state.ops.retain(|(op, _)| op.digest != *digest);
+        before != state.ops.len()
     }
 
     /// The operations live on `rid`, with their classes, in log order.

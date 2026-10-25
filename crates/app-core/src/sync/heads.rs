@@ -94,7 +94,7 @@ impl SyncService {
     /// ended it.
     pub async fn refresh_keys(&mut self, remote: &mut RemoteWorkspace) -> Result<(), SyncError> {
         let recipient = self.credentials.keys.clone();
-        let (epochs, keys) = self
+        let (epochs, keys, envelope) = self
             .load_keys(
                 remote.workspace,
                 remote.domain,
@@ -123,6 +123,7 @@ impl SyncService {
             .ok_or(SyncError::Check("sync_key_mismatch"))?;
         remote.keys.extend(keys);
         remote.epochs = epochs;
+        remote.envelope = envelope;
         Ok(())
     }
 

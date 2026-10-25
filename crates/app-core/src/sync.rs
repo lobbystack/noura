@@ -18,10 +18,14 @@ pub mod approval;
 pub mod device;
 pub mod device_list;
 pub mod heads;
+pub mod journal;
+pub mod marks;
 pub mod recovery;
+pub mod registry;
 pub mod removal;
 mod routes;
 pub mod upkeep;
+pub mod workspace;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -398,6 +402,9 @@ pub struct RemoteWorkspace {
     verifier: ChainVerifier,
     live: LiveSet,
     last: BTreeMap<Id, Operation>,
+    /// The envelope of the latest epoch that this device accepted, kept
+    /// still wrapped in its journal (§15).
+    envelope: Option<Signed<Envelope>>,
 }
 
 impl RemoteWorkspace {
@@ -430,6 +437,7 @@ impl RemoteWorkspace {
         policy: PolicyChain,
         epochs: EpochChain,
         keys: BTreeMap<u64, SecretKey>,
+        envelope: Option<Signed<Envelope>>,
     ) -> Result<Self, SyncError> {
         let key = epochs
             .latest()
@@ -448,6 +456,7 @@ impl RemoteWorkspace {
             verifier: ChainVerifier::new(),
             live: LiveSet::new(),
             last: BTreeMap::new(),
+            envelope,
         })
     }
 }
@@ -815,6 +824,7 @@ impl SyncService {
                     .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
             }),
         ];
+        let mut own_envelope = None;
         for device in &readers {
             let card = &policy.head_snapshot().devices[device].card;
             let envelope = wrap(
@@ -829,6 +839,9 @@ impl SyncService {
                 keys,
             )
             .map_err(|e| SyncError::Invalid(e.to_string()))?;
+            if *device == keys.device() {
+                own_envelope = Some(envelope.clone());
+            }
             records.push(RecordRef::Envelope(envelope));
         }
         let mut profile = Profile {
@@ -849,7 +862,8 @@ impl SyncService {
             &epoch.digest(),
             random(random_nonce())?,
         );
-        records.push(RecordRef::Profile(Signed::sign(profile, keys.signing())));
+        let profile = Signed::sign(profile, keys.signing());
+        records.push(RecordRef::Profile(profile.clone()));
         self.client.create_workspace(records).await?;
         self.heads
             .name(workspace, chain.account(), chain.genesis())?;
@@ -872,6 +886,7 @@ impl SyncService {
             verifier: ChainVerifier::new(),
             live: LiveSet::new(),
             last: BTreeMap::new(),
+            envelope: own_envelope,
         })
     }
 
@@ -891,7 +906,7 @@ impl SyncService {
         let domain = policy.head_snapshot().workspace_domain;
         let recipient = self.credentials.keys.clone();
         // Opening, the device holds no epoch of the domain yet (§9).
-        let (epochs, keys) = self
+        let (epochs, keys, envelope) = self
             .load_keys(workspace, domain, &policy, &recipient, false)
             .await?;
         let key = epochs
@@ -911,6 +926,7 @@ impl SyncService {
             verifier: ChainVerifier::new(),
             live: LiveSet::new(),
             last: BTreeMap::new(),
+            envelope,
         })
     }
 
@@ -1010,7 +1026,14 @@ impl SyncService {
         policy: &PolicyChain,
         recipient: &DeviceKeys,
         accepted_earlier: bool,
-    ) -> Result<(EpochChain, BTreeMap<u64, SecretKey>), SyncError> {
+    ) -> Result<
+        (
+            EpochChain,
+            BTreeMap<u64, SecretKey>,
+            Option<Signed<Envelope>>,
+        ),
+        SyncError,
+    > {
         let card = recipient.card(self.credentials.account);
         let current = self
             .client
@@ -1035,7 +1058,7 @@ impl SyncService {
             .filter(|e| e.body.epoch == record.body.epoch)
             .collect();
         // The first envelope that passes, in key order (§9).
-        let key = envelopes.iter().find_map(|envelope| {
+        let accepted = envelopes.iter().find_map(|envelope| {
             let key = unwrap(&envelope.body, recipient, &card).ok()?;
             let verdict = check_envelope(
                 envelope,
@@ -1047,9 +1070,9 @@ impl SyncService {
                 None,
             )
             .ok()?;
-            (verdict == EnvelopeVerdict::Accept).then_some(key)
+            (verdict == EnvelopeVerdict::Accept).then(|| (key, envelope.clone()))
         });
-        let Some(key) = key else {
+        let Some((key, envelope)) = accepted else {
             if !envelopes.is_empty()
                 && after_failed_envelopes(accepted_earlier) == FailedEnvelopes::Rewrap
             {
@@ -1085,7 +1108,7 @@ impl SyncService {
                 .map_err(|e| SyncError::Check(e.client_code()))?;
             keys.insert(record.body.epoch, key.clone());
         }
-        Ok((epochs, keys))
+        Ok((epochs, keys, Some(envelope)))
     }
 
     /// Pushes a file at `path` as a new object: a padded, encrypted `file`

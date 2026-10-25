@@ -6213,6 +6213,7 @@ dependencies = [
  "keyring",
  "keyring-core",
  "libc",
+ "local-core",
  "notify",
  "parking_lot",
  "pbkdf2",

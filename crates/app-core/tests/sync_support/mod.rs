@@ -706,3 +706,69 @@ impl NewDesktop {
         Desktop::connect(base, credentials, self.secrets, self.state).await
     }
 }
+
+/// A workspace folder on one desktop, with its engine and the app data
+/// that holds the registry of synced folders.
+pub struct Folder {
+    pub dir: tempfile::TempDir,
+    pub app_data: tempfile::TempDir,
+    pub engine: Arc<local_core::WorkspaceEngine>,
+    pub registry: app_core::sync::registry::Registry,
+}
+
+impl Folder {
+    /// A new workspace named `name` in an empty folder.
+    pub fn new(name: &str) -> Self {
+        let dir = tempfile::tempdir().expect("a folder");
+        let app_data = tempfile::tempdir().expect("app data");
+        let engine = Arc::new(
+            local_core::WorkspaceEngine::create_with_app_data(dir.path(), name, app_data.path())
+                .expect("the workspace opens"),
+        );
+        let registry =
+            app_core::sync::registry::Registry::open(app_data.path()).expect("the registry");
+        Self {
+            dir,
+            app_data,
+            engine,
+            registry,
+        }
+    }
+
+    pub fn path(&self, relative: &str) -> PathBuf {
+        self.dir.path().join(relative)
+    }
+
+    /// Writes a file as another app would.
+    pub fn write(&self, relative: &str, bytes: &[u8]) {
+        let path = self.path(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    /// Every file outside `.noura`, with its bytes.
+    pub fn files(&self) -> std::collections::BTreeMap<String, Vec<u8>> {
+        files(self.dir.path())
+            .into_iter()
+            .filter_map(|path| {
+                let relative = path
+                    .strip_prefix(self.dir.path())
+                    .ok()?
+                    .to_str()?
+                    .replace('\\', "/");
+                (!relative.starts_with(".noura/"))
+                    .then(|| (relative, std::fs::read(&path).unwrap()))
+            })
+            .collect()
+    }
+
+    /// Opens the folder's engine again, as a relaunch does.
+    pub fn reopen(&mut self) {
+        self.engine = Arc::new(
+            local_core::WorkspaceEngine::open_with_app_data(self.dir.path(), self.app_data.path())
+                .expect("the workspace opens again"),
+        );
+        self.registry =
+            app_core::sync::registry::Registry::open(self.app_data.path()).expect("the registry");
+    }
+}

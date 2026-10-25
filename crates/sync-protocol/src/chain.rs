@@ -145,27 +145,28 @@ impl Head {
     };
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 struct Attempt {
     previous_attempt: Digest,
     seq: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Position {
     applied: Digest,
     attempts: BTreeMap<Digest, Attempt>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct DeviceChain {
     head: Option<Head>,
     positions: BTreeMap<u64, Position>,
 }
 
 /// The verifier state of one domain: per device, the accepted head and the
-/// positions above the latest accepted checkpoint.
-#[derive(Clone, Debug, Default)]
+/// positions above the latest accepted checkpoint. It serializes, so a
+/// client's journal can keep it (§15).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ChainVerifier {
     devices: BTreeMap<Id, DeviceChain>,
 }
