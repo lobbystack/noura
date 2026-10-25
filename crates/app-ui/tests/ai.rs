@@ -1,7 +1,8 @@
-//! The AI page, Noura's consent prompt and the AI providers section of
-//! Settings through AccessKit: an answer streaming in shows as Markdown,
-//! Stop ends it, the prompt names the provider and starts on Deny, and
-//! the provider form labels each field and hides the key.
+//! The AI page, Noura's consent and tool prompts and the AI providers
+//! section of Settings through AccessKit: an answer streaming in shows as
+//! Markdown, Stop ends it, the consent prompt names the provider, the tool
+//! prompt names the tool, its plugin and its input, both start on Deny,
+//! and the provider form labels each field and hides the key.
 
 mod support;
 
@@ -18,7 +19,8 @@ use std::{
 use app_core::{
     App, Platform,
     ai_client::{
-        AiProviderEventStream, AiProviderStreamEvent, AiStreamer, ResolvedAiStreamRequest, Result,
+        AiProviderEventStream, AiProviderStreamEvent, AiStreamer, AiToolCall,
+        ResolvedAiStreamRequest, Result,
     },
 };
 use egui::{Key, accesskit::Role};
@@ -126,6 +128,7 @@ fn set_up_provider(app_data: &std::path::Path, consent: bool) {
             endpoint: None,
             enabled: true,
             key: None,
+            context_window: None,
         })
         .unwrap();
     if consent {
@@ -354,5 +357,165 @@ fn the_provider_form_labels_each_field_and_hides_the_key() {
         !all_labels(harness)
             .iter()
             .any(|label| label.contains("sk-ui-test-key"))
+    );
+}
+
+const TASKS_MANIFEST: &str = include_str!("../../plugins/tasks/plugin.toml");
+
+/// A provider whose first answer asks to create the task Water the
+/// tomatoes, and whose later answers say Done.
+#[derive(Default)]
+struct CallsTool {
+    requests: AtomicUsize,
+}
+
+impl AiStreamer for CallsTool {
+    fn stream(
+        &self,
+        _request: ResolvedAiStreamRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<AiProviderEventStream>> + Send + '_>> {
+        let first = self.requests.fetch_add(1, Ordering::SeqCst) == 0;
+        Box::pin(async move {
+            let events = if first {
+                vec![Ok(AiProviderStreamEvent::Completed {
+                    usage: None,
+                    stop_reason: None,
+                    tool_calls: vec![AiToolCall {
+                        call_id: "call_1".into(),
+                        name: "tasks__create".into(),
+                        arguments: serde_json::json!({ "title": "Water the tomatoes" }),
+                    }],
+                })]
+            } else {
+                vec![
+                    Ok(AiProviderStreamEvent::TextDelta("Done.".into())),
+                    Ok(AiProviderStreamEvent::Completed {
+                        usage: None,
+                        stop_reason: None,
+                        tool_calls: Vec::new(),
+                    }),
+                ]
+            };
+            let stream: AiProviderEventStream = Box::pin(futures::stream::iter(events));
+            Ok(stream)
+        })
+    }
+}
+
+struct Tooled {
+    harness: Ui,
+    provider: Arc<CallsTool>,
+    workspace: std::path::PathBuf,
+    _folders: (tempfile::TempDir, tempfile::TempDir),
+}
+
+/// A workspace with the Tasks and AI plugins on and the provider Local
+/// allowed, opened on the AI page, with the message sent that makes the
+/// model ask for a tool call.
+fn asking_for_a_tool() -> Option<Tooled> {
+    let component = plugins::built("ai_plugin")?;
+    let tasks = plugins::built("tasks_plugin")?;
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let workspace = parent.path().join("Garden");
+    create_workspace(app_data.path(), "Garden", &workspace);
+    let tasks_folder = parent.path().join("tasks-plugin");
+    std::fs::create_dir_all(&tasks_folder).unwrap();
+    let tasks = plugins::folder(&tasks_folder, TASKS_MANIFEST, "tasks_plugin.wasm", &tasks);
+    plugins::install_and_enable(app_data.path(), &tasks, "tasks");
+    let plugin = plugins::folder(parent.path(), MANIFEST, "ai_plugin.wasm", &component);
+    plugins::install_and_enable(app_data.path(), &plugin, "ai");
+    set_up_provider(app_data.path(), true);
+    let system = FakeSystem::new(Platform::current());
+    let mut harness = harness_with(app_data.path(), FakePicker::default(), system);
+    let provider = Arc::new(CallsTool::default());
+    harness
+        .state_mut()
+        .app_mut()
+        .set_ai_client(provider.clone());
+    settle(&mut harness);
+    open_page(&mut harness, "AI");
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::Form, "Message")
+            .is_some()
+    });
+    send(&mut harness, "Add a task to water the tomatoes");
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::AlertDialog, TOOL_PROMPT)
+            .is_some()
+    });
+    Some(Tooled {
+        harness,
+        provider,
+        workspace,
+        _folders: (app_data, parent),
+    })
+}
+
+const TOOL_PROMPT: &str = "Allow this tool call?";
+
+#[test]
+fn noura_s_tool_prompt_names_the_tool_its_plugin_and_input_and_escape_denies() {
+    let Some(mut tooled) = asking_for_a_tool() else {
+        return;
+    };
+    let harness = &mut tooled.harness;
+    let dialog = harness.get_by_role_and_label(Role::AlertDialog, TOOL_PROMPT);
+    let shown = texts(dialog.query_all(By::new().role(Role::Label)));
+    assert!(
+        shown.contains(&"The AI wants to run the tool create from Tasks.".to_owned()),
+        "{shown:?}"
+    );
+    assert!(
+        shown.contains(&"{\n  \"title\": \"Water the tomatoes\"\n}".to_owned()),
+        "{shown:?}"
+    );
+    dialog.get_by_role_and_label(Role::Button, "Deny");
+    dialog.get_by_role_and_label(Role::Button, "Allow once");
+    assert_eq!(focused(harness).as_deref(), Some("Deny"));
+
+    press(harness, Key::Escape);
+    wait_until(harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::AlertDialog, TOOL_PROMPT)
+            .is_none()
+            && all_labels(harness).contains(&"Done.".to_owned())
+    });
+    assert!(
+        all_labels(harness).contains(&"You didn't allow this call, so it didn't run.".to_owned())
+    );
+    assert!(
+        !tooled
+            .workspace
+            .join("tasks/Water the tomatoes.md")
+            .exists()
+    );
+    assert_eq!(tooled.provider.requests.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn tab_and_enter_allow_the_call_once() {
+    let Some(mut tooled) = asking_for_a_tool() else {
+        return;
+    };
+    let harness = &mut tooled.harness;
+    assert_eq!(focused(harness).as_deref(), Some("Deny"));
+
+    press(harness, Key::Tab);
+    assert_eq!(focused(harness).as_deref(), Some("Allow once"));
+    press(harness, Key::Enter);
+    wait_until(harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::AlertDialog, TOOL_PROMPT)
+            .is_none()
+            && all_labels(harness).contains(&"Done.".to_owned())
+    });
+    assert!(
+        tooled
+            .workspace
+            .join("tasks/Water the tomatoes.md")
+            .exists()
     );
 }

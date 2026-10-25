@@ -76,6 +76,7 @@ pub struct NouraUi {
     /// The prompt that asks before a provider receives the workspace's
     /// content.
     consent: ai::ConsentView,
+    tool_prompt: ai::ToolPromptView,
     tab_bar: tab_bar::TabBarView,
     palette: palette::PaletteView,
     /// The editors of the notes open in tabs.
@@ -108,6 +109,7 @@ impl NouraUi {
             plugin_install: plugins::InstallView::default(),
             shipped_plugins: plugins::ShippedView::default(),
             consent: ai::ConsentView::default(),
+            tool_prompt: ai::ToolPromptView::default(),
             tab_bar: tab_bar::TabBarView::default(),
             palette: palette::PaletteView::default(),
             notes: note::NoteView::default(),
@@ -338,6 +340,7 @@ impl NouraUi {
         plugins::install_dialog(ui, &mut self.app, &mut self.plugin_install);
         plugins::shipped_dialog(ui, &mut self.app, &mut self.shipped_plugins);
         ai::consent_prompt(ui, &mut self.app, &mut self.consent);
+        ai::tool_prompt(ui, &mut self.app, &mut self.tool_prompt);
         palette::show(ui, &mut self.app, &mut self.palette);
         note::unsaved_prompt(ui, &mut self.app);
         self.notes.commit_hidden_drafts(&mut self.app);

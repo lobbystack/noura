@@ -1,10 +1,12 @@
 //! What the kernel draws for AI: the AI providers section of Settings,
 //! where you add providers, keep their keys in the credential store and
-//! consent for the open workspace, and the prompt that asks before a
-//! provider receives the workspace's content. Plugins draw neither, so no
-//! plugin can show a prompt that grants consent or read a key.
+//! consent for the open workspace, the prompt that asks before a provider
+//! receives the workspace's content, and the prompt that asks before a
+//! tool call the model wants runs. Plugins draw none of them, so no
+//! plugin can show a prompt that grants consent, allow its own tool calls
+//! or read a key.
 
-use app_core::{AiConsentPrompt, AiProviderInput, AiProviderRow, App};
+use app_core::{AiConsentPrompt, AiProviderInput, AiProviderRow, App, DEFAULT_CONTEXT_WINDOW};
 use egui::{
     Button, ComboBox, Frame, Id, Margin, Modal, RichText, Stroke, TextEdit, Ui, UiBuilder,
     accesskit::Role,
@@ -54,6 +56,8 @@ struct ProviderForm {
     endpoint: String,
     /// A new key. It leaves memory when the form closes.
     key: Zeroizing<String>,
+    /// The context window in tokens, as you typed it.
+    context_window: String,
     enabled: bool,
     /// Whether the provider has a key already.
     has_key: bool,
@@ -70,6 +74,7 @@ impl ProviderForm {
             model: String::new(),
             endpoint: String::new(),
             key: Zeroizing::new(String::new()),
+            context_window: String::new(),
             enabled: true,
             has_key: false,
             problem: None,
@@ -84,6 +89,10 @@ impl ProviderForm {
             model: row.model.clone(),
             endpoint: row.endpoint.clone().unwrap_or_default(),
             key: Zeroizing::new(String::new()),
+            context_window: row
+                .context_window
+                .map(|window| window.to_string())
+                .unwrap_or_default(),
             enabled: row.enabled,
             has_key: row.has_key,
             problem: None,
@@ -241,6 +250,20 @@ fn provider_form(ui: &mut Ui, app: &mut App, form: &mut ProviderForm) -> bool {
                 "Key"
             };
             text_field(ui, key_label, &mut form.key, true);
+            text_field(
+                ui,
+                "Context window in tokens (optional)",
+                &mut form.context_window,
+                false,
+            );
+            muted(
+                ui,
+                &format!(
+                    "Noura summarizes a chat's earlier messages once they no longer fit. \
+                     Without a number, it counts on {} tokens.",
+                    thousands(DEFAULT_CONTEXT_WINDOW)
+                ),
+            );
             ui.checkbox(&mut form.enabled, "Turn this provider on");
             if let Some(problem) = &form.problem {
                 alert(ui, problem);
@@ -249,6 +272,19 @@ fn provider_form(ui: &mut Ui, app: &mut App, form: &mut ProviderForm) -> bool {
                 let ready = !form.model.trim().is_empty() && !form.name.trim().is_empty();
                 if primary_button(ui, "Save provider", ready).clicked() {
                     let endpoint = form.endpoint.trim();
+                    let window = form.context_window.replace([',', ' '], "");
+                    let context_window = match window.parse::<u32>() {
+                        _ if window.is_empty() => None,
+                        Ok(window) if window > 0 => Some(window),
+                        _ => {
+                            form.problem = Some(
+                                "Give the context window as a whole number of tokens, such as \
+                                 8192."
+                                    .to_owned(),
+                            );
+                            return;
+                        }
+                    };
                     let saved = app.save_ai_provider(AiProviderInput {
                         id: form.id.clone(),
                         name: form.name.clone(),
@@ -257,6 +293,7 @@ fn provider_form(ui: &mut Ui, app: &mut App, form: &mut ProviderForm) -> bool {
                         endpoint: (!endpoint.is_empty()).then(|| endpoint.to_owned()),
                         enabled: form.enabled,
                         key: (!form.key.trim().is_empty()).then(|| (*form.key).clone()),
+                        context_window,
                     });
                     match saved {
                         Ok(_) => closed = true,
@@ -270,6 +307,19 @@ fn provider_form(ui: &mut Ui, app: &mut App, form: &mut ProviderForm) -> bool {
         });
     });
     closed
+}
+
+/// `number` with a comma between each group of three digits.
+fn thousands(number: u32) -> String {
+    let digits = number.to_string();
+    let mut grouped = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
 }
 
 /// A labeled one-line text field. A secret one hides what you type.
@@ -362,6 +412,77 @@ pub(crate) fn consent_prompt(ui: &mut Ui, app: &mut App, view: &mut ConsentView)
         Some(true) => app.allow_ai_consent(),
         Some(false) => app.deny_ai_consent(),
         None => {}
+    }
+}
+
+/// What the tool prompt remembers between frames.
+#[derive(Default)]
+pub(crate) struct ToolPromptView {
+    /// The run and the call the prompt asked about last frame.
+    asking: Option<(String, String)>,
+}
+
+/// The prompt that asks whether a tool call the model wants may run. It
+/// names the tool, its plugin and its input, starts on Deny, and Escape
+/// or a click outside it counts as Deny. It waits while the consent
+/// prompt shows, so you answer one question at a time.
+pub(crate) fn tool_prompt(ui: &mut Ui, app: &mut App, view: &mut ToolPromptView) {
+    if app.ai_consent_prompt().is_some() {
+        return;
+    }
+    let Some(prompt) = app.ai_tool_prompt() else {
+        view.asking = None;
+        return;
+    };
+    let asking = (prompt.run.clone(), prompt.call.clone());
+    let opened = view.asking.as_ref() != Some(&asking);
+    view.asking = Some(asking);
+    let title = "Allow this tool call?";
+    let mut answer = None;
+    let modal = Modal::new(Id::unique("ai-tool")).show(ui.ctx(), |ui| {
+        let builder = UiBuilder::new()
+            .accessibility_role(Role::AlertDialog)
+            .accessibility_label(title);
+        ui.scope_builder(builder, |ui| {
+            ui.set_width(440.0);
+            ui.label(RichText::new(title).size(TITLE_SIZE).strong());
+            ui.add_space(4.0);
+            ui.label(format!(
+                "The AI wants to run the tool {} from {}.",
+                prompt.tool, prompt.plugin_name
+            ));
+            if !prompt.description.trim().is_empty() {
+                muted(ui, &prompt.description);
+            }
+            ui.add_space(8.0);
+            ui.label("Input");
+            ui.add(egui::Label::new(RichText::new(&prompt.input).monospace()).wrap())
+                .accessible_name("Input");
+            ui.add_space(8.0);
+            muted(
+                ui,
+                "Your answer covers this call only. If you deny it, the tool doesn't run.",
+            );
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                let deny = ui.add(Button::new("Deny"));
+                if opened {
+                    deny.request_focus();
+                }
+                if deny.clicked() {
+                    answer = Some(false);
+                }
+                if primary_button(ui, "Allow once", true).clicked() {
+                    answer = Some(true);
+                }
+            });
+        });
+    });
+    if answer.is_none() && modal.should_close() {
+        answer = Some(false);
+    }
+    if let Some(allow) = answer {
+        app.answer_ai_tool(&prompt, allow);
     }
 }
 

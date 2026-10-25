@@ -361,6 +361,7 @@ dependencies = [
  "rav1d",
  "resvg",
  "rusqlite",
+ "serde_json",
  "tempfile",
  "zeroize",
 ]
