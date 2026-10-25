@@ -421,17 +421,32 @@ fn ipv6_is_local_or_private(address: std::net::Ipv6Addr) -> bool {
     if segments[0] & 0xff00 == 0xff00 || (segments[0] == 0x2001 && segments[1] == 0x0db8) {
         return true;
     }
-    let embedded_ipv4 = segments[..6].iter().all(|segment| *segment == 0)
-        || segments[..5].iter().all(|segment| *segment == 0) && segments[5] == 0xffff;
-    let mapped_ipv4 = embedded_ipv4.then(|| {
-        Ipv4Addr::new(
-            (segments[6] >> 8) as u8,
-            segments[6] as u8,
-            (segments[7] >> 8) as u8,
-            segments[7] as u8,
-        )
-    });
-    mapped_ipv4.is_some_and(ipv4_is_local_or_private)
+    // NAT64 for local use (RFC 8215) reaches only the local network.
+    if segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001 {
+        return true;
+    }
+    let ipv4 = |high: u16, low: u16| {
+        let [a, b] = high.to_be_bytes();
+        let [c, d] = low.to_be_bytes();
+        Ipv4Addr::new(a, b, c, d)
+    };
+    let embedded_ipv4 = if segments[..6].iter().all(|segment| *segment == 0)
+        || segments[..5].iter().all(|segment| *segment == 0) && segments[5] == 0xffff
+    {
+        // IPv4-compatible and IPv4-mapped addresses.
+        Some(ipv4(segments[6], segments[7]))
+    } else if segments[..6] == [0x0064, 0xff9b, 0, 0, 0, 0] {
+        // The NAT64 well-known prefix (RFC 6052), which a NAT64 gateway
+        // turns into the IPv4 address it ends with.
+        Some(ipv4(segments[6], segments[7]))
+    } else if segments[0] == 0x2002 {
+        // 6to4 (RFC 3056), whose relay reaches the IPv4 address in its
+        // second and third groups.
+        Some(ipv4(segments[1], segments[2]))
+    } else {
+        None
+    };
+    embedded_ipv4.is_some_and(ipv4_is_local_or_private)
 }
 
 fn unavailable_error() -> CoreError {
@@ -611,6 +626,38 @@ mod tests {
             "web_url_unsafe_host"
         );
         assert!(validate_resolved_address("8.8.8.8".parse().unwrap(), "test").is_ok());
+    }
+
+    /// NAT64 and 6to4 addresses carry an IPv4 address that a gateway or
+    /// relay reaches, so the IPv4 address they carry is checked too.
+    #[test]
+    fn ipv6_addresses_that_carry_a_private_ipv4_address_are_rejected() {
+        for address in [
+            "64:ff9b::a00:1",
+            "64:ff9b::7f00:1",
+            "64:ff9b::a9fe:a9fe",
+            "64:ff9b:1::5db8:d70e",
+            "2002:a00:1::1",
+            "2002:7f00:1::",
+            "2002:c0a8:101::1",
+            "::ffff:10.0.0.1",
+            "::127.0.0.1",
+        ] {
+            assert_eq!(
+                validate_resolved_address(address.parse().unwrap(), "test")
+                    .unwrap_err()
+                    .code,
+                "web_url_unsafe_host",
+                "{address}"
+            );
+        }
+        for address in ["64:ff9b::808:808", "2002:808:808::1", "2606:4700::1111"] {
+            assert!(
+                validate_resolved_address(address.parse().unwrap(), "test").is_ok(),
+                "{address}"
+            );
+        }
+        assert!(parse_https_url("https://[64:ff9b::a00:1]/", "test").is_err());
     }
 
     #[test]
