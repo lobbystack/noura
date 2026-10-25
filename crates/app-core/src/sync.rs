@@ -523,6 +523,11 @@ impl SyncService {
         &self.credentials
     }
 
+    /// The credential store the service keeps its secrets in.
+    pub fn secrets(&self) -> Secrets {
+        self.secrets.clone()
+    }
+
     /// The heads the device keeps, to change.
     pub fn kept_heads_mut(&mut self) -> &mut KeptHeads {
         &mut self.heads

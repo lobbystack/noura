@@ -146,7 +146,11 @@ fn the_rail_s_settings_button_opens_settings_with_its_sections_by_group() {
             ),
             (
                 "Workspace".to_owned(),
-                vec!["Name and location".to_owned(), "Plugins".to_owned()]
+                vec![
+                    "Name and location".to_owned(),
+                    "Plugins".to_owned(),
+                    "Sync".to_owned()
+                ]
             ),
             (
                 "App".to_owned(),

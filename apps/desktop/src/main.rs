@@ -185,13 +185,16 @@ fn main() -> eframe::Result {
                 app.set_login_item(Arc::new(login::DesktopLoginItem::new()));
                 // The sync account keeps this computer's keys and session in
                 // credential store items that never leave it, and signs in
-                // through the system browser.
+                // through the system browser. The same backend runs the open
+                // workspace's sync with that account.
                 let browser = system.clone();
-                app.set_account_backend(Arc::new(app_core::account::live::LiveAccount::start(
+                let account = Arc::new(app_core::account::live::LiveAccount::start(
                     app_data.clone(),
                     Arc::new(app_core::sync::DeviceKeychain),
                     Arc::new(move |url: &str| app_core::System::open_url(&*browser, url)),
-                )));
+                ));
+                app.set_account_backend(account.clone());
+                app.set_folder_sync_backend(account);
                 if let Some(list) = licenses::bundled_licenses() {
                     app.set_third_party_licenses(list);
                 }

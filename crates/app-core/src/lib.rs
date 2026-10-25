@@ -25,6 +25,7 @@ mod commands;
 mod diagnostics;
 mod error;
 mod files;
+pub mod folder_sync;
 mod ignored;
 mod inbox;
 mod keys;

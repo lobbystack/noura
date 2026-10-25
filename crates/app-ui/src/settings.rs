@@ -166,6 +166,7 @@ fn content(
         settings_section::SYNC_ACCOUNT => {
             crate::account::section(ui, app, &mut view.account, picker)
         }
+        settings_section::SYNC => crate::folder_sync::section(ui, app),
         settings_section::AI => crate::ai::settings(ui, app, &mut view.ai),
         settings_section::ABOUT => about(ui, app),
         settings_section::UPDATES => crate::updates::update_settings(ui, app),

@@ -378,6 +378,25 @@ impl WorkspaceSync {
         self.state.workspace
     }
 
+    /// This device.
+    pub fn device(&self) -> Id {
+        self.credentials.keys.device()
+    }
+
+    /// Where `rid`'s file sits on this device, or the path its live state
+    /// names when it has none here.
+    pub fn local_path(&self, rid: &Id) -> Option<String> {
+        let object = self.state.objects.get(rid)?;
+        object.local.as_ref().map(|l| l.path.clone()).or_else(|| {
+            object
+                .states
+                .values()
+                .filter_map(|s| s.content.as_ref())
+                .find(|c| !c.delete)
+                .map(|c| c.path.clone())
+        })
+    }
+
     /// The workspace's name, from its profile.
     pub fn name(&self) -> &str {
         &self.state.name

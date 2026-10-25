@@ -16,11 +16,13 @@ use sync_protocol::records::KitPayload;
 use sync_protocol::types::Id;
 use zeroize::Zeroizing;
 
+use super::folder::Folder;
 use super::{
     AccountAction, AccountBackend, AccountPhase, AccountScreen, AlertEntry, ApprovalView,
     DeviceEntry, KitReplacementView, KitView, RecoveryView, RemovalView, RequestEntry, SignOutView,
     SignedInView, fingerprint,
 };
+use crate::folder_sync::{FolderSyncAction, FolderSyncBackend, FolderSyncScreen};
 use crate::sync::approval::{Candidate, CandidateStep, OutstandingOffer, PendingDevice};
 use crate::sync::device::{DeviceSignIn, Joined, SignedIn, StoredDevice, join, server_address};
 use crate::sync::device_list::{AddedBy, DeviceAlert};
@@ -44,10 +46,35 @@ pub type OpenBrowser = Arc<dyn Fn(&str) -> std::io::Result<()> + Send + Sync>;
 
 struct Shared {
     screen: Mutex<AccountScreen>,
+    folder: Mutex<FolderSyncScreen>,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
+/// What the backend's thread hears from the windows.
+enum Message {
+    Account(AccountAction),
+    Folder(FolderSyncAction),
+    Attach(Option<Arc<local_core::WorkspaceEngine>>),
+}
+
 impl Shared {
+    fn show_folder(&self, screen: FolderSyncScreen) {
+        let mut shown = self.folder.lock().unwrap_or_else(PoisonError::into_inner);
+        if *shown == screen {
+            return;
+        }
+        *shown = screen;
+        drop(shown);
+        let wake = self
+            .wake
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(wake) = wake {
+            wake();
+        }
+    }
+
     fn update(&self, change: impl FnOnce(&mut AccountScreen)) {
         change(&mut self.screen.lock().unwrap_or_else(PoisonError::into_inner));
         let wake = self
@@ -64,7 +91,7 @@ impl Shared {
 /// The account backend of the desktop app.
 pub struct LiveAccount {
     shared: Arc<Shared>,
-    actions: Mutex<Sender<AccountAction>>,
+    actions: Mutex<Sender<Message>>,
 }
 
 impl LiveAccount {
@@ -81,6 +108,7 @@ impl LiveAccount {
                 server: remembered.server.clone(),
                 ..AccountScreen::default()
             }),
+            folder: Mutex::new(FolderSyncScreen::default()),
             wake: Mutex::new(None),
         });
         let (sender, receiver) = channel();
@@ -99,6 +127,7 @@ impl LiveAccount {
             recovery: None,
             last_refresh: None,
             upkeep: Upkeep::default(),
+            folder: Folder::default(),
         };
         let spawned = std::thread::Builder::new()
             .name("noura-sync-account".into())
@@ -129,7 +158,7 @@ impl AccountBackend for LiveAccount {
             .actions
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .send(action);
+            .send(Message::Account(action));
     }
 
     fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
@@ -138,6 +167,41 @@ impl AccountBackend for LiveAccount {
             .wake
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(wake);
+    }
+}
+
+impl FolderSyncBackend for LiveAccount {
+    fn screen(&self) -> FolderSyncScreen {
+        self.shared
+            .folder
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn act(&self, action: FolderSyncAction) {
+        self.shared
+            .folder
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .busy = true;
+        let _ = self
+            .actions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .send(Message::Folder(action));
+    }
+
+    fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        AccountBackend::set_wake(self, wake);
+    }
+
+    fn attach(&self, engine: Option<Arc<local_core::WorkspaceEngine>>) {
+        let _ = self
+            .actions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .send(Message::Attach(engine));
     }
 }
 
@@ -175,6 +239,8 @@ struct Driver {
     recovery: Option<Recovery>,
     last_refresh: Option<Instant>,
     upkeep: Upkeep,
+    /// The open workspace's sync.
+    folder: Folder,
 }
 
 /// What a failed action tells you.
@@ -324,7 +390,7 @@ pub(crate) fn added_member_lines(added: &[(Id, Id)]) -> Vec<String> {
 }
 
 impl Driver {
-    fn run(mut self, actions: Receiver<AccountAction>) {
+    fn run(mut self, actions: Receiver<Message>) {
         let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -337,10 +403,28 @@ impl Driver {
         runtime.block_on(self.resume());
         loop {
             match actions.recv_timeout(TICK) {
-                Ok(action) => runtime.block_on(self.handle(action)),
-                Err(RecvTimeoutError::Timeout) => runtime.block_on(self.tick()),
+                Ok(Message::Account(action)) => runtime.block_on(self.handle(action)),
+                Ok(Message::Folder(action)) => runtime.block_on(self.folder.act(
+                    action,
+                    self.service.as_mut(),
+                    &self.app_data,
+                )),
+                Ok(Message::Attach(engine)) => {
+                    self.folder
+                        .attach(engine, self.service.as_ref(), &self.store, &self.app_data)
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    runtime.block_on(self.tick());
+                    runtime.block_on(self.folder.round(
+                        self.service.as_mut(),
+                        &self.store,
+                        &self.app_data,
+                    ));
+                }
                 Err(RecvTimeoutError::Disconnected) => return,
             }
+            self.shared
+                .show_folder(self.folder.screen(self.service.is_some()));
         }
     }
 
