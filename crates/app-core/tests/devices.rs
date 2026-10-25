@@ -15,7 +15,7 @@ use app_core::sync::device::{
 use app_core::sync::{KeptHeads, SyncClient, SyncError, SyncService};
 use local_core::sync::SyncCredentials as _;
 use sync_store::{Backend, WriteTxn as _};
-use sync_support::{MemorySecrets, Server, approve, first_desktop};
+use sync_support::{MemorySecrets, Proxy, Server, approve, first_desktop};
 
 /// What runs before the poll that follows a wait: it may start a task the
 /// wait then finishes.
@@ -394,6 +394,29 @@ async fn signing_in_again_never_overwrites_a_stored_device() {
         .unwrap()
         .unwrap();
     assert_eq!(kept.card().unwrap().device, laptop.id());
+}
+
+/// The app opens only the device page on the server's own address: a grant
+/// that names a page elsewhere, as the server behind this proxy does, opens
+/// nothing (§7).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_page_on_another_address_isnt_opened() {
+    let server = Server::start().await;
+    let proxy = Proxy::start(&server.base).await;
+    let opened = Arc::new(Mutex::new(Vec::<String>::new()));
+    let record = opened.clone();
+    let refused = DeviceSignIn::start(&proxy.base, &move |url| {
+        record.lock().unwrap().push(url.to_owned());
+        Ok(())
+    })
+    .await
+    .err()
+    .expect("the page is elsewhere");
+    assert!(
+        refused.to_string().contains("outside its own address"),
+        "{refused}"
+    );
+    assert!(opened.lock().unwrap().is_empty(), "no browser opened");
 }
 
 /// Every file under `dir`.

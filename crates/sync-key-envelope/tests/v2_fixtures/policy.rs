@@ -958,6 +958,7 @@ pub fn fixture() -> Fixture {
             "rotations": {"2": [], "3": [], "4": [ws_domain().to_hex()]},
         }),
     );
+    alerts_and_removed_changes(&mut f);
     chain_reads(&mut f);
     f.set(
         "limits",
@@ -974,6 +975,237 @@ pub fn fixture() -> Fixture {
 /// target account a waiting approval request that names an invitation to
 /// this workspace, which lets the sessions of the workspace's member
 /// accounts read its current chain in full.
+fn own_chain(person: &Person) -> Vec<String> {
+    person
+        .chain
+        .links
+        .iter()
+        .map(|l| to_hex(&l.to_bytes()))
+        .collect()
+}
+
+/// The device list's alerts on policy changes another device of the
+/// account signed, and the list of a removed card's changes with the undo
+/// the viewer's role allows (§7).
+fn alerts_and_removed_changes(f: &mut Fixture) {
+    let mut nina = Person::new("nina");
+    let nina_phone = nina.add("nina phone");
+    let mut omar = Person::new("omar");
+    omar.add("omar phone");
+    let pia = Person::new("pia");
+    for actor in [nina.first(), &nina_phone, omar.first(), pia.first()] {
+        f.actor(actor);
+    }
+
+    // The laptop created the workspace; its phone's changes alert there,
+    // other than account_heads, and neither the laptop's own nor another
+    // account's do.
+    let mut created = Policy::new(id("policy alert workspace"));
+    created.push(
+        nina.first(),
+        vec![nina.head()],
+        PolicyKind::Genesis {
+            workspace_domain: id("policy alert workspace domain"),
+        },
+    );
+    created.push(
+        &nina_phone,
+        vec![nina.head(), omar.head()],
+        PolicyKind::AddMember {
+            account: omar.account(),
+            role: Role::Admin,
+            invitation: id("policy invitation"),
+        },
+    );
+    let nina_tablet = nina.add("nina tablet");
+    f.actor(&nina_tablet);
+    created.push(&nina_phone, vec![nina.head()], PolicyKind::AccountHeads);
+    created.push(
+        nina.first(),
+        vec![nina.head(), pia.head()],
+        PolicyKind::AddMember {
+            account: pia.account(),
+            role: Role::Viewer,
+            invitation: id("policy invitation"),
+        },
+    );
+    created.push(
+        omar.first(),
+        vec![omar.head()],
+        PolicyKind::SetRole {
+            account: pia.account(),
+            role: Role::Editor,
+        },
+    );
+    let chain_list = chains(&[&nina.chain, &omar.chain, &pia.chain]);
+    f.case(json!({
+        "kind": "policy_alerts",
+        "name": "the_alert_for_a_change_another_device_of_your_account_signed",
+        "account_chains": chain_list,
+        "changes": changes(&created),
+        "own_chain": own_chain(&nina),
+        "this_device": nina.first().device().to_hex(),
+        "first_trusted": "its own genesis",
+        "trusted_after": 1,
+        "expect": [2],
+    }));
+    // Review of 3efebae: the phone first trusts that log through the
+    // laptop's change, so it alerts on the laptop's earlier changes too,
+    // its genesis included; through an anchor at revision 3 it would alert
+    // only on the later ones.
+    for (name, first_trusted, after, expect) in [
+        (
+            "a_device_that_first_trusts_a_workspace_through_a_siblings_change_alerts_on_its_earlier_changes",
+            "another device's change",
+            0,
+            json!([1, 4]),
+        ),
+        (
+            "a_device_anchored_after_a_siblings_changes_alerts_on_the_later_ones",
+            "an approval anchor at revision 3",
+            3,
+            json!([4]),
+        ),
+    ] {
+        f.case(json!({
+            "kind": "policy_alerts",
+            "name": name,
+            "account_chains": chain_list,
+            "changes": changes(&created),
+            "own_chain": own_chain(&nina),
+            "this_device": nina_phone.device().to_hex(),
+            "first_trusted": first_trusted,
+            "trusted_after": after,
+            "expect": expect,
+        }));
+    }
+
+    // Nina's phone, removed since, signed changes in two workspaces: one
+    // she owns and one where she is an admin, whose owner then made Pia an
+    // admin, whom an admin can't remove or demote.
+    let domain = id("policy removed card domain");
+    let mut owned = Policy::new(id("policy removed card workspace"));
+    owned.push(
+        nina.first(),
+        vec![nina.head()],
+        PolicyKind::Genesis {
+            workspace_domain: id("policy removed card workspace domain"),
+        },
+    );
+    owned.push(
+        &nina_phone,
+        vec![nina.head(), pia.head()],
+        PolicyKind::AddMember {
+            account: pia.account(),
+            role: Role::Viewer,
+            invitation: id("policy invitation"),
+        },
+    );
+    owned.push(
+        &nina_phone,
+        vec![nina.head()],
+        PolicyKind::SetRole {
+            account: pia.account(),
+            role: Role::Editor,
+        },
+    );
+    owned.push(
+        &nina_phone,
+        vec![nina.head()],
+        PolicyKind::CreateDomain {
+            domain,
+            marker_rid: id("policy removed card marker"),
+            access: access(&[(&nina, Level::Manage)]),
+        },
+    );
+    owned.push(
+        &nina_phone,
+        vec![nina.head()],
+        PolicyKind::SetAccess {
+            domain,
+            access: access(&[(&nina, Level::Manage), (&pia, Level::Read)]),
+        },
+    );
+    owned.push(
+        nina.first(),
+        vec![nina.head()],
+        PolicyKind::SetRole {
+            account: pia.account(),
+            role: Role::Viewer,
+        },
+    );
+    let undo = |revision: u64, kind: &str, undo: Option<&str>| json!({"revision": revision, "kind": kind, "undo": undo});
+    f.case(json!({
+        "kind": "removed_card_changes",
+        "name": "a_removed_cards_changes_with_the_undo_an_owner_allows",
+        "account_chains": chain_list,
+        "changes": changes(&owned),
+        "viewer": nina.account().to_hex(),
+        "removed": [nina_phone.device().to_hex()],
+        "expect": [
+            undo(2, "add_member", Some("remove_member")),
+            undo(3, "set_role", Some("set_role")),
+            undo(4, "create_domain", Some("delete_domain")),
+            undo(5, "set_access", Some("set_access")),
+        ],
+    }));
+    let mut admin = Policy::new(id("policy removed card admin workspace"));
+    admin.push(
+        omar.first(),
+        vec![omar.head()],
+        PolicyKind::Genesis {
+            workspace_domain: id("policy removed card admin workspace domain"),
+        },
+    );
+    admin.push(
+        omar.first(),
+        vec![omar.head(), nina.head()],
+        PolicyKind::AddMember {
+            account: nina.account(),
+            role: Role::Admin,
+            invitation: id("policy invitation"),
+        },
+    );
+    admin.push(
+        &nina_phone,
+        vec![nina.head(), pia.head()],
+        PolicyKind::AddMember {
+            account: pia.account(),
+            role: Role::Editor,
+            invitation: id("policy invitation"),
+        },
+    );
+    admin.push(
+        &nina_phone,
+        vec![nina.head()],
+        PolicyKind::CreateDomain {
+            domain: id("policy removed card admin domain"),
+            marker_rid: id("policy removed card admin marker"),
+            access: access(&[(&nina, Level::Manage)]),
+        },
+    );
+    admin.push(
+        omar.first(),
+        vec![omar.head()],
+        PolicyKind::SetRole {
+            account: pia.account(),
+            role: Role::Admin,
+        },
+    );
+    f.case(json!({
+        "kind": "removed_card_changes",
+        "name": "a_removed_cards_changes_with_the_undo_an_admin_allows",
+        "account_chains": chain_list,
+        "changes": changes(&admin),
+        "viewer": nina.account().to_hex(),
+        "removed": [nina_phone.device().to_hex()],
+        "expect": [
+            undo(3, "add_member", None),
+            undo(4, "create_domain", Some("delete_domain")),
+        ],
+    }));
+}
+
 fn chain_reads(f: &mut Fixture) {
     let mut kim = Person::new("kim");
     let mut lee = Person::new("lee");

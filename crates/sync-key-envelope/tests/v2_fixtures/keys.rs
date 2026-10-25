@@ -490,5 +490,80 @@ pub fn fixture() -> Fixture {
         }));
     }
     let _: Policy = policy;
+
+    // Review of 0eef7d5: a card brought in after the current epoch accepted
+    // no earlier epoch, so when its first envelope fails it asks for a
+    // re-wrap at once; here Bob, a malicious member who recorded Alice's
+    // later head, wrapped another key for her new tablet, and Alice's
+    // laptop answered the tablet's request with a lone envelope, which the
+    // tablet keeps because it is the first that passes.
+    let tablet = Actor::new("alice", "alice tablet");
+    f.actor(&tablet);
+    let mut alice = w.alice.clone();
+    alice.add_device(&w.alice_laptop, &tablet);
+    let mut recorded = w.policy.clone();
+    recorded.push(
+        &w.bob_laptop,
+        vec![alice.head(), w.bob.head()],
+        PolicyKind::AccountHeads,
+    );
+    let header = |wrapper: &Actor| EnvelopeHeader {
+        workspace: w.workspace,
+        domain: w.ws_domain,
+        epoch: 2,
+        wrapping_device: wrapper.device(),
+    };
+    let wrong = secret("a member's wrong key");
+    let from_bob = wrap_with_rng(
+        &header(&w.bob_laptop),
+        &wrong,
+        &tablet.card(),
+        &w.bob_laptop.keys,
+        &mut SeededRng::new("bob to tablet"),
+    )
+    .unwrap();
+    let from_alice = wrap_with_rng(
+        &header(&w.alice_laptop),
+        &w.ws_key2,
+        &tablet.card(),
+        &w.alice_laptop.keys,
+        &mut SeededRng::new("alice laptop to tablet"),
+    )
+    .unwrap();
+    for (name, envelopes, earlier, expect) in [
+        (
+            "a_new_card_whose_first_envelope_fails_asks_for_a_rewrap",
+            vec![(&from_bob, &wrong)],
+            false,
+            json!({"accepted": null, "then": "rewrap"}),
+        ),
+        (
+            "a_newly_added_card_rewrapped_after_a_malicious_members_failing_envelope",
+            vec![(&from_bob, &wrong), (&from_alice, &w.ws_key2)],
+            false,
+            json!({"accepted": 1, "then": null}),
+        ),
+        (
+            "a_device_that_accepted_an_earlier_epoch_replaces_it_instead",
+            vec![(&from_bob, &wrong)],
+            true,
+            json!({"accepted": null, "then": "replace"}),
+        ),
+    ] {
+        f.case(json!({
+            "kind": "envelope_choice",
+            "name": name,
+            "account_chains": chains_json(&[&alice, &w.bob]),
+            "changes": hexes(&recorded.changes),
+            "epoch": to_hex(&w.ws_epoch2.to_bytes()),
+            "recipient": "alice tablet",
+            "recipient_card": to_hex(&tablet.card().to_bytes()),
+            "envelopes": envelopes.iter().map(|(e, _)| to_hex(&e.to_bytes())).collect::<Vec<_>>(),
+            "unwrapped_keys": envelopes.iter().map(|(_, k)| to_hex(k.expose())).collect::<Vec<_>>(),
+            "accepted_head": recorded.changes.len(),
+            "accepted_earlier_epoch": earlier,
+            "expect": expect,
+        }));
+    }
     f
 }

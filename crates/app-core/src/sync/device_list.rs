@@ -14,7 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use sync_protocol::account::CardState;
-use sync_protocol::records::{Card, LinkKind, PolicyKind};
+use sync_protocol::records::{Card, LinkKind};
 use sync_protocol::types::{Digest, Id};
 
 use super::removal::kind_name;
@@ -248,20 +248,15 @@ impl SyncService {
         // Policy changes another device of your account signed.
         for remote in workspaces {
             let after = self.heads.trusted_after(&remote.workspace).unwrap_or(0);
-            for revision in (after + 1)..=remote.policy.head().0 {
+            for revision in remote.policy.alerted_changes(&chain, &this, after) {
                 let Some(change) = remote.policy.change(revision) else {
                     continue;
                 };
-                let body = &change.body;
-                let ours = cards.contains_key(&body.signer);
-                if !ours || body.signer == this || matches!(body.kind, PolicyKind::AccountHeads) {
-                    continue;
-                }
                 alerts.push(DeviceAlert::PolicyChange {
                     workspace: remote.workspace,
                     revision,
-                    kind: kind_name(&body.kind),
-                    signer: body.signer,
+                    kind: kind_name(&change.body.kind),
+                    signer: change.body.signer,
                 });
             }
         }

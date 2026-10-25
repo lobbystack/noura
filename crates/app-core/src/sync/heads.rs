@@ -95,7 +95,13 @@ impl SyncService {
     pub async fn refresh_keys(&mut self, remote: &mut RemoteWorkspace) -> Result<(), SyncError> {
         let recipient = self.credentials.keys.clone();
         let (epochs, keys) = self
-            .load_keys(remote.workspace, remote.domain, &remote.policy, &recipient)
+            .load_keys(
+                remote.workspace,
+                remote.domain,
+                &remote.policy,
+                &recipient,
+                !remote.keys.is_empty(),
+            )
             .await?;
         if let Some(old) = remote.epochs.latest() {
             let number = old.record.body.epoch;

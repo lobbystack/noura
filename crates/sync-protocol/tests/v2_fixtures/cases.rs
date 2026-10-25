@@ -98,6 +98,26 @@ pub fn run(file: &str, _doc: &Value, case: &Value) -> Outcome {
             };
             same(result, expect_str(case))
         }
+        "approval_request_target" => {
+            let request =
+                ApprovalRequest::from_bytes(&hex(&case["request"])).map_err(|e| e.to_string())?;
+            let expect = &case["expect"];
+            match request.target() {
+                Ok(target) => {
+                    let name = match target {
+                        RequestTarget::OwnDevice => "own_device",
+                        RequestTarget::Invitation => "invitation",
+                        RequestTarget::Reset => "reset",
+                    };
+                    same(json!(name), expect["target"].clone())?;
+                    same(
+                        json!(target == RequestTarget::OwnDevice),
+                        expect["listed_for_own_account"].clone(),
+                    )
+                }
+                Err(_) => same(json!("bad_request"), expect["error"].clone()),
+            }
+        }
         "records_frame_action" => {
             let n = |k: &str| case[k].as_u64().unwrap();
             let action =

@@ -85,6 +85,16 @@ async fn the_list_comes_from_the_chain_and_warns_about_what_this_device_didnt_se
         client.workspaces().await.is_err(),
         "the stranger's session ended"
     );
+    // The card keeps its alert without a session, so a server can't hide
+    // one it planted by reporting none.
+    let list = laptop.service.device_list(&[]).await.unwrap();
+    assert_eq!(
+        list.alerts,
+        vec![DeviceAlert::UnknownCard {
+            card: keys.card(account),
+            sessions: 0
+        }]
+    );
 
     // The laptop approves a tablet: the phone didn't take part.
     let tablet = approve(&server, &mut laptop, std::slice::from_mut(&mut workspace)).await;
@@ -100,13 +110,19 @@ async fn the_list_comes_from_the_chain_and_warns_about_what_this_device_didnt_se
         .unwrap();
     assert_eq!(
         list.alerts,
-        vec![DeviceAlert::Link {
-            seqno: 3,
-            kind: "add_device",
-            signer: laptop.id(),
-            card: tablet.credentials.card(),
-            recovery: false,
-        }]
+        vec![
+            DeviceAlert::UnknownCard {
+                card: keys.card(account),
+                sessions: 0
+            },
+            DeviceAlert::Link {
+                seqno: 3,
+                kind: "add_device",
+                signer: laptop.id(),
+                card: tablet.credentials.card(),
+                recovery: false,
+            }
+        ]
     );
 
     // The phone signs a policy change; the laptop alerts you to it. The

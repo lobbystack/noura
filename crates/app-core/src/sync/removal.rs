@@ -18,7 +18,7 @@ use sync_protocol::account::AccountChain;
 use sync_protocol::codec::{Decode, Sorted};
 use sync_protocol::messages::DeviceRemovedDetail;
 use sync_protocol::policy::PolicyChain;
-use sync_protocol::records::{Card, LinkKind, PolicyKind, Role};
+use sync_protocol::records::{Card, LinkKind, PolicyKind};
 use sync_protocol::types::{Digest, Id};
 
 use super::device::StoredDevice;
@@ -79,51 +79,7 @@ pub struct RemovedBy {
 
 /// A policy change's kind, as §8 names it.
 pub fn kind_name(kind: &PolicyKind) -> &'static str {
-    match kind {
-        PolicyKind::Genesis { .. } => "genesis",
-        PolicyKind::AccountHeads => "account_heads",
-        PolicyKind::AddMember { .. } => "add_member",
-        PolicyKind::SetRole { .. } => "set_role",
-        PolicyKind::RemoveMember { .. } => "remove_member",
-        PolicyKind::CreateDomain { .. } => "create_domain",
-        PolicyKind::SetAccess { .. } => "set_access",
-        PolicyKind::DeleteDomain { .. } => "delete_domain",
-        PolicyKind::TransferOwner { .. } => "transfer_owner",
-        PolicyKind::AcceptReset { .. } => "accept_reset",
-    }
-}
-
-/// The undo of `kind` that `role` allows in a workspace (§8, Roles and
-/// authority), with `manages` telling whether the viewer manages the
-/// domain a `set_access` or `create_domain` names.
-fn undo_for(
-    kind: &PolicyKind,
-    role: Option<Role>,
-    target_role: Option<Role>,
-    manages: bool,
-) -> Option<&'static str> {
-    let admin = matches!(role, Some(Role::Owner | Role::Admin));
-    match kind {
-        PolicyKind::AddMember { .. } | PolicyKind::AcceptReset { .. } => {
-            let removable = match role {
-                Some(Role::Owner) => target_role != Some(Role::Owner),
-                Some(Role::Admin) => matches!(target_role, Some(Role::Editor | Role::Viewer)),
-                _ => false,
-            };
-            removable.then_some("remove_member")
-        }
-        PolicyKind::SetRole { .. } => {
-            let allowed = match role {
-                Some(Role::Owner) => target_role != Some(Role::Owner),
-                Some(Role::Admin) => matches!(target_role, Some(Role::Editor | Role::Viewer)),
-                _ => false,
-            };
-            allowed.then_some("set_role")
-        }
-        PolicyKind::SetAccess { .. } => manages.then_some("set_access"),
-        PolicyKind::CreateDomain { .. } => (admin || manages).then_some("delete_domain"),
-        _ => None,
-    }
+    kind.name()
 }
 
 /// The changes of the verified `policy` other than `account_heads` that a
@@ -134,33 +90,15 @@ pub fn removed_card_changes(
     viewer: Id,
     cards: &BTreeSet<Id>,
 ) -> Vec<RemovedCardChange> {
-    let snapshot = policy.head_snapshot();
-    let role = snapshot.role(&viewer);
-    (1..=policy.head().0)
-        .filter_map(|revision| policy.change(revision))
-        .filter(|change| cards.contains(&change.body.signer))
-        .filter(|change| !matches!(change.body.kind, PolicyKind::AccountHeads))
-        .map(|change| {
-            let kind = &change.body.kind;
-            let target_role = match kind {
-                PolicyKind::AddMember { account, .. }
-                | PolicyKind::SetRole { account, .. }
-                | PolicyKind::AcceptReset { account } => snapshot.role(account),
-                _ => None,
-            };
-            let manages = match kind {
-                PolicyKind::SetAccess { domain, .. } | PolicyKind::CreateDomain { domain, .. } => {
-                    snapshot.manages(&viewer, domain)
-                }
-                _ => false,
-            };
-            RemovedCardChange {
-                workspace: policy.workspace(),
-                revision: change.body.revision,
-                signer: change.body.signer,
-                kind: kind_name(kind),
-                undo: undo_for(kind, role, target_role, manages),
-            }
+    policy
+        .removed_card_changes(&viewer, cards)
+        .into_iter()
+        .map(|change| RemovedCardChange {
+            workspace: policy.workspace(),
+            revision: change.revision,
+            signer: change.signer,
+            kind: change.kind,
+            undo: change.undo,
         })
         .collect()
 }

@@ -393,3 +393,71 @@ async fn a_tampered_envelope_or_a_wrong_recipient_list_fails_the_key_check() {
         "{refused:?}"
     );
 }
+
+/// A device whose first envelope fails before it accepted any epoch of the
+/// domain asks for a re-wrap at once, a key holder answers, and the device
+/// keeps the first envelope that passes (§9, Re-wrapping).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_card_whose_first_envelope_fails_asks_for_a_rewrap_at_once() {
+    let server = Server::start().await;
+    let proxy = Proxy::start(&server.base).await;
+    let mut laptop = first_desktop(&server, "fay@example.com").await;
+    let mut workspace = laptop.service.create_workspace("Notes").await.unwrap();
+    laptop
+        .service
+        .push_file(&mut workspace, "Kept.md", b"# Kept\n")
+        .await
+        .unwrap();
+    let phone = approve(&server, &mut laptop, std::slice::from_mut(&mut workspace)).await;
+    let phone_id = phone.id();
+    let mut phone = Desktop::connect(
+        &proxy.base,
+        phone.credentials.clone(),
+        phone.secrets.clone(),
+        phone.state,
+    )
+    .await;
+    // The envelope the approval carried reaches the phone damaged, as a
+    // malicious member's or server's would; later ones arrive intact.
+    let path = format!(
+        "/v2/workspaces/{}/keys/current",
+        workspace.workspace.to_base64url()
+    );
+    proxy.tamper(Box::new(move |route, body| {
+        if route != path {
+            return body;
+        }
+        let mut keys = KeysResponse::from_bytes(&body).unwrap();
+        if let Some(envelope) = keys.entries.0.iter_mut().find_map(|e| match &mut e.record {
+            KeyRecord::Envelope(env) if env.body.recipient == phone_id => Some(env),
+            _ => None,
+        }) {
+            envelope.body.recipient_hpke_digest.0[0] ^= 1;
+        }
+        keys.to_bytes()
+    }));
+    let refused = phone
+        .service
+        .open_workspace(workspace.workspace)
+        .await
+        .err()
+        .expect("the only envelope fails");
+    assert!(
+        matches!(refused, SyncError::Check("sync_key_mismatch")),
+        "{refused:?}"
+    );
+    // The phone asked at once; the laptop sees the request and answers.
+    let answers = laptop
+        .service
+        .answer_rewraps(&mut workspace)
+        .await
+        .expect("answered");
+    assert_eq!(answers, vec![RewrapAnswer::Answered(phone_id)]);
+    let mut remote = phone
+        .service
+        .open_workspace(workspace.workspace)
+        .await
+        .expect("the answer passes after the damaged envelope");
+    let files = phone.service.pull_files(&mut remote).await.unwrap();
+    assert!(files.iter().any(|f| f.bytes == b"# Kept\n"));
+}

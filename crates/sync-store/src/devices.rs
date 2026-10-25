@@ -19,7 +19,7 @@ use sync_protocol::codec::{Decode, Encode, List, Nested, Text};
 use sync_protocol::crypto::{hash, random_array};
 use sync_protocol::messages::{
     ApprovalRequest, DeviceAuthorizeResponse, DeviceInfo, DeviceState, DeviceTokenResponse,
-    DevicesResponse, OffersResponse, Pending, PendingResponse, RevealBody,
+    DevicesResponse, OffersResponse, Pending, PendingResponse, RequestTarget, RevealBody,
 };
 use sync_protocol::records::{Card, Enroll, Offer, Signed, approval_commit};
 use sync_protocol::types::{Digest, Id, Key, from_base64url, to_base64url};
@@ -437,31 +437,10 @@ impl<B: Backend> Store<B> {
                 format!("the body doesn't decode: {e}"),
             )
         })?;
-        if request.invitation.is_some() && request.workspace.is_some() {
-            return Err(refuse(
-                "bad_request",
-                "a request names at most one of an invitation and a workspace",
-            ));
-        }
-        if request.invite_proof.is_some() != request.invitation.is_some() {
-            return Err(refuse(
-                "bad_request",
-                "an invitation proof comes with its invitation",
-            ));
-        }
-        let own = request.invitation.is_none() && request.workspace.is_none();
-        if own && request.account.is_some() {
-            return Err(refuse(
-                "bad_request",
-                "a request of the account's own device carries no account head",
-            ));
-        }
-        if !own && request.account.is_none() {
-            return Err(refuse(
-                "bad_request",
-                "an invitation or reset request carries the candidate's account head",
-            ));
-        }
+        let own = match request.target() {
+            Ok(target) => target == RequestTarget::OwnDevice,
+            Err(error) => return Err(refuse("bad_request", error.message())),
+        };
         let now = self.clock().now();
         let cache = self.policies.clone();
         self.backend()

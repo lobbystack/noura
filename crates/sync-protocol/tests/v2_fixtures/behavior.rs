@@ -15,8 +15,9 @@ use sync_protocol::codec::{Bytes, Decode, Encode};
 use sync_protocol::crypto::{derive_key, hash};
 use sync_protocol::ids::{account_id, device_id, secret_check, text_lineage_id, yrs_client_id};
 use sync_protocol::keys::{
-    EpochAcceptance, EpochChain, LogJudge, check_envelope, judge_skipped_epoch_record, key_check,
-    key_matches, open_lineage, recipients_digest, walk_lineage,
+    EnvelopeVerdict, EpochAcceptance, EpochChain, LogJudge, after_failed_envelopes, check_envelope,
+    judge_skipped_epoch_record, key_check, key_matches, open_lineage, recipients_digest,
+    walk_lineage,
 };
 use sync_protocol::live::{LiveError, LiveOp, LiveSet, covers_for};
 use sync_protocol::manifest::{
@@ -25,7 +26,7 @@ use sync_protocol::manifest::{
 };
 use sync_protocol::messages::LiveCursor;
 use sync_protocol::padding::{is_valid_padded_length, pad, padded_length, padme, unpad};
-use sync_protocol::policy::{AccountChains, PolicyChain};
+use sync_protocol::policy::{AccountChains, PolicyChain, RecoveryStage};
 use sync_protocol::records::*;
 use sync_protocol::tag::Tag;
 use sync_protocol::types::{Digest, Id, Key, from_base64url, from_decimal, from_hex, to_hex};
@@ -401,6 +402,42 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
             .then_some(current);
             same(json!(through_policy.max(through_request)), expect.clone())
         }
+        "recovery_anchor" => {
+            let verified = policy(case);
+            let own = AccountChain::verify(&links(&case["own_chain"]), &BTreeSet::new()).unwrap();
+            let kit_head = own.head_at(u64_of(&case["kit_seqno"])).unwrap();
+            let stage = match case["stage"].as_str().unwrap() {
+                "review" => RecoveryStage::Review,
+                "removing" => RecoveryStage::Removing,
+                _ => RecoveryStage::Done,
+            };
+            same(
+                json!(verified.recovery_anchor(&own, &kit_head, stage)),
+                expect.clone(),
+            )
+        }
+        "policy_alerts" => {
+            let verified = policy(case);
+            let own = AccountChain::verify(&links(&case["own_chain"]), &BTreeSet::new()).unwrap();
+            same(
+                json!(verified.alerted_changes(
+                    &own,
+                    &id_of(&case["this_device"]),
+                    u64_of(&case["trusted_after"])
+                )),
+                expect.clone(),
+            )
+        }
+        "removed_card_changes" => {
+            let verified = policy(case);
+            let removed: BTreeSet<Id> = ids(&case["removed"]).into_iter().collect();
+            let listed: Vec<Value> = verified
+                .removed_card_changes(&id_of(&case["viewer"]), &removed)
+                .into_iter()
+                .map(|c| json!({"revision": c.revision, "kind": c.kind, "undo": c.undo}))
+                .collect();
+            same(json!(listed), expect.clone())
+        }
         "anchored_by" => {
             let verified = policy(case);
             let own = AccountChain::verify(&links(&case["own_chain"]), &BTreeSet::new()).unwrap();
@@ -494,6 +531,33 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
                 Err(e) => error_name(&e),
             };
             same(ours, expect.as_str().unwrap().to_owned())
+        }
+        "envelope_choice" => {
+            let verified = policy(case);
+            let epoch = Signed::<Epoch>::from_bytes(&hex(&case["epoch"])).unwrap();
+            let card = Card::from_bytes(&hex(&case["recipient_card"])).unwrap();
+            let keys = case["unwrapped_keys"].as_array().unwrap();
+            let accepted = case["envelopes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .zip(keys)
+                .position(|(envelope, key)| {
+                    let envelope = Signed::<Envelope>::from_bytes(&hex(envelope)).unwrap();
+                    check_envelope(
+                        &envelope,
+                        &epoch.body,
+                        &secret_of(key),
+                        &card,
+                        &verified,
+                        u64_of(&case["accepted_head"]),
+                        None,
+                    ) == Ok(EnvelopeVerdict::Accept)
+                });
+            let then = accepted
+                .is_none()
+                .then(|| after_failed_envelopes(case["accepted_earlier_epoch"].as_bool().unwrap()));
+            same(json!({"accepted": accepted, "then": then}), expect.clone())
         }
         "skipped_epoch_record" => {
             let verified = policy(case);

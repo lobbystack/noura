@@ -440,6 +440,10 @@ impl Recovery {
         for workspace in others {
             match service.verified_policy(workspace).await {
                 Ok(policy) => {
+                    // Step 3 verified it, so the device keeps trusting it
+                    // from here through steps 4 and 5 (§12).
+                    let (revision, head) = policy.head();
+                    service.heads.set_anchor(workspace, revision, head)?;
                     for revision in 1..=policy.head().0 {
                         let change = policy.change(revision).expect("verified");
                         review.changes.push(ReviewChange {
@@ -493,6 +497,9 @@ impl Recovery {
             LinkKind::RecoverDevice { card: Nested(card) },
         );
         let chain = service.append_links(vec![recover]).await?;
+        // Until step 5's links commit, the device trusts no workspace other
+        // than those the kit lists and step 3 verified (§12).
+        service.recovery_removing = true;
         for remote in self.workspaces.iter_mut() {
             service.record_heads(remote, &[]).await?;
         }
@@ -530,6 +537,7 @@ impl Recovery {
             chain = service.append_links(vec![link]).await?;
         }
         service.recovery = None;
+        service.recovery_removing = false;
         for remote in self.workspaces.iter_mut() {
             service.record_heads(remote, &[]).await?;
             service.refresh_keys(remote).await?;
@@ -579,7 +587,7 @@ impl SyncService {
             .ok_or_else(|| SyncError::Invalid("no recovery identity".into()))?;
         let domain = policy.head_snapshot().workspace_domain;
         let (epochs, keys) = self
-            .load_keys(workspace, domain, &policy, &identity)
+            .load_keys(workspace, domain, &policy, &identity, true)
             .await?;
         RemoteWorkspace::from_parts(workspace, domain, policy, epochs, keys)
     }

@@ -267,4 +267,75 @@ fn recovery_cases(f: &mut Fixture) {
             "proven_session_reads_the_identitys_envelopes_until_the_recovered_card_joins": true,
         },
     }));
+
+    // Review of a7af59a: a workspace the kit doesn't list, whose genesis a
+    // thief's device added after the kit signed. Step 3 verifies it against
+    // the confirmed head and shows it to you; once step 4's
+    // recover_device commits, the device trusts no such workspace until
+    // step 5's links commit, so one first listed in between is refused,
+    // and after the flow the thief's card confers no trust.
+    let thief = Actor::new("dora", "dora thief device");
+    f.actor(&thief);
+    let mut stolen = chain.clone();
+    stolen.add_device(&laptop, &thief);
+    let mut log = super::world::Policy::new(id("recovery thief workspace"));
+    log.push(
+        &thief,
+        vec![stolen.head()],
+        sync_protocol::records::PolicyKind::Genesis {
+            workspace_domain: id("recovery thief workspace domain"),
+        },
+    );
+    let confirmed = stolen.clone();
+    stolen.push(
+        &kit,
+        LinkKind::RecoverDevice {
+            card: Nested(phone.card()),
+        },
+    );
+    let removing = stolen.clone();
+    stolen.push(
+        &phone,
+        LinkKind::Remove {
+            device: laptop.device(),
+            keep: Sorted::default(),
+        },
+    );
+    let changes: Vec<serde_json::Value> = log
+        .changes
+        .iter()
+        .map(|c| json!(to_hex(&c.to_bytes())))
+        .collect();
+    for (name, stage, own, expect) in [
+        (
+            "a_workspace_the_kit_doesnt_list_shown_in_step_3",
+            "review",
+            &confirmed,
+            json!(1),
+        ),
+        (
+            "a_workspace_first_listed_between_steps_4_and_5_is_refused",
+            "removing",
+            &removing,
+            json!(null),
+        ),
+        (
+            "the_same_workspace_after_the_flow_is_refused",
+            "done",
+            &stolen,
+            json!(null),
+        ),
+    ] {
+        f.case(json!({
+            "kind": "recovery_anchor",
+            "name": name,
+            "account_chains": [links(&stolen)],
+            "changes": changes,
+            "own_chain": links(own),
+            "kit_seqno": 2,
+            "stage": stage,
+            "refusal": "sync_workspace_unverified",
+            "expect": expect,
+        }));
+    }
 }

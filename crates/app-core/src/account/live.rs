@@ -186,6 +186,10 @@ fn message(error: &SyncError) -> String {
             "The secret doesn't open this kit, or the kit file changed. Check both and try again."
                 .into()
         }
+        SyncError::Refused { code, .. } if code == "offer_expired" => {
+            "The approval took longer than 10 minutes, so it stopped. Start it again from the new device."
+                .into()
+        }
         SyncError::Check("sync_approval_mismatch") => {
             "Another offer reached this device, so the approval stopped. Start it again from one of your devices."
                 .into()
@@ -907,6 +911,9 @@ impl Driver {
                     }
                 }),
                 Ok(None) => {}
+                // A server it can't reach leaves the offer for the next
+                // poll.
+                Err(error @ SyncError::Network(_)) => return Err(error),
                 // An expired offer, or a nonce that doesn't open the
                 // commitment, ends the attempt on this device too.
                 Err(error) => {

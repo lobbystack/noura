@@ -327,7 +327,18 @@ impl SyncService {
         offer: &mut OutstandingOffer,
     ) -> Result<Option<String>, SyncError> {
         if offer.nc.is_none() {
-            let Some(nc) = self.client.read_reveal(offer.digest).await? else {
+            let revealed = match self.client.read_reveal(offer.digest).await {
+                Ok(revealed) => revealed,
+                // An expired or unknown offer ends the attempt, so the
+                // device takes another request; a server it can't reach
+                // leaves the offer for the next poll.
+                Err(error @ SyncError::Refused { .. }) => {
+                    self.outstanding = None;
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            };
+            let Some(nc) = revealed else {
                 return Ok(None);
             };
             let commit = approval_commit(&offer.card.fingerprint(), None, &nc);

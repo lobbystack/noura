@@ -33,7 +33,8 @@ use sync_protocol::chain::{ChainRecord, ChainVerifier, NoFetch};
 use sync_protocol::codec::{Bytes, Decode, Encode, List, Nested, Sorted, Text};
 use sync_protocol::crypto::{hash, random_nonce};
 use sync_protocol::keys::{
-    EnvelopeVerdict, EpochChain, EpochParams, LogJudge, build_epoch, check_envelope, walk_lineage,
+    EnvelopeVerdict, EpochChain, EpochParams, FailedEnvelopes, LogJudge, after_failed_envelopes,
+    build_epoch, check_envelope, walk_lineage,
 };
 use sync_protocol::live::{LiveOp, LiveSet};
 use sync_protocol::messages::{
@@ -46,10 +47,11 @@ use sync_protocol::messages::{
 pub use account_heads::{Anchor, KeptHeads};
 /// The credential store of v2 device secrets on this computer.
 pub use local_core::sync::DeviceKeychain;
-use sync_protocol::policy::{AccountChains, PolicyChain};
+use sync_protocol::policy::{AccountChains, PolicyChain, RecoveryStage};
 use sync_protocol::records::{
-    AccountHead, AccountLink, Card, Content, Epoch, EpochBundle, Operation, Payload, PayloadKind,
-    PolicyChange, PolicyKind, Profile, ProfilePayload, Signed, SyncPath, check_monotonic,
+    AccountHead, AccountLink, Card, Content, Envelope, Epoch, EpochBundle, Operation, Payload,
+    PayloadKind, PolicyChange, PolicyKind, Profile, ProfilePayload, Signed, SyncPath,
+    check_monotonic,
 };
 use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 
@@ -479,6 +481,10 @@ pub struct SyncService {
     /// The recovery identity a recovery proved, until the recovered device
     /// is active in each workspace (§12).
     recovery: Option<DeviceKeys>,
+    /// Whether a recovery appended `recover_device` and its `remove` links
+    /// haven't committed yet, while the device trusts no workspace beyond
+    /// the kit's and those step 3 verified (§12).
+    recovery_removing: bool,
 }
 
 impl SyncService {
@@ -499,6 +505,7 @@ impl SyncService {
             secrets,
             outstanding: None,
             recovery: None,
+            recovery_removing: false,
         })
     }
 
@@ -883,8 +890,9 @@ impl SyncService {
         let policy = self.verified_policy(workspace).await?;
         let domain = policy.head_snapshot().workspace_domain;
         let recipient = self.credentials.keys.clone();
+        // Opening, the device holds no epoch of the domain yet (§9).
         let (epochs, keys) = self
-            .load_keys(workspace, domain, &policy, &recipient)
+            .load_keys(workspace, domain, &policy, &recipient, false)
             .await?;
         let key = epochs
             .latest()
@@ -940,8 +948,13 @@ impl SyncService {
                 revision
             }
             None => {
+                let stage = match (&self.recovery, self.recovery_removing) {
+                    (None, _) => RecoveryStage::Done,
+                    (Some(_), false) => RecoveryStage::Review,
+                    (Some(_), true) => RecoveryStage::Removing,
+                };
                 policy
-                    .anchored_by(&own, &self.credentials.reference_head)
+                    .recovery_anchor(&own, &self.credentials.reference_head, stage)
                     .ok_or(SyncError::Check("sync_workspace_unverified"))?;
                 let created = policy
                     .change(1)
@@ -979,16 +992,24 @@ impl SyncService {
     }
 
     /// The epoch records and keys of `domain` that `recipient` holds: the
-    /// current epoch record and its envelope from `keys/current`, the
-    /// envelope checked under its wrapping device's card, and every earlier
-    /// key derived through lineage and checked against its own record's
-    /// `key_check`, each record accepted in order against `policy` (§9).
+    /// current epoch record and the first of its envelopes from
+    /// `keys/current` that passes, checked under its wrapping device's
+    /// card, and every earlier key derived through lineage and checked
+    /// against its own record's `key_check`, each record accepted in order
+    /// against `policy` (§9).
+    ///
+    /// When every envelope fails, `accepted_earlier` tells what comes next
+    /// (§9, Re-wrapping): a device that accepted no earlier epoch of the
+    /// domain asks for a re-wrap at once and reports `sync_key_mismatch`
+    /// until a key holder answers; one that did signs a replacement, which
+    /// ticket 48 builds.
     pub(crate) async fn load_keys(
         &mut self,
         workspace: Id,
         domain: Id,
         policy: &PolicyChain,
         recipient: &DeviceKeys,
+        accepted_earlier: bool,
     ) -> Result<(EpochChain, BTreeMap<u64, SecretKey>), SyncError> {
         let card = recipient.card(self.credentials.account);
         let current = self
@@ -996,37 +1017,48 @@ impl SyncService {
             .current_keys(workspace, recipient.device())
             .await?;
         let mut record = None;
-        let mut envelope = None;
+        let mut envelopes = Vec::new();
         for entry in current.entries.0 {
             match entry.record {
                 KeyRecord::Epoch(epoch) if epoch.body.domain == domain => record = Some(epoch),
                 KeyRecord::Envelope(env)
                     if env.body.domain == domain && env.body.recipient == recipient.device() =>
                 {
-                    envelope = Some(env)
+                    envelopes.push(env)
                 }
                 _ => {}
             }
         }
         let record = record.ok_or(SyncError::Check("sync_key_mismatch"))?;
-        let envelope = envelope
+        let envelopes: Vec<Signed<Envelope>> = envelopes
+            .into_iter()
             .filter(|e| e.body.epoch == record.body.epoch)
-            .ok_or(SyncError::Check("sync_key_mismatch"))?;
-        let key = unwrap(&envelope.body, recipient, &card)
-            .map_err(|_| SyncError::Check("sync_key_mismatch"))?;
-        let verdict = check_envelope(
-            &envelope,
-            &record.body,
-            &key,
-            &card,
-            policy,
-            policy.head().0,
-            None,
-        )
-        .map_err(|e| SyncError::Check(e.client_code()))?;
-        if verdict != EnvelopeVerdict::Accept {
+            .collect();
+        // The first envelope that passes, in key order (§9).
+        let key = envelopes.iter().find_map(|envelope| {
+            let key = unwrap(&envelope.body, recipient, &card).ok()?;
+            let verdict = check_envelope(
+                envelope,
+                &record.body,
+                &key,
+                &card,
+                policy,
+                policy.head().0,
+                None,
+            )
+            .ok()?;
+            (verdict == EnvelopeVerdict::Accept).then_some(key)
+        });
+        let Some(key) = key else {
+            if !envelopes.is_empty()
+                && after_failed_envelopes(accepted_earlier) == FailedEnvelopes::Rewrap
+            {
+                self.client
+                    .rewrap(workspace, domain, record.body.epoch)
+                    .await?;
+            }
             return Err(SyncError::Check("sync_key_mismatch"));
-        }
+        };
         let lineage: Vec<Signed<Epoch>> = self
             .client
             .epochs(workspace, domain, record.body.epoch)

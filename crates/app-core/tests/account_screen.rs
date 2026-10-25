@@ -16,7 +16,7 @@ use app_core::sync::device::StoredDevice;
 use app_core::sync::{KeptHeads, SyncService};
 use sync_protocol::types::{from_base64url, to_base64url, to_hex};
 use sync_store::{Backend as _, WriteTxn as _};
-use sync_support::{MemorySecrets, Server, first_desktop};
+use sync_support::{MemorySecrets, Server, first_desktop, new_desktop};
 
 fn wait_for(
     account: &LiveAccount,
@@ -534,5 +534,76 @@ fn the_recovery_review_shows_unlisted_workspaces_with_their_members() {
     assert!(view.devices.iter().any(|d| d.this_device && !d.removed));
     drop(account);
     drop(laptop);
+    drop(runtime);
+}
+
+/// An approval nobody confirms within 10 minutes ends on the approving
+/// device too, which then takes the next request (§10).
+#[test]
+fn an_approval_that_expires_ends_and_the_next_request_can_be_approved() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let server = runtime.block_on(Server::start());
+    let account_id = runtime.block_on(server.person("eve@example.com"));
+    let app_data = tempfile::tempdir().unwrap();
+    let account = LiveAccount::start(
+        app_data.path().to_owned(),
+        Arc::new(MemorySecrets::default()),
+        Arc::new(|_| Ok(())),
+    );
+    account.act(AccountAction::SetServer(server.base.clone()));
+    wait_for(&account, "the address", |s| s.server == server.base);
+    account.act(AccountAction::SignIn);
+    let screen = wait_for(&account, "the sign-in code", |s| {
+        matches!(s.phase, AccountPhase::SigningIn { .. })
+    });
+    let AccountPhase::SigningIn { user_code } = screen.phase else {
+        unreachable!()
+    };
+    runtime
+        .block_on(
+            server
+                .store
+                .decide_device_grant(account_id, &user_code, true),
+        )
+        .unwrap();
+    wait_for(
+        &account,
+        "the signed-in account",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if !view.devices.is_empty()),
+    );
+    let requested = |s: &AccountScreen| matches!(&s.phase, AccountPhase::SignedIn(view) if view.requests.len() == 1 && view.approval.is_none());
+    let _first = runtime.block_on(new_desktop(&server, account_id, &server.base));
+    wait_for(&account, "the first request", requested);
+    account.act(AccountAction::Approve(0));
+    wait_for(
+        &account,
+        "the open approval",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if view.approval.is_some()),
+    );
+
+    server.store.clock().advance(Duration::from_secs(601));
+    let screen = wait_for(&account, "the ended approval", |s| {
+        s.problem.is_some()
+            && matches!(&s.phase, AccountPhase::SignedIn(view) if view.approval.is_none())
+    });
+    assert!(
+        screen.problem.unwrap().contains("10 minutes"),
+        "the approval says why it stopped"
+    );
+
+    let second = runtime.block_on(new_desktop(&server, account_id, &server.base));
+    let shown = app_core::account::fingerprint(&second.candidate.fingerprint());
+    wait_for(&account, "the second request", |s| {
+        matches!(&s.phase, AccountPhase::SignedIn(view)
+            if view.requests.len() == 1 && view.requests[0].fingerprint == shown)
+    });
+    account.act(AccountAction::Approve(0));
+    let screen = wait_for(
+        &account,
+        "the second approval",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if view.approval.is_some()),
+    );
+    assert_eq!(screen.problem, None, "the device took the new request");
+    drop(account);
     drop(runtime);
 }
