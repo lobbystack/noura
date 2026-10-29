@@ -513,6 +513,10 @@ pub(crate) struct Plugins {
     wake: Option<Wake>,
     /// Counts the changes the windows show: plugins, pages and views.
     version: u64,
+    /// It serves an AI tool outside Noura. The app installs, updates and
+    /// removes plugins and watches their folders, so this service leaves
+    /// the library and the folders alone.
+    agent: bool,
     /// The AI service plugins that hold `ai` chat through.
     ai: Option<Arc<Ai>>,
 }
@@ -559,7 +563,19 @@ impl Plugins {
             openings: Openings::default(),
             wake: None,
             version: 0,
+            agent: false,
             ai: None,
+        }
+    }
+
+    /// The service for an AI tool outside Noura, such as the MCP server,
+    /// which runs beside the app on the same app data. It reads this
+    /// device's install records and approvals, and never changes the
+    /// library or watches plugin folders.
+    pub(crate) fn for_agent(app_data: &Path) -> Self {
+        Self {
+            agent: true,
+            ..Self::new(app_data)
         }
     }
 
@@ -660,11 +676,23 @@ impl Plugins {
         if let Some(host) = &self.host {
             return Ok(host.clone());
         }
-        let host = Arc::new(
-            PluginHost::new(self.app_data.join(LIBRARY)).map_err(|error| from_install(&error))?,
-        );
+        let library = self.app_data.join(LIBRARY);
+        let host = if self.agent {
+            PluginHost::shared(library)
+        } else {
+            PluginHost::new(library)
+        };
+        let host = Arc::new(host.map_err(|error| from_install(&error))?);
         self.host = Some(host.clone());
         let records = self.records.plugins.clone();
+        if self.agent {
+            for id in records.keys() {
+                if let Ok((manifest, _)) = host.installed(id) {
+                    self.manifests.insert(id.clone(), manifest);
+                }
+            }
+            return Ok(host);
+        }
         for id in host.installed_ids() {
             if !records.contains_key(&id)
                 && let Err(error) = host.uninstall(&id)
@@ -919,6 +947,28 @@ impl Plugins {
         }
     }
 
+    /// Read the release archive file `archive`, as `noura-plugin package`
+    /// writes it, for the install dialog, without running any of its code.
+    /// It goes through the same checks as a release downloaded from GitHub.
+    pub(crate) fn review_archive(&mut self, archive: &Path) -> PluginInstall {
+        let shown = archive.to_string_lossy().into_owned();
+        let Some(path) = archive.to_str() else {
+            return PluginInstall::refused(shown, false, AppError::unsupported_path().message);
+        };
+        let host = match self.host() {
+            Ok(host) => host,
+            Err(error) => return PluginInstall::refused(shown, false, error.message),
+        };
+        let bytes = match read_archive_file(archive) {
+            Ok(bytes) => bytes,
+            Err(problem) => return PluginInstall::refused(shown, false, problem),
+        };
+        match Archive::read(&bytes).and_then(|archive| host.inspect_archive(archive)) {
+            Ok(candidate) => PluginInstall::ready(path.to_owned(), false, candidate),
+            Err(error) => PluginInstall::refused(shown, false, error.message),
+        }
+    }
+
     /// Start reading the release at `address` on GitHub for the install
     /// dialog. An address that isn't a release on GitHub is refused at
     /// once, and nothing is fetched. Otherwise the dialog says the release
@@ -987,8 +1037,12 @@ impl Plugins {
         let source = Some(install.source.as_str());
         if install.from_github {
             self.install_candidate(candidate, None, source, false)
-        } else {
+        } else if candidate.folder().is_some() {
             self.install_candidate(candidate, source, None, false)
+        } else {
+            // A release archive from a file holds one build, so there is
+            // no folder to watch and no release to check.
+            self.install_candidate(candidate, None, None, false)
         }
     }
 
@@ -1917,6 +1971,68 @@ impl Plugins {
         })
     }
 
+    /// A call for an AI tool outside Noura to the tool `name` of the
+    /// plugin `plugin`, as [`Self::tool_call`] makes one. The plugin must
+    /// still be on in the workspace's manifest on disk and still hold the
+    /// `tools` capability in this device's approvals, which the app may
+    /// have changed since this service started it. A plugin turned off
+    /// since stops here, and one whose approvals changed runs with what
+    /// you approve now.
+    pub(crate) fn agent_tool_call(
+        &mut self,
+        plugin: &str,
+        name: &str,
+        arguments: &str,
+    ) -> Result<ToolCall, AppError> {
+        let shown = self
+            .manifests
+            .get(plugin)
+            .map_or_else(|| plugin.to_owned(), |manifest| manifest.name.clone());
+        let workspace = self
+            .workspace
+            .clone()
+            .ok_or_else(|| AppError::new("no_workspace", "No workspace is open for this tool."))?;
+        let manifest = workspace.engine().read_manifest().map_err(|error| {
+            AppError::from_core(error, workspace.root(), crate::error::Access::ReadWorkspace)
+        })?;
+        if !manifest.enabled_plugins.iter().any(|id| id == plugin) {
+            let message = if self.running.contains_key(plugin) {
+                format!(
+                    "You turned {shown} off in this workspace after this connection \
+                     started, so Noura didn't run its tool. Nothing changed."
+                )
+            } else {
+                format!("{shown} is off in this workspace, so Noura didn't run its tool.")
+            };
+            self.stop(plugin);
+            return Err(AppError::new("plugin_disabled", message));
+        }
+        self.records = self.store.load();
+        let Some(record) = self.records.plugins.get(plugin) else {
+            self.stop(plugin);
+            return Err(AppError::new(
+                "plugin_not_installed",
+                format!(
+                    "{shown} isn't installed on this device anymore, so Noura didn't run its \
+                     tool. Nothing changed."
+                ),
+            ));
+        };
+        if let Some(running) = self.running.get(plugin) {
+            running.plugin.set_approved(&record.approved);
+            if !Capability::holds(&running.plugin.granted(), "tools") {
+                return Err(AppError::new(
+                    "plugin_tools_revoked",
+                    format!(
+                        "You took back {shown}'s permission to offer tools on this device, \
+                         so Noura didn't run its tool. Nothing changed."
+                    ),
+                ));
+            }
+        }
+        self.tool_call(plugin, name, arguments)
+    }
+
     /// Draw the plugin `id`'s views again, as after another caller ran it.
     pub(crate) fn redraw(&mut self, id: &str) {
         self.acts += 1;
@@ -2177,6 +2293,33 @@ fn from_install(error: &InstallError) -> AppError {
         "a plugin couldn't be installed or loaded"
     );
     AppError::new(error.code.as_str(), error.message.clone())
+}
+
+/// The bytes of the release archive file `archive`, refused past the size
+/// a release download may have.
+fn read_archive_file(archive: &Path) -> Result<Vec<u8>, String> {
+    let unreadable = |error: std::io::Error| {
+        tracing::warn!(%error, "a plugin archive file didn't read");
+        "Noura couldn't read the archive.".to_owned()
+    };
+    let too_large = || {
+        format!(
+            "The archive is larger than {} MB.",
+            plugin_host::MAX_ARCHIVE_BYTES >> 20
+        )
+    };
+    let file = std::fs::File::open(archive).map_err(unreadable)?;
+    let limit = plugin_host::MAX_ARCHIVE_BYTES as u64;
+    if file.metadata().map_err(unreadable)?.len() > limit {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::Read::take(file, limit + 1), &mut bytes)
+        .map_err(unreadable)?;
+    if bytes.len() as u64 > limit {
+        return Err(too_large());
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]

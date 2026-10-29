@@ -3,9 +3,14 @@
 //! `allocate` allocates until the memory cap stops it, and `panic`
 //! panics. Its command `loop` and its Inbox section `slow` loop forever
 //! too, and its Inbox section `broken` returns a view whose root lists a
-//! child that doesn't exist. The page `fine` always draws.
+//! child that doesn't exist. The page `fine` always draws. Its tools
+//! `loop`, `allocate` and `panic` do as their names say, and `fine`
+//! answers `still fine`.
 
-use plugin_sdk::{Command, Event, InboxSection, Node, NodeKind, Page, Plugin, View};
+use plugin_sdk::{Command, Event, InboxSection, Node, NodeKind, Page, Plugin, Tool, View};
+
+/// The schema of every tool: no arguments.
+const NO_ARGUMENTS: &str = r#"{"type":"object","additionalProperties":false}"#;
 
 struct Misbehave;
 
@@ -84,6 +89,31 @@ impl Plugin for Misbehave {
             }];
         }
         spin()
+    }
+
+    fn tools() -> Vec<Tool> {
+        [
+            ("loop", "Loops forever."),
+            ("allocate", "Allocates until the memory cap stops it."),
+            ("panic", "Panics."),
+            ("fine", "Answers at once."),
+        ]
+        .into_iter()
+        .map(|(name, description)| Tool {
+            name: name.into(),
+            description: description.into(),
+            input_schema: NO_ARGUMENTS.into(),
+        })
+        .collect()
+    }
+
+    fn call_tool(name: String, _arguments: String) -> Result<String, String> {
+        match name.as_str() {
+            "loop" => spin(),
+            "allocate" => allocate(),
+            "panic" => panic!("the misbehave plugin panics on purpose"),
+            _ => Ok("still fine".into()),
+        }
     }
 }
 

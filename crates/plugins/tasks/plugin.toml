@@ -26,6 +26,7 @@ name = "inbox-sections"
 [[capabilities]]
 name = "commands"
 
-# Create and complete tasks for AI assistants, each call once you allow it.
+# List, create, update and complete tasks for AI assistants, through MCP
+# and in Noura's chats.
 [[capabilities]]
 name = "tools"

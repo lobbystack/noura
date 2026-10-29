@@ -66,6 +66,17 @@ impl App {
         self.listeners.emit(Change::Plugins);
     }
 
+    /// Open the install dialog for the plugin in the release archive file
+    /// `archive`, as `noura-plugin package` writes it, as
+    /// [`Self::review_plugin_folder`] does for a folder. Noura compiles the
+    /// component itself and never reads the archive again for new builds.
+    pub fn review_plugin_archive(&mut self, archive: PathBuf) {
+        let review = self.session.plugins().review_archive(&archive);
+        self.plugin_install = Some(review);
+        self.plugin_download = None;
+        self.listeners.emit(Change::Plugins);
+    }
+
     /// Open the install dialog for the release at `address` on GitHub. An
     /// address that isn't a release on GitHub is refused with a message,
     /// and nothing is fetched. Otherwise the dialog shows the release as

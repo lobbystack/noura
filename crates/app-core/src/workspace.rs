@@ -253,6 +253,19 @@ impl WorkspaceService {
         self.opened(engine)
     }
 
+    /// Open the workspace in `folder` for a tool outside Noura, such as an
+    /// AI tool through MCP. The folder must hold a workspace already, and
+    /// the recent list stays as it is.
+    pub fn open_existing(&self, folder: &Path) -> Result<Workspace, AppError> {
+        let path = representable(folder)?;
+        check_folder(folder, path)?;
+        check_links(folder, path)?;
+        check_manifest(folder, path)?;
+        let engine = WorkspaceEngine::open_with_app_data(folder, &self.app_data)
+            .map_err(|error| AppError::from_core(error, path, Access::ReadWorkspace))?;
+        Workspace::new(engine, self.system.clone())
+    }
+
     /// Open a workspace from the recent list. The entry stays listed when
     /// the workspace fails to open, so it can be removed.
     pub fn open_recent(&self, workspace_id: &str) -> Result<Workspace, AppError> {

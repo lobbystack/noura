@@ -7,6 +7,7 @@ members = [
     "crates/app-ui",
     "crates/editor-core",
     "crates/editor-egui",
+    "crates/kit-host",
     "crates/local-core",
     "crates/mcp-server",
     "crates/plugin-host",
@@ -136,6 +137,9 @@ jiff = { version = "0.2", features = ["serde"] }
 # files.
 jsonschema = { version = "0.59.0", default-features = false }
 keyring = "4"
+# Reads command-line arguments as OsStrings, so a path that isn't UTF-8
+# reaches a check that refuses it instead of a panic. MIT, no dependencies.
+lexopt = "0.3.2"
 # Rotates the local diagnostic log at 1 MB and keeps three old files.
 logroller = "0.1.12"
 memchr = "2.8.3"
