@@ -33,7 +33,8 @@ use crate::sync::{DeviceCredentials, KeptHeads, RemoteWorkspace, Secrets, SyncEr
 /// The file in the app's data folder that remembers the server address.
 pub const ACCOUNT_FILE: &str = "sync-account.json";
 
-/// How often the backend looks for offers, codes and new requests.
+/// How often the backend looks for offers, codes and new requests, and
+/// how long it rests between sync rounds whose pull didn't wait.
 const TICK: Duration = Duration::from_secs(2);
 
 #[derive(Default, Serialize, Deserialize)]
@@ -48,6 +49,8 @@ struct Shared {
     screen: Mutex<AccountScreen>,
     folder: Mutex<FolderSyncScreen>,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Ends a round's waiting pull when a message arrives.
+    interrupt: tokio::sync::Notify,
 }
 
 /// What the backend's thread hears from the windows.
@@ -110,6 +113,7 @@ impl LiveAccount {
             }),
             folder: Mutex::new(FolderSyncScreen::default()),
             wake: Mutex::new(None),
+            interrupt: tokio::sync::Notify::new(),
         });
         let (sender, receiver) = channel();
         let driver = Driver {
@@ -144,6 +148,19 @@ impl LiveAccount {
     }
 }
 
+impl LiveAccount {
+    /// Hands the backend's thread a message and ends the wait of a pull in
+    /// flight, so the message doesn't wait for it.
+    fn send(&self, message: Message) {
+        let _ = self
+            .actions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .send(message);
+        self.shared.interrupt.notify_one();
+    }
+}
+
 impl AccountBackend for LiveAccount {
     fn screen(&self) -> AccountScreen {
         self.shared
@@ -154,11 +171,7 @@ impl AccountBackend for LiveAccount {
     }
 
     fn act(&self, action: AccountAction) {
-        let _ = self
-            .actions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .send(Message::Account(action));
+        self.send(Message::Account(action));
     }
 
     fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
@@ -185,11 +198,7 @@ impl FolderSyncBackend for LiveAccount {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .busy = true;
-        let _ = self
-            .actions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .send(Message::Folder(action));
+        self.send(Message::Folder(action));
     }
 
     fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
@@ -197,11 +206,7 @@ impl FolderSyncBackend for LiveAccount {
     }
 
     fn attach(&self, engine: Option<Arc<local_core::WorkspaceEngine>>) {
-        let _ = self
-            .actions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .send(Message::Attach(engine));
+        self.send(Message::Attach(engine));
     }
 }
 
@@ -415,10 +420,18 @@ impl Driver {
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     runtime.block_on(self.tick());
+                    // The pull waits only while nothing else here polls.
+                    let long = self.folder.waits()
+                        && self.sign_in.is_none()
+                        && self.candidate.is_none()
+                        && self.offer.is_none()
+                        && self.recovery.is_none();
                     runtime.block_on(self.folder.round(
                         self.service.as_mut(),
                         &self.store,
                         &self.app_data,
+                        long,
+                        &self.shared.interrupt,
                     ));
                 }
                 Err(RecvTimeoutError::Disconnected) => return,

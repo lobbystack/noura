@@ -825,3 +825,76 @@ fn an_approval_that_expires_ends_and_the_next_request_can_be_approved() {
     drop(account);
     drop(runtime);
 }
+
+/// While a synced workspace's pull waits up to 25 seconds for new records
+/// (§15), what you do in the Workspace sync section still takes effect at
+/// once: the message ends the wait.
+#[test]
+fn a_waiting_pull_doesnt_hold_up_what_you_do() {
+    use app_core::folder_sync::{FolderSyncAction, FolderSyncBackend, FolderSyncPhase};
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let server = runtime.block_on(Server::start());
+    let account_id = runtime.block_on(server.person("di@example.com"));
+    let app_data = tempfile::tempdir().unwrap();
+    let secrets = Arc::new(MemorySecrets::default());
+    let account = LiveAccount::start(
+        app_data.path().to_owned(),
+        secrets.clone(),
+        Arc::new(|_| Ok(())),
+    );
+    AccountBackend::act(&account, AccountAction::SetServer(server.base.clone()));
+    wait_for(&account, "the address", |s| s.server == server.base);
+    AccountBackend::act(&account, AccountAction::SignIn);
+    let screen = wait_for(&account, "the sign-in code", |s| {
+        matches!(s.phase, AccountPhase::SigningIn { .. })
+    });
+    let AccountPhase::SigningIn { user_code } = screen.phase else {
+        unreachable!()
+    };
+    runtime
+        .block_on(
+            server
+                .store
+                .decide_device_grant(account_id, &user_code, true),
+        )
+        .unwrap();
+    wait_for(
+        &account,
+        "the signed-in account",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if !view.devices.is_empty()),
+    );
+
+    let folder = sync_support::Folder::new("Garden");
+    folder.write("Note.md", b"# Note\n");
+    FolderSyncBackend::attach(&account, Some(folder.engine.clone()));
+    let wait_folder =
+        |what: &str, done: &dyn Fn(&app_core::folder_sync::FolderSyncScreen) -> bool| {
+            let started = Instant::now();
+            loop {
+                let screen = FolderSyncBackend::screen(&account);
+                if done(&screen) {
+                    return started.elapsed();
+                }
+                assert!(
+                    started.elapsed() < Duration::from_secs(30),
+                    "{what} never showed: {screen:?}"
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+    FolderSyncBackend::act(&account, FolderSyncAction::TurnOn);
+    wait_folder("sync on", &|s| {
+        s.phase == FolderSyncPhase::On && s.pending == 0 && !s.busy
+    });
+    // The next rounds' pulls wait for the server, which has nothing new.
+    std::thread::sleep(Duration::from_secs(5));
+    FolderSyncBackend::act(&account, FolderSyncAction::Pause);
+    let took = wait_folder("the pause", &|s| s.phase == FolderSyncPhase::Paused);
+    assert!(
+        took < Duration::from_secs(5),
+        "the pause waited for the pull: {took:?}"
+    );
+    drop(account);
+    drop(runtime);
+}

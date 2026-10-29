@@ -5,8 +5,11 @@
 //! section's state in step.
 //!
 //! The rounds share the account's one service, so the device keeps one
-//! view of its account chains. Until the realtime channel arrives (ticket
-//! 61), each round's pull asks once and returns at once, every tick.
+//! view of its account chains. Each round's pull waits up to
+//! [`PULL_WAIT_SECONDS`] for new records when the driver has nothing else
+//! to poll. A change in the workspace's files or something you do ends the
+//! wait, so local changes go out at once (§15). The realtime channel
+//! replaces the wait in ticket 61.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -18,7 +21,7 @@ use crate::folder_sync::{
     HeldEntry, HeldRootEntry,
 };
 use crate::sync::registry::Registry;
-use crate::sync::workspace::WorkspaceSync;
+use crate::sync::workspace::{PULL_WAIT_SECONDS, WorkspaceSync};
 use crate::sync::{Secrets, SyncError, SyncService};
 
 /// The open workspace and its sync.
@@ -200,13 +203,25 @@ impl Folder {
         }
     }
 
+    /// Whether the open workspace syncs and isn't paused, so a round's
+    /// pull may wait for new records.
+    pub(super) fn waits(&self) -> bool {
+        self.sync
+            .as_ref()
+            .is_some_and(|sync| !sync.paused() && sync.status().ended.is_none())
+    }
+
     /// One round, unless you paused sync, when a workspace that syncs is
-    /// open. A failed round keeps the outbox and shows why.
+    /// open. Its pull waits up to [`PULL_WAIT_SECONDS`] when `long` and
+    /// until `wake` or a change in the workspace's files ends the wait. A
+    /// failed round keeps the outbox and shows why.
     pub(super) async fn round(
         &mut self,
         service: Option<&mut SyncService>,
         store: &Secrets,
         app_data: &Path,
+        long: bool,
+        wake: &tokio::sync::Notify,
     ) {
         let Some(service) = service else {
             return;
@@ -233,7 +248,27 @@ impl Folder {
         let result = if sync.paused() {
             sync.capture().map(|_| ())
         } else {
-            sync.round(service, 0).await.map(|_| ())
+            let wait = if long { PULL_WAIT_SECONDS } else { 0 };
+            let mut events = self.engine.as_ref().map(|engine| engine.subscribe());
+            let changes = async {
+                loop {
+                    match events.as_mut() {
+                        Some(events) => match events.recv().await {
+                            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                wake.notify_one();
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                std::future::pending::<()>().await;
+                            }
+                        },
+                        None => std::future::pending::<()>().await,
+                    }
+                }
+            };
+            tokio::select! {
+                result = sync.round_until(service, wait, wake) => result.map(|_| ()),
+                () = changes => Ok(()),
+            }
         };
         match result {
             Ok(()) => self.last_error = None,

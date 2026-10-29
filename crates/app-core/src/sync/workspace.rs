@@ -738,6 +738,21 @@ impl WorkspaceSync {
         service: &mut SyncService,
         wait_seconds: u32,
     ) -> Result<Round, SyncError> {
+        self.round_until(service, wait_seconds, &tokio::sync::Notify::new())
+            .await
+    }
+
+    /// A [`round`](Self::round) whose pull stops waiting once `wake` is
+    /// notified and asks again without waiting, so a local change or
+    /// something you did gets the next round at once rather than after the
+    /// wait. Only the pull's wait ends early; a push in flight always
+    /// finishes.
+    pub async fn round_until(
+        &mut self,
+        service: &mut SyncService,
+        wait_seconds: u32,
+        wake: &tokio::sync::Notify,
+    ) -> Result<Round, SyncError> {
         // A change took this device's access: nothing more goes out or
         // comes in, and the files stay as they are (§15).
         if self.state.ended.is_some() {
@@ -768,7 +783,7 @@ impl WorkspaceSync {
             self.state.profile_recheck = false;
             self.follow_profile(service).await?;
         }
-        let (applied, waiting_for_key) = self.pull(service, wait_seconds).await?;
+        let (applied, waiting_for_key) = self.pull_until(service, wait_seconds, wake).await?;
         // A replacement the pull brought ends epochs whose records this
         // device writes again at once (§9); merges go out next round.
         if !self.state.rewrite_epochs.is_empty() {
@@ -1002,10 +1017,19 @@ impl WorkspaceSync {
             {
                 self.state.ended_epochs.push(record.clone());
                 self.state.rewrite_epochs.push(record.body.epoch);
+                // A rewrite already waiting keeps its deadline, so
+                // replacements in quick succession can't keep pushing it
+                // back (§9).
+                let waiting = !self.state.rewrite_others.is_empty();
                 self.state.rewrite_others.push(record.body.epoch);
-                self.state.rewrite_due = unix_now()
+                let due = unix_now()
                     + super::heads::random_wait(&(std::time::Duration::ZERO..self.rewrite_wait))
                         .as_secs();
+                self.state.rewrite_due = if waiting {
+                    self.state.rewrite_due.min(due)
+                } else {
+                    due
+                };
             }
         }
         self.state.epochs = epochs;
@@ -2026,6 +2050,16 @@ impl WorkspaceSync {
         service: &mut SyncService,
         wait_seconds: u32,
     ) -> Result<(usize, bool), SyncError> {
+        self.pull_until(service, wait_seconds, &tokio::sync::Notify::new())
+            .await
+    }
+
+    async fn pull_until(
+        &mut self,
+        service: &mut SyncService,
+        wait_seconds: u32,
+        wake: &tokio::sync::Notify,
+    ) -> Result<(usize, bool), SyncError> {
         // An entry the device learned of before this request is owed by
         // the head of the page it answers; one it learns of while handling
         // the page, by the next page's (§8, §9).
@@ -2036,17 +2070,31 @@ impl WorkspaceSync {
             .iter()
             .map(|w| (w.epoch, w.number))
             .collect();
-        let response = service
-            .client()
-            .pull(
-                self.state.workspace,
-                vec![PullCursor {
-                    domain: self.state.domain,
-                    after: self.state.log.cursor,
-                }],
-                wait_seconds,
-            )
-            .await?;
+        // One cursor while the device reads only the workspace domain.
+        // Ticket 50 brings restricted domains; this pull then carries every
+        // domain's cursor the device reads (§15).
+        let cursors = || {
+            vec![PullCursor {
+                domain: self.state.domain,
+                after: self.state.log.cursor,
+            }]
+        };
+        let workspace = self.state.workspace;
+        let answered = if wait_seconds == 0 {
+            Some(service.client().pull(workspace, cursors(), 0).await?)
+        } else {
+            let request = service.client().pull(workspace, cursors(), wait_seconds);
+            tokio::select! {
+                response = request => Some(response?),
+                () = wake.notified() => None,
+            }
+        };
+        // Woken while it waited, the round still pulls once, without
+        // waiting; dropping the waiting request changed nothing.
+        let response = match answered {
+            Some(response) => response,
+            None => service.client().pull(workspace, cursors(), 0).await?,
+        };
         let page = response
             .pages
             .0

@@ -301,3 +301,77 @@ async fn turning_sync_off_stops_it_and_leaves_the_files() {
         .expect("a round");
     assert_eq!(b.files(), a.files());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_waiting_pull_returns_once_another_desktop_pushes() {
+    use app_core::sync::workspace::PULL_WAIT_SECONDS;
+    use std::time::{Duration, Instant};
+
+    let server = Server::start().await;
+    let mut laptop = first_desktop(&server, "ana@example.com").await;
+    let mut a = Folder::new("Field notes");
+    a.write("Notes/Plan.md", PLAN);
+    let mut sync_a = WorkspaceSync::turn_on(
+        &mut laptop.service,
+        a.engine.clone(),
+        "Field notes",
+        &mut a.registry,
+    )
+    .await
+    .expect("sync turns on");
+    sync_a.round(&mut laptop.service, 0).await.expect("a round");
+    let mut desktop = approve(
+        &server,
+        &mut laptop,
+        std::slice::from_mut(sync_a.remote_mut().expect("connected")),
+    )
+    .await;
+    let mut b = Folder::new("Downloaded");
+    let mut sync_b = WorkspaceSync::download(
+        &mut desktop.service,
+        b.engine.clone(),
+        sync_a.workspace(),
+        &mut b.registry,
+    )
+    .await
+    .expect("the download starts");
+    sync_b
+        .round(&mut desktop.service, 0)
+        .await
+        .expect("the download pulls every file");
+
+    // The desktop's pull waits for the server; the laptop pushes an edit
+    // a moment later, and the waiting pull returns with it.
+    let never = tokio::sync::Notify::new();
+    let started = Instant::now();
+    let (waited, ()) = tokio::join!(
+        sync_b.round_until(&mut desktop.service, PULL_WAIT_SECONDS, &never),
+        async {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            a.write("Notes/Plan.md", PLAN_EDITED);
+            sync_a.round(&mut laptop.service, 0).await.expect("a round");
+        }
+    );
+    let waited = waited.expect("the waiting round");
+    assert_eq!(waited.applied, 1, "the edit arrives in the waiting pull");
+    assert!(started.elapsed() >= Duration::from_millis(500));
+    assert!(
+        started.elapsed() < Duration::from_secs(u64::from(PULL_WAIT_SECONDS)),
+        "the pull returned before its wait ran out"
+    );
+    assert_eq!(b.files(), a.files());
+
+    // A wake ends the wait: the round asks once more without waiting and
+    // returns with nothing new.
+    let wake = tokio::sync::Notify::new();
+    let started = Instant::now();
+    let (woken, ()) = tokio::join!(
+        sync_b.round_until(&mut desktop.service, PULL_WAIT_SECONDS, &wake),
+        async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            wake.notify_one();
+        }
+    );
+    assert_eq!(woken.expect("the woken round").applied, 0);
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
