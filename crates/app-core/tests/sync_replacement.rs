@@ -14,8 +14,8 @@ mod sync_support;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sync_protocol::codec::{Decode, Encode, ExactBytes};
-use sync_protocol::messages::{KeyRecord, KeysResponse};
+use sync_protocol::codec::{Bytes, Decode, Encode, ExactBytes, Text};
+use sync_protocol::messages::{ErrorBody, KeyRecord, KeysResponse, PushFailureDetail};
 use sync_protocol::types::Id;
 use sync_support::{Folder, Pair, Proxy, approve, pair};
 
@@ -232,4 +232,69 @@ async fn a_reader_of_the_skipped_epoch_writes_a_gone_rotators_record_and_profile
         .await
         .expect("the laptop takes the profile signed again");
     assert_eq!(pair.sync_a.name(), "Garden notes");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rewrite_whose_cover_the_server_cant_return_writes_nothing_and_waits_for_review() {
+    let mut pair = pair().await;
+    desktop_rotates(&mut pair).await;
+    pair.b.write("Plan.md", b"# Plan, under epoch 2\n");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("the desktop pushes under epoch 2");
+    damage_envelopes(&pair.proxy, pair.laptop.id(), pair.desktop.id());
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("the laptop signs a replacement");
+    pair.proxy.honest();
+
+    // The server answers supersedes_unknown for the record the rewrite
+    // covers, as it does once it pruned that record.
+    let mut via = pair.desktop.connect_through(&pair.proxy.base).await;
+    pair.proxy.forge(Box::new(|method, path| {
+        if method != "POST" || !path.ends_with("/ops") {
+            return None;
+        }
+        let detail = PushFailureDetail {
+            record_index: 0,
+            code: Text("supersedes_unknown".to_owned()),
+            record_detail: None,
+        };
+        let body = ErrorBody {
+            code: Text("supersedes_unknown".to_owned()),
+            message: Text("refused".to_owned()),
+            retry_after_seconds: None,
+            detail: Some(Bytes(detail.to_bytes())),
+        };
+        Some((409, body.to_bytes()))
+    }));
+    pair.sync_b
+        .round(&mut via, 0)
+        .await
+        .expect("a refused rewrite isn't an error");
+    pair.proxy.honest();
+    assert!(
+        pair.sync_b.outbox().is_empty(),
+        "the rewrite writes nothing"
+    );
+    let plan = pair.sync_b.rid_at("Plan.md").expect("synced");
+    assert!(
+        pair.sync_b.held().iter().any(|(rid, _)| *rid == plan),
+        "the version waits for review"
+    );
+    assert_eq!(pair.b.files()["Plan.md"], b"# Plan, under epoch 2\n");
+    // Nothing more goes out for it.
+    let round = pair
+        .sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("a round");
+    assert_eq!(round.pushed, 0);
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    assert_eq!(pair.a.files()["Plan.md"], b"# Plan\n");
 }

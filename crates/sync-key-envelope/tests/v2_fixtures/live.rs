@@ -158,6 +158,26 @@ pub fn fixture() -> Fixture {
         "own_device": device(a).to_hex(),
         "expect": covers,
     }));
+    // A rewrite after a replacement (§9): the record under the skipped
+    // epoch is a1, and the device's own highest live operation on the
+    // `rid`, the patch a2, lies above it, so the rewrite covers a2 too and
+    // leaves none of the device's operations live.
+    let skipped = [op(note, a, 1, 1, &[], false), op(note, a, 2, 2, &[], false)];
+    f.case(json!({
+        "kind": "covers_for",
+        "name": "a_rewrite_covers_the_devices_later_live_operation_too",
+        "ops": skipped,
+        "chosen": [{"device": device(a).to_hex(), "counter": 1}],
+        "own_device": device(a).to_hex(),
+        "expect": [{"device": device(a).to_hex(), "counter": 2}],
+    }));
+    f.case(json!({
+        "kind": "live_check",
+        "name": "that_rewrite_is_a_state_operation",
+        "ops": skipped,
+        "next": op(note, a, 3, 3, &[(a, 2)], false),
+        "expect": "state",
+    }));
     journal_less(&mut f);
     f
 }

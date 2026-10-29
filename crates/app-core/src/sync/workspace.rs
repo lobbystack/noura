@@ -47,7 +47,8 @@ use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 use capture::{Change, Found};
 pub use capture::{SkipWhy, Skipped};
 use state::{
-    Content as Carried, Log, Object, OpKey, Outgoing, Own, ProfileMark, State, StateInfo, Wanted,
+    Content as Carried, Held, Log, Object, OpKey, Outgoing, Own, ProfileMark, State, StateInfo,
+    Wanted,
 };
 
 use super::journal::{self, Journal, STATE_FILE};
@@ -1689,6 +1690,16 @@ impl WorkspaceSync {
                 // waits for review (§9).
                 let rejected = self.state.outbox.remove(index);
                 self.forget_own(&rejected.record);
+                let rid = rejected.record.body.rid;
+                if let Some(local) = self.state.objects.get(&rid).and_then(|o| o.local.clone()) {
+                    self.state.held.insert(
+                        rid,
+                        Held {
+                            path: local.path,
+                            revision: local.revision,
+                        },
+                    );
+                }
                 self.reseal_replacing_or_end(index, &rejected.record)
             }
             "supersedes_unknown" => {

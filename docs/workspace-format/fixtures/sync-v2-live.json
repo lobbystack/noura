@@ -690,6 +690,87 @@
 			"own_device": "f7e78d25be316bf60f3424c5e0b0f3bd"
 		},
 		{
+			"chosen": [
+				{
+					"counter": 1,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+				}
+			],
+			"expect": [
+				{
+					"counter": 2,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+				}
+			],
+			"kind": "covers_for",
+			"name": "a_rewrite_covers_the_devices_later_live_operation_too",
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				},
+				{
+					"counter": 2,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "a7e32a97234d475f11f09ca128a5abcdec647810a6a66e83e0dec8d5a44311ae",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 2,
+					"weight": 300
+				}
+			],
+			"own_device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+		},
+		{
+			"expect": "state",
+			"kind": "live_check",
+			"name": "that_rewrite_is_a_state_operation",
+			"next": {
+				"counter": 3,
+				"covers": [
+					{
+						"counter": 2,
+						"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+					}
+				],
+				"delete": false,
+				"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+				"digest": "771ed2c5300b00606d62569ce358f20c3f155e2e8021c758fa902f0685ac9aad",
+				"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+				"seq": 3,
+				"weight": 300
+			},
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				},
+				{
+					"counter": 2,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "a7e32a97234d475f11f09ca128a5abcdec647810a6a66e83e0dec8d5a44311ae",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 2,
+					"weight": 300
+				}
+			]
+		},
+		{
 			"expect": [
 				{
 					"rid": "a2b2b0deb8ce7851571aa16a7a02d452",
