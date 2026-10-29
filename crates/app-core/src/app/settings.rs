@@ -46,6 +46,9 @@ impl App {
             notice: None,
             manifest_revision,
         });
+        if self.mcp_test != crate::McpTest::Testing {
+            self.mcp_test = crate::McpTest::NotRun;
+        }
         self.listeners.emit(Change::Settings);
     }
 
@@ -173,6 +176,12 @@ impl App {
                 // The other windows show the new name too.
                 self.recents_seen = self.session.recents_changed(self.key);
                 self.listeners.emit(Change::Settings);
+                // A synced workspace takes the name in its profile (§25).
+                self.session
+                    .folder_sync()
+                    .act(crate::folder_sync::FolderSyncAction::Rename(
+                        name.to_owned(),
+                    ));
                 true
             }
             Err(error) => {

@@ -9,7 +9,8 @@
 //! Projects reads and changes tasks only through the Tasks plugin's
 //! commands, which keep each card's place in its task's file. Other
 //! plugins create and change projects through its `create` and `update`
-//! commands, which [`commands`] documents.
+//! commands, which [`commands`] documents, and AI assistants list, create
+//! and change them through its tools, which [`tools`] lists.
 //!
 //! Build it with `crates/plugin-sdk/build-plugins.sh`, then install the
 //! folder holding `plugin.toml` and the built `projects_plugin.wasm`.
@@ -20,6 +21,7 @@ mod order;
 mod panel;
 mod project;
 mod tasks;
+mod tools;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -27,7 +29,7 @@ use std::{
 };
 
 use plugin_sdk::{
-    Command, Error, Event, Node, ObjectType, Page, Plugin, View,
+    Command, Error, Event, Node, ObjectType, Page, Plugin, Tool, View,
     navigation::{self, Placement},
     objects,
 };
@@ -114,6 +116,14 @@ impl Plugin for Projects {
 
     fn run_command(id: String, input: String) -> Result<String, String> {
         commands::run(&id, &input)
+    }
+
+    fn tools() -> Vec<Tool> {
+        tools::tools()
+    }
+
+    fn call_tool(name: String, arguments: String) -> Result<String, String> {
+        tools::call(&name, &arguments)
     }
 }
 

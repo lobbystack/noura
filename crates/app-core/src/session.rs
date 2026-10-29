@@ -66,6 +66,8 @@ pub(crate) struct Session {
     plugins: Mutex<Plugins>,
     /// The sync account every window's account screens show.
     account: Mutex<Arc<dyn crate::account::AccountBackend>>,
+    /// The open workspace's sync, which Settings shows.
+    folder_sync: Mutex<Arc<dyn crate::folder_sync::FolderSyncBackend>>,
     /// The AI providers, consents and runs every window shares.
     pub(crate) ai: Arc<Ai>,
 }
@@ -245,6 +247,7 @@ impl Session {
             }),
             plugins: Mutex::new(plugins),
             account: Mutex::new(Arc::new(crate::account::NoAccount::default())),
+            folder_sync: Mutex::new(Arc::new(crate::folder_sync::NoFolderSync::default())),
             ai,
         }
     }
@@ -268,6 +271,34 @@ impl Session {
         }));
         *self
             .account
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = backend;
+    }
+
+    /// The open workspace's sync, which every window's Settings shows.
+    pub(crate) fn folder_sync(&self) -> Arc<dyn crate::folder_sync::FolderSyncBackend> {
+        self.folder_sync
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    /// Runs the open workspace's sync with `backend`, which wakes every
+    /// window when its state changes, and tells it which workspace is open.
+    pub(crate) fn set_folder_sync(
+        self: &Arc<Self>,
+        backend: Arc<dyn crate::folder_sync::FolderSyncBackend>,
+    ) {
+        let session = Arc::downgrade(self);
+        backend.set_wake(Arc::new(move || {
+            if let Some(session) = session.upgrade() {
+                session.emit_all(Change::Account);
+            }
+        }));
+        let open = self.lock().workspace.as_ref().map(|w| w.shared_engine());
+        backend.attach(open);
+        *self
+            .folder_sync
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = backend;
     }
@@ -379,6 +410,7 @@ impl Session {
         state.moves.clear();
         state.watch = self.watch(&workspace, snapshot, counts, state.opening);
         let view = state.views.load(workspace.id());
+        let engine = workspace.shared_engine();
         state.workspace = Some(workspace);
         state.rail_order.clone_from(&view.rail_order);
         state.rail += 1;
@@ -402,6 +434,7 @@ impl Session {
         if let Some(previous) = previous {
             previous.finish();
         }
+        self.folder_sync().attach(Some(engine));
         for listeners in closing {
             listeners.emit(Change::Screen);
         }

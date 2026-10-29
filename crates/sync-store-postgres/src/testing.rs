@@ -314,6 +314,13 @@ impl Cluster {
         connection.close().await.expect("closed");
     }
 
+    /// Whether the cluster dates commits (`track_commit_timestamp`).
+    pub async fn dates_commits(&self) -> bool {
+        crate::track_commit_timestamp(&self.url("postgres"))
+            .await
+            .expect("the cluster answers")
+    }
+
     /// A fresh, empty database.
     pub async fn database(self: &Arc<Self>) -> TestDatabase {
         let suffix: [u8; 8] = sync_protocol::crypto::random_array().expect("random");
@@ -333,5 +340,96 @@ impl Drop for Cluster {
             pg_ctl(&local.bin, &["stop", "-m", "immediate", "-w"], &local.data);
             let _ = std::fs::remove_dir_all(&local.root);
         }
+    }
+}
+
+/// One stored value, for a test that checks what the server keeps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Stored {
+    /// A `bytea` value.
+    Bytes(Vec<u8>),
+    /// A text value.
+    Text(String),
+    /// An integer value.
+    Int(i64),
+    /// A value of another type, or NULL.
+    Other,
+}
+
+/// One column of one table in the `public` schema, with its type and every
+/// value its rows hold.
+#[derive(Clone, Debug)]
+pub struct StoredColumn {
+    /// The table.
+    pub table: String,
+    /// The column.
+    pub column: String,
+    /// Its type, as `information_schema.columns` names it.
+    pub data_type: String,
+    /// Each row's value.
+    pub values: Vec<Stored>,
+}
+
+impl TestDatabase {
+    /// Every column of every table the database holds, with its values.
+    pub async fn columns(&self) -> Vec<StoredColumn> {
+        use sqlx::Row;
+        let mut connection = PgConnection::connect(&self.url)
+            .await
+            .expect("the database answers");
+        let listed = sqlx::raw_sql(sqlx::AssertSqlSafe(
+            "SELECT table_name::text, column_name::text, data_type::text \
+             FROM information_schema.columns WHERE table_schema = 'public' \
+             ORDER BY table_name, ordinal_position"
+                .to_owned(),
+        ))
+        .fetch_all(&mut connection)
+        .await
+        .expect("the columns list");
+        let mut columns = Vec::new();
+        for row in listed {
+            let table: String = row.get(0);
+            let column: String = row.get(1);
+            let data_type: String = row.get(2);
+            let cast = match data_type.as_str() {
+                "bytea" => format!("\"{column}\""),
+                "smallint" | "integer" | "bigint" => format!("\"{column}\"::bigint"),
+                "boolean" => format!("\"{column}\"::int::bigint"),
+                _ => format!("\"{column}\"::text"),
+            };
+            let values = sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+                "SELECT {cast} FROM \"{table}\""
+            )))
+            .fetch_all(&mut connection)
+            .await
+            .expect("the rows read")
+            .into_iter()
+            .map(|row| match data_type.as_str() {
+                "bytea" => row
+                    .try_get::<Option<Vec<u8>>, _>(0)
+                    .ok()
+                    .flatten()
+                    .map_or(Stored::Other, Stored::Bytes),
+                "smallint" | "integer" | "bigint" | "boolean" => row
+                    .try_get::<Option<i64>, _>(0)
+                    .ok()
+                    .flatten()
+                    .map_or(Stored::Other, Stored::Int),
+                _ => row
+                    .try_get::<Option<String>, _>(0)
+                    .ok()
+                    .flatten()
+                    .map_or(Stored::Other, Stored::Text),
+            })
+            .collect();
+            columns.push(StoredColumn {
+                table,
+                column,
+                data_type,
+                values,
+            });
+        }
+        connection.close().await.expect("closed");
+        columns
     }
 }

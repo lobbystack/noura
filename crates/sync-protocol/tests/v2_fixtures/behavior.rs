@@ -27,6 +27,10 @@ use sync_protocol::manifest::{
     CheckpointChain, CheckpointError, Manifest, bucket_hash, bucket_of, descent_path, heads_digest,
     leaf_hash, node_hash, skip_number, verify_bucket, verify_descent, verify_manifest,
 };
+use sync_protocol::matching::{
+    DomainRoot, HeldRoot, JournalObject, LiveObject, LocalFile, LocalMarker, archived, held_roots,
+    hold_ends, match_files, refuses_marker_path,
+};
 use sync_protocol::messages::LiveCursor;
 use sync_protocol::padding::{is_valid_padded_length, pad, padded_length, padme, unpad};
 use sync_protocol::policy::{AccountChains, PolicyChain, RecoveryStage};
@@ -887,6 +891,48 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
             ),
             None => Ok(()),
         }),
+
+        // Matching without a journal.
+        "journal_less_match" => {
+            let objects: Vec<LiveObject> = serde_json::from_value(case["objects"].clone()).unwrap();
+            let locals: Vec<LocalFile> = serde_json::from_value(case["locals"].clone()).unwrap();
+            same(
+                serde_json::to_value(match_files(&objects, &locals)).unwrap(),
+                expect.clone(),
+            )
+        }
+        "archived" => {
+            let objects: Vec<JournalObject> =
+                serde_json::from_value(case["objects"].clone()).unwrap();
+            same(
+                serde_json::to_value(archived(&objects)).unwrap(),
+                expect.clone(),
+            )
+        }
+        "stray_marker" => {
+            let markers: Vec<Id> = serde_json::from_value(case["marker_rids"].clone()).unwrap();
+            same(
+                refuses_marker_path(
+                    &id_of(&case["rid"]),
+                    case["path"].as_str().unwrap(),
+                    &markers,
+                ),
+                expect.as_bool().unwrap(),
+            )
+        }
+        "held_roots" => {
+            let locals: Vec<LocalMarker> = serde_json::from_value(case["locals"].clone()).unwrap();
+            let applied: Vec<DomainRoot> = serde_json::from_value(case["applied"].clone()).unwrap();
+            same(
+                serde_json::to_value(held_roots(&locals, &applied)).unwrap(),
+                expect.clone(),
+            )
+        }
+        "hold_ends" => {
+            let held: HeldRoot = serde_json::from_value(case["held"].clone()).unwrap();
+            let roots: Vec<DomainRoot> = serde_json::from_value(case["roots"].clone()).unwrap();
+            same(hold_ends(&held, &roots), expect.as_bool().unwrap())
+        }
 
         // The manifest.
         "leaf_hash" => {

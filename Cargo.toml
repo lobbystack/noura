@@ -158,6 +158,9 @@ jsonschema = { version = "0.59.0", default-features = false }
 keyring = "4"
 # Sign-in mail over SMTP for the sync server, with rustls. MIT.
 lettre = { version = "0.11.23", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
+# Reads command-line arguments as OsStrings, so a path that isn't UTF-8
+# reaches a check that refuses it instead of a panic. MIT, no dependencies.
+lexopt = "0.3.2"
 # Rotates the local diagnostic log at 1 MB and keeps three old files.
 logroller = "0.1.12"
 memchr = "2.8.3"

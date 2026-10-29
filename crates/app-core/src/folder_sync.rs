@@ -1,0 +1,282 @@
+//! The Workspace sync section's state (docs/workspace-format/sync-v2.md
+//! §15, §16): whether the open workspace syncs, whether sync runs or you
+//! paused it, how many changes wait to upload, the conflicts that wait for
+//! you, the last error and the last successful sync.
+//!
+//! [`FolderSyncScreen`] is plain view state that `app-ui` draws; what you do
+//! there arrives as a [`FolderSyncAction`] at the [`FolderSyncBackend`] the
+//! app runs with. The desktop's [`LiveAccount`](crate::account::live) runs
+//! the open workspace's sync rounds next to the account; tests supply a
+//! fake.
+
+use std::sync::{Arc, Mutex, PoisonError};
+
+pub use local_core::WorkspaceEngine;
+pub use sync_protocol::types::Id;
+
+pub use crate::sync::workspace::rebuild::HeldChoice;
+pub use crate::sync::workspace::state::OpKey;
+use crate::sync::workspace::{SkipWhy, Status};
+
+/// Where the open workspace's sync stands.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum FolderSyncPhase {
+    /// No workspace is open, or this computer has no sync account yet.
+    #[default]
+    Unavailable,
+    /// The workspace doesn't sync; its files stay on this computer.
+    Off,
+    /// Sync runs.
+    On,
+    /// You paused sync.
+    Paused,
+    /// The folder is a copy of a synced folder, or its journal names
+    /// another replica: it syncs once you connect it (§15).
+    NotConnected,
+}
+
+/// One version of a conflicted file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BranchEntry {
+    /// What the button that keeps it says.
+    pub label: String,
+    /// Its position, which choosing names.
+    pub key: OpKey,
+}
+
+/// A file whose devices disagree, waiting for you to choose (§16).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConflictEntry {
+    /// The object.
+    pub rid: Id,
+    /// The path this device shows.
+    pub path: String,
+    /// Its versions.
+    pub branches: Vec<BranchEntry>,
+}
+
+/// A local version held after the folder synced without its journal,
+/// waiting for you to choose (§15).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldEntry {
+    /// The object.
+    pub rid: Id,
+    /// Where the file sits.
+    pub path: String,
+}
+
+/// A folder whose files wait until you confirm who may see them (§9).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldRootEntry {
+    /// The folder.
+    pub folder: String,
+    /// The files beneath it.
+    pub files: Vec<String>,
+    /// How many people would see them in the workspace.
+    pub people: usize,
+}
+
+/// A version an earlier journal kept for review (§15).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArchivedEntry {
+    /// Its place in the list, which restoring names.
+    pub index: usize,
+    /// The path the version had.
+    pub path: String,
+}
+
+/// What the Workspace sync section shows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FolderSyncScreen {
+    /// Where sync stands.
+    pub phase: FolderSyncPhase,
+    /// The changes waiting to upload.
+    pub pending: usize,
+    /// The conflicts waiting for you.
+    pub conflicts: Vec<ConflictEntry>,
+    /// The local versions held for review.
+    pub held: Vec<HeldEntry>,
+    /// The folders whose files wait for you.
+    pub held_roots: Vec<HeldRootEntry>,
+    /// The versions an earlier journal kept.
+    pub archived: Vec<ArchivedEntry>,
+    /// The versions from other devices that didn't open, one line each,
+    /// naming the device that signed each (§13).
+    pub unreadable: Vec<String>,
+    /// Whether sync holds your changes after a device left your account,
+    /// until the workspace records it and changes its key (§9).
+    pub removal_hold: bool,
+    /// What ended sync for this computer, when a change took its access
+    /// to the workspace (§15).
+    pub ended: Option<String>,
+    /// The files sync leaves out, one line each.
+    pub skipped: Vec<String>,
+    /// What went wrong last, for you to read.
+    pub last_error: Option<String>,
+    /// When the last round finished without an error, as local time.
+    pub last_success: Option<String>,
+    /// Whether an action is running.
+    pub busy: bool,
+}
+
+impl FolderSyncScreen {
+    /// The screen of a folder whose sync `status` describes.
+    pub fn of(status: &Status, paused: bool) -> Self {
+        Self {
+            phase: if paused {
+                FolderSyncPhase::Paused
+            } else {
+                FolderSyncPhase::On
+            },
+            pending: status.pending,
+            conflicts: Vec::new(),
+            held: Vec::new(),
+            held_roots: Vec::new(),
+            archived: Vec::new(),
+            unreadable: Vec::new(),
+            removal_hold: false,
+            ended: status.ended.as_ref().map(ended_line),
+            skipped: status.skipped.iter().map(skipped_line).collect(),
+            last_error: None,
+            last_success: status.last_success.map(local_time),
+            busy: false,
+        }
+    }
+}
+
+/// What ended sync for this computer, naming who made the change.
+pub fn ended_line(ended: &crate::sync::workspace::Ended) -> String {
+    let short = |id: &sync_protocol::types::Id| id.to_hex().chars().take(8).collect::<String>();
+    let who = match &ended.by_account {
+        Some(account) => format!("Account {}", short(account)),
+        None => "Another account".to_owned(),
+    };
+    let what = if ended.account_removed {
+        "removed your account from this workspace"
+    } else if ended.domain_deleted {
+        "deleted this part of the workspace"
+    } else {
+        "took this computer's access to the workspace"
+    };
+    format!(
+        "{who} {what}, from device {}. Sync stopped. Your files stay on this computer as they are.",
+        short(&ended.by_device)
+    )
+}
+
+/// One line of the list of files sync leaves out.
+pub fn skipped_line(skipped: &crate::sync::workspace::Skipped) -> String {
+    let why = match skipped.why {
+        SkipWhy::Symlink => "a link to another place",
+        SkipWhy::UnsupportedName => "a name here has characters sync can't carry",
+        SkipWhy::PathRules => "its name doesn't work on every computer",
+        SkipWhy::Unreadable => "Noura can't read it",
+        SkipWhy::NotDownloaded => "it isn't downloaded from the cloud yet",
+        SkipWhy::IdentityConflict => "another file has the same ID",
+        SkipWhy::TooLarge => "files above 256 KB sync once attachments arrive",
+        SkipWhy::HeldRoot => "it waits until you confirm who may see this folder",
+    };
+    let path = if skipped.path.is_empty() {
+        "The workspace folder"
+    } else {
+        skipped.path.as_str()
+    };
+    format!("{path}: {why}")
+}
+
+/// Unix seconds as local date and time, such as `2026-10-24 14:05`.
+pub fn local_time(seconds: u64) -> String {
+    let Ok(timestamp) = jiff::Timestamp::from_second(seconds as i64) else {
+        return String::new();
+    };
+    let zoned = timestamp.to_zoned(jiff::tz::TimeZone::system());
+    zoned.strftime("%Y-%m-%d %H:%M").to_string()
+}
+
+/// What you do in the Workspace sync section.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FolderSyncAction {
+    /// Sync the open workspace, as a new remote workspace or again.
+    TurnOn,
+    /// Stop syncing it; the files stay.
+    TurnOff,
+    /// Hold changes on this computer.
+    Pause,
+    /// Upload what queued and sync again.
+    Resume,
+    /// Keep one version of a conflicted file.
+    Choose {
+        /// The object.
+        rid: Id,
+        /// The version.
+        key: OpKey,
+    },
+    /// Decide about a held local version.
+    KeepHeld {
+        /// The object.
+        rid: Id,
+        /// What to keep.
+        choice: HeldChoice,
+    },
+    /// Let the files beneath a held folder upload to the workspace.
+    ConfirmFolder(String),
+    /// Save an earlier journal's version as a new file.
+    RestoreArchived(usize),
+    /// Throw an earlier journal's version away.
+    DiscardArchived(usize),
+    /// Connect a copied folder, which then syncs as after a lost journal.
+    Connect,
+    /// You renamed the workspace: a synced one takes the name in its
+    /// profile, when your role lets you (§25).
+    Rename(String),
+}
+
+/// Carries out what you do in the Workspace sync section and reports where
+/// sync stands.
+pub trait FolderSyncBackend: Send + Sync {
+    /// What the section shows now.
+    fn screen(&self) -> FolderSyncScreen;
+    /// Starts `action`; the screen changes once it runs.
+    fn act(&self, action: FolderSyncAction);
+    /// Calls `wake` whenever the screen changes.
+    fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>);
+    /// The workspace the windows show, or `None` once none is open.
+    fn attach(&self, engine: Option<Arc<WorkspaceEngine>>);
+}
+
+/// The backend of an app that runs without sync: the workspace never
+/// syncs.
+#[derive(Default)]
+pub struct NoFolderSync {
+    screen: Mutex<FolderSyncScreen>,
+}
+
+impl FolderSyncBackend for NoFolderSync {
+    fn screen(&self) -> FolderSyncScreen {
+        self.screen
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn act(&self, _action: FolderSyncAction) {}
+
+    fn set_wake(&self, _wake: Arc<dyn Fn() + Send + Sync>) {}
+
+    fn attach(&self, _engine: Option<Arc<WorkspaceEngine>>) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skipped_files_read_as_one_line_each() {
+        let line = skipped_line(&crate::sync::workspace::Skipped {
+            path: "Notes/CON".into(),
+            why: SkipWhy::PathRules,
+        });
+        assert_eq!(line, "Notes/CON: its name doesn't work on every computer");
+        assert!(local_time(0).starts_with("19"));
+    }
+}

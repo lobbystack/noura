@@ -688,9 +688,370 @@
 				}
 			],
 			"own_device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+		},
+		{
+			"chosen": [
+				{
+					"counter": 1,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+				}
+			],
+			"expect": [
+				{
+					"counter": 2,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+				}
+			],
+			"kind": "covers_for",
+			"name": "a_rewrite_covers_the_devices_later_live_operation_too",
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				},
+				{
+					"counter": 2,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "a7e32a97234d475f11f09ca128a5abcdec647810a6a66e83e0dec8d5a44311ae",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 2,
+					"weight": 300
+				}
+			],
+			"own_device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+		},
+		{
+			"expect": "state",
+			"kind": "live_check",
+			"name": "that_rewrite_is_a_state_operation",
+			"next": {
+				"counter": 3,
+				"covers": [
+					{
+						"counter": 2,
+						"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+					}
+				],
+				"delete": false,
+				"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+				"digest": "771ed2c5300b00606d62569ce358f20c3f155e2e8021c758fa902f0685ac9aad",
+				"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+				"seq": 3,
+				"weight": 300
+			},
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				},
+				{
+					"counter": 2,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "a7e32a97234d475f11f09ca128a5abcdec647810a6a66e83e0dec8d5a44311ae",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 2,
+					"weight": 300
+				}
+			]
+		},
+		{
+			"expect": [
+				{
+					"rid": "a2b2b0deb8ce7851571aa16a7a02d452",
+					"verdict": "adopt"
+				},
+				{
+					"rid": "a09e9907c3667b186b2c4ef9719db5ee",
+					"verdict": "held"
+				},
+				{
+					"rid": "459ce0ea0989b08ff5edcd4a6e3dbe28",
+					"verdict": "held"
+				},
+				{
+					"verdict": "new"
+				}
+			],
+			"kind": "journal_less_match",
+			"locals": [
+				{
+					"object_id": "note_01j9z3y7q8r2s4t6v8w0x2y4z6",
+					"path": "Plan.md",
+					"revision": "234a113ef9c98c5020e188c08e0ba78d96ee74f24964a53964a28bcfbb97eeeb"
+				},
+				{
+					"object_id": "",
+					"path": "Pictures/photo.png",
+					"revision": "a2229697e4520e7a181ed1da92d7b53aadd6916ad4d51ebce576e27866dd4954"
+				},
+				{
+					"object_id": "",
+					"path": "doc.md",
+					"revision": "7364721bc2831b1aea981d03c9aabba6dd875c58664edb6ac5ce1bdd6dce5b58"
+				},
+				{
+					"object_id": "",
+					"path": "New.md",
+					"revision": "b20ab0a020a48d349e0c64d109c441f87c9bc43d49fc701c4a5f6f1b16aa4e32"
+				}
+			],
+			"name": "a_lost_journal_adopts_identical_files_and_holds_differing_ones",
+			"objects": [
+				{
+					"object_id": "note_01j9z3y7q8r2s4t6v8w0x2y4z6",
+					"rid": "a2b2b0deb8ce7851571aa16a7a02d452",
+					"states": [
+						{
+							"delete": false,
+							"path": "Plan.md",
+							"revision": "234a113ef9c98c5020e188c08e0ba78d96ee74f24964a53964a28bcfbb97eeeb"
+						}
+					]
+				},
+				{
+					"object_id": "",
+					"rid": "a09e9907c3667b186b2c4ef9719db5ee",
+					"states": [
+						{
+							"delete": false,
+							"path": "photo.png",
+							"revision": "a2229697e4520e7a181ed1da92d7b53aadd6916ad4d51ebce576e27866dd4954"
+						}
+					]
+				},
+				{
+					"object_id": "",
+					"rid": "459ce0ea0989b08ff5edcd4a6e3dbe28",
+					"states": [
+						{
+							"delete": false,
+							"path": "Doc.md",
+							"revision": "a77d0578deb9a5e2222e9128a2158dd87c6ca69fe661f8761ebb2d0b76858251"
+						}
+					]
+				}
+			]
+		},
+		{
+			"expect": [
+				{
+					"rid": "a2b2b0deb8ce7851571aa16a7a02d452",
+					"verdict": "held"
+				},
+				{
+					"verdict": "new"
+				}
+			],
+			"kind": "journal_less_match",
+			"locals": [
+				{
+					"object_id": "note_01j9z3y7q8r2s4t6v8w0x2y4z6",
+					"path": "Archive/Plan.md",
+					"revision": "234a113ef9c98c5020e188c08e0ba78d96ee74f24964a53964a28bcfbb97eeeb"
+				},
+				{
+					"object_id": "",
+					"path": "Plan.md",
+					"revision": "234a113ef9c98c5020e188c08e0ba78d96ee74f24964a53964a28bcfbb97eeeb"
+				}
+			],
+			"name": "a_managed_note_matched_by_id_at_another_path_is_held",
+			"objects": [
+				{
+					"object_id": "note_01j9z3y7q8r2s4t6v8w0x2y4z6",
+					"rid": "a2b2b0deb8ce7851571aa16a7a02d452",
+					"states": [
+						{
+							"delete": false,
+							"path": "Plan.md",
+							"revision": "234a113ef9c98c5020e188c08e0ba78d96ee74f24964a53964a28bcfbb97eeeb"
+						}
+					]
+				}
+			]
+		},
+		{
+			"expect": [
+				{
+					"rid": "a2b2b0deb8ce7851571aa16a7a02d452",
+					"verdict": "adopt"
+				}
+			],
+			"kind": "journal_less_match",
+			"locals": [
+				{
+					"object_id": "note_01j9z3y7q8r2s4t6v8w0x2y4z6",
+					"path": "Plan.md",
+					"revision": "0269d30f2b333112c41c64921d4d5448cee4d06efb5b7f906ba37276dc9c1f20"
+				}
+			],
+			"name": "a_text_mode_note_matches_on_its_merged_body",
+			"objects": [
+				{
+					"object_id": "note_01j9z3y7q8r2s4t6v8w0x2y4z6",
+					"rid": "a2b2b0deb8ce7851571aa16a7a02d452",
+					"states": [
+						{
+							"delete": false,
+							"path": "Plan.md",
+							"revision": "0269d30f2b333112c41c64921d4d5448cee4d06efb5b7f906ba37276dc9c1f20"
+						}
+					]
+				}
+			],
+			"state_operation_revision": "b4ae89c3f5101266510e478a1cd0dc25b1f7018f534b8155a85bceea6a69bc07"
+		},
+		{
+			"expect": [
+				{
+					"rid": "459ce0ea0989b08ff5edcd4a6e3dbe28",
+					"verdict": "adopt"
+				}
+			],
+			"kind": "journal_less_match",
+			"locals": [
+				{
+					"object_id": "",
+					"path": "Doc.md",
+					"revision": "6e4e35d274810ce44dfcdb0aa9e282409d8e4e95ac018565f17bee19907828b4"
+				}
+			],
+			"name": "a_file_matches_any_branch_of_a_conflict",
+			"objects": [
+				{
+					"object_id": "",
+					"rid": "459ce0ea0989b08ff5edcd4a6e3dbe28",
+					"states": [
+						{
+							"delete": false,
+							"path": "Doc.md",
+							"revision": "9d86fd633e28fe2d081372aaeee631014baf93d870dfee49380435413fc1eb1a"
+						},
+						{
+							"delete": false,
+							"path": "Doc.md",
+							"revision": "6e4e35d274810ce44dfcdb0aa9e282409d8e4e95ac018565f17bee19907828b4"
+						}
+					]
+				}
+			]
+		},
+		{
+			"expect": [
+				{
+					"rid": "cbd16abad2e79abc72bc5af24784ca67",
+					"verdict": "adopt"
+				},
+				{
+					"rid": "dd388bf85c685f4f2a420bb0a1817575",
+					"verdict": "held"
+				},
+				{
+					"verdict": "new"
+				}
+			],
+			"kind": "journal_less_match",
+			"locals": [
+				{
+					"object_id": "",
+					"path": "Pay/Sheet.csv",
+					"revision": "9269d60d4ddb724d3988f0f0d126bd5c2c59e1d9604bdf25aff58797d814df1f"
+				},
+				{
+					"object_id": "",
+					"path": "Pay/Memo.md",
+					"revision": "5d0fc838c1ebe07f198c7b62688a7f252df7d9f22c9cc0c1ae2a52baf60b8469"
+				},
+				{
+					"object_id": "",
+					"path": "Pay/Draft.md",
+					"revision": "99c438850c146df47a9bf28631936ae02b9baff900350970e0da32b8db940c93"
+				}
+			],
+			"name": "a_grant_restored_after_a_reset_matches_the_held_files_first",
+			"objects": [
+				{
+					"object_id": "",
+					"rid": "cbd16abad2e79abc72bc5af24784ca67",
+					"states": [
+						{
+							"delete": false,
+							"path": "Pay/Sheet.csv",
+							"revision": "9269d60d4ddb724d3988f0f0d126bd5c2c59e1d9604bdf25aff58797d814df1f"
+						}
+					]
+				},
+				{
+					"object_id": "",
+					"rid": "dd388bf85c685f4f2a420bb0a1817575",
+					"states": [
+						{
+							"delete": false,
+							"path": "Pay/Memo.md",
+							"revision": "a1885efb6508a019776c9b0c5a538895766f19868ef254aab66b464033888def"
+						}
+					]
+				}
+			]
+		},
+		{
+			"expect": [
+				[
+					"459ce0ea0989b08ff5edcd4a6e3dbe28",
+					"e908bbc7d13353dfc08845ea5d98b615",
+					9
+				]
+			],
+			"kind": "archived",
+			"name": "set_up_sync_again_keeps_a_branch_whose_author_device_is_gone",
+			"objects": [
+				{
+					"base": [
+						"ac38d31c152e47cb1e2cbd5ec3fe0513",
+						4
+					],
+					"branches": [
+						{
+							"counter": 4,
+							"delete": false,
+							"device": "ac38d31c152e47cb1e2cbd5ec3fe0513",
+							"kept": true
+						},
+						{
+							"counter": 9,
+							"delete": false,
+							"device": "e908bbc7d13353dfc08845ea5d98b615",
+							"kept": true
+						},
+						{
+							"counter": 10,
+							"delete": true,
+							"device": "e908bbc7d13353dfc08845ea5d98b615",
+							"kept": false
+						}
+					],
+					"rid": "459ce0ea0989b08ff5edcd4a6e3dbe28"
+				}
+			]
 		}
 	],
-	"description": "Live sets (sync-v2.md §13, §17): each case applies operations in log order and lists the class the server gives each and the live set of each object afterward, computed alike by server and client. `floors` applies a checkpoint's rising floor at its covered_seq; `covers_for` asks which covers an edit writes.",
+	"description": "Live sets (sync-v2.md §13, §17): each case applies operations in log order and lists the class the server gives each and the live set of each object afterward, computed alike by server and client. `floors` applies a checkpoint's rising floor at its covered_seq; `covers_for` asks which covers an edit writes. `journal_less_match` matches local files to objects when a folder syncs without its journal (§15, §18), against the states each live set derives (§16), and `archived` lists what connecting a folder keeps of the old review store.",
 	"fixture_keys_are_public_test_values": true,
 	"keys": {},
 	"records": []

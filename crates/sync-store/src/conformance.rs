@@ -68,6 +68,7 @@ macro_rules! conformance_tests {
             enrolled_cards_bind_again_but_never_a_removed_id,
             sign_in_rows_work_once_and_expire,
             chain_reads_follow_the_policy,
+            a_removed_member_reads_the_policy_up_to_its_removal,
             a_retired_chain_the_workspace_names_reads_in_full,
             recovery_proofs_consume_their_challenge,
             approval_requests_open_the_invitees_chain,
@@ -81,6 +82,7 @@ macro_rules! conformance_tests {
             replacements_skip_only_their_rotators_epochs,
             rewraps_reach_readers_and_close,
             rewraps_follow_the_fixture_schedule,
+            profile_pushes_follow_section_25,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
@@ -658,6 +660,13 @@ pub async fn live_sets_match_the_fixture<B: Backend>(store: Store<B>) {
         let workspace = Id::random().expect("random");
         let domain = Id::random().expect("random");
         let label = case["name"].as_str().expect("a name");
+        // Matching files without a journal is the client's alone (§15).
+        if matches!(
+            case["kind"].as_str(),
+            Some("journal_less_match" | "archived")
+        ) {
+            continue;
+        }
         let ops: Vec<LiveOp> = case["ops"]
             .as_array()
             .expect("ops")
@@ -2898,6 +2907,72 @@ pub async fn sign_in_rows_work_once_and_expire<B: Backend>(store: Store<B>) {
     assert_eq!(store.delete_expired().await.expect("swept"), 4);
 }
 
+/// `GET .../policy` (§8): a device whose account `remove_member` removed
+/// may still fetch the policy chain up to and including that change, and
+/// nothing after it, while every other route refuses it; a device that no
+/// change ever counted gets nothing.
+pub async fn a_removed_member_reads_the_policy_up_to_its_removal<B: Backend>(store: Store<B>) {
+    let mut world = World::new(store, 1).await;
+    let (member, member_keys, member_links) = account(2);
+    world
+        .store
+        .append_account_links(member_links.clone())
+        .await
+        .expect("chain");
+    let member_session = Session::new(member, member_keys[0].device());
+    let add = world.change(
+        0,
+        vec![head_of(&world.links), head_of(&member_links[..1])],
+        PolicyKind::AddMember {
+            account: member,
+            role: sync_protocol::records::Role::Editor,
+            invitation: Id::random().expect("random"),
+        },
+    );
+    world.inject_policy(add, vec![world.domain], None).await;
+    let remove = world.change(
+        0,
+        vec![head_of(&world.links)],
+        PolicyKind::RemoveMember { account: member },
+    );
+    let removed_at = remove.body.revision;
+    world.inject_policy(remove, vec![world.domain], None).await;
+    let stranger = DeviceKeys::generate().expect("random");
+    let link = next_link(
+        &world.devices[0].keys,
+        &head_of(&world.links),
+        LinkKind::AddDevice {
+            card: Nested(stranger.card(world.account)),
+            offer: Digest([9; 32]),
+        },
+    );
+    world
+        .store
+        .append_account_links(vec![link.clone()])
+        .await
+        .expect("grown");
+    world.links.push(link);
+    let later = world.change(0, vec![head_of(&world.links)], PolicyKind::AccountHeads);
+    world.inject_policy(later, vec![world.domain], None).await;
+
+    let served = world
+        .store
+        .policy(member_session, world.workspace, 0)
+        .await
+        .expect("up to the removal");
+    assert_eq!(served.head_revision, removed_at);
+    let revisions: Vec<u64> = served.changes.0.iter().map(|c| c.0.body.revision).collect();
+    assert_eq!(revisions, (1..=removed_at).collect::<Vec<_>>());
+    let keys = world
+        .store
+        .keys(member_session, world.workspace, 0, member_session.device)
+        .await;
+    assert_eq!(refusal(keys).code, "forbidden");
+    let outsider = Session::new(Id::random().expect("random"), Id::random().expect("random"));
+    let policy = world.store.policy(outsider, world.workspace, 0).await;
+    assert_eq!(refusal(policy).code, "forbidden");
+}
+
 /// `POST /v2/accounts/chains` (§7): a member's current chain in full to
 /// the workspace's devices, a removed member's chain up to its last
 /// recorded head, the remover's chain to the removed member up to its
@@ -3349,4 +3424,97 @@ pub fn manager(account: Id) -> sync_protocol::records::AccessList {
         level: Level::Manage,
     }])
     .expect("one entry")
+}
+
+/// A pushed profile (§25): an owner or admin device signs it at a policy
+/// revision the server holds, under the workspace domain's current epoch,
+/// one above the latest profile, with a padded ciphertext, and the
+/// workspace list serves the latest.
+pub async fn profile_pushes_follow_section_25<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 1).await;
+    let epoch_record = {
+        let response = world
+            .store
+            .epochs(world.devices[0].session, world.workspace, world.domain, 1)
+            .await
+            .expect("epochs");
+        response.epochs.0[0].0.digest()
+    };
+    let profile = |revision: u64, edit: &dyn Fn(&mut Profile)| {
+        let mut body = Profile {
+            workspace: world.workspace,
+            profile_revision: revision,
+            epoch: 1,
+            policy_revision: world.head.0,
+            policy_head: world.head.1,
+            signer: world.devices[0].id(),
+            nonce: Nonce::ZERO,
+            ciphertext: Bytes(Vec::new()),
+        };
+        body.seal_payload(
+            &ProfilePayload {
+                name: Text("Renamed".into()),
+            },
+            &world.epoch_key,
+            &epoch_record,
+            random_nonce().expect("random"),
+        );
+        edit(&mut body);
+        Signed::sign(body, world.devices[0].keys.signing())
+    };
+    let push = |record: Signed<Profile>| {
+        let body = PushRequest {
+            records: List(vec![RecordRef::Profile(record)]),
+        }
+        .to_bytes();
+        world
+            .store
+            .push(world.devices[0].session, world.workspace, body)
+    };
+    let renamed = profile(2, &|_| {});
+    let response = push(renamed.clone()).await.expect("the profile commits");
+    assert!(
+        response.receipts.0.is_empty(),
+        "a profile makes no log entry"
+    );
+    let listed = world
+        .store
+        .workspaces(world.devices[0].session)
+        .await
+        .expect("listed");
+    let latest = listed.workspaces.0[0].profile.clone().expect("a profile").0;
+    assert_eq!(latest, renamed);
+
+    for (revision, edit, code) in [
+        (
+            2u64,
+            (&|_: &mut Profile| {}) as &dyn Fn(&mut Profile),
+            "profile_conflict",
+        ),
+        (4, &|_: &mut Profile| {}, "profile_conflict"),
+        (3, &|p: &mut Profile| p.policy_revision = 9, "policy_stale"),
+        (
+            3,
+            &|p: &mut Profile| p.policy_head = Digest([3; 32]),
+            "policy_conflict",
+        ),
+        (3, &|p: &mut Profile| p.epoch = 2, "epoch_stale"),
+        (
+            3,
+            &|p: &mut Profile| p.ciphertext = Bytes(vec![0; 300]),
+            "padding_invalid",
+        ),
+    ] {
+        assert_eq!(
+            push_failure(push(profile(revision, edit)).await),
+            (code, 0),
+            "{code}"
+        );
+    }
+    let mut forged = profile(3, &|_| {});
+    forged.sig.0[0] ^= 1;
+    assert_eq!(push_failure(push(forged).await), ("signature_invalid", 0));
+    push(profile(3, &|_| {}))
+        .await
+        .expect("the next revision commits");
 }

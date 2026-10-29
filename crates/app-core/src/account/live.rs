@@ -16,11 +16,13 @@ use sync_protocol::records::KitPayload;
 use sync_protocol::types::Id;
 use zeroize::Zeroizing;
 
+use super::folder::Folder;
 use super::{
     AccountAction, AccountBackend, AccountPhase, AccountScreen, AlertEntry, ApprovalView,
     DeviceEntry, KitReplacementView, KitView, RecoveryView, RemovalView, RequestEntry, SignOutView,
     SignedInView, fingerprint,
 };
+use crate::folder_sync::{FolderSyncAction, FolderSyncBackend, FolderSyncScreen};
 use crate::sync::approval::{Candidate, CandidateStep, OutstandingOffer, PendingDevice};
 use crate::sync::device::{DeviceSignIn, Joined, SignedIn, StoredDevice, join, server_address};
 use crate::sync::device_list::{AddedBy, DeviceAlert};
@@ -31,7 +33,8 @@ use crate::sync::{DeviceCredentials, KeptHeads, RemoteWorkspace, Secrets, SyncEr
 /// The file in the app's data folder that remembers the server address.
 pub const ACCOUNT_FILE: &str = "sync-account.json";
 
-/// How often the backend looks for offers, codes and new requests.
+/// How often the backend looks for offers, codes and new requests, and
+/// how long it rests between sync rounds whose pull didn't wait.
 const TICK: Duration = Duration::from_secs(2);
 
 #[derive(Default, Serialize, Deserialize)]
@@ -44,10 +47,37 @@ pub type OpenBrowser = Arc<dyn Fn(&str) -> std::io::Result<()> + Send + Sync>;
 
 struct Shared {
     screen: Mutex<AccountScreen>,
+    folder: Mutex<FolderSyncScreen>,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Ends a round's waiting pull when a message arrives.
+    interrupt: tokio::sync::Notify,
+}
+
+/// What the backend's thread hears from the windows.
+enum Message {
+    Account(AccountAction),
+    Folder(FolderSyncAction),
+    Attach(Option<Arc<local_core::WorkspaceEngine>>),
 }
 
 impl Shared {
+    fn show_folder(&self, screen: FolderSyncScreen) {
+        let mut shown = self.folder.lock().unwrap_or_else(PoisonError::into_inner);
+        if *shown == screen {
+            return;
+        }
+        *shown = screen;
+        drop(shown);
+        let wake = self
+            .wake
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(wake) = wake {
+            wake();
+        }
+    }
+
     fn update(&self, change: impl FnOnce(&mut AccountScreen)) {
         change(&mut self.screen.lock().unwrap_or_else(PoisonError::into_inner));
         let wake = self
@@ -64,7 +94,7 @@ impl Shared {
 /// The account backend of the desktop app.
 pub struct LiveAccount {
     shared: Arc<Shared>,
-    actions: Mutex<Sender<AccountAction>>,
+    actions: Mutex<Sender<Message>>,
 }
 
 impl LiveAccount {
@@ -81,7 +111,9 @@ impl LiveAccount {
                 server: remembered.server.clone(),
                 ..AccountScreen::default()
             }),
+            folder: Mutex::new(FolderSyncScreen::default()),
             wake: Mutex::new(None),
+            interrupt: tokio::sync::Notify::new(),
         });
         let (sender, receiver) = channel();
         let driver = Driver {
@@ -99,6 +131,7 @@ impl LiveAccount {
             recovery: None,
             last_refresh: None,
             upkeep: Upkeep::default(),
+            folder: Folder::default(),
         };
         let spawned = std::thread::Builder::new()
             .name("noura-sync-account".into())
@@ -115,6 +148,19 @@ impl LiveAccount {
     }
 }
 
+impl LiveAccount {
+    /// Hands the backend's thread a message and ends the wait of a pull in
+    /// flight, so the message doesn't wait for it.
+    fn send(&self, message: Message) {
+        let _ = self
+            .actions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .send(message);
+        self.shared.interrupt.notify_one();
+    }
+}
+
 impl AccountBackend for LiveAccount {
     fn screen(&self) -> AccountScreen {
         self.shared
@@ -125,11 +171,7 @@ impl AccountBackend for LiveAccount {
     }
 
     fn act(&self, action: AccountAction) {
-        let _ = self
-            .actions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .send(action);
+        self.send(Message::Account(action));
     }
 
     fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
@@ -138,6 +180,33 @@ impl AccountBackend for LiveAccount {
             .wake
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(wake);
+    }
+}
+
+impl FolderSyncBackend for LiveAccount {
+    fn screen(&self) -> FolderSyncScreen {
+        self.shared
+            .folder
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn act(&self, action: FolderSyncAction) {
+        self.shared
+            .folder
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .busy = true;
+        self.send(Message::Folder(action));
+    }
+
+    fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        AccountBackend::set_wake(self, wake);
+    }
+
+    fn attach(&self, engine: Option<Arc<local_core::WorkspaceEngine>>) {
+        self.send(Message::Attach(engine));
     }
 }
 
@@ -175,6 +244,8 @@ struct Driver {
     recovery: Option<Recovery>,
     last_refresh: Option<Instant>,
     upkeep: Upkeep,
+    /// The open workspace's sync.
+    folder: Folder,
 }
 
 /// What a failed action tells you.
@@ -324,7 +395,7 @@ pub(crate) fn added_member_lines(added: &[(Id, Id)]) -> Vec<String> {
 }
 
 impl Driver {
-    fn run(mut self, actions: Receiver<AccountAction>) {
+    fn run(mut self, actions: Receiver<Message>) {
         let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -337,10 +408,36 @@ impl Driver {
         runtime.block_on(self.resume());
         loop {
             match actions.recv_timeout(TICK) {
-                Ok(action) => runtime.block_on(self.handle(action)),
-                Err(RecvTimeoutError::Timeout) => runtime.block_on(self.tick()),
+                Ok(Message::Account(action)) => runtime.block_on(self.handle(action)),
+                Ok(Message::Folder(action)) => runtime.block_on(self.folder.act(
+                    action,
+                    self.service.as_mut(),
+                    &self.app_data,
+                )),
+                Ok(Message::Attach(engine)) => {
+                    self.folder
+                        .attach(engine, self.service.as_ref(), &self.store, &self.app_data)
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    runtime.block_on(self.tick());
+                    // The pull waits only while nothing else here polls.
+                    let long = self.folder.waits()
+                        && self.sign_in.is_none()
+                        && self.candidate.is_none()
+                        && self.offer.is_none()
+                        && self.recovery.is_none();
+                    runtime.block_on(self.folder.round(
+                        self.service.as_mut(),
+                        &self.store,
+                        &self.app_data,
+                        long,
+                        &self.shared.interrupt,
+                    ));
+                }
                 Err(RecvTimeoutError::Disconnected) => return,
             }
+            self.shared
+                .show_folder(self.folder.screen(self.service.is_some()));
         }
     }
 

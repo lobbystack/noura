@@ -561,8 +561,9 @@ impl PositionError {
 
 /// Walks one domain's log in sequence order and judges each record by its
 /// position after the policy and epoch entries before it. Server and client
-/// run the same rules.
-#[derive(Clone, Debug)]
+/// run the same rules. It serializes, so a client's journal can keep it
+/// (§15).
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LogJudge {
     domain: Id,
     policy_entry: Option<u64>,

@@ -18,10 +18,14 @@ pub mod approval;
 pub mod device;
 pub mod device_list;
 pub mod heads;
+pub mod journal;
+pub mod marks;
 pub mod recovery;
+pub mod registry;
 pub mod removal;
 mod routes;
 pub mod upkeep;
+pub mod workspace;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -85,6 +89,11 @@ pub enum SyncError {
     /// A sign-in through the browser ended without a session (§7).
     #[error("{0}")]
     SignIn(device::SignInEnd),
+    /// The key of a domain's current epoch hasn't reached this device yet,
+    /// such as an envelope still on its way: no verified check failed, and
+    /// the device holds its cursor until the key arrives (§9, §13).
+    #[error("the key of the current epoch hasn't arrived yet")]
+    KeyMissing,
     /// A device removed the recovery kit's identity, so the kit can't
     /// recover; you reset your devices instead (§12).
     #[error(
@@ -369,6 +378,14 @@ fn verify_served(
     Ok(chain)
 }
 
+/// The epoch records a device accepted for a domain, their keys, and the
+/// envelope of the latest epoch.
+pub(crate) type LoadedKeys = (
+    EpochChain,
+    BTreeMap<u64, SecretKey>,
+    Option<Signed<Envelope>>,
+);
+
 /// The chains a workspace's log records, as [`SyncService::recorded_chains`]
 /// judged them.
 struct RecordedChains {
@@ -398,6 +415,9 @@ pub struct RemoteWorkspace {
     verifier: ChainVerifier,
     live: LiveSet,
     last: BTreeMap<Id, Operation>,
+    /// The envelope of the latest epoch that this device accepted, kept
+    /// still wrapped in its journal (§15).
+    envelope: Option<Signed<Envelope>>,
 }
 
 impl RemoteWorkspace {
@@ -430,6 +450,7 @@ impl RemoteWorkspace {
         policy: PolicyChain,
         epochs: EpochChain,
         keys: BTreeMap<u64, SecretKey>,
+        envelope: Option<Signed<Envelope>>,
     ) -> Result<Self, SyncError> {
         let key = epochs
             .latest()
@@ -448,6 +469,7 @@ impl RemoteWorkspace {
             verifier: ChainVerifier::new(),
             live: LiveSet::new(),
             last: BTreeMap::new(),
+            envelope,
         })
     }
 }
@@ -512,6 +534,11 @@ impl SyncService {
     /// The device's credentials.
     pub fn credentials(&self) -> &DeviceCredentials {
         &self.credentials
+    }
+
+    /// The credential store the service keeps its secrets in.
+    pub fn secrets(&self) -> Secrets {
+        self.secrets.clone()
     }
 
     /// The heads the device keeps, to change.
@@ -815,6 +842,7 @@ impl SyncService {
                     .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
             }),
         ];
+        let mut own_envelope = None;
         for device in &readers {
             let card = &policy.head_snapshot().devices[device].card;
             let envelope = wrap(
@@ -829,6 +857,9 @@ impl SyncService {
                 keys,
             )
             .map_err(|e| SyncError::Invalid(e.to_string()))?;
+            if *device == keys.device() {
+                own_envelope = Some(envelope.clone());
+            }
             records.push(RecordRef::Envelope(envelope));
         }
         let mut profile = Profile {
@@ -849,7 +880,8 @@ impl SyncService {
             &epoch.digest(),
             random(random_nonce())?,
         );
-        records.push(RecordRef::Profile(Signed::sign(profile, keys.signing())));
+        let profile = Signed::sign(profile, keys.signing());
+        records.push(RecordRef::Profile(profile.clone()));
         self.client.create_workspace(records).await?;
         self.heads
             .name(workspace, chain.account(), chain.genesis())?;
@@ -872,6 +904,7 @@ impl SyncService {
             verifier: ChainVerifier::new(),
             live: LiveSet::new(),
             last: BTreeMap::new(),
+            envelope: own_envelope,
         })
     }
 
@@ -891,7 +924,7 @@ impl SyncService {
         let domain = policy.head_snapshot().workspace_domain;
         let recipient = self.credentials.keys.clone();
         // Opening, the device holds no epoch of the domain yet (§9).
-        let (epochs, keys) = self
+        let (epochs, keys, envelope) = self
             .load_keys(workspace, domain, &policy, &recipient, false)
             .await?;
         let key = epochs
@@ -911,6 +944,7 @@ impl SyncService {
             verifier: ChainVerifier::new(),
             live: LiveSet::new(),
             last: BTreeMap::new(),
+            envelope,
         })
     }
 
@@ -953,9 +987,28 @@ impl SyncService {
                     (Some(_), false) => RecoveryStage::Review,
                     (Some(_), true) => RecoveryStage::Removing,
                 };
-                policy
+                if policy
                     .recovery_anchor(&own, &self.credentials.reference_head, stage)
-                    .ok_or(SyncError::Check("sync_workspace_unverified"))?;
+                    .is_none()
+                {
+                    // The policy head in the credential store's mark anchors
+                    // a workspace the device trusted before, also once the
+                    // sibling whose change it trusted is gone (§8, §15): the
+                    // hash chain fixes the prefix up to it.
+                    let mark = marks::Mark::read(
+                        &*self.secrets,
+                        &self.credentials.keys.device(),
+                        &workspace,
+                    )?;
+                    let anchored = mark.is_some_and(|mark| {
+                        mark.policy_revision > 0
+                            && policy.change(mark.policy_revision).map(|c| c.digest())
+                                == Some(mark.policy_head)
+                    });
+                    if !anchored {
+                        return Err(SyncError::Check("sync_workspace_unverified"));
+                    }
+                }
                 let created = policy
                     .change(1)
                     .is_some_and(|genesis| genesis.body.signer == self.credentials.keys.device());
@@ -1010,7 +1063,26 @@ impl SyncService {
         policy: &PolicyChain,
         recipient: &DeviceKeys,
         accepted_earlier: bool,
-    ) -> Result<(EpochChain, BTreeMap<u64, SecretKey>), SyncError> {
+    ) -> Result<LoadedKeys, SyncError> {
+        self.load_keys_at(workspace, domain, policy, recipient, accepted_earlier, None)
+            .await
+    }
+
+    /// [`SyncService::load_keys`], with the revision of the latest policy
+    /// entry before the current epoch's entry, once a pulled page carried
+    /// it: an envelope whose wrapper could read the domain there passes
+    /// even when it can't at the accepted head (§9, Envelopes). A missing
+    /// envelope, or one that waits for that entry, is no failure:
+    /// [`SyncError::KeyMissing`].
+    pub(crate) async fn load_keys_at(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        policy: &PolicyChain,
+        recipient: &DeviceKeys,
+        accepted_earlier: bool,
+        entry_revision: Option<u64>,
+    ) -> Result<LoadedKeys, SyncError> {
         let card = recipient.card(self.credentials.account);
         let current = self
             .client
@@ -1029,13 +1101,18 @@ impl SyncService {
                 _ => {}
             }
         }
-        let record = record.ok_or(SyncError::Check("sync_key_mismatch"))?;
+        let record = record.ok_or(SyncError::KeyMissing)?;
         let envelopes: Vec<Signed<Envelope>> = envelopes
             .into_iter()
             .filter(|e| e.body.epoch == record.body.epoch)
             .collect();
-        // The first envelope that passes, in key order (§9).
-        let key = envelopes.iter().find_map(|envelope| {
+        if envelopes.is_empty() {
+            return Err(SyncError::KeyMissing);
+        }
+        // The first envelope that passes, in key order (§9). One whose
+        // wrapper waits for the epoch's entry isn't a failure yet.
+        let mut waiting = false;
+        let accepted = envelopes.iter().find_map(|envelope| {
             let key = unwrap(&envelope.body, recipient, &card).ok()?;
             let verdict = check_envelope(
                 envelope,
@@ -1044,15 +1121,17 @@ impl SyncService {
                 &card,
                 policy,
                 policy.head().0,
-                None,
+                entry_revision,
             )
             .ok()?;
-            (verdict == EnvelopeVerdict::Accept).then_some(key)
+            waiting |= verdict == EnvelopeVerdict::Wait;
+            (verdict == EnvelopeVerdict::Accept).then(|| (key, envelope.clone()))
         });
-        let Some(key) = key else {
-            if !envelopes.is_empty()
-                && after_failed_envelopes(accepted_earlier) == FailedEnvelopes::Rewrap
-            {
+        let Some((key, envelope)) = accepted else {
+            if waiting {
+                return Err(SyncError::KeyMissing);
+            }
+            if after_failed_envelopes(accepted_earlier) == FailedEnvelopes::Rewrap {
                 self.client
                     .rewrap(workspace, domain, record.body.epoch)
                     .await?;
@@ -1085,7 +1164,7 @@ impl SyncService {
                 .map_err(|e| SyncError::Check(e.client_code()))?;
             keys.insert(record.body.epoch, key.clone());
         }
-        Ok((epochs, keys))
+        Ok((epochs, keys, Some(envelope)))
     }
 
     /// Pushes a file at `path` as a new object: a padded, encrypted `file`

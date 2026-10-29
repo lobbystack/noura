@@ -3,6 +3,11 @@
 //! `--smoke` opens the first window, prints what this copy found about
 //! itself once that window's first frame is on screen, and quits. CI runs
 //! it from each installed package.
+//!
+//! `mcp --workspace <folder>` serves that workspace to an AI tool over
+//! stdio instead, with `noura-mcp`. It opens no window and doesn't count as
+//! a running copy of Noura, so it runs while the app has the workspace
+//! open.
 
 // A release build on Windows opens no console window. Output still reaches
 // a pipe, so the smoke run's report does too.
@@ -12,6 +17,7 @@ mod file_drag;
 mod instance;
 mod licenses;
 mod login;
+mod mcp;
 #[cfg_attr(
     not(any(target_os = "macos", target_os = "windows")),
     allow(dead_code, reason = "Linux shows no native menu bar")
@@ -23,7 +29,9 @@ mod updates;
 mod windows;
 
 use std::{
+    ffi::OsStr,
     path::{Path, PathBuf},
+    process::ExitCode,
     sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
@@ -139,7 +147,21 @@ fn register_editor(
     Ok(())
 }
 
-fn main() -> eframe::Result {
+fn main() -> ExitCode {
+    let mut arguments = std::env::args_os().skip(1);
+    if arguments.next().as_deref() == Some(OsStr::new("mcp")) {
+        return noura_mcp::run(arguments);
+    }
+    match run_app() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Noura stopped: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_app() -> eframe::Result {
     let launched = Instant::now();
     let smoke = std::env::args()
         .skip(1)
@@ -185,19 +207,23 @@ fn main() -> eframe::Result {
                 app.set_login_item(Arc::new(login::DesktopLoginItem::new()));
                 // The sync account keeps this computer's keys and session in
                 // credential store items that never leave it, and signs in
-                // through the system browser.
+                // through the system browser. The same backend runs the open
+                // workspace's sync with that account.
                 let browser = system.clone();
-                app.set_account_backend(Arc::new(app_core::account::live::LiveAccount::start(
+                let account = Arc::new(app_core::account::live::LiveAccount::start(
                     app_data.clone(),
                     Arc::new(app_core::sync::DeviceKeychain),
                     Arc::new(move |url: &str| app_core::System::open_url(&*browser, url)),
-                )));
+                ));
+                app.set_account_backend(account.clone());
+                app.set_folder_sync_backend(account);
                 if let Some(list) = licenses::bundled_licenses() {
                     app.set_third_party_licenses(list);
                 }
                 if let Some(plugins) = licenses::bundled_plugins() {
                     app.set_shipped_plugins(plugins);
                 }
+                mcp::offer(&mut app);
                 let quit = QuitRequest::default();
                 let updates = set_up_updates(
                     &mut app,

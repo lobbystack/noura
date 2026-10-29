@@ -225,9 +225,10 @@ async fn a_lagging_head_goes_in_steps_when_its_envelopes_wont_fit() {
     );
 }
 
-/// A server that tampers with a recipient's envelope, or a rotator that
-/// lists a recipient the policy doesn't authorize, fails the client's key
-/// checks with `sync_key_mismatch` (§9, §30).
+/// A server that tampers with a recipient's envelope fails the client's key
+/// checks with `sync_key_mismatch`; an epoch record whose recipients the
+/// policy doesn't authorize fails them too, and the client replaces it from
+/// the epoch it accepted (§9, §30).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_tampered_envelope_or_a_wrong_recipient_list_fails_the_key_check() {
     let server = Server::start().await;
@@ -383,15 +384,14 @@ async fn a_tampered_envelope_or_a_wrong_recipient_list_fails_the_key_check() {
         }))
         .await
         .unwrap();
-    let refused = phone
+    // The phone can't accept that record, so it signs a replacement that
+    // skips it, from the epoch it accepted (§9, ticket 48).
+    phone
         .service
         .refresh_keys(&mut remote)
         .await
-        .expect_err("recipients the policy doesn't authorize");
-    assert!(
-        matches!(refused, SyncError::Check("sync_key_mismatch")),
-        "{refused:?}"
-    );
+        .expect("recipients the policy doesn't authorize get a replacement");
+    assert_eq!(remote.epoch(), 3);
 }
 
 /// A device whose first envelope fails before it accepted any epoch of the

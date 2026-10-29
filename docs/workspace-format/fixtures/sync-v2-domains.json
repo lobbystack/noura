@@ -47,9 +47,145 @@
 			"expect": null,
 			"kind": "marker",
 			"name": "zero_id"
+		},
+		{
+			"expect": true,
+			"kind": "stray_marker",
+			"marker_rids": [
+				"4509b65680a4f3d860b9ed52bf355a8b"
+			],
+			"name": "an_object_at_a_marker_path_that_no_domain_names_is_refused",
+			"path": "Team/.noura-domain",
+			"rid": "742a19d1a716bc34fff0aaa49b8d3226"
+		},
+		{
+			"expect": false,
+			"kind": "stray_marker",
+			"marker_rids": [
+				"4509b65680a4f3d860b9ed52bf355a8b"
+			],
+			"name": "a_domains_own_marker_is_written",
+			"path": "Team/.noura-domain",
+			"rid": "4509b65680a4f3d860b9ed52bf355a8b"
+		},
+		{
+			"expect": false,
+			"kind": "stray_marker",
+			"marker_rids": [
+				"4509b65680a4f3d860b9ed52bf355a8b"
+			],
+			"name": "a_name_that_only_contains_the_marker_name_is_ordinary",
+			"path": "Team/.noura-domain.md",
+			"rid": "742a19d1a716bc34fff0aaa49b8d3226"
+		},
+		{
+			"applied": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team"
+				}
+			],
+			"expect": [
+				{
+					"domain": null,
+					"folder": "Scratch"
+				},
+				{
+					"domain": "d1d8472de6d496006f2eccf0b34d283d",
+					"folder": "Team/Pay"
+				}
+			],
+			"kind": "held_roots",
+			"locals": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team"
+				},
+				{
+					"domain": "d1d8472de6d496006f2eccf0b34d283d",
+					"folder": "Team/Pay"
+				},
+				{
+					"domain": null,
+					"folder": "Scratch"
+				}
+			],
+			"name": "local_markers_other_than_applied_ones_hold_their_folders"
+		},
+		{
+			"expect": false,
+			"held": {
+				"domain": "d1d8472de6d496006f2eccf0b34d283d",
+				"folder": "Team/Pay"
+			},
+			"kind": "hold_ends",
+			"name": "another_domains_valid_marker_never_ends_a_hold",
+			"roots": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team"
+				},
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team/Pay"
+				}
+			]
+		},
+		{
+			"expect": true,
+			"held": {
+				"domain": "d1d8472de6d496006f2eccf0b34d283d",
+				"folder": "Team/Pay"
+			},
+			"kind": "hold_ends",
+			"name": "the_held_domains_innermost_root_ends_the_hold",
+			"roots": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team"
+				},
+				{
+					"domain": "d1d8472de6d496006f2eccf0b34d283d",
+					"folder": "Team/Pay"
+				}
+			]
+		},
+		{
+			"expect": true,
+			"held": {
+				"domain": "d1d8472de6d496006f2eccf0b34d283d",
+				"folder": "Team/Pay"
+			},
+			"kind": "hold_ends",
+			"name": "a_grant_restored_after_a_reset_ends_the_hold_through_the_domains_marker",
+			"roots": [
+				{
+					"domain": "d1d8472de6d496006f2eccf0b34d283d",
+					"folder": "Team/Pay"
+				}
+			]
+		},
+		{
+			"expect": false,
+			"held": {
+				"domain": "d1d8472de6d496006f2eccf0b34d283d",
+				"folder": "Team/Pay"
+			},
+			"kind": "hold_ends",
+			"name": "an_outer_root_of_the_held_domain_under_another_inner_one_doesnt",
+			"roots": [
+				{
+					"domain": "d1d8472de6d496006f2eccf0b34d283d",
+					"folder": "Team"
+				},
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team/Pay"
+				}
+			]
 		}
 	],
-	"description": "Restricted domain markers (sync-v2.md §9): the exact content of a `.noura-domain` file, one line `domain: <base64url domain ID>` and a line feed, and content that isn't a marker's.",
+	"description": "Restricted domain markers (sync-v2.md §9): the exact content of a `.noura-domain` file, one line `domain: <base64url domain ID>` and a line feed, and content that isn't a marker's. `stray_marker` asks whether a client refuses an object at a marker path, `held_roots` which local markers hold their folders after a sync without a journal, and `hold_ends` whether a hold ends without your confirmation.",
 	"fixture_keys_are_public_test_values": true,
 	"keys": {},
 	"marker_file_name": ".noura-domain",

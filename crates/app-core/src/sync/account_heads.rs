@@ -227,7 +227,10 @@ fn write_refusals(
         .map_err(credential_error)
 }
 
-fn journal_key(credentials: &dyn SyncCredentials, device: &Id) -> Result<SecretKey, SyncError> {
+pub(crate) fn journal_key(
+    credentials: &dyn SyncCredentials,
+    device: &Id,
+) -> Result<SecretKey, SyncError> {
     let name = journal_key_name(device);
     if let Some(text) = credentials.read_optional(&name).map_err(credential_error)? {
         let bytes: [u8; 32] = from_hex(&text)

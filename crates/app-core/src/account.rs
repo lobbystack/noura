@@ -9,6 +9,7 @@
 //! runs with. [`live::LiveAccount`] carries the actions out against a sync
 //! server on its own thread; tests supply a fake.
 
+mod folder;
 pub mod live;
 
 use std::collections::BTreeSet;
