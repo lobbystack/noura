@@ -2287,7 +2287,7 @@ impl WorkspaceSync {
                     match check_operation(
                         remote, &self.keys, &ended, &mut log, op, entry.seq, fetcher,
                     )? {
-                        Judged::Record(record) => records.push(record),
+                        Judged::Record(record) => records.push(*record),
                         Judged::Ignored => {}
                         Judged::NoKey => return Ok(None),
                     }
@@ -2525,7 +2525,7 @@ impl ChainFetcher for Cached<'_> {
 /// What the checks of one operation found.
 enum Judged {
     /// It passed, and the device applies it.
-    Record(CheckedRecord),
+    Record(Box<CheckedRecord>),
     /// It repeats a position the device applied, or an earlier attempt.
     Ignored,
     /// The device doesn't hold the key of its epoch yet, which holds the
@@ -2611,12 +2611,12 @@ fn check_operation(
     // A record that passes every check but doesn't open counts as applied
     // and unreadable (§13).
     let payload = opened.and_then(|(digest, key)| op.body.open_payload(key, &digest, class).ok());
-    Ok(Judged::Record(CheckedRecord {
+    Ok(Judged::Record(Box::new(CheckedRecord {
         op: op.clone(),
         seq,
         class,
         payload,
-    }))
+    })))
 }
 
 /// What a payload carries, keeping a file's bytes in `contents` by the

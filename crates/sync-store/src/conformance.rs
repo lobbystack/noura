@@ -660,6 +660,13 @@ pub async fn live_sets_match_the_fixture<B: Backend>(store: Store<B>) {
         let workspace = Id::random().expect("random");
         let domain = Id::random().expect("random");
         let label = case["name"].as_str().expect("a name");
+        // Matching files without a journal is the client's alone (§15).
+        if matches!(
+            case["kind"].as_str(),
+            Some("journal_less_match" | "archived")
+        ) {
+            continue;
+        }
         let ops: Vec<LiveOp> = case["ops"]
             .as_array()
             .expect("ops")

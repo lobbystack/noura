@@ -8,7 +8,7 @@
 //! view of its account chains. Until the realtime channel arrives (ticket
 //! 61), each round's pull asks once and returns at once, every tick.
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 use local_core::WorkspaceEngine;
@@ -151,7 +151,7 @@ impl Folder {
         engine: Option<Arc<WorkspaceEngine>>,
         service: Option<&SyncService>,
         store: &Secrets,
-        app_data: &PathBuf,
+        app_data: &Path,
     ) {
         self.sync = None;
         self.last_error = None;
@@ -161,7 +161,7 @@ impl Folder {
         self.open(service, store, app_data);
     }
 
-    fn open(&mut self, service: Option<&SyncService>, store: &Secrets, app_data: &PathBuf) {
+    fn open(&mut self, service: Option<&SyncService>, store: &Secrets, app_data: &Path) {
         let (Some(engine), Some(service)) = (&self.engine, service) else {
             return;
         };
@@ -206,7 +206,7 @@ impl Folder {
         &mut self,
         service: Option<&mut SyncService>,
         store: &Secrets,
-        app_data: &PathBuf,
+        app_data: &Path,
     ) {
         let Some(service) = service else {
             return;
@@ -249,7 +249,7 @@ impl Folder {
         &mut self,
         action: FolderSyncAction,
         service: Option<&mut SyncService>,
-        app_data: &PathBuf,
+        app_data: &Path,
     ) {
         let result = self.try_act(action, service, app_data).await;
         if let Err(error) = result {
@@ -261,7 +261,7 @@ impl Folder {
         &mut self,
         action: FolderSyncAction,
         service: Option<&mut SyncService>,
-        app_data: &PathBuf,
+        app_data: &Path,
     ) -> Result<(), SyncError> {
         let mut registry = Registry::open(app_data)?;
         match action {

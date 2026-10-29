@@ -4,6 +4,11 @@
 //! overwrite an outside edit, stays inside the workspace, reaches the disk
 //! before it returns, and brings the index along.
 
+#![allow(
+    clippy::result_large_err,
+    reason = "CoreError is the engine's structured error, as in the library"
+)]
+
 use local_core::{ManifestUpdateInput, SkipReason, SyncedExpect, WorkspaceEngine};
 use tempfile::tempdir;
 

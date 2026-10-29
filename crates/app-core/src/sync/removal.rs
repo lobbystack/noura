@@ -272,11 +272,11 @@ impl SyncService {
 
 /// Whether signing out leaves a workspace's rotation to the readers that
 /// remain after `error` (§7): a client check that stops the workspace or
-/// fails its key, or a refusal that means the device can't commit that
-/// rotation.
+/// fails its key, a key it doesn't hold yet, or a refusal that means the
+/// device can't commit that rotation.
 pub fn skips_sign_out_rotation(error: &SyncError) -> bool {
     match error {
-        SyncError::Check(_) => true,
+        SyncError::Check(_) | SyncError::KeyMissing => true,
         SyncError::Refused { code, .. } => matches!(
             code.as_str(),
             "forbidden"
