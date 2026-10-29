@@ -298,3 +298,90 @@ async fn a_rewrite_whose_cover_the_server_cant_return_writes_nothing_and_waits_f
         .expect("a round");
     assert_eq!(pair.a.files()["Plan.md"], b"# Plan\n");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_envelope_whose_wrapper_lost_access_after_the_epochs_entry_passes() {
+    let mut pair = pair().await;
+    let mut fourth = approve(
+        &pair.server,
+        &mut pair.laptop,
+        std::slice::from_mut(pair.sync_a.remote_mut().unwrap()),
+    )
+    .await;
+    let mut d = Folder::new("Fourth");
+    let mut sync_d = app_core::sync::workspace::WorkspaceSync::download(
+        &mut fourth.service,
+        d.engine.clone(),
+        pair.sync_a.workspace(),
+        &mut d.registry,
+    )
+    .await
+    .expect("the fourth device downloads");
+    sync_d.round(&mut fourth.service, 0).await.unwrap();
+
+    // The desktop rotates to epoch 2, wrapping it for every reader, and
+    // writes under it. The laptop takes epoch 2.
+    desktop_rotates(&mut pair).await;
+    pair.b.write("Plan.md", b"# Plan, under epoch 2\n");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("the desktop pushes under epoch 2");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("the laptop takes epoch 2");
+
+    // The laptop removes the desktop after epoch 2's entry. The change
+    // commits, and the rotation it makes due doesn't yet.
+    let posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = posts.clone();
+    pair.proxy.forge(Box::new(move |method, path| {
+        if method != "POST" || !path.ends_with("/ops") {
+            return None;
+        }
+        (seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 1).then(|| (503, Vec::new()))
+    }));
+    let desktop = pair.desktop.id();
+    let before = pair.sync_a.remote_mut().unwrap().policy().head().0;
+    let removed = pair
+        .service
+        .remove_device(
+            desktop,
+            &[],
+            std::slice::from_mut(pair.sync_a.remote_mut().unwrap()),
+        )
+        .await;
+    pair.proxy.honest();
+    assert!(removed.is_err(), "the rotation didn't go out");
+    assert_eq!(posts.load(std::sync::atomic::Ordering::SeqCst), 2);
+    let removal = pair
+        .service
+        .client()
+        .policy(pair.sync_a.workspace(), 0)
+        .await
+        .unwrap()
+        .head_revision;
+    assert!(removal > before, "the removal committed");
+    let latest = pair
+        .service
+        .client()
+        .current_keys(pair.sync_a.workspace(), pair.laptop.id())
+        .await
+        .unwrap();
+    assert!(latest.entries.0.iter().any(|e| matches!(
+        &e.record,
+        KeyRecord::Epoch(epoch) if epoch.body.epoch == 2
+    )));
+
+    // The fourth device meets epoch 2's entry before the removal: its
+    // envelope from the desktop passes the test at the latest policy entry
+    // before that entry, so it reads the desktop's record and replaces
+    // nothing.
+    let round = sync_d.round(&mut fourth.service, 0).await.expect("a round");
+    assert!(!round.waiting_for_key);
+    assert!(sync_d.policy_revision() >= removal);
+    assert!(sync_d.remote_mut().unwrap().epoch() >= 2);
+    assert_eq!(d.files()["Plan.md"], b"# Plan, under epoch 2\n");
+    assert!(sync_d.unreadable().is_empty());
+}
