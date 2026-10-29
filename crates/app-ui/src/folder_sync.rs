@@ -74,6 +74,9 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
                 actions.push(FolderSyncAction::TurnOn);
             }
         }
+        FolderSyncPhase::On | FolderSyncPhase::Paused if screen.ended.is_some() => {
+            alert(ui, screen.ended.as_deref().unwrap_or_default());
+        }
         FolderSyncPhase::On | FolderSyncPhase::Paused => {
             let paused = screen.phase == FolderSyncPhase::Paused;
             if screen.removal_hold {

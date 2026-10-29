@@ -106,6 +106,9 @@ pub struct FolderSyncScreen {
     /// Whether sync holds your changes after a device left your account,
     /// until the workspace records it and changes its key (§9).
     pub removal_hold: bool,
+    /// What ended sync for this computer, when a change took its access
+    /// to the workspace (§15).
+    pub ended: Option<String>,
     /// The files sync leaves out, one line each.
     pub skipped: Vec<String>,
     /// What went wrong last, for you to read.
@@ -132,12 +135,33 @@ impl FolderSyncScreen {
             archived: Vec::new(),
             unreadable: Vec::new(),
             removal_hold: false,
+            ended: status.ended.as_ref().map(ended_line),
             skipped: status.skipped.iter().map(skipped_line).collect(),
             last_error: None,
             last_success: status.last_success.map(local_time),
             busy: false,
         }
     }
+}
+
+/// What ended sync for this computer, naming who made the change.
+pub fn ended_line(ended: &crate::sync::workspace::Ended) -> String {
+    let short = |id: &sync_protocol::types::Id| id.to_hex().chars().take(8).collect::<String>();
+    let who = match &ended.by_account {
+        Some(account) => format!("Account {}", short(account)),
+        None => "Another account".to_owned(),
+    };
+    let what = if ended.account_removed {
+        "removed your account from this workspace"
+    } else if ended.domain_deleted {
+        "deleted this part of the workspace"
+    } else {
+        "took this computer's access to the workspace"
+    };
+    format!(
+        "{who} {what}, from device {}. Sync stopped. Your files stay on this computer as they are.",
+        short(&ended.by_device)
+    )
 }
 
 /// One line of the list of files sync leaves out.

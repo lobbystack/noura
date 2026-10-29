@@ -39,13 +39,14 @@ use sync_protocol::messages::{
 };
 use sync_protocol::policy::PolicyChain;
 use sync_protocol::records::{
-    Content, Cover, DeleteReason, OpClass, Operation, Payload, PayloadKind, Profile,
+    Content, Cover, DeleteReason, OpClass, Operation, Payload, PayloadKind, PolicyKind, Profile,
     ProfilePayload, Role, Signed, SyncPath,
 };
 use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 
 use capture::{Change, Found};
 pub use capture::{SkipWhy, Skipped};
+pub use state::Ended;
 use state::{
     Content as Carried, Held, Log, Object, OpKey, Outgoing, Own, ProfileMark, State, StateInfo,
     Wanted,
@@ -123,6 +124,9 @@ pub struct Status {
     pub held_roots: usize,
     /// Versions an earlier journal's review store kept.
     pub archived: usize,
+    /// The change that took this device's access, after which it syncs
+    /// nothing more and the files stay as they are (§15).
+    pub ended: Option<Ended>,
     /// Objects the device refuses to write.
     pub refused: usize,
 }
@@ -310,6 +314,7 @@ impl WorkspaceSync {
             rewrite_others: Vec::new(),
             rewrite_due: 0,
             profile_recheck: false,
+            ended: None,
         };
         // A device accepts no policy head or epoch below its mark, also
         // when it starts again without a journal (§15).
@@ -529,6 +534,7 @@ impl WorkspaceSync {
             held_roots: self.state.held_roots.len(),
             archived: self.state.archived.len(),
             refused: self.state.refused.len(),
+            ended: self.state.ended.clone(),
         }
     }
 
@@ -732,6 +738,11 @@ impl WorkspaceSync {
         service: &mut SyncService,
         wait_seconds: u32,
     ) -> Result<Round, SyncError> {
+        // A change took this device's access: nothing more goes out or
+        // comes in, and the files stay as they are (§15).
+        if self.state.ended.is_some() {
+            return Ok(Round::default());
+        }
         if self.paused {
             let captured = self.capture()?;
             return Ok(Round {
@@ -1032,6 +1043,49 @@ impl WorkspaceSync {
         Ok(())
     }
 
+    /// Takes the policy again, and nothing else: a device that lost its
+    /// access may read the policy up to the change that took it (§7).
+    async fn refresh_policy(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
+        let Some(mut remote) = self.remote.take() else {
+            return Err(SyncError::KeyMissing);
+        };
+        let refreshed = service.refresh_policy(&mut remote).await;
+        self.state.policy = policy_changes(&remote.policy);
+        self.remote = Some(remote);
+        refreshed.map(|_| ())
+    }
+
+    /// The latest accepted change that took this device's read access to
+    /// the domain, if the verified policy holds one at its head.
+    fn access_ended(&self) -> Option<Ended> {
+        let policy = &self.remote.as_ref()?.policy;
+        let own = self.credentials.keys.device();
+        let domain = self.state.domain;
+        if policy.head_snapshot().can_read(&own, &domain) {
+            return None;
+        }
+        let head = policy.head().0;
+        (2..=head).rev().find_map(|revision| {
+            let before = policy.at(revision - 1)?;
+            let after = policy.at(revision)?;
+            if !before.can_read(&own, &domain) || after.can_read(&own, &domain) {
+                return None;
+            }
+            let change = policy.change(revision)?;
+            let account = self.credentials.account;
+            Some(Ended {
+                revision,
+                by_device: change.body.signer,
+                by_account: before.account_of(&change.body.signer),
+                account_removed: matches!(
+                    change.body.kind,
+                    PolicyKind::RemoveMember { account: removed } if removed == account
+                ),
+                domain_deleted: !after.domains.contains_key(&domain),
+            })
+        })
+    }
+
     /// Compares the journal's head of this device's chain with the server's
     /// (§14): a server head above it means the journal lost records the
     /// device sent, which it takes back after checking its own signature on
@@ -1101,7 +1155,7 @@ impl WorkspaceSync {
     pub fn capture(&mut self) -> Result<usize, SyncError> {
         // A held domain takes no new encryption; the files keep their
         // changes until the hold ends (§9).
-        if self.stopped.is_some() || self.state.removal_hold {
+        if self.stopped.is_some() || self.state.removal_hold || self.state.ended.is_some() {
             return Ok(0);
         }
         let rewritten = self.rewrite_skipped()?;
@@ -2003,6 +2057,15 @@ impl WorkspaceSync {
         match page.status {
             PageStatus::Ok => {}
             PageStatus::Forbidden | PageStatus::NotFound => {
+                // Once a change it accepted took its access or deleted the
+                // domain, the device stops pulling it (§15).
+                if self.refresh_policy(service).await.is_ok()
+                    && let Some(ended) = self.access_ended()
+                {
+                    self.state.ended = Some(ended);
+                    self.save()?;
+                    return Ok((0, false));
+                }
                 self.refresh(service).await?;
                 return Err(SyncError::Refused {
                     code: format!("{:?}", page.status).to_lowercase(),

@@ -95,6 +95,25 @@ pub struct State {
     /// once `rewrite_due` passes (§9, §25).
     #[serde(default)]
     pub profile_recheck: bool,
+    /// The accepted change that took this device's access to the domain,
+    /// after which it pulls and pushes nothing there (§15).
+    #[serde(default)]
+    pub ended: Option<Ended>,
+}
+
+/// The change that took this device's access to the domain (§15).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ended {
+    /// The change's revision.
+    pub revision: u64,
+    /// The device that signed it.
+    pub by_device: Id,
+    /// That device's account, when the policy before the change lists it.
+    pub by_account: Option<Id>,
+    /// Whether the change removed this device's account (`remove_member`).
+    pub account_removed: bool,
+    /// Whether the change deleted the domain.
+    pub domain_deleted: bool,
 }
 
 /// The profile a device accepted last (§25).

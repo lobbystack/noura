@@ -11,7 +11,9 @@ use sync_protocol::messages::{
     RewrapRequest, WorkspaceInfo, WorkspacesResponse,
 };
 use sync_protocol::policy::PolicyChain;
-use sync_protocol::records::{AccountLink, Envelope, Epoch, PolicyChange, Profile, Role, Signed};
+use sync_protocol::records::{
+    AccountLink, Envelope, Epoch, PolicyChange, PolicyKind, Profile, Role, Signed,
+};
 use sync_protocol::types::Id;
 
 use crate::policy::{self, ChainCache, PolicyCache};
@@ -182,30 +184,59 @@ pub(crate) async fn policy(
     workspace: Id,
     after: u64,
 ) -> Result<PolicyResponse> {
-    let (row, policy) = authorize(txn, cache, session, workspace).await?;
+    let (row, policy, removed_at) = match authorize(txn, cache, session, workspace).await {
+        Ok((row, policy)) => (row, policy, None),
+        Err(refused) => {
+            // A device whose account `remove_member` removed still fetches
+            // the chain up to and including that change (§8).
+            let Some((row, policy)) = policy::load(txn, cache, workspace).await? else {
+                return Err(refused);
+            };
+            let Some(revision) = removed_member_at(&policy, session) else {
+                return Err(refused);
+            };
+            (row, policy, Some(revision))
+        }
+    };
     let mut heads = Vec::new();
-    for account in policy.head_snapshot().members.keys() {
-        if let Some(chain) = policy::current_chain(txn, *account).await? {
-            heads.push(chain.head());
+    if removed_at.is_none() {
+        for account in policy.head_snapshot().members.keys() {
+            if let Some(chain) = policy::current_chain(txn, *account).await? {
+                heads.push(chain.head());
+            }
         }
     }
     let heads = Sorted::new(heads).map_err(|e| Error::internal(e.name()))?;
     let mut budget = MAX_BODY.saturating_sub(8 + 4 + heads.to_bytes().len());
     let mut changes = Vec::new();
     for bytes in txn.policy_changes(workspace, after).await? {
+        let change = Signed::<PolicyChange>::from_bytes(&bytes).map_err(Error::internal)?;
+        if removed_at.is_some_and(|r| change.body.revision > r) {
+            break;
+        }
         let size = 4 + bytes.len();
         if size > budget {
             break;
         }
         budget -= size;
-        changes.push(Nested(
-            Signed::<PolicyChange>::from_bytes(&bytes).map_err(Error::internal)?,
-        ));
+        changes.push(Nested(change));
     }
     Ok(PolicyResponse {
-        head_revision: row.policy_revision,
+        head_revision: removed_at.unwrap_or(row.policy_revision),
         changes: List(changes),
         account_heads: heads,
+    })
+}
+
+/// The revision of the `remove_member` that removed the session's account
+/// while the policy before it counted the session's device, if any (§8).
+fn removed_member_at(policy: &PolicyChain, session: Session) -> Option<u64> {
+    (2..=policy.head().0).rev().find(|&revision| {
+        policy.change(revision).is_some_and(|change| {
+            matches!(change.body.kind, PolicyKind::RemoveMember { account } if account == session.account)
+        }) && policy
+            .at(revision - 1)
+            .is_some_and(|before| reader(before, session).is_some())
     })
 }
 

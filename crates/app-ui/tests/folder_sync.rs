@@ -254,6 +254,25 @@ fn a_held_removal_and_unreadable_versions_show() {
 }
 
 #[test]
+fn a_removed_account_says_who_removed_it_and_offers_no_pause() {
+    let app_data = tempfile::tempdir().unwrap();
+    let sync = Arc::new(FakeSync::default());
+    let line = "Account 1a2b3c4d removed your account from this workspace, from device 5e6f7a8b. Sync stopped. Your files stay on this computer as they are.";
+    sync.show(FolderSyncScreen {
+        phase: FolderSyncPhase::On,
+        ended: Some(line.into()),
+        ..FolderSyncScreen::default()
+    });
+    let harness = harness(app_data.path(), sync);
+    harness.get_by_role_and_label(Role::Alert, line);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, "Pause sync")
+            .is_none()
+    );
+}
+
+#[test]
 fn a_copied_folder_offers_to_connect() {
     let app_data = tempfile::tempdir().unwrap();
     let sync = Arc::new(FakeSync::default());
