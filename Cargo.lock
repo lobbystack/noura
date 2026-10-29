@@ -2939,6 +2939,7 @@ dependencies = [
  "logroller",
  "minisign",
  "muda",
+ "noura-mcp",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
@@ -6117,6 +6118,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lexopt"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "803ec87c9cfb29b9d2633f20cba1f488db3fd53f2158b1024cbefb47ba05d413"
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6648,6 +6655,8 @@ dependencies = [
 name = "noura-mcp"
 version = "0.2.0"
 dependencies = [
+ "app-core",
+ "lexopt",
  "local-core",
  "rmcp",
  "schemars 1.2.2",
@@ -6657,7 +6666,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "zeroize",
 ]
 
 [[package]]
@@ -8082,6 +8090,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "process-wrap"
+version = "9.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f95f6259ebd0640685b7cd26d635861f39208df0f89b2b61ff5cf76310fa54f6"
+dependencies = [
+ "futures",
+ "indexmap 2.14.0",
+ "nix",
+ "tokio",
+ "tracing",
+ "windows 0.62.2",
+]
+
+[[package]]
 name = "profiling"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8775,12 +8797,14 @@ dependencies = [
  "indexmap 2.14.0",
  "pastey 0.2.3",
  "pin-project-lite",
+ "process-wrap",
  "rmcp-macros",
  "schemars 1.2.2",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-stream",
  "tokio-util",
  "tracing",
  "uuid",

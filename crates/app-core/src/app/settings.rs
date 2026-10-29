@@ -46,6 +46,9 @@ impl App {
             notice: None,
             manifest_revision,
         });
+        if self.mcp_test != crate::McpTest::Testing {
+            self.mcp_test = crate::McpTest::NotRun;
+        }
         self.listeners.emit(Change::Settings);
     }
 
