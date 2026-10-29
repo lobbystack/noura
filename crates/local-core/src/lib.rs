@@ -28,6 +28,7 @@ pub use text_files::is_plain_text_path;
 pub mod sync;
 mod watcher;
 mod web_access;
+mod web_search;
 
 pub use ai::*;
 pub use chat::*;
@@ -55,6 +56,7 @@ pub use watcher::WatchCoordinator;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use watcher::WatchFault;
 pub use web_access::*;
+pub use web_search::{BraveClient, WEB_SEARCH_PROVIDER, WebClient, WebConsentGrant, WebFoundation};
 pub use workspace_format::merge::merge_text;
 pub use workspace_format::{
     MAX_FILE_NAME_CHARS, WORKSPACE_MANIFEST_PATH, WorkspaceManifest, WorkspaceObject,

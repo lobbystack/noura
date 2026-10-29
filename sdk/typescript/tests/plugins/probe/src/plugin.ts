@@ -15,6 +15,9 @@ import {
 	readChat,
 	readRun,
 	send,
+	webFetch,
+	webReady,
+	webSearch,
 } from 'noura:plugin/ai@0.1.0';
 import { call as callCommand } from 'noura:plugin/command-calls@0.1.0';
 import { now } from 'noura:plugin/clock@0.1.0';
@@ -146,6 +149,9 @@ const CALLS: Record<string, () => unknown> = {
 		}).id,
 	'ai-read-chat-missing': () => readChat('chat_01j9qv6m0000000000000000cc'),
 	'ai-read-run-missing': () => readRun('run_missing'),
+	'ai-web-ready': () => webReady(),
+	'ai-web-search': () => webSearch('tomatoes', 3),
+	'ai-web-fetch': () => webFetch('https://garden.example.com/'),
 };
 
 function get(url: string): number {

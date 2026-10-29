@@ -273,7 +273,7 @@ fn provider_form(ui: &mut Ui, app: &mut App, form: &mut ProviderForm) -> bool {
 }
 
 /// A labeled one-line text field. A secret one hides what you type.
-fn text_field(ui: &mut Ui, label: &str, text: &mut String, secret: bool) {
+pub(crate) fn text_field(ui: &mut Ui, label: &str, text: &mut String, secret: bool) {
     ui.label(label);
     ui.add(
         TextEdit::singleline(text)
@@ -284,7 +284,7 @@ fn text_field(ui: &mut Ui, label: &str, text: &mut String, secret: bool) {
 }
 
 /// A bordered box around a provider or the form.
-fn boxed(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+pub(crate) fn boxed(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     let palette = Palette::of(ui.ctx());
     Frame::new()
         .stroke(Stroke::new(1.0, palette.border))
@@ -296,7 +296,7 @@ fn boxed(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
         });
 }
 
-fn alert(ui: &mut Ui, message: &str) {
+pub(crate) fn alert(ui: &mut Ui, message: &str) {
     let palette = Palette::of(ui.ctx());
     let builder = UiBuilder::new().accessibility_role(Role::Alert);
     ui.scope_builder(builder, |ui| {

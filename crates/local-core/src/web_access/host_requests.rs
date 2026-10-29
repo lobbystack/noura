@@ -1,8 +1,8 @@
 //! Requests to the hosts a caller may reach, such as the network hosts a
-//! plugin declares. The boundary allows HTTPS only, checks the host
-//! against the allowed list and every address it resolves to before a
-//! connection opens, and follows redirects itself so it checks each hop
-//! the same way. A transport sends one checked hop at a time and connects
+//! plugin declares, or any public host for a page the AI reads. The
+//! boundary allows HTTPS only, checks the host against the allowed list
+//! and every address it resolves to before a connection opens, and
+//! follows redirects itself so it checks each hop the same way. A transport sends one checked hop at a time and connects
 //! only to the addresses the boundary hands it, so a host can't resolve to
 //! another address between the check and the connection.
 
@@ -152,8 +152,19 @@ impl HostRequests {
 
     /// Send `request` to one of `hosts`, following redirects to `hosts`.
     pub async fn send(&self, request: HostRequest, hosts: &[String]) -> Result<HostResponse> {
-        let checked = check_request(request, hosts, self.limits)?;
-        tokio::time::timeout(self.limits.request_timeout, self.follow(checked, hosts))
+        self.send_within(request, Reach::Hosts(hosts)).await
+    }
+
+    /// Send `request` to any public host, following redirects to public
+    /// hosts, as when the AI reads a page. Every hop still needs HTTPS
+    /// and addresses outside private, loopback and link-local ranges.
+    pub async fn send_public(&self, request: HostRequest) -> Result<HostResponse> {
+        self.send_within(request, Reach::Public).await
+    }
+
+    async fn send_within(&self, request: HostRequest, reach: Reach<'_>) -> Result<HostResponse> {
+        let checked = check_request(request, reach, self.limits)?;
+        tokio::time::timeout(self.limits.request_timeout, self.follow(checked, reach))
             .await
             .map_err(|_| timeout_error(OPERATION))?
     }
@@ -183,7 +194,7 @@ impl HostRequests {
         }
     }
 
-    async fn follow(&self, request: Checked, hosts: &[String]) -> Result<HostResponse> {
+    async fn follow(&self, request: Checked, reach: Reach<'_>) -> Result<HostResponse> {
         let Checked {
             mut method,
             mut url,
@@ -226,7 +237,7 @@ impl HostRequests {
                 self.limits.max_redirects,
                 OPERATION,
             )?;
-            allowed(&target, hosts)?;
+            allowed(&target, reach)?;
             redirects += 1;
             if response.status == 303 && method != WebMethod::Head
                 || matches!(response.status, 301 | 302) && method == WebMethod::Post
@@ -274,6 +285,15 @@ impl HostRequests {
     }
 }
 
+/// The hosts a request and its redirects may reach.
+#[derive(Clone, Copy)]
+enum Reach<'a> {
+    /// Only these hosts.
+    Hosts(&'a [String]),
+    /// Any public host.
+    Public,
+}
+
 /// A request whose URL, host, headers and body passed the checks.
 struct Checked {
     method: WebMethod,
@@ -284,11 +304,11 @@ struct Checked {
 
 fn check_request(
     request: HostRequest,
-    hosts: &[String],
+    reach: Reach<'_>,
     limits: WebAccessLimits,
 ) -> Result<Checked> {
     let url = parse_https_url(&request.url, OPERATION)?;
-    allowed(&url, hosts)?;
+    allowed(&url, reach)?;
     if request.headers.len() > MAX_HEADERS
         || request
             .headers
@@ -330,13 +350,17 @@ fn check_request(
     })
 }
 
-/// Fails unless `url`'s host is one of `hosts`.
-fn allowed(url: &Url, hosts: &[String]) -> Result<()> {
+/// Fails unless `reach` allows `url`'s host. The URL's own checks already
+/// refused local and private hosts.
+fn allowed(url: &Url, reach: Reach<'_>) -> Result<()> {
     let host = url.host_str().unwrap_or_default();
-    if hosts
-        .iter()
-        .any(|allowed| allowed.eq_ignore_ascii_case(host))
-    {
+    let allowed = match reach {
+        Reach::Hosts(hosts) => hosts
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(host)),
+        Reach::Public => true,
+    };
+    if allowed {
         Ok(())
     } else {
         Err(CoreError::new(
@@ -389,6 +413,11 @@ fn request_failed() -> CoreError {
     );
     error.retryable = true;
     error
+}
+
+/// The transport that sends hops over HTTPS on this device's network.
+pub(crate) fn https_transport() -> Arc<dyn WebTransport> {
+    Arc::new(HttpsTransport)
 }
 
 /// Sends hops over HTTPS with reqwest and resolves hosts with the system
@@ -705,6 +734,52 @@ mod tests {
         assert_eq!(
             server.hops().len(),
             WebAccessLimits::default().max_redirects + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_public_request_reaches_any_public_host_and_checks_every_hop() {
+        let server = server(vec![
+            (
+                "https://api.example.com/start",
+                redirect(302, "https://evil.example.net/next"),
+            ),
+            ("https://evil.example.net/next", ok("public")),
+            (
+                "https://tiles.example.com/start",
+                redirect(302, "https://intranet.example.com/"),
+            ),
+        ]);
+        let requests = requests(&server);
+
+        let response = requests
+            .send_public(get("https://api.example.com/start"))
+            .await
+            .unwrap();
+        assert_eq!(response.body, b"public");
+        assert_eq!(response.url, "https://evil.example.net/next");
+
+        for (url, code) in [
+            ("http://api.example.com/", "web_url_not_https"),
+            ("https://localhost/", "web_url_unsafe_host"),
+            ("https://intranet.example.com/", "web_url_unsafe_host"),
+            ("https://tiles.example.com/start", "web_url_unsafe_host"),
+        ] {
+            let error = requests.send_public(get(url)).await.unwrap_err();
+            assert_eq!(error.code, code, "{url}");
+        }
+        let hops: Vec<String> = server
+            .hops()
+            .iter()
+            .map(|hop| hop.url.to_string())
+            .collect();
+        assert_eq!(
+            hops,
+            [
+                "https://api.example.com/start",
+                "https://evil.example.net/next",
+                "https://tiles.example.com/start",
+            ]
         );
     }
 
