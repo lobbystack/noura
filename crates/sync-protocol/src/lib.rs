@@ -19,6 +19,7 @@ pub mod ids;
 pub mod keys;
 pub mod live;
 pub mod manifest;
+pub mod matching;
 pub mod messages;
 pub mod padding;
 pub mod policy;

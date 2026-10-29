@@ -43,7 +43,7 @@ fn live(entries: &[(&str, u64)]) -> Value {
 pub fn fixture() -> Fixture {
     let mut f = Fixture::new(
         "sync-v2-live.json",
-        "Live sets (sync-v2.md §13, §17): each case applies operations in log order and lists the class the server gives each and the live set of each object afterward, computed alike by server and client. `floors` applies a checkpoint's rising floor at its covered_seq; `covers_for` asks which covers an edit writes.",
+        "Live sets (sync-v2.md §13, §17): each case applies operations in log order and lists the class the server gives each and the live set of each object afterward, computed alike by server and client. `floors` applies a checkpoint's rising floor at its covered_seq; `covers_for` asks which covers an edit writes. `journal_less_match` matches local files to objects when a folder syncs without its journal (§15, §18), against the states each live set derives (§16), and `archived` lists what connecting a folder keeps of the old review store.",
     );
     let a = "live device a";
     let b = "live device b";
@@ -158,5 +158,109 @@ pub fn fixture() -> Fixture {
         "own_device": device(a).to_hex(),
         "expect": covers,
     }));
+    journal_less(&mut f);
     f
+}
+
+fn rev(label: &str) -> String {
+    sync_protocol::crypto::hash(label.as_bytes()).to_hex()
+}
+
+fn state(path: &str, revision: &str) -> Value {
+    json!({"path": path, "revision": rev(revision), "delete": false})
+}
+
+fn object(rid: &str, object_id: &str, states: &[Value]) -> Value {
+    json!({"rid": id(rid).to_hex(), "object_id": object_id, "states": states})
+}
+
+fn file(path: &str, revision: &str, object_id: &str) -> Value {
+    json!({"path": path, "revision": rev(revision), "object_id": object_id})
+}
+
+fn verdict(kind: &str, rid: Option<&str>) -> Value {
+    match rid {
+        Some(rid) => json!({"verdict": kind, "rid": id(rid).to_hex()}),
+        None => json!({"verdict": kind}),
+    }
+}
+
+/// Matching files when a folder syncs without this device's journal
+/// (§9, §15, §18). Each `objects` entry lists the states its live set
+/// derives (§16), and `expect` gives one verdict per local file.
+fn journal_less(f: &mut Fixture) {
+    let plan = "match plan";
+    let photo = "match photo";
+    let doc = "match doc";
+    f.case(json!({
+        "kind": "journal_less_match",
+        "name": "a_lost_journal_adopts_identical_files_and_holds_differing_ones",
+        "objects": [
+            object(plan, "note_01j9z3y7q8r2s4t6v8w0x2y4z6", &[state("Plan.md", "plan v1")]),
+            object(photo, "", &[state("photo.png", "photo bytes")]),
+            object(doc, "", &[state("Doc.md", "doc v1")]),
+        ],
+        "locals": [
+            file("Plan.md", "plan v1", "note_01j9z3y7q8r2s4t6v8w0x2y4z6"),
+            file("Pictures/photo.png", "photo bytes", ""),
+            file("doc.md", "doc v2", ""),
+            file("New.md", "new", ""),
+        ],
+        // The note by ID, the photo by revision but at another path, the
+        // document by its folded path but with other content, and a file
+        // nothing matches.
+        "expect": [verdict("adopt", Some(plan)), verdict("held", Some(photo)), verdict("held", Some(doc)), verdict("new", None)],
+    }));
+    f.case(json!({
+        "kind": "journal_less_match",
+        "name": "a_managed_note_matched_by_id_at_another_path_is_held",
+        "objects": [object(plan, "note_01j9z3y7q8r2s4t6v8w0x2y4z6", &[state("Plan.md", "plan v1")])],
+        "locals": [file("Archive/Plan.md", "plan v1", "note_01j9z3y7q8r2s4t6v8w0x2y4z6"), file("Plan.md", "plan v1", "")],
+        "expect": [verdict("held", Some(plan)), verdict("new", None)],
+    }));
+    f.case(json!({
+        "kind": "journal_less_match",
+        "name": "a_text_mode_note_matches_on_its_merged_body",
+        // The state operation's own revision field names the body before
+        // its live patches; the derived state is the merged body.
+        "state_operation_revision": rev("plan before patches"),
+        "objects": [object(plan, "note_01j9z3y7q8r2s4t6v8w0x2y4z6", &[state("Plan.md", "plan merged")])],
+        "locals": [file("Plan.md", "plan merged", "note_01j9z3y7q8r2s4t6v8w0x2y4z6")],
+        "expect": [verdict("adopt", Some(plan))],
+    }));
+    f.case(json!({
+        "kind": "journal_less_match",
+        "name": "a_file_matches_any_branch_of_a_conflict",
+        "objects": [object(doc, "", &[state("Doc.md", "doc mine"), state("Doc.md", "doc theirs")])],
+        "locals": [file("Doc.md", "doc theirs", "")],
+        "expect": [verdict("adopt", Some(doc))],
+    }));
+    f.case(json!({
+        "kind": "journal_less_match",
+        "name": "a_grant_restored_after_a_reset_matches_the_held_files_first",
+        // The files beneath a hold that ends when the domain's own marker
+        // returns, matched before the domain's bootstrap writes any.
+        "objects": [
+            object("match pay sheet", "", &[state("Pay/Sheet.csv", "sheet v1")]),
+            object("match pay memo", "", &[state("Pay/Memo.md", "memo v1")]),
+        ],
+        "locals": [file("Pay/Sheet.csv", "sheet v1", ""), file("Pay/Memo.md", "memo edited offline", ""), file("Pay/Draft.md", "draft", "")],
+        "expect": [verdict("adopt", Some("match pay sheet")), verdict("held", Some("match pay memo")), verdict("new", None)],
+    }));
+    let gone = id("match device that is gone");
+    let mine = id("match this device");
+    f.case(json!({
+        "kind": "archived",
+        "name": "set_up_sync_again_keeps_a_branch_whose_author_device_is_gone",
+        "objects": [{
+            "rid": id(doc).to_hex(),
+            "base": [mine.to_hex(), 4],
+            "branches": [
+                {"device": mine.to_hex(), "counter": 4, "delete": false, "kept": true},
+                {"device": gone.to_hex(), "counter": 9, "delete": false, "kept": true},
+                {"device": gone.to_hex(), "counter": 10, "delete": true, "kept": false},
+            ],
+        }],
+        "expect": [[id(doc).to_hex(), gone.to_hex(), 9]],
+    }));
 }

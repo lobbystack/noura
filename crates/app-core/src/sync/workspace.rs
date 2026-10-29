@@ -60,6 +60,9 @@ pub const PULL_WAIT_SECONDS: u32 = 25;
 /// The re-seals per chain position that no newer epoch or policy change
 /// forces (§14, §27).
 pub const RESEAL_LIMIT: u32 = 3;
+/// The longest random wait before a device writes again other devices'
+/// records under an epoch a replacement skipped (§9).
+pub const REWRITE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 /// How far below 1 MiB a push stays, for its framing.
 const PUSH_MARGIN: usize = 4_096;
 
@@ -152,6 +155,9 @@ pub struct WorkspaceSync {
     /// The log entries the device required before it sent the current
     /// pull, which that pull's page owes.
     armed: BTreeSet<(bool, u64)>,
+    /// The longest random wait before the device writes again other
+    /// devices' records under a skipped epoch (§9).
+    rewrite_wait: std::time::Duration,
 }
 
 impl std::fmt::Debug for WorkspaceSync {
@@ -300,6 +306,9 @@ impl WorkspaceSync {
             removal_hold: false,
             ended_epochs: Vec::new(),
             rewrite_epochs: Vec::new(),
+            rewrite_others: Vec::new(),
+            rewrite_due: 0,
+            profile_recheck: false,
         };
         // A device accepts no policy head or epoch below its mark, also
         // when it starts again without a journal (§15).
@@ -327,6 +336,7 @@ impl WorkspaceSync {
             stopped: None,
             paused: false,
             matching: false,
+            rewrite_wait: REWRITE_WAIT,
             cache: BTreeMap::new(),
             entry_hint: None,
             armed: BTreeSet::new(),
@@ -418,6 +428,7 @@ impl WorkspaceSync {
             stopped: None,
             paused: entry.paused,
             matching: false,
+            rewrite_wait: REWRITE_WAIT,
             cache: BTreeMap::new(),
             entry_hint: None,
             armed: BTreeSet::new(),
@@ -741,6 +752,10 @@ impl WorkspaceSync {
         }
         let mut captured = self.capture()?;
         let mut pushed = self.push(service).await?;
+        if self.state.profile_recheck && unix_now() >= self.state.rewrite_due {
+            self.state.profile_recheck = false;
+            self.follow_profile(service).await?;
+        }
         let (applied, waiting_for_key) = self.pull(service, wait_seconds).await?;
         // A replacement the pull brought ends epochs whose records this
         // device writes again at once (§9); merges go out next round.
@@ -794,12 +809,28 @@ impl WorkspaceSync {
             // A replacement skipped the epoch the profile was signed under:
             // the device that signed it signs it again under the current
             // epoch (§25); others keep the name they accepted.
-            if profile.body.signer == self.credentials.keys.device() && self.may_rename() {
+            // After the random wait, so does each owner or admin device
+            // that accepted that epoch and finds the profile still under it.
+            let signer = profile.body.signer == self.credentials.keys.device();
+            let accepted_it = self
+                .state
+                .ended_epochs
+                .iter()
+                .any(|e| e.body.epoch == profile.body.epoch);
+            let due = unix_now() >= self.state.rewrite_due;
+            if self.may_rename() && (signer || (accepted_it && due)) {
                 let name = self.state.name.clone();
-                return self
+                return match self
                     .sign_profile(service, &name, profile.body.profile_revision)
-                    .await;
+                    .await
+                {
+                    // Another device's profile arrived first; the server
+                    // keeps the first (§25).
+                    Err(SyncError::Refused { code, .. }) if code == "profile_conflict" => Ok(()),
+                    other => other,
+                };
             }
+            self.state.profile_recheck = accepted_it;
             return Ok(());
         }
         let signer_gone = !remote
@@ -959,6 +990,10 @@ impl WorkspaceSync {
             {
                 self.state.ended_epochs.push(record.clone());
                 self.state.rewrite_epochs.push(record.body.epoch);
+                self.state.rewrite_others.push(record.body.epoch);
+                self.state.rewrite_due = unix_now()
+                    + super::heads::random_wait(&(std::time::Duration::ZERO..self.rewrite_wait))
+                        .as_secs();
             }
         }
         self.state.epochs = epochs;
@@ -1810,16 +1845,42 @@ impl WorkspaceSync {
         Ok(())
     }
 
-    /// Writes again, under the current epoch, each object where this
-    /// device's own record under an epoch a replacement skipped is live, as
-    /// a state operation covering that record and its own highest live
-    /// operation on the object, so the server neither counts it as a patch
-    /// nor answers `supersedes_incomplete` (§9).
+    /// Writes again, under the current epoch, each object where a record
+    /// under an epoch a replacement skipped is live (§9): this device's own
+    /// records at once, and other devices' records it can read once the
+    /// random wait passes, skipping any that a rewrite covered meanwhile.
+    /// Each is a state operation covering that record and this device's own
+    /// highest live operation on the object, so the server neither counts
+    /// it as a patch nor answers `supersedes_incomplete`.
     fn rewrite_skipped(&mut self) -> Result<usize, SyncError> {
-        if self.state.rewrite_epochs.is_empty() {
-            return Ok(0);
+        let mut written = 0;
+        if !self.state.rewrite_epochs.is_empty() {
+            let epochs: BTreeSet<u64> = self.state.rewrite_epochs.drain(..).collect();
+            written += self.rewrite_under(&epochs, true)?;
         }
-        let epochs: BTreeSet<u64> = self.state.rewrite_epochs.drain(..).collect();
+        if !self.state.rewrite_others.is_empty() && unix_now() >= self.state.rewrite_due {
+            let epochs: BTreeSet<u64> = self.state.rewrite_others.drain(..).collect();
+            written += self.rewrite_under(&epochs, false)?;
+        }
+        Ok(written)
+    }
+
+    /// Sets the longest random wait before the device writes again other
+    /// devices' records under a skipped epoch; [`REWRITE_WAIT`] by default.
+    pub fn set_rewrite_wait(&mut self, wait: std::time::Duration) {
+        self.rewrite_wait = wait;
+        if self.state.rewrite_due > unix_now() + wait.as_secs() {
+            self.state.rewrite_due = unix_now() + wait.as_secs();
+        }
+    }
+
+    /// Writes again each object with a live record under `epochs`, this
+    /// device's own when `own`, else another device's that opened here.
+    fn rewrite_under(
+        &mut self,
+        epochs: &BTreeSet<u64>,
+        own_records: bool,
+    ) -> Result<usize, SyncError> {
         let own = self.credentials.keys.device();
         let rids: Vec<Id> = self.state.objects.keys().copied().collect();
         let mut written = 0;
@@ -1828,11 +1889,14 @@ impl WorkspaceSync {
             let object = &self.state.objects[&rid];
             let Some((key, content)) = live.iter().find_map(|key| {
                 let info = object.states.get(key)?;
-                (key.device == own && epochs.contains(&info.epoch))
+                ((key.device == own) == own_records && epochs.contains(&info.epoch))
                     .then(|| info.content.clone().map(|c| (*key, c)))?
             }) else {
                 continue;
             };
+            if !own_records && self.state.held.contains_key(&rid) {
+                continue;
+            }
             let mut view = BTreeSet::from([key]);
             view.extend(live.iter().filter(|k| k.device == own).copied());
             let covers = self.covers_of(&rid, &view);

@@ -19,6 +19,8 @@ ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["fas
 getrandom = { version = "=0.4.3", default-features = false }
 serde.workspace = true
 thiserror.workspace = true
+# NFC for path matches and collisions (§16). MIT or Apache-2.0, no_std.
+unicode-normalization.workspace = true
 zeroize.workspace = true
 
 [features]

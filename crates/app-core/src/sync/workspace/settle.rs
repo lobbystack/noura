@@ -20,24 +20,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use local_core::SyncedExpect;
 use sync_protocol::crypto::hash;
 use sync_protocol::types::{Digest, Id};
-use unicode_normalization::UnicodeNormalization;
 
 use super::state::{Content as Carried, Local, OpKey};
 use super::{SyncError, WorkspaceSync, core, journal, same_state, stat};
 
-/// A path as collisions compare it: NFC, then each character's simple case
-/// folding where it folds to one character.
-pub(crate) fn fold(path: &str) -> String {
-    path.nfc()
-        .map(|c| {
-            let mut lower = c.to_lowercase();
-            match (lower.next(), lower.next()) {
-                (Some(single), None) => single,
-                _ => c,
-            }
-        })
-        .collect()
-}
+pub(crate) use sync_protocol::matching::fold;
+use sync_protocol::matching::refuses_marker_path;
 
 /// `path` as the file system names it: each component as its folder lists
 /// it, which differs in case on a file system that ignores case.
@@ -69,11 +57,6 @@ pub(crate) fn actual_path(root: &std::path::Path, path: &str) -> String {
         parts.push(name);
     }
     parts.join("/")
-}
-
-/// Whether `path`'s last component is a domain marker's name (§9).
-pub(crate) fn is_marker_path(path: &str) -> bool {
-    path.rsplit('/').next() == Some(super::rebuild::MARKER)
 }
 
 /// Whether two paths collide (§16): equal once folded, or one a folder
@@ -111,14 +94,15 @@ pub(crate) fn free_name(path: &str, taken: &dyn Fn(&str) -> bool) -> String {
 }
 
 impl WorkspaceSync {
-    /// Whether a domain of the verified policy names `rid` as its marker.
-    fn is_marker(&self, rid: &Id) -> bool {
-        self.remote.as_ref().is_some_and(|r| {
+    /// The `marker_rid` of each domain in the verified policy.
+    fn marker_rids(&self) -> Vec<Id> {
+        self.remote.as_ref().map_or_else(Vec::new, |r| {
             r.policy
                 .head_snapshot()
                 .domains
                 .values()
-                .any(|d| d.marker_rid == Some(*rid))
+                .filter_map(|d| d.marker_rid)
+                .collect()
         })
     }
 
@@ -208,7 +192,7 @@ impl WorkspaceSync {
         // An object at a `.noura-domain` path that no domain names as its
         // marker would hold files after a sync without the journal: the
         // device writes none and lists it for review (§9).
-        if !content.delete && is_marker_path(&content.path) && !self.is_marker(&rid) {
+        if !content.delete && refuses_marker_path(&rid, &content.path, &self.marker_rids()) {
             if !self.state.refused.contains(&rid) {
                 self.state.refused.push(rid);
             }

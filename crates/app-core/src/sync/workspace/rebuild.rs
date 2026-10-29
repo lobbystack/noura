@@ -16,17 +16,17 @@ use std::sync::Arc;
 use local_core::{SyncedExpect, WorkspaceEngine};
 use serde::{Deserialize, Serialize};
 use sync_protocol::crypto::hash;
+use sync_protocol::matching::{LiveObject, LiveState, LocalFile, Matched, match_files};
 use sync_protocol::types::{Digest, Id};
 
 use super::capture::{Found, object_id_of};
-use super::settle::{fold, free_name};
+use super::settle::free_name;
 use super::state::{Held, OpKey, State};
 use super::{SyncError, SyncService, WorkspaceSync, core, profile_of};
 use crate::sync::journal::{self, Journal, STATE_FILE};
 use crate::sync::registry::Registry;
 
-/// The name of a restricted domain's marker file (§9).
-pub const MARKER: &str = ".noura-domain";
+pub use sync_protocol::matching::MARKER;
 /// The listing of an archived review store.
 const ARCHIVE_INDEX: &str = "archive.json";
 
@@ -87,10 +87,7 @@ pub(crate) fn local_markers(root: &Path) -> Vec<String> {
     found
 }
 
-/// Whether `path` lies at or beneath the held root `folder`.
-pub(crate) fn beneath(path: &str, folder: &str) -> bool {
-    folder.is_empty() || path == folder || path.starts_with(&format!("{folder}/"))
-}
+pub(crate) use sync_protocol::matching::beneath;
 
 /// The server, account and remote workspace that `device`'s journal in
 /// the folder at `root` names, as a copied folder's journal does.
@@ -231,38 +228,34 @@ impl WorkspaceSync {
             });
         }
         let rids: Vec<Id> = self.state.objects.keys().copied().collect();
-        let mut claimed: BTreeSet<String> = BTreeSet::new();
+        let objects: Vec<LiveObject> = rids
+            .iter()
+            .map(|rid| LiveObject {
+                rid: *rid,
+                object_id: self.state.objects[rid].object_id.clone(),
+                states: self
+                    .live_contents(rid)
+                    .into_iter()
+                    .map(|(_, c)| LiveState {
+                        path: c.path,
+                        revision: c.revision,
+                        delete: c.delete,
+                    })
+                    .collect(),
+            })
+            .collect();
+        let files: Vec<LocalFile> = locals
+            .iter()
+            .map(|l| LocalFile {
+                path: l.file.relative_path.clone(),
+                revision: l.revision,
+                object_id: l.object_id.clone(),
+            })
+            .collect();
         let mut matched: BTreeMap<Id, Found> = BTreeMap::new();
-        // Each pass takes the objects the earlier passes left.
-        for pass in 0..3 {
-            for rid in &rids {
-                if matched.contains_key(rid) {
-                    continue;
-                }
-                let object = &self.state.objects[rid];
-                let states = self.live_contents(rid);
-                let hit = locals.iter().find(|local| {
-                    !claimed.contains(&local.file.relative_path)
-                        && match pass {
-                            0 => {
-                                !object.object_id.is_empty() && local.object_id == object.object_id
-                            }
-                            1 => {
-                                local.object_id.is_empty()
-                                    && object.object_id.is_empty()
-                                    && states
-                                        .iter()
-                                        .any(|(_, c)| !c.delete && c.revision == local.revision)
-                            }
-                            _ => states.iter().any(|(_, c)| {
-                                !c.delete && fold(&c.path) == fold(&local.file.relative_path)
-                            }),
-                        }
-                });
-                if let Some(hit) = hit {
-                    claimed.insert(hit.file.relative_path.clone());
-                    matched.insert(*rid, hit.clone());
-                }
+        for (verdict, local) in match_files(&objects, &files).into_iter().zip(locals) {
+            if let Matched::Adopt(rid) | Matched::Held(rid) = verdict {
+                matched.insert(rid, local);
             }
         }
         for rid in rids {

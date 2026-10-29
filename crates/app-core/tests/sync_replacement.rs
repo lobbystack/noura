@@ -5,11 +5,14 @@
 //! writes its records again under the current epoch. When another device
 //! used the skipped epoch, the server refuses the replacement with
 //! `epoch_conflict`, the reader asks for a re-wrap and keeps the first
-//! envelope that passes.
+//! envelope that passes. Every other device that read the skipped epoch
+//! writes again, after a random wait, the records it can read under it and
+//! the profile, so a rotator that is gone loses nothing.
 
 mod sync_support;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use sync_protocol::codec::{Decode, Encode, ExactBytes};
 use sync_protocol::messages::{KeyRecord, KeysResponse};
@@ -164,4 +167,69 @@ async fn a_replacement_another_device_used_the_epoch_against_asks_for_a_rewrap()
     assert_eq!(pair.sync_a.remote_mut().unwrap().epoch(), 2);
     assert_eq!(pair.a.files()["Fourth.md"], b"# From the fourth device\n");
     let _ = Arc::new(());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reader_of_the_skipped_epoch_writes_a_gone_rotators_record_and_profile_again() {
+    let mut pair = pair().await;
+    let mut fourth = approve(
+        &pair.server,
+        &mut pair.laptop,
+        std::slice::from_mut(pair.sync_a.remote_mut().unwrap()),
+    )
+    .await;
+    let mut d = Folder::new("Fourth");
+    let mut sync_d = app_core::sync::workspace::WorkspaceSync::download(
+        &mut fourth.service,
+        d.engine.clone(),
+        pair.sync_a.workspace(),
+        &mut d.registry,
+    )
+    .await
+    .expect("the fourth device downloads");
+    sync_d.round(&mut fourth.service, 0).await.unwrap();
+    desktop_rotates(&mut pair).await;
+
+    // The desktop writes and renames under epoch 2, then goes away.
+    pair.b.write("Plan.md", b"# Plan, under epoch 2\n");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("the desktop pushes under epoch 2");
+    pair.sync_b
+        .rename(&mut pair.desktop.service, "Garden notes")
+        .await
+        .expect("renamed under epoch 2");
+    let round = sync_d.round(&mut fourth.service, 0).await.unwrap();
+    assert!(!round.waiting_for_key);
+    assert_eq!(d.files()["Plan.md"], b"# Plan, under epoch 2\n");
+    sync_d.connect(&mut fourth.service).await.unwrap();
+    assert_eq!(sync_d.name(), "Garden notes");
+
+    // The laptop's envelope of epoch 2 fails, and it replaces the epoch.
+    damage_envelopes(&pair.proxy, pair.laptop.id(), pair.desktop.id());
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("the laptop signs a replacement");
+    pair.proxy.honest();
+    assert_eq!(pair.sync_a.remote_mut().unwrap().epoch(), 3);
+    assert_eq!(pair.a.files()["Plan.md"], b"# Plan\n");
+
+    // The fourth device read epoch 2: after its wait it writes the
+    // desktop's record and the profile again under epoch 3.
+    sync_d.set_rewrite_wait(Duration::ZERO);
+    let round = sync_d.round(&mut fourth.service, 0).await.expect("a round");
+    assert_eq!(round.captured, 1, "the rewrite of the desktop's record");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    assert_eq!(pair.a.files()["Plan.md"], b"# Plan, under epoch 2\n");
+    assert_eq!(pair.sync_a.status().conflicts, 0);
+    pair.sync_a
+        .connect(&mut pair.service)
+        .await
+        .expect("the laptop takes the profile signed again");
+    assert_eq!(pair.sync_a.name(), "Garden notes");
 }

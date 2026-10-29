@@ -82,6 +82,19 @@ pub struct State {
     /// Those epochs whose records this device still writes again (§9).
     #[serde(default)]
     pub rewrite_epochs: Vec<u64>,
+    /// Those epochs whose other devices' live records this device writes
+    /// again once `rewrite_due` passes, unless a rewrite covered them
+    /// meanwhile (§9).
+    #[serde(default)]
+    pub rewrite_others: Vec<u64>,
+    /// Unix seconds after which the device writes those records again.
+    #[serde(default)]
+    pub rewrite_due: u64,
+    /// Whether the profile sits under an epoch this device accepted and a
+    /// replacement skipped, so an owner or admin device signs it again
+    /// once `rewrite_due` passes (§9, §25).
+    #[serde(default)]
+    pub profile_recheck: bool,
 }
 
 /// The profile a device accepted last (§25).
