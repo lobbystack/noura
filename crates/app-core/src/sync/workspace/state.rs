@@ -164,6 +164,10 @@ pub struct Log {
     /// replacement ended it, for judging records under it (§9).
     #[serde(default)]
     pub skipped_rotators: BTreeMap<u64, Id>,
+    /// The checkpoints the log carried, and what the next one's checks
+    /// need (§17).
+    #[serde(default)]
+    pub checkpoints: crate::sync::checkpoints::Checkpoints,
 }
 
 /// A log entry the device requires.

@@ -13,7 +13,7 @@ use sync_protocol::codec::{Decode, Nested, Sorted};
 use sync_protocol::manifest::{
     Manifest, bucket_of, node_hash, verify_bucket, verify_buckets, verify_descent,
 };
-use sync_protocol::messages::{CursorCompactedDetail, EntryRecord, LiveCursor, RecordRef};
+use sync_protocol::messages::{CursorCompactedDetail, EntryRecord, Frame, LiveCursor, RecordRef};
 use sync_protocol::records::{
     Card, Checkpoint, CheckpointBundle, Epoch, EpochBundle, LinkKind, PolicyKind, Ref, Role, Signed,
 };
@@ -184,9 +184,34 @@ pub async fn checkpoints_fall_due_by_volume<B: Backend>(store: Store<B>) {
         ("checkpoint_not_due", 0),
         "no checkpoint is due yet"
     );
+    let session = world.devices[1].session;
+    let mut watch = world
+        .store
+        .realtime_watch(session, world.workspace)
+        .await
+        .expect("a watch");
     let due = track.write(&world, 1).await;
     assert_eq!(due, 6);
     assert_eq!(world.pull(1, 0).await.checkpoint_due, 6);
+    // The realtime channel publishes the due point with the entry (§23).
+    let frames = world
+        .store
+        .realtime_frames(session, world.workspace, &mut watch)
+        .await
+        .expect("frames");
+    assert!(
+        frames.iter().any(|f| matches!(
+            f,
+            Frame::Records {
+                checkpoint_due: 6,
+                ..
+            } | Frame::Notify {
+                checkpoint_due: 6,
+                ..
+            }
+        )),
+        "a records or notify frame carries the due point: {frames:?}"
+    );
     assert_eq!(
         push_failure(push_checkpoint(&world, 0, &early).await),
         ("checkpoint_not_due", 0),

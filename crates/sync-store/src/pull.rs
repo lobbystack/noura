@@ -18,13 +18,6 @@ pub(crate) const ENTRY_FIXED: usize = 8 + 1 + 4;
 /// Entries read per query.
 pub(crate) const CHUNK: u32 = 256;
 
-/// The sequence the next checkpoint's `covered_seq` must reach, which
-/// pages and realtime frames carry (§17): 0 while none is due, until the
-/// checkpoint ticket decides when one falls due.
-pub(crate) fn checkpoint_due() -> u64 {
-    0
-}
-
 /// Decodes a stored log entry.
 pub(crate) fn entry(raw: RawEntry) -> Result<Entry> {
     let record = match raw.record_type {
@@ -87,7 +80,8 @@ pub(crate) async fn snapshot(
             checkpoint_seq: 0,
             restore_generation: generation,
             policy_revision: row.policy_revision,
-            checkpoint_due: checkpoint_due(),
+            // Only a page whose status is 1 names a due point (§15).
+            checkpoint_due: 0,
             entries: Entries::default(),
         };
         if !active {

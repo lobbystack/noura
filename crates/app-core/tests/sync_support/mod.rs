@@ -74,6 +74,20 @@ pub const DATABASE: &str = "sync.sqlite3";
 
 impl Server<SqliteBackend> {
     pub async fn start() -> Self {
+        Self::start_with(sync_store::CheckpointInterval::default()).await
+    }
+
+    /// The server on SQLite, with checkpoints falling due every `entries`
+    /// log entries (§17).
+    pub async fn start_with_interval(entries: u64) -> Self {
+        Self::start_with(sync_store::CheckpointInterval {
+            entries,
+            weight: u64::MAX,
+        })
+        .await
+    }
+
+    async fn start_with(interval: sync_store::CheckpointInterval) -> Self {
         let dir = tempfile::tempdir().expect("temporary directory");
         let data = dir.path().join("data");
         sync_server::migrate(&data).await.expect("migrated");
@@ -82,7 +96,8 @@ impl Server<SqliteBackend> {
             "127.0.0.1:0".parse().expect("an address"),
         ))
         .await
-        .expect("the store opens");
+        .expect("the store opens")
+        .with_checkpoint_interval(interval);
         Self::serve(store, dir, None).await
     }
 }
@@ -1013,7 +1028,11 @@ pub struct Pair<B: Backend> {
 }
 
 pub async fn pair() -> Pair<SqliteBackend> {
-    let server = Server::start().await;
+    pair_on(Server::start().await).await
+}
+
+/// A [`Pair`] on `server`.
+pub async fn pair_on<B: Backend>(server: Server<B>) -> Pair<B> {
     let proxy = Proxy::start(&server.base).await;
     let mut laptop = first_desktop(&server, "ana@example.com").await;
     let mut service = laptop.connect_through(&proxy.base).await;
@@ -1065,4 +1084,16 @@ pub async fn pair() -> Pair<SqliteBackend> {
 /// Answers every request with a 503, as a server you can't reach would.
 pub fn cut_off(proxy: &Proxy) {
     proxy.forge(Box::new(|_, _| Some((503, Vec::new()))));
+}
+
+/// The body of a `not_found` error, for a forged answer.
+pub fn not_found_body() -> Vec<u8> {
+    use sync_protocol::codec::Text;
+    sync_protocol::messages::ErrorBody {
+        code: Text::new("not_found").unwrap(),
+        message: Text::new("not found").unwrap(),
+        retry_after_seconds: None,
+        detail: None,
+    }
+    .to_bytes()
 }

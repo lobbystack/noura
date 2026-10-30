@@ -79,7 +79,7 @@ pub(crate) async fn read(
             // A domain it just started to read: everything from the start.
             None => 0,
         };
-        let checkpoint_due = pull::checkpoint_due();
+        let checkpoint_due = row.checkpoint_due;
         frames.push(
             match entries(txn, workspace, domain, previous, row.head_seq).await? {
                 Some(entries) => Frame::Records {

@@ -16,6 +16,7 @@
 pub mod account_heads;
 pub mod approval;
 mod blobs;
+pub mod checkpoints;
 pub mod device;
 pub mod device_list;
 pub mod heads;
