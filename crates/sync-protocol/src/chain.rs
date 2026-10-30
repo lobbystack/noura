@@ -125,6 +125,18 @@ impl ChainFetcher for NoFetch {
     }
 }
 
+/// A record a reader applied on the branch that a settled fork dropped
+/// (§14), which it takes out of its live set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Reverted {
+    /// Its counter.
+    pub counter: u64,
+    /// Its digest.
+    pub digest: Digest,
+    /// The sequence it was applied at.
+    pub seq: u64,
+}
+
 /// A device's head in one domain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Head {
@@ -157,14 +169,22 @@ struct Position {
     attempts: BTreeMap<Digest, Attempt>,
 }
 
+impl Position {
+    /// The sequence of the applied attempt.
+    fn seq(&self) -> u64 {
+        self.attempts.get(&self.applied).map_or(0, |a| a.seq)
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct DeviceChain {
     head: Option<Head>,
     positions: BTreeMap<u64, Position>,
     /// The records of a forked chain's other branch, which the client
-    /// ignores once a checkpoint settled the fork (§14).
+    /// ignores once a checkpoint settled the fork (§14), with their
+    /// sequences.
     #[serde(default)]
-    ignored: BTreeSet<Digest>,
+    ignored: BTreeMap<Digest, u64>,
 }
 
 /// The verifier state of one domain: per device, the accepted head and the
@@ -195,7 +215,7 @@ impl ChainVerifier {
                         seq: head.seq,
                     }),
                     positions: BTreeMap::new(),
-                    ignored: BTreeSet::new(),
+                    ignored: BTreeMap::new(),
                 },
             );
         }
@@ -210,15 +230,33 @@ impl ChainVerifier {
             .unwrap_or(Head::NONE)
     }
 
-    /// Forgets the positions at or below the heads, keeping only heads, as
-    /// the client does once it accepts a checkpoint.
-    pub fn forget_below_heads(&mut self) {
+    /// Forgets the per-record state at or below `covered_seq`, as the
+    /// client does once it accepts a checkpoint covering it (§14): each
+    /// device keeps its positions above `covered_seq`, its last position at
+    /// or below it, which is its head in that checkpoint, and the ignored
+    /// records of a settled fork above it.
+    pub fn forget_below(&mut self, covered_seq: u64) {
         for chain in self.devices.values_mut() {
-            if let Some(head) = chain.head {
-                chain.positions.retain(|&counter, _| counter > head.counter);
-            }
-            chain.ignored.clear();
+            let below = chain
+                .positions
+                .iter()
+                .rev()
+                .find(|(_, p)| p.seq() <= covered_seq)
+                .map(|(counter, _)| *counter);
+            chain
+                .positions
+                .retain(|counter, p| p.seq() > covered_seq || Some(*counter) == below);
+            chain.ignored.retain(|_, seq| *seq > covered_seq);
         }
+    }
+
+    /// How many records the verifier keeps state for: positions and
+    /// ignored records, across devices.
+    pub fn retained(&self) -> usize {
+        self.devices
+            .values()
+            .map(|chain| chain.positions.len() + chain.ignored.len())
+            .sum()
     }
 
     /// Whether the record is on the other branch of a settled fork, which
@@ -226,21 +264,31 @@ impl ChainVerifier {
     pub fn ignores(&self, device: &Id, digest: &Digest) -> bool {
         self.devices
             .get(device)
-            .is_some_and(|chain| chain.ignored.contains(digest))
+            .is_some_and(|chain| chain.ignored.contains_key(digest))
     }
 
     /// Settles a fork in `kept.device`'s chain (§14). The client holds
     /// `sync_chain_forked` for that device and accepted a policy change
     /// that ends its write access; `kept` is the device's head in the
-    /// first checkpoint that covers that change's entry, and `records`
-    /// are the log's records from the client's cursor through that
-    /// checkpoint's `covered_seq`. The branch that ends at `kept` must
-    /// extend the client's head, through `previous` links or as a later
-    /// attempt of the head; the device's other records there are ignored
-    /// from now on. A branch that doesn't extend the head, as when the
-    /// client already applied the other branch past it, reports
-    /// `sync_chain_forked`.
-    pub fn resolve_fork(&mut self, kept: &Ref, records: &[ChainRecord]) -> Result<(), ChainError> {
+    /// first checkpoint that covers that change's entry, and `records` are
+    /// the log's records from the client's cursor through that checkpoint's
+    /// `covered_seq`.
+    ///
+    /// The branch that ends at `kept` reaches back, through `previous`
+    /// links or as a later attempt, either to the client's head or to a
+    /// record the client applied below it: the fork point. Above a fork
+    /// point the client applied the other branch, so those records are
+    /// reverted: the head moves back to the fork point and the reverted
+    /// records are returned, oldest first, for the caller to take out of
+    /// its live set. The device's other records in `records`, and the
+    /// reverted ones, are ignored from now on. A branch that reaches
+    /// neither, as when the fork point lies below what the verifier keeps
+    /// after a checkpoint, reports `sync_chain_forked`.
+    pub fn resolve_fork(
+        &mut self,
+        kept: &Ref,
+        records: &[ChainRecord],
+    ) -> Result<Vec<Reverted>, ChainError> {
         let device = kept.device;
         let head = self.head(&device);
         let mine: BTreeMap<Digest, &ChainRecord> = records
@@ -248,14 +296,29 @@ impl ChainVerifier {
             .filter(|r| r.device == device)
             .map(|r| (r.digest, r))
             .collect();
-        if kept.op_digest == head.digest {
-            if kept.counter != head.counter || kept.seq != head.seq {
-                return Err(ChainError::Forked);
-            }
-        } else if !mine
-            .get(&kept.op_digest)
-            .is_some_and(|r| r.counter == kept.counter && r.seq == kept.seq)
-        {
+        // The records the client applied, by digest: candidate fork points.
+        let applied: BTreeMap<Digest, (u64, u64)> = self
+            .devices
+            .get(&device)
+            .map(|chain| {
+                chain
+                    .positions
+                    .iter()
+                    .map(|(counter, p)| (p.applied, (*counter, p.seq())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let at_head = kept.op_digest == head.digest;
+        let holds = |counter: u64, seq: u64| counter == kept.counter && seq == kept.seq;
+        let known = if at_head {
+            holds(head.counter, head.seq)
+        } else if let Some((counter, seq)) = applied.get(&kept.op_digest) {
+            holds(*counter, *seq)
+        } else {
+            mine.get(&kept.op_digest)
+                .is_some_and(|r| holds(r.counter, r.seq))
+        };
+        if !known {
             return Err(ChainError::Forked);
         }
         // Earlier attempts of a kept record are harmless: the verifier
@@ -277,25 +340,57 @@ impl ChainVerifier {
         };
         let mut keep = BTreeSet::new();
         let mut current = kept.op_digest;
-        while current != head.digest {
+        let mut steps = 0;
+        let fork_point = loop {
+            if current == head.digest {
+                break None;
+            }
+            if let Some((counter, _)) = applied.get(&current) {
+                break Some(*counter);
+            }
+            steps += 1;
+            if steps > mine.len() {
+                return Err(ChainError::Forked);
+            }
             let record = mine.get(&current).ok_or(ChainError::Forked)?;
-            match record.counter.cmp(&head.counter) {
-                std::cmp::Ordering::Greater => {
-                    attempts(current, &mut keep);
-                    current = record.previous;
-                }
+            if record.counter == head.counter && attempts(current, &mut keep) {
                 // A later attempt of the head, whose line reaches it.
-                std::cmp::Ordering::Equal if attempts(current, &mut keep) => break,
-                _ => return Err(ChainError::Forked),
+                break None;
+            }
+            attempts(current, &mut keep);
+            current = record.previous;
+        };
+        let chain = self.devices.entry(device).or_default();
+        let mut reverted = Vec::new();
+        if let Some(base) = fork_point {
+            let position = chain.positions.get(&base).ok_or(ChainError::Forked)?;
+            let base_head = Head {
+                counter: base,
+                digest: position.applied,
+                seq: position.seq(),
+            };
+            let above: Vec<u64> = chain.positions.range(base + 1..).map(|(c, _)| *c).collect();
+            for counter in above {
+                let Some(position) = chain.positions.remove(&counter) else {
+                    continue;
+                };
+                reverted.push(Reverted {
+                    counter,
+                    digest: position.applied,
+                    seq: position.seq(),
+                });
+                for (digest, attempt) in position.attempts {
+                    chain.ignored.insert(digest, attempt.seq);
+                }
+            }
+            chain.head = Some(base_head);
+        }
+        for (digest, record) in &mine {
+            if !keep.contains(digest) {
+                chain.ignored.insert(*digest, record.seq);
             }
         }
-        let chain = self.devices.entry(device).or_default();
-        chain.ignored = mine
-            .keys()
-            .filter(|digest| !keep.contains(*digest))
-            .copied()
-            .collect();
-        Ok(())
+        Ok(reverted)
     }
 
     /// Judges a page of records in sequence order. On an error the caller
@@ -535,5 +630,101 @@ impl ChainVerifier {
             }
             std::cmp::Ordering::Equal => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn digest(name: &str) -> Digest {
+        crate::crypto::hash(name.as_bytes())
+    }
+
+    fn record(device: Id, counter: u64, previous: Digest, name: &str, seq: u64) -> ChainRecord {
+        ChainRecord {
+            device,
+            counter,
+            previous,
+            previous_attempt: Digest::ZERO,
+            digest: digest(name),
+            seq,
+        }
+    }
+
+    #[test]
+    fn an_accepted_checkpoint_leaves_only_heads_below_it() {
+        let x = Id([1; 16]);
+        let y = Id([2; 16]);
+        let mut verifier = ChainVerifier::new();
+        let mut page = Vec::new();
+        let (mut px, mut py) = (Digest::ZERO, Digest::ZERO);
+        for i in 1..=10u64 {
+            let rx = record(x, i, px, &format!("x{i}"), 2 * i - 1);
+            let ry = record(y, i, py, &format!("y{i}"), 2 * i);
+            (px, py) = (rx.digest, ry.digest);
+            page.extend([rx, ry]);
+        }
+        verifier.process_page(&page, &mut NoFetch).unwrap();
+        assert_eq!(verifier.retained(), 20);
+        // A checkpoint covering through sequence 14: each device keeps its
+        // head there and the positions above it.
+        verifier.forget_below(14);
+        assert_eq!(verifier.retained(), 2 + 6);
+        // A page that repeats a kept position is still ignored, and one
+        // that replays a forgotten position at a later sequence is refused.
+        assert_eq!(
+            verifier.process_one(&page[19], &mut NoFetch),
+            Ok(ChainVerdict::Ignore)
+        );
+        assert_eq!(
+            verifier.process_one(&at(page[0], 30), &mut NoFetch),
+            Err(ChainError::Replayed)
+        );
+        verifier.forget_below(20);
+        assert_eq!(verifier.retained(), 2);
+    }
+
+    fn at(r: ChainRecord, seq: u64) -> ChainRecord {
+        ChainRecord { seq, ..r }
+    }
+
+    #[test]
+    fn a_settled_fork_keeps_ignoring_the_other_branch_above_an_accepted_checkpoint() {
+        let x = Id([1; 16]);
+        let a = record(x, 1, Digest::ZERO, "a", 1);
+        let b = record(x, 2, a.digest, "b", 2);
+        let b2 = record(x, 2, a.digest, "b2", 4);
+        let c2 = record(x, 3, b2.digest, "c2", 6);
+        let mut verifier = ChainVerifier::new();
+        verifier.process_page(&[a, b], &mut NoFetch).unwrap();
+        assert_eq!(
+            verifier.clone().process_page(&[b2, c2], &mut NoFetch),
+            Err((0, ChainError::Forked))
+        );
+        let kept = Ref {
+            device: x,
+            counter: c2.counter,
+            seq: c2.seq,
+            op_digest: c2.digest,
+        };
+        let reverted = verifier.resolve_fork(&kept, &[b2, c2]).unwrap();
+        assert_eq!(
+            reverted,
+            vec![Reverted {
+                counter: 2,
+                digest: b.digest,
+                seq: 2
+            }]
+        );
+        assert!(verifier.ignores(&x, &b.digest));
+        // A checkpoint below the ignored record leaves it ignored.
+        verifier.forget_below(1);
+        assert!(verifier.ignores(&x, &b.digest));
+        let verdicts = verifier.process_page(&[b2, c2], &mut NoFetch).unwrap();
+        assert_eq!(verdicts, vec![ChainVerdict::Accept, ChainVerdict::Accept]);
+        // One covering it forgets it.
+        verifier.forget_below(2);
+        assert!(!verifier.ignores(&x, &b.digest));
     }
 }

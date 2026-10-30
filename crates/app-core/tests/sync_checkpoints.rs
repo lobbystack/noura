@@ -1821,3 +1821,391 @@ fn the_fixture_kit_and_offer_carry_checkpoint_anchors_with_their_generation() {
     let length = size["length"].as_u64().unwrap();
     assert!((115_000..130_000).contains(&length), "{length}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn below_an_accepted_checkpoint_the_verifier_keeps_only_heads() {
+    let mut pair = pair_with_checkpoints(6).await;
+    until_checkpoint(&mut pair, 1, "v").await;
+    let mut retained = Vec::new();
+    for number in 2..=5 {
+        until_checkpoint(&mut pair, number, &format!("v{number}-")).await;
+        retained.push(pair.sync_a.verifier_retained());
+    }
+    // Each interval holds about six entries from two devices, and the
+    // verifier keeps the records above the latest accepted checkpoint and
+    // one head per device below it, never the whole log.
+    assert!(
+        retained.iter().all(|r| *r <= 6 + 2),
+        "the verifier grew with the log: {retained:?}"
+    );
+}
+
+/// How the forking proxy rewrites the laptop's pulls (§14). The desktop's
+/// first record after `arm` is the target. In `Sibling` mode the laptop
+/// gets the target where it belongs and a sibling of it, at the target's
+/// counter, in the place of checkpoint 1's entry. In `Swap` mode it gets
+/// the sibling in the target's place and the target in checkpoint 1's.
+#[derive(Clone, Copy, PartialEq)]
+enum Fork {
+    Sibling,
+    Swap,
+}
+
+#[derive(Default)]
+struct ForkState {
+    armed: bool,
+    target: Option<sync_protocol::records::Signed<sync_protocol::records::Operation>>,
+    sibling: Option<sync_protocol::records::Signed<sync_protocol::records::Operation>>,
+}
+
+fn fork_through(
+    proxy: &sync_support::Proxy,
+    device: sync_protocol::types::Id,
+    keys: sync_key_envelope::v2::DeviceKeys,
+    mode: Fork,
+) -> std::sync::Arc<std::sync::Mutex<ForkState>> {
+    use std::sync::{Arc, Mutex};
+    use sync_protocol::codec::{Encode, Sorted};
+    use sync_protocol::records::Signed;
+    use sync_protocol::types::Nonce;
+
+    let state: Arc<Mutex<ForkState>> = Arc::default();
+    let shared = state.clone();
+    proxy.tamper(Box::new(move |path, body| {
+        if !path.ends_with("/pull") {
+            return body;
+        }
+        let mut state = shared.lock().unwrap();
+        let mut response = PullResponse::from_bytes(&body).expect("a pull response");
+        for page in response.pages.0.iter_mut() {
+            let mut entries = Vec::new();
+            for mut entry in page.entries.iter().cloned() {
+                match &entry.record {
+                    EntryRecord::Operation(op) if op.body.device == device => {
+                        if state.armed && state.target.is_none() {
+                            let mut body = op.body.clone();
+                            body.nonce = Nonce([0x5a; 24]);
+                            state.sibling = Some(Signed::sign(body, keys.signing()));
+                            state.target = Some(op.clone());
+                            state.armed = false;
+                        }
+                        if mode == Fork::Swap
+                            && state.target.as_ref().is_some_and(|t| t.digest() == op.digest())
+                        {
+                            entry.record =
+                                EntryRecord::Operation(state.sibling.clone().expect("forged"));
+                        }
+                    }
+                    EntryRecord::Checkpoint(bundle) if bundle.checkpoint.0.body.number == 1 => {
+                        let moved = match mode {
+                            Fork::Sibling => state.sibling.clone(),
+                            Fork::Swap => state.target.clone(),
+                        };
+                        if let Some(op) = moved {
+                            entry.record = EntryRecord::Operation(op);
+                        }
+                    }
+                    _ => {}
+                }
+                entries.push(entry);
+            }
+            page.entries = Sorted::new(entries).expect("sorted");
+        }
+        response.to_bytes()
+    }));
+    state
+}
+
+/// A pair whose laptop reads through the forking proxy, a third device of
+/// the account that signs every checkpoint, and a desktop record `a` that
+/// every device applied.
+struct ForkSetup {
+    pair: Pair<sync_store_sqlite::SqliteBackend>,
+    third: sync_support::Desktop,
+    c: sync_support::Folder,
+    sync_c: app_core::sync::workspace::WorkspaceSync,
+}
+
+async fn fork_setup() -> ForkSetup {
+    use sync_support::{Folder, approve};
+
+    let mut pair = pair_on(Server::start_with_interval(12).await).await;
+    let never = Duration::from_secs(1 << 40);
+    pair.sync_a.set_checkpoint_wait(never);
+    pair.sync_b.set_checkpoint_wait(never);
+    let mut third = approve(
+        &pair.server,
+        &mut pair.laptop,
+        std::slice::from_mut(pair.sync_a.remote_mut().unwrap()),
+    )
+    .await;
+    let mut c = Folder::new("Third");
+    let mut sync_c = app_core::sync::workspace::WorkspaceSync::download(
+        &mut third.service,
+        c.engine.clone(),
+        pair.sync_a.workspace(),
+        &mut c.registry,
+    )
+    .await
+    .expect("the download starts");
+    sync_c.set_checkpoint_wait(Duration::ZERO);
+    sync_c
+        .round(&mut third.service, 0)
+        .await
+        .expect("a round");
+    write_and_sync(&mut pair, "Shared").await;
+    pair.b.write("Before.md", b"# Before\n");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("a round");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    sync_c
+        .round(&mut third.service, 0)
+        .await
+        .expect("a round");
+    assert!(
+        pair.sync_a.latest_checkpoint().is_none(),
+        "no checkpoint yet"
+    );
+    ForkSetup {
+        pair,
+        third,
+        c,
+        sync_c,
+    }
+}
+
+/// Writes notes on the third device until it accepted a checkpoint that
+/// satisfies `done`.
+async fn third_signs(setup: &mut ForkSetup, prefix: &str, done: impl Fn(u64) -> bool) {
+    checkpoint_until(
+        &mut setup.third.service,
+        &setup.c,
+        &mut setup.sync_c,
+        prefix,
+        done,
+    )
+    .await;
+}
+
+/// The laptop removes the desktop, and the third device signs the
+/// checkpoint that the removal made due.
+async fn remove_the_desktop(setup: &mut ForkSetup) -> u64 {
+    let ForkSetup {
+        pair,
+        third,
+        sync_c,
+        ..
+    } = setup;
+    pair.laptop
+        .service
+        .remove_device(
+            pair.desktop.id(),
+            &[],
+            std::slice::from_mut(pair.sync_a.remote_mut().unwrap()),
+        )
+        .await
+        .expect("removed and recorded");
+    let before = sync_c.latest_checkpoint().map_or(0, |c| c.body.number);
+    for _ in 0..5 {
+        sync_c.round(&mut third.service, 0).await.expect("a round");
+        if sync_c
+            .latest_checkpoint()
+            .is_some_and(|c| c.body.number > before)
+        {
+            break;
+        }
+    }
+    let covering = sync_c.latest_checkpoint().expect("a checkpoint").clone();
+    assert!(covering.body.number > before, "the removal made one due");
+    covering.body.number
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reader_holding_a_fork_resumes_on_the_branch_the_covering_checkpoint_lists() {
+    let mut setup = fork_setup().await;
+    let desktop = setup.pair.desktop.id();
+    let fork = fork_through(
+        &setup.pair.proxy,
+        desktop,
+        setup.pair.desktop.credentials.keys.clone(),
+        Fork::Sibling,
+    );
+    // The desktop writes `b`, which the laptop applies; checkpoint 1's
+    // entry then reaches the laptop as a sibling of `b`.
+    fork.lock().unwrap().armed = true;
+    setup.pair.b.write("Fork.md", b"# Fork\n");
+    setup
+        .pair
+        .sync_b
+        .round(&mut setup.pair.desktop.service, 0)
+        .await
+        .expect("a round");
+    setup
+        .pair
+        .sync_a
+        .round(&mut setup.pair.service, 0)
+        .await
+        .expect("a round");
+    let sibling = fork.lock().unwrap().sibling.clone().expect("forged");
+    third_signs(&mut setup, "c", |n| n >= 1).await;
+    let cursor = setup.pair.sync_a.cursor();
+    let error = setup
+        .pair
+        .sync_a
+        .round(&mut setup.pair.service, 0)
+        .await
+        .expect_err("the chain forked");
+    assert!(
+        matches!(error, SyncError::Check("sync_chain_forked")),
+        "{error:?}"
+    );
+    assert_eq!(setup.pair.sync_a.forked_devices(), vec![desktop]);
+
+    // The desktop's write access ends, but no checkpoint covers that yet:
+    // the cursor stays held.
+    setup
+        .pair
+        .laptop
+        .service
+        .remove_device(
+            desktop,
+            &[],
+            std::slice::from_mut(setup.pair.sync_a.remote_mut().unwrap()),
+        )
+        .await
+        .expect("removed and recorded");
+    let error = setup
+        .pair
+        .sync_a
+        .round(&mut setup.pair.service, 0)
+        .await
+        .expect_err("still forked");
+    assert!(
+        matches!(error, SyncError::Check("sync_chain_forked")),
+        "{error:?}"
+    );
+    assert_eq!(setup.pair.sync_a.cursor(), cursor);
+
+    // Once the third device signs the checkpoint covering the removal,
+    // the laptop keeps the branch it lists and ignores the sibling.
+    let before = setup.sync_c.latest_checkpoint().map(|c| c.body.number);
+    for _ in 0..5 {
+        setup
+            .sync_c
+            .round(&mut setup.third.service, 0)
+            .await
+            .expect("a round");
+        if setup.sync_c.latest_checkpoint().map(|c| c.body.number) != before {
+            break;
+        }
+    }
+    assert_ne!(
+        setup.sync_c.latest_checkpoint().map(|c| c.body.number),
+        before
+    );
+    setup
+        .pair
+        .sync_a
+        .round(&mut setup.pair.service, 0)
+        .await
+        .expect("the laptop resumes");
+    assert!(setup.pair.sync_a.forked_devices().is_empty());
+    // The sibling never applied: it would count as unreadable. The
+    // checkpoint the laptop then accepted covers it, so the verifier
+    // forgot it again (§14).
+    assert!(setup.pair.sync_a.unreadable().is_empty());
+    assert!(!setup.pair.sync_a.ignores_record(&desktop, &sibling.digest()));
+    assert_eq!(
+        setup.pair.sync_a.latest_checkpoint().map(|c| c.digest()),
+        setup.sync_c.latest_checkpoint().map(|c| c.digest()),
+    );
+    assert!(setup.pair.sync_a.cursor() > cursor);
+    assert_eq!(setup.pair.a.files(), setup.c.files());
+    assert!(setup.pair.a.files().contains_key("Fork.md"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reader_that_applied_the_other_branch_reverts_it() {
+    let mut setup = fork_setup().await;
+    let desktop = setup.pair.desktop.id();
+    let fork = fork_through(
+        &setup.pair.proxy,
+        desktop,
+        setup.pair.desktop.credentials.keys.clone(),
+        Fork::Swap,
+    );
+    // The laptop applies a sibling of the desktop's `b` in its place, an
+    // operation that opens under no key, and later meets `b` itself.
+    fork.lock().unwrap().armed = true;
+    setup.pair.b.write("Fork.md", b"# Fork\n");
+    setup
+        .pair
+        .sync_b
+        .round(&mut setup.pair.desktop.service, 0)
+        .await
+        .expect("a round");
+    setup
+        .pair
+        .sync_a
+        .round(&mut setup.pair.service, 0)
+        .await
+        .expect("a round");
+    assert!(!setup.pair.a.files().contains_key("Fork.md"));
+    assert_eq!(setup.pair.sync_a.unreadable().len(), 1);
+    let sibling = fork.lock().unwrap().sibling.clone().expect("forged");
+    third_signs(&mut setup, "c", |n| n >= 1).await;
+    let error = setup
+        .pair
+        .sync_a
+        .round(&mut setup.pair.service, 0)
+        .await
+        .expect_err("the chain forked");
+    assert!(
+        matches!(error, SyncError::Check("sync_chain_forked")),
+        "{error:?}"
+    );
+
+    // The desktop edits the note, then loses its write access, and the
+    // third device signs the checkpoint covering that, which lists the
+    // edit as the desktop's head.
+    setup
+        .pair
+        .sync_b
+        .round(&mut setup.pair.desktop.service, 0)
+        .await
+        .expect("a round");
+    setup.pair.b.write("Fork.md", b"# Fork, edited\n");
+    setup
+        .pair
+        .sync_b
+        .round(&mut setup.pair.desktop.service, 0)
+        .await
+        .expect("a round");
+    remove_the_desktop(&mut setup).await;
+
+    setup
+        .pair
+        .sync_a
+        .round(&mut setup.pair.service, 0)
+        .await
+        .expect("the laptop resumes");
+    assert!(setup.pair.sync_a.forked_devices().is_empty());
+    assert_ne!(sibling.digest(), fork.lock().unwrap().target.as_ref().unwrap().digest());
+    assert!(
+        setup.pair.sync_a.unreadable().is_empty(),
+        "the reverted sibling left the journal: {:?} sibling {:?} {}",
+        setup.pair.sync_a.unreadable(),
+        sibling.body.rid,
+        sibling.body.counter,
+    );
+    assert_eq!(setup.pair.a.files(), setup.c.files());
+    assert_eq!(
+        setup.pair.a.files().get("Fork.md").map(Vec::as_slice),
+        Some(&b"# Fork, edited\n"[..])
+    );
+}

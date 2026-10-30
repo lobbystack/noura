@@ -87,7 +87,7 @@ fn schedule(
 pub fn fixture() -> Fixture {
     let mut f = Fixture::new(
         "sync-v2-chain.json",
-        "Device chains (sync-v2.md §14): schedules of served records and what the chain verifier reports for each. `server` lists what `GET .../chain/{device}/{counter}` serves (the record at that counter or the device's next one above it), `start_heads` the heads a bootstrap checkpoint gave, and `expect` either the verdict of each record of each page or the error and the page and index where it occurs. A `checkpoint_walk` case (§17, Checkpoint chain) gives the checkpoints a client `reached`, its `floor` and restore `generation`, the checkpoints `GET .../checkpoints/{digest}` serves, and a page's `entries`, and `expect` lists the checkpoints the client fetches before each entry, oldest first, or the index of the entry where the walk reports `sync_chain_gap`. A `fork_resolution` case gives the pages a reader `applied`, the page that `forked`, the head the first checkpoint covering the change that ends the device's write access `kept`, and the log's `records` from the reader's cursor through that checkpoint's `covered_seq`; `expect` holds the verdicts of the forked page judged again once the fork settles, or the error settling reports.",
+        "Device chains (sync-v2.md §14): schedules of served records and what the chain verifier reports for each. `server` lists what `GET .../chain/{device}/{counter}` serves (the record at that counter or the device's next one above it), `start_heads` the heads a bootstrap checkpoint gave, and `expect` either the verdict of each record of each page or the error and the page and index where it occurs. A `checkpoint_walk` case (§17, Checkpoint chain) gives the checkpoints a client `reached`, its `floor` and restore `generation`, the checkpoints `GET .../checkpoints/{digest}` serves, and a page's `entries`, and `expect` lists the checkpoints the client fetches before each entry, oldest first, or the index of the entry where the walk reports `sync_chain_gap`. A `fork_resolution` case gives the pages a reader `applied`, the page that `forked`, the head the first checkpoint covering the change that ends the device's write access `kept`, and the log's `records` from the reader's cursor through that checkpoint's `covered_seq`, with `accepted_covered_seq` when the reader accepted a checkpoint after the applied pages; `expect` holds the verdicts of the forked page judged again once the fork settles, with the digests of the applied records settling `reverted` when the fork point lies below the reader's head, or the error settling reports.",
     );
     let accept = json!({"verdict": "accept"});
     let ignore = json!({"verdict": "ignore"});
@@ -443,16 +443,51 @@ fn fork_resolutions(f: &mut Fixture) {
         forked.clone(),
     );
     // The reader applied one branch past the fork before the other
-    // arrived: the kept branch doesn't extend its head.
+    // arrived: the kept branch doesn't extend its head, so the reader
+    // reverts the records it applied above the fork point and takes the
+    // kept branch.
     fork_resolution(
         f,
-        "a_kept_branch_that_doesnt_extend_the_readers_head",
+        "a_kept_branch_that_doesnt_extend_the_readers_head_reverts_the_other",
         &[vec![a, b, c]],
         &[b2, c2],
         &[b2, c2],
         &c2,
-        forked,
+        json!({
+            "reverted": [b.digest.to_hex(), c.digest.to_hex()],
+            "verdicts": [accept, accept],
+        }),
     );
+    // The same with the kept branch's head at the fork point itself: the
+    // reader reverts everything it applied above `a`.
+    fork_resolution(
+        f,
+        "a_kept_head_below_the_readers_head_reverts_above_it",
+        &[vec![a, b, c]],
+        &[b2],
+        &[b2],
+        &a,
+        json!({
+            "reverted": [b.digest.to_hex(), c.digest.to_hex()],
+            "verdicts": [ignore],
+        }),
+    );
+    // Once the reader accepted a checkpoint covering `b`, it keeps no
+    // position below `b`, so the fork point `a` is gone and the fork can't
+    // settle.
+    let b2_late = at(b2, 5);
+    let c2_late = at(c2, 6);
+    let mut case = json!({
+        "kind": "fork_resolution",
+        "name": "a_fork_point_below_the_accepted_checkpoint",
+        "applied": [[rec(&a), rec(&b), rec(&c)]],
+        "accepted_covered_seq": 2,
+        "forked": [rec(&b2_late), rec(&c2_late)],
+        "records": [rec(&b2_late), rec(&c2_late)],
+        "kept": rec(&c2_late),
+        "expect": forked,
+    });
+    f.case(std::mem::take(&mut case));
 
     // Sibling re-seal attempts of the reader's head.
     let mut d = Device::new("forking device");

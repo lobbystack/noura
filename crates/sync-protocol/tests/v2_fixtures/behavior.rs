@@ -811,6 +811,10 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
                     .process_page(&records(page), &mut NoFetch)
                     .map_err(|e| format!("an applied page failed: {e:?}"))?;
             }
+            // A checkpoint the reader accepted after the applied pages.
+            if let Some(covered) = case.get("accepted_covered_seq") {
+                verifier.forget_below(u64_of(covered));
+            }
             let forked = records(&case["forked"]);
             match verifier.clone().process_page(&forked, &mut NoFetch) {
                 Err((_, ChainError::Forked)) => {}
@@ -828,8 +832,19 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
                     json!({"error": e.client_code().trim_start_matches("sync_chain_")}),
                     expect.clone(),
                 ),
-                Ok(()) => match verifier.process_page(&forked, &mut NoFetch) {
-                    Ok(verdicts) => same(serde_json::to_value(verdicts).unwrap(), expect.clone()),
+                Ok(reverted) => match verifier.process_page(&forked, &mut NoFetch) {
+                    Ok(verdicts) => {
+                        let reverted: Vec<String> =
+                            reverted.iter().map(|r| r.digest.to_hex()).collect();
+                        let verdicts = serde_json::to_value(verdicts).unwrap();
+                        if expect.get("verdicts").is_some() {
+                            same(json!({"reverted": reverted, "verdicts": verdicts}), expect.clone())
+                        } else if reverted.is_empty() {
+                            same(verdicts, expect.clone())
+                        } else {
+                            Err(format!("settling reverted {reverted:?}"))
+                        }
+                    }
                     Err((i, e)) => Err(format!("record {i} failed after settling: {e:?}")),
                 },
             }

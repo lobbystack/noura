@@ -2049,7 +2049,18 @@
 				]
 			],
 			"expect": {
-				"error": "forked"
+				"reverted": [
+					"34b3c6660965a6588ecd64d50b98e2871517d1cf111b5461ca3edc2c187d3647",
+					"9bf8b5aa371035841b307acbeb65d44f1d772a40ced8a92050bb5f2beba6a361"
+				],
+				"verdicts": [
+					{
+						"verdict": "accept"
+					},
+					{
+						"verdict": "accept"
+					}
+				]
 			},
 			"forked": [
 				{
@@ -2078,7 +2089,7 @@
 				"seq": 5
 			},
 			"kind": "fork_resolution",
-			"name": "a_kept_branch_that_doesnt_extend_the_readers_head",
+			"name": "a_kept_branch_that_doesnt_extend_the_readers_head_reverts_the_other",
 			"records": [
 				{
 					"counter": 2,
@@ -2095,6 +2106,157 @@
 					"previous": "aeb31d6788184e5477eb1e54230252a9e9fb440fa97a4fb15e3141002dd8a1a9",
 					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
 					"seq": 5
+				}
+			]
+		},
+		{
+			"applied": [
+				[
+					{
+						"counter": 1,
+						"device": "cdb381d0ce458e2f728392848dfb81eb",
+						"digest": "4122296b4b7ff0ab2a21461076d7668fffd6587791c61c16c850525069264cc1",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 2,
+						"device": "cdb381d0ce458e2f728392848dfb81eb",
+						"digest": "34b3c6660965a6588ecd64d50b98e2871517d1cf111b5461ca3edc2c187d3647",
+						"previous": "4122296b4b7ff0ab2a21461076d7668fffd6587791c61c16c850525069264cc1",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 2
+					},
+					{
+						"counter": 3,
+						"device": "cdb381d0ce458e2f728392848dfb81eb",
+						"digest": "9bf8b5aa371035841b307acbeb65d44f1d772a40ced8a92050bb5f2beba6a361",
+						"previous": "34b3c6660965a6588ecd64d50b98e2871517d1cf111b5461ca3edc2c187d3647",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 4
+					}
+				]
+			],
+			"expect": {
+				"reverted": [
+					"34b3c6660965a6588ecd64d50b98e2871517d1cf111b5461ca3edc2c187d3647",
+					"9bf8b5aa371035841b307acbeb65d44f1d772a40ced8a92050bb5f2beba6a361"
+				],
+				"verdicts": [
+					{
+						"verdict": "ignore"
+					}
+				]
+			},
+			"forked": [
+				{
+					"counter": 2,
+					"device": "cdb381d0ce458e2f728392848dfb81eb",
+					"digest": "aeb31d6788184e5477eb1e54230252a9e9fb440fa97a4fb15e3141002dd8a1a9",
+					"previous": "4122296b4b7ff0ab2a21461076d7668fffd6587791c61c16c850525069264cc1",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 3
+				}
+			],
+			"kept": {
+				"counter": 1,
+				"device": "cdb381d0ce458e2f728392848dfb81eb",
+				"digest": "4122296b4b7ff0ab2a21461076d7668fffd6587791c61c16c850525069264cc1",
+				"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+				"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+				"seq": 1
+			},
+			"kind": "fork_resolution",
+			"name": "a_kept_head_below_the_readers_head_reverts_above_it",
+			"records": [
+				{
+					"counter": 2,
+					"device": "cdb381d0ce458e2f728392848dfb81eb",
+					"digest": "aeb31d6788184e5477eb1e54230252a9e9fb440fa97a4fb15e3141002dd8a1a9",
+					"previous": "4122296b4b7ff0ab2a21461076d7668fffd6587791c61c16c850525069264cc1",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 3
+				}
+			]
+		},
+		{
+			"accepted_covered_seq": 2,
+			"applied": [
+				[
+					{
+						"counter": 1,
+						"device": "cdb381d0ce458e2f728392848dfb81eb",
+						"digest": "4122296b4b7ff0ab2a21461076d7668fffd6587791c61c16c850525069264cc1",
+						"previous": "0000000000000000000000000000000000000000000000000000000000000000",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 1
+					},
+					{
+						"counter": 2,
+						"device": "cdb381d0ce458e2f728392848dfb81eb",
+						"digest": "34b3c6660965a6588ecd64d50b98e2871517d1cf111b5461ca3edc2c187d3647",
+						"previous": "4122296b4b7ff0ab2a21461076d7668fffd6587791c61c16c850525069264cc1",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 2
+					},
+					{
+						"counter": 3,
+						"device": "cdb381d0ce458e2f728392848dfb81eb",
+						"digest": "9bf8b5aa371035841b307acbeb65d44f1d772a40ced8a92050bb5f2beba6a361",
+						"previous": "34b3c6660965a6588ecd64d50b98e2871517d1cf111b5461ca3edc2c187d3647",
+						"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+						"seq": 4
+					}
+				]
+			],
+			"expect": {
+				"error": "forked"
+			},
+			"forked": [
+				{
+					"counter": 2,
+					"device": "cdb381d0ce458e2f728392848dfb81eb",
+					"digest": "aeb31d6788184e5477eb1e54230252a9e9fb440fa97a4fb15e3141002dd8a1a9",
+					"previous": "4122296b4b7ff0ab2a21461076d7668fffd6587791c61c16c850525069264cc1",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 5
+				},
+				{
+					"counter": 3,
+					"device": "cdb381d0ce458e2f728392848dfb81eb",
+					"digest": "b25a42e5e55388bf5b4dfd3105b73bee45b59057792c7c6a10fbc4d68a9b1e5d",
+					"previous": "aeb31d6788184e5477eb1e54230252a9e9fb440fa97a4fb15e3141002dd8a1a9",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 6
+				}
+			],
+			"kept": {
+				"counter": 3,
+				"device": "cdb381d0ce458e2f728392848dfb81eb",
+				"digest": "b25a42e5e55388bf5b4dfd3105b73bee45b59057792c7c6a10fbc4d68a9b1e5d",
+				"previous": "aeb31d6788184e5477eb1e54230252a9e9fb440fa97a4fb15e3141002dd8a1a9",
+				"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+				"seq": 6
+			},
+			"kind": "fork_resolution",
+			"name": "a_fork_point_below_the_accepted_checkpoint",
+			"records": [
+				{
+					"counter": 2,
+					"device": "cdb381d0ce458e2f728392848dfb81eb",
+					"digest": "aeb31d6788184e5477eb1e54230252a9e9fb440fa97a4fb15e3141002dd8a1a9",
+					"previous": "4122296b4b7ff0ab2a21461076d7668fffd6587791c61c16c850525069264cc1",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 5
+				},
+				{
+					"counter": 3,
+					"device": "cdb381d0ce458e2f728392848dfb81eb",
+					"digest": "b25a42e5e55388bf5b4dfd3105b73bee45b59057792c7c6a10fbc4d68a9b1e5d",
+					"previous": "aeb31d6788184e5477eb1e54230252a9e9fb440fa97a4fb15e3141002dd8a1a9",
+					"previous_attempt": "0000000000000000000000000000000000000000000000000000000000000000",
+					"seq": 6
 				}
 			]
 		},
@@ -2187,7 +2349,7 @@
 			]
 		}
 	],
-	"description": "Device chains (sync-v2.md §14): schedules of served records and what the chain verifier reports for each. `server` lists what `GET .../chain/{device}/{counter}` serves (the record at that counter or the device's next one above it), `start_heads` the heads a bootstrap checkpoint gave, and `expect` either the verdict of each record of each page or the error and the page and index where it occurs. A `checkpoint_walk` case (§17, Checkpoint chain) gives the checkpoints a client `reached`, its `floor` and restore `generation`, the checkpoints `GET .../checkpoints/{digest}` serves, and a page's `entries`, and `expect` lists the checkpoints the client fetches before each entry, oldest first, or the index of the entry where the walk reports `sync_chain_gap`. A `fork_resolution` case gives the pages a reader `applied`, the page that `forked`, the head the first checkpoint covering the change that ends the device's write access `kept`, and the log's `records` from the reader's cursor through that checkpoint's `covered_seq`; `expect` holds the verdicts of the forked page judged again once the fork settles, or the error settling reports.",
+	"description": "Device chains (sync-v2.md §14): schedules of served records and what the chain verifier reports for each. `server` lists what `GET .../chain/{device}/{counter}` serves (the record at that counter or the device's next one above it), `start_heads` the heads a bootstrap checkpoint gave, and `expect` either the verdict of each record of each page or the error and the page and index where it occurs. A `checkpoint_walk` case (§17, Checkpoint chain) gives the checkpoints a client `reached`, its `floor` and restore `generation`, the checkpoints `GET .../checkpoints/{digest}` serves, and a page's `entries`, and `expect` lists the checkpoints the client fetches before each entry, oldest first, or the index of the entry where the walk reports `sync_chain_gap`. A `fork_resolution` case gives the pages a reader `applied`, the page that `forked`, the head the first checkpoint covering the change that ends the device's write access `kept`, and the log's `records` from the reader's cursor through that checkpoint's `covered_seq`, with `accepted_covered_seq` when the reader accepted a checkpoint after the applied pages; `expect` holds the verdicts of the forked page judged again once the fork settles, with the digests of the applied records settling `reverted` when the fork point lies below the reader's head, or the error settling reports.",
 	"fixture_keys_are_public_test_values": true,
 	"keys": {},
 	"records": []

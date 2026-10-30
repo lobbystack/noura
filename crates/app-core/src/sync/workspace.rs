@@ -323,7 +323,7 @@ impl WorkspaceSync {
                 epoch_entries: 0,
                 skipped_rotators: BTreeMap::new(),
                 checkpoints: Default::default(),
-                forked: BTreeSet::new(),
+                forked: BTreeMap::new(),
             },
             own: Own {
                 next,
@@ -2181,6 +2181,23 @@ impl WorkspaceSync {
         &self.state.log.checkpoints.failures
     }
 
+    /// How many records the chain verifier keeps state for, which stays
+    /// within one checkpoint interval (§14).
+    pub fn verifier_retained(&self) -> usize {
+        self.state.log.verifier.retained()
+    }
+
+    /// The devices whose forked chain holds the cursor (§14).
+    pub fn forked_devices(&self) -> Vec<Id> {
+        self.state.log.forked.keys().copied().collect()
+    }
+
+    /// Whether the chain verifier ignores `digest`, a record of `device` on
+    /// the other branch of a settled fork (§14).
+    pub fn ignores_record(&self, device: &Id, digest: &Digest) -> bool {
+        self.state.log.verifier.ignores(device, digest)
+    }
+
     /// Signs and pushes a checkpoint once the device has applied the log
     /// past the due point the server published and its random wait passed
     /// with none arriving (§17). A device that can't write the domain, or
@@ -2662,7 +2679,7 @@ impl WorkspaceSync {
     /// A fork it can't settle yet keeps holding the cursor.
     async fn settle_forks(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
         let (workspace, domain) = (self.state.workspace, self.state.domain);
-        for device in self.state.log.forked.clone() {
+        for (device, at) in self.state.log.forked.clone() {
             let Some(remote) = self.remote.as_ref() else {
                 return Ok(());
             };
@@ -2670,8 +2687,10 @@ impl WorkspaceSync {
             if policy.head_snapshot().can_write(&device, &domain) {
                 continue;
             }
+            // The first change after the forked record's position that ends
+            // the device's write access (§14).
             let head = policy.head().0;
-            let Some(ended) = (2..=head).rev().find(|&r| {
+            let Some(ended) = (at.max(1) + 1..=head).find(|&r| {
                 policy
                     .at(r - 1)
                     .is_some_and(|s| s.can_write(&device, &domain))
@@ -2735,16 +2754,59 @@ impl WorkspaceSync {
                 }
                 after = page.complete_through;
             }
-            if self
-                .state
-                .log
-                .verifier
-                .resolve_fork(&kept, &records)
-                .is_ok()
-            {
+            if let Ok(reverted) = self.state.log.verifier.resolve_fork(&kept, &records) {
+                self.revert(device, &reverted, &BTreeMap::new())?;
                 self.state.log.forked.remove(&device);
                 self.save()?;
             }
+        }
+        Ok(())
+    }
+
+    /// Takes out of the journal the records of `device` that a settled
+    /// fork reverted (§14): each leaves the live set of its object, its
+    /// state and the per-record refs the next checkpoint's heads come
+    /// from, and each touched object's file follows its live set again.
+    fn revert(
+        &mut self,
+        device: Id,
+        reverted: &[sync_protocol::chain::Reverted],
+        contents: &Bodies,
+    ) -> Result<(), SyncError> {
+        let mut touched = Vec::new();
+        for record in reverted {
+            let Some(rid) = self.state.log.live.remove_digest(&record.digest) else {
+                continue;
+            };
+            let key = OpKey {
+                device,
+                counter: record.counter,
+            };
+            if let Some(object) = self.state.objects.get_mut(&rid)
+                && object.states.get(&key).is_some_and(|s| s.digest == record.digest)
+            {
+                object.states.remove(&key);
+            }
+            self.state.unreadable.retain(|u| {
+                !(u.rid == rid && u.device == device && u.counter == record.counter
+                    && u.seq == record.seq)
+            });
+            self.state
+                .log
+                .checkpoints
+                .since
+                .retain(|r| r.op_digest != record.digest);
+            if !touched.contains(&rid) {
+                touched.push(rid);
+            }
+        }
+        // The kept branch's records carry the device's policy revision and
+        // generation again.
+        if !reverted.is_empty() {
+            self.state.log.last.remove(&device);
+        }
+        for rid in touched {
+            self.settle(rid, contents)?;
         }
         Ok(())
     }
@@ -2929,11 +2991,12 @@ impl WorkspaceSync {
             };
             let outcome = self.judge_with(page, extra, &mut fetcher);
             let misses = std::mem::take(&mut fetcher.misses);
-            if let (Err(SyncError::Check("sync_chain_forked")), Some(device)) =
+            if let (Err(SyncError::Check("sync_chain_forked")), Some((device, at))) =
                 (&outcome, fetcher.forked)
                 && misses.is_empty()
-                && self.state.log.forked.insert(device)
+                && !self.state.log.forked.contains_key(&device)
             {
+                self.state.log.forked.insert(device, at);
                 self.save()?;
             }
             match outcome {
@@ -3080,7 +3143,12 @@ impl WorkspaceSync {
                             .check(bundle, &log.live, &log.judge, policy, &remote.epochs)
                     };
                     match checked {
-                        Ok(()) => log.checkpoints.accept(bundle, &mut log.live),
+                        Ok(()) => {
+                            log.checkpoints.accept(bundle, &mut log.live);
+                            // Below an accepted checkpoint the verifier
+                            // keeps only heads (§14).
+                            log.verifier.forget_below(record.body.covered_seq);
+                        }
                         Err(code) => {
                             tracing::warn!(
                                 code,
@@ -3480,8 +3548,9 @@ impl sync_protocol::manifest::CheckpointFetcher for CachedCheckpoints<'_> {
 struct Cached<'a> {
     cache: &'a BTreeMap<(Id, u64), Fetched>,
     misses: Vec<(Id, u64)>,
-    /// The device whose record reported `sync_chain_forked`.
-    forked: Option<Id>,
+    /// The device whose record reported `sync_chain_forked`, with the
+    /// revision of the latest policy entry before the record.
+    forked: Option<(Id, u64)>,
 }
 
 impl ChainFetcher for Cached<'_> {
@@ -3549,7 +3618,10 @@ fn check_operation(
         .process_one(&ChainRecord::from_operation(op, seq), fetcher)
         .map_err(|e| {
             if e == ChainError::Forked {
-                fetcher.forked = Some(body.device);
+                fetcher.forked = Some((
+                    body.device,
+                    log.judge.latest_policy_entry().unwrap_or(0),
+                ));
             }
             SyncError::Check(e.client_code())
         })?;
