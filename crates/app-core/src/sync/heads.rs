@@ -153,7 +153,10 @@ impl SyncService {
     /// The account chains a change in `remote` relies on: every chain its
     /// log records, the device's own included, judged against the heads
     /// the device keeps.
-    async fn chains_of(&mut self, remote: &RemoteWorkspace) -> Result<AccountChains, SyncError> {
+    pub(crate) async fn chains_of(
+        &mut self,
+        remote: &RemoteWorkspace,
+    ) -> Result<AccountChains, SyncError> {
         let own = self.own_chain().await?;
         let changes: Vec<Signed<PolicyChange>> = (1..=remote.policy.head().0)
             .filter_map(|r| remote.policy.change(r).cloned())
@@ -407,7 +410,7 @@ impl SyncService {
 
     /// A current-epoch envelope of the workspace domain for every card that
     /// `next` brings in, when this device could read the domain before.
-    fn envelopes_for(
+    pub(crate) fn envelopes_for(
         &self,
         remote: &RemoteWorkspace,
         before: &Snapshot,

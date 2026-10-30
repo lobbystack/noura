@@ -21,6 +21,7 @@ pub mod device;
 pub mod device_list;
 pub mod heads;
 pub mod invitations;
+pub mod joining;
 pub mod journal;
 pub mod marks;
 pub mod realtime;

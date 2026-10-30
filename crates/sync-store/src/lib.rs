@@ -2082,11 +2082,36 @@ impl<B: Backend> Store<B> {
             };
             self.push_checkpoint(session, workspace, bundle).await?
         } else {
+            // An approval's fresh checkpoint, last in its push: the checks
+            // and the recomputation over committed records run first, in a
+            // read transaction, as for a checkpoint alone (§17).
+            let plan = match ops.last() {
+                Some(push::Pushed::Checkpoint(index, bundle)) => {
+                    let index = *index;
+                    let bundle = Arc::new(bundle.clone());
+                    let read_cache = self.policies.clone();
+                    let plan = self
+                        .backend
+                        .read(Box::new(move |txn: &mut B::Read| {
+                            Box::pin(async move {
+                                checkpoints::plan(txn, &read_cache, session, workspace, &bundle)
+                                    .await
+                            })
+                        }))
+                        .await
+                        .map_err(|e| match e {
+                            Error::Refused(refusal) => push::failure(index, refusal),
+                            internal => internal,
+                        })?;
+                    Some(plan)
+                }
+                _ => None,
+            };
             let group = push::group(workspace, &ops);
             let job: WriteJob<B::Write, PushResponse> = Box::new(move |txn: &mut B::Write| {
                 Box::pin(async move {
                     push::commit(
-                        txn, &cache, interval, generation, session, workspace, ops, now,
+                        txn, &cache, interval, generation, session, workspace, ops, plan, now,
                     )
                     .await
                 })

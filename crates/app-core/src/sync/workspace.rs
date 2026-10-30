@@ -15,6 +15,7 @@
 //! capture changes; the calls that reach the server take the device's
 //! [`SyncService`].
 
+mod approve;
 mod bootstrap;
 mod capture;
 pub mod rebuild;

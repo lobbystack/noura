@@ -10,13 +10,13 @@ use sync_protocol::codec::{Bytes, Encode, Nested, Sorted, Text};
 use sync_protocol::crypto::{random_array, random_nonce};
 use sync_protocol::messages::{ApprovalRequest, InvitationStatus};
 use sync_protocol::records::{
-    AccountHead, AccountLink, InviteContext, InvitePayload, Offer, PolicyKind, Role, Signed,
-    approval_commit, invite_proof, invite_token_hash,
+    AccountHead, AccountLink, InviteContext, InvitePayload, Offer, PolicyChange, PolicyKind, Role,
+    Signed, approval_commit, invite_proof, invite_token_hash,
 };
 use sync_protocol::types::{Digest, Id, Key, SecretKey};
 
 use super::{World, account, head_of, random_token, refusal};
-use crate::{Backend, InvitationCreation, MAX_INVITATIONS, Session, Store};
+use crate::{Backend, InvitationCreation, MAX_INVITATIONS, Session, Store, WriteTxn};
 
 /// An invitation's secrets, as the inviting device keeps them.
 pub struct Invite {
@@ -570,7 +570,7 @@ pub async fn workspace_requests_hold_a_hundred<B: Backend>(store: Store<B>) {
 
 /// The invitation, its acceptance and the invitee's approval request,
 /// ready for the approving device's `add_member`.
-async fn requested<B: Backend>(world: &World<B>, role: Role) -> (Invite, Invitee) {
+pub(super) async fn requested<B: Backend>(world: &World<B>, role: Role) -> (Invite, Invitee) {
     let owner = world.devices[0].session;
     let invite = Invite::new(role);
     world
@@ -852,5 +852,139 @@ pub async fn invitations_end_with_their_inviters_authority<B: Backend>(store: St
             .collect::<Vec<_>>(),
         vec![from_owner.invitation],
         "the owner's invitation stays"
+    );
+}
+
+/// Puts `case` of `sync-v2-policy.json` in the store: the case's account
+/// chains, and its workspace with every change but the last, as a
+/// workspace that committed them. Returns the workspace and the last
+/// change, unpushed, with its signer's session.
+pub async fn forged_policy_case<B: Backend>(
+    store: &Store<B>,
+    case: &str,
+) -> (Id, Signed<PolicyChange>, Session) {
+    use sync_protocol::codec::Decode;
+    use sync_protocol::types::from_hex;
+
+    let doc = super::fixture("sync-v2-policy.json");
+    let case = doc["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|c| c["name"] == case)
+        .expect("the case")
+        .clone();
+    let hex = |v: &serde_json::Value| from_hex(v.as_str().expect("hex")).expect("hex");
+    for chain in case["account_chains"].as_array().expect("chains") {
+        let links: Vec<Signed<AccountLink>> = doc["chains"][chain.as_str().expect("a digest")]
+            .as_array()
+            .expect("links")
+            .iter()
+            .map(|d| {
+                Signed::from_bytes(&hex(&doc["links"][d.as_str().expect("a digest")]))
+                    .expect("a link")
+            })
+            .collect();
+        store
+            .append_account_links(links)
+            .await
+            .expect("the fixture's chain");
+    }
+    let mut changes: Vec<Signed<PolicyChange>> = case["changes"]
+        .as_array()
+        .expect("changes")
+        .iter()
+        .map(|c| Signed::from_bytes(&hex(c)).expect("a change"))
+        .collect();
+    let forged = changes.pop().expect("a forged change");
+    let workspace = changes[0].body.workspace;
+    let PolicyKind::Genesis { workspace_domain } = changes[0].body.kind else {
+        panic!("the chain starts with a genesis");
+    };
+    let signer = forged.body.signer;
+    let account = doc["keys"]
+        .as_object()
+        .expect("keys")
+        .values()
+        .find(|k| super::id_of(&k["device"]) == signer)
+        .map(|k| super::id_of(&k["account"]))
+        .expect("the signer's account");
+    store
+        .backend()
+        .write(Box::new(move |txn: &mut B::Write| {
+            Box::pin(async move {
+                let last = changes.last().expect("a change");
+                txn.insert_workspace(
+                    workspace,
+                    &crate::WorkspaceRow {
+                        owner: changes[0].body.heads.iter().next().expect("a head").account,
+                        creation_digest: Digest::ZERO,
+                        creation_response: Vec::new(),
+                        policy_revision: last.body.revision,
+                        policy_head: last.digest(),
+                    },
+                )
+                .await?;
+                txn.insert_domain(workspace, workspace_domain).await?;
+                for change in &changes {
+                    crate::policy::store_change(txn, workspace, change).await?;
+                }
+                Ok(())
+            })
+        }))
+        .await
+        .expect("the fixture's workspace");
+    (workspace, forged, Session::new(account, signer))
+}
+
+/// Pushes the forged change of `case` from its signer and returns the
+/// refusal's code and message.
+async fn push_forged<B: Backend>(store: Store<B>, case: &str) -> (&'static str, String) {
+    use sync_protocol::messages::{PushRequest, RecordRef};
+
+    let (workspace, forged, session) = forged_policy_case(&store, case).await;
+    let body = PushRequest {
+        records: sync_protocol::codec::List(vec![RecordRef::Policy(forged)]),
+    }
+    .to_bytes();
+    let refused = refusal(store.push(session, workspace, body).await);
+    (refused.code, refused.message)
+}
+
+/// The server refuses with `forbidden` a change that records another
+/// account's head outside `add_member`, `accept_reset` and `account_heads`
+/// (§8, `sync-v2-policy.json`).
+pub async fn a_foreign_head_is_forbidden<B: Backend>(store: Store<B>) {
+    assert_eq!(
+        push_forged(
+            store,
+            "another_account_outside_add_member_accept_reset_and_account_heads"
+        )
+        .await
+        .0,
+        "forbidden"
+    );
+}
+
+/// The server refuses with `forbidden` an `add_member` for an account that
+/// is already a member, by the policy rule: the fixture's change names no
+/// invitation the store holds, and the policy check runs first (§8).
+pub async fn add_member_of_a_member_is_forbidden<B: Backend>(store: Store<B>) {
+    let (code, message) = push_forged(store, "add_member_for_a_member").await;
+    assert_eq!(code, "forbidden");
+    assert!(
+        message.contains("invalid target"),
+        "the policy chain refuses it, not the invitation checks: {message}"
+    );
+}
+
+/// The server refuses with `id_conflict` heads that would make one device
+/// ID active under two accounts (§8).
+pub async fn one_device_under_two_accounts_is_an_id_conflict<B: Backend>(store: Store<B>) {
+    assert_eq!(
+        push_forged(store, "one_device_id_under_two_accounts")
+            .await
+            .0,
+        "id_conflict"
     );
 }

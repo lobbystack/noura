@@ -15,7 +15,8 @@ use sync_protocol::messages::{
 use sync_protocol::padding::is_padded_ciphertext_length;
 use sync_protocol::policy::PolicyChain;
 use sync_protocol::records::{
-    CheckpointBundle, Envelope, EpochBundle, Operation, PolicyChange, Profile, Role, Signed,
+    CheckpointBundle, Envelope, EpochBundle, Operation, PolicyChange, PolicyKind, Profile, Role,
+    Signed,
 };
 use sync_protocol::types::{Digest, Id};
 
@@ -99,7 +100,8 @@ pub(crate) enum Pushed {
     Envelope(usize, Signed<Envelope>),
     /// A new workspace profile from an owner or admin device (§25).
     Profile(usize, Signed<Profile>),
-    /// A checkpoint bundle (§17), alone in its push.
+    /// A checkpoint bundle (§17), alone in its push or last in an
+    /// approval's.
     Checkpoint(usize, CheckpointBundle),
 }
 
@@ -144,12 +146,17 @@ pub(crate) fn decode(body: &[u8], workspace: Id, session: Session) -> Result<Vec
             }
             RecordRef::Profile(profile) => (profile.body.workspace, profile.body.signer),
             RecordRef::CheckpointBundle(bundle) => {
-                // A checkpoint goes in a push of its own until approvals
-                // and grants carry one (ticket 50).
-                if records_len > 1 {
+                // A checkpoint goes in a push of its own, or last in the
+                // push of an approval, whose fresh checkpoint sets the new
+                // member's history floor (§9, §10).
+                let approval = pushed.iter().any(|p| {
+                    matches!(p, Pushed::Change(_, change)
+                        if matches!(change.body.kind, PolicyKind::AddMember { .. }))
+                });
+                if records_len > 1 && (index + 1 != records_len || !approval) {
                     return Err(fail(
                         "bad_request",
-                        "a checkpoint goes in a push of its own",
+                        "a checkpoint goes in a push of its own or last in an approval's",
                     ));
                 }
                 let body = &bundle.checkpoint.0.body;
@@ -265,8 +272,10 @@ pub(crate) async fn commit(
     session: Session,
     workspace: Id,
     pushed: Vec<Pushed>,
+    plan: Option<crate::checkpoints::Plan>,
     now: u64,
 ) -> Result<PushResponse> {
+    let mut plan = plan;
     let changes = pushed.iter().any(|p| matches!(p, Pushed::Change(..)));
     let keys = pushed
         .iter()
@@ -349,9 +358,19 @@ pub(crate) async fn commit(
             Pushed::Op(op) => apply(txn, state.policy(), interval, generation, workspace, op)
                 .await
                 .map(|receipt| vec![receipt]),
-            Pushed::Checkpoint(..) => Err(Error::internal(
-                "a checkpoint commits through checkpoints::commit",
-            )),
+            Pushed::Checkpoint(_, bundle) => match plan.take() {
+                // The approval's fresh checkpoint, planned before this
+                // transaction opened (§17).
+                Some(plan) => {
+                    let policy = state.policy().clone();
+                    crate::checkpoints::commit_locked(
+                        txn, &policy, session, workspace, bundle, plan, true,
+                    )
+                    .await
+                    .map(|receipt| vec![receipt])
+                }
+                None => Err(Error::internal("a checkpoint in a push has no plan")),
+            },
             Pushed::Change(_, change) => {
                 keys::apply_change(txn, &mut state, session, workspace, index, change).await
             }

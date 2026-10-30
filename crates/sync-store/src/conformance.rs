@@ -100,7 +100,7 @@ macro_rules! conformance_tests {
             checkpoint_checks_match_the_fixture,
             checkpoint_heads_follow_the_fixture,
             racing_checkpoints_keep_the_first,
-            a_checkpoint_goes_in_a_push_of_its_own,
+            a_checkpoint_goes_alone_or_last_in_an_approval,
             removals_make_checkpoints_due_and_leave_the_heads,
             replacements_make_checkpoints_due,
             checkpoint_routes_serve_the_chain_and_manifest,
@@ -113,6 +113,9 @@ macro_rules! conformance_tests {
             workspace_requests_hold_a_hundred,
             membership_changes_follow_section_8,
             invitations_end_with_their_inviters_authority,
+            a_foreign_head_is_forbidden,
+            add_member_of_a_member_is_forbidden,
+            one_device_under_two_accounts_is_an_id_conflict,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {

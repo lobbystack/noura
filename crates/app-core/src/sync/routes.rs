@@ -114,6 +114,19 @@ impl SyncClient {
             .await
     }
 
+    /// `GET /v2/workspaces/{w}/pending-devices`: the requests of invited
+    /// and reset accounts, for an owner or admin device.
+    pub async fn workspace_pending_devices(
+        &mut self,
+        workspace: Id,
+    ) -> Result<PendingResponse, SyncError> {
+        let path = format!(
+            "/v2/workspaces/{}/pending-devices",
+            workspace.to_base64url()
+        );
+        self.call(reqwest::Method::GET, &path, None).await
+    }
+
     /// `POST /v2/approvals`.
     pub async fn post_offer(&mut self, offer: &Signed<Offer>) -> Result<(), SyncError> {
         let body = OfferRequest {

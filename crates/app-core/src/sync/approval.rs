@@ -226,10 +226,13 @@ pub struct PendingDevice {
 
 /// The one offer an approving device keeps outstanding (§10).
 pub struct OutstandingOffer {
-    offer: Signed<Offer>,
-    digest: Digest,
-    card: Card,
-    nc: Option<Key>,
+    pub(crate) offer: Signed<Offer>,
+    pub(crate) digest: Digest,
+    pub(crate) card: Card,
+    pub(crate) nc: Option<Key>,
+    /// The invitation an invited member's request named, with the role it
+    /// grants; `None` for a device of your own account.
+    pub(crate) invited: Option<(Id, sync_protocol::records::Role)>,
 }
 
 impl OutstandingOffer {
@@ -320,6 +323,7 @@ impl SyncService {
             digest,
             card: request.card.clone(),
             nc: None,
+            invited: None,
         })
     }
 
@@ -345,7 +349,11 @@ impl SyncService {
             let Some(nc) = revealed else {
                 return Ok(None);
             };
-            let commit = approval_commit(&offer.card.fingerprint(), None, &nc);
+            let commit = approval_commit(
+                &offer.card.fingerprint(),
+                offer.offer.body.candidate_head.as_ref(),
+                &nc,
+            );
             if commit != offer.offer.body.candidate_commit {
                 self.outstanding = None;
                 return Err(mismatch());
@@ -371,6 +379,11 @@ impl SyncService {
         mut offer: OutstandingOffer,
         workspaces: &mut [RemoteWorkspace],
     ) -> Result<AccountHead, SyncError> {
+        if offer.invited.is_some() {
+            return Err(SyncError::Invalid(
+                "an invited member joins through add_member, not your account chain".into(),
+            ));
+        }
         // Confirming spends the offer whatever happens next, so the device
         // takes another request.
         let code = self.approval_code(&mut offer).await;

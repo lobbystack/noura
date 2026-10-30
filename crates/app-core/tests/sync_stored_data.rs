@@ -37,8 +37,9 @@ const TRANSIENT: &[&str] = &[
 
 /// The tables whose rows keep the expiry the protocol sets for them: a
 /// share link lives 1 to 30 days and its expiry is what the server learns
-/// of when it was created (§24, §29).
-const EXPIRING: &[&str] = &["shares"];
+/// of when it was created, and an invitation's row, or the ID an ended one
+/// leaves, lasts until the expiry seven days out (§11, §24, §29).
+const EXPIRING: &[&str] = &["shares", "invitations", "ended_invitations"];
 
 /// A value the server stores.
 enum Value {

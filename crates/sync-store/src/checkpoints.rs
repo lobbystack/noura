@@ -500,10 +500,7 @@ pub(crate) async fn commit(
     bundle: &CheckpointBundle,
     plan: Plan,
 ) -> Result<PushResponse> {
-    let record = &bundle.checkpoint.0;
-    let c = &record.body;
-    let domain = c.domain;
-    let digest = record.digest();
+    let domain = bundle.checkpoint.0.body.domain;
     txn.lock(&LockPlan {
         workspace: Some(workspace),
         policy_exclusive: false,
@@ -515,20 +512,41 @@ pub(crate) async fn commit(
     let Some((ws_row, policy)) = policy::load(txn, cache, workspace).await? else {
         return Err(refuse("not_found", "no such workspace"));
     };
-    check_signer(&policy, session, c)?;
-    let response = |seq| PushResponse {
+    let receipt = commit_locked(txn, &policy, session, workspace, bundle, plan, false).await?;
+    Ok(PushResponse {
         policy_revision: ws_row.policy_revision,
-        receipts: List(vec![Receipt {
-            record_digest: digest,
-            domain,
-            seq,
-        }]),
+        receipts: List(vec![receipt]),
+    })
+}
+
+/// [`commit`] under locks the caller holds, against `policy`. A checkpoint
+/// of the workspace domain that follows an approval in its push
+/// (`approval`) needs no due point: it sets the new member's history floor
+/// (§9, §17).
+pub(crate) async fn commit_locked(
+    txn: &mut impl WriteTxn,
+    policy: &PolicyChain,
+    session: Session,
+    workspace: Id,
+    bundle: &CheckpointBundle,
+    plan: Plan,
+    approval: bool,
+) -> Result<Receipt> {
+    let record = &bundle.checkpoint.0;
+    let c = &record.body;
+    let domain = c.domain;
+    let digest = record.digest();
+    check_signer(policy, session, c)?;
+    let receipt = |seq| Receipt {
+        record_digest: digest,
+        domain,
+        seq,
     };
     let latest = txn.latest_checkpoint(workspace, domain).await?;
     if let Some(latest) = &latest
         && latest.digest == digest
     {
-        return Ok(response(latest.seq));
+        return Ok(receipt(latest.seq));
     }
     let latest_digest = latest.as_ref().map_or(Digest::ZERO, |l| l.digest);
     let planned_digest = plan.previous.as_ref().map_or(Digest::ZERO, |p| p.digest);
@@ -542,8 +560,9 @@ pub(crate) async fn commit(
         .domain(workspace, domain)
         .await?
         .ok_or_else(|| refuse("not_found", "no such domain"))?;
-    check_rotation(&policy, domain, row.epoch_policy_revision)?;
-    if row.checkpoint_due == 0 || c.covered_seq < row.checkpoint_due {
+    check_rotation(policy, domain, row.epoch_policy_revision)?;
+    let floor_setting = approval && domain == policy.head_snapshot().workspace_domain;
+    if !floor_setting && (row.checkpoint_due == 0 || c.covered_seq < row.checkpoint_due) {
         return Err(refuse(
             "checkpoint_not_due",
             "no checkpoint is due, or covered_seq falls short of the due point",
@@ -585,7 +604,7 @@ pub(crate) async fn commit(
     }
     txn.set_checkpoint_progress(workspace, domain, 0, 0, 0)
         .await?;
-    Ok(response(seq))
+    Ok(receipt(seq))
 }
 
 /// `GET .../checkpoint`.

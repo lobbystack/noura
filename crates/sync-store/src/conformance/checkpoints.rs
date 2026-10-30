@@ -476,14 +476,22 @@ async fn add_viewer<B: Backend>(world: &mut World<B>) {
     });
 }
 
-/// A checkpoint goes in a push of its own until approvals and grants carry
-/// one (ticket 50).
-pub async fn a_checkpoint_goes_in_a_push_of_its_own<B: Backend>(store: Store<B>) {
-    let world = World::new(store.with_checkpoint_interval(interval(4)), 2).await;
+/// A checkpoint goes in a push of its own, or last in the push of an
+/// approval (§9, §10): there the fresh checkpoint of the workspace domain
+/// needs no due point, and its entry lands after the `add_member`'s. After
+/// any other record, or before the `add_member`, the push fails with
+/// `bad_request`.
+pub async fn a_checkpoint_goes_alone_or_last_in_an_approval<B: Backend>(store: Store<B>) {
+    let world = World::new(store.with_checkpoint_interval(interval(1_000)), 2).await;
     let mut track = Track::new(&world).await;
     track.write(&world, 0).await;
-    track.write(&world, 1).await;
-    let honest = track.checkpoint(&world, 0, 4, &[], |_, _| {}).await;
+    let head = track.write(&world, 1).await;
+    let fresh = track.checkpoint(&world, 0, head, &[], |_, _| {}).await;
+    assert_eq!(
+        push_failure(push_checkpoint(&world, 0, &fresh).await),
+        ("checkpoint_not_due", 0),
+        "alone, a checkpoint waits for its due point"
+    );
     let op = world.op(0, |op| {
         op.counter = 2;
         op.previous = track.heads[&world.devices[0].id()].op_digest;
@@ -495,16 +503,66 @@ pub async fn a_checkpoint_goes_in_a_push_of_its_own<B: Backend>(store: Store<B>)
                     0,
                     vec![
                         RecordRef::Operation(op),
-                        RecordRef::CheckpointBundle(honest.clone())
+                        RecordRef::CheckpointBundle(fresh.clone())
                     ]
                 )
                 .await
         ),
-        ("bad_request", 1)
+        ("bad_request", 1),
+        "a checkpoint after an operation"
     );
-    push_checkpoint(&world, 0, &honest)
+
+    let (invite, invitee) = super::invitations::requested(&world, Role::Editor).await;
+    let add = world.change(
+        0,
+        vec![super::head_of(&world.links), invitee.head()],
+        PolicyKind::AddMember {
+            account: invitee.account,
+            role: Role::Editor,
+            invitation: invite.invitation,
+        },
+    );
+    let envelope = world.envelope(0, &invitee.keys.card(invitee.account), 1, &world.epoch_key);
+    assert_eq!(
+        push_failure(
+            world
+                .push_records(
+                    0,
+                    vec![
+                        RecordRef::CheckpointBundle(fresh.clone()),
+                        RecordRef::Policy(add.clone()),
+                        RecordRef::Envelope(envelope.clone()),
+                    ]
+                )
+                .await
+        ),
+        ("bad_request", 0),
+        "a checkpoint before the add_member"
+    );
+    let pushed = world
+        .push_records(
+            0,
+            vec![
+                RecordRef::Policy(add),
+                RecordRef::Envelope(envelope),
+                RecordRef::CheckpointBundle(fresh.clone()),
+            ],
+        )
         .await
-        .expect("alone, it commits");
+        .expect("the approval commits with its fresh checkpoint");
+    let entry = pushed
+        .receipts
+        .iter()
+        .find(|r| r.record_digest == fresh.checkpoint.0.digest())
+        .expect("the checkpoint's receipt");
+    assert_eq!(entry.seq, head + 2, "after the add_member's entry");
+    let latest = world
+        .store
+        .checkpoint(world.devices[0].session, world.workspace, world.domain)
+        .await
+        .expect("the latest checkpoint");
+    assert_eq!(latest.bundle.checkpoint.0, fresh.checkpoint.0);
+    assert_eq!(latest.seq, head + 2);
 }
 
 /// Racing checkpoints (§17): writers that each sign the due checkpoint and
