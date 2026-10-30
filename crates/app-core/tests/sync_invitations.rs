@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use app_core::sync::SyncError;
 use app_core::sync::invitations::{
-    INVITATION_UNUSABLE, InvitationBook, InvitationLink, NewInvitation,
+    INVITATION_UNUSABLE, InvitationBook, InvitationLink, NewInvitation, open_signed_out,
 };
 use app_core::sync::workspace::WorkspaceSync;
 use local_core::sync::SyncCredentials;
@@ -169,6 +169,75 @@ async fn invitations_work_end_to_end_on_sqlite() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn invitations_work_end_to_end_on_postgres() {
     end_to_end(Server::start_postgres().await).await;
+}
+
+/// You open the link before you have an account: the app shows the
+/// invitation from the context alone, then you sign up through the device
+/// grant and accept, which grants nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_signed_out_app_opens_the_link_then_signs_up_and_accepts() {
+    let server = Server::start().await;
+    let (mut ana, sync, _folder) = owner(&server).await;
+    let workspace = sync.workspace();
+    let mut book = InvitationBook::open(ana.state.path(), ana.id()).unwrap();
+    let created = ana
+        .service
+        .create_invitation(
+            &mut book,
+            NewInvitation {
+                workspace,
+                role: Role::Viewer,
+                workspace_name: "Field notes",
+                inviter_name: "Ana",
+            },
+        )
+        .await
+        .expect("invited");
+    let link = InvitationLink::parse(&created.url).expect("the link reads");
+
+    let opened = open_signed_out(&server.base, &link)
+        .await
+        .expect("it opens with no account");
+    assert_eq!(
+        (opened.workspace, opened.role, opened.status),
+        (workspace, Role::Viewer, InvitationStatus::Pending)
+    );
+    assert_eq!(opened.workspace_name, "Field notes");
+    assert_eq!(opened.inviter_name, "Ana");
+    let wrong = InvitationLink {
+        origin: link.origin.clone(),
+        token: link.token,
+        secret: SecretKey([1; 32]),
+    };
+    unusable(open_signed_out(&server.base, &wrong).await);
+    let refused = open_signed_out("https://sync.example.com", &link)
+        .await
+        .unwrap_err();
+    assert!(refused.to_string().contains("another sync server"));
+
+    // Signing up enrolls Ben's first device; then the app accepts.
+    let mut ben = first_desktop(&server, "ben@example.com").await;
+    ben.service
+        .accept_invitation(&link)
+        .await
+        .expect("accepted");
+    assert!(
+        ben.service
+            .client()
+            .workspaces()
+            .await
+            .expect("listed")
+            .workspaces
+            .is_empty(),
+        "acceptance grants nothing"
+    );
+    let listed = ana
+        .service
+        .workspace_invitations(&mut book, workspace)
+        .await
+        .expect("listed");
+    assert_eq!(listed[0].status, InvitationStatus::Accepted);
+    assert_eq!(listed[0].accepted_by, Some(ben.credentials.account));
 }
 
 /// No request carries the secret, a lost answer gets the same bytes again

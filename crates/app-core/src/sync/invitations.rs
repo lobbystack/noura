@@ -38,6 +38,10 @@ fn unusable() -> SyncError {
     SyncError::Invalid(INVITATION_UNUSABLE.into())
 }
 
+fn another_server() -> SyncError {
+    SyncError::Invalid("This invitation is for another sync server.".into())
+}
+
 fn failed(error: impl std::fmt::Display) -> SyncError {
     SyncError::Invalid(format!("the list of invitations can't be used: {error}"))
 }
@@ -141,6 +145,24 @@ pub fn open_context(
     })
 }
 
+/// Opens `link` before you sign in, against the app's server at `server`:
+/// the context route takes no session, so the app can show the workspace,
+/// the inviter and the role before you sign in or sign up (§11).
+pub async fn open_signed_out(
+    server: &str,
+    link: &InvitationLink,
+) -> Result<OpenedInvitation, SyncError> {
+    let origin = reqwest::Url::parse(server)
+        .map_err(|_| SyncError::Invalid("the server address isn't a URL".into()))?
+        .origin()
+        .ascii_serialization();
+    if link.origin != origin {
+        return Err(another_server());
+    }
+    let mut client = SyncClient::connect(server, "").await?;
+    client.open_invitation(link).await
+}
+
 impl SyncClient {
     /// `GET /v2/invitations/{token}`, opened with the link's secret. The
     /// link must name this client's server, and any failure, the server's
@@ -150,9 +172,7 @@ impl SyncClient {
         link: &InvitationLink,
     ) -> Result<OpenedInvitation, SyncError> {
         if link.origin != self.origin()? {
-            return Err(SyncError::Invalid(
-                "This invitation is for another sync server.".into(),
-            ));
+            return Err(another_server());
         }
         let path = format!("/v2/invitations/{}", to_base64url(&link.token));
         let response: InvitationResponse = match self.call(reqwest::Method::GET, &path, None).await

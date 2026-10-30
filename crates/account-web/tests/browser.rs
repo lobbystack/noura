@@ -753,3 +753,96 @@ async fn a_browser_with_no_account_opens_a_share_link() {
     let _ = browser.wait().await;
     events.abort();
 }
+
+/// The invitation page (§11) only sends a browser visitor to the desktop
+/// app: whether the invitation is open, unknown or revoked, it loads no
+/// script, so nothing on it can read the fragment that holds the secret.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs Chrome, which NOURA_CHROME names, and the built module"]
+async fn the_invitation_page_never_reads_the_fragment() {
+    use chromiumoxide::cdp::browser_protocol::network::EventRequestWillBeSent;
+    use sync_protocol::types::to_base64url;
+    use sync_store::conformance::{Invite, World};
+
+    let site = site().await;
+    let world = World::on(site.store.clone(), 1).await;
+    let owner = world.devices[0].session;
+    let invite = Invite::new(sync_protocol::records::Role::Editor);
+    site.store
+        .create_invitation(owner, world.workspace, invite.creation(world.workspace))
+        .await
+        .unwrap();
+    let token = to_base64url(&invite.token);
+    let fragment = to_base64url(invite.secret.expose());
+    let url = format!("{}/invite/{token}#{fragment}", site.base);
+    let unknown = format!(
+        "{}/invite/{}#{fragment}",
+        site.base,
+        to_base64url(&[7u8; 16])
+    );
+
+    let (mut browser, events, _profile) = launch().await;
+    let page = browser.new_page("about:blank").await.unwrap();
+    let requests = Arc::new(Mutex::new(Vec::<String>::new()));
+    let mut sent = page
+        .event_listener::<EventRequestWillBeSent>()
+        .await
+        .unwrap();
+    let seen = requests.clone();
+    let listener = tokio::spawn(async move {
+        while let Some(event) = sent.next().await {
+            seen.lock().unwrap().push(event.request.url.clone());
+        }
+    });
+
+    // Checks the page `address` shows: its heading, no script element, no
+    // script or module fetched, and the fragment nowhere but the address.
+    async fn check(page: &Page, requests: &Mutex<Vec<String>>, address: &str, heading: &str) {
+        requests.lock().unwrap().clear();
+        visit(page, address).await;
+        let text: String = eval(page, "document.body.innerText").await;
+        assert!(text.contains(heading), "{address}: {text}");
+        let scripts: u32 = eval(page, "document.scripts.length").await;
+        assert_eq!(scripts, 0, "{address} holds a script");
+        let fetched: Vec<String> = eval(
+            page,
+            "performance.getEntriesByType('resource').map(e => e.name)",
+        )
+        .await;
+        let requested = requests.lock().unwrap().clone();
+        for url in fetched.iter().chain(&requested) {
+            assert!(
+                !url.ends_with(".js") && !url.ends_with(".wasm"),
+                "{address} loads {url}"
+            );
+        }
+        assert!(
+            requested.iter().any(|url| url.contains("/invite/")),
+            "the listener saw the page's request: {requested:?}"
+        );
+        let fragment = &address[address.find('#').unwrap()..];
+        let html: String = eval(page, "document.documentElement.outerHTML").await;
+        assert!(
+            !html.contains(&fragment[1..]),
+            "{address} echoes the secret"
+        );
+        for url in &requested {
+            assert!(!url.contains('#'), "a request carries the fragment: {url}");
+        }
+        let hash: String = eval(page, "location.hash").await;
+        assert_eq!(hash, fragment, "the page leaves the address alone");
+    }
+
+    check(&page, &requests, &url, "Open this invitation in Noura").await;
+    check(&page, &requests, &unknown, "This invitation doesn't open").await;
+    site.store
+        .revoke_invitation(owner, world.workspace, invite.invitation)
+        .await
+        .unwrap();
+    check(&page, &requests, &url, "This invitation doesn't open").await;
+
+    listener.abort();
+    browser.close().await.unwrap();
+    let _ = browser.wait().await;
+    events.abort();
+}
