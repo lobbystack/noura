@@ -345,6 +345,11 @@ pub type Tamper = Box<dyn Fn(&str, Vec<u8>) -> Vec<u8> + Send + Sync>;
 /// status and body to send, or `None` to forward the request.
 pub type Forge = Box<dyn Fn(&str, &str) -> Option<(u16, Vec<u8>)> + Send + Sync>;
 
+/// Picks, by method and path, a request whose answer the proxy loses: it
+/// forwards the request, then answers 502 with no error body, as a relay
+/// that drops the connection after the server commits.
+pub type Lose = Box<dyn Fn(&str, &str) -> bool + Send + Sync>;
+
 /// Rewrites a request's path and query before the proxy forwards it.
 pub type Reroute = Box<dyn Fn(&str) -> String + Send + Sync>;
 
@@ -361,11 +366,24 @@ pub struct Proxy {
     pub base: String,
     tamper: Arc<Mutex<Option<Tamper>>>,
     forge: Arc<Mutex<Option<Forge>>>,
+    lose: Arc<Mutex<Option<Lose>>>,
     reroute: Arc<Mutex<Option<Reroute>>>,
     upstream: Arc<Mutex<String>>,
+    /// Every request the proxy received: its method, path with query,
+    /// headers and body.
+    requests: Arc<Mutex<Vec<Captured>>>,
     frames: Arc<Mutex<Option<FrameTamper>>>,
     pings: Arc<AtomicUsize>,
     closing: tokio::sync::watch::Sender<u64>,
+}
+
+/// One request a proxy received.
+#[derive(Clone, Debug)]
+pub struct Captured {
+    pub method: String,
+    pub path: String,
+    pub headers: Vec<(String, Vec<u8>)>,
+    pub body: Vec<u8>,
 }
 
 /// Bridges a client's realtime channel to the server's, passing each
@@ -464,7 +482,11 @@ impl Proxy {
         let tamper: Arc<Mutex<Option<Tamper>>> = Arc::new(Mutex::new(None));
         let forge: Arc<Mutex<Option<Forge>>> = Arc::new(Mutex::new(None));
         let reroute: Arc<Mutex<Option<Reroute>>> = Arc::new(Mutex::new(None));
+        let lose: Arc<Mutex<Option<Lose>>> = Arc::new(Mutex::new(None));
+        let lost = lose.clone();
         let upstream: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let requests: Arc<Mutex<Vec<Captured>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = requests.clone();
         let shared = tamper.clone();
         let forged = forge.clone();
         let rerouted = reroute.clone();
@@ -478,11 +500,30 @@ impl Proxy {
             let shared = shared.clone();
             let forged = forged.clone();
             let rerouted = rerouted.clone();
+            let lost = lost.clone();
             let upstream = target.lock().unwrap().clone();
             let http = http.clone();
+            let captured = captured.clone();
             let (frames, pings, closing) = bridged.clone();
             async move {
                 let (mut parts, body) = request.into_parts();
+                let body = axum::body::to_bytes(body, 2 << 20)
+                    .await
+                    .unwrap_or_default();
+                captured.lock().unwrap().push(Captured {
+                    method: parts.method.to_string(),
+                    path: parts
+                        .uri
+                        .path_and_query()
+                        .map_or("/", |p| p.as_str())
+                        .to_owned(),
+                    headers: parts
+                        .headers
+                        .iter()
+                        .map(|(n, v)| (n.to_string(), v.as_bytes().to_vec()))
+                        .collect(),
+                    body: body.to_vec(),
+                });
                 let answer = forged
                     .lock()
                     .unwrap()
@@ -529,9 +570,6 @@ impl Proxy {
                         Err(error) => panic!("the server's channel didn't open: {error}"),
                     };
                 }
-                let body = axum::body::to_bytes(body, 2 << 20)
-                    .await
-                    .unwrap_or_default();
                 let path = parts
                     .uri
                     .path_and_query()
@@ -553,6 +591,17 @@ impl Proxy {
                     .await
                     .expect("upstream answers");
                 let status = response.status();
+                if lost
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|lose| lose(parts.method.as_str(), parts.uri.path()))
+                {
+                    return axum::response::Response::builder()
+                        .status(502)
+                        .body(axum::body::Body::empty())
+                        .unwrap();
+                }
                 let headers = response.headers().clone();
                 let mut bytes = response.bytes().await.expect("a body").to_vec();
                 if status.is_success()
@@ -578,12 +627,19 @@ impl Proxy {
             base,
             tamper,
             forge,
+            lose,
             reroute,
             upstream,
+            requests,
             frames,
             pings,
             closing,
         }
+    }
+
+    /// Every request the proxy received so far.
+    pub fn requests(&self) -> Vec<Captured> {
+        self.requests.lock().unwrap().clone()
     }
 
     /// Rewrites or drops every later realtime frame with `tamper`.
@@ -613,6 +669,12 @@ impl Proxy {
         *self.tamper.lock().unwrap() = Some(tamper);
     }
 
+    /// Loses the answer to every later request that `lose` picks, after
+    /// the server handled it.
+    pub fn lose(&self, lose: Lose) {
+        *self.lose.lock().unwrap() = Some(lose);
+    }
+
     /// Sends every later request to the path `reroute` gives it.
     pub fn reroute(&self, reroute: Reroute) {
         *self.reroute.lock().unwrap() = Some(reroute);
@@ -623,6 +685,7 @@ impl Proxy {
         *self.frames.lock().unwrap() = None;
         *self.tamper.lock().unwrap() = None;
         *self.forge.lock().unwrap() = None;
+        *self.lose.lock().unwrap() = None;
         *self.reroute.lock().unwrap() = None;
     }
 }

@@ -11,6 +11,7 @@
 
 mod folder;
 pub mod live;
+mod share;
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;

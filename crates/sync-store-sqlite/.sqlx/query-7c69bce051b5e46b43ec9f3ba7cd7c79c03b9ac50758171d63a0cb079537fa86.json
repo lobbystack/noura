@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO shares (token_hash, workspace, domain, device, expires_at, share) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "7c69bce051b5e46b43ec9f3ba7cd7c79c03b9ac50758171d63a0cb079537fa86"
+}

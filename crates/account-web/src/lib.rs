@@ -4,7 +4,8 @@
 //! browser without the module offers email links alone, asks the server's
 //! JSON routes for the ceremony's options, calls the browser's WebAuthn API
 //! with them through webauthn-rs-proto's conversions, and returns the
-//! credential. The encrypted share viewer joins it with ticket 56.
+//! credential. It also runs the encrypted share viewer ([`share`]), which
+//! verifies, decrypts and renders a shared note in the browser.
 //!
 //! The module ships with `THIRD_PARTY_NOTICES.txt`, which names
 //! webauthn-rs-proto under MPL-2.0 and carries the license's text;
@@ -14,6 +15,7 @@
 
 #[cfg(target_arch = "wasm32")]
 mod browser;
+pub mod share;
 
 /// A passkey form's ceremony, named by its `data-passkey` attribute.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -216,6 +216,7 @@ fn run_app() -> eframe::Result {
                     Arc::new(move |url: &str| app_core::System::open_url(&*browser, url)),
                 ));
                 app.set_account_backend(account.clone());
+                app.set_share_backend(account.clone());
                 app.set_folder_sync_backend(account);
                 if let Some(list) = licenses::bundled_licenses() {
                     app.set_third_party_licenses(list);

@@ -220,7 +220,32 @@ pub fn routes<B: Backend>() -> Router<AppState<B>> {
         .route("/account/assets/{file}", get(asset::<B>))
         .route("/device", get(device_page::<B>).post(device_code::<B>))
         .route("/device/decide", post(device_decide::<B>))
+        .route("/s/{token}", get(share_page::<B>))
         .layer(middleware::from_fn(page_headers))
+}
+
+/// `GET /s/{token}`: the share viewer page (§24), or a not-found page once
+/// the link expired or someone revoked it. The fragment that holds the
+/// link's keys never reaches the server.
+async fn share_page<B: Backend>(
+    State(state): State<AppState<B>>,
+    Path(token): Path<String>,
+) -> Response {
+    let gone = || {
+        message(
+            StatusCode::NOT_FOUND,
+            "This link doesn't open",
+            "The link expired, or someone revoked it. Ask the person who shared it for a new one.",
+        )
+    };
+    let Ok(token) = from_base64url::<16>(&token) else {
+        return gone();
+    };
+    match state.store.read_share(token).await {
+        Ok(_) => html(StatusCode::OK, &pages::Share),
+        Err(sync_store::Error::Refused(_)) => gone(),
+        Err(error) => failure(error),
+    }
 }
 
 /// `GET /device`: the device page (§7), where you enter the code the

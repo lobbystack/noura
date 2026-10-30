@@ -28,6 +28,7 @@ mod pull;
 mod push;
 mod reads;
 mod realtime;
+mod shares;
 
 #[cfg(feature = "conformance")]
 pub mod conformance;
@@ -55,6 +56,7 @@ use sync_protocol::records::{
 pub use accounts::{SIGN_IN_TOKEN_LEN, SignInToken};
 pub use blobs::{BlobCreation, BlobUpload, Recorded};
 pub use chains::SIGN_IN_TTL;
+pub use shares::{MAX_SHARE_DAYS, MAX_SHARES, ShareCreation};
 use sync_protocol::types::{Digest, Id, SecretKey};
 
 pub use hub::EventHub;
@@ -481,6 +483,25 @@ pub struct BlobRow {
     pub complete: bool,
 }
 
+/// A share link's row (§24): what the server stores of it, which is the
+/// token's hash, the workspace, the domain, the creating device, the expiry
+/// and the signed padded snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShareRow {
+    /// `BLAKE3(tag(noura.sync.share.token) || token)`.
+    pub token_hash: Digest,
+    /// The workspace.
+    pub workspace: Id,
+    /// The domain the creating device named.
+    pub domain: Id,
+    /// The device that created the link, the only one that updates it.
+    pub device: Id,
+    /// Unix seconds after which the link no longer opens.
+    pub expires_at: u64,
+    /// The signed `share` record's bytes.
+    pub share: Vec<u8>,
+}
+
 /// A lone delete a rising checkpoint floor may drop (§17).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeleteRow {
@@ -788,6 +809,18 @@ pub trait ReadTxn: Send {
     /// Whether an operation lists the blob.
     fn blob_listed(&mut self, workspace: Id, blob: Id)
     -> impl Future<Output = Result<bool>> + Send;
+    /// The share link whose token hashes to `token_hash`, expired or not.
+    fn share(
+        &mut self,
+        token_hash: Digest,
+    ) -> impl Future<Output = Result<Option<ShareRow>>> + Send;
+    /// The workspace's share links that expire after `now`, by token hash,
+    /// with empty snapshots.
+    fn shares(
+        &mut self,
+        workspace: Id,
+        now: u64,
+    ) -> impl Future<Output = Result<Vec<ShareRow>>> + Send;
 }
 
 /// The writes a store's write transaction offers, besides its reads.
@@ -1104,8 +1137,8 @@ pub trait WriteTxn: ReadTxn {
         token_hash: Digest,
     ) -> impl Future<Output = Result<Option<PendingPasskeyRow>>> + Send;
     /// Deletes every magic link, waiting passkey, ceremony, challenge,
-    /// device grant, approval request and approval offer that expires at or
-    /// before `now`, and returns how many it deleted.
+    /// device grant, approval request, approval offer and share link that
+    /// expires at or before `now`, and returns how many it deleted.
     fn delete_expired(&mut self, now: u64) -> impl Future<Output = Result<u64>> + Send;
     /// Stores a new blob row at offset 0.
     fn insert_blob(
@@ -1134,6 +1167,16 @@ pub trait WriteTxn: ReadTxn {
         domain: Id,
         seq: u64,
     ) -> impl Future<Output = Result<()>> + Send;
+    /// Stores a new share link.
+    fn insert_share(&mut self, row: &ShareRow) -> impl Future<Output = Result<()>> + Send;
+    /// Replaces a share link's snapshot.
+    fn set_share(
+        &mut self,
+        token_hash: Digest,
+        share: &[u8],
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Deletes a share link and its snapshot.
+    fn delete_share(&mut self, token_hash: Digest) -> impl Future<Output = Result<()>> + Send;
 }
 
 /// A job that runs in one read transaction.

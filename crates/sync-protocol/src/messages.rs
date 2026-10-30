@@ -560,6 +560,8 @@ crate::wire_struct! {
         pub token_hash: Digest,
         /// The domain.
         pub domain: Id,
+        /// The device that created the link.
+        pub device: Id,
         /// Unix seconds.
         pub expires_at: u64,
     }

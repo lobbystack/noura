@@ -55,6 +55,7 @@ mod saves;
 mod search;
 mod session;
 mod settings;
+pub mod shares;
 mod store;
 pub mod sync;
 mod system;

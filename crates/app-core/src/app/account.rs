@@ -5,6 +5,7 @@ use std::sync::Arc;
 use super::App;
 use crate::account::{AccountAction, AccountBackend, AccountScreen};
 use crate::folder_sync::{FolderSyncAction, FolderSyncBackend, FolderSyncScreen};
+use crate::shares::{ShareAction, ShareBackend, ShareScreen};
 
 impl App {
     /// What the account screens show.
@@ -39,5 +40,44 @@ impl App {
     /// each workspace the windows open.
     pub fn set_folder_sync_backend(&self, backend: Arc<dyn FolderSyncBackend>) {
         self.session.set_folder_sync(backend);
+    }
+
+    /// What the share dialog shows.
+    pub fn share_screen(&self) -> ShareScreen {
+        self.session.shares().screen()
+    }
+
+    /// Carries out what you did in the share dialog.
+    pub fn share_action(&self, action: ShareAction) {
+        self.session.shares().act(action);
+    }
+
+    /// Runs the share dialog with `backend`, such as the desktop's
+    /// [`LiveAccount`](crate::account::live::LiveAccount).
+    pub fn set_share_backend(&self, backend: Arc<dyn ShareBackend>) {
+        self.session.set_shares(backend);
+    }
+
+    /// Share link on the open note: opens the share dialog for it.
+    pub fn share_open_note(&mut self) {
+        let Some(note) = self.active_note_for_sharing() else {
+            return;
+        };
+        self.session.shares().act(note);
+    }
+
+    /// The Open action of the note in the active tab, when it's a Markdown
+    /// note Noura could read.
+    fn active_note_for_sharing(&self) -> Option<ShareAction> {
+        let tab = self.active_tab()?.id();
+        let note = self.note(tab)?;
+        if !note.relative_path().to_ascii_lowercase().ends_with(".md") {
+            return None;
+        }
+        Some(ShareAction::Open {
+            path: note.relative_path().to_owned(),
+            name: note.name(),
+            text: note.text().to_owned(),
+        })
     }
 }
