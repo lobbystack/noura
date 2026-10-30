@@ -241,7 +241,7 @@ ulid = { version = "1", default-features = false }
 unicode-normalization = "0.1.25"
 uuid = { version = "1", features = ["v4", "serde"] }
 # Stays on the 48.x LTS line. cargo deny fails the build on an unpatched advisory.
-wasmtime = { version = "48.0.7", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
+wasmtime = { version = "48.0.8", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
 url = "2"
 # Generates plugin-sdk's Rust bindings for `noura:plugin`.
 wit-bindgen = { version = "0.63.0", default-features = false, features = ["macros", "realloc"] }
