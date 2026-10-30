@@ -638,11 +638,6 @@ fn an_invitee_pastes_a_link_accepts_and_compares_the_code() {
     harness
         .get_by_role_and_label(Role::Button, "Choose a folder")
         .click();
-    harness.run();
-    assert_eq!(
-        account.taken(),
-        vec![AccountAction::DownloadInvited(folder.path().to_owned())]
-    );
     for _ in 0..200 {
         harness.step();
         if folder.path().join(".noura").exists() {
@@ -650,6 +645,10 @@ fn an_invitee_pastes_a_link_accepts_and_compares_the_code() {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+    assert_eq!(
+        account.taken(),
+        vec![AccountAction::DownloadInvited(folder.path().to_owned())]
+    );
     let names: Vec<_> = std::fs::read_dir(folder.path())
         .unwrap()
         .map(|entry| entry.unwrap().file_name())

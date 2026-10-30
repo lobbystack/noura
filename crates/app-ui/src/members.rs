@@ -179,6 +179,7 @@ fn draw(
             view.confirm = None;
         }
     }
+    approvals(ui, screen, actions, idle);
     ui.add_space(8.0);
     ui.label(RichText::new("Members").strong());
     for member in &screen.members {
@@ -268,7 +269,6 @@ fn draw(
             });
         }
     }
-    approvals(ui, screen, actions, idle);
     restricted(ui, screen, view, actions, idle);
     if screen.may_leave {
         ui.add_space(8.0);
