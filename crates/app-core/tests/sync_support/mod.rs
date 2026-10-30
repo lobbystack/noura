@@ -355,6 +355,18 @@ pub struct Proxy {
     forge: Arc<Mutex<Option<Forge>>>,
     reroute: Arc<Mutex<Option<Reroute>>>,
     upstream: Arc<Mutex<String>>,
+    /// Every request the proxy received: its method, path with query,
+    /// headers and body.
+    requests: Arc<Mutex<Vec<Captured>>>,
+}
+
+/// One request a proxy received.
+#[derive(Clone, Debug)]
+pub struct Captured {
+    pub method: String,
+    pub path: String,
+    pub headers: Vec<(String, Vec<u8>)>,
+    pub body: Vec<u8>,
 }
 
 impl Proxy {
@@ -403,6 +415,8 @@ impl Proxy {
         let forge: Arc<Mutex<Option<Forge>>> = Arc::new(Mutex::new(None));
         let reroute: Arc<Mutex<Option<Reroute>>> = Arc::new(Mutex::new(None));
         let upstream: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let requests: Arc<Mutex<Vec<Captured>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = requests.clone();
         let shared = tamper.clone();
         let forged = forge.clone();
         let rerouted = reroute.clone();
@@ -414,8 +428,26 @@ impl Proxy {
             let rerouted = rerouted.clone();
             let upstream = target.lock().unwrap().clone();
             let http = http.clone();
+            let captured = captured.clone();
             async move {
                 let (parts, body) = request.into_parts();
+                let body = axum::body::to_bytes(body, 2 << 20)
+                    .await
+                    .unwrap_or_default();
+                captured.lock().unwrap().push(Captured {
+                    method: parts.method.to_string(),
+                    path: parts
+                        .uri
+                        .path_and_query()
+                        .map_or("/", |p| p.as_str())
+                        .to_owned(),
+                    headers: parts
+                        .headers
+                        .iter()
+                        .map(|(n, v)| (n.to_string(), v.as_bytes().to_vec()))
+                        .collect(),
+                    body: body.to_vec(),
+                });
                 let answer = forged
                     .lock()
                     .unwrap()
@@ -428,9 +460,6 @@ impl Proxy {
                         .body(axum::body::Body::from(bytes))
                         .unwrap();
                 }
-                let body = axum::body::to_bytes(body, 2 << 20)
-                    .await
-                    .unwrap_or_default();
                 let path = parts
                     .uri
                     .path_and_query()
@@ -479,7 +508,13 @@ impl Proxy {
             forge,
             reroute,
             upstream,
+            requests,
         }
+    }
+
+    /// Every request the proxy received so far.
+    pub fn requests(&self) -> Vec<Captured> {
+        self.requests.lock().unwrap().clone()
     }
 
     /// Answers every later request that `forge` picks in the server's

@@ -35,6 +35,11 @@ const TRANSIENT: &[&str] = &[
     "rate_limits",
 ];
 
+/// The tables whose rows keep the expiry the protocol sets for them: a
+/// share link lives 1 to 30 days and its expiry is what the server learns
+/// of when it was created (§24, §29).
+const EXPIRING: &[&str] = &["shares"];
+
 /// A value the server stores.
 enum Value {
     Bytes(Vec<u8>),
@@ -133,8 +138,9 @@ fn check(columns: &[Column]) {
         ]
         .iter()
         .any(|word| column.name.contains(word));
-        if (named_for_time || column.timestamp_type) && !TRANSIENT.contains(&column.table.as_str())
-        {
+        let allowed = TRANSIENT.contains(&column.table.as_str())
+            || (EXPIRING.contains(&column.table.as_str()) && column.name == "expires_at");
+        if (named_for_time || column.timestamp_type) && !allowed {
             panic!("{}.{} dates records", column.table, column.name);
         }
         if column.table == "sessions" {

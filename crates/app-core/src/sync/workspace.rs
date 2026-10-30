@@ -479,6 +479,11 @@ impl WorkspaceSync {
         self.state.workspace
     }
 
+    /// The workspace domain, which holds this folder's files.
+    pub fn domain(&self) -> Id {
+        self.state.domain
+    }
+
     /// This device.
     pub fn device(&self) -> Id {
         self.credentials.keys.device()

@@ -25,6 +25,7 @@ pub mod recovery;
 pub mod registry;
 pub mod removal;
 mod routes;
+pub mod shares;
 pub mod upkeep;
 pub mod workspace;
 
