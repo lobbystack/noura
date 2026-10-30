@@ -119,6 +119,10 @@ pub struct State {
     /// folder another device restricted (§9), by domain.
     #[serde(default)]
     pub move_due: BTreeMap<Id, u64>,
+    /// The files you moved into a restricted folder, each with its domain,
+    /// until you dismiss the warning (§9).
+    #[serde(default)]
+    pub moved_in: Vec<(Id, String)>,
     /// Whether the device still loads the domain from its latest
     /// checkpoint before it pulls, as a new device does (§18).
     #[serde(default)]

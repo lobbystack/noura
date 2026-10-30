@@ -111,6 +111,9 @@ pub struct FolderSyncScreen {
     pub ended: Option<String>,
     /// The files sync leaves out, one line each.
     pub skipped: Vec<String>,
+    /// What waits for you in the Members section, which the window says
+    /// once wherever you are (§9).
+    pub attention: Option<String>,
     /// What went wrong last, for you to read.
     pub last_error: Option<String>,
     /// When the last round finished without an error, as local time.
@@ -137,6 +140,7 @@ impl FolderSyncScreen {
             removal_hold: false,
             ended: status.ended.as_ref().map(ended_line),
             skipped: status.skipped.iter().map(skipped_line).collect(),
+            attention: None,
             last_error: None,
             last_success: status.last_success.map(local_time),
             busy: false,

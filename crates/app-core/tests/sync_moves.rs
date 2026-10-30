@@ -539,6 +539,108 @@ async fn a_hand_off_goes_in_two_changes() {
     assert!(!team.folder.files().contains_key("Pay/New.md"));
 }
 
+/// A pair that loses a half comes undone: the file stays, nothing of the
+/// move reaches the server, and the next round moves it whole.
+#[tokio::test]
+async fn a_pair_that_loses_a_half_comes_undone_and_tries_again() {
+    use sync_protocol::codec::{Bytes, Encode, Text};
+    use sync_protocol::messages::{ErrorBody, PushFailureDetail};
+
+    let (server, proxy) = Proxy::in_front().await;
+    let mut team = team(&server).await;
+    let mut proxied = team.owner.connect_through(&proxy.base).await;
+    let domain = team.restrict(Level::Write).await;
+    let old = team.sync.rid_at("Plan.md").expect("mapped");
+    rename(&team.folder, "Plan.md", "Pay/Plan.md");
+    let once = std::sync::atomic::AtomicBool::new(false);
+    proxy.forge(Box::new(move |method, path| {
+        if method != "POST" || !path.ends_with("/ops") {
+            return None;
+        }
+        if once.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return None;
+        }
+        let code = "forbidden";
+        let detail = PushFailureDetail {
+            record_index: 1,
+            code: Text(code.to_owned()),
+            record_detail: None,
+        };
+        let body = ErrorBody {
+            code: Text(code.to_owned()),
+            message: Text("refused".to_owned()),
+            retry_after_seconds: None,
+            detail: Some(Bytes(detail.to_bytes())),
+        };
+        Some((403, body.to_bytes()))
+    }));
+    for _ in 0..3 {
+        team.sync.round(&mut proxied, 0).await.expect("a round");
+    }
+    proxy.honest();
+    assert!(team.folder.files().contains_key("Pay/Plan.md"));
+    let moved = team.sync.rid_at("Pay/Plan.md").expect("the new object");
+    assert_ne!(moved, old);
+    assert_eq!(team.sync.object_domain(&moved), Some(domain));
+    assert_eq!(team.sync.status().pending, 0);
+
+    team.settle().await;
+    assert_eq!(team.grantee_sync.rid_at("Pay/Plan.md"), Some(moved));
+    assert_eq!(team.grantee_sync.status().conflicts, 0);
+    assert!(!team.grantee_folder.files().contains_key("Plan.md"));
+    assert!(!team.outsider_folder.files().contains_key("Plan.md"));
+}
+
+/// A member taken off and granted again holds old keys and a cursor below
+/// its new floor on the same device: it reads what's live at the floor,
+/// its hold ends, and it writes again.
+#[tokio::test]
+async fn a_member_taken_off_and_granted_again_converges_on_the_same_device() {
+    let server = Server::start().await;
+    let mut team = team(&server).await;
+    let domain = team.restrict(Level::Write).await;
+    team.folder.write("Pay/Early.md", b"early\n");
+    team.settle().await;
+    let own = team.owner.credentials.account;
+    let ben = team.grantee_account();
+    let list = |ben_level: Option<Level>| {
+        let mut list = vec![Access {
+            account: own,
+            level: Level::Manage,
+        }];
+        list.extend(ben_level.map(|level| Access {
+            account: ben,
+            level,
+        }));
+        list
+    };
+    team.sync
+        .set_access(&mut team.owner.service, domain, &list(None))
+        .await
+        .expect("taken off");
+    team.folder.write("Pay/Away.md", b"away\n");
+    team.settle().await;
+    assert!(!team.grantee_folder.files().contains_key("Pay/Away.md"));
+
+    team.sync
+        .set_access(&mut team.owner.service, domain, &list(Some(Level::Write)))
+        .await
+        .expect("granted again");
+    team.folder.write("Pay/Back.md", b"back\n");
+    team.settle().await;
+    team.settle().await;
+    let files = team.grantee_folder.files();
+    assert!(files.contains_key("Pay/Early.md"));
+    assert!(files.contains_key("Pay/Away.md"), "live at the new floor");
+    assert!(files.contains_key("Pay/Back.md"));
+    assert_eq!(team.grantee_sync.status().held_roots, 0);
+    assert_eq!(team.grantee_sync.status().conflicts, 0);
+
+    team.grantee_folder.write("Pay/Reply.md", b"reply\n");
+    team.settle().await;
+    assert!(team.folder.files().contains_key("Pay/Reply.md"));
+}
+
 #[tokio::test]
 async fn deleting_a_domain_keeps_the_files_and_holds_them_for_review() {
     let server = Server::start().await;
@@ -559,7 +661,7 @@ async fn deleting_a_domain_keeps_the_files_and_holds_them_for_review() {
         assert_eq!(sync.status().held_roots, 1);
         let held = sync.held_files();
         assert_eq!(held.len(), 1);
-        assert_eq!(held[0].people, 3, "every member reads the workspace domain");
+        assert_eq!(held[0].people, 1, "only the outsider would newly read it");
     }
     assert!(!team.outsider_folder.files().contains_key("Pay/Salaries.md"));
 

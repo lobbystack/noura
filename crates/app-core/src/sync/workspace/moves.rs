@@ -63,11 +63,17 @@ impl WorkspaceSync {
         domain.unwrap_or_else(|| self.workspace_domain())
     }
 
-    /// The accounts that read `domain`, at the accepted policy.
+    /// The accounts that read `domain`, at the accepted policy. A deleted
+    /// domain's readers are the ones its last policy entry named.
     fn reading_accounts(&self, domain: Option<Id>) -> BTreeSet<Id> {
         let id = self.domain_id(domain);
         self.remote.as_ref().map_or_else(BTreeSet::new, |remote| {
-            let snapshot = remote.policy.head_snapshot();
+            let head = remote.policy.head_snapshot();
+            let snapshot = (1..=head.revision)
+                .rev()
+                .filter_map(|revision| remote.policy.at(revision))
+                .find(|snapshot| snapshot.domains.contains_key(&id))
+                .unwrap_or(head);
             snapshot
                 .readers(&id)
                 .iter()
@@ -248,9 +254,9 @@ impl WorkspaceSync {
         self.sign_move(rid, found, target)?;
         self.confirmed_moves.remove(&rid);
         if let Some(domain) = target
-            && !self.moved_in.iter().any(|(_, p)| *p == path)
+            && !self.state.moved_in.iter().any(|(_, p)| *p == path)
         {
-            self.moved_in.push((domain, path));
+            self.state.moved_in.push((domain, path));
         }
         Ok(2)
     }
@@ -265,12 +271,13 @@ impl WorkspaceSync {
     /// stay in the source domain's log (§9), each with its domain. The app
     /// shows them until you dismiss them.
     pub fn moved_in(&self) -> &[(Id, String)] {
-        &self.moved_in
+        &self.state.moved_in
     }
 
     /// Dismisses the notice about files moved into a restricted folder.
-    pub fn dismiss_moved_in(&mut self) {
-        self.moved_in.clear();
+    pub fn dismiss_moved_in(&mut self) -> Result<(), SyncError> {
+        self.state.moved_in.clear();
+        self.save()
     }
 
     /// Confirms a move that waited for review; the next round signs it.

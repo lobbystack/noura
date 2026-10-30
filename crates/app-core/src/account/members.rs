@@ -215,12 +215,19 @@ impl Membership {
                 Some("You confirmed where those files go.".into())
             }
             MembersAction::DismissMovedIn => {
-                sync.dismiss_moved_in();
+                sync.dismiss_moved_in()?;
                 None
             }
         };
-        self.refresh(service, folder, &mut book).await?;
-        Ok(notice)
+        // The action stands whether or not the list comes back.
+        match self.refresh(service, folder, &mut book).await {
+            Err(error) if notice.is_some() => {
+                tracing::warn!(kind = ?error.code(), "the Members section didn't refresh");
+                Ok(notice)
+            }
+            Err(error) => Err(error),
+            Ok(()) => Ok(notice),
+        }
     }
 
     /// Lists the members and the open invitations again.

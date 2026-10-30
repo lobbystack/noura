@@ -194,9 +194,6 @@ pub struct WorkspaceSync {
     reviews: Vec<MoveReview>,
     /// The moves you confirmed, which the next capture signs.
     confirmed_moves: BTreeSet<Id>,
-    /// The files you moved into a restricted folder, until you dismiss the
-    /// notice (§9).
-    moved_in: Vec<(Id, String)>,
     /// What the running capture leaves out.
     skipped_now: Vec<Skipped>,
     /// How long a manager's device leaves another's moves (§9).
@@ -372,6 +369,7 @@ impl WorkspaceSync {
             deferred_moves: BTreeMap::new(),
             moved_away: Vec::new(),
             move_due: BTreeMap::new(),
+            moved_in: Vec::new(),
             bootstrap: false,
             bootstrap_progress: None,
         };
@@ -412,7 +410,6 @@ impl WorkspaceSync {
             rematch: false,
             reviews: Vec::new(),
             confirmed_moves: BTreeSet::new(),
-            moved_in: Vec::new(),
             skipped_now: Vec::new(),
             move_wait: MOVE_WAIT,
             rotation_wait: super::upkeep::KEY_HOLDER_WAIT.end,
@@ -534,7 +531,6 @@ impl WorkspaceSync {
             rematch: false,
             reviews: Vec::new(),
             confirmed_moves: BTreeSet::new(),
-            moved_in: Vec::new(),
             skipped_now: Vec::new(),
             move_wait: MOVE_WAIT,
             rotation_wait: super::upkeep::KEY_HOLDER_WAIT.end,
@@ -3022,7 +3018,15 @@ impl WorkspaceSync {
                     detail: None,
                 });
             }
-            PageStatus::Compacted | PageStatus::BeforeHistoryFloor => {
+            // A member or grantee back after a removal holds a cursor below
+            // the floor its new approval or grant set: it loads the domain
+            // from a checkpoint at or above the floor (§9, §18).
+            PageStatus::BeforeHistoryFloor => {
+                self.state.bootstrap = true;
+                self.save()?;
+                return Ok((0, false));
+            }
+            PageStatus::Compacted => {
                 // Bootstrapping from a checkpoint arrives with ticket 58.
                 return Err(SyncError::Refused {
                     code: "cursor_compacted".into(),

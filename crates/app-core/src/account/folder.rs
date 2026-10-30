@@ -66,6 +66,20 @@ fn folder_message(error: &SyncError) -> String {
     }
 }
 
+/// What the window says about `waiting` moves and held folders, and about
+/// `moved_in` files whose earlier versions stayed behind (§9).
+fn attention(waiting: usize, moved_in: usize) -> Option<String> {
+    match (waiting, moved_in) {
+        (0, 0) => None,
+        (0, _) => Some(
+            "Earlier versions of a file you moved into a restricted folder stayed in the folder it left. Open Settings > Members to read more.".into(),
+        ),
+        _ => Some(
+            "Files wait for you before they reach more people. Open Settings > Members to decide.".into(),
+        ),
+    }
+}
+
 fn short(id: &sync_protocol::types::Id) -> String {
     id.to_hex().chars().take(8).collect()
 }
@@ -129,6 +143,10 @@ impl Folder {
                     })
                     .collect();
                 screen.removal_hold = sync.removal_hold();
+                screen.attention = attention(
+                    sync.moves_for_review().len() + screen.held_roots.len(),
+                    sync.moved_in().len(),
+                );
                 screen.archived = sync
                     .archived()
                     .iter()
