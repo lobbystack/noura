@@ -1892,6 +1892,7 @@ impl WorkspaceSync {
         self.state.own.head = Some((counter, signed.digest()));
         let key = OpKey { device, counter };
         let epoch = signed.body.epoch;
+        let policy_revision = signed.body.policy_revision;
         let object = self.state.objects.entry(rid).or_default();
         object.own_highest = counter;
         object.states.insert(
@@ -1902,6 +1903,7 @@ impl WorkspaceSync {
                 covers,
                 content: Some(carried),
                 epoch,
+                policy_revision,
             },
         );
         self.state.outbox.push(Outgoing {
@@ -3723,6 +3725,7 @@ impl WorkspaceSync {
                         covers: op.body.supersedes.to_vec(),
                         content,
                         epoch: op.body.epoch,
+                        policy_revision: op.body.policy_revision,
                     },
                 );
             }

@@ -8,7 +8,7 @@ mod sync_support;
 
 use std::time::Duration;
 
-use app_core::sync::SyncError;
+use app_core::sync::{SyncError, SyncService};
 use app_core::sync::invitations::InvitationBook;
 use app_core::sync::workspace::{SkipWhy, WorkspaceSync};
 use sync_protocol::codec::Decode;
@@ -996,4 +996,187 @@ async fn floors_hold_for_a_grantee_a_new_device_and_a_restored_device() {
         first_page(&mut service, workspace, workspace_domain).await,
         PageStatus::BeforeHistoryFloor
     );
+}
+
+/// Runs `sync` for `rounds` rounds, with its move wait gone.
+async fn run(sync: &mut WorkspaceSync, service: &mut SyncService, rounds: usize) {
+    sync.set_move_wait(Duration::ZERO);
+    for _ in 0..rounds {
+        sync.round(service, 0).await.expect("a round");
+    }
+}
+
+/// The checkpoint that covers `create_domain`, signed by `sync`'s device
+/// over some workspace-domain work, so a new device bootstraps past that
+/// entry.
+async fn checkpoint_past_the_restriction(team: &mut Team) {
+    team.sync.set_checkpoint_wait(Duration::ZERO);
+    for i in 0..8 {
+        team.folder.write(&format!("Filler {i}.md"), b"filler\n");
+    }
+    team.settle().await;
+    team.settle().await;
+}
+
+/// §9 on a device that bootstrapped past `create_domain`: only an object
+/// signed before the restriction waits for its move. A file an outsider
+/// writes later goes under ` (shared)` there too, a bootstrapped manager
+/// doesn't take it into the domain, so the outsider keeps it, and neither
+/// a later write nor a stale one takes a path from the domain's own file.
+#[tokio::test]
+async fn an_outsiders_later_file_stays_out_of_the_root_on_a_bootstrapped_device() {
+    let server = Server::start_with_interval(6).await;
+    let mut team = team(&server).await;
+    let account = team.grantee_account();
+    // The outsider hasn't heard of the restriction when it writes `Same.md`.
+    let domain = team
+        .sync
+        .restrict_folder(
+            &mut team.owner.service,
+            "Pay",
+            &[Access {
+                account,
+                level: Level::Manage,
+            }],
+        )
+        .await
+        .expect("restricted");
+    team.folder.write("Pay/Same.md", b"restricted\n");
+    for _ in 0..3 {
+        team.sync
+            .round(&mut team.owner.service, 0)
+            .await
+            .expect("a round");
+    }
+    team.outsider_folder.write("Pay/Same.md", b"stale outside\n");
+    team.outsider_sync.capture().expect("captured");
+    team.outsider_sync
+        .push(&mut team.outsider.service)
+        .await
+        .expect("pushed");
+    team.settle().await;
+
+    // Once it knows, it writes under the root anyway.
+    team.outsider_folder.write("Pay/Late.md", b"late outside\n");
+    team.settle().await;
+    checkpoint_past_the_restriction(&mut team).await;
+    assert_eq!(
+        team.folder.files().get("Pay/Same.md").map(Vec::as_slice),
+        Some(&b"restricted\n"[..])
+    );
+
+    // The grantee's new device, whose account manages the domain.
+    let new = sync_support::approve(
+        &server,
+        &mut team.grantee,
+        std::slice::from_mut(team.grantee_sync.remote_mut().expect("connected")),
+    )
+    .await;
+    let mut service = new.connect_through(&server.base).await;
+    let mut folder = Folder::new("Downloaded");
+    let mut sync = WorkspaceSync::download(
+        &mut service,
+        folder.engine.clone(),
+        team.sync.workspace(),
+        &mut folder.registry,
+    )
+    .await
+    .expect("the download starts");
+    run(&mut sync, &mut service, 4).await;
+    assert!(sync.bootstrapped_past(&domain), "it never saw the entry");
+
+    let files = folder.files();
+    assert_eq!(
+        files.get("Pay/Same.md").map(Vec::as_slice),
+        Some(&b"restricted\n"[..]),
+        "the domain's file keeps its path: {:?}",
+        files.keys().collect::<Vec<_>>()
+    );
+    assert!(!files.contains_key("Pay/Same (2).md"));
+    assert_eq!(
+        files.get("Pay (shared)/Same.md").map(Vec::as_slice),
+        Some(&b"stale outside\n"[..])
+    );
+    assert_eq!(
+        files.get("Pay (shared)/Late.md").map(Vec::as_slice),
+        Some(&b"late outside\n"[..])
+    );
+    assert!(!files.contains_key("Pay/Late.md"));
+    let late = sync.rid_at("Pay (shared)/Late.md").expect("mapped");
+    assert_eq!(sync.object_domain(&late), None);
+
+    // The bootstrapped manager moved neither, so the outsider keeps both.
+    team.settle().await;
+    run(&mut sync, &mut service, 2).await;
+    team.settle().await;
+    let outside = team.outsider_folder.files();
+    assert!(outside.contains_key("Pay/Late.md"), "{:?}", outside.keys());
+    assert!(outside.contains_key("Pay/Same.md"));
+}
+
+/// A device that bootstrapped past `create_domain` still keeps a file that
+/// predates the root at its path, and a manager's device finishes its move.
+#[tokio::test]
+async fn a_bootstrapped_manager_finishes_a_move_of_a_file_that_predates_the_root() {
+    let server = Server::start_with_interval(6).await;
+    let mut team = team(&server).await;
+    team.folder.write("Pay/One.md", b"one\n");
+    team.settle().await;
+    let account = team.grantee_account();
+    let domain = team
+        .sync
+        .restrict_folder(
+            &mut team.owner.service,
+            "Pay",
+            &[Access {
+                account,
+                level: Level::Manage,
+            }],
+        )
+        .await
+        .expect("restricted");
+    // The creating device stops, and the workspace goes on without it. The
+    // grantee holds off too, so the move is still waiting.
+    team.grantee_sync.set_move_wait(Duration::from_secs(3_600));
+    team.grantee_sync.set_checkpoint_wait(Duration::ZERO);
+    for i in 0..8 {
+        team.grantee_folder
+            .write(&format!("Filler {i}.md"), b"filler\n");
+    }
+    for _ in 0..4 {
+        team.grantee_sync
+            .round(&mut team.grantee.service, 0)
+            .await
+            .expect("a round");
+    }
+    let before = team.grantee_sync.rid_at("Pay/One.md").expect("mapped");
+    assert_eq!(team.grantee_sync.object_domain(&before), None);
+
+    let new = sync_support::approve(
+        &server,
+        &mut team.grantee,
+        std::slice::from_mut(team.grantee_sync.remote_mut().expect("connected")),
+    )
+    .await;
+    let mut service = new.connect_through(&server.base).await;
+    let mut folder = Folder::new("Downloaded");
+    let mut sync = WorkspaceSync::download(
+        &mut service,
+        folder.engine.clone(),
+        team.sync.workspace(),
+        &mut folder.registry,
+    )
+    .await
+    .expect("the download starts");
+    sync.set_move_wait(Duration::from_secs(3_600));
+    for _ in 0..3 {
+        sync.round(&mut service, 0).await.expect("a round");
+    }
+    assert!(sync.bootstrapped_past(&domain), "it never saw the entry");
+    assert!(folder.files().contains_key("Pay/One.md"));
+    assert!(!folder.files().keys().any(|p| p.contains("(shared)")));
+
+    run(&mut sync, &mut service, 3).await;
+    let moved = sync.rid_at("Pay/One.md").expect("mapped");
+    assert_eq!(sync.object_domain(&moved), Some(domain));
 }

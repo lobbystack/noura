@@ -429,6 +429,10 @@ pub struct StateInfo {
     /// The epoch whose key encrypts it.
     #[serde(default)]
     pub epoch: u64,
+    /// The policy revision it was signed at, which places it against a
+    /// `create_domain` whose log entry the device never pulled (§9).
+    #[serde(default)]
+    pub policy_revision: u64,
 }
 
 /// What a state operation carries.

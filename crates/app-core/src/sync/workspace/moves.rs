@@ -16,6 +16,7 @@ use sync_protocol::types::Id;
 
 use super::super::{SyncError, SyncService, random};
 use super::capture::Found;
+use super::settle::collide;
 use super::state::{MovePair, Object};
 use super::{PUSH_MARGIN, WorkspaceSync, unix_now};
 
@@ -91,21 +92,27 @@ impl WorkspaceSync {
         })
     }
 
-    /// The object's position against `root`'s `create_domain` entry in the
-    /// workspace domain's log: whether its latest state sits before it,
-    /// or the device bootstrapped past that entry and can't tell.
+    /// Whether the object's latest state operation predates `root`'s
+    /// `create_domain`: by position in the workspace domain's log, or, on a
+    /// device that bootstrapped past that entry, by the policy revision the
+    /// operation was signed at. Anything else is a later write, which a
+    /// root never takes in (§9).
     fn sits_before(&self, object: &Object, root: &RecordedRoot) -> bool {
-        let log = self.log_of(None);
-        let created = self.created_revision(&root.domain);
-        let Some(entry) = created.and_then(|revision| log.domain_entries.get(&revision)) else {
-            return true;
+        let Some(created) = self.created_revision(&root.domain) else {
+            return false;
         };
-        object
+        let Some((seq, latest)) = object
             .states
             .values()
-            .filter_map(|state| state.seq)
-            .max()
-            .is_some_and(|seq| seq < *entry)
+            .filter_map(|state| state.seq.map(|seq| (seq, state)))
+            .max_by_key(|(seq, _)| *seq)
+        else {
+            return false;
+        };
+        match self.log_of(None).domain_entries.get(&created) {
+            Some(entry) => seq < *entry,
+            None => latest.policy_revision < created,
+        }
     }
 
     /// The root whose files `path` lies among, when it belongs to a
@@ -126,6 +133,15 @@ impl WorkspaceSync {
     /// path, which the §9 exception keeps until its move lands.
     pub(super) fn stays_for_move(&self, rid: &Id, path: &str) -> bool {
         self.awaiting_root(rid, path).is_some()
+    }
+
+    /// Whether this device never pulled `domain`'s `create_domain` entry,
+    /// because it bootstrapped past it.
+    #[doc(hidden)]
+    pub fn bootstrapped_past(&self, domain: &Id) -> bool {
+        self.created_revision(domain).is_some_and(|revision| {
+            !self.log_of(None).domain_entries.contains_key(&revision)
+        })
     }
 
     /// Whether `rid` waits for its move into the root that now holds it,
@@ -704,9 +720,20 @@ impl WorkspaceSync {
     }
 
     /// Where the placement rules put `rid`'s file, with the §9 exception
-    /// for an object that waits for its move.
+    /// for an object that waits for its move. The exception gives way to
+    /// the root's own objects: a waiting object never takes a path from one.
     pub(super) fn placement_with_exception(&self, rid: &Id, path: &str) -> Placement {
-        if self.stays_for_move(rid, path) {
+        let keeps_path = self.awaiting_root(rid, path).is_some_and(|root| {
+            !self.state.objects.iter().any(|(other, object)| {
+                other != rid
+                    && object.domain == Some(root.domain)
+                    && object
+                        .local
+                        .as_ref()
+                        .is_some_and(|local| collide(path, &local.path))
+            })
+        });
+        if keeps_path {
             return Placement::At(path.to_owned());
         }
         self.placement_of(rid, path)

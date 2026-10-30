@@ -243,5 +243,6 @@ impl WorkspaceSync {
     /// finishes them itself.
     pub fn set_move_wait(&mut self, wait: std::time::Duration) {
         self.move_wait = wait;
+        self.state.move_due.clear();
     }
 }

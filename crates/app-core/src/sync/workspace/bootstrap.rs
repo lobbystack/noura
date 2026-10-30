@@ -358,6 +358,7 @@ impl WorkspaceSync {
                     covers: op.body.supersedes.to_vec(),
                     content,
                     epoch: op.body.epoch,
+                    policy_revision: op.body.policy_revision,
                 },
             );
         }

@@ -350,7 +350,15 @@ impl WorkspaceSync {
             self.hold(root.folder, root.domain);
         }
         roots.sort_by(|a, b| a.folder.cmp(&b.folder));
+        let added: Vec<RecordedRoot> = roots
+            .iter()
+            .filter(|root| !self.state.roots.iter().any(|r| r.domain == root.domain))
+            .cloned()
+            .collect();
         self.state.roots = roots;
+        for root in &added {
+            self.leave_new_root(root);
+        }
         // A marker you moved away from its root leaves the synced marker
         // valid, but the hold stands until the file is back (§9).
         let covering: Vec<DomainRoot> = valid
@@ -375,6 +383,37 @@ impl WorkspaceSync {
         });
         self.rematch |= self.state.held_roots.len() != before;
         Ok(())
+    }
+
+    /// Takes out of a root this device just learned of each file of
+    /// another domain that doesn't wait for its move, as a bootstrap leaves
+    /// them when it reads the workspace domain first (§9). A file that
+    /// changed on disk stays, and the next capture finds it.
+    fn leave_new_root(&mut self, root: &RecordedRoot) {
+        let markers = self.marker_objects();
+        let synced: Vec<(Id, String)> = self
+            .state
+            .objects
+            .iter()
+            .filter(|(rid, object)| {
+                object.domain != Some(root.domain)
+                    && !markers.contains(rid)
+                    && object.base.is_some()
+                    && object.states.values().all(|state| state.seq.is_some())
+            })
+            .filter_map(|(rid, object)| {
+                let local = object.local.as_ref()?;
+                beneath(&local.path, &root.folder).then(|| (*rid, local.path.clone()))
+            })
+            .collect();
+        for (rid, path) in synced {
+            let Placement::Shared(to) = self.placement_with_exception(&rid, &path) else {
+                continue;
+            };
+            if let Err(error) = self.relocate(&rid, &to) {
+                tracing::warn!(%error, "a file of another domain stayed under a new root");
+            }
+        }
     }
 
     fn hold(&mut self, folder: String, domain: Id) {
@@ -679,6 +718,7 @@ impl WorkspaceSync {
                         blob: None,
                     }),
                     epoch: 1,
+                    policy_revision: change.body.revision,
                 },
             )]),
             ..Object::default()

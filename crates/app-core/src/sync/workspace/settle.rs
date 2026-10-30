@@ -561,7 +561,13 @@ impl WorkspaceSync {
             .iter()
             .filter(|(_, other, _)| collide(path, other))
             .collect();
-        if colliding.iter().any(|(_, _, current)| digest > *current) {
+        // An object of a restricted domain outranks a workspace-domain
+        // object that only waits for its move into that root (§9).
+        let restricted = self.state.objects[rid].domain.is_some();
+        let yields = colliding
+            .iter()
+            .any(|(other, _, current)| digest > *current && !(restricted && self.awaits_move(other)));
+        if yields {
             return (self.free_for(rid, path), Vec::new());
         }
         let displaced = colliding.iter().map(|(other, _, _)| *other).collect();
@@ -601,7 +607,32 @@ impl WorkspaceSync {
         let Some(local) = self.state.objects.get(rid).and_then(|o| o.local.clone()) else {
             return Ok(());
         };
+        // An object that only waits for its move leaves the root (§9).
+        if self.awaits_move(rid)
+            && let Placement::Shared(path) = self.placement_of(rid, &local.path)
+        {
+            return self.relocate(rid, &path);
+        }
         let free = self.free_for(rid, &local.path);
+        self.relocate(rid, &free)
+    }
+
+    /// Moves `rid`'s file to `path`, or to the first free name beside it
+    /// when something holds `path`. The object's synced path stays.
+    pub(super) fn relocate(&mut self, rid: &Id, path: &str) -> Result<(), SyncError> {
+        let Some(local) = self.state.objects.get(rid).and_then(|o| o.local.clone()) else {
+            return Ok(());
+        };
+        let taken = self
+            .current_paths(rid)
+            .iter()
+            .any(|(_, other, _)| collide(path, other))
+            || self.engine.root().join(path).exists();
+        let free = if taken {
+            self.free_for(rid, path)
+        } else {
+            path.to_owned()
+        };
         self.engine
             .move_synced(&local.path, &free, &local.revision.to_hex())
             .map_err(core)?;
