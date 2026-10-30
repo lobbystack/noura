@@ -942,3 +942,25 @@ fn closing_the_note_waits_for_no_record() {
     assert_eq!(note.settle(), Err(HandleError::Closed));
     assert_eq!(note.take_updates(), Err(HandleError::Closed));
 }
+
+#[test]
+fn a_collaborators_cursor_stays_on_its_character_as_text_changes_around_it() {
+    let mut editor = open(vec![support::insert(0, 0, "a😀b")]);
+    // The UTF-16 offset after the emoji, as a relative position.
+    let position = editor.note.encode_position(3, false).unwrap();
+    assert_eq!(editor.doc.offset_of_utf16(3).0, 2, "two graphemes in");
+
+    // Text arrives ahead of the cursor, and the cursor moves with its
+    // character.
+    let theirs = insert_between(support::client(2, 1), 0, None, Some((0, 0)), "xy");
+    editor.receive(update_record(1, 2, 3, 1, &theirs));
+    editor.settle();
+    assert_eq!(editor.doc.text(), "xya😀b");
+    let index = editor.note.decode_position(position).unwrap();
+    assert_eq!(index, 5);
+    assert_eq!(editor.doc.offset_of_utf16(index as usize).0, 4);
+
+    // Your own selection reads the same way.
+    editor.caret(4);
+    assert_eq!(editor.doc.selection_utf16(), (5, 5));
+}

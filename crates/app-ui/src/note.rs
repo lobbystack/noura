@@ -990,3 +990,15 @@ pub(crate) fn unsaved_prompt(ui: &mut Ui, app: &mut App) {
         app.keep_editing();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collaborators_get_distinct_colors_that_stay_with_their_device() {
+        let colors: std::collections::HashSet<_> = (0..8).map(cursor_color).collect();
+        assert_eq!(colors.len(), 8);
+        assert_eq!(cursor_color(3), cursor_color(3 + 8));
+    }
+}

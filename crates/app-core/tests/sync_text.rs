@@ -858,3 +858,66 @@ fn damage_envelopes(proxy: &sync_support::Proxy, reader: Id, wrapper: Id) {
         keys.to_bytes()
     }));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_devices_that_start_from_different_states_conflict_as_two_branches() {
+    let mut pair = pair().await;
+    both_rounds(&mut pair).await;
+    // The laptop enters text mode while the desktop writes the file.
+    let (entered, document) = pair.sync_a.open_text(PLAN).expect("the note opens");
+    assert_eq!(entered, Entered::Yes);
+    let mut document = document.unwrap();
+    type_at(&mut document, 6, " laptop");
+    pair.b.write(PLAN, b"# Plan desktop\n");
+    pair.sync_b.capture().expect("a capture");
+    both_rounds(&mut pair).await;
+    let conflicts = pair.sync_a.conflicts();
+    assert_eq!(conflicts.len(), 1, "two branches");
+    assert_eq!(conflicts[0].branches.len(), 2);
+
+    // Choosing the text-mode branch keeps the merged text and ends the
+    // lineage on both desktops.
+    let rid = conflicts[0].rid;
+    let own = pair.sync_a.device();
+    let branch = conflicts[0]
+        .branches
+        .iter()
+        .find(|branch| branch.device == own)
+        .unwrap();
+    pair.sync_a.choose(rid, branch.key).expect("chosen");
+    both_rounds(&mut pair).await;
+    assert!(pair.sync_a.conflicts().is_empty());
+    assert_eq!(read(&pair.a, PLAN), "# Plan laptop\n");
+    assert_eq!(read(&pair.b, PLAN), "# Plan laptop\n");
+    assert!(!pair.sync_b.in_text_mode(&rid));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restarted_client_keeps_a_notes_journal_and_rebuilds_from_it() {
+    let mut pair = pair().await;
+    let (mut a, _b) = open_both(&mut pair).await;
+    type_at(&mut a, 6, " kept");
+    both_rounds(&mut pair).await;
+    let rid = pair.sync_b.rid_at(PLAN).unwrap();
+    let before = pair.sync_b.text_file(&rid).unwrap().unwrap();
+    drop(_b);
+    let replica = pair.sync_b.workspace();
+    assert_eq!(replica, pair.sync_a.workspace());
+    drop(pair.sync_b);
+    let reopened = WorkspaceSync::open(
+        pair.b.engine.clone(),
+        pair.desktop.credentials.clone(),
+        pair.desktop.secrets(),
+        &pair.b.registry,
+    )
+    .expect("the client reopens");
+    pair.sync_b = reopened;
+    let after = pair.sync_b.text_file(&rid).unwrap().unwrap();
+    assert_eq!(before.records.len(), after.records.len());
+    assert!(pair.sync_b.in_text_mode(&rid));
+    both_rounds(&mut pair).await;
+    let (entered, document) = pair.sync_b.open_text(PLAN).expect("opens");
+    assert_eq!(entered, Entered::Yes);
+    assert!(document.is_some());
+    assert_eq!(pair.sync_b.text_body(&rid), Some("# Plan kept\n"));
+}

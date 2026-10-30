@@ -141,7 +141,10 @@ fn verdict_past_its_memory() {
         "{:?}",
         effects.events
     );
-    let effects = note.receive(inline_record(2, &insert(ME, 0, "y")), Instant::now());
+    let effects = note.receive(
+        inline_record(2, &support::insert_after(ME, 0, (0, 0), "y")),
+        Instant::now(),
+    );
     assert!(merged(&effects.events, 2));
     assert!(!note.is_stopped());
 }
@@ -151,7 +154,10 @@ fn verdict_past_its_memory() {
 fn text_past_8_mib() {
     let mut note = support::note(vec![insert(0, 0, "x")]);
     let text = "a".repeat((8 << 20) + 1);
-    let effects = note.receive(blob_record(1, insert(ME, 0, &text)), Instant::now());
+    let effects = note.receive(
+        blob_record(1, support::insert_after(ME, 0, (0, 0), &text)),
+        Instant::now(),
+    );
     assert_eq!(stopped(&effects.events), Some(StopReason::TextTooLarge));
     assert_eq!(note.text().unwrap(), "x");
 }
@@ -256,7 +262,7 @@ fn deep_nesting() {
             }])
             .unwrap(),
             content: Content::Inline {
-                bytes: Bytes(insert(ME, 0, "deep")),
+                bytes: Bytes(support::insert_after(ME, 0, (0, 0), "deep")),
             },
         },
     }

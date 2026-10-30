@@ -888,6 +888,7 @@ impl WorkspaceSync {
 
     /// Keeps a record this device wrote in the note's file, so a restart
     /// rebuilds the document from it.
+    #[allow(clippy::too_many_arguments)]
     fn keep_own(
         &mut self,
         rid: Id,

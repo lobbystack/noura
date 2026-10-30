@@ -454,9 +454,11 @@ impl Note {
             _ => Vec::new(),
         };
         self.pending_writers = clients
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .map(|word| {
-                let client = u64::from_le_bytes(word.try_into().expect("eight bytes"));
+                let client = u64::from_le_bytes(*word);
                 (client >> LOAD_BITS) as u32
             })
             .collect();

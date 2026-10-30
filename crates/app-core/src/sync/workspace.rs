@@ -4028,7 +4028,14 @@ impl WorkspaceSync {
             .get(&chosen)
             .and_then(|s| s.content.clone())
             .ok_or_else(|| SyncError::Invalid("no such branch".into()))?;
-        let view: BTreeSet<OpKey> = self.live_states(&rid).into_iter().collect();
+        // A choice in a text-mode note covers its patches too, which ends
+        // the lineage.
+        let text = self.in_text_mode(&rid);
+        let view: BTreeSet<OpKey> = if text {
+            self.live_ops(&rid).into_iter().collect()
+        } else {
+            self.live_states(&rid).into_iter().collect()
+        };
         let covers = self.covers_of(&rid, &view);
         if content.delete {
             if let Some(local) = object.local.clone() {
@@ -4039,10 +4046,27 @@ impl WorkspaceSync {
             self.state.objects.get_mut(&rid).expect("checked").local = None;
             self.sign_delete(rid, covers)?;
         } else {
-            let body = self.content_body(&rid, &chosen, &BTreeMap::new())?;
-            self.place(&rid, &content.path, &body, content.revision)?;
+            // A text-mode branch's bytes come from its document.
+            let merged = match content.text {
+                Some(_) => self.text_body_of(&rid)?,
+                None => None,
+            };
+            let (body, revision) = match merged {
+                Some(bytes) => {
+                    let revision = hash(&bytes);
+                    (Body::Bytes(bytes), revision)
+                }
+                None => (
+                    self.content_body(&rid, &chosen, &BTreeMap::new())?,
+                    content.revision,
+                ),
+            };
+            self.place(&rid, &content.path, &body, revision)?;
             let found = self.found_on_disk(&content.path)?;
             self.sign_file(rid, &found, covers)?;
+        }
+        if text {
+            self.end_text(rid)?;
         }
         self.save()
     }
