@@ -27,6 +27,7 @@ mod policy;
 mod pull;
 mod push;
 mod reads;
+mod realtime;
 mod shares;
 
 #[cfg(feature = "conformance")]
@@ -61,6 +62,7 @@ use sync_protocol::types::{Digest, Id, SecretKey};
 pub use hub::EventHub;
 pub use limiter::{Limit, Limiter, MemoryLimiter, Taken};
 pub use policy::PolicyCache;
+pub use realtime::Watch;
 
 /// The restore generation a new database starts at (§14). Restores raise it
 /// (ticket 60).
@@ -1221,10 +1223,12 @@ pub trait Backend: Send + Sync + 'static {
     }
 
     /// Tells the other instances on the same database that `workspace`'s
-    /// domains reached these heads. The store calls it only after the push
-    /// commits, and it returns at once: the announcement leaves from its own
-    /// statement outside the push's transaction, and a lost one costs at
-    /// most a pull's wait.
+    /// domains reached these heads, or, with no heads, that the workspace
+    /// changed without moving one, as an envelope or a re-wrap request
+    /// does. The store calls it only after the change commits, and it
+    /// returns at once: the announcement leaves from its own statement
+    /// outside the change's transaction, and a lost one costs at most a
+    /// pull's wait.
     fn announce(&self, workspace: Id, heads: Vec<(Id, u64)>) {
         let _ = (workspace, heads);
     }
@@ -1395,6 +1399,7 @@ impl<B: Backend> Store<B> {
                 Box::pin(async move { chains::append(txn, session, &links).await })
             }))
             .await?;
+        self.wake_recording(session.account).await?;
         Ok(ChainAppendResponse { seqno })
     }
 
@@ -1582,11 +1587,17 @@ impl<B: Backend> Store<B> {
     /// sends them: tests set up stores this way. `POST /v2/accounts/chain`
     /// runs [`Store::append_chain`], which checks the sender too.
     pub async fn append_account_links(&self, links: Vec<Signed<AccountLink>>) -> Result<u64> {
-        self.backend
+        let account = links.first().map(|link| link.body.account);
+        let seqno = self
+            .backend
             .write(Box::new(move |txn: &mut B::Write| {
                 Box::pin(async move { reads::append_account_links(txn, &links).await })
             }))
-            .await
+            .await?;
+        if let Some(account) = account {
+            self.wake_recording(account).await?;
+        }
+        Ok(seqno)
     }
 
     /// `POST /v2/workspaces`.
@@ -1743,7 +1754,78 @@ impl<B: Backend> Store<B> {
                     reads::rewrap(txn, &cache, session, workspace, domain, epoch).await
                 })
             }))
+            .await?;
+        // The request joined the key stream, which the readers' realtime
+        // connections announce (§9, §23).
+        self.wake(workspace);
+        Ok(())
+    }
+
+    /// Wakes `workspace`'s pulls and realtime connections on this instance
+    /// and the others, after a change committed.
+    fn wake(&self, workspace: Id) {
+        self.hub.notify(workspace);
+        self.backend.announce(workspace, Vec::new());
+    }
+
+    /// Wakes every workspace whose policy records a head of `account`, so
+    /// their realtime connections announce its new chain head (§23).
+    async fn wake_recording(&self, account: Id) -> Result<()> {
+        let workspaces = self
+            .backend
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move { txn.workspaces_recording(account).await })
+            }))
+            .await?;
+        for workspace in workspaces {
+            self.wake(workspace);
+        }
+        Ok(())
+    }
+
+    /// What a realtime connection of `session` to `workspace` starts from:
+    /// the heads, policy revision, key stream head and member chains it
+    /// would tell of, read in one snapshot. A device that isn't active in
+    /// the workspace gets `forbidden` (§23).
+    pub async fn realtime_watch(&self, session: Session, workspace: Id) -> Result<Watch> {
+        let cache = self.policies.clone();
+        self.backend
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move {
+                    let mut watch = Watch::default();
+                    realtime::read(txn, &cache, session, workspace, &mut watch, true).await?;
+                    Ok(watch)
+                })
+            }))
             .await
+    }
+
+    /// The frames that tell a realtime connection of `session` what
+    /// committed in `workspace` since `watch`, from one snapshot: a records
+    /// frame for each domain whose new entries fit one frame, a notify for
+    /// each other domain that moved, and the policy, key and account chain
+    /// hints. Brings `watch` up to date. A device no longer active in the
+    /// workspace gets `forbidden` (§23).
+    pub async fn realtime_frames(
+        &self,
+        session: Session,
+        workspace: Id,
+        watch: &mut Watch,
+    ) -> Result<Vec<sync_protocol::messages::Frame>> {
+        let cache = self.policies.clone();
+        let mut moved = watch.clone();
+        let (frames, moved) = self
+            .backend
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move {
+                    let frames =
+                        realtime::read(txn, &cache, session, workspace, &mut moved, false).await?;
+                    Ok((frames, moved))
+                })
+            }))
+            .await?;
+        *watch = moved;
+        Ok(frames)
     }
 
     /// `GET /v2/workspaces/{w}/domains/{d}/epochs/{epoch}`.
@@ -1786,16 +1868,17 @@ impl<B: Backend> Store<B> {
             Some(group) => self.backend.write_grouped(group, job).await?,
             None => self.backend.write(job).await?,
         };
-        if !response.receipts.is_empty() {
-            self.hub.notify(workspace);
-            let mut heads: BTreeMap<Id, u64> = BTreeMap::new();
-            for receipt in response.receipts.iter() {
-                let head = heads.entry(receipt.domain).or_default();
-                *head = (*head).max(receipt.seq);
-            }
-            self.backend
-                .announce(workspace, heads.into_iter().collect());
+        // Every committed push wakes the workspace's pulls and realtime
+        // connections, also one that only added envelopes to the key
+        // stream (§23).
+        self.hub.notify(workspace);
+        let mut heads: BTreeMap<Id, u64> = BTreeMap::new();
+        for receipt in response.receipts.iter() {
+            let head = heads.entry(receipt.domain).or_default();
+            *head = (*head).max(receipt.seq);
         }
+        self.backend
+            .announce(workspace, heads.into_iter().collect());
         Ok(response)
     }
 
