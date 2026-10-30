@@ -79,6 +79,15 @@ pub(crate) async fn read(
             // A domain it just started to read: everything from the start.
             None => 0,
         };
+        // Nothing at or below the account's history floor reaches a frame
+        // (§9); a device that sees the gap pulls, and bootstraps from there.
+        let floor = txn
+            .history_floor(workspace, session.account, domain)
+            .await?;
+        let previous = previous.max(floor);
+        if previous >= row.head_seq {
+            continue;
+        }
         let checkpoint_due = row.checkpoint_due;
         frames.push(
             match entries(txn, workspace, domain, previous, row.head_seq).await? {

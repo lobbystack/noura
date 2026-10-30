@@ -221,7 +221,47 @@ pub fn routes<B: Backend>() -> Router<AppState<B>> {
         .route("/device", get(device_page::<B>).post(device_code::<B>))
         .route("/device/decide", post(device_decide::<B>))
         .route("/s/{token}", get(share_page::<B>))
+        .route("/invite/{token}", get(invite_page::<B>))
         .layer(middleware::from_fn(page_headers))
+}
+
+/// `GET /invite/{token}`: the invitation page (§11), which sends a browser
+/// visitor to the desktop app. Every answer, the not-found and failure pages
+/// included, loads no script, since the link's fragment holds the secret.
+async fn invite_page<B: Backend>(
+    State(state): State<AppState<B>>,
+    Path(token): Path<String>,
+) -> Response {
+    let page = |status, heading, text| html(status, &pages::Invite { heading, text });
+    let gone = || {
+        page(
+            StatusCode::NOT_FOUND,
+            "This invitation doesn't open",
+            "The person who invited you revoked it, or it expired after seven days. Ask them for a new link.",
+        )
+    };
+    let Ok(token) = from_base64url::<16>(&token) else {
+        return gone();
+    };
+    match state.store.invitation_context(token).await {
+        Ok(_) => page(
+            StatusCode::OK,
+            "Open this invitation in Noura",
+            "Someone invited you to a Noura workspace. Copy this page's address and paste it in the Noura desktop app, under Settings > Sync account, to see who invited you and join.",
+        ),
+        Err(sync_store::Error::Refused(_)) => gone(),
+        Err(error) => {
+            let mut response = page(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Something went wrong",
+                "The server couldn't finish. Try again in a moment.",
+            );
+            response
+                .extensions_mut()
+                .insert(InternalCause(error.to_string()));
+            response
+        }
+    }
 }
 
 /// `GET /s/{token}`: the share viewer page (§24), or a not-found page once

@@ -7,7 +7,10 @@
 use std::path::{Path, PathBuf};
 
 use app_core::App;
-use app_core::account::{AccountAction, AccountPhase, AccountScreen, RecoveryView, SignedInView};
+use app_core::account::{
+    AccountAction, AccountPhase, AccountScreen, InvitationStage, InvitationView, RecoveryView,
+    SignedInView,
+};
 use app_core::sync::recovery::KIT_WARNING;
 use egui::{Button, RichText, TextEdit, Ui, UiBuilder, accesskit::Role};
 
@@ -23,6 +26,8 @@ pub(crate) struct AccountView {
     /// The recovery kit file and secret being typed.
     kit_path: String,
     kit_secret: String,
+    /// The invitation link being pasted.
+    invitation_link: String,
 }
 
 fn group(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
@@ -94,6 +99,10 @@ pub(crate) fn section(
             muted(ui, "Working on it.");
         });
     }
+    let mut download = None;
+    if let Some(invitation) = &screen.invitation {
+        download = invitation_group(ui, &screen, invitation, &mut actions, picker);
+    }
     match &screen.phase {
         AccountPhase::SignedOut => signed_out(ui, &screen, view, &mut actions),
         AccountPhase::SigningIn { user_code } => {
@@ -157,9 +166,135 @@ pub(crate) fn section(
             });
         }
     }
+    if screen.invitation.is_none()
+        && matches!(
+            screen.phase,
+            AccountPhase::SignedOut | AccountPhase::SignedIn(_)
+        )
+    {
+        paste_invitation(ui, &screen, view, &mut actions);
+    }
     for action in actions {
         app.account_action(action);
     }
+    if let (Some(folder), Some(invitation)) = (download, &screen.invitation) {
+        app.download_invited(&invitation.workspace, folder);
+    }
+}
+
+fn paste_invitation(
+    ui: &mut Ui,
+    screen: &AccountScreen,
+    view: &mut AccountView,
+    actions: &mut Vec<AccountAction>,
+) {
+    group(ui, "Join a workspace", |ui| {
+        ui.add(
+            TextEdit::singleline(&mut view.invitation_link)
+                .hint_text("https://sync.noura.app/invite/...")
+                .desired_width(320.0),
+        )
+        .accessible_name("Invitation link");
+        let filled = !view.invitation_link.trim().is_empty();
+        if ui
+            .add_enabled(!screen.busy && filled, Button::new("Open link"))
+            .clicked()
+        {
+            actions.push(AccountAction::OpenInvitation(std::mem::take(
+                &mut view.invitation_link,
+            )));
+        }
+    });
+}
+
+/// "a viewer" or "an editor".
+fn with_article(role: &str) -> String {
+    let article = if role.starts_with(['a', 'e']) {
+        "an"
+    } else {
+        "a"
+    };
+    format!("{article} {role}")
+}
+
+/// Draws the invitation you opened. Returns the folder you chose for the
+/// workspace you joined.
+fn invitation_group(
+    ui: &mut Ui,
+    screen: &AccountScreen,
+    invitation: &InvitationView,
+    actions: &mut Vec<AccountAction>,
+    picker: &mut dyn FolderPicker,
+) -> Option<PathBuf> {
+    let mut chosen = None;
+    let inviter = &invitation.inviter;
+    group(ui, "Invitation", |ui| {
+        ui.label(format!(
+            "{inviter} invited you to {} as {}.",
+            invitation.workspace,
+            with_article(&invitation.role)
+        ));
+        match &invitation.stage {
+            InvitationStage::Opened => {
+                let signed_in = matches!(screen.phase, AccountPhase::SignedIn(_));
+                let accept = if signed_in {
+                    "Accept"
+                } else {
+                    "Sign in and accept"
+                };
+                if ui.add_enabled(!screen.busy, Button::new(accept)).clicked() {
+                    actions.push(AccountAction::AcceptInvitation);
+                }
+                if ui.button("Not now").clicked() {
+                    actions.push(AccountAction::CancelInvitation);
+                }
+            }
+            InvitationStage::Waiting {
+                fingerprint,
+                code: shown,
+                confirmed,
+            } => {
+                ui.label("This computer's fingerprint:");
+                fingerprint_line(ui, fingerprint);
+                match shown {
+                    None => {
+                        muted(
+                            ui,
+                            &format!("Waiting for {inviter} to approve this computer."),
+                        );
+                    }
+                    Some(shown) => {
+                        ui.label(format!(
+                            "Compare this code with {inviter} on a call or another channel you trust:"
+                        ));
+                        code(ui, shown);
+                        if *confirmed {
+                            muted(ui, &format!("Waiting for {inviter}'s computer to finish."));
+                        } else if ui.button("Codes match").clicked() {
+                            actions.push(AccountAction::ConfirmInvitationCode);
+                        }
+                    }
+                }
+                if ui.button("Cancel").clicked() {
+                    actions.push(AccountAction::CancelInvitation);
+                }
+            }
+            InvitationStage::Joined { downloading } => {
+                if *downloading {
+                    muted(ui, "Noura is downloading the workspace.");
+                } else {
+                    ui.label("You joined. Choose an empty folder for its files.");
+                    if ui
+                        .add_enabled(!screen.busy, Button::new("Choose a folder"))
+                        .clicked()
+                    {
+                        chosen = picker.pick_folder("Choose an empty folder for the workspace");
+                    }
+                }
+            }
+        }
+    });
+    chosen
 }
 
 fn signed_out(

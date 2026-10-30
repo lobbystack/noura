@@ -283,6 +283,7 @@ pub(super) fn placeholder_target(name: &str) -> Option<&str> {
     name.strip_prefix('.')?
         .strip_suffix(".icloud")
         .filter(|real| !real.is_empty() && !real.starts_with('.'))
+        .filter(|_| !workspace_format::is_domain_marker(name))
 }
 
 /// Where iCloud keeps the placeholder for a file it has not downloaded.

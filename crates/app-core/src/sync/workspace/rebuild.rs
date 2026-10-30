@@ -26,6 +26,7 @@ use super::{SyncError, SyncService, WorkspaceSync, core, profile_of};
 use crate::sync::journal::{self, Journal, STATE_FILE};
 use crate::sync::registry::Registry;
 
+use sync_protocol::matching::HeldRoot;
 pub use sync_protocol::matching::MARKER;
 /// The listing of an archived review store.
 const ARCHIVE_INDEX: &str = "archive.json";
@@ -78,7 +79,7 @@ pub(crate) fn local_markers(root: &Path) -> Vec<String> {
             };
             if kind.is_dir() && !(relative.is_empty() && (name == ".noura" || name == ".git")) {
                 stack.push((entry.path(), path));
-            } else if kind.is_file() && name == MARKER {
+            } else if kind.is_file() && workspace_format::is_domain_marker(&name) {
                 found.push(relative.clone());
             }
         }
@@ -141,15 +142,37 @@ impl WorkspaceSync {
         sync.paused = entry.paused;
         archived.extend(old.map(|s| s.archived).unwrap_or_default());
         sync.state.archived = archived;
-        // Every local marker holds the files beneath it; this device reads
-        // no restricted domain yet (ticket 50), so none is valid here.
-        sync.state.held_roots = local_markers(sync.engine.root());
+        // Every local marker holds the files beneath it until a valid
+        // marker of the domain it names covers them (§9).
+        sync.state.held_roots = local_markers(sync.engine.root())
+            .into_iter()
+            .map(|folder| {
+                let named = sync
+                    .engine
+                    .read_synced(&format!("{folder}/{MARKER}"))
+                    .ok()
+                    .flatten()
+                    .and_then(|bytes| sync_protocol::records::parse_marker(&bytes));
+                HeldRoot {
+                    folder,
+                    domain: named,
+                }
+            })
+            .collect();
         sync.compare_own_chain(service).await?;
+        // The client bootstraps again and matches its files (§15).
+        sync.state.bootstrap = true;
         sync.matching = true;
         let caught_up = async {
             for _ in 0..10_000 {
                 let (_, waiting) = sync.pull(service, 0).await?;
-                if waiting || sync.state.log.cursor >= sync.state.log.head {
+                let behind = sync.state.log.cursor < sync.state.log.head
+                    || sync
+                        .state
+                        .restricted
+                        .values()
+                        .any(|f| f.log.cursor < f.log.head);
+                if waiting || !behind {
                     return Ok(());
                 }
             }
@@ -204,7 +227,7 @@ impl WorkspaceSync {
     /// then by path. A match that equals a live state is adopted as it is;
     /// one that differs is held; objects nothing matched are written; the
     /// files nothing matched upload as new objects in the next capture.
-    fn match_local(&mut self) -> Result<(), SyncError> {
+    pub(super) fn match_local(&mut self) -> Result<(), SyncError> {
         let cache = std::mem::take(&mut self.cache);
         let listing = self.engine.synced_listing().map_err(core)?;
         let mut locals: Vec<Found> = Vec::new();
@@ -213,7 +236,7 @@ impl WorkspaceSync {
                 .state
                 .held_roots
                 .iter()
-                .any(|root| beneath(&file.relative_path, root))
+                .any(|root| beneath(&file.relative_path, &root.folder))
             {
                 continue;
             }
@@ -436,7 +459,7 @@ impl WorkspaceSync {
     /// Ends the hold on the files beneath `folder`, which upload to the
     /// workspace domain from the next capture on (§9).
     pub fn confirm_held_root(&mut self, folder: &str) -> Result<(), SyncError> {
-        self.state.held_roots.retain(|root| root != folder);
+        self.state.held_roots.retain(|root| root.folder != folder);
         self.save()
     }
 
@@ -458,10 +481,10 @@ impl WorkspaceSync {
             .map(|root| {
                 let files = listing
                     .iter()
-                    .filter(|f| beneath(&f.relative_path, root))
+                    .filter(|f| beneath(&f.relative_path, &root.folder))
                     .map(|f| f.relative_path.clone())
                     .collect();
-                (root.clone(), files, people)
+                (root.folder.clone(), files, people)
             })
             .collect()
     }

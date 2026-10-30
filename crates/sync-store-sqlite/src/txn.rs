@@ -4,13 +4,13 @@ use sqlx::{Sqlite, SqliteConnection, Transaction};
 use sync_protocol::codec::{Decode, Encode};
 use sync_protocol::live::LiveOp;
 use sync_protocol::messages::DeviceRemovedDetail;
-use sync_protocol::records::{AccountHead, OpClass, Ref};
+use sync_protocol::records::{AccountHead, OpClass, Ref, Role};
 use sync_protocol::types::{Digest, Id, Key};
 use sync_store::{
     ApprovalRequestRow, BlobRow, CeremonyKind, CeremonyRow, ChainHeadRow, CheckpointRow, DeleteRow,
-    DeviceGrantRow, DomainRow, EpochRow, Error, KeyRow, LinkRow, LockPlan, OfferRow, PasskeyRow,
-    PendingPasskeyRow, RawEntry, ReadTxn, RemovedBy, Result, RewrapRow, Session, SessionRow,
-    ShareRow, WorkspaceRow, WriteTxn,
+    DeviceGrantRow, DomainRow, EpochRow, Error, InvitationRow, KeyRow, LinkRow, LockPlan, OfferRow,
+    PasskeyRow, PendingPasskeyRow, RawEntry, ReadTxn, RemovedBy, Result, RewrapRow, Session,
+    SessionRow, ShareRow, WorkspaceRow, WriteTxn,
 };
 
 /// A read transaction from the pool, or the writer's connection inside its
@@ -195,6 +195,30 @@ fn request_row(
         workspace: workspace.map(id).transpose()?,
         request,
         expires_at: uint(expires_at)?,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn invitation_row(
+    invitation: Vec<u8>,
+    token_hash: Vec<u8>,
+    workspace: Vec<u8>,
+    role: i64,
+    inviter: Vec<u8>,
+    accepted_by: Option<Vec<u8>>,
+    expires_at: i64,
+    invite_context: Vec<u8>,
+) -> Result<InvitationRow> {
+    Ok(InvitationRow {
+        invitation: id(invitation)?,
+        token_hash: digest(token_hash)?,
+        workspace: id(workspace)?,
+        role: Role::from_code(byte(role)?)
+            .ok_or_else(|| Error::internal("a stored invitation names an unknown role"))?,
+        inviter: id(inviter)?,
+        accepted_by: accepted_by.map(id).transpose()?,
+        expires_at: uint(expires_at)?,
+        invite_context,
     })
 }
 
@@ -696,6 +720,23 @@ impl ReadTxn for SqliteTxn {
         .await
         .map_err(db)?;
         Ok(row.map(|r| r.record))
+    }
+
+    async fn history_floor(&mut self, workspace: Id, account: Id, domain: Id) -> Result<u64> {
+        let workspace = &workspace.0[..];
+        let account = &account.0[..];
+        let domain = &domain.0[..];
+        let floor = sqlx::query_scalar!(
+            "SELECT floor FROM history_floors
+             WHERE workspace = ?1 AND account = ?2 AND domain = ?3",
+            workspace,
+            account,
+            domain
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        floor.map_or(Ok(0), uint)
     }
 
     async fn domain(&mut self, workspace: Id, domain: Id) -> Result<Option<DomainRow>> {
@@ -1552,6 +1593,139 @@ impl ReadTxn for SqliteTxn {
         Ok(row.is_some())
     }
 
+    async fn blob_listing_seqs(&mut self, workspace: Id, blob: Id) -> Result<Vec<u64>> {
+        let workspace = &workspace.0[..];
+        let blob = &blob.0[..];
+        let rows = sqlx::query_scalar!(
+            "SELECT seq FROM blob_listings WHERE workspace = ?1 AND blob = ?2",
+            workspace,
+            blob
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter().map(uint).collect()
+    }
+
+    async fn invitation(&mut self, invitation: Id) -> Result<Option<InvitationRow>> {
+        let invitation = &invitation.0[..];
+        let row = sqlx::query!(
+            "SELECT invitation, token_hash, workspace, role, inviter, accepted_by, expires_at, invite_context FROM invitations WHERE invitation = ?1",
+            invitation
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| {
+            invitation_row(
+                r.invitation,
+                r.token_hash,
+                r.workspace,
+                r.role,
+                r.inviter,
+                r.accepted_by,
+                r.expires_at,
+                r.invite_context,
+            )
+        })
+        .transpose()
+    }
+
+    async fn invitation_ended(&mut self, invitation: Id) -> Result<bool> {
+        let invitation = &invitation.0[..];
+        let row = sqlx::query!(
+            "SELECT expires_at FROM ended_invitations WHERE invitation = ?1",
+            invitation
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        Ok(row.is_some())
+    }
+
+    async fn invitation_by_token(&mut self, token_hash: Digest) -> Result<Option<InvitationRow>> {
+        let hash = &token_hash.0[..];
+        let row = sqlx::query!(
+            "SELECT invitation, token_hash, workspace, role, inviter, accepted_by, expires_at, invite_context FROM invitations WHERE token_hash = ?1",
+            hash
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| {
+            invitation_row(
+                r.invitation,
+                r.token_hash,
+                r.workspace,
+                r.role,
+                r.inviter,
+                r.accepted_by,
+                r.expires_at,
+                r.invite_context,
+            )
+        })
+        .transpose()
+    }
+
+    async fn invitations(&mut self, workspace: Id, now: u64) -> Result<Vec<InvitationRow>> {
+        let workspace = &workspace.0[..];
+        let now = at_most(now);
+        let rows = sqlx::query!(
+            "SELECT invitation, token_hash, workspace, role, inviter, accepted_by, expires_at, invite_context FROM invitations WHERE workspace = ?1 AND expires_at > ?2 ORDER BY invitation",
+            workspace,
+            now
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|r| {
+                invitation_row(
+                    r.invitation,
+                    r.token_hash,
+                    r.workspace,
+                    r.role,
+                    r.inviter,
+                    r.accepted_by,
+                    r.expires_at,
+                    r.invite_context,
+                )
+            })
+            .collect()
+    }
+
+    async fn workspace_approval_requests(
+        &mut self,
+        workspace: Id,
+    ) -> Result<Vec<ApprovalRequestRow>> {
+        let workspace = &workspace.0[..];
+        let rows = sqlx::query!(
+            "SELECT commit_digest, account, device, card, candidate_head, invitation,
+                    invite_proof, workspace, request, expires_at
+             FROM approval_requests WHERE workspace = ?1 ORDER BY commit_digest",
+            workspace
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|r| {
+                request_row(
+                    r.commit_digest,
+                    r.account,
+                    r.device,
+                    r.card,
+                    r.candidate_head,
+                    r.invitation,
+                    r.invite_proof,
+                    r.workspace,
+                    r.request,
+                    r.expires_at,
+                )
+            })
+            .collect()
+    }
+
     async fn share(&mut self, token_hash: Digest) -> Result<Option<ShareRow>> {
         let hash = &token_hash.0[..];
         let row = sqlx::query!(
@@ -1736,6 +1910,46 @@ impl WriteTxn for SqliteTxn {
             workspace,
             account,
             role
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn set_history_floor(
+        &mut self,
+        workspace: Id,
+        account: Id,
+        domain: Id,
+        floor: u64,
+    ) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let account = &account.0[..];
+        let domain = &domain.0[..];
+        let floor = int(floor)?;
+        sqlx::query!(
+            "INSERT INTO history_floors (workspace, account, domain, floor)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (workspace, account, domain) DO UPDATE SET floor = excluded.floor",
+            workspace,
+            account,
+            domain,
+            floor
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn delete_member(&mut self, workspace: Id, account: Id) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let account = &account.0[..];
+        sqlx::query!(
+            "DELETE FROM members WHERE workspace = ?1 AND account = ?2",
+            workspace,
+            account
         )
         .execute(self.c())
         .await
@@ -2781,6 +2995,16 @@ impl WriteTxn for SqliteTxn {
             .await
             .map_err(db)?
             .rows_affected();
+        deleted += sqlx::query!("DELETE FROM invitations WHERE expires_at <= ?1", now)
+            .execute(self.c())
+            .await
+            .map_err(db)?
+            .rows_affected();
+        deleted += sqlx::query!("DELETE FROM ended_invitations WHERE expires_at <= ?1", now)
+            .execute(self.c())
+            .await
+            .map_err(db)?
+            .rows_affected();
         Ok(deleted)
     }
 
@@ -2891,6 +3115,62 @@ impl WriteTxn for SqliteTxn {
         .execute(self.c())
         .await
         .map_err(db)?;
+        Ok(())
+    }
+
+    async fn insert_invitation(&mut self, row: &InvitationRow) -> Result<()> {
+        let invitation = &row.invitation.0[..];
+        let hash = &row.token_hash.0[..];
+        let workspace = &row.workspace.0[..];
+        let role = i64::from(row.role.code());
+        let inviter = &row.inviter.0[..];
+        let accepted_by = row.accepted_by.as_ref().map(|a| &a.0[..]);
+        let expires_at = int(row.expires_at)?;
+        let context = &row.invite_context[..];
+        sqlx::query!(
+            "INSERT INTO invitations (invitation, token_hash, workspace, role, inviter, accepted_by, expires_at, invite_context) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            invitation,
+            hash,
+            workspace,
+            role,
+            inviter,
+            accepted_by,
+            expires_at,
+            context
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn accept_invitation(&mut self, invitation: Id, account: Id) -> Result<()> {
+        let invitation = &invitation.0[..];
+        let account = &account.0[..];
+        sqlx::query!(
+            "UPDATE invitations SET accepted_by = ?1 WHERE invitation = ?2",
+            account,
+            invitation
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn delete_invitation(&mut self, invitation: Id) -> Result<()> {
+        let invitation = &invitation.0[..];
+        sqlx::query!(
+            "INSERT INTO ended_invitations (invitation, expires_at) SELECT invitation, expires_at FROM invitations WHERE invitation = ?1 ON CONFLICT DO NOTHING",
+            invitation
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        sqlx::query!("DELETE FROM invitations WHERE invitation = ?1", invitation)
+            .execute(self.c())
+            .await
+            .map_err(db)?;
         Ok(())
     }
 

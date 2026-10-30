@@ -38,21 +38,41 @@ pub(crate) const MAX_REWRAP_ANSWERS: usize = 3;
 pub(crate) struct PushState {
     policy: Arc<PolicyChain>,
     owed: BTreeMap<(Id, u64, Id), usize>,
+    /// The domains this push created, which take epoch 1 in it.
+    created: BTreeSet<Id>,
+    /// Each account a change brought into a domain, with the change's
+    /// digest, whose history floor the push sets (§9).
+    floors: Vec<(Id, Id, sync_protocol::types::Digest)>,
     interval: CheckpointInterval,
+    /// The store clock's time, in Unix seconds.
+    pub(crate) now: u64,
 }
 
 impl PushState {
-    pub(crate) fn new(policy: Arc<PolicyChain>, interval: CheckpointInterval) -> Self {
+    pub(crate) fn new(policy: Arc<PolicyChain>, interval: CheckpointInterval, now: u64) -> Self {
         Self {
             policy,
             owed: BTreeMap::new(),
+            created: BTreeSet::new(),
+            floors: Vec::new(),
             interval,
+            now,
         }
     }
 
     /// The policy after the changes so far.
     pub(crate) fn policy(&self) -> &Arc<PolicyChain> {
         &self.policy
+    }
+
+    /// What [`Self::floors`] names: domain, account and the change.
+    pub(crate) fn floors(&self) -> impl Iterator<Item = &(Id, Id, sync_protocol::types::Digest)> {
+        self.floors.iter()
+    }
+
+    /// Whether a change of this push sets a floor in `domain`.
+    pub(crate) fn sets_floor(&self, domain: &Id) -> bool {
+        self.floors.iter().any(|(d, _, _)| d == domain)
     }
 
     /// The first record whose envelopes the push doesn't carry.
@@ -80,11 +100,21 @@ pub(crate) async fn apply_change(
     index: usize,
     change: &Signed<PolicyChange>,
 ) -> Result<Vec<Receipt>> {
-    if !matches!(change.body.kind, PolicyKind::AccountHeads) {
-        // Ticket 50 adds the membership and domain changes.
+    if !matches!(
+        change.body.kind,
+        PolicyKind::AccountHeads
+            | PolicyKind::AddMember { .. }
+            | PolicyKind::SetRole { .. }
+            | PolicyKind::RemoveMember { .. }
+            | PolicyKind::TransferOwner { .. }
+            | PolicyKind::CreateDomain { .. }
+            | PolicyKind::SetAccess { .. }
+            | PolicyKind::DeleteDomain { .. }
+    ) {
+        // accept_reset arrives with ticket 60.
         return Err(refuse(
             "bad_request",
-            "this server takes account_heads changes in a push so far",
+            "this server takes no accept_reset in a push yet",
         ));
     }
     let current = state.policy.clone();
@@ -100,6 +130,26 @@ pub(crate) async fn apply_change(
     let next = current
         .check(change, &chains)
         .map_err(|e| refuse(e.server_code(), e.to_string()))?;
+    if let PolicyKind::AddMember {
+        account,
+        role,
+        invitation,
+    } = &change.body.kind
+    {
+        let signer = prev
+            .account_of(&change.body.signer)
+            .ok_or_else(|| refuse("forbidden", "the signer isn't a member device"))?;
+        crate::invitations::check_add_member(
+            txn,
+            workspace,
+            signer,
+            *account,
+            *role,
+            *invitation,
+            state.now,
+        )
+        .await?;
+    }
 
     // The envelopes it owes the cards it brings in.
     let read_before = |domain: &Id| {
@@ -108,6 +158,11 @@ pub(crate) async fn apply_change(
     };
     for (domain, added) in &next.new_readers {
         if !prev.domains.contains_key(domain) {
+            // A new domain's readers take epoch 1 in this push, from the
+            // device that signed the change (§9, Rotation).
+            for device in added {
+                state.owed.insert((*domain, 1, *device), index);
+            }
             continue;
         }
         if read_before(domain) {
@@ -126,6 +181,11 @@ pub(crate) async fn apply_change(
         }
     }
 
+    state.created.extend(
+        next.domains
+            .keys()
+            .filter(|domain| !prev.domains.contains_key(domain)),
+    );
     let revision = change.body.revision;
     let digest = change.digest();
     policy::store_change(txn, workspace, change).await?;
@@ -133,6 +193,43 @@ pub(crate) async fn apply_change(
     for (account, member) in &next.members {
         txn.upsert_member(workspace, *account, member.role.code())
             .await?;
+    }
+    for account in prev.members.keys() {
+        if !next.members.contains_key(account) {
+            txn.delete_member(workspace, *account).await?;
+        }
+    }
+    // A created domain's log starts with this change's entry (§8), which
+    // the loop below appends first since nothing else stands in the log.
+    for domain in next.domains.keys() {
+        if !prev.domains.contains_key(domain) {
+            txn.insert_domain(workspace, *domain).await?;
+        }
+    }
+    match &change.body.kind {
+        PolicyKind::AddMember {
+            account,
+            invitation,
+            ..
+        } => {
+            // An approved invitation ends: its link no longer opens.
+            txn.delete_invitation(*invitation).await?;
+            state.floors.push((next.workspace_domain, *account, digest));
+        }
+        PolicyKind::SetAccess { domain, access } => {
+            let before = prev.domains.get(domain).map(|d| &d.access);
+            for entry in access.iter() {
+                if !before.is_some_and(|list| list.contains_key(&entry.account)) {
+                    state.floors.push((*domain, entry.account, digest));
+                }
+            }
+        }
+        PolicyKind::SetRole { .. }
+        | PolicyKind::RemoveMember { .. }
+        | PolicyKind::TransferOwner { .. } => {
+            crate::invitations::end_ungrantable(txn, workspace, &next).await?;
+        }
+        _ => {}
     }
     let entry = PolicyEntry {
         revision,
@@ -210,6 +307,9 @@ pub(crate) async fn apply_epoch(
             "forbidden",
             "the rotating device couldn't read the domain at its revision or can't now",
         ));
+    }
+    if row.epoch == 0 {
+        return apply_first_epoch(txn, state, workspace, bundle).await;
     }
     if body.epoch <= row.epoch {
         return Err(refuse("epoch_conflict", "another rotation took this epoch"));
@@ -308,6 +408,92 @@ pub(crate) async fn apply_epoch(
     for reader in readers {
         state.owed.insert((domain, body.epoch, reader), index);
     }
+    Ok(vec![Receipt {
+        record_digest: digest,
+        domain,
+        seq,
+    }])
+}
+
+/// Commits epoch 1 of a domain whose `create_domain` this push carries
+/// (§9): from the device that signed that change, at its revision, with no
+/// lineage, for the domain's readers. A domain gets no first epoch later,
+/// so one that a push left without it never takes a record.
+async fn apply_first_epoch(
+    txn: &mut impl WriteTxn,
+    state: &mut PushState,
+    workspace: Id,
+    bundle: &EpochBundle,
+) -> Result<Vec<Receipt>> {
+    let record = &bundle.epoch.0;
+    let body = &record.body;
+    let policy = state.policy.clone();
+    let snapshot = policy.head_snapshot();
+    let domain = body.domain;
+    let created = snapshot
+        .domains
+        .get(&domain)
+        .ok_or_else(|| refuse("not_found", "no such domain"))?;
+    if !state.created.contains(&domain) || body.epoch != 1 || !body.previous.is_zero() {
+        return Err(refuse(
+            "rotation_not_due",
+            "epoch 1 of a domain commits with its create_domain",
+        ));
+    }
+    if body.rotating_device != created.creator {
+        return Err(refuse(
+            "forbidden",
+            "epoch 1 comes from the device that signed the create_domain",
+        ));
+    }
+    if body.policy_revision != created.created_at {
+        return Err(refuse(
+            "policy_stale",
+            "epoch 1 names the create_domain's revision",
+        ));
+    }
+    if !body.lineage.0.is_empty() || !body.lineage_nonce.is_zero() {
+        return Err(refuse("bad_request", "epoch 1 carries no lineage"));
+    }
+    let readers = snapshot.readers(&domain);
+    let listed: BTreeSet<Id> = bundle.recipients.iter().copied().collect();
+    if listed != readers || body.recipients_digest != recipients_digest(&readers) {
+        return Err(refuse(
+            "recipients_invalid",
+            "the epoch's recipients aren't the domain's readers",
+        ));
+    }
+    let bytes = record.to_bytes();
+    let digest = record.digest();
+    let seq = txn
+        .append_entry(workspace, domain, ENTRY_EPOCH, &bytes)
+        .await?;
+    crate::checkpoints::note_entry(
+        txn,
+        state.interval,
+        workspace,
+        domain,
+        seq,
+        bytes.len() as u64,
+        false,
+    )
+    .await?;
+    txn.insert_epoch(
+        workspace,
+        domain,
+        &EpochRow {
+            epoch: 1,
+            seq,
+            digest,
+            previous: body.previous,
+            record: bytes.clone(),
+        },
+        body.policy_revision,
+        &bundle.to_bytes(),
+    )
+    .await?;
+    txn.append_key_entry(workspace, KEY_EPOCH, domain, 1, None, &bytes)
+        .await?;
     Ok(vec![Receipt {
         record_digest: digest,
         domain,

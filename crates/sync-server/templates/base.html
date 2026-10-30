@@ -6,7 +6,7 @@
 <meta name="referrer" content="strict-origin">
 <title>{% block title %}{% endblock %} · Noura</title>
 <link rel="stylesheet" href="/account/assets/account.css">
-<script type="module" src="/account/assets/account.js"></script>
+{% block scripts %}<script type="module" src="/account/assets/account.js"></script>{% endblock %}
 </head>
 <body>
 <main>

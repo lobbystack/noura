@@ -60,10 +60,19 @@ pub struct State {
     pub held: BTreeMap<Id, Held>,
     /// Unix seconds of the last round that finished without an error.
     pub last_success: Option<u64>,
-    /// Folders whose files wait until you confirm where they go, each at a
-    /// local `.noura-domain` file found without a journal (§9).
+    /// Folders whose files wait until you confirm where they go or their
+    /// own domain's marker covers them (§9).
     #[serde(default)]
-    pub held_roots: Vec<String>,
+    pub held_roots: Vec<sync_protocol::matching::HeldRoot>,
+    /// The domain roots this device recorded (§9).
+    #[serde(default)]
+    pub roots: Vec<sync_protocol::matching::RecordedRoot>,
+    /// The restricted domains the device reads, each with what the fields
+    /// above hold for the domain the device works in. While it works in a
+    /// restricted domain, that domain's entry holds the workspace domain's
+    /// part instead, and [`State::swap`] puts them back.
+    #[serde(default)]
+    pub restricted: BTreeMap<Id, Frame>,
     /// Versions an earlier journal's review store kept (§15).
     #[serde(default)]
     pub archived: Vec<super::rebuild::Archived>,
@@ -99,6 +108,21 @@ pub struct State {
     /// after which it pulls and pushes nothing there (§15).
     #[serde(default)]
     pub ended: Option<Ended>,
+    /// Each object whose reason-2 delete arrived before its move's create,
+    /// with the new `rid`: the delete waits for the target domain (§9).
+    #[serde(default)]
+    pub deferred_moves: BTreeMap<Id, Id>,
+    /// Objects whose deferred delete can settle now.
+    #[serde(default)]
+    pub moved_away: Vec<Id>,
+    /// Unix seconds from which a manager's device finishes the moves of a
+    /// folder another device restricted (§9), by domain.
+    #[serde(default)]
+    pub move_due: BTreeMap<Id, u64>,
+    /// The files you moved into a restricted folder, each with its domain,
+    /// until you dismiss the warning (§9).
+    #[serde(default)]
+    pub moved_in: Vec<(Id, String)>,
     /// Whether the device still loads the domain from its latest
     /// checkpoint before it pulls, as a new device does (§18).
     #[serde(default)]
@@ -107,6 +131,81 @@ pub struct State {
     /// saved with the files of each bucket it installed.
     #[serde(default)]
     pub bootstrap_progress: Option<BootstrapProgress>,
+}
+
+/// One key domain's part of the journal.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Frame {
+    /// The domain.
+    pub domain: Id,
+    /// Its accepted epoch records, oldest first.
+    pub epochs: Vec<Signed<Epoch>>,
+    /// This device's envelope of the latest epoch, still wrapped.
+    pub envelope: Option<Signed<Envelope>>,
+    /// Its log as the device followed it.
+    pub log: Log,
+    /// This device's chain in it.
+    pub own: Own,
+    /// Signed records not yet acknowledged, in chain order.
+    pub outbox: Vec<Outgoing>,
+    /// Epoch records a replacement ended since.
+    pub ended_epochs: Vec<Signed<Epoch>>,
+    /// Those epochs whose records this device still writes again.
+    pub rewrite_epochs: Vec<u64>,
+    /// Those epochs whose other devices' records it writes again later.
+    pub rewrite_others: Vec<u64>,
+    /// Unix seconds after which it writes those.
+    pub rewrite_due: u64,
+    /// Whether the device still loads it from its latest checkpoint.
+    pub bootstrap: bool,
+    /// How far that bootstrap got.
+    pub bootstrap_progress: Option<BootstrapProgress>,
+}
+
+impl Frame {
+    /// A domain the device hasn't read yet, whose chain starts at `next`.
+    pub fn new(domain: Id, next: u64) -> Self {
+        Self {
+            domain,
+            epochs: Vec::new(),
+            envelope: None,
+            log: Log::new(domain),
+            own: Own {
+                next,
+                head: None,
+                acked: None,
+            },
+            outbox: Vec::new(),
+            ended_epochs: Vec::new(),
+            rewrite_epochs: Vec::new(),
+            rewrite_others: Vec::new(),
+            rewrite_due: 0,
+            bootstrap: true,
+            bootstrap_progress: None,
+        }
+    }
+}
+
+impl State {
+    /// Exchanges the domain the fields hold with `domain`'s entry. Doing
+    /// it twice leaves everything as it was.
+    pub fn swap(&mut self, domain: &Id) {
+        let Some(frame) = self.restricted.get_mut(domain) else {
+            return;
+        };
+        std::mem::swap(&mut self.domain, &mut frame.domain);
+        std::mem::swap(&mut self.epochs, &mut frame.epochs);
+        std::mem::swap(&mut self.envelope, &mut frame.envelope);
+        std::mem::swap(&mut self.log, &mut frame.log);
+        std::mem::swap(&mut self.own, &mut frame.own);
+        std::mem::swap(&mut self.outbox, &mut frame.outbox);
+        std::mem::swap(&mut self.ended_epochs, &mut frame.ended_epochs);
+        std::mem::swap(&mut self.rewrite_epochs, &mut frame.rewrite_epochs);
+        std::mem::swap(&mut self.rewrite_others, &mut frame.rewrite_others);
+        std::mem::swap(&mut self.rewrite_due, &mut frame.rewrite_due);
+        std::mem::swap(&mut self.bootstrap, &mut frame.bootstrap);
+        std::mem::swap(&mut self.bootstrap_progress, &mut frame.bootstrap_progress);
+    }
 }
 
 /// A bootstrap's progress through the `live` pages of one checkpoint (§18,
@@ -203,6 +302,32 @@ pub struct Log {
     /// latest policy entry before its forked record.
     #[serde(default)]
     pub forked: BTreeMap<Id, u64>,
+    /// The sequence of each `create_domain`'s entry the device saw, by
+    /// revision: a workspace-domain object below it awaits its move (§9).
+    #[serde(default)]
+    pub domain_entries: BTreeMap<u64, u64>,
+}
+
+impl Log {
+    /// The start of `domain`'s log.
+    pub fn new(domain: Id) -> Self {
+        Self {
+            cursor: 0,
+            head: 0,
+            checkpoint_seq: 0,
+            retention_floor: 0,
+            judge: LogJudge::new(domain),
+            verifier: ChainVerifier::new(),
+            live: LiveSet::new(),
+            last: BTreeMap::new(),
+            wanted: Vec::new(),
+            epoch_entries: 0,
+            skipped_rotators: BTreeMap::new(),
+            checkpoints: Default::default(),
+            forked: BTreeMap::new(),
+            domain_entries: BTreeMap::new(),
+        }
+    }
 }
 
 /// A log entry the device requires.
@@ -263,6 +388,9 @@ impl<'de> Deserialize<'de> for OpKey {
 pub struct Object {
     /// The managed file's frontmatter ID, or empty for an ordinary file.
     pub object_id: String,
+    /// Its restricted domain, or `None` in the workspace domain.
+    #[serde(default)]
+    pub domain: Option<Id>,
     /// Its file on this device, until it's deleted or before it's written.
     pub local: Option<Local>,
     /// The state operation the local file holds, which an edit covers.
@@ -305,6 +433,10 @@ pub struct StateInfo {
     /// The epoch whose key encrypts it.
     #[serde(default)]
     pub epoch: u64,
+    /// The policy revision it was signed at, which places it against a
+    /// `create_domain` whose log entry the device never pulled (§9).
+    #[serde(default)]
+    pub policy_revision: u64,
 }
 
 /// What a state operation carries.
@@ -342,6 +474,20 @@ pub struct Outgoing {
     /// ciphertext lies in the journal at [`upload_path`].
     #[serde(default)]
     pub upload: Option<sync_protocol::records::BlobRef>,
+    /// The move between domains this record is half of, which goes in one
+    /// push with its other half (§9).
+    #[serde(default)]
+    pub pair: Option<MovePair>,
+}
+
+/// A move between domains: the object's `rid` in the source domain and
+/// the new one in the target (§9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct MovePair {
+    /// The source `rid`, whose reason-2 delete is one half.
+    pub source: Id,
+    /// The new `rid`, whose state operation is the other.
+    pub target: Id,
 }
 
 /// Where the journal keeps a blob's ciphertext until its upload completes.

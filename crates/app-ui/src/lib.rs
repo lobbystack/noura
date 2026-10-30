@@ -16,6 +16,7 @@ mod image_view;
 mod inbox;
 mod keys;
 mod markdown;
+mod members;
 mod note;
 mod note_images;
 mod note_links;

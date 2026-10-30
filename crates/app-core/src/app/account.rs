@@ -1,10 +1,12 @@
 //! The sync account screens every window shares.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::App;
 use crate::account::{AccountAction, AccountBackend, AccountScreen};
 use crate::folder_sync::{FolderSyncAction, FolderSyncBackend, FolderSyncScreen};
+use crate::members::{MembersAction, MembersBackend, MembersScreen};
 use crate::shares::{ShareAction, ShareBackend, ShareScreen};
 
 impl App {
@@ -16,6 +18,13 @@ impl App {
     /// Carries out what you did on the account screens.
     pub fn account_action(&self, action: AccountAction) {
         self.session.account().act(action);
+    }
+
+    /// Makes `folder` a new workspace named `name` and downloads the
+    /// workspace you joined into it, once the windows show it (§11).
+    pub fn download_invited(&mut self, name: &str, folder: PathBuf) {
+        self.create_workspace(name, folder.clone());
+        self.account_action(AccountAction::DownloadInvited(folder));
     }
 
     /// Runs the account screens with `backend`, such as the desktop's
@@ -40,6 +49,22 @@ impl App {
     /// each workspace the windows open.
     pub fn set_folder_sync_backend(&self, backend: Arc<dyn FolderSyncBackend>) {
         self.session.set_folder_sync(backend);
+    }
+
+    /// What the Members section shows.
+    pub fn members(&self) -> MembersScreen {
+        self.session.members().screen()
+    }
+
+    /// Carries out what you did in the Members section.
+    pub fn members_action(&self, action: MembersAction) {
+        self.session.members().act(action);
+    }
+
+    /// Runs the Members section with `backend`, such as the desktop's
+    /// [`LiveAccount`](crate::account::live::LiveAccount).
+    pub fn set_members_backend(&self, backend: Arc<dyn MembersBackend>) {
+        self.session.set_members(backend);
     }
 
     /// What the share dialog shows.

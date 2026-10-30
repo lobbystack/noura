@@ -36,6 +36,9 @@ pub enum SkipWhy {
     /// The file sits beneath a local `.noura-domain` file found without a
     /// journal, and waits until you confirm where it goes (§9).
     HeldRoot,
+    /// The file crossed into or out of a restricted folder, which is a
+    /// move between domains (§9).
+    CrossesRoot,
 }
 
 /// A file sync leaves out.
@@ -95,11 +98,14 @@ pub(crate) fn object_id_of(path: &str, bytes: &[u8]) -> String {
 
 /// What a walk found, against the journal's `objects`. `read` returns a
 /// file's revision, and its bytes when it read them, which it does for
-/// Markdown files and files that fit inline; `held` names objects that take no change for now, such
-/// as one under review.
+/// Markdown files and files that fit inline; `markers` names the domain
+/// markers, which the scanner leaves out and [`super::domains`] looks after;
+/// `held` names objects that take no change for now, such as one under
+/// review.
 pub(crate) fn changes(
     listing: &SyncedListing,
     objects: &BTreeMap<Id, Object>,
+    markers: &BTreeSet<Id>,
     held: &BTreeSet<Id>,
     held_root: impl Fn(&str) -> bool,
     mut read: impl FnMut(&SyncedFile) -> Option<(Digest, Option<Vec<u8>>)>,
@@ -121,6 +127,7 @@ pub(crate) fn changes(
     let mut present: BTreeSet<String> = skipped.iter().map(|s| s.path.clone()).collect();
     let by_path: BTreeMap<&str, Id> = objects
         .iter()
+        .filter(|(rid, _)| !markers.contains(rid))
         .filter_map(|(rid, o)| o.local.as_ref().map(|l| (l.path.as_str(), *rid)))
         .collect();
 
@@ -222,6 +229,7 @@ pub(crate) fn changes(
                     .as_ref()
                     .is_some_and(|l| !seen.contains(l.path.as_str()) && !present.contains(&l.path))
                     && !held.contains(rid)
+                    && !markers.contains(rid)
             })
             .map(|(rid, _)| *rid)
             .collect()
@@ -341,6 +349,7 @@ mod tests {
         changes(
             &listing,
             objects,
+            &BTreeSet::new(),
             &BTreeSet::new(),
             |_| false,
             |f| {

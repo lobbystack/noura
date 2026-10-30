@@ -122,6 +122,10 @@ pub struct Snapshot {
     /// revision recorded a head of the card's account at which a link had
     /// removed it, or a head of its account on another chain.
     pub gone: BTreeSet<Id>,
+    /// Every head a device of its own account recorded here, by account
+    /// and link digest, which that account's devices never record again
+    /// (§8).
+    pub own_heads: BTreeSet<(Id, Digest)>,
     /// Domains this change makes due for rotation.
     pub rotations: BTreeSet<Id>,
     /// Devices this change brings into each domain's readers.
@@ -285,6 +289,13 @@ pub enum PolicyError {
         /// The failing change's revision.
         revision: u64,
     },
+    /// An `add_member` or `accept_reset` records the signer's account past
+    /// the head the workspace records.
+    #[error("revision {revision}: the signer records a later head of its own")]
+    SignerAhead {
+        /// The failing change's revision.
+        revision: u64,
+    },
     /// The heads would make one device ID active under two accounts.
     #[error("revision {revision}: a device ID under two accounts")]
     DeviceUnderTwoAccounts {
@@ -388,6 +399,7 @@ impl PolicyChain {
                 recorded_by_own: true,
             },
         );
+        let own_heads = BTreeSet::from([(head.account, head.head)]);
         let mut domains = BTreeMap::new();
         domains.insert(
             workspace_domain,
@@ -412,6 +424,7 @@ impl PolicyChain {
             card_indices: BTreeMap::new(),
             card_chains: BTreeMap::new(),
             gone: BTreeSet::new(),
+            own_heads,
             rotations: BTreeSet::new(),
             new_readers: BTreeMap::new(),
         };
@@ -505,6 +518,15 @@ impl PolicyChain {
             if !body.heads.iter().any(|h| h.account == account) {
                 return Err(PolicyError::ForeignHead { revision });
             }
+            // Neither change takes a card out of the signer's account: a
+            // later head goes in its own `account_heads` change first (§8).
+            if prev
+                .members
+                .get(&signer_account)
+                .is_some_and(|m| m.head != *signer_head)
+            {
+                return Err(PolicyError::SignerAhead { revision });
+            }
         }
 
         // Heads of member accounts move forward on the recorded chain.
@@ -576,12 +598,13 @@ impl PolicyChain {
                     .find(|h| h.account == *account)
                     .expect("checked");
                 next.former.remove(account);
+                let recorded_by_own = prev.own_heads.contains(&(*account, head.head));
                 next.members.insert(
                     *account,
                     Member {
                         role: *role,
                         head: head.clone(),
-                        recorded_by_own: false,
+                        recorded_by_own,
                     },
                 );
             }
@@ -707,10 +730,11 @@ impl PolicyChain {
             if let Some(member) = next.members.get_mut(&head.account) {
                 if member.head != *head {
                     member.head = head.clone();
-                    member.recorded_by_own = false;
+                    member.recorded_by_own = prev.own_heads.contains(&(head.account, head.head));
                 }
                 if head.account == signer_account {
                     member.recorded_by_own = true;
+                    next.own_heads.insert((head.account, head.head));
                 }
             }
         }

@@ -11,6 +11,7 @@
 
 mod folder;
 pub mod live;
+mod members;
 mod share;
 
 use std::collections::BTreeSet;
@@ -45,6 +46,43 @@ pub struct AccountScreen {
     /// Whether this computer holds a device that couldn't connect, such as
     /// when the server can't be reached, so you can try again.
     pub can_retry: bool,
+    /// The invitation you opened (§11).
+    pub invitation: Option<InvitationView>,
+}
+
+/// An invitation you opened, as its encrypted context reads (§11).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvitationView {
+    /// The workspace's name.
+    pub workspace: String,
+    /// The inviter's name.
+    pub inviter: String,
+    /// The role it grants, in lower case.
+    pub role: String,
+    /// How far you got.
+    pub stage: InvitationStage,
+}
+
+/// How far an invitation you opened got.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InvitationStage {
+    /// You read it and haven't accepted.
+    Opened,
+    /// You accepted, and the inviting computer approves this one (§10).
+    Waiting {
+        /// This device's fingerprint.
+        fingerprint: String,
+        /// The approval code once an offer arrived, as 8 digits in two
+        /// groups of 4.
+        code: Option<String>,
+        /// Whether you confirmed the code on this device.
+        confirmed: bool,
+    },
+    /// You joined; the workspace waits for a folder.
+    Joined {
+        /// Whether the files started to download.
+        downloading: bool,
+    },
 }
 
 /// Where this device's account stands.
@@ -272,6 +310,16 @@ pub enum AccountAction {
     },
     /// Finish the recovery you reviewed.
     ConfirmRecovery,
+    /// Open the invitation link you pasted.
+    OpenInvitation(String),
+    /// Accept the open invitation, signing in first when you have to.
+    AcceptInvitation,
+    /// The approval codes match, on the invited device.
+    ConfirmInvitationCode,
+    /// Close the invitation.
+    CancelInvitation,
+    /// Download the workspace you joined into this new workspace folder.
+    DownloadInvited(PathBuf),
     /// Start signing out.
     SignOut,
     /// Sign out.
@@ -305,6 +353,13 @@ impl std::fmt::Debug for AccountAction {
             AccountAction::CancelExportKit => f.write_str("CancelExportKit"),
             AccountAction::DismissKit => f.write_str("DismissKit"),
             AccountAction::ConfirmRecovery => f.write_str("ConfirmRecovery"),
+            AccountAction::OpenInvitation(_) => f.write_str("OpenInvitation"),
+            AccountAction::AcceptInvitation => f.write_str("AcceptInvitation"),
+            AccountAction::ConfirmInvitationCode => f.write_str("ConfirmInvitationCode"),
+            AccountAction::CancelInvitation => f.write_str("CancelInvitation"),
+            AccountAction::DownloadInvited(path) => {
+                f.debug_tuple("DownloadInvited").field(path).finish()
+            }
             AccountAction::SignOut => f.write_str("SignOut"),
             AccountAction::ConfirmSignOut => f.write_str("ConfirmSignOut"),
             AccountAction::CancelSignOut => f.write_str("CancelSignOut"),

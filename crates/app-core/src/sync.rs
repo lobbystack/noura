@@ -20,8 +20,11 @@ pub mod checkpoints;
 pub mod device;
 pub mod device_list;
 pub mod heads;
+pub mod invitations;
+pub mod joining;
 pub mod journal;
 pub mod marks;
+pub mod members;
 pub mod realtime;
 pub mod recovery;
 pub mod registry;
@@ -425,9 +428,26 @@ pub struct RemoteWorkspace {
     /// The latest checkpoint of the workspace domain this device accepted,
     /// as an approval offer anchors it, with its restore generation (§10).
     checkpoint: Option<(sync_protocol::records::CheckpointAnchor, u64)>,
+    /// The current epoch and key of each restricted domain the device
+    /// reads, so a change that brings a card in wraps for it there too
+    /// (§8).
+    restricted: BTreeMap<Id, (u64, SecretKey)>,
 }
 
 impl RemoteWorkspace {
+    /// The current epoch's key.
+    pub(crate) fn current_key(&self) -> SecretKey {
+        self.key.clone()
+    }
+
+    /// Replaces the restricted domains' current epochs and keys.
+    pub(crate) fn set_restricted(&mut self, keys: Vec<(Id, u64, SecretKey)>) {
+        self.restricted = keys
+            .into_iter()
+            .map(|(domain, epoch, key)| (domain, (epoch, key)))
+            .collect();
+    }
+
     /// The accepted policy head's revision.
     pub fn policy_revision(&self) -> u64 {
         self.policy.head().0
@@ -478,6 +498,7 @@ impl RemoteWorkspace {
             last: BTreeMap::new(),
             envelope,
             checkpoint: None,
+            restricted: BTreeMap::new(),
         })
     }
 }
@@ -938,6 +959,7 @@ impl SyncService {
             last: BTreeMap::new(),
             envelope: own_envelope,
             checkpoint: None,
+            restricted: BTreeMap::new(),
         })
     }
 
@@ -1033,7 +1055,7 @@ impl SyncService {
             .and_then(|latest| keys.get(&latest.record.body.epoch).cloned())
             .ok_or(SyncError::Check("sync_key_mismatch"))?;
         let checkpoint = self.marked_checkpoint(workspace, domain)?;
-        Ok(RemoteWorkspace {
+        let mut remote = RemoteWorkspace {
             workspace,
             domain,
             policy,
@@ -1048,7 +1070,44 @@ impl SyncService {
             last: BTreeMap::new(),
             envelope,
             checkpoint,
-        })
+            restricted: BTreeMap::new(),
+        };
+        if lineage {
+            self.load_restricted(&mut remote, &recipient).await?;
+        }
+        Ok(remote)
+    }
+
+    /// Loads the current key of each restricted domain `recipient` reads,
+    /// so a change signed in `remote` wraps for new cards there too (§8).
+    /// A domain whose envelope hasn't arrived stays out; a change that needs
+    /// it then waits.
+    pub(crate) async fn load_restricted(
+        &mut self,
+        remote: &mut RemoteWorkspace,
+        recipient: &DeviceKeys,
+    ) -> Result<(), SyncError> {
+        let device = recipient.device();
+        let snapshot = remote.policy.head_snapshot().clone();
+        for (domain, entry) in &snapshot.domains {
+            if !entry.restricted || !snapshot.can_read(&device, domain) {
+                continue;
+            }
+            let loaded = self
+                .load_keys(remote.workspace, *domain, &remote.policy, recipient, true)
+                .await;
+            let (epochs, keys, _) = match loaded {
+                Ok(loaded) => loaded,
+                Err(SyncError::KeyMissing) => continue,
+                Err(error) => return Err(error),
+            };
+            if let Some(epoch) = epochs.latest().map(|e| e.record.body.epoch)
+                && let Some(key) = keys.get(&epoch)
+            {
+                remote.restricted.insert(*domain, (epoch, key.clone()));
+            }
+        }
+        Ok(())
     }
 
     /// Fetches and verifies a workspace's whole policy chain, as

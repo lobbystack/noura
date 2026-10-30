@@ -30,8 +30,9 @@ use sync_protocol::manifest::{
     leaf_hash, node_hash, skip_number, verify_bucket, verify_descent, verify_manifest,
 };
 use sync_protocol::matching::{
-    DomainRoot, HeldRoot, JournalObject, LiveObject, LocalFile, LocalMarker, archived, held_roots,
-    hold_ends, match_files, refuses_marker_path,
+    DomainRoot, HeldRoot, JournalObject, LiveObject, LocalFile, LocalMarker, MarkerView,
+    RecordedRoot, archived, bootstrap_held_roots, domain_of, held_roots, hold_ends, marker_allowed,
+    marker_present, match_files, placement, refuses_marker_path, synced_path, valid_roots,
 };
 use sync_protocol::messages::LiveCursor;
 use sync_protocol::padding::{is_valid_padded_length, pad, padded_length, padme, unpad};
@@ -1057,6 +1058,56 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
             let held: HeldRoot = serde_json::from_value(case["held"].clone()).unwrap();
             let roots: Vec<DomainRoot> = serde_json::from_value(case["roots"].clone()).unwrap();
             same(hold_ends(&held, &roots), expect.as_bool().unwrap())
+        }
+
+        "valid_roots" => {
+            let markers: Vec<MarkerView> = serde_json::from_value(case["markers"].clone()).unwrap();
+            same(
+                serde_json::to_value(valid_roots(&markers)).unwrap(),
+                expect.clone(),
+            )
+        }
+        "new_file_domain" => {
+            let roots: Vec<RecordedRoot> = serde_json::from_value(case["roots"].clone()).unwrap();
+            let domain: Option<Id> = serde_json::from_value(expect.clone()).unwrap();
+            same(domain_of(case["path"].as_str().unwrap(), &roots), domain)
+        }
+        "marker_allowed" => {
+            let roots: Vec<RecordedRoot> = serde_json::from_value(case["roots"].clone()).unwrap();
+            same(
+                marker_allowed(case["folder"].as_str().unwrap(), &roots),
+                expect.as_bool().unwrap(),
+            )
+        }
+        "placement" => {
+            let roots: Vec<RecordedRoot> = serde_json::from_value(case["roots"].clone()).unwrap();
+            let domain: Option<Id> = serde_json::from_value(case["object_domain"].clone()).unwrap();
+            same(
+                serde_json::to_value(placement(case["path"].as_str().unwrap(), domain, &roots))
+                    .unwrap(),
+                expect.clone(),
+            )
+        }
+        "synced_path" => {
+            let roots: Vec<RecordedRoot> = serde_json::from_value(case["roots"].clone()).unwrap();
+            same(
+                synced_path(case["local"].as_str().unwrap(), &roots),
+                expect.as_str().unwrap().to_owned(),
+            )
+        }
+        "bootstrap_held_roots" => {
+            let paths: Vec<String> = serde_json::from_value(case["paths"].clone()).unwrap();
+            same(
+                serde_json::to_value(bootstrap_held_roots(id_of(&case["domain"]), &paths)).unwrap(),
+                expect.clone(),
+            )
+        }
+        "marker_present" => {
+            let names: Vec<String> = serde_json::from_value(case["names"].clone()).unwrap();
+            same(
+                marker_present(names.iter().map(String::as_str)),
+                expect.as_bool().unwrap(),
+            )
         }
 
         // The manifest.

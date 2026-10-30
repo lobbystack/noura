@@ -1,0 +1,134 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT commit_digest, account, device, card, candidate_head, invitation,\n                    invite_proof, workspace, request, expires_at\n             FROM approval_requests WHERE workspace = ?1 ORDER BY commit_digest",
+  "describe": {
+    "columns": [
+      {
+        "name": "commit_digest",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "commit_digest"
+          }
+        }
+      },
+      {
+        "name": "account",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "account"
+          }
+        }
+      },
+      {
+        "name": "device",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "device"
+          }
+        }
+      },
+      {
+        "name": "card",
+        "ordinal": 3,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "card"
+          }
+        }
+      },
+      {
+        "name": "candidate_head",
+        "ordinal": 4,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "candidate_head"
+          }
+        }
+      },
+      {
+        "name": "invitation",
+        "ordinal": 5,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "invitation"
+          }
+        }
+      },
+      {
+        "name": "invite_proof",
+        "ordinal": 6,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "invite_proof"
+          }
+        }
+      },
+      {
+        "name": "workspace",
+        "ordinal": 7,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "workspace"
+          }
+        }
+      },
+      {
+        "name": "request",
+        "ordinal": 8,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "request"
+          }
+        }
+      },
+      {
+        "name": "expires_at",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "11a38b5870520834a9ebcf1b4fed50c8c3c09c8f81a2602a43b05765208e1b62"
+}

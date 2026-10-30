@@ -96,6 +96,8 @@ pub(crate) struct Session {
     folder_sync: Mutex<Arc<dyn crate::folder_sync::FolderSyncBackend>>,
     /// The share dialog's backend.
     shares: Mutex<Arc<dyn crate::shares::ShareBackend>>,
+    /// The Members section's backend.
+    members: Mutex<Arc<dyn crate::members::MembersBackend>>,
     /// The AI providers, consents and runs every window shares.
     pub(crate) ai: Arc<Ai>,
 }
@@ -279,6 +281,7 @@ impl Session {
             account: Mutex::new(Arc::new(crate::account::NoAccount::default())),
             folder_sync: Mutex::new(Arc::new(crate::folder_sync::NoFolderSync::default())),
             shares: Mutex::new(Arc::new(crate::shares::NoShares::default())),
+            members: Mutex::new(Arc::new(crate::members::NoMembers::default())),
             ai,
         }
     }
@@ -353,6 +356,29 @@ impl Session {
         }));
         *self
             .shares
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = backend;
+    }
+
+    /// The Members section's backend.
+    pub(crate) fn members(&self) -> Arc<dyn crate::members::MembersBackend> {
+        self.members
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    /// Runs the Members section with `backend`, which wakes every window
+    /// when the section changes.
+    pub(crate) fn set_members(self: &Arc<Self>, backend: Arc<dyn crate::members::MembersBackend>) {
+        let session = Arc::downgrade(self);
+        backend.set_wake(Arc::new(move || {
+            if let Some(session) = session.upgrade() {
+                session.emit_all(Change::Account);
+            }
+        }));
+        *self
+            .members
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = backend;
     }

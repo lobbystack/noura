@@ -1,0 +1,112 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT invitation, token_hash, workspace, role, inviter, accepted_by, expires_at, invite_context FROM invitations WHERE invitation = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "invitation",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "invitations",
+            "name": "invitation"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "token_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "invitations",
+            "name": "token_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "workspace",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "invitations",
+            "name": "workspace"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "role",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "invitations",
+            "name": "role"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "inviter",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "invitations",
+            "name": "inviter"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "accepted_by",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "invitations",
+            "name": "accepted_by"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "expires_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "invitations",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "invite_context",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "invitations",
+            "name": "invite_context"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "bec51c4f257755347d345dac5617406b1d0d61e0dae8fee3ec5a1430a7995dbf"
+}

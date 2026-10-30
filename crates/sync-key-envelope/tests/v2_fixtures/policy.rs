@@ -530,6 +530,71 @@ pub fn fixture() -> Fixture {
         4,
     );
 
+    // Review of 0eef7d5: an account invited again with an unchanged chain
+    // already recorded that head, so its candidate skips the push, and the
+    // rule is one every client checks too.
+    let mut invited_again = base.clone();
+    invited_again.push(bob.first(), vec![bob.head()], PolicyKind::AccountHeads);
+    invited_again.push(
+        alice.first(),
+        vec![alice.head()],
+        PolicyKind::RemoveMember {
+            account: bob.account(),
+        },
+    );
+    add_member(&mut invited_again, &alice, &bob, Role::Editor);
+    accepted(
+        &mut f,
+        "invited_again_with_a_head_it_recorded",
+        &[&alice.chain, &bob.chain],
+        &invited_again,
+        json!({}),
+    );
+    invited_again.push(bob.first(), vec![bob.head()], PolicyKind::AccountHeads);
+    refused(
+        &mut f,
+        "invited_again_candidate_skips_the_push",
+        &[&alice, &bob],
+        &invited_again,
+        "nothing_new",
+        6,
+    );
+
+    // Review of 0eef7d5: an approval records the signer's account at the
+    // recorded head, so a later head goes first in its own change.
+    let mut later = Person::new("alice");
+    let later_owner = genesis(&later);
+    let phone = later.add("alice phone");
+    let carol = Person::new("carol");
+    let signer = later.first().clone();
+    later.chain.push(
+        &signer,
+        LinkKind::Remove {
+            device: phone.device(),
+            keep: Sorted::default(),
+        },
+    );
+    let mut ahead = later_owner.clone();
+    add_member(&mut ahead, &later, &carol, Role::Editor);
+    refused(
+        &mut f,
+        "add_member_recording_the_signers_later_head",
+        &[&later, &carol],
+        &ahead,
+        "signer_ahead",
+        2,
+    );
+    let mut first = later_owner;
+    first.push(later.first(), vec![later.head()], PolicyKind::AccountHeads);
+    add_member(&mut first, &later, &carol, Role::Editor);
+    accepted(
+        &mut f,
+        "a_later_head_recorded_first_then_add_member",
+        &[&later.chain, &carol.chain],
+        &first,
+        json!({}),
+    );
+
     // Authority.
     let mut kit_owner = Person::new("alice");
     let kit = Actor::new("alice", "alice kit");

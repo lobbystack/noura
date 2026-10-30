@@ -44,6 +44,8 @@ pub mod settings_section {
     pub const PLUGINS: &str = "plugins";
     /// Whether the open workspace syncs, and how its sync stands.
     pub const SYNC: &str = "workspace-sync";
+    /// The workspace's members and invitations.
+    pub const MEMBERS: &str = "workspace-members";
     /// The sync account: the server, this computer's sign-in, your devices
     /// and the recovery kit.
     pub const SYNC_ACCOUNT: &str = "sync-account";
@@ -114,6 +116,11 @@ pub(crate) fn kernel_sections() -> Vec<SettingsSection> {
             SettingsGroup::Workspace,
         ),
         (settings_section::SYNC, "Sync", SettingsGroup::Workspace),
+        (
+            settings_section::MEMBERS,
+            "Members",
+            SettingsGroup::Workspace,
+        ),
         (settings_section::ABOUT, "About Noura", SettingsGroup::App),
         (settings_section::UPDATES, "Updates", SettingsGroup::App),
     ]

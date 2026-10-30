@@ -66,6 +66,20 @@ fn folder_message(error: &SyncError) -> String {
     }
 }
 
+/// What the window says about `waiting` moves and held folders, and about
+/// `moved_in` files whose earlier versions stayed behind (§9).
+fn attention(waiting: usize, moved_in: usize) -> Option<String> {
+    match (waiting, moved_in) {
+        (0, 0) => None,
+        (0, _) => Some(
+            "Earlier versions of a file you moved into a restricted folder stayed in the folder it left. Open Settings > Members to read more.".into(),
+        ),
+        _ => Some(
+            "Files wait for you before they reach more people. Open Settings > Members to decide.".into(),
+        ),
+    }
+}
+
 fn short(id: &sync_protocol::types::Id) -> String {
     id.to_hex().chars().take(8).collect()
 }
@@ -129,6 +143,10 @@ impl Folder {
                     })
                     .collect();
                 screen.removal_hold = sync.removal_hold();
+                screen.attention = attention(
+                    sync.moves_for_review().len() + screen.held_roots.len(),
+                    sync.moved_in().len(),
+                );
                 screen.archived = sync
                     .archived()
                     .iter()
@@ -209,6 +227,34 @@ impl Folder {
             Err(SyncError::Check("sync_folder_not_connected")) => self.not_connected = true,
             Err(error) => self.last_error = Some(folder_message(&error)),
         }
+    }
+
+    /// Whether the windows show the workspace in `folder`.
+    pub(super) fn shows(&self, folder: &Path) -> bool {
+        let canonical = |path: &Path| std::fs::canonicalize(path).ok();
+        self.engine.as_ref().is_some_and(|engine| {
+            canonical(engine.root()).is_some() && canonical(engine.root()) == canonical(folder)
+        })
+    }
+
+    /// Downloads the remote workspace `workspace` into the open folder
+    /// (§15, §18).
+    pub(super) async fn download(
+        &mut self,
+        service: &mut SyncService,
+        workspace: sync_protocol::types::Id,
+        app_data: &Path,
+    ) -> Result<(), SyncError> {
+        let engine = self
+            .engine
+            .clone()
+            .ok_or_else(|| SyncError::Invalid("Choose a folder first.".into()))?;
+        let mut registry = Registry::open(app_data)?;
+        let sync = WorkspaceSync::download(service, engine, workspace, &mut registry).await?;
+        self.sync = Some(sync);
+        self.last_error = None;
+        self.not_connected = false;
+        Ok(())
     }
 
     /// The open workspace's sync, when it syncs.

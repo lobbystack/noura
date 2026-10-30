@@ -111,6 +111,9 @@ pub struct FolderSyncScreen {
     pub ended: Option<String>,
     /// The files sync leaves out, one line each.
     pub skipped: Vec<String>,
+    /// What waits for you in the Members section, which the window says
+    /// once wherever you are (§9).
+    pub attention: Option<String>,
     /// What went wrong last, for you to read.
     pub last_error: Option<String>,
     /// When the last round finished without an error, as local time.
@@ -137,6 +140,7 @@ impl FolderSyncScreen {
             removal_hold: false,
             ended: status.ended.as_ref().map(ended_line),
             skipped: status.skipped.iter().map(skipped_line).collect(),
+            attention: None,
             last_error: None,
             last_success: status.last_success.map(local_time),
             busy: false,
@@ -175,6 +179,7 @@ pub fn skipped_line(skipped: &crate::sync::workspace::Skipped) -> String {
         SkipWhy::IdentityConflict => "another file has the same ID",
         SkipWhy::TooLarge => "files above 256 KB sync once attachments arrive",
         SkipWhy::HeldRoot => "it waits until you confirm who may see this folder",
+        SkipWhy::CrossesRoot => "it moved into or out of a restricted folder",
     };
     let path = if skipped.path.is_empty() {
         "The workspace folder"

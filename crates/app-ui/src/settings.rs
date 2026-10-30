@@ -38,6 +38,8 @@ pub(crate) struct SettingsView {
     web: crate::web_search::WebSettingsView,
     /// The release address being typed in Plugins.
     release_address: String,
+    /// The Members section.
+    members: crate::members::MembersView,
 }
 
 /// Draw Settings while it is open in the window whose ID salt is
@@ -157,6 +159,9 @@ fn content(
     ui.label(RichText::new(title).size(TITLE_SIZE).strong());
     ui.add_space(4.0);
     notice(ui, settings);
+    if settings.section != settings_section::MEMBERS {
+        view.members.refreshed = false;
+    }
     match settings.section.as_str() {
         settings_section::GENERAL => general(ui, app, settings),
         settings_section::EDITOR => editor(ui, app, spelling),
@@ -169,6 +174,7 @@ fn content(
             crate::account::section(ui, app, &mut view.account, picker)
         }
         settings_section::SYNC => crate::folder_sync::section(ui, app),
+        settings_section::MEMBERS => crate::members::section(ui, app, &mut view.members),
         settings_section::AI => crate::ai::settings(ui, app, &mut view.ai),
         settings_section::WEB_SEARCH => crate::web_search::settings(ui, app, &mut view.web),
         settings_section::ABOUT => about(ui, app),

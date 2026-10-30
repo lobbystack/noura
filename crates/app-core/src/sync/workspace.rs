@@ -15,8 +15,12 @@
 //! capture changes; the calls that reach the server take the device's
 //! [`SyncService`].
 
+mod access;
+mod approve;
 mod bootstrap;
 mod capture;
+mod domains;
+mod moves;
 pub mod rebuild;
 mod settle;
 pub mod state;
@@ -27,18 +31,18 @@ use std::sync::Arc;
 
 use local_core::WorkspaceEngine;
 use sync_key_envelope::v2::unwrap;
-use sync_protocol::chain::{
-    ChainError, ChainFetcher, ChainRecord, ChainVerdict, ChainVerifier, Fetched,
-};
+use sync_protocol::chain::{ChainError, ChainFetcher, ChainRecord, ChainVerdict, Fetched};
 use sync_protocol::codec::{Bytes, Decode, Encode, Sorted, Text};
 use sync_protocol::crypto::{hash, random_nonce};
 use sync_protocol::keys::{
-    LogJudge, SkippedEpochRecord, judge_skipped_epoch_record, key_matches, walk_lineage,
+    SkippedEpochRecord, judge_skipped_epoch_record, key_matches, walk_lineage,
 };
-use sync_protocol::live::{LiveOp, LiveSet};
+use sync_protocol::live::LiveOp;
+use sync_protocol::matching::{domain_of, synced_path};
 use sync_protocol::messages::{
     ChainConflictDetail, Entry, EntryRecord, Frame, FrameAction, MAX_BODY, Page, PageStatus,
-    PullCursor, PushFailureDetail, RecordRef, records_frame_action, records_frame_is_well_formed,
+    PullCursor, PushFailureDetail, Receipt, RecordRef, records_frame_action,
+    records_frame_is_well_formed,
 };
 use sync_protocol::policy::PolicyChain;
 use sync_protocol::records::{
@@ -49,6 +53,7 @@ use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 
 use capture::{Change, Found};
 pub use capture::{SkipWhy, Skipped};
+pub use moves::{HeldFile, MOVE_WAIT, MoveReview};
 use settle::{Bodies, Body};
 pub use state::Ended;
 use state::{
@@ -177,6 +182,27 @@ pub struct WorkspaceSync {
     /// The restore generation of the latest `restored` frame, which every
     /// other frame is judged against (§23).
     frame_generation: Option<u64>,
+    /// The restricted domain the device works in, whose part of the
+    /// journal the state's fields hold for now.
+    active: Option<Id>,
+    /// What the device holds in memory of each restricted domain, or of
+    /// the workspace domain under the active domain's key.
+    parked: BTreeMap<Id, domains::Runtime>,
+    /// Whether a hold ended, so the files beneath it wait to be matched.
+    rematch: bool,
+    /// The moves that wait for you, from the latest capture.
+    reviews: Vec<MoveReview>,
+    /// The moves you confirmed, which the next capture signs.
+    confirmed_moves: BTreeSet<Id>,
+    /// What the running capture leaves out.
+    skipped_now: Vec<Skipped>,
+    /// How long a manager's device leaves another's moves (§9).
+    move_wait: std::time::Duration,
+    /// The longest random wait before the device rotates a restricted
+    /// domain whose rotation is pending (§9).
+    rotation_wait: std::time::Duration,
+    /// When the device rotates each such domain.
+    rotation_due: BTreeMap<Id, std::time::Instant>,
 }
 
 /// What handling one realtime frame did (§23).
@@ -195,6 +221,11 @@ impl std::fmt::Debug for WorkspaceSync {
             .field("workspace", &self.state.workspace)
             .finish_non_exhaustive()
     }
+}
+
+/// The entries `log` requires, which the page a request brings owes.
+fn wanted_entries(log: &Log) -> BTreeSet<(bool, u64)> {
+    log.wanted.iter().map(|w| (w.epoch, w.number)).collect()
 }
 
 fn unix_now() -> u64 {
@@ -312,21 +343,7 @@ impl WorkspaceSync {
             envelope: remote.envelope.clone(),
             name: name.to_owned(),
             profile,
-            log: Log {
-                cursor: 0,
-                head: 0,
-                checkpoint_seq: 0,
-                retention_floor: 0,
-                judge: LogJudge::new(remote.domain),
-                verifier: ChainVerifier::new(),
-                live: LiveSet::new(),
-                last: BTreeMap::new(),
-                wanted: Vec::new(),
-                epoch_entries: 0,
-                skipped_rotators: BTreeMap::new(),
-                checkpoints: Default::default(),
-                forked: BTreeMap::new(),
-            },
+            log: Log::new(remote.domain),
             own: Own {
                 next,
                 head: None,
@@ -338,6 +355,8 @@ impl WorkspaceSync {
             held: BTreeMap::new(),
             last_success: None,
             held_roots: Vec::new(),
+            roots: Vec::new(),
+            restricted: BTreeMap::new(),
             archived: Vec::new(),
             refused: Vec::new(),
             removal_hold: false,
@@ -347,6 +366,10 @@ impl WorkspaceSync {
             rewrite_due: 0,
             profile_recheck: false,
             ended: None,
+            deferred_moves: BTreeMap::new(),
+            moved_away: Vec::new(),
+            move_due: BTreeMap::new(),
+            moved_in: Vec::new(),
             bootstrap: false,
             bootstrap_progress: None,
         };
@@ -382,6 +405,15 @@ impl WorkspaceSync {
             entry_hint: None,
             armed: BTreeSet::new(),
             frame_generation: None,
+            active: None,
+            parked: BTreeMap::new(),
+            rematch: false,
+            reviews: Vec::new(),
+            confirmed_moves: BTreeSet::new(),
+            skipped_now: Vec::new(),
+            move_wait: MOVE_WAIT,
+            rotation_wait: super::upkeep::KEY_HOLDER_WAIT.end,
+            rotation_due: BTreeMap::new(),
         };
         sync.want_entries();
         sync.save()?;
@@ -391,10 +423,14 @@ impl WorkspaceSync {
     /// Requires, in the log, the entry of each accepted change and each
     /// known epoch that the log hasn't carried yet (§8, §9).
     fn want_entries(&mut self) {
+        let first = self.first_revision();
         let log = &mut self.state.log;
         let policy_seen = log.judge.latest_policy_entry().unwrap_or(0);
         for change in &self.state.policy {
             let number = change.body.revision;
+            if number < first {
+                continue;
+            }
             let wanted = Wanted {
                 epoch: false,
                 number,
@@ -448,10 +484,13 @@ impl WorkspaceSync {
             return Err(SyncError::Check("sync_folder_not_connected"));
         }
         let mut mark = Mark::read(&*secrets, &device, &state.workspace)?.unwrap_or_default();
-        let epochs: BTreeMap<Id, u64> = BTreeMap::from([(
+        let mut epochs: BTreeMap<Id, u64> = BTreeMap::from([(
             state.domain,
             state.epochs.last().map_or(0, |e| e.body.epoch),
         )]);
+        for (domain, frame) in &state.restricted {
+            epochs.insert(*domain, frame.epochs.last().map_or(0, |e| e.body.epoch));
+        }
         let revision = state.policy.last().map_or(0, |c| c.body.revision);
         let checkpoint_seq = state
             .log
@@ -487,12 +526,33 @@ impl WorkspaceSync {
             entry_hint: None,
             armed: BTreeSet::new(),
             frame_generation: None,
+            active: None,
+            parked: BTreeMap::new(),
+            rematch: false,
+            reviews: Vec::new(),
+            confirmed_moves: BTreeSet::new(),
+            skipped_now: Vec::new(),
+            move_wait: MOVE_WAIT,
+            rotation_wait: super::upkeep::KEY_HOLDER_WAIT.end,
+            rotation_due: BTreeMap::new(),
             state,
         };
         if let Some(next) = next.get(&sync.state.domain) {
             sync.state.own.next = sync.state.own.next.max(*next);
         }
         sync.keys = sync.offline_keys()?;
+        for domain in sync.state.restricted.keys().copied().collect::<Vec<_>>() {
+            sync.swap_domain(domain);
+            if let Some(next) = next.get(&domain) {
+                sync.state.own.next = sync.state.own.next.max(*next);
+            }
+            let keys = sync.offline_keys();
+            if let Ok(keys) = &keys {
+                sync.keys = keys.clone();
+            }
+            sync.swap_domain(domain);
+            keys?;
+        }
         sync.save()?;
         Ok(sync)
     }
@@ -585,7 +645,13 @@ impl WorkspaceSync {
     pub fn status(&self) -> Status {
         Status {
             name: self.state.name.clone(),
-            pending: self.state.outbox.len(),
+            pending: self.state.outbox.len()
+                + self
+                    .state
+                    .restricted
+                    .values()
+                    .map(|f| f.outbox.len())
+                    .sum::<usize>(),
             conflicts: self.conflicts().len(),
             skipped: self.skipped.clone(),
             last_success: self.state.last_success,
@@ -762,7 +828,19 @@ impl WorkspaceSync {
         Self::open(engine, credentials, secrets, registry)
     }
 
+    /// Writes the journal, with the workspace domain's part in its place
+    /// wherever the device works.
     fn save(&mut self) -> Result<(), SyncError> {
+        let Some(active) = self.active else {
+            return self.save_here();
+        };
+        self.swap_domain(active);
+        let saved = self.save_here();
+        self.swap_domain(active);
+        saved
+    }
+
+    fn save_here(&mut self) -> Result<(), SyncError> {
         self.journal.write(STATE_FILE, &self.state)?;
         // An approval offer anchors the latest accepted checkpoint (§10).
         let accepted = self
@@ -815,6 +893,36 @@ impl WorkspaceSync {
                 &self.state.workspace,
             )?;
         }
+        // Each restricted domain's latest epoch and checkpoint (§15).
+        let mut moved = false;
+        for (id, frame) in &self.state.restricted {
+            let domain = self.mark.domains.entry(*id).or_default();
+            let (epoch, record) = frame
+                .epochs
+                .last()
+                .map_or((0, Digest::ZERO), |e| (e.body.epoch, e.digest()));
+            if epoch != domain.epoch {
+                domain.epoch = epoch;
+                domain.epoch_record = record;
+                moved = true;
+            }
+            if let Some(accepted) = &frame.log.checkpoints.accepted {
+                let covered = accepted.record.body.covered_seq;
+                if covered > domain.checkpoint_seq {
+                    domain.checkpoint_seq = covered;
+                    domain.checkpoint = accepted.record.digest();
+                    domain.checkpoint_generation = self.state.generation;
+                    moved = true;
+                }
+            }
+        }
+        if moved {
+            self.mark.write(
+                &*self.secrets,
+                &self.credentials.keys.device(),
+                &self.state.workspace,
+            )?;
+        }
         Ok(())
     }
 
@@ -857,7 +965,8 @@ impl WorkspaceSync {
             if self.remote.is_none() {
                 self.connect(service).await?;
             }
-            self.update_hold(service).await
+            self.update_hold(service).await?;
+            self.sync_domains(service).await
         }
         .await;
         if let Err(error) = online {
@@ -866,13 +975,21 @@ impl WorkspaceSync {
             return Err(error);
         }
         let mut captured = self.capture()?;
-        let mut pushed = self.push(service).await?;
+        let mut pushed = self.push_everything(service).await?;
         if self.state.profile_recheck && unix_now() >= self.state.rewrite_due {
             self.state.profile_recheck = false;
             self.follow_profile(service).await?;
         }
         let (applied, waiting_for_key) = self.pull_until(service, wait_seconds, wake).await?;
+        self.settle_moved_away()?;
+        self.rotate_domains(service, false).await?;
         self.sign_checkpoint(service).await?;
+        for domain in self.loaded_domains() {
+            self.swap_domain(domain);
+            let result = self.sign_checkpoint(service).await;
+            self.swap_domain(domain);
+            result?;
+        }
         // A replacement the pull brought ends epochs whose records this
         // device writes again at once (§9); merges go out next round.
         if !self.state.rewrite_epochs.is_empty() {
@@ -918,7 +1035,8 @@ impl WorkspaceSync {
     /// admin device signs the profile again at its accepted head; the
     /// server keeps the first.
     async fn follow_profile(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
-        if self.remote.is_none() {
+        // The profile lives in the workspace domain (§25).
+        if self.remote.is_none() || self.active.is_some() {
             return Ok(());
         }
         let list = service.client().workspaces().await?;
@@ -999,6 +1117,28 @@ impl WorkspaceSync {
         })
     }
 
+    /// Changes a member's role, removes a member, leaves, or transfers
+    /// ownership (§8), as [`SyncService::change_member`], and takes the
+    /// policy and keys that result. Returns the new policy revision.
+    pub async fn change_member(
+        &mut self,
+        service: &mut SyncService,
+        change: crate::sync::members::MemberChange,
+    ) -> Result<u64, SyncError> {
+        if self.remote.is_none() {
+            self.connect(service).await?;
+        }
+        let mut remote = self.remote.take().ok_or(SyncError::KeyMissing)?;
+        let changed = service.change_member(&mut remote, change).await;
+        self.adopt(remote)?;
+        let revision = changed?;
+        // The signer rotates each restricted domain it still reads (§9).
+        self.sync_domains(service).await?;
+        self.rotate_domains(service, true).await?;
+        self.save()?;
+        Ok(revision)
+    }
+
     /// Renames the workspace by pushing a new profile, as an owner or admin
     /// device may (§25).
     pub async fn rename(&mut self, service: &mut SyncService, name: &str) -> Result<(), SyncError> {
@@ -1033,17 +1173,18 @@ impl WorkspaceSync {
             .keys
             .get(&epoch.body.epoch)
             .ok_or(SyncError::Check("sync_key_mismatch"))?;
-        let head = self
-            .state
+        let (policy_revision, policy_head) = self
+            .remote
+            .as_ref()
+            .ok_or(SyncError::Check("sync_workspace_unverified"))?
             .policy
-            .last()
-            .ok_or(SyncError::Check("sync_workspace_unverified"))?;
+            .head();
         let mut profile = Profile {
             workspace: self.state.workspace,
             profile_revision: latest + 1,
             epoch: epoch.body.epoch,
-            policy_revision: head.body.revision,
-            policy_head: head.digest(),
+            policy_revision,
+            policy_head,
             signer: self.credentials.keys.device(),
             nonce: Nonce::ZERO,
             ciphertext: Bytes(Vec::new()),
@@ -1309,18 +1450,27 @@ impl WorkspaceSync {
             return Ok(0);
         }
         let rewritten = self.rewrite_skipped()?;
+        let moved_markers = self.check_markers()?;
         let listing = self.engine.synced_listing().map_err(core)?;
         let held: BTreeSet<Id> = self.state.held.keys().copied().collect();
         let engine = self.engine.clone();
         let roots = self.state.held_roots.clone();
+        let markers = self.marker_objects();
+        let holding_new = self.markers_pending();
         let (changes, mut skipped) = capture::changes(
             &listing,
             &self.state.objects,
+            &markers,
             &held,
-            |path| roots.iter().any(|root| rebuild::beneath(path, root)),
+            |path| {
+                roots
+                    .iter()
+                    .any(|root| rebuild::beneath(path, &root.folder))
+            },
             |file| read_for_sync(&engine, &file.relative_path, file.size),
         );
-        let mut signed = rewritten;
+        let mut signed = rewritten + moved_markers;
+        self.reviews.clear();
         for change in changes {
             match change {
                 Change::Touch { rid, found } => {
@@ -1336,15 +1486,26 @@ impl WorkspaceSync {
                         });
                         continue;
                     }
+                    // Until the device applied every marker it reads, it
+                    // can't tell where a new file goes (§9).
+                    if holding_new {
+                        skipped.push(Skipped {
+                            path: found.file.relative_path.clone(),
+                            why: SkipWhy::HeldRoot,
+                        });
+                        continue;
+                    }
+                    let domain = domain_of(&found.file.relative_path, &self.state.roots);
                     let rid = random(Id::random())?;
                     self.state.objects.insert(
                         rid,
                         Object {
                             object_id: found.object_id.clone(),
+                            domain,
                             ..Object::default()
                         },
                     );
-                    self.sign_file(rid, &found, Vec::new())?;
+                    self.in_domain(domain, |sync| sync.sign_file(rid, &found, Vec::new()))?;
                     signed += 1;
                 }
                 Change::Update { rid, found } => {
@@ -1355,13 +1516,27 @@ impl WorkspaceSync {
                         });
                         continue;
                     }
-                    let covers = self.edit_covers(&rid);
-                    self.sign_file(rid, &found, covers)?;
+                    let domain = self.object_domain(&rid);
+                    // A file that crossed a root is a move between domains,
+                    // and a workspace-domain object inside a new root waits
+                    // for its move (§9).
+                    let target = domain_of(&found.file.relative_path, &self.state.roots);
+                    if target != domain {
+                        signed += self.crossing(rid, &found, domain, target)?;
+                        continue;
+                    }
+                    self.in_domain(domain, |sync| {
+                        let covers = sync.edit_covers(&rid);
+                        sync.sign_file(rid, &found, covers)
+                    })?;
                     signed += 1;
                 }
                 Change::Delete { rid } => {
-                    let covers = self.edit_covers(&rid);
-                    self.sign_delete(rid, covers)?;
+                    let domain = self.object_domain(&rid);
+                    self.in_domain(domain, |sync| {
+                        let covers = sync.edit_covers(&rid);
+                        sync.sign_delete(rid, covers)
+                    })?;
                     signed += 1;
                 }
             }
@@ -1375,10 +1550,15 @@ impl WorkspaceSync {
             let Ok(found) = self.found_on_disk(&local.path) else {
                 continue;
             };
-            let covers = self.edit_covers(&rid);
-            self.sign_file(rid, &found, covers)?;
+            let domain = self.object_domain(&rid);
+            self.in_domain(domain, |sync| {
+                let covers = sync.edit_covers(&rid);
+                sync.sign_file(rid, &found, covers)
+            })?;
             signed += 1;
         }
+        signed += self.finish_moves()?;
+        skipped.append(&mut self.skipped_now);
         skipped.sort();
         self.skipped = skipped;
         self.save()?;
@@ -1442,8 +1622,8 @@ impl WorkspaceSync {
 
     /// The live state operations on `rid`, in log order.
     fn live_states(&self, rid: &Id) -> Vec<OpKey> {
-        self.state
-            .log
+        let domain = self.state.objects.get(rid).and_then(|o| o.domain);
+        self.log_of(domain)
             .live
             .live(rid)
             .into_iter()
@@ -1456,7 +1636,30 @@ impl WorkspaceSync {
     }
 
     fn sign_file(&mut self, rid: Id, found: &Found, covers: Vec<Cover>) -> Result<(), SyncError> {
-        let path = SyncPath::new(found.file.relative_path.clone())
+        self.sign_file_from(rid, found, covers, None)
+    }
+
+    /// [`Self::sign_file`], with the `origin` of a move between domains.
+    fn sign_file_from(
+        &mut self,
+        rid: Id,
+        found: &Found,
+        covers: Vec<Cover>,
+        origin: Option<sync_protocol::records::Origin>,
+    ) -> Result<(), SyncError> {
+        // A file relocated under `<root> (shared)` keeps its synced path
+        // (§9).
+        let existing = self
+            .state
+            .objects
+            .get(&rid)
+            .is_some_and(|o| o.base.is_some());
+        let synced = if existing {
+            synced_path(&found.file.relative_path, &self.state.roots)
+        } else {
+            found.file.relative_path.clone()
+        };
+        let path = SyncPath::new(synced.clone())
             .map_err(|e| SyncError::Invalid(format!("path: {}", e.name())))?;
         let size = found
             .bytes
@@ -1491,11 +1694,11 @@ impl WorkspaceSync {
                 path,
                 revision: found.revision,
                 content,
-                origin: None,
+                origin,
             },
         };
         let carried = Carried {
-            path: found.file.relative_path.clone(),
+            path: synced,
             revision: found.revision,
             delete: false,
             object_id: found.object_id.clone(),
@@ -1614,6 +1817,18 @@ impl WorkspaceSync {
     }
 
     fn sign_delete(&mut self, rid: Id, covers: Vec<Cover>) -> Result<(), SyncError> {
+        self.sign_removal(rid, covers, DeleteReason::Deleted, None)
+    }
+
+    /// Signs a delete of `rid`: an ordinary one, or the source half of a
+    /// move, which names the `target`.
+    fn sign_removal(
+        &mut self,
+        rid: Id,
+        covers: Vec<Cover>,
+        reason: DeleteReason,
+        target: Option<sync_protocol::records::Origin>,
+    ) -> Result<(), SyncError> {
         let object = &self.state.objects[&rid];
         let revision = object.local.as_ref().map_or(Digest::ZERO, |l| l.revision);
         let payload = Payload {
@@ -1622,8 +1837,8 @@ impl WorkspaceSync {
                 object_id: Text::new(object.object_id.clone())
                     .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
                 revision,
-                reason: DeleteReason::Deleted,
-                target: None,
+                reason,
+                target,
             },
         };
         let carried = Carried {
@@ -1673,6 +1888,7 @@ impl WorkspaceSync {
         self.state.own.head = Some((counter, signed.digest()));
         let key = OpKey { device, counter };
         let epoch = signed.body.epoch;
+        let policy_revision = signed.body.policy_revision;
         let object = self.state.objects.entry(rid).or_default();
         object.own_highest = counter;
         object.states.insert(
@@ -1683,6 +1899,7 @@ impl WorkspaceSync {
                 covers,
                 content: Some(carried),
                 epoch,
+                policy_revision,
             },
         );
         self.state.outbox.push(Outgoing {
@@ -1690,6 +1907,7 @@ impl WorkspaceSync {
             reseals: 0,
             rewrite: false,
             upload: None,
+            pair: None,
         });
         Ok(key)
     }
@@ -1855,6 +2073,26 @@ impl WorkspaceSync {
         }
     }
 
+    /// Pushes every domain's outbox, with each move between domains in one
+    /// push. Returns how many records the server acknowledged.
+    async fn push_everything(&mut self, service: &mut SyncService) -> Result<usize, SyncError> {
+        let mut pushed = 0;
+        loop {
+            pushed += self.push(service).await?;
+            for domain in self.loaded_domains() {
+                self.swap_domain(domain);
+                let result = self.push(service).await;
+                self.swap_domain(domain);
+                pushed += result?;
+            }
+            let moved = self.push_pairs(service).await?;
+            pushed += moved;
+            if moved == 0 {
+                return Ok(pushed);
+            }
+        }
+    }
+
     /// Pushes the outbox in order, one push at a time, each at most 1 MiB,
     /// until it's empty or the server refuses a record that waits (§15).
     /// The same bytes go out on every retry. Returns how many records the
@@ -1878,7 +2116,8 @@ impl WorkspaceSync {
             self.save()?;
         }
         self.upload_blobs(service).await?;
-        while !self.state.outbox.is_empty() {
+        // A move's records leave in one push across domains (§9).
+        while self.state.outbox.first().is_some_and(|o| o.pair.is_none()) {
             // At the re-seal cap the device signs nothing more there, but
             // retries the last attempt's bytes (§14).
             let at_cap = self.stopped == Some("sync_reseal_limit");
@@ -1896,7 +2135,9 @@ impl WorkspaceSync {
             for outgoing in &self.state.outbox {
                 let record = RecordRef::Operation(outgoing.record.clone());
                 let len = record.to_bytes().len();
-                if !batch.is_empty() && size + len > MAX_BODY - PUSH_MARGIN {
+                if outgoing.pair.is_some()
+                    || (!batch.is_empty() && size + len > MAX_BODY - PUSH_MARGIN)
+                {
                     break;
                 }
                 size += len;
@@ -1905,32 +2146,10 @@ impl WorkspaceSync {
             let sent = batch.len();
             match service.client().push(self.state.workspace, batch).await {
                 Ok(response) => {
-                    for (outgoing, receipt) in self
-                        .state
-                        .outbox
-                        .drain(..sent)
-                        .zip(response.receipts.0.iter())
+                    let outgoing: Vec<Outgoing> = self.state.outbox.drain(..sent).collect();
+                    for (outgoing, receipt) in outgoing.into_iter().zip(response.receipts.0.iter())
                     {
-                        let record = &outgoing.record;
-                        if receipt.record_digest != record.digest() {
-                            return Err(SyncError::Network(
-                                "the push returned another record's receipt".into(),
-                            ));
-                        }
-                        self.state.own.acked =
-                            Some((record.body.counter, record.digest(), receipt.seq));
-                        let key = OpKey {
-                            device: record.body.device,
-                            counter: record.body.counter,
-                        };
-                        if let Some(state) = self
-                            .state
-                            .objects
-                            .get_mut(&record.body.rid)
-                            .and_then(|o| o.states.get_mut(&key))
-                        {
-                            state.seq = Some(receipt.seq);
-                        }
+                        self.acknowledge(outgoing, receipt)?;
                     }
                     acknowledged += sent;
                     if at_cap {
@@ -1956,6 +2175,30 @@ impl WorkspaceSync {
         Ok(acknowledged)
     }
 
+    /// Records the server's receipt for a record that left the outbox.
+    fn acknowledge(&mut self, outgoing: Outgoing, receipt: &Receipt) -> Result<(), SyncError> {
+        let record = &outgoing.record;
+        if receipt.record_digest != record.digest() {
+            return Err(SyncError::Network(
+                "the push returned another record's receipt".into(),
+            ));
+        }
+        self.state.own.acked = Some((record.body.counter, record.digest(), receipt.seq));
+        let key = OpKey {
+            device: record.body.device,
+            counter: record.body.counter,
+        };
+        if let Some(state) = self
+            .state
+            .objects
+            .get_mut(&record.body.rid)
+            .and_then(|o| o.states.get_mut(&key))
+        {
+            state.seq = Some(receipt.seq);
+        }
+        Ok(())
+    }
+
     /// Handles a refused push (§14): checks the reason against what the
     /// device can verify, then re-seals, replaces, drops or keeps the
     /// failing record. Returns an error when the record waits.
@@ -1974,6 +2217,19 @@ impl WorkspaceSync {
             ),
             None => (0, code, None),
         };
+        self.refused_at(service, index, record_code, record_detail)
+            .await
+    }
+
+    /// [`Self::refused`], for the record at `index` of the outbox.
+    async fn refused_at(
+        &mut self,
+        service: &mut SyncService,
+        index: usize,
+        record_code: &str,
+        record_detail: Option<Vec<u8>>,
+    ) -> Result<(), SyncError> {
+        let code = record_code;
         if index >= self.state.outbox.len() {
             return Err(SyncError::Refused {
                 code: code.to_owned(),
@@ -1990,7 +2246,17 @@ impl WorkspaceSync {
             "epoch_stale" | "rotation_pending" => {
                 let before = self.accepted_epoch();
                 let revision = self.accepted_revision();
-                self.refresh(service).await?;
+                // An envelope that waits for its epoch's entry holds up no
+                // rotation: the device took the policy, and it rotates from
+                // the key it accepted.
+                match self.refresh(service).await {
+                    Err(SyncError::KeyMissing)
+                        if self
+                            .remote
+                            .as_ref()
+                            .is_some_and(|remote| service.rotation_pending(remote)) => {}
+                    refreshed => refreshed?,
+                }
                 if let Some(remote) = self.remote.as_mut()
                     && service.rotation_pending(remote)
                 {
@@ -2057,6 +2323,18 @@ impl WorkspaceSync {
                 self.refresh(service).await?;
                 self.reseal_from(index, false)
             }
+            "policy_stale" => {
+                // Signed under a revision at which the device couldn't
+                // write, such as a viewer's edit before the change that
+                // made it an editor: sealed again under the policy it
+                // accepts now, if that one moved on (§13).
+                let revision = self.accepted_revision();
+                self.refresh(service).await?;
+                if self.accepted_revision() == revision {
+                    return Err(refused());
+                }
+                self.reseal_from(index, false)
+            }
             "chain_conflict" => {
                 let head = record_detail
                     .as_deref()
@@ -2107,7 +2385,12 @@ impl WorkspaceSync {
     }
 
     fn accepted_revision(&self) -> u64 {
-        self.state.policy.last().map_or(0, |c| c.body.revision)
+        // Each domain's verified policy follows the journal's on its own
+        // time, and a page is judged against that one.
+        match &self.remote {
+            Some(remote) => remote.policy.head().0,
+            None => self.state.policy.last().map_or(0, |c| c.body.revision),
+        }
     }
 
     /// Re-seals the record at `index` with other covers, then the later
@@ -2200,9 +2483,12 @@ impl WorkspaceSync {
     pub fn set_checkpoint_wait(&mut self, wait: std::time::Duration) {
         self.checkpoint_wait = wait;
         let latest = unix_now() + wait.as_secs();
-        let checkpoints = &mut self.state.log.checkpoints;
-        if checkpoints.sign_at.is_some_and(|at| at > latest) {
-            checkpoints.sign_at = Some(latest);
+        let frames = self.state.restricted.values_mut().map(|f| &mut f.log);
+        for log in std::iter::once(&mut self.state.log).chain(frames) {
+            let checkpoints = &mut log.checkpoints;
+            if checkpoints.sign_at.is_some_and(|at| at > latest) {
+                checkpoints.sign_at = Some(latest);
+            }
         }
     }
 
@@ -2342,8 +2628,11 @@ impl WorkspaceSync {
         let rids: Vec<Id> = self.state.objects.keys().copied().collect();
         let mut written = 0;
         for rid in rids {
-            let live: BTreeSet<OpKey> = self.live_states(&rid).into_iter().collect();
             let object = &self.state.objects[&rid];
+            if object.domain != self.active {
+                continue;
+            }
+            let live: BTreeSet<OpKey> = self.live_states(&rid).into_iter().collect();
             let Some((key, content)) = live.iter().find_map(|key| {
                 let info = object.states.get(key)?;
                 ((key.device == own) == own_records && epochs.contains(&info.epoch))
@@ -2428,6 +2717,12 @@ impl WorkspaceSync {
         wait_seconds: u32,
         wake: &tokio::sync::Notify,
     ) -> Result<(usize, bool), SyncError> {
+        if self.active.is_none() {
+            self.sync_domains(service).await?;
+            if !self.loaded_domains().is_empty() {
+                return self.pull_every_domain(service, wait_seconds, wake).await;
+            }
+        }
         if self.state.bootstrap {
             self.bootstrap(service).await?;
             self.state.bootstrap = false;
@@ -2443,9 +2738,6 @@ impl WorkspaceSync {
             .iter()
             .map(|w| (w.epoch, w.number))
             .collect();
-        // One cursor while the device reads only the workspace domain.
-        // Ticket 50 brings restricted domains; this pull then carries every
-        // domain's cursor the device reads (§15).
         let cursors = || {
             vec![PullCursor {
                 domain: self.state.domain,
@@ -2477,6 +2769,90 @@ impl WorkspaceSync {
         self.take_page(service, page).await
     }
 
+    /// Pulls every domain the device reads in one request (§15). Restricted
+    /// domains go first, so their roots stand before a workspace object
+    /// beneath one finds its place.
+    async fn pull_every_domain(
+        &mut self,
+        service: &mut SyncService,
+        wait_seconds: u32,
+        wake: &tokio::sync::Notify,
+    ) -> Result<(usize, bool), SyncError> {
+        let domains = self.loaded_domains();
+        for domain in &domains {
+            self.swap_domain(*domain);
+            let loaded = if self.state.bootstrap {
+                match self.bootstrap(service).await {
+                    Ok(_) => {
+                        self.state.bootstrap = false;
+                        self.save()
+                    }
+                    Err(error) => Err(error),
+                }
+            } else {
+                Ok(())
+            };
+            self.swap_domain(*domain);
+            loaded?;
+        }
+        if self.state.bootstrap {
+            self.bootstrap(service).await?;
+            self.state.bootstrap = false;
+            self.save()?;
+        }
+        let mut cursors = vec![PullCursor {
+            domain: self.state.domain,
+            after: self.state.log.cursor,
+        }];
+        self.armed = wanted_entries(&self.state.log);
+        for domain in &domains {
+            self.swap_domain(*domain);
+            self.armed = wanted_entries(&self.state.log);
+            cursors.push(PullCursor {
+                domain: *domain,
+                after: self.state.log.cursor,
+            });
+            self.swap_domain(*domain);
+        }
+        let workspace = self.state.workspace;
+        let answered = if wait_seconds == 0 {
+            Some(service.client().pull(workspace, cursors.clone(), 0).await?)
+        } else {
+            let request = service
+                .client()
+                .pull(workspace, cursors.clone(), wait_seconds);
+            tokio::select! {
+                response = request => Some(response?),
+                () = wake.notified() => None,
+            }
+        };
+        let response = match answered {
+            Some(response) => response,
+            None => service.client().pull(workspace, cursors, 0).await?,
+        };
+        let mut pages = response.pages.0;
+        let (mut applied, mut waiting) = (0, false);
+        for domain in &domains {
+            let index = pages
+                .iter()
+                .position(|p| p.domain == *domain)
+                .ok_or(SyncError::Check("sync_chain_gap"))?;
+            let page = pages.swap_remove(index);
+            self.swap_domain(*domain);
+            let taken = self.take_page(service, page).await;
+            self.swap_domain(*domain);
+            let (count, waits) = taken?;
+            applied += count;
+            waiting |= waits;
+        }
+        let page = pages
+            .into_iter()
+            .find(|p| p.domain == self.state.domain)
+            .ok_or(SyncError::Check("sync_chain_gap"))?;
+        let (count, waits) = self.take_page(service, page).await?;
+        Ok((applied + count, waiting || waits))
+    }
+
     /// Handles a frame of the realtime channel (§23). A records frame that
     /// follows straight on from the cursor goes through every check a
     /// pulled page does, and the cursor moves to its last entry only after
@@ -2493,6 +2869,17 @@ impl WorkspaceSync {
     ) -> Result<FrameOutcome, SyncError> {
         if self.state.ended.is_some() || self.paused {
             return Ok(FrameOutcome::default());
+        }
+        // A restricted domain's frames take the same path in that domain.
+        if self.active.is_none()
+            && let Frame::Records { domain, .. } | Frame::Notify { domain, .. } = frame
+            && self.parked.get(domain).is_some_and(|r| r.remote.is_some())
+        {
+            let domain = *domain;
+            self.swap_domain(domain);
+            let outcome = Box::pin(self.on_frame(service, frame)).await;
+            self.swap_domain(domain);
+            return outcome;
         }
         let current = self.frame_generation == Some(self.state.generation);
         match frame {
@@ -2609,6 +2996,11 @@ impl WorkspaceSync {
         self.check_page(&page)?;
         match page.status {
             PageStatus::Ok => {}
+            PageStatus::Forbidden | PageStatus::NotFound if self.active.is_some() => {
+                // Losing a restricted domain ends only that domain: its
+                // files stay, and the next round no longer pulls it.
+                return self.refresh_policy(service).await.map(|()| (0, false));
+            }
             PageStatus::Forbidden | PageStatus::NotFound => {
                 // Once a change it accepted took its access or deleted the
                 // domain, the device stops pulling it (§15).
@@ -2626,7 +3018,15 @@ impl WorkspaceSync {
                     detail: None,
                 });
             }
-            PageStatus::Compacted | PageStatus::BeforeHistoryFloor => {
+            // A member or grantee back after a removal holds a cursor below
+            // the floor its new approval or grant set: it loads the domain
+            // from a checkpoint at or above the floor (§9, §18).
+            PageStatus::BeforeHistoryFloor => {
+                self.state.bootstrap = true;
+                self.save()?;
+                return Ok((0, false));
+            }
+            PageStatus::Compacted => {
                 // Bootstrapping from a checkpoint arrives with ticket 58.
                 return Err(SyncError::Refused {
                     code: "cursor_compacted".into(),
@@ -2677,6 +3077,13 @@ impl WorkspaceSync {
                 Err(SyncError::KeyMissing) if unknown_epoch => {
                     return Ok((0, true));
                 }
+                // The device holds the key of every epoch here. Its latest
+                // envelope only waits again, since the wrapper lost its
+                // access, so it takes the policy (§9).
+                Err(SyncError::KeyMissing) => {
+                    let remote = self.remote.take().ok_or(SyncError::KeyMissing)?;
+                    self.adopt(remote)?;
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -2695,6 +3102,11 @@ impl WorkspaceSync {
         if !self.matching {
             for rid in self.unsettled() {
                 self.settle(rid, &BTreeMap::new())?;
+            }
+            // A hold that ended leaves files to match with the domain's
+            // live objects before anything writes there (§9).
+            if std::mem::take(&mut self.rematch) {
+                self.match_local()?;
             }
         }
         for (digest, at, own) in walks {
@@ -3129,6 +3541,9 @@ impl WorkspaceSync {
                         .map_err(|e| SyncError::Check(e.client_code()))?;
                     log.checkpoints
                         .note_policy_entry(entry.seq, policy_entry.revision);
+                    if matches!(change.body.kind, PolicyKind::CreateDomain { .. }) {
+                        log.domain_entries.insert(policy_entry.revision, entry.seq);
+                    }
                 }
                 EntryRecord::Epoch(epoch) => {
                     log.wanted
@@ -3253,13 +3668,17 @@ impl WorkspaceSync {
         let mut touched: Vec<Id> = Vec::new();
         let mut contents: Bodies = fetched;
         let mut applied = 0;
+        let mut arrivals = Vec::new();
+        let mut departures = Vec::new();
         for record in records {
             let op = &record.op;
             let key = OpKey {
                 device: op.body.device,
                 counter: op.body.counter,
             };
+            let domain = self.active;
             let object = self.state.objects.entry(op.body.rid).or_default();
+            object.domain = domain;
             if op.body.device == own {
                 object.own_highest = object.own_highest.max(op.body.counter);
                 // This device's own record: its file already holds it,
@@ -3272,6 +3691,18 @@ impl WorkspaceSync {
                 }
             }
             applied += 1;
+            match record.payload.as_ref().map(|p| &p.kind) {
+                Some(PayloadKind::File {
+                    origin: Some(origin),
+                    ..
+                }) => arrivals.push((op.body.rid, origin.clone())),
+                Some(PayloadKind::Delete {
+                    reason: DeleteReason::Moved,
+                    target: Some(target),
+                    ..
+                }) => departures.push((op.body.rid, target.clone())),
+                _ => {}
+            }
             let content = match record.payload {
                 Some(payload) => carried(&payload, &mut contents),
                 None => {
@@ -3298,6 +3729,7 @@ impl WorkspaceSync {
                         covers: op.body.supersedes.to_vec(),
                         content,
                         epoch: op.body.epoch,
+                        policy_revision: op.body.policy_revision,
                     },
                 );
             }
@@ -3305,11 +3737,27 @@ impl WorkspaceSync {
                 touched.push(op.body.rid);
             }
         }
+        // A move's create comes before its delete: the new object takes
+        // the file, and a delete whose create hasn't arrived waits (§9).
+        for (moved, origin) in arrivals {
+            self.arrive(moved, origin);
+        }
+        for (rid, target) in departures {
+            if self.defers_delete(&target) {
+                self.state.deferred_moves.insert(rid, target.rid);
+                touched.retain(|t| *t != rid);
+            }
+        }
+        // Every marker in the page stands as a root before any file beneath
+        // it finds its place, and the marker's own file goes first (§9).
+        self.update_roots()?;
         if self.matching {
             // The matching after a sync without the journal writes these.
             self.cache.extend(contents);
             return Ok(applied);
         }
+        let markers = self.marker_objects();
+        touched.sort_by_key(|rid| !markers.contains(rid));
         for rid in touched {
             self.settle(rid, &contents)?;
         }

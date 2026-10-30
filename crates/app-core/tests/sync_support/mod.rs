@@ -411,10 +411,17 @@ pub struct Proxy {
     /// Every request the proxy received: its method, path with query,
     /// headers and body.
     requests: Arc<Mutex<Vec<Captured>>>,
+    /// Every response body and realtime frame the proxy passed on, with
+    /// the path it answered or `frame`.
+    received: Received,
     frames: Arc<Mutex<Option<FrameTamper>>>,
     pings: Arc<AtomicUsize>,
     closing: tokio::sync::watch::Sender<u64>,
 }
+
+/// The response bodies and frames a proxy passed on, each with the path it
+/// answered or `frame`.
+type Received = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 
 /// One request a proxy received.
 #[derive(Clone, Debug)]
@@ -435,6 +442,7 @@ async fn bridge(
     frames: Arc<Mutex<Option<FrameTamper>>>,
     pings: Arc<AtomicUsize>,
     mut closing: tokio::sync::watch::Receiver<u64>,
+    received: Received,
 ) {
     use axum::extract::ws::Message as Client;
     use futures::{SinkExt, StreamExt};
@@ -459,6 +467,7 @@ async fn bridge(
             message = from_server.next() => match message {
                 Some(Ok(Server::Binary(bytes))) => {
                     let frame = Frame::from_bytes(&bytes).expect("the server sends frames");
+                    received.lock().unwrap().push(("frame".to_owned(), bytes.to_vec()));
                     let sent = match frames.lock().unwrap().as_ref() {
                         Some(tamper) => tamper(frame),
                         None => vec![frame],
@@ -535,6 +544,8 @@ impl Proxy {
         let frames: Arc<Mutex<Option<FrameTamper>>> = Arc::new(Mutex::new(None));
         let pings = Arc::new(AtomicUsize::new(0));
         let (closing, _) = tokio::sync::watch::channel(0u64);
+        let received: Received = Arc::new(Mutex::new(Vec::new()));
+        let recording = received.clone();
         let bridged = (frames.clone(), pings.clone(), closing.clone());
         let http = reqwest::Client::new();
         let app = axum::Router::new().fallback(move |request: axum::extract::Request| {
@@ -547,6 +558,7 @@ impl Proxy {
             let http = http.clone();
             let captured = captured.clone();
             let (frames, pings, closing) = bridged.clone();
+            let recording = recording.clone();
             async move {
                 let (mut parts, body) = request.into_parts();
                 let body = axum::body::to_bytes(body, 2 << 20)
@@ -613,7 +625,7 @@ impl Proxy {
                         Ok((server, _)) => {
                             let closing = closing.subscribe();
                             upgrade.on_upgrade(move |client| {
-                                bridge(client, server, frames, pings, closing)
+                                bridge(client, server, frames, pings, closing, recording)
                             })
                         }
                         Err(tokio_tungstenite::tungstenite::Error::Http(refused)) => {
@@ -666,6 +678,10 @@ impl Proxy {
                 {
                     bytes = tamper(parts.uri.path(), bytes);
                 }
+                recording
+                    .lock()
+                    .unwrap()
+                    .push((parts.uri.path().to_owned(), bytes.clone()));
                 let mut reply = axum::response::Response::builder().status(status.as_u16());
                 for (name, value) in &headers {
                     if name != "content-length" && name != "transfer-encoding" {
@@ -689,10 +705,17 @@ impl Proxy {
             hold,
             upstream,
             requests,
+            received,
             frames,
             pings,
             closing,
         }
+    }
+
+    /// Every response body and realtime frame the proxy passed on so far,
+    /// each with the path it answered or `frame`.
+    pub fn received(&self) -> Vec<(String, Vec<u8>)> {
+        self.received.lock().unwrap().clone()
     }
 
     /// Every request the proxy received so far.
@@ -1153,4 +1176,117 @@ pub fn not_found_body() -> Vec<u8> {
         detail: None,
     }
     .to_bytes()
+}
+
+/// Invites `member`'s account to `inviter`'s synced workspace with `role`,
+/// through the whole flow of §10 and §11: the link, acceptance, the
+/// invited request, the offer, the matching codes and the `add_member`.
+/// The member's device then downloads the workspace into a new folder and
+/// records its own head there, as §10 step 6 says. Returns its sync and
+/// folder.
+pub async fn invite_and_join(
+    inviter: &mut Desktop,
+    inviter_sync: &mut app_core::sync::workspace::WorkspaceSync,
+    book: &mut app_core::sync::invitations::InvitationBook,
+    member: &mut Desktop,
+    role: sync_protocol::records::Role,
+) -> (app_core::sync::workspace::WorkspaceSync, Folder) {
+    use app_core::sync::approval::CandidateStep;
+    use app_core::sync::invitations::{InvitationLink, NewInvitation};
+
+    let workspace = inviter_sync.workspace();
+    let created = inviter
+        .service
+        .create_invitation(
+            book,
+            NewInvitation {
+                workspace,
+                role,
+                workspace_name: "Field notes",
+                inviter_name: "Ana",
+            },
+        )
+        .await
+        .expect("invited");
+    let link = InvitationLink::parse(&created.url).expect("the link reads");
+    let opened = member
+        .service
+        .open_invitation(&link)
+        .await
+        .expect("it opens");
+    member
+        .service
+        .accept_invitation(&link)
+        .await
+        .expect("accepted");
+    let mut candidate = member
+        .service
+        .request_invited_approval(&link, &opened)
+        .await
+        .expect("the request");
+    let requests = inviter
+        .service
+        .invited_requests(book, workspace)
+        .await
+        .expect("listed");
+    let request = requests
+        .iter()
+        .find(|r| r.commit == candidate.commit())
+        .expect("the request");
+    let mut offer = inviter
+        .service
+        .offer_invited(request, inviter_sync.remote_mut().expect("connected"))
+        .await
+        .expect("offered");
+    let CandidateStep::Code(code) = member
+        .service
+        .poll_invited(&mut candidate)
+        .await
+        .expect("polled")
+    else {
+        panic!("a code");
+    };
+    assert_eq!(
+        inviter.service.approval_code(&mut offer).await.unwrap(),
+        Some(code)
+    );
+    candidate.confirm();
+    inviter_sync
+        .approve_member(&mut inviter.service, offer)
+        .await
+        .expect("the approval commits");
+    assert!(
+        member
+            .service
+            .join_invited(&candidate)
+            .await
+            .expect("joined")
+    );
+    let mut folder = Folder::new("Member's copy");
+    let mut sync = app_core::sync::workspace::WorkspaceSync::download(
+        &mut member.service,
+        folder.engine.clone(),
+        workspace,
+        &mut folder.registry,
+    )
+    .await
+    .expect("the download starts");
+    sync.round(&mut member.service, 0).await.expect("a round");
+    let remote = sync.remote_mut().expect("connected");
+    let own = member
+        .service
+        .pending_heads(remote)
+        .await
+        .expect("pending")
+        .into_iter()
+        .find(|p| p.own);
+    if let Some(own) = own {
+        member
+            .service
+            .push_pending_head(remote, &own)
+            .await
+            .expect("recorded");
+    }
+    sync.round(&mut member.service, 0).await.expect("a round");
+    (sync, folder)
 }

@@ -30,11 +30,15 @@ use crate::{Backend, Error, LockPlan, Refusal, Session, Store, WriteTxn};
 mod blobs;
 mod checkpoints;
 mod devices;
+mod domains;
+mod invitations;
 mod keys;
 mod shares;
 pub use blobs::*;
 pub use checkpoints::*;
 pub use devices::*;
+pub use domains::*;
+pub use invitations::*;
 pub use keys::*;
 pub use shares::*;
 
@@ -98,13 +102,28 @@ macro_rules! conformance_tests {
             checkpoint_checks_match_the_fixture,
             checkpoint_heads_follow_the_fixture,
             racing_checkpoints_keep_the_first,
-            a_checkpoint_goes_in_a_push_of_its_own,
+            a_checkpoint_goes_alone_or_last_in_an_approval,
+            history_floors_follow_section_9,
+            create_domain_commits_with_its_epoch_and_marker,
+            an_outside_member_receives_nothing_of_a_domain,
+            set_access_and_delete_domain_follow_the_policy,
+            a_grant_sets_the_grantees_history_floor,
+            limits_follow_section_27,
             removals_make_checkpoints_due_and_leave_the_heads,
             replacements_make_checkpoints_due,
             checkpoint_routes_serve_the_chain_and_manifest,
             share_links_follow_section_24,
             share_links_outlive_their_creator_until_they_expire,
             share_limit_holds_a_thousand_links,
+            invitations_follow_section_11,
+            invitation_limit_holds_a_hundred,
+            invited_requests_reach_pending_devices,
+            workspace_requests_hold_a_hundred,
+            membership_changes_follow_section_8,
+            invitations_end_with_their_inviters_authority,
+            a_foreign_head_is_forbidden,
+            add_member_of_a_member_is_forbidden,
+            one_device_under_two_accounts_is_an_id_conflict,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {

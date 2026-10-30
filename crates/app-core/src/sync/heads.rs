@@ -153,7 +153,10 @@ impl SyncService {
     /// The account chains a change in `remote` relies on: every chain its
     /// log records, the device's own included, judged against the heads
     /// the device keeps.
-    async fn chains_of(&mut self, remote: &RemoteWorkspace) -> Result<AccountChains, SyncError> {
+    pub(crate) async fn chains_of(
+        &mut self,
+        remote: &RemoteWorkspace,
+    ) -> Result<AccountChains, SyncError> {
         let own = self.own_chain().await?;
         let changes: Vec<Signed<PolicyChange>> = (1..=remote.policy.head().0)
             .filter_map(|r| remote.policy.change(r).cloned())
@@ -405,53 +408,61 @@ impl SyncService {
         Ok(records)
     }
 
-    /// A current-epoch envelope of the workspace domain for every card that
-    /// `next` brings in, when this device could read the domain before.
-    fn envelopes_for(
+    /// A current-epoch envelope, in every domain this device holds a key
+    /// of, for each card that `next` brings in, when the device could read
+    /// the domain before.
+    pub(crate) fn envelopes_for(
         &self,
         remote: &RemoteWorkspace,
         before: &Snapshot,
         next: &Snapshot,
     ) -> Result<Vec<Signed<Envelope>>, SyncError> {
         let device = self.credentials.keys.device();
-        let domain = remote.domain;
-        let Some(added) = next.new_readers.get(&domain) else {
-            return Ok(Vec::new());
-        };
-        // A recovering device wraps with the keys its proven recovery
-        // identity reads (§12).
-        let identity_reads = self
-            .recovery
-            .as_ref()
-            .is_some_and(|identity| before.can_read(&identity.device(), &domain));
-        if !before.can_read(&device, &domain) && !identity_reads {
-            return if next.rotations.contains(&domain) {
-                Ok(Vec::new())
-            } else {
-                Err(SyncError::Invalid(
+        let mut envelopes = Vec::new();
+        for (domain, added) in &next.new_readers {
+            // A new domain's envelopes go with its epoch 1.
+            if !before.domains.contains_key(domain) {
+                continue;
+            }
+            // A recovering device wraps with the keys its proven recovery
+            // identity reads (§12).
+            let identity_reads = self
+                .recovery
+                .as_ref()
+                .is_some_and(|identity| before.can_read(&identity.device(), domain));
+            if !before.can_read(&device, domain) && !identity_reads {
+                if next.rotations.contains(domain) {
+                    continue;
+                }
+                return Err(SyncError::Invalid(
                     "only a device that reads the domain records this head, since it brings cards in without a rotation".into(),
-                ))
+                ));
+            }
+            let (epoch, key) = if *domain == remote.domain {
+                (remote.epoch(), &remote.key)
+            } else {
+                match remote.restricted.get(domain) {
+                    Some((epoch, key)) => (*epoch, key),
+                    None => return Err(SyncError::KeyMissing),
+                }
             };
-        }
-        let epoch = remote.epoch();
-        added
-            .iter()
-            .map(|reader| {
-                let card = &next.devices[reader].card;
-                wrap(
+            for reader in added {
+                let envelope = wrap(
                     &EnvelopeHeader {
                         workspace: remote.workspace,
-                        domain,
+                        domain: *domain,
                         epoch,
                         wrapping_device: device,
                     },
-                    &remote.key,
-                    card,
+                    key,
+                    &next.devices[reader].card,
                     &self.credentials.keys,
                 )
-                .map_err(|e| SyncError::Invalid(e.to_string()))
-            })
-            .collect()
+                .map_err(|e| SyncError::Invalid(e.to_string()))?;
+                envelopes.push(envelope);
+            }
+        }
+        Ok(envelopes)
     }
 
     /// Rotates the workspace domain (§9): a new epoch key, an epoch record
@@ -587,6 +598,22 @@ impl SyncService {
         }
     }
 
+    /// Whether the server's current epoch of `remote`'s domain is the one
+    /// the device accepted.
+    async fn holds_latest_epoch(&mut self, remote: &RemoteWorkspace) -> Result<bool, SyncError> {
+        let Some(accepted) = remote.epochs.latest().map(|e| e.digest) else {
+            return Ok(false);
+        };
+        let current = self
+            .client
+            .current_keys(remote.workspace, self.credentials.keys.device())
+            .await?;
+        Ok(current.entries.0.iter().any(|e| {
+            matches!(&e.record, KeyRecord::Epoch(epoch)
+                if epoch.body.domain == remote.domain && epoch.digest() == accepted)
+        }))
+    }
+
     /// Whether a rotation of the workspace domain is pending in the
     /// accepted policy: a change above the latest epoch record's
     /// `policy_revision` requires it (§9, Epoch authority).
@@ -614,7 +641,13 @@ impl SyncService {
         remote: &mut RemoteWorkspace,
     ) -> Result<bool, SyncError> {
         self.refresh_policy(remote).await?;
-        self.refresh_keys(remote).await?;
+        match self.refresh_keys(remote).await {
+            // The wrapper lost its access since, so the envelope waits for
+            // the epoch's entry (§9), but a device that accepted this
+            // epoch holds its key and rotates from it.
+            Err(SyncError::KeyMissing) if self.holds_latest_epoch(remote).await? => {}
+            refreshed => refreshed?,
+        }
         let reads = remote
             .policy
             .head_snapshot()

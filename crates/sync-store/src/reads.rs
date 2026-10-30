@@ -568,6 +568,19 @@ pub(crate) async fn chain_record(
                 "the device has no record at or above that counter",
             )
         })?;
+    // Another device's record at or below the account's history floor
+    // stays out of reach (§9); the device's own records it signed.
+    if device != session.device
+        && raw.seq
+            <= txn
+                .history_floor(workspace, session.account, domain)
+                .await?
+    {
+        return Err(refuse(
+            "before_history_floor",
+            "that record lies below the account's history floor",
+        ));
+    }
     entry(raw)
 }
 

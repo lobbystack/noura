@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO history_floors (workspace, account, domain, floor)\n             VALUES (?1, ?2, ?3, ?4)\n             ON CONFLICT (workspace, account, domain) DO UPDATE SET floor = excluded.floor",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "9f3211bee7e70fce2de8940d3874350eede1e4bb67ce6200ad1e65bd7fec10bb"
+}

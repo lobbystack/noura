@@ -428,7 +428,9 @@ impl<B: Backend> Store<B> {
     /// minutes (§10). A request names at most one of an invitation and a
     /// workspace; one for the account's own new device names neither and
     /// carries no account head, from a card the account's chains don't
-    /// list. An account holds at most 32 requests, and a retry with
+    /// list. One that names an invitation needs it open and accepted by the
+    /// session's account, which isn't a member yet (§11), and a workspace
+    /// holds at most 100 pending requests. An account holds at most 32 requests, and a retry with
     /// identical bytes gets the original result.
     pub async fn post_approval_request(&self, session: Session, body: Vec<u8>) -> Result<()> {
         let request = ApprovalRequest::from_bytes(&body).map_err(|e| {
@@ -465,15 +467,22 @@ impl<B: Backend> Store<B> {
                             ))
                         };
                     }
-                    if request.invitation.is_some() {
-                        // Ticket 50 builds invitations; the store holds none.
-                        return Err(refuse(
-                            "invitation_invalid",
-                            "the invitation is revoked, expired, used or unknown",
-                        ));
-                    }
-                    if let Some(workspace) = request.workspace {
+                    let mut workspace = request.workspace;
+                    if let Some(invitation) = request.invitation {
+                        workspace = Some(
+                            crate::invitations::invited_request(
+                                txn,
+                                &cache,
+                                session,
+                                invitation,
+                                request.account.as_ref(),
+                                now,
+                            )
+                            .await?,
+                        );
+                    } else if let Some(workspace) = request.workspace {
                         reset_request_allowed(txn, &cache, session, workspace).await?;
+                        crate::invitations::workspace_request_room(txn, workspace, now).await?;
                     }
                     let pending: Vec<ApprovalRequestRow> = txn
                         .approval_requests(session.account)
@@ -499,7 +508,7 @@ impl<B: Backend> Store<B> {
                         candidate_head: request.account.clone(),
                         invitation: request.invitation,
                         invite_proof: request.invite_proof,
-                        workspace: request.workspace,
+                        workspace,
                         request: body,
                         expires_at: now + SIGN_IN_TTL,
                     })
@@ -548,12 +557,15 @@ impl<B: Backend> Store<B> {
     /// minutes (§10). The session's card must be active in its account's
     /// chain and be the offer's `approver_card` byte for byte, the signature
     /// must verify under it, and the offer must answer an unexpired request
-    /// of the account's own new device whose card and head it names. A
-    /// retry with identical bytes gets the original result.
+    /// whose card and head it names: one of the account's own new devices,
+    /// or one of an invited account, from a device of the inviting account
+    /// that is an owner or admin of the workspace (§11). A retry with
+    /// identical bytes gets the original result.
     pub async fn post_offer(&self, session: Session, offer: Signed<Offer>) -> Result<()> {
         let digest = offer.digest();
         let bytes = offer.to_bytes();
         let now = self.clock().now();
+        let cache = self.policies.clone();
         self.backend()
             .write(Box::new(move |txn: &mut B::Write| {
                 Box::pin(async move {
@@ -586,10 +598,11 @@ impl<B: Backend> Store<B> {
                         .await?
                         .filter(|r| r.expires_at > now)
                         .ok_or_else(|| refuse("not_found", "no such approval request"))?;
-                    let own = request.invitation.is_none() && request.workspace.is_none();
-                    if !own || request.account != session.account {
-                        // Invitations and resets arrive with tickets 50 and
-                        // 60.
+                    if let Some(invitation) = request.invitation {
+                        crate::invitations::invited_offer(txn, &cache, session, invitation, now)
+                            .await?;
+                    } else if request.workspace.is_some() || request.account != session.account {
+                        // Ticket 60 answers resets.
                         return Err(refuse(
                             "forbidden",
                             "the request isn't one of this account's own devices",
