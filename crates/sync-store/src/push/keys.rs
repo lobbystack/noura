@@ -39,14 +39,17 @@ pub(crate) struct PushState {
     policy: Arc<PolicyChain>,
     owed: BTreeMap<(Id, u64, Id), usize>,
     interval: CheckpointInterval,
+    /// The store clock's time, in Unix seconds.
+    pub(crate) now: u64,
 }
 
 impl PushState {
-    pub(crate) fn new(policy: Arc<PolicyChain>, interval: CheckpointInterval) -> Self {
+    pub(crate) fn new(policy: Arc<PolicyChain>, interval: CheckpointInterval, now: u64) -> Self {
         Self {
             policy,
             owed: BTreeMap::new(),
             interval,
+            now,
         }
     }
 
@@ -80,11 +83,18 @@ pub(crate) async fn apply_change(
     index: usize,
     change: &Signed<PolicyChange>,
 ) -> Result<Vec<Receipt>> {
-    if !matches!(change.body.kind, PolicyKind::AccountHeads) {
-        // Ticket 50 adds the membership and domain changes.
+    if !matches!(
+        change.body.kind,
+        PolicyKind::AccountHeads
+            | PolicyKind::AddMember { .. }
+            | PolicyKind::SetRole { .. }
+            | PolicyKind::RemoveMember { .. }
+            | PolicyKind::TransferOwner { .. }
+    ) {
+        // The domain changes and accept_reset arrive later.
         return Err(refuse(
             "bad_request",
-            "this server takes account_heads changes in a push so far",
+            "this server takes account_heads and membership changes in a push so far",
         ));
     }
     let current = state.policy.clone();
@@ -100,6 +110,26 @@ pub(crate) async fn apply_change(
     let next = current
         .check(change, &chains)
         .map_err(|e| refuse(e.server_code(), e.to_string()))?;
+    if let PolicyKind::AddMember {
+        account,
+        role,
+        invitation,
+    } = &change.body.kind
+    {
+        let signer = prev
+            .account_of(&change.body.signer)
+            .ok_or_else(|| refuse("forbidden", "the signer isn't a member device"))?;
+        crate::invitations::check_add_member(
+            txn,
+            workspace,
+            signer,
+            *account,
+            *role,
+            *invitation,
+            state.now,
+        )
+        .await?;
+    }
 
     // The envelopes it owes the cards it brings in.
     let read_before = |domain: &Id| {
@@ -133,6 +163,15 @@ pub(crate) async fn apply_change(
     for (account, member) in &next.members {
         txn.upsert_member(workspace, *account, member.role.code())
             .await?;
+    }
+    for account in prev.members.keys() {
+        if !next.members.contains_key(account) {
+            txn.delete_member(workspace, *account).await?;
+        }
+    }
+    if let PolicyKind::AddMember { invitation, .. } = &change.body.kind {
+        // An approved invitation ends: its link no longer opens.
+        txn.delete_invitation(*invitation).await?;
     }
     let entry = PolicyEntry {
         revision,

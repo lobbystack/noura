@@ -64,6 +64,16 @@ pub struct DeviceConfirm<'a> {
     pub confirmation: &'a str,
 }
 
+/// The invitation page (§11): it tells a browser visitor to open the link
+/// in Noura, and loads no script, so nothing on it reads the fragment that
+/// holds the invitation's secret.
+#[derive(Template)]
+#[template(path = "invite.html")]
+pub struct Invite<'a> {
+    pub heading: &'a str,
+    pub text: &'a str,
+}
+
 /// The share viewer (§24): account-web fetches the snapshot, verifies and
 /// decrypts it with the keys in the fragment and fills the page.
 #[derive(Template)]

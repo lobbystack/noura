@@ -30,11 +30,13 @@ use crate::{Backend, Error, LockPlan, Refusal, Session, Store, WriteTxn};
 mod blobs;
 mod checkpoints;
 mod devices;
+mod invitations;
 mod keys;
 mod shares;
 pub use blobs::*;
 pub use checkpoints::*;
 pub use devices::*;
+pub use invitations::*;
 pub use keys::*;
 pub use shares::*;
 
@@ -105,6 +107,11 @@ macro_rules! conformance_tests {
             share_links_follow_section_24,
             share_links_outlive_their_creator_until_they_expire,
             share_limit_holds_a_thousand_links,
+            invitations_follow_section_11,
+            invitation_limit_holds_a_hundred,
+            invited_requests_reach_pending_devices,
+            workspace_requests_hold_a_hundred,
+            membership_changes_follow_section_8,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {

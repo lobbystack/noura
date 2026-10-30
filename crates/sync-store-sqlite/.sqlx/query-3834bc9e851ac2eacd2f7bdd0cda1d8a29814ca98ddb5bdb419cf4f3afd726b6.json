@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO invitations (invitation, token_hash, workspace, role, inviter, accepted_by, expires_at, invite_context) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "3834bc9e851ac2eacd2f7bdd0cda1d8a29814ca98ddb5bdb419cf4f3afd726b6"
+}

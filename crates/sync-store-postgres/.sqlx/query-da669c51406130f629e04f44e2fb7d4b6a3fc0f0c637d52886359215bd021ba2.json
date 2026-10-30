@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE invitations SET accepted_by = $1 WHERE invitation = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "da669c51406130f629e04f44e2fb7d4b6a3fc0f0c637d52886359215bd021ba2"
+}

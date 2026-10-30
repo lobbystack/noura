@@ -187,8 +187,8 @@ pub async fn account_heads_changes_carry_their_envelopes<B: Backend>(store: Stor
     let other_kind = world.change(
         0,
         vec![head.clone()],
-        PolicyKind::RemoveMember {
-            account: Id::random().expect("random"),
+        PolicyKind::DeleteDomain {
+            domain: Id::random().expect("random"),
         },
     );
     assert_eq!(

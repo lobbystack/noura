@@ -16,13 +16,16 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use sync_protocol::codec::{Bytes, Decode, Encode, Nested, Text};
 use sync_protocol::messages::{
-    ChainAppendRequest, ChainsRequest, CreateShareRequest, DeviceTokenRequest, EnrollRequest,
-    ErrorBody, ExpiresAtResponse, LiveCursor, MAX_BODY, MEDIA_TYPE, OfferRequest, PullRequest,
-    RESTORE_GENERATION_HEADER, RecoveryRequest, RevealBody, RewrapBody, ShareBody,
+    ChainAppendRequest, ChainsRequest, CreateInvitationRequest, CreateShareRequest,
+    DeviceTokenRequest, EnrollRequest, ErrorBody, ExpiresAtResponse, LiveCursor, MAX_BODY,
+    MEDIA_TYPE, OfferRequest, PullRequest, RESTORE_GENERATION_HEADER, RecoveryRequest, RevealBody,
+    RewrapBody, ShareBody,
 };
 use sync_protocol::types::{Digest, Id, from_base64url, from_decimal};
 use sync_store::devices::UNBOUND;
-use sync_store::{Backend, Error, Refusal, Session, SessionRow, ShareCreation, Store};
+use sync_store::{
+    Backend, Error, InvitationCreation, Refusal, Session, SessionRow, ShareCreation, Store,
+};
 
 /// A failed request: a refusal the protocol names, or a store failure.
 pub struct ApiError(pub Error);
@@ -710,6 +713,86 @@ async fn read_share<B: Backend>(
     }))
 }
 
+async fn create_invitation<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments(workspace): Segments<String>,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let workspace = id(&workspace)?;
+    let request: CreateInvitationRequest = decode(&body(request).await?)?;
+    let expires_at = store
+        .create_invitation(
+            session,
+            workspace,
+            InvitationCreation {
+                invitation: request.invitation,
+                token_hash: request.token_hash,
+                role: request.role,
+                invite_context: request.invite_context.0,
+            },
+        )
+        .await?;
+    Ok(ok(&ExpiresAtResponse { expires_at }))
+}
+
+async fn list_invitations<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments(workspace): Segments<String>,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store.invitations(session, id(&workspace)?).await?))
+}
+
+async fn revoke_invitation<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments((workspace, invitation)): Segments<(String, String)>,
+) -> Result<Response, ApiError> {
+    store
+        .revoke_invitation(session, id(&workspace)?, id(&invitation)?)
+        .await?;
+    Ok(empty())
+}
+
+fn invite_token(token: &str) -> Result<[u8; 16], ApiError> {
+    from_base64url::<16>(token).map_err(|_| {
+        refused(
+            "invitation_invalid",
+            "the invitation is revoked, expired, used or unknown",
+        )
+    })
+}
+
+/// `GET /v2/invitations/{token}`, which takes no session: the token alone
+/// names the invitation, and its context opens only with the fragment's
+/// secret.
+async fn read_invitation<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Segments(token): Segments<String>,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store.invitation_context(invite_token(&token)?).await?))
+}
+
+async fn accept_invitation<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments(token): Segments<String>,
+) -> Result<Response, ApiError> {
+    store
+        .accept_invitation(session, invite_token(&token)?)
+        .await?;
+    Ok(empty())
+}
+
+async fn pending_devices<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments(workspace): Segments<String>,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store.pending_devices(session, id(&workspace)?).await?))
+}
+
 async fn not_found() -> ApiError {
     refused("not_found", "no such route")
 }
@@ -784,6 +867,23 @@ pub fn router<B: Backend>(state: AppState<B>) -> Router {
             axum::routing::put(update_share::<B>).delete(revoke_share::<B>),
         )
         .route("/v2/shares/{token}", get(read_share::<B>))
+        .route(
+            "/v2/workspaces/{w}/invitations",
+            get(list_invitations::<B>).post(create_invitation::<B>),
+        )
+        .route(
+            "/v2/workspaces/{w}/invitations/{id}",
+            axum::routing::delete(revoke_invitation::<B>),
+        )
+        .route("/v2/invitations/{token}", get(read_invitation::<B>))
+        .route(
+            "/v2/invitations/{token}/accept",
+            post(accept_invitation::<B>),
+        )
+        .route(
+            "/v2/workspaces/{w}/pending-devices",
+            get(pending_devices::<B>),
+        )
         .route("/v2/workspaces/{w}/pull", post(pull::<B>))
         .route(
             "/v2/workspaces/{w}/realtime",

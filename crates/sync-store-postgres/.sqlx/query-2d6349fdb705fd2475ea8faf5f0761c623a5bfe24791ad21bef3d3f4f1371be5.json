@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM members WHERE workspace = $1 AND account = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2d6349fdb705fd2475ea8faf5f0761c623a5bfe24791ad21bef3d3f4f1371be5"
+}

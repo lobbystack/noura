@@ -22,6 +22,7 @@ mod checkpoints;
 mod create;
 pub mod devices;
 mod hub;
+mod invitations;
 pub mod limiter;
 mod live;
 mod policy;
@@ -57,6 +58,7 @@ use sync_protocol::records::{
 pub use accounts::{SIGN_IN_TOKEN_LEN, SignInToken};
 pub use blobs::{BlobCreation, BlobUpload, Recorded};
 pub use chains::SIGN_IN_TTL;
+pub use invitations::{INVITATION_TTL, InvitationCreation, MAX_INVITATIONS};
 pub use shares::{MAX_SHARE_DAYS, MAX_SHARES, ShareCreation};
 use sync_protocol::types::{Digest, Id, SecretKey};
 
@@ -551,6 +553,30 @@ pub struct ShareRow {
     pub share: Vec<u8>,
 }
 
+/// An open invitation's row (§11): the token's hash, the workspace, the
+/// role, the inviting account, the accepting account once known, the expiry
+/// and the encrypted context. Its status is pending until an account
+/// accepts it, then accepted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvitationRow {
+    /// The invitation ID the inviting device chose.
+    pub invitation: Id,
+    /// `BLAKE3(tag(noura.sync.invite.token) || token)`.
+    pub token_hash: Digest,
+    /// The workspace.
+    pub workspace: Id,
+    /// The role it grants.
+    pub role: sync_protocol::records::Role,
+    /// The inviting account.
+    pub inviter: Id,
+    /// The account that accepted it.
+    pub accepted_by: Option<Id>,
+    /// Unix seconds after which the link no longer opens.
+    pub expires_at: u64,
+    /// The encoded `invite_context`.
+    pub invite_context: Vec<u8>,
+}
+
 /// A lone delete a rising checkpoint floor may drop (§17).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeleteRow {
@@ -924,6 +950,29 @@ pub trait ReadTxn: Send {
     /// Whether an operation lists the blob.
     fn blob_listed(&mut self, workspace: Id, blob: Id)
     -> impl Future<Output = Result<bool>> + Send;
+    /// The invitation with this ID, expired or not.
+    fn invitation(
+        &mut self,
+        invitation: Id,
+    ) -> impl Future<Output = Result<Option<InvitationRow>>> + Send;
+    /// The invitation whose token hashes to `token_hash`, expired or not.
+    fn invitation_by_token(
+        &mut self,
+        token_hash: Digest,
+    ) -> impl Future<Output = Result<Option<InvitationRow>>> + Send;
+    /// The workspace's invitations that expire after `now`, by invitation
+    /// ID.
+    fn invitations(
+        &mut self,
+        workspace: Id,
+        now: u64,
+    ) -> impl Future<Output = Result<Vec<InvitationRow>>> + Send;
+    /// The stored approval requests that name `workspace`, through an
+    /// invitation or a reset, by commitment.
+    fn workspace_approval_requests(
+        &mut self,
+        workspace: Id,
+    ) -> impl Future<Output = Result<Vec<ApprovalRequestRow>>> + Send;
     /// The share link whose token hashes to `token_hash`, expired or not.
     fn share(
         &mut self,
@@ -996,6 +1045,12 @@ pub trait WriteTxn: ReadTxn {
         workspace: Id,
         account: Id,
         role: u8,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Forgets a member account that `remove_member` took out.
+    fn delete_member(
+        &mut self,
+        workspace: Id,
+        account: Id,
     ) -> impl Future<Output = Result<()>> + Send;
     /// Stores a policy change. The workspace row names the head. The store
     /// calls it only through `policy::store_change`, which also records the
@@ -1271,8 +1326,9 @@ pub trait WriteTxn: ReadTxn {
         token_hash: Digest,
     ) -> impl Future<Output = Result<Option<PendingPasskeyRow>>> + Send;
     /// Deletes every magic link, waiting passkey, ceremony, challenge,
-    /// device grant, approval request, approval offer and share link that
-    /// expires at or before `now`, and returns how many it deleted.
+    /// device grant, approval request, approval offer, invitation and share
+    /// link that expires at or before `now`, and returns how many it
+    /// deleted.
     fn delete_expired(&mut self, now: u64) -> impl Future<Output = Result<u64>> + Send;
     /// Stores a new blob row at offset 0.
     fn insert_blob(
@@ -1301,6 +1357,17 @@ pub trait WriteTxn: ReadTxn {
         domain: Id,
         seq: u64,
     ) -> impl Future<Output = Result<()>> + Send;
+    /// Stores a new invitation.
+    fn insert_invitation(&mut self, row: &InvitationRow)
+    -> impl Future<Output = Result<()>> + Send;
+    /// Binds an invitation to the account that accepted it.
+    fn accept_invitation(
+        &mut self,
+        invitation: Id,
+        account: Id,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Deletes an invitation.
+    fn delete_invitation(&mut self, invitation: Id) -> impl Future<Output = Result<()>> + Send;
     /// Stores a new share link.
     fn insert_share(&mut self, row: &ShareRow) -> impl Future<Output = Result<()>> + Send;
     /// Replaces a share link's snapshot.
@@ -2004,6 +2071,7 @@ impl<B: Backend> Store<B> {
         let cache = self.policies.clone();
         let generation = self.generation;
         let interval = self.interval;
+        let now = self.clock().now();
         let response = if let [push::Pushed::Checkpoint(..)] = ops.as_slice() {
             let Some(push::Pushed::Checkpoint(_, bundle)) = ops.pop() else {
                 unreachable!("one checkpoint");
@@ -2013,7 +2081,10 @@ impl<B: Backend> Store<B> {
             let group = push::group(workspace, &ops);
             let job: WriteJob<B::Write, PushResponse> = Box::new(move |txn: &mut B::Write| {
                 Box::pin(async move {
-                    push::commit(txn, &cache, interval, generation, session, workspace, ops).await
+                    push::commit(
+                        txn, &cache, interval, generation, session, workspace, ops, now,
+                    )
+                    .await
                 })
             });
             match group {

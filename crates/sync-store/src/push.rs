@@ -255,7 +255,8 @@ pub(crate) fn check_signatures(
 
 /// Validates the records in order against the current state plus the ones
 /// before them, and writes each. The caller's transaction commits all of
-/// them or none.
+/// them or none. `now` is the store clock's time, in Unix seconds.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn commit(
     txn: &mut impl WriteTxn,
     cache: &PolicyCache,
@@ -264,6 +265,7 @@ pub(crate) async fn commit(
     session: Session,
     workspace: Id,
     pushed: Vec<Pushed>,
+    now: u64,
 ) -> Result<PushResponse> {
     let changes = pushed.iter().any(|p| matches!(p, Pushed::Change(..)));
     let keys = pushed
@@ -339,7 +341,7 @@ pub(crate) async fn commit(
             "the device isn't active in this workspace",
         ));
     }
-    let mut state = keys::PushState::new(policy, interval);
+    let mut state = keys::PushState::new(policy, interval, now);
     let mut receipts = Vec::with_capacity(pushed.len());
     for record in &pushed {
         let index = record.index();
