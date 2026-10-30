@@ -2168,6 +2168,67 @@
 			"signer": "writer"
 		},
 		{
+			"events": [
+				"set_role_viewer"
+			],
+			"kind": "server_heads",
+			"leave": [],
+			"name": "a_demoted_device_stays"
+		},
+		{
+			"events": [
+				"remove_member"
+			],
+			"kind": "server_heads",
+			"leave": [],
+			"name": "a_device_remove_member_removed_stays"
+		},
+		{
+			"events": [
+				"reset",
+				"accept_reset"
+			],
+			"kind": "server_heads",
+			"leave": [
+				"member laptop",
+				"member phone"
+			],
+			"name": "cards_an_accept_reset_retired_leave"
+		},
+		{
+			"events": [
+				"remove_member",
+				"reset",
+				"add_member"
+			],
+			"kind": "server_heads",
+			"leave": [
+				"member laptop",
+				"member phone"
+			],
+			"name": "cards_an_add_member_after_a_reset_retired_leave"
+		},
+		{
+			"events": [
+				"remove_member",
+				"add_member"
+			],
+			"kind": "server_heads",
+			"leave": [],
+			"name": "devices_added_back_on_their_chain_stay"
+		},
+		{
+			"events": [
+				"remove_phone_link",
+				"remove_own_account"
+			],
+			"kind": "server_heads",
+			"leave": [
+				"member phone"
+			],
+			"name": "a_card_its_own_accounts_removal_recorded_removed_leaves"
+		},
+		{
 			"account_chains": [
 				"f9b8ba364799c367f16f1b7253340f0f261ee48cd577cbae3bc1c9675543b85a",
 				"e87650512460266f950e8c124501e2873a2e277fbbec15b510dccc8e7c06cdf8"

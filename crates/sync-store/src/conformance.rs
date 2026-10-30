@@ -96,6 +96,7 @@ macro_rules! conformance_tests {
             checkpoints_fall_due_by_volume,
             checkpoints_fall_due_by_weight,
             checkpoint_checks_match_the_fixture,
+            checkpoint_heads_follow_the_fixture,
             racing_checkpoints_keep_the_first,
             a_checkpoint_goes_in_a_push_of_its_own,
             removals_make_checkpoints_due_and_leave_the_heads,

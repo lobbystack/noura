@@ -224,6 +224,7 @@ pub fn fixture() -> Fixture {
     let _ = floor_falls;
 
     server_checks(&mut f);
+    server_heads(&mut f);
     heads_rule(&mut f, &w);
     f
 }
@@ -406,6 +407,61 @@ fn server_checks(f: &mut Fixture) {
         json!({}),
         "checkpoint_not_due",
     ));
+}
+
+/// The heads rule on the server (§17), which the store conformance suite
+/// runs on each store. Each case starts from an owner's two writer devices
+/// and a member account's laptop and phone, added as an editor, each of
+/// which writes once before the first checkpoint commits. The `events`
+/// then run in order: `set_role_viewer` demotes the member,
+/// `remove_member` removes it, `reset` starts a new chain for its account,
+/// `accept_reset` accepts that chain, `add_member` adds the member back at
+/// its current chain's head, `remove_phone_link` removes the phone by a
+/// link of the member's chain, and `remove_own_account` has the laptop
+/// remove its own account, recording that head. A rotation follows when
+/// the events took a reader out. The second checkpoint, the first that
+/// covers the events, lists every device. The third, after the owner's
+/// devices write to the next due point, leaves out exactly the devices in
+/// `leave`; the server refuses one that keeps them, or that drops the
+/// laptop when `leave` is empty, with `manifest_mismatch`.
+fn server_heads(f: &mut Fixture) {
+    let both = &["member laptop", "member phone"][..];
+    let none: &[&str] = &[];
+    for (name, events, leave) in [
+        ("a_demoted_device_stays", &["set_role_viewer"][..], none),
+        (
+            "a_device_remove_member_removed_stays",
+            &["remove_member"][..],
+            none,
+        ),
+        (
+            "cards_an_accept_reset_retired_leave",
+            &["reset", "accept_reset"][..],
+            both,
+        ),
+        (
+            "cards_an_add_member_after_a_reset_retired_leave",
+            &["remove_member", "reset", "add_member"][..],
+            both,
+        ),
+        (
+            "devices_added_back_on_their_chain_stay",
+            &["remove_member", "add_member"][..],
+            none,
+        ),
+        (
+            "a_card_its_own_accounts_removal_recorded_removed_leaves",
+            &["remove_phone_link", "remove_own_account"][..],
+            &["member phone"][..],
+        ),
+    ] {
+        f.case(json!({
+            "kind": "server_heads",
+            "name": name,
+            "events": events,
+            "leave": leave,
+        }));
+    }
 }
 
 /// The heads rule (§17): whether a device may leave the heads of a

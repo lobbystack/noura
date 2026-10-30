@@ -15,12 +15,13 @@ use sync_protocol::manifest::{
 };
 use sync_protocol::messages::{CursorCompactedDetail, EntryRecord, Frame, LiveCursor, RecordRef};
 use sync_protocol::records::{
-    Card, Checkpoint, CheckpointBundle, Epoch, EpochBundle, LinkKind, PolicyKind, Ref, Role, Signed,
+    Card, Checkpoint, CheckpointBundle, Epoch, EpochBundle, LinkKind, PolicyChange, PolicyKind,
+    Ref, Role, Signed,
 };
 use sync_protocol::types::{Digest, Id, SecretKey};
 
 use super::{World, push_failure, refusal};
-use crate::{Backend, CheckpointInterval, Session, Store};
+use crate::{Backend, CheckpointInterval, ReadTxn, Session, Store, WriteTxn};
 
 /// What a test wrote: each device's chain, the objects it made and the
 /// checkpoints the server accepted.
@@ -842,4 +843,318 @@ pub async fn commit_checkpoints<B: Backend>(
         committed.push((bundle.checkpoint.0, receipt.receipts[0].seq));
     }
     committed
+}
+
+/// The heads rule on the server (§17), from the `server_heads` cases of
+/// `sync-v2-manifest.json`: a demoted device and one whose account
+/// `remove_member` removed stay in the heads, while cards that a recorded
+/// head retired leave them once the previous checkpoint's
+/// `policy_revision` covers that head, as after an `accept_reset`, an
+/// `add_member` after a reset, or a removal that records a link removing a
+/// card. The first checkpoint covering the events still lists every
+/// device.
+pub async fn checkpoint_heads_follow_the_fixture<B: Backend>(store: Store<B>) {
+    let doc = super::fixture("sync-v2-manifest.json");
+    let store = Arc::new(store.with_checkpoint_interval(interval(4)));
+    let mut ran = 0;
+    for case in doc["cases"].as_array().expect("cases") {
+        if case["kind"] != "server_heads" {
+            continue;
+        }
+        ran += 1;
+        let label = case["name"].as_str().expect("a name");
+        let mut world = World::on(store.clone(), 2).await;
+        // The member's laptop and phone, as devices 2 and 3.
+        let (member, keys, links) = super::account(2);
+        world
+            .store
+            .append_account_links(links.clone())
+            .await
+            .expect("the member's chain");
+        let add = world.change(
+            0,
+            vec![super::head_of(&world.links), super::head_of(&links)],
+            PolicyKind::AddMember {
+                account: member,
+                role: Role::Editor,
+                invitation: Id::random().expect("random"),
+            },
+        );
+        let domain = world.domain;
+        world.inject_policy(add, vec![domain], None).await;
+        for keys in keys {
+            let session = Session::new(member, keys.device());
+            let token = sync_protocol::crypto::random_array().expect("random");
+            world
+                .store
+                .create_session(token, session)
+                .await
+                .expect("a session");
+            world.devices.push(super::Device {
+                keys,
+                session,
+                token,
+            });
+        }
+        let device_of = |name: &Value| match name.as_str().expect("a device") {
+            "member laptop" => 2,
+            "member phone" => 3,
+            other => panic!("{label}: unknown device {other}"),
+        };
+        let mut track = Track::new(&world).await;
+        track.write(&world, 2).await;
+        let head = track.write(&world, 3).await;
+        let due = world.pull(0, 0).await.checkpoint_due;
+        assert_eq!(due, head, "{label}: due at the phone's operation");
+        let first = track.checkpoint(&world, 0, due, &[], |_, _| {}).await;
+        push_checkpoint(&world, 0, &first)
+            .await
+            .unwrap_or_else(|e| panic!("{label}: checkpoint 1: {e:?}"));
+        track.accepted.push(first.checkpoint.0.clone());
+
+        // The member's current chain and the cards that read the domain.
+        let owner_cards: Vec<Card> = world.devices[..2]
+            .iter()
+            .map(|d| d.keys.card(world.account))
+            .collect();
+        let mut member_links = links;
+        let mut member_keys: Vec<sync_key_envelope::v2::DeviceKeys> =
+            world.devices[2..].iter().map(|d| d.keys.clone()).collect();
+        let mut readers: Vec<Card> = member_keys.iter().map(|k| k.card(member)).collect();
+        let mut reduced = false;
+        for event in case["events"].as_array().expect("events") {
+            let owner_head = super::head_of(&world.links);
+            match event.as_str().expect("an event") {
+                "set_role_viewer" => {
+                    let change = world.change(
+                        0,
+                        vec![owner_head],
+                        PolicyKind::SetRole {
+                            account: member,
+                            role: Role::Viewer,
+                        },
+                    );
+                    inject_counted(&mut world, change).await;
+                }
+                "remove_member" => {
+                    let change = world.change(
+                        0,
+                        vec![owner_head],
+                        PolicyKind::RemoveMember { account: member },
+                    );
+                    inject_counted(&mut world, change).await;
+                    readers.clear();
+                    reduced = true;
+                }
+                "reset" => {
+                    let keys = sync_key_envelope::v2::DeviceKeys::generate().expect("random");
+                    let genesis = sync_key_envelope::v2::genesis_link(&keys, member);
+                    let row = crate::LinkRow {
+                        genesis: genesis.digest(),
+                        seqno: 1,
+                        link: sync_protocol::codec::Encode::to_bytes(&genesis),
+                    };
+                    let new = genesis.digest();
+                    world
+                        .store
+                        .backend()
+                        .write(Box::new(move |txn: &mut B::Write| {
+                            Box::pin(async move {
+                                txn.insert_account_link(member, &row, new).await?;
+                                txn.set_current_genesis(member, new).await
+                            })
+                        }))
+                        .await
+                        .expect("reset");
+                    member_links = vec![genesis];
+                    member_keys = vec![keys];
+                }
+                "accept_reset" => {
+                    let change = world.change(
+                        0,
+                        vec![owner_head, super::head_of(&member_links)],
+                        PolicyKind::AcceptReset { account: member },
+                    );
+                    inject_counted(&mut world, change).await;
+                    readers = member_keys.iter().map(|k| k.card(member)).collect();
+                    reduced = true;
+                }
+                "add_member" => {
+                    let change = world.change(
+                        0,
+                        vec![owner_head, super::head_of(&member_links)],
+                        PolicyKind::AddMember {
+                            account: member,
+                            role: Role::Editor,
+                            invitation: Id::random().expect("random"),
+                        },
+                    );
+                    inject_counted(&mut world, change).await;
+                    readers = member_keys.iter().map(|k| k.card(member)).collect();
+                }
+                "remove_phone_link" => {
+                    let phone = world.devices[3].id();
+                    let link = sync_key_envelope::v2::next_link(
+                        &world.devices[2].keys,
+                        &super::head_of(&member_links),
+                        LinkKind::Remove {
+                            device: phone,
+                            keep: Sorted::default(),
+                        },
+                    );
+                    world
+                        .store
+                        .append_account_links(vec![link.clone()])
+                        .await
+                        .expect("the phone's removal");
+                    member_links.push(link);
+                }
+                "remove_own_account" => {
+                    let change = world.change(
+                        2,
+                        vec![super::head_of(&member_links)],
+                        PolicyKind::RemoveMember { account: member },
+                    );
+                    inject_counted(&mut world, change).await;
+                    readers.clear();
+                    reduced = true;
+                }
+                other => panic!("{label}: unknown event {other}"),
+            }
+        }
+        if reduced {
+            let cards: Vec<Card> = owner_cards.iter().chain(&readers).cloned().collect();
+            let recipients: BTreeSet<Id> = cards.iter().map(|c| c.device).collect();
+            let key = SecretKey::random().expect("random");
+            let previous = track.epoch.clone().expect("epoch 1");
+            let rotated = world.epoch_after(0, 2, &previous, &world.epoch_key, &key, &recipients);
+            let mut records = vec![RecordRef::EpochBundle(EpochBundle {
+                epoch: Nested(rotated.clone()),
+                recipients: Sorted::new(recipients.iter().copied().collect()).expect("sorted"),
+            })];
+            for card in &cards {
+                records.push(RecordRef::Envelope(world.envelope(0, card, 2, &key)));
+            }
+            world
+                .push_records(0, records)
+                .await
+                .unwrap_or_else(|e| panic!("{label}: the rotation: {e:?}"));
+            track.epoch = Some(rotated);
+        }
+
+        // The first checkpoint covering the events lists every device.
+        let page = world.pull(0, 0).await;
+        assert_ne!(page.checkpoint_due, 0, "{label}: the events make one due");
+        let covered = page.head;
+        let laptop = world.devices[2].id();
+        let without = track
+            .checkpoint(&world, 0, covered, &[laptop], |_, _| {})
+            .await;
+        assert_eq!(
+            push_failure(push_checkpoint(&world, 0, &without).await),
+            ("manifest_mismatch", 0),
+            "{label}: the first checkpoint covering the events lists every device"
+        );
+        let second = track.checkpoint(&world, 0, covered, &[], |_, _| {}).await;
+        push_checkpoint(&world, 0, &second)
+            .await
+            .unwrap_or_else(|e| panic!("{label}: checkpoint 2: {e:?}"));
+        track.accepted.push(second.checkpoint.0.clone());
+
+        // The owner's devices write to the next due point.
+        let mut writer = 0;
+        let mut due = 0;
+        while due == 0 {
+            track.write(&world, writer).await;
+            writer = 1 - writer;
+            due = world.pull(0, 0).await.checkpoint_due;
+        }
+        let leave: Vec<Id> = case["leave"]
+            .as_array()
+            .expect("a list")
+            .iter()
+            .map(|d| world.devices[device_of(d)].id())
+            .collect();
+        let wrong: Vec<Id> = if leave.is_empty() {
+            vec![laptop]
+        } else {
+            Vec::new()
+        };
+        let refused = track.checkpoint(&world, 0, due, &wrong, |_, _| {}).await;
+        assert_eq!(
+            push_failure(push_checkpoint(&world, 0, &refused).await),
+            ("manifest_mismatch", 0),
+            "{label}: the heads rule decides who leaves"
+        );
+        let third = track.checkpoint(&world, 0, due, &leave, |_, _| {}).await;
+        push_checkpoint(&world, 0, &third)
+            .await
+            .unwrap_or_else(|e| panic!("{label}: checkpoint 3: {e:?}"));
+    }
+    assert!(ran >= 6, "the fixture's heads cases ran");
+}
+
+/// Commits a policy change straight into the store, as
+/// [`World::inject_policy`] does, with its workspace-domain entry counted
+/// toward the due point the way a pushed change's is (§17): due at its
+/// entry when it ends a writer's access.
+async fn inject_counted<B: Backend>(world: &mut World<B>, change: Signed<PolicyChange>) {
+    let workspace = world.workspace;
+    let domain = world.domain;
+    let head = (change.body.revision, change.digest());
+    world
+        .store
+        .backend()
+        .write(Box::new(move |txn: &mut B::Write| {
+            Box::pin(async move {
+                txn.lock(&crate::LockPlan {
+                    workspace: Some(workspace),
+                    policy_exclusive: true,
+                    key_sequence: false,
+                    domains: vec![domain],
+                    blobs: Vec::new(),
+                })
+                .await?;
+                let mut changes = txn
+                    .policy_changes(workspace, 0)
+                    .await?
+                    .iter()
+                    .map(|bytes| {
+                        Signed::<PolicyChange>::from_bytes(bytes).map_err(crate::Error::internal)
+                    })
+                    .collect::<crate::Result<Vec<_>>>()?;
+                changes.push(change.clone());
+                let accounts: BTreeSet<Id> = changes
+                    .iter()
+                    .flat_map(|c| c.body.heads.iter().map(|h| h.account))
+                    .collect();
+                let chains = crate::policy::account_chains(txn, accounts).await?;
+                let policy = sync_protocol::policy::PolicyChain::verify(&changes, &chains)
+                    .map_err(|e| crate::Error::internal(e.to_string()))?;
+                let revision = change.body.revision;
+                let prev = policy.at(revision - 1).expect("the previous revision");
+                let next = policy.at(revision).expect("this revision");
+                crate::policy::store_change(txn, workspace, &change).await?;
+                txn.set_policy_head(workspace, revision, change.digest())
+                    .await?;
+                let entry = sync_protocol::messages::PolicyEntry {
+                    revision,
+                    head: change.digest(),
+                };
+                crate::checkpoints::append_policy_entry(
+                    txn,
+                    interval(4),
+                    workspace,
+                    domain,
+                    &entry,
+                    Some(prev),
+                    next,
+                )
+                .await?;
+                Ok(())
+            })
+        }))
+        .await
+        .expect("policy change injected");
+    world.head = head;
 }
