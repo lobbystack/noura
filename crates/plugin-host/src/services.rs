@@ -4,7 +4,10 @@
 
 use std::fmt;
 
-use crate::{AiChat, AiMessage, AiProvider, AiRequest, AiRun, AiToolDefinition, AiToolResult};
+use crate::{
+    AiChat, AiFailure, AiMessage, AiProvider, AiRequest, AiRetention, AiRun, AiToolDefinition,
+    AiToolResult, AiWebPage, AiWebResult,
+};
 
 /// A workspace-relative path that crossed the plugin boundary: not empty,
 /// with `/` between its parts, and no `.`, `..`, `\` or control
@@ -283,6 +286,27 @@ pub trait AiChats: Send + Sync {
     /// A new chat, titled `New chat`.
     fn create_chat(&self) -> Result<AiChat, ServiceError>;
 
+    /// Give the chat `id` the title `title`, when its `chat.md` still
+    /// holds `expected_revision`.
+    fn rename_chat(
+        &self,
+        id: &str,
+        title: &str,
+        expected_revision: &str,
+    ) -> Result<AiChat, ServiceError>;
+
+    /// Keep the chat `id` as `retention` says, when its `chat.md` still
+    /// holds `expected_revision`.
+    fn set_retention(
+        &self,
+        id: &str,
+        retention: AiRetention,
+        expected_revision: &str,
+    ) -> Result<AiChat, ServiceError>;
+
+    /// The tools the plugins on in the workspace register, for the model.
+    fn workspace_tools(&self) -> Result<Vec<AiToolDefinition>, ServiceError>;
+
     /// Write the message and an in-progress answer, then ask the provider,
     /// once you consent.
     fn send(&self, request: AiRequest) -> Result<AiRun, ServiceError>;
@@ -296,9 +320,52 @@ pub trait AiChats: Send + Sync {
         tools: Vec<AiToolDefinition>,
     ) -> Result<AiRun, ServiceError>;
 
+    /// Run the workspace tool calls of the completed run `run`, each once
+    /// you allow it, and ask the provider again.
+    fn run_tools(&self, run: &str) -> Result<AiRun, ServiceError>;
+
+    /// Answer the last message of yours in the chat `chat` again.
+    fn resume(
+        &self,
+        chat: &str,
+        provider: &str,
+        tools: Vec<AiToolDefinition>,
+    ) -> Result<AiRun, ServiceError>;
+
     /// The run `id` as it stands now.
     fn read_run(&self, id: &str) -> Result<AiRun, ServiceError>;
 
     /// Stop the run `id`.
     fn stop(&self, id: &str) -> Result<(), ServiceError>;
+
+    /// Whether the model may search the web and read pages in the open
+    /// workspace: you added a web search key and allowed web search for
+    /// the workspace. A service without web access says no.
+    fn web_ready(&self) -> Result<bool, ServiceError> {
+        Ok(false)
+    }
+
+    /// Search the web for `query`, for at most `max_results` results. The
+    /// failure holds a public code and message, never a key or what the
+    /// search provider answered.
+    fn web_search(
+        &self,
+        _query: &str,
+        _max_results: Option<u32>,
+    ) -> Result<Vec<AiWebResult>, AiFailure> {
+        Err(web_unavailable())
+    }
+
+    /// Read the page at `url` as text, as [`AiChats::web_search`] fails.
+    fn web_fetch(&self, _url: &str) -> Result<AiWebPage, AiFailure> {
+        Err(web_unavailable())
+    }
+}
+
+/// What a web call to a service without web access returns.
+fn web_unavailable() -> AiFailure {
+    AiFailure {
+        code: "web_access_unavailable".to_owned(),
+        message: "Noura can't search the web here.".to_owned(),
+    }
 }

@@ -109,7 +109,12 @@ pub mod navigation {
 /// Chats with the AI providers you set up in Settings, which Noura keeps
 /// as Markdown files in the workspace. Needs the `ai` capability. Noura
 /// asks you for consent before a request carries the workspace's content
-/// to a provider, and no call returns a provider's key.
+/// to a provider, and no call returns a provider's key. Once you add a
+/// Brave Search key and allow web search for the workspace, `web_search`
+/// and `web_fetch` search the web and read pages for the model, and
+/// `web_ready` says whether they work. Each one answers a call the model
+/// made: a run of the plugin's completed with a `web_search` call for
+/// that query, or a `web_fetch` call for that address.
 ///
 /// ```no_run
 /// use plugin_sdk::ai::{self, Request, RunStatus};
@@ -120,20 +125,26 @@ pub mod navigation {
 ///     chat: chat.id,
 ///     provider: provider.id,
 ///     message: "What should I plant in October?".into(),
-///     tools: Vec::new(),
+///     // The tools of the plugins on in the workspace.
+///     tools: ai::workspace_tools().unwrap(),
 /// })
 /// .unwrap();
 /// // Noura draws the plugin's views again as the answer streams in.
 /// let now = ai::read_run(&run.id).unwrap();
 /// if now.status == RunStatus::Streaming {
 ///     ai::stop(&run.id).unwrap();
+/// } else if now.status == RunStatus::Completed && !now.tool_calls.is_empty() {
+///     // Noura asks you about each call, runs the ones you allow, and
+///     // streams the next answer into the same run.
+///     ai::run_tools(&run.id).unwrap();
 /// }
 /// ```
 pub mod ai {
     pub use crate::noura::plugin::ai::{
-        Chat, Failure, Message, MessageKind, MessageStatus, Provider, Request, Run, RunStatus,
-        ToolCall, ToolDefinition, ToolResult, answer_tools, chats, create_chat, providers,
-        read_chat, read_run, send, stop,
+        Chat, Failure, Message, MessageKind, MessageStatus, Provider, Request, Retention, Run,
+        RunStatus, ToolCall, ToolDefinition, ToolResult, WebError, WebPage, WebResult,
+        answer_tools, chats, create_chat, providers, read_chat, read_run, rename_chat, resume,
+        run_tools, send, set_retention, stop, web_fetch, web_ready, web_search, workspace_tools,
     };
 }
 

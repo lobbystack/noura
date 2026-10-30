@@ -39,9 +39,10 @@ use bindings::exports::noura::plugin::{
 };
 pub use bindings::noura::plugin::ai::{
     Chat as AiChat, Failure as AiFailure, Message as AiMessage, MessageKind as AiMessageKind,
-    MessageStatus as AiMessageStatus, Provider as AiProvider, Request as AiRequest, Run as AiRun,
-    RunStatus as AiRunStatus, ToolCall as AiToolCall, ToolDefinition as AiToolDefinition,
-    ToolResult as AiToolResult,
+    MessageStatus as AiMessageStatus, Provider as AiProvider, Request as AiRequest,
+    Retention as AiRetention, Run as AiRun, RunStatus as AiRunStatus, ToolCall as AiToolCall,
+    ToolDefinition as AiToolDefinition, ToolResult as AiToolResult, WebPage as AiWebPage,
+    WebResult as AiWebResult,
 };
 pub use bindings::noura::plugin::navigation::Placement;
 pub(crate) use bindings::noura::plugin::types::Error as CallError;
@@ -485,6 +486,28 @@ impl ai::Host for HostState {
         self.with_ai(|ai| ai.create_chat())
     }
 
+    fn rename_chat(
+        &mut self,
+        id: String,
+        title: String,
+        expected_revision: String,
+    ) -> Result<ai::Chat, types::Error> {
+        self.with_ai(|ai| ai.rename_chat(&id, &title, &expected_revision))
+    }
+
+    fn set_retention(
+        &mut self,
+        id: String,
+        retention: ai::Retention,
+        expected_revision: String,
+    ) -> Result<ai::Chat, types::Error> {
+        self.with_ai(|ai| ai.set_retention(&id, retention, &expected_revision))
+    }
+
+    fn workspace_tools(&mut self) -> Result<Vec<ai::ToolDefinition>, types::Error> {
+        self.with_ai(|ai| ai.workspace_tools())
+    }
+
     fn send(&mut self, request: ai::Request) -> Result<ai::Run, types::Error> {
         self.with_ai(|ai| ai.send(request))
     }
@@ -498,12 +521,47 @@ impl ai::Host for HostState {
         self.with_ai(|ai| ai.answer_tools(&run, results, tools))
     }
 
+    fn run_tools(&mut self, run: String) -> Result<ai::Run, types::Error> {
+        self.with_ai(|ai| ai.run_tools(&run))
+    }
+
+    fn resume(
+        &mut self,
+        chat: String,
+        provider: String,
+        tools: Vec<ai::ToolDefinition>,
+    ) -> Result<ai::Run, types::Error> {
+        self.with_ai(|ai| ai.resume(&chat, &provider, tools))
+    }
+
     fn read_run(&mut self, id: String) -> Result<ai::Run, types::Error> {
         self.with_ai(|ai| ai.read_run(&id))
     }
 
     fn stop(&mut self, id: String) -> Result<(), types::Error> {
         self.with_ai(|ai| ai.stop(&id))
+    }
+
+    fn web_ready(&mut self) -> Result<bool, types::Error> {
+        self.with_ai(|ai| ai.web_ready())
+    }
+
+    fn web_search(
+        &mut self,
+        query: String,
+        max_results: Option<u32>,
+    ) -> Result<Vec<ai::WebResult>, ai::WebError> {
+        // The request goes out from the app, through local-core's web
+        // access boundary: the plugin has no socket of its own.
+        let ai = self.ai().map_err(ai::WebError::Refused)?;
+        self.waiting(|_| ai.web_search(&query, max_results))
+            .map_err(ai::WebError::Failed)
+    }
+
+    fn web_fetch(&mut self, url: String) -> Result<ai::WebPage, ai::WebError> {
+        let ai = self.ai().map_err(ai::WebError::Refused)?;
+        self.waiting(|_| ai.web_fetch(&url))
+            .map_err(ai::WebError::Failed)
     }
 }
 

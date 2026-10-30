@@ -19,8 +19,9 @@ use std::{
 use local_core::{ChangeCounts, WorkspaceEngine};
 
 use crate::{
-    FileTree, PendingWrites, Preferences, Problem, System, Updates, Workspace, WorkspaceService,
-    ai::Ai,
+    AppError, FileTree, PendingWrites, PluginTool, Preferences, Problem, System, Updates,
+    Workspace, WorkspaceService,
+    ai::{Ai, ToolBox},
     app::{Change, Listeners},
     links::LinkFiles,
     plugins::{Plugins, SystemClock},
@@ -34,6 +35,30 @@ use crate::{
 /// up yet. A window further behind lets its tabs follow their files by
 /// stable ID alone.
 const MOVES_KEPT: usize = 256;
+
+/// The tools of the session's running plugins, for AI runs. It holds the
+/// session weakly, so the AI service it lives in doesn't keep the session.
+struct SessionTools(Weak<Session>);
+
+impl ToolBox for SessionTools {
+    fn tools(&self) -> Vec<PluginTool> {
+        self.0
+            .upgrade()
+            .map(|session| session.plugins().tools())
+            .unwrap_or_default()
+    }
+
+    fn plugin_name(&self, id: &str) -> Option<String> {
+        self.0.upgrade()?.plugins().plugin_name(id)
+    }
+
+    fn call(&self, plugin: &str, name: &str, arguments: &str) -> Result<String, AppError> {
+        self.0
+            .upgrade()
+            .ok_or_else(|| AppError::new("app_closed", "Noura closed before the tool ran."))?
+            .call_plugin_tool(plugin, name, arguments)
+    }
+}
 
 /// A window's identity for this session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,15 +214,17 @@ impl Session {
             // Plugins read the time and time zone from the system, which
             // tests fix.
             plugins.set_clock(Arc::new(SystemClock(system.clone())));
-            // AI runs wake every window as their answers arrive, and keep
-            // provider keys in the system's credential store.
-            let ai = Ai::new(app_data, system.credentials());
+            // AI runs wake every window as their answers arrive, keep
+            // provider keys in the system's credential store, expire chats
+            // by its clock, and run the tools of the session's plugins.
+            let ai = Ai::new(app_data, system.clone());
             let woken = session.clone();
             ai.set_wake(Arc::new(move || {
                 if let Some(session) = woken.upgrade() {
                     session.wake_all();
                 }
             }));
+            ai.set_toolbox(Arc::new(SessionTools(session.clone())));
             plugins.set_ai(ai.clone());
             Self::with(app_data, system, rescans, writes, updates, plugins, ai)
         })
@@ -252,6 +279,22 @@ impl Session {
         self.plugins
             .lock()
             .unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// Call the tool `name` of the running plugin `plugin` with JSON
+    /// `arguments`, and wait for its answer. Arguments that don't match the
+    /// tool's schema never reach the plugin. The plugin draws again after.
+    pub(crate) fn call_plugin_tool(
+        &self,
+        plugin: &str,
+        name: &str,
+        arguments: &str,
+    ) -> Result<String, AppError> {
+        let call = self.plugins().tool_call(plugin, name, arguments)?;
+        let answer = call.run();
+        self.plugins().redraw(call.plugin_id());
+        self.wake_all();
+        answer
     }
 
     /// Wake every open window to apply a change, such as a plugin's new

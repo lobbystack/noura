@@ -790,7 +790,18 @@ impl WorkspaceEngine {
             .and_then(|mut index| {
                 index.upsert_markdown(&chat.relative_path, &bytes, mtime_ns(&destination), &parsed)
             });
-        Ok(self.index_outcome(result))
+        Ok(self.chat_index_outcome(result))
+    }
+
+    /// How the index took a chat change. The files are canonical, so an
+    /// index that couldn't record the change doesn't fail it. The index is
+    /// stale then, and the next read walks the workspace again, so it
+    /// finds the files the index missed once the index takes writes.
+    pub(super) fn chat_index_outcome(&self, result: Result<()>) -> (IndexStatus, Vec<CoreWarning>) {
+        if result.is_err() {
+            self.dirty.store(true, Ordering::SeqCst);
+        }
+        self.index_outcome(result)
     }
 
     fn check_chat_revision_unlocked(

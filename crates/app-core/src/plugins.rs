@@ -1126,6 +1126,10 @@ impl Plugins {
         } else {
             self.stop(id);
             self.problems.remove(id);
+            // The AI runs that relied on it end, and its files stay.
+            if let Some(ai) = &self.ai {
+                ai.plugin_disabled(id);
+            }
             // What the other plugins show may come from this one's
             // commands, as a project's tasks come from Tasks. A plugin
             // that starts has them draw again once it registered.
@@ -1141,6 +1145,9 @@ impl Plugins {
     pub(crate) fn uninstall(&mut self, id: &str) -> Result<(), AppError> {
         let host = self.host()?;
         self.stop(id);
+        if let Some(ai) = &self.ai {
+            ai.plugin_disabled(id);
+        }
         self.watchers.remove(id);
         self.updates.remove(id);
         self.update_checks.remove(id);
@@ -1927,6 +1934,11 @@ impl Plugins {
                     })
             })
             .collect()
+    }
+
+    /// The name of the installed plugin `id`, as its manifest gives it.
+    pub(crate) fn plugin_name(&self, id: &str) -> Option<String> {
+        self.manifests.get(id).map(|manifest| manifest.name.clone())
     }
 
     /// A call to the tool `name` of the plugin `plugin`, once `arguments`

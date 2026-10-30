@@ -17,10 +17,16 @@
 //!   `ai:send:<chat>:<provider>:<message>`,
 //!   `ai:send-with-tool:<chat>:<provider>:<message>`, which offers the
 //!   `echo` tool, `ai:answer-tools:<run>:<content>`, which answers each
-//!   call of the run with `content`, `ai:read-run:<id>` and `ai:stop:<id>`:
-//!   call the host AI interface, one line per provider, chat, message or
-//!   run. A press on a node whose ID is `ai:<call>` makes the call too, and
-//!   the `events` page shows each line as `<page> ai <line>`.
+//!   call of the run with `content`, `ai:read-run:<id>`, `ai:stop:<id>`,
+//!   `ai:rename-chat:<id>:<revision>:<title>`,
+//!   `ai:set-retention:<id>:<revision>:<permanent or ephemeral>`,
+//!   `ai:workspace-tools`, `ai:run-tools:<run>`,
+//!   `ai:resume:<chat>:<provider>`, which offers the workspace's tools,
+//!   `ai:web-ready`, `ai:web-search:<query>`, which asks for three
+//!   results, and `ai:web-fetch:<url>`: call the host AI interface, one
+//!   line per provider, chat, message, run, search result or page. A press
+//!   on a node whose ID is `ai:<call>` makes the call too, and the `events`
+//!   page shows each line as `<page> ai <line>`.
 //! - `clock`: the clock's reading, as `now <instant> <time zone>`.
 //! - `markdown`: a Markdown node with a heading, emphasis, a link, a
 //!   list and a remote image.
@@ -377,13 +383,77 @@ fn ai_call(call: &str) -> Vec<String> {
         }
         "read-run" => ai::read_run(rest).map(|run| vec![run_line(&run)]),
         "stop" => ai::stop(rest).map(|()| vec!["stopped".to_owned()]),
+        "rename-chat" => {
+            let mut parts = rest.splitn(3, ':');
+            let id = parts.next().unwrap_or_default();
+            let revision = parts.next().unwrap_or_default();
+            let title = parts.next().unwrap_or_default();
+            ai::rename_chat(id, title, revision).map(|chat| vec![chat_line(&chat)])
+        }
+        "set-retention" => {
+            let mut parts = rest.splitn(3, ':');
+            let id = parts.next().unwrap_or_default();
+            let revision = parts.next().unwrap_or_default();
+            let retention = if parts.next() == Some("ephemeral") {
+                ai::Retention::Ephemeral
+            } else {
+                ai::Retention::Permanent
+            };
+            ai::set_retention(id, retention, revision).map(|chat| vec![chat_line(&chat)])
+        }
+        "workspace-tools" => ai::workspace_tools().map(|tools| {
+            tools
+                .iter()
+                .map(|tool| format!("tool {} {}", tool.name, tool.description))
+                .collect()
+        }),
+        "run-tools" => ai::run_tools(rest).map(|run| vec![run_line(&run)]),
+        "resume" => {
+            let (chat, provider) = rest.split_once(':').unwrap_or((rest, ""));
+            ai::workspace_tools()
+                .and_then(|tools| ai::resume(chat, provider, &tools))
+                .map(|run| vec![run_line(&run)])
+        }
+        "web-ready" => ai::web_ready().map(|ready| vec![format!("web-ready {ready}")]),
+        "web-search" => {
+            return web_lines(ai::web_search(rest, Some(3)).map(|results| {
+                results
+                    .iter()
+                    .map(|found| {
+                        format!("web-result {} {} {}", found.title, found.url, found.snippet)
+                    })
+                    .collect()
+            }));
+        }
+        "web-fetch" => {
+            return web_lines(ai::web_fetch(rest).map(|page| {
+                vec![format!(
+                    "web-page {} {} {} {}",
+                    page.url, page.content_type, page.truncated, page.text
+                )]
+            }));
+        }
         other => Ok(vec![format!("no ai call {other}")]),
     };
     lines.unwrap_or_else(|error| vec![describe(&error)])
 }
 
+/// The lines of a web call, or why it failed.
+fn web_lines(result: Result<Vec<String>, ai::WebError>) -> Vec<String> {
+    match result {
+        Ok(lines) => lines,
+        Err(ai::WebError::Refused(error)) => vec![describe(&error)],
+        Err(ai::WebError::Failed(failure)) => {
+            vec![format!("web-failed {} {}", failure.code, failure.message)]
+        }
+    }
+}
+
 fn chat_line(chat: &ai::Chat) -> String {
-    format!("chat {} {}", chat.id, chat.title)
+    format!(
+        "chat {} {} {:?} {}",
+        chat.id, chat.revision, chat.retention, chat.title
+    )
 }
 
 fn run_line(run: &ai::Run) -> String {
@@ -616,6 +686,7 @@ fn describe(error: &Error) -> String {
         Error::TargetNotDeclared(target) => format!("error target-not-declared {target}"),
         Error::TargetUnavailable(target) => format!("error target-unavailable {target}"),
         Error::Busy(plugin) => format!("error busy {plugin}"),
+        Error::RevisionConflict(id) => format!("error revision-conflict {id}"),
         other => format!("error {other:?}"),
     }
 }
