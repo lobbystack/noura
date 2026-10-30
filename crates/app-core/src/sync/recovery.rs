@@ -644,6 +644,9 @@ impl SyncService {
         let (epochs, keys, envelope) = self
             .load_keys(workspace, domain, &policy, &identity, true)
             .await?;
-        RemoteWorkspace::from_parts(workspace, domain, policy, epochs, keys, envelope)
+        let mut remote =
+            RemoteWorkspace::from_parts(workspace, domain, policy, epochs, keys, envelope)?;
+        self.load_restricted(&mut remote, &identity).await?;
+        Ok(remote)
     }
 }

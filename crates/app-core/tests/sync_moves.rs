@@ -880,3 +880,120 @@ async fn a_move_commits_on_postgres() {
     assert!(!team.outsider_folder.files().contains_key("Plan.md"));
     assert_eq!(team.sync.status().pending, 0);
 }
+
+/// A pull of `domain` from the start, as `service`'s device.
+async fn first_page(
+    service: &mut app_core::sync::SyncService,
+    workspace: Id,
+    domain: Id,
+) -> sync_protocol::messages::PageStatus {
+    let cursor = sync_protocol::messages::PullCursor { domain, after: 0 };
+    service
+        .client()
+        .pull(workspace, vec![cursor], 0)
+        .await
+        .expect("a pull")
+        .pages
+        .0[0]
+        .status
+}
+
+/// A grantee reads nothing below the floor its grant set, and a member's
+/// new device and the device its kit restores keep the member's floor
+/// (§9). An account accepted after a reset waits for ticket 60, which adds
+/// `accept_reset` to a push.
+#[tokio::test]
+async fn floors_hold_for_a_grantee_a_new_device_and_a_restored_device() {
+    use app_core::sync::recovery::{Recovery, open_kit};
+    use std::sync::Arc;
+    use sync_protocol::messages::PageStatus;
+    use sync_support::MemorySecrets;
+
+    let server = Server::start().await;
+    let mut team = team(&server).await;
+    let domain = team.restrict(Level::Write).await;
+    team.folder.write("Pay/Early.md", b"early\n");
+    team.folder.write("Plan.md", b"# Plan, edited\n");
+    team.settle().await;
+    let workspace = team.sync.workspace();
+    let workspace_domain = team.sync.domain();
+    let (own, ben, cy) = (
+        team.owner.credentials.account,
+        team.grantee_account(),
+        team.outsider_account(),
+    );
+    let list = [
+        Access {
+            account: own,
+            level: Level::Manage,
+        },
+        Access {
+            account: ben,
+            level: Level::Write,
+        },
+        Access {
+            account: cy,
+            level: Level::Read,
+        },
+    ];
+    team.sync
+        .set_access(&mut team.owner.service, domain, &list)
+        .await
+        .expect("the grant commits");
+    team.settle().await;
+    assert_eq!(
+        first_page(&mut team.outsider.service, workspace, domain).await,
+        PageStatus::BeforeHistoryFloor
+    );
+    assert!(
+        team.outsider_folder.files().contains_key("Pay/Early.md"),
+        "a grantee reads what's live at the floor's checkpoint"
+    );
+    assert_eq!(
+        first_page(&mut team.owner.service, workspace, domain).await,
+        PageStatus::Ok
+    );
+
+    // Cy's new device keeps Cy's floor.
+    let new = sync_support::approve(
+        &server,
+        &mut team.outsider,
+        std::slice::from_mut(team.outsider_sync.remote_mut().expect("connected")),
+    )
+    .await;
+    let mut service = new.connect_through(&server.base).await;
+    assert_eq!(
+        first_page(&mut service, workspace, workspace_domain).await,
+        PageStatus::BeforeHistoryFloor
+    );
+
+    // So does the device Cy's kit restores.
+    team.outsider_sync
+        .round(&mut team.outsider.service, 0)
+        .await
+        .expect("a round");
+    let outside = tempfile::tempdir().unwrap();
+    let path = outside.path().join("Noura recovery kit");
+    let export = team
+        .outsider
+        .service
+        .export_kit(
+            &path,
+            &[],
+            std::slice::from_mut(team.outsider_sync.remote_mut().expect("connected")),
+        )
+        .await
+        .expect("exported");
+    let kit = open_kit(&path, export.secret.as_ref()).expect("the kit opens");
+    let signed_in = server.sign_in(cy, &server.base).await;
+    let secrets = Arc::new(MemorySecrets::default());
+    let state = tempfile::tempdir().unwrap();
+    let recovery = Recovery::begin(&signed_in, kit, secrets.clone(), state.path())
+        .await
+        .expect("the kit's identity proves");
+    let (mut service, _, _) = recovery.finish(&[], &*secrets).await.expect("recovered");
+    assert_eq!(
+        first_page(&mut service, workspace, workspace_domain).await,
+        PageStatus::BeforeHistoryFloor
+    );
+}

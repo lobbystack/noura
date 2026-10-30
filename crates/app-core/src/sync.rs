@@ -1055,7 +1055,7 @@ impl SyncService {
             .and_then(|latest| keys.get(&latest.record.body.epoch).cloned())
             .ok_or(SyncError::Check("sync_key_mismatch"))?;
         let checkpoint = self.marked_checkpoint(workspace, domain)?;
-        Ok(RemoteWorkspace {
+        let mut remote = RemoteWorkspace {
             workspace,
             domain,
             policy,
@@ -1071,7 +1071,43 @@ impl SyncService {
             envelope,
             checkpoint,
             restricted: BTreeMap::new(),
-        })
+        };
+        if lineage {
+            self.load_restricted(&mut remote, &recipient).await?;
+        }
+        Ok(remote)
+    }
+
+    /// Loads the current key of each restricted domain `recipient` reads,
+    /// so a change signed in `remote` wraps for new cards there too (§8).
+    /// A domain whose envelope hasn't arrived stays out; a change that needs
+    /// it then waits.
+    pub(crate) async fn load_restricted(
+        &mut self,
+        remote: &mut RemoteWorkspace,
+        recipient: &DeviceKeys,
+    ) -> Result<(), SyncError> {
+        let device = recipient.device();
+        let snapshot = remote.policy.head_snapshot().clone();
+        for (domain, entry) in &snapshot.domains {
+            if !entry.restricted || !snapshot.can_read(&device, domain) {
+                continue;
+            }
+            let loaded = self
+                .load_keys(remote.workspace, *domain, &remote.policy, recipient, true)
+                .await;
+            let (epochs, keys, _) = match loaded {
+                Ok(loaded) => loaded,
+                Err(SyncError::KeyMissing) => continue,
+                Err(error) => return Err(error),
+            };
+            if let Some(epoch) = epochs.latest().map(|e| e.record.body.epoch)
+                && let Some(key) = keys.get(&epoch)
+            {
+                remote.restricted.insert(*domain, (epoch, key.clone()));
+            }
+        }
+        Ok(())
     }
 
     /// Fetches and verifies a workspace's whole policy chain, as

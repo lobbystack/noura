@@ -6,7 +6,7 @@ use sync_key_envelope::v2::{EnvelopeHeader, wrap};
 use sync_protocol::codec::{Bytes, Encode, List, Nested, Sorted};
 use sync_protocol::keys::{EpochParams, build_epoch};
 use sync_protocol::messages::{
-    KeyEntry, KeyRecord, PageStatus, PullCursor, PullRequest, RecordRef,
+    KeyEntry, KeyRecord, PageStatus, PullCursor, PullRequest, PushRequest, RecordRef,
 };
 use sync_protocol::records::{
     Access, AccessList, Epoch, EpochBundle, Level, Operation, PolicyChange, PolicyKind, Role,
@@ -444,6 +444,83 @@ pub async fn set_access_and_delete_domain_follow_the_policy<B: Backend>(store: S
     world.head = (removal.body.revision, removal.digest());
     let page = pull_as(&world, member.session, creating.domain).await;
     assert_eq!(page.status, PageStatus::Forbidden);
+
+    // The domain takes no record until a rotation, and neither a rotation
+    // nor an envelope from the member taken off.
+    let mut pending = creating.marker_op(&world, 0);
+    if let RecordRef::Operation(op) = &mut pending {
+        let mut body = op.body.clone();
+        body.counter = 2;
+        body.previous = op.digest();
+        body.rid = Id::random().expect("random");
+        body.policy_revision = removal.body.revision;
+        body.policy_head = removal.digest();
+        *op = Signed::sign(body, world.devices[0].keys.signing());
+    }
+    assert_eq!(
+        push_failure(world.push_records(0, vec![pending]).await),
+        ("rotation_pending", 0)
+    );
+    let next_key = SecretKey::random().expect("random");
+    let stolen = Signed::sign(
+        build_epoch(
+            &EpochParams {
+                workspace: world.workspace,
+                domain: creating.domain,
+                epoch: 2,
+                previous: creating.epoch.digest(),
+                policy_revision: grant.body.revision,
+                policy_head: grant.digest(),
+                rotating_device: member.keys.device(),
+                recipients: creating.recipients.iter().copied().collect(),
+            },
+            &next_key,
+            Some(&creating.key),
+            sync_protocol::crypto::random_nonce().expect("random"),
+        ),
+        member.keys.signing(),
+    );
+    let rotation = PushRequest {
+        records: List(vec![RecordRef::EpochBundle(EpochBundle {
+            epoch: Nested(stolen),
+            recipients: Sorted::new(creating.recipients.clone()).expect("sorted"),
+        })]),
+    };
+    assert_eq!(
+        push_failure(
+            world
+                .store
+                .push(member.session, world.workspace, rotation.to_bytes())
+                .await
+        ),
+        ("forbidden", 0),
+        "the member taken off can't rotate"
+    );
+    let wrapped = wrap(
+        &EnvelopeHeader {
+            workspace: world.workspace,
+            domain: creating.domain,
+            epoch: 1,
+            wrapping_device: member.keys.device(),
+        },
+        &creating.key,
+        &world.devices[0].keys.card(world.account),
+        &member.keys,
+    )
+    .expect("wraps");
+    let lone = PushRequest {
+        records: List(vec![RecordRef::Envelope(wrapped)]),
+    };
+    assert_eq!(
+        push_failure(
+            world
+                .store
+                .push(member.session, world.workspace, lone.to_bytes())
+                .await
+        ),
+        ("forbidden", 0),
+        "the member taken off can't wrap"
+    );
 
     let delete = world.change(
         0,
