@@ -1,0 +1,2061 @@
+//! Text mode on the desktop client (docs/workspace-format/sync-v2.md §22):
+//! a Markdown note whose body lives in a yrs document in the collaboration
+//! sandbox, and whose path and properties merge per key beside it.
+//!
+//! The journal keeps each text-mode note's live records with the sandbox's
+//! verdict on each, in ordinary files: a record counts as applied once it
+//! reaches them, and the sandbox runs afterward. The note's file follows the
+//! document's merged changes through `local-core`'s checked writes, never
+//! the editor's. A device opens a note's document on a thread of its own
+//! while it edits the note or has records to merge, and hands the editor its
+//! side of it.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+use collab_sandbox::{
+    Backend, Event, HandleError, JournalRecord, LOAD_BLOCK, LineageStatus, Loader, NoteHandle,
+    Opened, Place, RemoteRecord, Sandbox, SandboxDocument, SharedNote,
+};
+use serde::{Deserialize, Serialize};
+use sync_protocol::codec::{Bytes, Encode, Sorted, Text};
+use sync_protocol::crypto::hash;
+use sync_protocol::ids::{text_lineage_id, yrs_client_id};
+use sync_protocol::matching::Placement;
+use sync_protocol::records::{
+    Content, Cover, MAX_PAYLOAD_LEN, Meta, OpClass, Operation, Payload, PayloadKind, Signed,
+};
+use sync_protocol::types::{Digest, Id};
+use workspace_format::text_note::{NoteParts, compose_note, note_parts};
+
+use super::settle::Body;
+use super::state::{Content as Carried, OpKey};
+use super::{CheckedRecord, Found, SyncError, WorkspaceSync, core};
+
+/// How often the client sends local edits and presence while a note is
+/// open.
+pub const TICK: Duration = Duration::from_millis(500);
+/// How long a note rests before the device that wrote its latest update
+/// snapshots it.
+pub const IDLE: Duration = Duration::from_secs(30);
+/// How long a note rests before any writer device snapshots it.
+pub const IDLE_ANY_WRITER: Duration = Duration::from_secs(300);
+/// The shortest time between two snapshots of a note from one device, unless
+/// the server requires one.
+pub const SNAPSHOT_EVERY: Duration = Duration::from_secs(10);
+/// The live patches a note may hold when it rests.
+pub const IDLE_PATCHES: usize = 8;
+/// The live patches past which the designated device snapshots a note.
+pub const VOLUME_PATCHES: usize = 512;
+/// The smallest and largest byte threshold of the volume rule.
+const VOLUME_BYTES: (u64, u64) = (1 << 20, 2 << 20);
+/// The UTF-8 bytes of text past which your edit takes a note out of text
+/// mode.
+pub const TEXT_LIMIT: usize = 4 << 20;
+/// The encoded document at which a note rebases.
+pub const REBASE_AT: usize = 16 << 20;
+/// A device's own records carry IDs above every log sequence until the log
+/// gives them one.
+const OWN_RECORDS: u64 = 1 << 62;
+/// An update that carries no change to the document.
+const EMPTY_UPDATE: [u8; 2] = [0, 0];
+/// The payload's fields around a text record's bytes and `meta` entries.
+const PAYLOAD_OVERHEAD: usize = 128;
+
+/// The one sandbox a process compiles, which takes a moment.
+fn sandbox() -> Result<&'static Sandbox, SyncError> {
+    static SANDBOX: OnceLock<Result<Sandbox, String>> = OnceLock::new();
+    SANDBOX
+        .get_or_init(|| Sandbox::new(Backend::Cranelift).map_err(|error| error.to_string()))
+        .as_ref()
+        .map_err(|error| SyncError::Invalid(format!("the collaboration sandbox: {error}")))
+}
+
+fn handle_error(error: HandleError) -> SyncError {
+    SyncError::Invalid(format!("the note's document: {error}"))
+}
+
+/// The sandbox's verdict on a record, as the journal keeps it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Judgement {
+    /// The record reached the journal and the sandbox hasn't judged it.
+    Waiting,
+    /// It merged, or this device wrote it.
+    Readable,
+    /// The verdict stage judged it unreadable.
+    Unreadable,
+    /// It holds an item that would land elsewhere on a booted device (§22).
+    Refused,
+    /// A snapshot that made the device rebuild the document.
+    Disagrees,
+}
+
+/// A `meta` entry of a record.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaEntry {
+    /// `path`, or `p:` and a property's name.
+    pub key: String,
+    /// The sequence it names.
+    pub seq: u64,
+    /// Its value, or `None` for a removal.
+    pub value: Option<Vec<u8>>,
+}
+
+/// One live record of a text-mode note.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TextRecord {
+    /// Its position in its signer's chain.
+    pub key: OpKey,
+    /// Its log sequence, once the device saw it in the log.
+    pub seq: Option<u64>,
+    /// Its digest.
+    pub digest: Digest,
+    /// Whether it's a `text_snapshot`.
+    pub snapshot: bool,
+    /// The lineage it names.
+    pub lineage: Id,
+    /// The signer's card index.
+    pub writer: u32,
+    /// The cards the workspace indexed at its `policy_revision`.
+    pub card_count: u32,
+    /// Its covers.
+    pub covers: Vec<Cover>,
+    /// What the server counts for it: its ciphertext, blob included.
+    pub weight: u64,
+    /// The epoch it's sealed under.
+    pub epoch: u64,
+    /// Its `meta` entries.
+    pub meta: Vec<MetaEntry>,
+    /// The hash of its payload's bytes, which name its file in the journal.
+    pub payload: Digest,
+    /// The hash of its blob's file, when its bytes travel in one.
+    pub blob: Option<Digest>,
+    /// The sandbox's verdict.
+    pub judgement: Judgement,
+}
+
+impl TextRecord {
+    /// The record's name in the sandbox: its log sequence, or a number past
+    /// every sequence.
+    fn id(&self) -> u64 {
+        self.seq.unwrap_or(OWN_RECORDS + self.key.counter)
+    }
+
+    fn place(&self) -> Place {
+        Place {
+            device: self.key.device,
+            counter: self.key.counter,
+            covers: self.covers.clone(),
+        }
+    }
+}
+
+/// Why a text-mode note waits in the review store (§22).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TextReviewKind {
+    /// A record judged unreadable.
+    Unreadable,
+    /// A record whose item would land elsewhere on a booted device.
+    Refused,
+    /// A snapshot or update that disagrees with what the device holds:
+    /// `sync_text_conflict`.
+    Disagrees,
+    /// Updates that wait on a record that never merged.
+    Pending,
+    /// The lineage stopped on this device, and the note waits for your
+    /// choice.
+    Stopped,
+    /// An update of a lineage that isn't live any more.
+    EndedLineage,
+    /// A merged path outside the note's domain root.
+    OutsideRoot,
+}
+
+/// A text-mode note's entry in the review store.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextReview {
+    /// The note.
+    pub rid: Id,
+    /// Why it waits.
+    pub kind: TextReviewKind,
+    /// The record's signer, when one record is at fault.
+    pub signer: Option<Id>,
+    /// The record's log sequence, when one record is at fault.
+    pub seq: Option<u64>,
+}
+
+/// What the journal keeps of one text-mode note.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TextFile {
+    /// The lineage the note's document follows.
+    pub lineage: Id,
+    /// Its live records, and covered ones the sandbox still compares
+    /// snapshots against, in the order they reached the journal.
+    pub records: Vec<TextRecord>,
+    /// Each writer's fuel balance when the note last closed.
+    pub balances: Vec<(u32, i64)>,
+    /// Whether the lineage stopped on this device.
+    pub stopped: bool,
+    /// The first record that yrs held pending, while one waits.
+    pub pending_since: Option<u64>,
+    /// The note's entries in the review store.
+    pub reviews: Vec<TextReview>,
+}
+
+/// One merged `meta` key: its latest write.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MetaWrite {
+    value: Option<Vec<u8>>,
+    /// The write's effective sequence, or `u64::MAX` for this device's own
+    /// write the log hasn't committed yet.
+    effective: u64,
+    digest: Digest,
+}
+
+/// The note's merged `meta`: each key's latest write among the records that
+/// passed the verdict, by effective sequence and then record digest (§22).
+fn merged_meta(records: &[TextRecord]) -> BTreeMap<String, MetaWrite> {
+    let mut merged: BTreeMap<String, MetaWrite> = BTreeMap::new();
+    for record in records {
+        if record.judgement != Judgement::Readable && record.judgement != Judgement::Disagrees {
+            continue;
+        }
+        for entry in &record.meta {
+            let own = record.seq.unwrap_or(u64::MAX);
+            let effective = if record.snapshot && entry.seq != 0 && entry.seq <= own {
+                entry.seq
+            } else {
+                own
+            };
+            let write = MetaWrite {
+                value: entry.value.clone(),
+                effective,
+                digest: record.digest,
+            };
+            let later = merged.get(&entry.key).is_none_or(|current| {
+                (write.effective, write.digest) > (current.effective, current.digest)
+            });
+            if later {
+                merged.insert(entry.key.clone(), write);
+            }
+        }
+    }
+    merged
+}
+
+/// The path and properties a merged `meta` holds.
+fn note_meta(merged: &BTreeMap<String, MetaWrite>) -> (Option<String>, BTreeMap<String, String>) {
+    let path = merged
+        .get("path")
+        .and_then(|write| write.value.as_ref())
+        .and_then(|value| String::from_utf8(value.clone()).ok());
+    let properties = merged
+        .iter()
+        .filter_map(|(key, write)| {
+            let name = key.strip_prefix("p:")?;
+            let value = String::from_utf8(write.value.clone()?).ok()?;
+            Some((name.to_owned(), value))
+        })
+        .collect();
+    (path, properties)
+}
+
+fn meta_list(entries: &[MetaEntry]) -> Result<sync_protocol::records::MetaList, SyncError> {
+    let mut list = Vec::with_capacity(entries.len());
+    for entry in entries {
+        list.push(Meta {
+            key: Text::new(entry.key.clone())
+                .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
+            seq: entry.seq,
+            value: entry.value.clone().map(Bytes),
+        });
+    }
+    Sorted::new(list).map_err(|e| SyncError::Invalid(e.name().to_owned()))
+}
+
+fn entries_of(meta: &sync_protocol::records::MetaList) -> Vec<MetaEntry> {
+    meta.iter()
+        .map(|entry| MetaEntry {
+            key: entry.key.as_str().to_owned(),
+            seq: entry.seq,
+            value: entry.value.as_ref().map(|value| value.0.clone()),
+        })
+        .collect()
+}
+
+/// How a request to edit a note in text mode turned out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Entered {
+    /// The note is in text mode.
+    Yes,
+    /// No live `file` operation matches the note's file yet, so its edits
+    /// sync as `file` operations until one does.
+    NotYet,
+    /// The note stays out of text mode: its file isn't a Markdown note whose
+    /// frontmatter passes the property rules.
+    Never,
+}
+
+/// Load numbers this device reserved and hasn't used (§22).
+#[derive(Debug, Default)]
+struct Loads {
+    next: u64,
+    reserved: u64,
+}
+
+/// A note whose document is open.
+struct Session {
+    /// The editor's side, until the editor takes it.
+    handle: Option<NoteHandle>,
+    shared: SharedNote,
+    /// The text the document last merged, which the file follows.
+    body: String,
+    /// The load the document's first client ID names.
+    load: u32,
+    /// The records handed to the sandbox.
+    sent: BTreeSet<u64>,
+    /// Where the sandbox's loader reads deferred records.
+    records: Arc<Mutex<BTreeMap<u64, Stored>>>,
+    /// Whether an editor holds the note.
+    editing: bool,
+    /// `path` and property writes that wait for the next update.
+    meta: Vec<MetaEntry>,
+}
+
+/// What the sandbox's loader needs to read a deferred record back.
+#[derive(Clone)]
+struct Stored {
+    writer: u32,
+    card_count: u32,
+    place: Place,
+    payload: std::path::PathBuf,
+    blob: Option<std::path::PathBuf>,
+}
+
+/// When things last happened to a note on this device.
+#[derive(Clone, Copy, Debug)]
+struct Activity {
+    last_edit: Instant,
+    last_snapshot: Option<Instant>,
+    /// Whether the note closed since its last edit.
+    closed: bool,
+}
+
+/// What a folder's sync client holds in memory for text mode.
+#[derive(Default)]
+pub struct TextRuntime {
+    loads: Arc<Mutex<Loads>>,
+    sessions: BTreeMap<Id, Session>,
+    activity: BTreeMap<Id, Activity>,
+    /// Records that the next settle judges.
+    unsettled: BTreeSet<Id>,
+    /// Notes the server required a snapshot of.
+    required: BTreeSet<Id>,
+    /// Codes reported to the app since it last asked, such as
+    /// `sync_text_conflict`.
+    reported: Vec<&'static str>,
+}
+
+impl std::fmt::Debug for TextRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextRuntime")
+            .field("sessions", &self.sessions.len())
+            .finish_non_exhaustive()
+    }
+}
+
+fn text_name(rid: &Id) -> String {
+    format!("text-{}.json", rid.to_hex())
+}
+
+fn record_path(rid: &Id, digest: &Digest) -> String {
+    format!("text/{}/{}", rid.to_hex(), digest.to_hex())
+}
+
+impl WorkspaceSync {
+    /// What the journal keeps of the note, when it's in text mode.
+    pub fn text_file(&self, rid: &Id) -> Result<Option<TextFile>, SyncError> {
+        Ok(self.journal.read(&text_name(rid))?)
+    }
+
+    fn store_text(&self, rid: &Id, file: &TextFile) -> Result<(), SyncError> {
+        Ok(self.journal.write(&text_name(rid), file)?)
+    }
+
+    /// The note at `path`, by its object.
+    pub fn text_rid(&self, path: &str) -> Option<Id> {
+        self.rid_at(path)
+    }
+
+    /// Whether the object is in text mode on this device.
+    pub fn in_text_mode(&self, rid: &Id) -> bool {
+        self.state
+            .objects
+            .get(rid)
+            .is_some_and(|object| object.text.is_some())
+    }
+
+    /// The body the note's document merged, for a note whose document is
+    /// open.
+    pub fn text_body(&self, rid: &Id) -> Option<&str> {
+        self.text.sessions.get(rid).map(|s| s.body.as_str())
+    }
+
+    /// Where the note's lineage stands, for a note whose document is open.
+    pub fn text_status(&self, rid: &Id) -> Option<LineageStatus> {
+        self.text.sessions.get(rid).map(|s| s.shared.status())
+    }
+
+    /// Every text-mode note's entries in the review store.
+    pub fn text_reviews(&self) -> Vec<TextReview> {
+        self.state
+            .objects
+            .iter()
+            .filter(|(_, object)| object.text.is_some())
+            .filter_map(|(rid, _)| self.text_file(rid).ok().flatten())
+            .flat_map(|file| file.reviews)
+            .collect()
+    }
+
+    /// The codes reported since the last call, such as
+    /// `sync_text_conflict`.
+    pub fn take_text_reports(&mut self) -> Vec<&'static str> {
+        std::mem::take(&mut self.text.reported)
+    }
+
+    /// Reserves load numbers when few are left, so the note threads, which
+    /// can't reach the credential store, never run out while they rebuild.
+    fn reserve_loads(&mut self) -> Result<(), SyncError> {
+        let mut loads = self.text.loads.lock().unwrap_or_else(|p| p.into_inner());
+        if loads.next == 0 {
+            loads.next = self.mark.reserved_load + 1;
+            loads.reserved = self.mark.reserved_load;
+        }
+        if loads.next + u64::from(LOAD_BLOCK) / 4 > loads.reserved {
+            loads.reserved += u64::from(LOAD_BLOCK);
+            self.mark.reserved_load = loads.reserved;
+            drop(loads);
+            self.mark.write(
+                &*self.secrets,
+                &self.credentials.keys.device(),
+                &self.state.workspace,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Hands out client IDs from the reserved load numbers.
+    fn client_ids(&mut self) -> Result<(collab_sandbox::ClientIds, u32), SyncError> {
+        self.reserve_loads()?;
+        let card = self.card_index()?;
+        let loads = self.text.loads.clone();
+        let first = {
+            let mut loads = loads.lock().unwrap_or_else(|p| p.into_inner());
+            let load = loads.next;
+            loads.next += 1;
+            load as u32
+        };
+        let mut pending = Some(first);
+        let client_ids: collab_sandbox::ClientIds = Box::new(move || {
+            let load = match pending.take() {
+                Some(load) => load,
+                None => {
+                    let mut loads = loads.lock().unwrap_or_else(|p| p.into_inner());
+                    if loads.next > loads.reserved {
+                        return None;
+                    }
+                    let load = loads.next;
+                    loads.next += 1;
+                    load as u32
+                }
+            };
+            yrs_client_id(card, load)
+        });
+        Ok((client_ids, first))
+    }
+
+    fn card_index(&self) -> Result<u32, SyncError> {
+        self.card_of(&self.credentials.keys.device(), None)
+            .map(|(index, _)| index)
+    }
+
+    /// `device`'s card index, and how many cards the workspace indexed, at
+    /// `revision`, or at the head.
+    fn card_of(&self, device: &Id, revision: Option<u64>) -> Result<(u32, u32), SyncError> {
+        let remote = self
+            .remote
+            .as_ref()
+            .ok_or(SyncError::Check("sync_workspace_unverified"))?;
+        let snapshot = match revision {
+            Some(revision) => remote
+                .policy
+                .at(revision)
+                .ok_or(SyncError::Check("sync_writer_not_authorized"))?,
+            None => remote.policy.head_snapshot(),
+        };
+        let index = snapshot
+            .card_indices
+            .get(device)
+            .copied()
+            .ok_or(SyncError::Check("sync_writer_not_authorized"))?;
+        Ok((index, snapshot.card_indices.len() as u32))
+    }
+
+    fn can_write_note(&self, rid: &Id) -> bool {
+        let device = self.credentials.keys.device();
+        let domain = self
+            .state
+            .objects
+            .get(rid)
+            .and_then(|object| object.domain)
+            .unwrap_or(self.remote.as_ref().map_or(self.state.domain, |r| r.domain));
+        self.remote
+            .as_ref()
+            .is_some_and(|r| r.policy.head_snapshot().can_write(&device, &domain))
+            && self.stopped.is_none()
+    }
+
+    /// The readable records of the note's lineage, in canonical order: each
+    /// live snapshot by log sequence, then each update, this device's own
+    /// records not yet in the log last.
+    fn canonical(&self, rid: &Id, file: &TextFile) -> Result<Vec<JournalRecord>, SyncError> {
+        let mut records: Vec<&TextRecord> = file
+            .records
+            .iter()
+            .filter(|r| r.lineage == file.lineage && r.judgement == Judgement::Readable)
+            .collect();
+        records.sort_by_key(|r| (!r.snapshot, r.id()));
+        let mut out = Vec::with_capacity(records.len());
+        for record in records {
+            let Some(bytes) = self.record_yrs(rid, record)? else {
+                continue;
+            };
+            out.push(JournalRecord {
+                id: record.id(),
+                snapshot: record.snapshot,
+                place: record.place(),
+                bytes,
+            });
+        }
+        Ok(out)
+    }
+
+    /// The yrs bytes a record holds, from the journal.
+    fn record_yrs(&self, rid: &Id, record: &TextRecord) -> Result<Option<Vec<u8>>, SyncError> {
+        use sync_protocol::codec::Decode;
+        let payload = self
+            .journal
+            .kept(&record_path(rid, &record.payload), &record.payload)?;
+        let Ok(payload) = Payload::from_bytes(&payload) else {
+            return Ok(None);
+        };
+        let content = match payload.kind {
+            PayloadKind::TextSnapshot { content, .. } | PayloadKind::TextUpdate { content, .. } => {
+                content
+            }
+            _ => return Ok(None),
+        };
+        match (content, &record.blob) {
+            (Content::Inline { bytes }, _) => Ok(Some(bytes.0)),
+            (Content::Blob(_), Some(blob)) => Ok(Some(
+                self.journal.kept(&record_path(rid, blob), blob)?,
+            )),
+            (Content::Blob(_), None) => Ok(None),
+        }
+    }
+
+    /// Opens the note's document, loading it from the journal.
+    fn open_session(&mut self, rid: &Id) -> Result<(), SyncError> {
+        if self.text.sessions.contains_key(rid) {
+            return Ok(());
+        }
+        let file = self
+            .text_file(rid)?
+            .ok_or_else(|| SyncError::Invalid("the note isn't in text mode".into()))?;
+        let records = self.canonical(rid, &file)?;
+        let (client_ids, load) = self.client_ids()?;
+        let stored: Arc<Mutex<BTreeMap<u64, Stored>>> = Arc::default();
+        let source = stored.clone();
+        let loader: Loader = Box::new(move |id| {
+            let stored = source
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&id)
+                .cloned()?;
+            Some(RemoteRecord {
+                id,
+                writer: stored.writer,
+                card_count: stored.card_count,
+                payload: std::fs::read(&stored.payload).ok()?,
+                blob: match &stored.blob {
+                    Some(path) => Some(std::fs::read(path).ok()?),
+                    None => None,
+                },
+                place: stored.place,
+            })
+        });
+        let opening = NoteHandle::start_lineage(
+            sandbox()?,
+            Opened {
+                records,
+                balances: file.balances.clone(),
+                loader: Some(loader),
+            },
+            client_ids,
+        );
+        let (handle, body) = opening.wait().map_err(handle_error)?;
+        let session = Session {
+            shared: handle.shared(),
+            handle: Some(handle),
+            body,
+            load,
+            sent: BTreeSet::new(),
+            records: stored,
+            editing: false,
+            meta: Vec::new(),
+        };
+        self.text.sessions.insert(*rid, session);
+        Ok(())
+    }
+
+    /// Closes the note's document, keeping each writer's balance, unless an
+    /// editor holds it.
+    fn close_session(&mut self, rid: &Id) -> Result<(), SyncError> {
+        let Some(session) = self.text.sessions.get(rid) else {
+            return Ok(());
+        };
+        if session.editing {
+            return Ok(());
+        }
+        if let Ok(balances) = session.shared.balances()
+            && let Some(mut file) = self.text_file(rid)?
+        {
+            file.balances = balances;
+            self.store_text(rid, &file)?;
+        }
+        self.text.sessions.remove(rid);
+        Ok(())
+    }
+
+    /// The note's document for the editor. The note enters text mode now,
+    /// when a live `file` operation matches its file, and its edits go to
+    /// the document from here on. Call [`Self::close_text`] when the editor
+    /// lets go of it.
+    pub fn open_text(&mut self, path: &str) -> Result<(Entered, Option<SandboxDocument>), SyncError> {
+        let Some(rid) = self.rid_at(path) else {
+            return Ok((Entered::NotYet, None));
+        };
+        if !self.in_text_mode(&rid) {
+            let entered = self.enter_text(rid)?;
+            if entered != Entered::Yes {
+                return Ok((entered, None));
+            }
+        }
+        self.text_settle(rid)?;
+        self.open_session(&rid)?;
+        let session = self
+            .text
+            .sessions
+            .get_mut(&rid)
+            .expect("the session just opened");
+        session.editing = true;
+        let handle = session.handle.take();
+        self.touch(&rid);
+        Ok((Entered::Yes, handle.map(SandboxDocument::new)))
+    }
+
+    /// The editor let go of the note: the idle rule runs now (§22).
+    pub fn close_text(&mut self, path: &str) -> Result<(), SyncError> {
+        let Some(rid) = self.rid_at(path) else {
+            return Ok(());
+        };
+        if let Some(session) = self.text.sessions.get_mut(&rid) {
+            session.editing = false;
+        }
+        self.text.activity.entry(rid).and_modify(|a| a.closed = true);
+        self.send_text(rid)?;
+        self.text_upkeep_note(rid, Instant::now())?;
+        self.close_session(&rid)
+    }
+
+    fn touch(&mut self, rid: &Id) {
+        let now = Instant::now();
+        self.text
+            .activity
+            .entry(*rid)
+            .and_modify(|a| {
+                a.last_edit = now;
+                a.closed = false;
+            })
+            .or_insert(Activity {
+                last_edit: now,
+                last_snapshot: None,
+                closed: false,
+            });
+    }
+
+    /// Puts the note in text mode (§22, Entering text mode): a
+    /// `text_snapshot` derived from the base operation alone.
+    fn enter_text(&mut self, rid: Id) -> Result<Entered, SyncError> {
+        let Some(object) = self.state.objects.get(&rid) else {
+            return Ok(Entered::NotYet);
+        };
+        let domain = object.domain;
+        let (Some(base), Some(local)) = (object.base, object.local.clone()) else {
+            return Ok(Entered::NotYet);
+        };
+        if !local.path.ends_with(".md") {
+            return Ok(Entered::Never);
+        }
+        let Some(info) = object.states.get(&base).cloned() else {
+            return Ok(Entered::NotYet);
+        };
+        let (Some(seq), Some(content)) = (info.seq, info.content.clone()) else {
+            return Ok(Entered::NotYet);
+        };
+        if content.delete || content.revision != local.revision {
+            return Ok(Entered::NotYet);
+        }
+        if self.live_states(&rid) != [base] || self.local_edit(&rid) {
+            return Ok(Entered::NotYet);
+        }
+        if !self.can_write_note(&rid) {
+            return Ok(Entered::NotYet);
+        }
+        let Some(bytes) = self.engine.read_synced(&local.path).map_err(core)? else {
+            return Ok(Entered::NotYet);
+        };
+        let (properties, body) = match note_parts(&local.path, &bytes) {
+            NoteParts::Managed { properties, body } => (properties, body),
+            NoteParts::Unmanaged { body } => (BTreeMap::new(), body),
+            NoteParts::Outside => return Ok(Entered::Never),
+        };
+        if body.len() > TEXT_LIMIT {
+            return Ok(Entered::Never);
+        }
+        let document = sandbox()?
+            .first_document(&body)
+            .map_err(|error| SyncError::Invalid(error.to_string()))?;
+        let lineage = text_lineage_id(&rid, &info.digest, &document);
+        let mut meta = vec![MetaEntry {
+            key: "path".into(),
+            seq,
+            value: Some(content.path.clone().into_bytes()),
+        }];
+        for (name, value) in &properties {
+            meta.push(MetaEntry {
+                key: format!("p:{name}"),
+                seq,
+                value: Some(value.clone().into_bytes()),
+            });
+        }
+        meta.sort_by(|a, b| a.key.cmp(&b.key));
+        let composed = compose_note(&properties, &body)
+            .map_err(|_| SyncError::Invalid("the note's frontmatter".into()))?;
+        let revision = hash(composed.as_bytes());
+        let mut file = TextFile {
+            lineage,
+            records: Vec::new(),
+            balances: Vec::new(),
+            stopped: false,
+            pending_since: None,
+            reviews: Vec::new(),
+        };
+        self.in_domain(domain, |sync| {
+            let view: BTreeSet<OpKey> = sync.live_ops(&rid).into_iter().collect();
+            let covers = sync.covers_of(&rid, &view);
+            sync.sign_snapshot(rid, &mut file, covers, revision, &meta, document)
+        })?;
+        self.state
+            .objects
+            .get_mut(&rid)
+            .expect("signed for it")
+            .text = Some(lineage);
+        self.store_text(&rid, &file)?;
+        self.touch(&rid);
+        self.save()?;
+        Ok(Entered::Yes)
+    }
+
+    /// Every live operation on `rid`, patches included.
+    pub(super) fn live_ops(&self, rid: &Id) -> Vec<OpKey> {
+        let domain = self.state.objects.get(rid).and_then(|o| o.domain);
+        self.log_of(domain)
+            .live
+            .live(rid)
+            .into_iter()
+            .map(|(op, _)| OpKey {
+                device: op.device,
+                counter: op.counter,
+            })
+            .collect()
+    }
+
+    /// The content of a record's payload: inline, or in a blob when the
+    /// payload would pass the inline limit.
+    fn text_content(
+        &mut self,
+        rid: Id,
+        bytes: &[u8],
+        meta_len: usize,
+    ) -> Result<(Content, Option<sync_protocol::records::BlobRef>), SyncError> {
+        if bytes.len() + meta_len + PAYLOAD_OVERHEAD <= MAX_PAYLOAD_LEN {
+            return Ok((
+                Content::Inline {
+                    bytes: Bytes(bytes.to_vec()),
+                },
+                None,
+            ));
+        }
+        let found = Found {
+            file: local_core::SyncedFile {
+                relative_path: String::new(),
+                size: bytes.len() as u64,
+                modified_ns: 0,
+                file_id: None,
+            },
+            revision: hash(bytes),
+            object_id: String::new(),
+            bytes: Some(bytes.to_vec()),
+        };
+        let (blob, upload) = self.blob_for(rid, &found)?;
+        Ok((Content::Blob(blob), upload))
+    }
+
+    fn meta_len(meta: &[MetaEntry]) -> usize {
+        meta.iter()
+            .map(|e| e.key.len() + 16 + e.value.as_ref().map_or(0, Vec::len))
+            .sum()
+    }
+
+    /// Keeps a record this device wrote in the note's file, so a restart
+    /// rebuilds the document from it.
+    fn keep_own(
+        &mut self,
+        rid: Id,
+        file: &mut TextFile,
+        signed: &Signed<Operation>,
+        payload: &Payload,
+        snapshot: bool,
+        lineage: Id,
+        meta: &[MetaEntry],
+        blob: Option<&[u8]>,
+    ) -> Result<(), SyncError> {
+        let bytes = payload.to_bytes();
+        let digest = hash(&bytes);
+        self.journal.keep(&record_path(&rid, &digest), &bytes)?;
+        let blob = match blob {
+            Some(blob) => {
+                let digest = hash(blob);
+                self.journal.keep(&record_path(&rid, &digest), blob)?;
+                Some(digest)
+            }
+            None => None,
+        };
+        let (writer, card_count) = self.card_of(&signed.body.device, None)?;
+        file.records.push(TextRecord {
+            key: OpKey {
+                device: signed.body.device,
+                counter: signed.body.counter,
+            },
+            seq: None,
+            digest: signed.digest(),
+            snapshot,
+            lineage,
+            writer,
+            card_count,
+            covers: signed.body.supersedes.to_vec(),
+            weight: signed.body.ciphertext.len() as u64,
+            epoch: signed.body.epoch,
+            meta: meta.to_vec(),
+            payload: digest,
+            blob,
+            judgement: Judgement::Readable,
+        });
+        Ok(())
+    }
+
+    /// Signs a `text_snapshot` holding `document` in the note's lineage.
+    fn sign_snapshot(
+        &mut self,
+        rid: Id,
+        file: &mut TextFile,
+        covers: Vec<Cover>,
+        revision: Digest,
+        meta: &[MetaEntry],
+        document: Vec<u8>,
+    ) -> Result<(), SyncError> {
+        let object_id = self.state.objects[&rid].object_id.clone();
+        let path = meta
+            .iter()
+            .find(|e| e.key == "path")
+            .and_then(|e| e.value.clone())
+            .and_then(|v| String::from_utf8(v).ok())
+            .unwrap_or_default();
+        let (content, upload) = self.text_content(rid, &document, Self::meta_len(meta))?;
+        let in_blob = matches!(content, Content::Blob(_));
+        let payload = Payload {
+            rid,
+            kind: PayloadKind::TextSnapshot {
+                object_id: Text::new(object_id.clone())
+                    .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
+                revision,
+                text_lineage: file.lineage,
+                meta: meta_list(meta)?,
+                content,
+                origin: None,
+            },
+        };
+        let carried = Carried {
+            path,
+            revision,
+            delete: false,
+            object_id,
+            kept: None,
+            blob: None,
+            text: Some(file.lineage),
+        };
+        let key = self.sign(rid, false, covers, &payload, carried)?;
+        if let Some(outgoing) = self.state.outbox.last_mut() {
+            outgoing.upload = upload;
+        }
+        let signed = self
+            .state
+            .outbox
+            .last()
+            .map(|o| o.record.clone())
+            .expect("just signed");
+        let lineage = file.lineage;
+        self.keep_own(
+            rid,
+            file,
+            &signed,
+            &payload,
+            true,
+            lineage,
+            meta,
+            in_blob.then_some(document.as_slice()),
+        )?;
+        self.state.objects.get_mut(&rid).expect("signed").base = Some(key);
+        Ok(())
+    }
+
+    /// Signs a `text_update` carrying `yrs` and `meta` under `load`.
+    fn sign_update(
+        &mut self,
+        rid: Id,
+        file: &mut TextFile,
+        load: u32,
+        yrs: Vec<u8>,
+        meta: &[MetaEntry],
+    ) -> Result<(), SyncError> {
+        let object_id = self.state.objects[&rid].object_id.clone();
+        let (content, upload) = self.text_content(rid, &yrs, Self::meta_len(meta))?;
+        let in_blob = matches!(content, Content::Blob(_));
+        let payload = Payload {
+            rid,
+            kind: PayloadKind::TextUpdate {
+                object_id: Text::new(object_id.clone())
+                    .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
+                text_lineage: file.lineage,
+                load,
+                meta: meta_list(meta)?,
+                content,
+            },
+        };
+        let carried = Carried {
+            path: String::new(),
+            revision: Digest::ZERO,
+            delete: false,
+            object_id,
+            kept: None,
+            blob: None,
+            text: Some(file.lineage),
+        };
+        let key = self.sign(rid, false, Vec::new(), &payload, carried)?;
+        if let Some(outgoing) = self.state.outbox.last_mut() {
+            outgoing.upload = upload;
+        }
+        // A patch is no state of the object.
+        self.state
+            .objects
+            .get_mut(&rid)
+            .expect("signed")
+            .states
+            .remove(&key);
+        let signed = self
+            .state
+            .outbox
+            .last()
+            .map(|o| o.record.clone())
+            .expect("just signed");
+        let lineage = file.lineage;
+        self.keep_own(
+            rid,
+            file,
+            &signed,
+            &payload,
+            false,
+            lineage,
+            meta,
+            in_blob.then_some(yrs.as_slice()),
+        )
+    }
+
+    /// Signs what the note's document holds that hasn't gone out: at most
+    /// one update per load, with the waiting `path` and property writes.
+    pub(super) fn send_text(&mut self, rid: Id) -> Result<usize, SyncError> {
+        let domain = self.state.objects.get(&rid).and_then(|o| o.domain);
+        self.in_domain(domain, |sync| sync.send_text_here(rid))
+    }
+
+    fn send_text_here(&mut self, rid: Id) -> Result<usize, SyncError> {
+        let Some(session) = self.text.sessions.get(&rid) else {
+            return Ok(0);
+        };
+        if self.state.removal_hold || self.state.ended.is_some() {
+            return Ok(0);
+        }
+        let updates = session.shared.take_updates().map_err(handle_error)?;
+        let load = session.load;
+        let meta = session.meta.clone();
+        if updates.is_empty() && meta.is_empty() {
+            return Ok(0);
+        }
+        if !self.can_write_note(&rid) {
+            return Ok(0);
+        }
+        let Some(mut file) = self.text_file(&rid)? else {
+            return Ok(0);
+        };
+        let mut signed = 0;
+        let mut meta = Some(meta);
+        for update in updates {
+            let entries = meta.take().unwrap_or_default();
+            self.sign_update(rid, &mut file, update.load, update.bytes, &entries)?;
+            signed += 1;
+        }
+        if let Some(entries) = meta.take()
+            && !entries.is_empty()
+        {
+            self.sign_update(rid, &mut file, load, EMPTY_UPDATE.to_vec(), &entries)?;
+            signed += 1;
+        }
+        if let Some(session) = self.text.sessions.get_mut(&rid) {
+            session.meta.clear();
+        }
+        self.store_text(&rid, &file)?;
+        self.touch(&rid);
+        Ok(signed)
+    }
+
+    /// Takes in a `text_snapshot` or `text_update` that passed the checks of
+    /// §13: from here on it counts as applied. The sandbox judges it later.
+    pub(super) fn take_text(
+        &mut self,
+        record: &CheckedRecord,
+        blob: Option<Vec<u8>>,
+    ) -> Result<(), SyncError> {
+        let op = &record.op;
+        let rid = op.body.rid;
+        let key = OpKey {
+            device: op.body.device,
+            counter: op.body.counter,
+        };
+        let payload = record.payload.as_ref().expect("a text record opened");
+        let (snapshot, lineage, meta, object_id, revision) = match &payload.kind {
+            PayloadKind::TextSnapshot {
+                text_lineage,
+                meta,
+                object_id,
+                revision,
+                ..
+            } => (true, *text_lineage, meta, object_id, Some(*revision)),
+            PayloadKind::TextUpdate {
+                text_lineage,
+                meta,
+                object_id,
+                ..
+            } => (false, *text_lineage, meta, object_id, None),
+            _ => return Ok(()),
+        };
+        let mut file = self.text_file(&rid)?.unwrap_or(TextFile {
+            lineage,
+            records: Vec::new(),
+            balances: Vec::new(),
+            stopped: false,
+            pending_since: None,
+            reviews: Vec::new(),
+        });
+        if let Some(own) = file.records.iter_mut().find(|r| r.key == key) {
+            own.seq = Some(record.seq);
+            own.digest = op.digest();
+            own.epoch = op.body.epoch;
+        } else {
+            let bytes = payload.to_bytes();
+            let digest = hash(&bytes);
+            self.journal.keep(&record_path(&rid, &digest), &bytes)?;
+            let blob = match blob {
+                Some(blob) => {
+                    let digest = hash(&blob);
+                    self.journal.keep(&record_path(&rid, &digest), &blob)?;
+                    Some(digest)
+                }
+                None => None,
+            };
+            let (writer, card_count) =
+                self.card_of(&op.body.device, Some(op.body.policy_revision))?;
+            file.records.push(TextRecord {
+                key,
+                seq: Some(record.seq),
+                digest: op.digest(),
+                snapshot,
+                lineage,
+                writer,
+                card_count,
+                covers: op.body.supersedes.to_vec(),
+                weight: LiveWeight::of(op),
+                epoch: op.body.epoch,
+                meta: entries_of(meta),
+                payload: digest,
+                blob,
+                judgement: Judgement::Waiting,
+            });
+        }
+        self.store_text(&rid, &file)?;
+        let domain = self.active;
+        let object = self.state.objects.entry(rid).or_default();
+        object.domain = domain;
+        if object.object_id.is_empty() {
+            object.object_id = object_id.0.clone();
+        }
+        if op.body.device == self.credentials.keys.device() {
+            object.own_highest = object.own_highest.max(op.body.counter);
+        }
+        if record.class == OpClass::State {
+            let path = meta
+                .iter()
+                .find(|e| e.key.as_str() == "path")
+                .and_then(|e| e.value.as_ref())
+                .and_then(|v| String::from_utf8(v.0.clone()).ok())
+                .unwrap_or_default();
+            let entry = object.states.entry(key).or_insert(super::StateInfo {
+                digest: op.digest(),
+                seq: None,
+                covers: op.body.supersedes.to_vec(),
+                content: None,
+                epoch: op.body.epoch,
+                policy_revision: op.body.policy_revision,
+            });
+            entry.seq = Some(record.seq);
+            entry.digest = op.digest();
+            entry.epoch = op.body.epoch;
+            entry.content = Some(Carried {
+                path,
+                revision: revision.unwrap_or(Digest::ZERO),
+                delete: false,
+                object_id: object_id.0.clone(),
+                kept: None,
+                blob: None,
+                text: Some(lineage),
+            });
+        }
+        self.text.unsettled.insert(rid);
+        Ok(())
+    }
+
+    /// Runs the sandbox on what the journal took in since the last call.
+    pub(super) fn settle_text(&mut self) -> Result<(), SyncError> {
+        for rid in std::mem::take(&mut self.text.unsettled) {
+            self.text_settle(rid)?;
+        }
+        Ok(())
+    }
+
+    /// The lineage the live set leaves the note on: the lineage of its live
+    /// snapshots, when they all name one.
+    fn live_lineage(&self, rid: &Id) -> Option<Id> {
+        let object = self.state.objects.get(rid)?;
+        let mut lineages = self.live_states(rid).into_iter().filter_map(|key| {
+            let content = object.states.get(&key)?.content.as_ref()?;
+            Some(content.text)
+        });
+        let first = lineages.next()??;
+        lineages.all(|l| l == Some(first)).then_some(first)
+    }
+
+    /// Brings the note in line with its live records: follows the live
+    /// lineage, hands the sandbox what it hasn't judged, and writes the
+    /// note's file from the merged state.
+    pub(super) fn text_settle(&mut self, rid: Id) -> Result<(), SyncError> {
+        let Some(mut file) = self.text_file(&rid)? else {
+            return Ok(());
+        };
+        // This device's own snapshot on its way holds the lineage up.
+        let own_snapshot = file
+            .records
+            .iter()
+            .any(|r| r.snapshot && r.seq.is_none() && r.lineage == file.lineage);
+        let live = own_snapshot
+            .then_some(file.lineage)
+            .or_else(|| self.live_lineage(&rid));
+        let Some(lineage) = live else {
+            // A `file` operation covers the lineage, or a conflict holds it.
+            if !self.live_states(&rid).is_empty()
+                && !self
+                    .state
+                    .objects
+                    .get(&rid)
+                    .is_some_and(|o| self.has_live_snapshot(&rid, o))
+            {
+                self.end_text(rid)?;
+            }
+            return Ok(());
+        };
+        if file.lineage != lineage {
+            // A rebase: the note starts again from the new lineage, and
+            // updates of the old one go to review as text.
+            for record in &file.records {
+                if !record.snapshot && record.lineage != lineage {
+                    let review = TextReview {
+                        rid,
+                        kind: TextReviewKind::EndedLineage,
+                        signer: Some(record.key.device),
+                        seq: record.seq,
+                    };
+                    if !file.reviews.contains(&review) {
+                        file.reviews.push(review);
+                    }
+                }
+            }
+            file.lineage = lineage;
+            file.stopped = false;
+            file.pending_since = None;
+            self.store_text(&rid, &file)?;
+            self.text.sessions.remove(&rid);
+        }
+        self.state.objects.entry(rid).or_default().text = Some(lineage);
+        if file.stopped {
+            return Ok(());
+        }
+        self.open_session(&rid)?;
+        let session = self.text.sessions.get_mut(&rid).expect("just opened");
+        for record in &file.records {
+            if record.judgement != Judgement::Waiting || record.lineage != lineage {
+                continue;
+            }
+            let id = record.id();
+            if !session.sent.insert(id) {
+                continue;
+            }
+            let payload = self
+                .journal
+                .kept(&record_path(&rid, &record.payload), &record.payload)?;
+            let blob = match &record.blob {
+                Some(blob) => Some(self.journal.kept(&record_path(&rid, blob), blob)?),
+                None => None,
+            };
+            session
+                .records
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(
+                    id,
+                    Stored {
+                        writer: record.writer,
+                        card_count: record.card_count,
+                        place: record.place(),
+                        payload: self
+                            .journal
+                            .dir()
+                            .join(record_path(&rid, &record.payload)),
+                        blob: record
+                            .blob
+                            .map(|blob| self.journal.dir().join(record_path(&rid, &blob))),
+                    },
+                );
+            session
+                .shared
+                .receive(RemoteRecord {
+                    id,
+                    writer: record.writer,
+                    card_count: record.card_count,
+                    payload,
+                    blob,
+                    place: record.place(),
+                })
+                .map_err(handle_error)?;
+        }
+        session.shared.settle().map_err(handle_error)?;
+        self.touch(&rid);
+        self.absorb(rid, &mut file)?;
+        self.store_text(&rid, &file)?;
+        self.write_note(rid, &mut file)?;
+        self.prune(rid, &mut file)?;
+        self.store_text(&rid, &file)?;
+        let busy = self
+            .text
+            .sessions
+            .get(&rid)
+            .is_some_and(|s| s.editing || !s.meta.is_empty());
+        if !busy {
+            self.close_session(&rid)?;
+        }
+        Ok(())
+    }
+
+    fn has_live_snapshot(&self, rid: &Id, object: &super::Object) -> bool {
+        self.live_states(rid).iter().any(|key| {
+            object
+                .states
+                .get(key)
+                .and_then(|s| s.content.as_ref())
+                .is_some_and(|c| c.text.is_some())
+        })
+    }
+
+    /// Takes what the sandbox reported and the changes the document merged.
+    fn absorb(&mut self, rid: Id, file: &mut TextFile) -> Result<(), SyncError> {
+        let Some(session) = self.text.sessions.get_mut(&rid) else {
+            return Ok(());
+        };
+        let device_of = |file: &TextFile, id: u64| {
+            file.records
+                .iter()
+                .find(|r| r.id() == id)
+                .map(|r| (r.key.device, r.seq))
+        };
+        let mut reports = Vec::new();
+        let events = session.shared.take_events();
+        let status = session.shared.status();
+        for event in events {
+            let review = |kind, id: u64, file: &mut TextFile| {
+                let (signer, seq) = device_of(file, id).map_or((None, None), |(d, s)| (Some(d), s));
+                let entry = TextReview {
+                    rid,
+                    kind,
+                    signer,
+                    seq,
+                };
+                if !file.reviews.contains(&entry) {
+                    file.reviews.push(entry);
+                }
+            };
+            let set = |id: u64, judgement: Judgement, file: &mut TextFile| {
+                if let Some(record) = file.records.iter_mut().find(|r| r.id() == id) {
+                    record.judgement = judgement;
+                }
+            };
+            match event {
+                Event::Verdict { id, verdict } if verdict.outcome.is_err() => {
+                    set(id, Judgement::Unreadable, file);
+                    review(TextReviewKind::Unreadable, id, file);
+                }
+                Event::Merged { id, .. } => {
+                    set(id, Judgement::Readable, file);
+                    if status == LineageStatus::Pending && file.pending_since.is_none() {
+                        file.pending_since = Some(id);
+                    }
+                }
+                Event::Refused { id } => {
+                    set(id, Judgement::Refused, file);
+                    review(TextReviewKind::Refused, id, file);
+                }
+                Event::Disagrees { id, .. } => {
+                    let snapshot = file.records.iter().any(|r| r.id() == id && r.snapshot);
+                    set(
+                        id,
+                        if snapshot {
+                            Judgement::Disagrees
+                        } else {
+                            Judgement::Readable
+                        },
+                        file,
+                    );
+                    review(TextReviewKind::Disagrees, id, file);
+                    reports.push("sync_text_conflict");
+                }
+                Event::Stopped { id, .. } => {
+                    file.stopped = true;
+                    review(TextReviewKind::Stopped, id, file);
+                }
+                Event::Pending(true) => {
+                    let entry = TextReview {
+                        rid,
+                        kind: TextReviewKind::Pending,
+                        signer: None,
+                        seq: None,
+                    };
+                    if !file.reviews.contains(&entry) {
+                        file.reviews.push(entry);
+                    }
+                }
+                Event::Pending(false) => {
+                    file.pending_since = None;
+                    file.reviews.retain(|r| r.kind != TextReviewKind::Pending);
+                }
+                _ => {}
+            }
+        }
+        let shared = session.shared.clone();
+        for op in shared.take_merged_changes() {
+            session.body = match op.apply(&session.body) {
+                Ok(body) => body,
+                Err(_) => shared.merged_text().map_err(handle_error)?,
+            };
+        }
+        self.text.reported.extend(reports);
+        Ok(())
+    }
+
+    /// Writes the note's file from its merged state, through the kernel's
+    /// durable write path. A file with an edit sync hasn't captured keeps
+    /// it until the next capture turns it into an update.
+    fn write_note(&mut self, rid: Id, file: &mut TextFile) -> Result<(), SyncError> {
+        let Some(session) = self.text.sessions.get(&rid) else {
+            return Ok(());
+        };
+        if file.stopped || self.local_edit(&rid) {
+            return Ok(());
+        }
+        let merged = merged_meta(&file.records);
+        let (path, properties) = note_meta(&merged);
+        let Some(path) = path else {
+            return Ok(());
+        };
+        let Ok(composed) = compose_note(&properties, &session.body) else {
+            return Ok(());
+        };
+        let bytes = composed.into_bytes();
+        let revision = hash(&bytes);
+        let synced = match self.placement_with_exception(&rid, &path) {
+            Placement::At(path) | Placement::Shared(path) => path,
+            // A path that left the object's root: the file stays, and the
+            // change goes to review (§9).
+            Placement::Outside(_) => {
+                let entry = TextReview {
+                    rid,
+                    kind: TextReviewKind::OutsideRoot,
+                    signer: None,
+                    seq: None,
+                };
+                if !file.reviews.contains(&entry) {
+                    file.reviews.push(entry);
+                }
+                return Ok(());
+            }
+        };
+        let object = &self.state.objects[&rid];
+        let local = object.local.as_ref();
+        if local.is_some_and(|l| l.path == synced && l.revision == revision) {
+            return Ok(());
+        }
+        let Some(base) = self.latest_snapshot(&rid) else {
+            return Ok(());
+        };
+        let (target, displaced) = self.destination(&rid, &base, &synced);
+        for other in displaced {
+            if let Err(error) = self.move_aside(&other) {
+                tracing::warn!(%error, "a file that yields its path couldn't move aside");
+                return Ok(());
+            }
+        }
+        match self.place(&rid, &target, &Body::Bytes(bytes), revision) {
+            Ok(()) => {
+                self.state.objects.get_mut(&rid).expect("present").base = Some(base);
+                Ok(())
+            }
+            Err(SyncError::Invalid(message)) if message.starts_with("revision_conflict") => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// The live snapshot at the highest log sequence.
+    fn latest_snapshot(&self, rid: &Id) -> Option<OpKey> {
+        let object = self.state.objects.get(rid)?;
+        self.live_states(rid)
+            .into_iter()
+            .filter(|key| {
+                object
+                    .states
+                    .get(key)
+                    .and_then(|s| s.content.as_ref())
+                    .is_some_and(|c| c.text.is_some())
+            })
+            .max_by_key(|key| object.states[key].seq.unwrap_or(u64::MAX))
+            .or(object.base)
+    }
+
+    /// Forgets the records no live operation holds, once the sandbox judged
+    /// every snapshot that covers one (§22).
+    fn prune(&mut self, rid: Id, file: &mut TextFile) -> Result<(), SyncError> {
+        if file
+            .records
+            .iter()
+            .any(|r| r.snapshot && r.judgement == Judgement::Waiting)
+        {
+            return Ok(());
+        }
+        let live: BTreeSet<OpKey> = self.live_ops(&rid).into_iter().collect();
+        let (kept, gone): (Vec<_>, Vec<_>) = std::mem::take(&mut file.records)
+            .into_iter()
+            .partition(|r| r.seq.is_none() || live.contains(&r.key));
+        file.records = kept;
+        for record in gone {
+            let used = |digest: &Digest| {
+                file.records
+                    .iter()
+                    .any(|r| r.payload == *digest || r.blob == Some(*digest))
+            };
+            if !used(&record.payload) {
+                self.journal.forget(&record_path(&rid, &record.payload));
+            }
+            if let Some(blob) = record.blob.filter(|blob| !used(blob)) {
+                self.journal.forget(&record_path(&rid, &blob));
+            }
+        }
+        Ok(())
+    }
+
+    /// Ends text mode on this device: the note's file is what it holds now,
+    /// and a `file` operation covers the lineage.
+    pub(super) fn end_text(&mut self, rid: Id) -> Result<(), SyncError> {
+        self.text.sessions.remove(&rid);
+        self.text.activity.remove(&rid);
+        if let Some(file) = self.text_file(&rid)? {
+            for record in &file.records {
+                self.journal.forget(&record_path(&rid, &record.payload));
+                if let Some(blob) = &record.blob {
+                    self.journal.forget(&record_path(&rid, blob));
+                }
+            }
+        }
+        self.journal.forget(&text_name(&rid));
+        if let Some(object) = self.state.objects.get_mut(&rid) {
+            object.text = None;
+        }
+        Ok(())
+    }
+
+    /// Signs a `file` operation of the note's file that covers every live
+    /// operation, which ends the lineage on every device (§22).
+    fn end_with_file(&mut self, rid: Id, found: &Found) -> Result<(), SyncError> {
+        let domain = self.object_domain(&rid);
+        self.in_domain(domain, |sync| {
+            let view: BTreeSet<OpKey> = sync.live_ops(&rid).into_iter().collect();
+            let covers = sync.covers_of(&rid, &view);
+            sync.sign_file(rid, found, covers)
+        })?;
+        self.end_text(rid)
+    }
+
+    /// Keeps a stopped note's last good state: a `file` operation that
+    /// covers every live operation of the note ends its lineage (§22).
+    pub fn keep_last_good(&mut self, rid: Id) -> Result<(), SyncError> {
+        let path = self
+            .state
+            .objects
+            .get(&rid)
+            .and_then(|o| o.local.as_ref())
+            .map(|l| l.path.clone())
+            .ok_or_else(|| SyncError::Invalid("the note has no file".into()))?;
+        let found = self.found_on_disk(&path)?;
+        self.end_with_file(rid, &found)?;
+        self.save()
+    }
+
+    /// Turns a local change to a text-mode note's file into what §22 asks:
+    /// a `text_update` computed from the difference, nothing for a change
+    /// that only reformats the frontmatter, or a `file` operation that ends
+    /// text mode. Returns how many records it signed.
+    pub(super) fn capture_text(&mut self, rid: Id, found: &Found) -> Result<usize, SyncError> {
+        let Some(mut file) = self.text_file(&rid)? else {
+            return Ok(0);
+        };
+        if file.stopped {
+            return Ok(0);
+        }
+        let bytes = match &found.bytes {
+            Some(bytes) => bytes.clone(),
+            None => {
+                self.end_with_file(rid, found)?;
+                return Ok(1);
+            }
+        };
+        let path = found.file.relative_path.as_str();
+        let merged = merged_meta(&file.records);
+        let (merged_path, merged_properties) = note_meta(&merged);
+        let managed = !merged_properties.is_empty();
+        let (properties, body) = match note_parts(path, &bytes) {
+            NoteParts::Managed { properties, body } if managed => (properties, body),
+            NoteParts::Unmanaged { body } if !managed => (BTreeMap::new(), body),
+            _ => {
+                self.end_with_file(rid, found)?;
+                return Ok(1);
+            }
+        };
+        if body.len() > TEXT_LIMIT {
+            self.end_with_file(rid, found)?;
+            return Ok(1);
+        }
+        self.open_session(&rid)?;
+        self.absorb(rid, &mut file)?;
+        self.store_text(&rid, &file)?;
+        let session = self.text.sessions.get_mut(&rid).expect("just opened");
+        let body_changed = session.body != body;
+        let mut meta = Vec::new();
+        if merged_path.as_deref() != Some(path)
+            && let synced = sync_protocol::matching::synced_path(path, &self.state.roots)
+            && merged_path.as_deref() != Some(synced.as_str())
+        {
+            meta.push(MetaEntry {
+                key: "path".into(),
+                seq: 0,
+                value: Some(synced.into_bytes()),
+            });
+        }
+        for (name, value) in &properties {
+            if merged_properties.get(name) != Some(value) {
+                meta.push(MetaEntry {
+                    key: format!("p:{name}"),
+                    seq: 0,
+                    value: Some(value.clone().into_bytes()),
+                });
+            }
+        }
+        for name in merged_properties.keys() {
+            if !properties.contains_key(name) {
+                meta.push(MetaEntry {
+                    key: format!("p:{name}"),
+                    seq: 0,
+                    value: None,
+                });
+            }
+        }
+        meta.sort_by(|a, b| a.key.cmp(&b.key));
+        let session = self.text.sessions.get_mut(&rid).expect("just opened");
+        if body_changed {
+            let at = 0;
+            session
+                .shared
+                .replace_text(body.clone(), at)
+                .map_err(handle_error)?;
+            session.body = body;
+            session.shared.take_merged_changes();
+        }
+        session.meta.extend(meta);
+        let changed = body_changed || !session.meta.is_empty();
+        let signed = self.send_text(rid)?;
+        if let Some(object) = self.state.objects.get_mut(&rid) {
+            object.local = Some(found.local());
+        }
+        if !changed {
+            // Only the frontmatter's form changed: your bytes stay until
+            // another change rewrites them.
+            return Ok(0);
+        }
+        self.touch(&rid);
+        let editing = self
+            .text
+            .sessions
+            .get(&rid)
+            .is_some_and(|session| session.editing);
+        if !editing {
+            self.close_session(&rid)?;
+        }
+        Ok(signed)
+    }
+
+    /// One tick of text mode: takes the documents' merged changes to the
+    /// files, signs the edits that wait, and runs the snapshot rules.
+    pub fn text_tick(&mut self, now: Instant) -> Result<usize, SyncError> {
+        let mut signed = 0;
+        let rids: Vec<Id> = self.text.sessions.keys().copied().collect();
+        for rid in rids {
+            signed += self.send_text(rid)?;
+            let Some(mut file) = self.text_file(&rid)? else {
+                self.text.sessions.remove(&rid);
+                continue;
+            };
+            let session = &self.text.sessions[&rid];
+            let closed = !session.shared.is_alive();
+            self.absorb(rid, &mut file)?;
+            if let Some(session) = self.text.sessions.get(&rid)
+                && session.body.len() > TEXT_LIMIT
+                && let Some(path) = self.state.objects[&rid].local.as_ref().map(|l| l.path.clone())
+            {
+                self.write_note(rid, &mut file)?;
+                let found = self.found_on_disk(&path)?;
+                self.end_with_file(rid, &found)?;
+                signed += 1;
+                continue;
+            }
+            self.write_note(rid, &mut file)?;
+            self.store_text(&rid, &file)?;
+            if closed {
+                self.text.sessions.remove(&rid);
+            }
+        }
+        let notes: Vec<Id> = self
+            .state
+            .objects
+            .iter()
+            .filter(|(_, object)| object.text.is_some())
+            .map(|(rid, _)| *rid)
+            .collect();
+        for rid in notes {
+            signed += usize::from(self.text_upkeep_note(rid, now)?);
+        }
+        Ok(signed)
+    }
+
+    /// Whether the client ticks: a note's document is open.
+    pub fn text_active(&self) -> bool {
+        !self.text.sessions.is_empty()
+    }
+
+    /// Runs the snapshot rules on the note (§22). Returns whether it wrote
+    /// a snapshot.
+    fn text_upkeep_note(&mut self, rid: Id, now: Instant) -> Result<bool, SyncError> {
+        let Some(file) = self.text_file(&rid)? else {
+            return Ok(false);
+        };
+        if file.stopped || !self.can_write_note(&rid) {
+            return Ok(false);
+        }
+        let required = self.text.required.contains(&rid);
+        let own = self.credentials.keys.device();
+        let activity = *self.text.activity.entry(rid).or_insert(Activity {
+            last_edit: now,
+            last_snapshot: None,
+            closed: false,
+        });
+        let live: BTreeSet<OpKey> = self.live_ops(&rid).into_iter().collect();
+        let patches: Vec<&TextRecord> = file
+            .records
+            .iter()
+            .filter(|r| !r.snapshot && live.contains(&r.key))
+            .collect();
+        let count = patches.len();
+        let bytes: u64 = patches.iter().map(|r| r.weight).sum();
+        let latest = patches.iter().max_by_key(|r| r.id());
+        let wrote_latest = latest.is_some_and(|r| r.key.device == own);
+        let snapshot_size = file
+            .records
+            .iter()
+            .filter(|r| r.snapshot)
+            .map(|r| r.weight)
+            .max()
+            .unwrap_or(0);
+        let threshold = (snapshot_size / 4).clamp(VOLUME_BYTES.0, VOLUME_BYTES.1);
+        let lowest_holder = patches.iter().map(|r| r.key.device).min();
+        let designated = lowest_holder == Some(own);
+        let idle = now.saturating_duration_since(activity.last_edit);
+        let due = required
+            || (count > VOLUME_PATCHES || bytes > threshold) && designated
+            || count > 2 * VOLUME_PATCHES
+            || bytes > 2 * threshold
+            || count > IDLE_PATCHES
+                && ((wrote_latest && (idle >= IDLE || activity.closed)) || idle >= IDLE_ANY_WRITER);
+        if !due {
+            return Ok(false);
+        }
+        let recent = activity
+            .last_snapshot
+            .is_some_and(|at| now.saturating_duration_since(at) < SNAPSHOT_EVERY);
+        if recent && !required {
+            return Ok(false);
+        }
+        self.write_snapshot(rid, false)?;
+        self.text.required.remove(&rid);
+        if let Some(activity) = self.text.activity.get_mut(&rid) {
+            activity.last_snapshot = Some(now);
+        }
+        Ok(true)
+    }
+
+    /// Writes a `text_snapshot` of the note's document, or a rebase once
+    /// the document reaches 16 MiB (§22). A `rewrite` writes again records
+    /// under an epoch a replacement skipped.
+    pub(super) fn write_snapshot(&mut self, rid: Id, rewrite: bool) -> Result<(), SyncError> {
+        let domain = self.object_domain(&rid);
+        self.send_text(rid)?;
+        let keep_open = self.text.sessions.contains_key(&rid);
+        self.open_session(&rid)?;
+        let Some(mut file) = self.text_file(&rid)? else {
+            return Ok(());
+        };
+        self.absorb(rid, &mut file)?;
+        let session = &self.text.sessions[&rid];
+        let document = session.shared.state().map_err(handle_error)?;
+        let body = session.body.clone();
+        let merged = merged_meta(&file.records);
+        let (_, properties) = note_meta(&merged);
+        let composed = compose_note(&properties, &body)
+            .map_err(|_| SyncError::Invalid("the note's frontmatter".into()))?;
+        let revision = hash(composed.as_bytes());
+        let meta: Vec<MetaEntry> = merged
+            .iter()
+            .map(|(key, write)| MetaEntry {
+                key: key.clone(),
+                seq: if write.effective == u64::MAX {
+                    0
+                } else {
+                    write.effective
+                },
+                value: write.value.clone(),
+            })
+            .collect();
+        let rebase = document.len() >= REBASE_AT && !rewrite;
+        let covers = self.snapshot_covers(&rid, &file);
+        let before = self.state.outbox.len();
+        if rebase {
+            let new_document = sandbox()?
+                .first_document(&body)
+                .map_err(|error| SyncError::Invalid(error.to_string()))?;
+            let base = self
+                .latest_snapshot(&rid)
+                .and_then(|key| self.state.objects[&rid].states.get(&key).map(|s| s.digest))
+                .unwrap_or(Digest::ZERO);
+            file.lineage = text_lineage_id(&rid, &base, &new_document);
+            self.in_domain(domain, |sync| {
+                sync.sign_snapshot(rid, &mut file, covers, revision, &meta, new_document)
+            })?;
+            self.state.objects.entry(rid).or_default().text = Some(file.lineage);
+            self.store_text(&rid, &file)?;
+            self.text.sessions.remove(&rid);
+        } else {
+            self.in_domain(domain, |sync| {
+                sync.sign_snapshot(rid, &mut file, covers, revision, &meta, document)
+            })?;
+            self.store_text(&rid, &file)?;
+        }
+        if rewrite {
+            for outgoing in &mut self.state.outbox[before..] {
+                outgoing.rewrite = true;
+            }
+        }
+        if !keep_open {
+            self.close_session(&rid)?;
+        }
+        Ok(())
+    }
+
+    /// A snapshot's covers (§22): for each device, the highest live
+    /// operation below its lowest live patch the document hasn't
+    /// integrated, deferred or pending, so those patches stay live.
+    fn snapshot_covers(&self, rid: &Id, file: &TextFile) -> Vec<Cover> {
+        let own = self.credentials.keys.device();
+        let waiting = |record: &TextRecord| {
+            record.judgement == Judgement::Waiting
+                || file
+                    .pending_since
+                    .is_some_and(|since| !record.snapshot && record.id() >= since)
+        };
+        let mut lowest: BTreeMap<Id, u64> = BTreeMap::new();
+        for record in file.records.iter().filter(|r| waiting(r)) {
+            let entry = lowest.entry(record.key.device).or_insert(u64::MAX);
+            *entry = (*entry).min(record.key.counter);
+        }
+        let view: BTreeSet<OpKey> = self
+            .live_ops(rid)
+            .into_iter()
+            .filter(|key| {
+                key.device == own || key.counter < lowest.get(&key.device).copied().unwrap_or(u64::MAX)
+            })
+            .collect();
+        self.covers_of(rid, &view)
+    }
+
+    /// Drops a record the server refused from the note's file. The
+    /// document still holds its change.
+    pub(super) fn forget_text_record(
+        &mut self,
+        record: &Signed<Operation>,
+    ) -> Result<(), SyncError> {
+        let rid = record.body.rid;
+        let Some(mut file) = self.text_file(&rid)? else {
+            return Ok(());
+        };
+        file.records.retain(|r| {
+            r.key.device != record.body.device || r.key.counter != record.body.counter
+        });
+        self.store_text(&rid, &file)
+    }
+
+    /// The server asked for a snapshot of the note before it takes another
+    /// patch (§14).
+    pub(super) fn snapshot_required(&mut self, rid: Id) -> Result<(), SyncError> {
+        self.text.required.insert(rid);
+        self.write_snapshot(rid, false)?;
+        self.text.required.remove(&rid);
+        Ok(())
+    }
+
+    /// Whether `rid` is in text mode and its rejected record was a text
+    /// update.
+    pub(super) fn is_text_update(&self, record: &Signed<Operation>) -> bool {
+        record.body.supersedes.is_empty() && self.in_text_mode(&record.body.rid)
+    }
+
+    /// Writes again, as snapshots of their lineage, the text-mode notes
+    /// that hold this device's own records under `epochs`, which a
+    /// replacement skipped (§9): each snapshot covers those records.
+    pub(super) fn rewrite_text(&mut self, epochs: &BTreeSet<u64>) -> Result<usize, SyncError> {
+        let own = self.credentials.keys.device();
+        let rids: Vec<Id> = self
+            .state
+            .objects
+            .iter()
+            .filter(|(_, object)| object.text.is_some() && object.domain == self.active)
+            .map(|(rid, _)| *rid)
+            .collect();
+        let mut written = 0;
+        for rid in rids {
+            let Some(file) = self.text_file(&rid)? else {
+                continue;
+            };
+            let holds = file
+                .records
+                .iter()
+                .any(|r| r.key.device == own && epochs.contains(&r.epoch));
+            if holds {
+                self.write_snapshot(rid, true)?;
+                written += 1;
+            }
+        }
+        Ok(written)
+    }
+
+    /// The bytes a text-mode state gives, for a review of a conflict.
+    pub(super) fn text_body_of(&mut self, rid: &Id) -> Result<Option<Vec<u8>>, SyncError> {
+        let Some(file) = self.text_file(rid)? else {
+            return Ok(None);
+        };
+        let keep = self.text.sessions.contains_key(rid);
+        self.open_session(rid)?;
+        let merged = merged_meta(&file.records);
+        let (_, properties) = note_meta(&merged);
+        let body = self.text.sessions[rid].body.clone();
+        if !keep {
+            self.close_session(rid)?;
+        }
+        Ok(compose_note(&properties, &body).ok().map(String::into_bytes))
+    }
+}
+
+/// A record's weight as the server counts it.
+struct LiveWeight;
+
+impl LiveWeight {
+    fn of(op: &Signed<Operation>) -> u64 {
+        sync_protocol::live::LiveOp::from_operation(op, 0).weight
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(seq: u64, snapshot: bool, digest: u8, entries: &[(&str, u64, Option<&str>)]) -> TextRecord {
+        TextRecord {
+            key: OpKey {
+                device: Id([1; 16]),
+                counter: seq,
+            },
+            seq: Some(seq),
+            digest: Digest([digest; 32]),
+            snapshot,
+            lineage: Id([2; 16]),
+            writer: 1,
+            card_count: 1,
+            covers: Vec::new(),
+            weight: 0,
+            epoch: 1,
+            meta: entries
+                .iter()
+                .map(|(key, seq, value)| MetaEntry {
+                    key: (*key).to_owned(),
+                    seq: *seq,
+                    value: value.map(|v| v.as_bytes().to_vec()),
+                })
+                .collect(),
+            payload: Digest::ZERO,
+            blob: None,
+            judgement: Judgement::Readable,
+        }
+    }
+
+    fn value(merged: &BTreeMap<String, MetaWrite>, key: &str) -> Option<String> {
+        merged[key]
+            .value
+            .clone()
+            .map(|v| String::from_utf8(v).unwrap())
+    }
+
+    #[test]
+    fn concurrent_edits_to_different_keys_both_survive() {
+        let merged = merged_meta(&[
+            record(1, true, 1, &[("path", 0, Some("a.md")), ("p:a", 0, Some("1"))]),
+            record(2, false, 2, &[("p:a", 0, Some("2"))]),
+            record(3, false, 3, &[("p:b", 0, Some("3"))]),
+        ]);
+        assert_eq!(value(&merged, "p:a").as_deref(), Some("2"));
+        assert_eq!(value(&merged, "p:b").as_deref(), Some("3"));
+    }
+
+    #[test]
+    fn the_later_committed_write_wins_a_key_and_a_digest_breaks_a_tie() {
+        let merged = merged_meta(&[
+            record(2, false, 9, &[("p:a", 0, Some("early"))]),
+            record(3, false, 1, &[("p:a", 0, Some("late"))]),
+        ]);
+        assert_eq!(value(&merged, "p:a").as_deref(), Some("late"));
+        // Two snapshots name one sequence for different values.
+        let merged = merged_meta(&[
+            record(5, true, 1, &[("p:a", 3, Some("low"))]),
+            record(6, true, 2, &[("p:a", 3, Some("high"))]),
+        ]);
+        assert_eq!(value(&merged, "p:a").as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn a_snapshot_keeps_a_covered_writes_place_against_a_concurrent_one() {
+        // Its entry names sequence 3, so the update at 4 it never saw wins.
+        let merged = merged_meta(&[
+            record(4, false, 1, &[("p:a", 0, Some("concurrent"))]),
+            record(5, true, 2, &[("p:a", 3, Some("covered"))]),
+        ]);
+        assert_eq!(value(&merged, "p:a").as_deref(), Some("concurrent"));
+    }
+
+    #[test]
+    fn a_snapshot_that_names_0_or_a_later_sequence_writes_at_its_own() {
+        for named in [0, 9] {
+            let merged = merged_meta(&[
+                record(4, false, 1, &[("p:a", 0, Some("update"))]),
+                record(5, true, 2, &[("p:a", named, Some("snapshot"))]),
+            ]);
+            assert_eq!(value(&merged, "p:a").as_deref(), Some("snapshot"));
+        }
+    }
+
+    #[test]
+    fn a_write_with_no_value_removes_the_property() {
+        let merged = merged_meta(&[
+            record(1, true, 1, &[("p:a", 0, Some("1"))]),
+            record(2, false, 2, &[("p:a", 0, None)]),
+        ]);
+        let (_, properties) = note_meta(&merged);
+        assert!(properties.is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_records_entries_never_reach_the_note() {
+        let mut bad = record(2, false, 2, &[("p:a", 0, Some("bad"))]);
+        bad.judgement = Judgement::Unreadable;
+        let merged = merged_meta(&[record(1, true, 1, &[("p:a", 0, Some("good"))]), bad]);
+        assert_eq!(value(&merged, "p:a").as_deref(), Some("good"));
+    }
+}

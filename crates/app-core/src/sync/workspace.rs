@@ -24,6 +24,7 @@ mod moves;
 pub mod rebuild;
 mod settle;
 pub mod state;
+pub mod text;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -203,6 +204,8 @@ pub struct WorkspaceSync {
     rotation_wait: std::time::Duration,
     /// When the device rotates each such domain.
     rotation_due: BTreeMap<Id, std::time::Instant>,
+    /// What the device holds in memory for text mode (§22).
+    text: text::TextRuntime,
 }
 
 /// What handling one realtime frame did (§23).
@@ -414,6 +417,7 @@ impl WorkspaceSync {
             move_wait: MOVE_WAIT,
             rotation_wait: super::upkeep::KEY_HOLDER_WAIT.end,
             rotation_due: BTreeMap::new(),
+            text: text::TextRuntime::default(),
         };
         sync.want_entries();
         sync.save()?;
@@ -535,6 +539,7 @@ impl WorkspaceSync {
             move_wait: MOVE_WAIT,
             rotation_wait: super::upkeep::KEY_HOLDER_WAIT.end,
             rotation_due: BTreeMap::new(),
+            text: text::TextRuntime::default(),
             state,
         };
         if let Some(next) = next.get(&sync.state.domain) {
@@ -726,6 +731,7 @@ impl WorkspaceSync {
             object_id: String::new(),
             kept: None,
             blob: None,
+            text: None,
         };
         self.sign(rid, false, covers, &payload, carried)?;
         self.save()
@@ -1450,6 +1456,7 @@ impl WorkspaceSync {
             return Ok(0);
         }
         let rewritten = self.rewrite_skipped()?;
+        let ticked = self.text_tick(std::time::Instant::now())?;
         let moved_markers = self.check_markers()?;
         let listing = self.engine.synced_listing().map_err(core)?;
         let held: BTreeSet<Id> = self.state.held.keys().copied().collect();
@@ -1469,7 +1476,7 @@ impl WorkspaceSync {
             },
             |file| read_for_sync(&engine, &file.relative_path, file.size),
         );
-        let mut signed = rewritten + moved_markers;
+        let mut signed = rewritten + ticked + moved_markers;
         self.reviews.clear();
         for change in changes {
             match change {
@@ -1522,7 +1529,16 @@ impl WorkspaceSync {
                     // for its move (§9).
                     let target = domain_of(&found.file.relative_path, &self.state.roots);
                     if target != domain {
+                        // A note that moves to another domain leaves text
+                        // mode as a `file` operation (§22).
                         signed += self.crossing(rid, &found, domain, target)?;
+                        if signed > 0 {
+                            self.end_text(rid)?;
+                        }
+                        continue;
+                    }
+                    if self.in_text_mode(&rid) {
+                        signed += self.capture_text(rid, &found)?;
                         continue;
                     }
                     self.in_domain(domain, |sync| {
@@ -1534,9 +1550,15 @@ impl WorkspaceSync {
                 Change::Delete { rid } => {
                     let domain = self.object_domain(&rid);
                     self.in_domain(domain, |sync| {
-                        let covers = sync.edit_covers(&rid);
+                        let covers = if sync.in_text_mode(&rid) {
+                            let view = sync.live_ops(&rid).into_iter().collect();
+                            sync.covers_of(&rid, &view)
+                        } else {
+                            sync.edit_covers(&rid)
+                        };
                         sync.sign_delete(rid, covers)
                     })?;
+                    self.end_text(rid)?;
                     signed += 1;
                 }
             }
@@ -1704,6 +1726,7 @@ impl WorkspaceSync {
             object_id: found.object_id.clone(),
             kept: None,
             blob,
+            text: None,
         };
         let key = self.sign(rid, false, covers, &payload, carried)?;
         if let Some(outgoing) = self.state.outbox.last_mut() {
@@ -1848,6 +1871,7 @@ impl WorkspaceSync {
             object_id: object.object_id.clone(),
             kept: None,
             blob: None,
+            text: None,
         };
         let key = self.sign(rid, true, covers, &payload, carried)?;
         let object = self.state.objects.get_mut(&rid).expect("signed for it");
@@ -2351,6 +2375,15 @@ impl WorkspaceSync {
                     _ => Err(refused()),
                 }
             }
+            "snapshot_required" if self.is_text_update(&self.state.outbox[index].record) => {
+                // The document holds the patch, so a snapshot takes its
+                // place and carries it (§14).
+                let rejected = self.state.outbox.remove(index);
+                self.forget_own(&rejected.record);
+                self.forget_text_record(&rejected.record)?;
+                self.snapshot_required(rejected.record.body.rid)?;
+                self.reseal_replacing(index, &rejected.record)
+            }
             "conflict_limit" | "quota_exceeded" | "snapshot_required" => {
                 // The change stays local; the next record takes its place.
                 if index + 1 >= self.state.outbox.len() {
@@ -2469,6 +2502,7 @@ impl WorkspaceSync {
         let mut written = 0;
         if !self.state.rewrite_epochs.is_empty() {
             let epochs: BTreeSet<u64> = self.state.rewrite_epochs.drain(..).collect();
+            written += self.rewrite_text(&epochs)?;
             written += self.rewrite_under(&epochs, true)?;
         }
         if !self.state.rewrite_others.is_empty() && unix_now() >= self.state.rewrite_due {
@@ -2629,7 +2663,7 @@ impl WorkspaceSync {
         let mut written = 0;
         for rid in rids {
             let object = &self.state.objects[&rid];
-            if object.domain != self.active {
+            if object.domain != self.active || object.text.is_some() {
                 continue;
             }
             let live: BTreeSet<OpKey> = self.live_states(&rid).into_iter().collect();
@@ -3676,6 +3710,13 @@ impl WorkspaceSync {
                 device: op.body.device,
                 counter: op.body.counter,
             };
+            if let Some(payload) = record.payload.as_ref().filter(|p| is_text(p)) {
+                let blob = text_blob(payload, &mut contents);
+                self.take_text(&record, blob)?;
+                let own = op.body.device == own;
+                applied += usize::from(!own);
+                continue;
+            }
             let domain = self.active;
             let object = self.state.objects.entry(op.body.rid).or_default();
             object.domain = domain;
@@ -3761,6 +3802,7 @@ impl WorkspaceSync {
         for rid in touched {
             self.settle(rid, &contents)?;
         }
+        self.settle_text()?;
         Ok(applied)
     }
 
@@ -3784,6 +3826,30 @@ impl WorkspaceSync {
         let downloads = self.journal.dir().join(journal::DOWNLOADS);
         let mut fetched = Bodies::new();
         for record in &checked.records {
+            // A text record's blob holds yrs bytes, and its segments'
+            // hashes check it (§22).
+            if let Some(Payload {
+                kind:
+                    PayloadKind::TextSnapshot {
+                        content: Content::Blob(blob),
+                        ..
+                    }
+                    | PayloadKind::TextUpdate {
+                        content: Content::Blob(blob),
+                        ..
+                    },
+                ..
+            }) = &record.payload
+            {
+                if record.op.body.device != own {
+                    let path = service
+                        .client()
+                        .download_blob(self.state.workspace, blob, None, &downloads)
+                        .await?;
+                    fetched.insert(blob.ciphertext_digest, Body::File(path));
+                }
+                continue;
+            }
             let Some(Payload {
                 kind:
                     PayloadKind::File {
@@ -4202,8 +4268,44 @@ fn listed_blobs(payload: &Payload) -> Vec<Id> {
         PayloadKind::File {
             content: Content::Blob(blob),
             ..
+        }
+        | PayloadKind::TextSnapshot {
+            content: Content::Blob(blob),
+            ..
+        }
+        | PayloadKind::TextUpdate {
+            content: Content::Blob(blob),
+            ..
         } => vec![blob.blob],
         _ => Vec::new(),
+    }
+}
+
+/// Whether a payload belongs to text mode (§22).
+fn is_text(payload: &Payload) -> bool {
+    matches!(
+        payload.kind,
+        PayloadKind::TextSnapshot { .. } | PayloadKind::TextUpdate { .. }
+    )
+}
+
+/// The file of the blob a text record's payload names, from the page's
+/// downloads.
+fn text_blob(payload: &Payload, contents: &mut Bodies) -> Option<Vec<u8>> {
+    let blob = match &payload.kind {
+        PayloadKind::TextSnapshot {
+            content: Content::Blob(blob),
+            ..
+        }
+        | PayloadKind::TextUpdate {
+            content: Content::Blob(blob),
+            ..
+        } => blob,
+        _ => return None,
+    };
+    match contents.remove(&blob.ciphertext_digest)? {
+        Body::Bytes(bytes) => Some(bytes),
+        Body::File(path) => std::fs::read(path).ok(),
     }
 }
 
@@ -4229,6 +4331,7 @@ fn carried(payload: &Payload, contents: &mut Bodies) -> Option<Carried> {
                 object_id: object_id.0.clone(),
                 kept: None,
                 blob: None,
+                text: None,
             })
         }
         PayloadKind::Delete {
@@ -4242,6 +4345,7 @@ fn carried(payload: &Payload, contents: &mut Bodies) -> Option<Carried> {
             object_id: object_id.0.clone(),
             kept: None,
             blob: None,
+            text: None,
         }),
         PayloadKind::File {
             object_id,
@@ -4256,8 +4360,9 @@ fn carried(payload: &Payload, contents: &mut Bodies) -> Option<Carried> {
             object_id: object_id.0.clone(),
             kept: None,
             blob: Some(blob.clone()),
+            text: None,
         }),
-        // Text mode (ticket 55) comes later.
+        // Text records go through `take_text`.
         _ => None,
     }
 }
@@ -4267,6 +4372,7 @@ fn carried(payload: &Payload, contents: &mut Bodies) -> Option<Carried> {
 pub(crate) fn same_state(a: &Carried, b: &Carried) -> bool {
     (a.delete && b.delete)
         || (!a.delete && !b.delete && a.path == b.path && a.revision == b.revision)
+        || (a.text.is_some() && a.text == b.text)
 }
 
 fn policy_changes(policy: &PolicyChain) -> Vec<Signed<sync_protocol::records::PolicyChange>> {

@@ -543,6 +543,12 @@ impl SharedNote {
         Ok(answered.recv().map_err(|_| HandleError::Closed)??)
     }
 
+    /// Whether the note's thread still runs.
+    pub fn is_alive(&self) -> bool {
+        let (flushed, _) = mpsc::channel();
+        self.requests.send(Request::Flush(flushed)).is_ok()
+    }
+
     /// Hands the thread a remote record to judge and merge.
     pub fn receive(&self, record: RemoteRecord) -> Result<(), HandleError> {
         self.send(Request::Record(Box::new(record)))

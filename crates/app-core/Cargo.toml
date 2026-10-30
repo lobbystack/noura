@@ -12,6 +12,8 @@ rust-version.workspace = true
 test-hooks = ["local-core/test-hooks", "plugin-host/test-hooks"]
 
 [dependencies]
+# Text mode: each note's document, its verdicts and its writers' allowances.
+collab-sandbox = { version = "0.2.0", path = "../collab-sandbox" }
 # Finds the workspace's names in log lines for Copy diagnostics.
 aho-corasick.workspace = true
 atomic-write-file.workspace = true
@@ -68,6 +70,8 @@ axum = { workspace = true, features = ["ws"] }
 futures.workspace = true
 # The tests record which folders each change syncs.
 local-core = { version = "0.2.0", path = "../local-core", features = ["durability-probe"] }
+# The text mode tests type into a note's document as the editor does.
+editor-core = { version = "0.2.0", path = "../editor-core" }
 # Search treats arbitrary typed text as plain words.
 proptest.workspace = true
 # The tests stop the index from accepting writes.

@@ -403,6 +403,9 @@ pub struct Object {
     /// branch, as one the server refused with `conflict_limit` does.
     #[serde(default)]
     pub cover_all: bool,
+    /// The text lineage the note's document follows, in text mode (§22).
+    #[serde(default)]
+    pub text: Option<Id>,
 }
 
 /// A file on this device, as sync last left or saw it.
@@ -456,6 +459,9 @@ pub struct Content {
     /// (§21). A move inside the domain reuses it.
     #[serde(default)]
     pub blob: Option<sync_protocol::records::BlobRef>,
+    /// The text lineage, for a `text_snapshot` (§22).
+    #[serde(default)]
+    pub text: Option<Id>,
 }
 
 /// A signed record waiting for its acknowledgement.

@@ -153,6 +153,15 @@ impl WorkspaceSync {
         }
         let edited = self.local_edit(&rid);
         if branches.len() == 1 {
+            // A text-mode note's file follows its document (§22).
+            let text = object
+                .states
+                .get(&branches[0].key)
+                .and_then(|state| state.content.as_ref())
+                .is_some_and(|content| content.text.is_some());
+            if text {
+                return Ok(());
+            }
             return self.adopt_state(rid, branches[0].key, edited, contents);
         }
         if let Some((path_branch, content_branch)) = self.disjoint(&rid, &branches) {
@@ -554,7 +563,7 @@ impl WorkspaceSync {
     /// operation in its next round; other devices only show it there (§16).
     /// Also returns the objects at colliding paths that yield to this one,
     /// which move aside first.
-    fn destination(&self, rid: &Id, key: &OpKey, path: &str) -> (String, Vec<Id>) {
+    pub(super) fn destination(&self, rid: &Id, key: &OpKey, path: &str) -> (String, Vec<Id>) {
         let digest = self.state.objects[rid].states[key].digest;
         let others = self.current_paths(rid);
         let colliding: Vec<&(Id, String, Digest)> = others
@@ -603,7 +612,7 @@ impl WorkspaceSync {
     /// Moves `rid`'s file aside to the first free name, as an object that
     /// yields its path does; when this device wrote its current state, it
     /// signs the move in its next capture (§16).
-    fn move_aside(&mut self, rid: &Id) -> Result<(), SyncError> {
+    pub(super) fn move_aside(&mut self, rid: &Id) -> Result<(), SyncError> {
         let Some(local) = self.state.objects.get(rid).and_then(|o| o.local.clone()) else {
             return Ok(());
         };
