@@ -10,7 +10,7 @@ use sync_store::{
     ApprovalRequestRow, BlobRow, CeremonyKind, CeremonyRow, ChainHeadRow, CheckpointRow, DeleteRow,
     DeviceGrantRow, DomainRow, EpochRow, Error, KeyRow, LinkRow, LockPlan, OfferRow, PasskeyRow,
     PendingPasskeyRow, RawEntry, ReadTxn, RemovedBy, Result, RewrapRow, Session, SessionRow,
-    WorkspaceRow, WriteTxn,
+    ShareRow, WorkspaceRow, WriteTxn,
 };
 
 /// A read transaction from the pool, or the writer's connection inside its
@@ -1551,6 +1551,53 @@ impl ReadTxn for SqliteTxn {
         .map_err(db)?;
         Ok(row.is_some())
     }
+
+    async fn share(&mut self, token_hash: Digest) -> Result<Option<ShareRow>> {
+        let hash = &token_hash.0[..];
+        let row = sqlx::query!(
+            "SELECT workspace, domain, device, expires_at, share FROM shares WHERE token_hash = ?1",
+            hash
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| {
+            Ok(ShareRow {
+                token_hash,
+                workspace: id(r.workspace)?,
+                domain: id(r.domain)?,
+                device: id(r.device)?,
+                expires_at: uint(r.expires_at)?,
+                share: r.share,
+            })
+        })
+        .transpose()
+    }
+
+    async fn shares(&mut self, workspace: Id, now: u64) -> Result<Vec<ShareRow>> {
+        let workspace_bytes = &workspace.0[..];
+        let now = at_most(now);
+        let rows = sqlx::query!(
+            "SELECT token_hash, domain, device, expires_at FROM shares WHERE workspace = ?1 AND expires_at > ?2 ORDER BY token_hash",
+            workspace_bytes,
+            now
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(ShareRow {
+                    token_hash: digest(r.token_hash)?,
+                    workspace,
+                    domain: id(r.domain)?,
+                    device: id(r.device)?,
+                    expires_at: uint(r.expires_at)?,
+                    share: Vec::new(),
+                })
+            })
+            .collect()
+    }
 }
 
 fn kind_code(kind: CeremonyKind) -> i64 {
@@ -2729,6 +2776,11 @@ impl WriteTxn for SqliteTxn {
             .await
             .map_err(db)?
             .rows_affected();
+        deleted += sqlx::query!("DELETE FROM shares WHERE expires_at <= ?1", now)
+            .execute(self.c())
+            .await
+            .map_err(db)?
+            .rows_affected();
         Ok(deleted)
     }
 
@@ -2839,6 +2891,50 @@ impl WriteTxn for SqliteTxn {
         .execute(self.c())
         .await
         .map_err(db)?;
+        Ok(())
+    }
+
+    async fn insert_share(&mut self, row: &ShareRow) -> Result<()> {
+        let hash = &row.token_hash.0[..];
+        let workspace = &row.workspace.0[..];
+        let domain = &row.domain.0[..];
+        let device = &row.device.0[..];
+        let expires_at = int(row.expires_at)?;
+        let share = &row.share[..];
+        sqlx::query!(
+            "INSERT INTO shares (token_hash, workspace, domain, device, expires_at, share) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            hash,
+            workspace,
+            domain,
+            device,
+            expires_at,
+            share
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn set_share(&mut self, token_hash: Digest, share: &[u8]) -> Result<()> {
+        let hash = &token_hash.0[..];
+        sqlx::query!(
+            "UPDATE shares SET share = ?1 WHERE token_hash = ?2",
+            share,
+            hash
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn delete_share(&mut self, token_hash: Digest) -> Result<()> {
+        let hash = &token_hash.0[..];
+        sqlx::query!("DELETE FROM shares WHERE token_hash = ?1", hash)
+            .execute(self.c())
+            .await
+            .map_err(db)?;
         Ok(())
     }
 }

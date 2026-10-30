@@ -521,3 +521,235 @@ async fn a_browser_approves_a_device_code_sign_in() {
     let _ = browser.wait().await;
     events.abort();
 }
+
+/// Replaces the stored snapshot of a link with `bytes`, as a server that
+/// tampers with it would.
+async fn store_snapshot(site: &Site, token_hash: sync_protocol::types::Digest, bytes: Vec<u8>) {
+    type Write = <sync_store_sqlite::SqliteBackend as sync_store::Backend>::Write;
+    sync_store::Backend::write(
+        site.store.backend(),
+        Box::new(move |txn: &mut Write| {
+            Box::pin(async move { sync_store::WriteTxn::set_share(txn, token_hash, &bytes).await })
+        }),
+    )
+    .await
+    .unwrap();
+}
+
+/// Opens `url` as a new document, even when only its fragment differs
+/// from the page's, which a browser would otherwise follow in place.
+async fn visit(page: &Page, url: &str) {
+    open(page, "about:blank").await;
+    open(page, url).await;
+}
+
+/// What the viewer page shows: its status line, whether the note shows,
+/// and the note's text.
+async fn viewer(page: &Page) -> (String, bool, String) {
+    let status: String = eval(
+        page,
+        "(document.querySelector('[data-share-status]') || document.body).innerText",
+    )
+    .await;
+    let shown: bool = eval(
+        page,
+        "!!document.querySelector('[data-share-note]') && !document.querySelector('[data-share-note]').hidden",
+    )
+    .await;
+    let text: String = eval(
+        page,
+        "(document.querySelector('[data-share-body]') || { innerText: '' }).innerText",
+    )
+    .await;
+    (status, shown, text)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs Chrome, which NOURA_CHROME names, and the built module"]
+async fn a_browser_with_no_account_opens_a_share_link() {
+    use sync_protocol::codec::Encode;
+    use sync_protocol::records::share_fragment;
+    use sync_protocol::types::{to_base64url, to_hex};
+    use sync_store::conformance::{Link, World};
+
+    let site = site().await;
+    let logs = site._dir.path().join("logs");
+    // No other test in this binary installs a subscriber, so the log check
+    // below always runs: a failed install fails the test instead of
+    // skipping it.
+    sync_server::logs::init(&logs).expect("the server's log is the global subscriber");
+    let world = World::on(site.store.clone(), 1).await;
+    let owner = world.devices[0].session;
+    let link = Link::new();
+    let markdown = "# Steps\n\nTomatoes in **May**.\n\n![tracker](https://example.com/p.png)\n\n\
+                    <img src=x onerror=\"window.pwned = 1\">\n\n<script>window.pwned = 2</script>\n";
+    site.store
+        .create_share(
+            owner,
+            world.workspace,
+            link.creation(world.domain, 30, markdown),
+        )
+        .await
+        .unwrap();
+    let token = to_base64url(&link.token);
+    let fragment = share_fragment(&link.key, &link.signing.public());
+    let url = format!("{}/s/{token}#{fragment}", site.base);
+
+    let (mut browser, events, _profile) = launch().await;
+    let page = browser.new_page("about:blank").await.unwrap();
+
+    // The notice ships with the module and names the viewer's crates.
+    open(
+        &page,
+        &format!("{}/account/assets/THIRD_PARTY_NOTICES.txt", site.base),
+    )
+    .await;
+    let notice: String = eval(&page, "document.body.innerText").await;
+    assert!(notice.contains("pulldown-cmark") && notice.contains("ed25519-dalek 3.0.0"));
+
+    // The note opens with no account: its title and Markdown, without the
+    // image, the raw HTML or the script.
+    visit(&page, &url).await;
+    until(&page, "!document.querySelector('[data-share-note]').hidden").await;
+    let title: String = eval(
+        &page,
+        "document.querySelector('[data-share-title]').innerText",
+    )
+    .await;
+    assert_eq!(title, "Plan");
+    let html: String = eval(
+        &page,
+        "document.querySelector('[data-share-body]').innerHTML",
+    )
+    .await;
+    assert!(
+        html.contains("<h1>Steps</h1>") && html.contains("<strong>May</strong>"),
+        "{html}"
+    );
+    let images: u32 = eval(&page, "document.querySelectorAll('img').length").await;
+    assert_eq!(images, 0, "embedded images stay out");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let pwned: bool = eval(&page, "window.pwned !== undefined").await;
+    assert!(!pwned, "nothing in the note runs");
+    if let Some(shots) = std::env::var_os("NOURA_SCREENSHOTS") {
+        let shot = page
+            .screenshot(
+                chromiumoxide::page::ScreenshotParams::builder()
+                    .full_page(true)
+                    .build(),
+            )
+            .await
+            .unwrap();
+        std::fs::write(PathBuf::from(shots).join("share.png"), shot).unwrap();
+    }
+
+    // The viewer page blocks inline scripts.
+    let _: bool = eval(
+        &page,
+        "(() => { document.addEventListener('securitypolicyviolation', e => { window.blocked = e.effectiveDirective; }); const s = document.createElement('script'); s.textContent = 'window.inlineRan = true'; document.body.appendChild(s); })(), true",
+    )
+    .await;
+    until(&page, "typeof window.blocked === 'string'").await;
+    let blocked: String = eval(&page, "window.blocked").await;
+    assert!(blocked.starts_with("script-src"), "{blocked}");
+    let ran: bool = eval(&page, "window.inlineRan === true").await;
+    assert!(!ran, "the content security policy blocks inline scripts");
+
+    // Update link: a reload shows the new version, and the viewer remembers
+    // the highest revision it showed.
+    site.store
+        .update_share(
+            owner,
+            world.workspace,
+            link.hash(),
+            link.snapshot(2, "Peppers too."),
+        )
+        .await
+        .unwrap();
+    visit(&page, &url).await;
+    until(&page, "!document.querySelector('[data-share-note]').hidden").await;
+    let (_, _, text) = viewer(&page).await;
+    assert_eq!(text, "Peppers too.");
+    let key = format!("noura.share.revision.{}", to_hex(&link.hash().0));
+    let kept: String = eval(&page, &format!("localStorage.getItem('{key}')")).await;
+    assert_eq!(kept, "2");
+    let warned: bool = eval(
+        &page,
+        "document.querySelector('[data-share-warning]').hidden === false",
+    )
+    .await;
+    assert!(!warned);
+    // A later visit that shows a lower revision than one shown before warns.
+    let _: bool = eval(&page, &format!("localStorage.setItem('{key}', '5'), true")).await;
+    visit(&page, &url).await;
+    until(
+        &page,
+        "document.querySelector('[data-share-warning]').hidden === false",
+    )
+    .await;
+    let warning: String = eval(
+        &page,
+        "document.querySelector('[data-share-warning]').innerText",
+    )
+    .await;
+    assert!(warning.contains("older version"), "{warning}");
+
+    // A wrong key, a tampered ciphertext and a bad signature show an error
+    // page and render nothing.
+    let other = Link::new();
+    let wrong = format!(
+        "{}/s/{token}#{}",
+        site.base,
+        share_fragment(&other.key, &link.signing.public())
+    );
+    let good = link.snapshot(3, "Fine.");
+    let mut tampered = good.clone();
+    tampered.body.ciphertext.0[0] ^= 1;
+    let mut forged = good.clone();
+    forged.sig.0[0] ^= 1;
+    for (case, address, snapshot) in [
+        ("a wrong key", wrong.clone(), good.clone()),
+        ("a tampered ciphertext", url.clone(), tampered),
+        ("a bad signature", url.clone(), forged),
+    ] {
+        store_snapshot(&site, link.hash(), snapshot.to_bytes()).await;
+        visit(&page, &address).await;
+        until(
+            &page,
+            "document.querySelector('[data-share-status]').getAttribute('role') === 'alert'",
+        )
+        .await;
+        let (status, shown, text) = viewer(&page).await;
+        assert!(status.contains("can't be opened"), "{case}: {status}");
+        assert!(!shown && text.is_empty(), "{case} renders nothing");
+    }
+
+    // A revoked link shows a not-found page.
+    site.store
+        .revoke_share(owner, world.workspace, link.hash())
+        .await
+        .unwrap();
+    visit(&page, &url).await;
+    let gone: String = eval(&page, "document.body.innerText").await;
+    assert!(gone.contains("This link doesn't open"), "{gone}");
+
+    // The fragment never reached the server's log.
+    let mut logged = String::new();
+    for file in std::fs::read_dir(&logs).unwrap() {
+        logged.push_str(&std::fs::read_to_string(file.unwrap().path()).unwrap());
+    }
+    assert!(logged.contains("/s/{token}"), "the log records the route");
+    let other_fragment = &wrong[wrong.find('#').unwrap() + 1..];
+    for secret in [
+        fragment.as_str(),
+        other_fragment,
+        token.as_str(),
+        &to_hex(link.key.expose()),
+    ] {
+        assert!(!logged.contains(secret), "the log holds {secret}");
+    }
+
+    browser.close().await.unwrap();
+    let _ = browser.wait().await;
+    events.abort();
+}

@@ -14,15 +14,15 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use sync_protocol::codec::{Bytes, Decode, Encode, Text};
+use sync_protocol::codec::{Bytes, Decode, Encode, Nested, Text};
 use sync_protocol::messages::{
-    ChainAppendRequest, ChainsRequest, DeviceTokenRequest, EnrollRequest, ErrorBody, LiveCursor,
-    MAX_BODY, MEDIA_TYPE, OfferRequest, PullRequest, RESTORE_GENERATION_HEADER, RecoveryRequest,
-    RevealBody, RewrapBody,
+    ChainAppendRequest, ChainsRequest, CreateShareRequest, DeviceTokenRequest, EnrollRequest,
+    ErrorBody, ExpiresAtResponse, LiveCursor, MAX_BODY, MEDIA_TYPE, OfferRequest, PullRequest,
+    RESTORE_GENERATION_HEADER, RecoveryRequest, RevealBody, RewrapBody, ShareBody,
 };
-use sync_protocol::types::{Digest, Id, from_decimal};
+use sync_protocol::types::{Digest, Id, from_base64url, from_decimal};
 use sync_store::devices::UNBOUND;
-use sync_store::{Backend, Error, Refusal, Session, SessionRow, Store};
+use sync_store::{Backend, Error, Refusal, Session, SessionRow, ShareCreation, Store};
 
 /// A failed request: a refusal the protocol names, or a store failure.
 pub struct ApiError(pub Error);
@@ -137,7 +137,7 @@ impl<B: Backend> FromRequestParts<AppState<B>> for ChainReader {
     }
 }
 
-fn bearer(parts: &Parts) -> Result<&str, ApiError> {
+pub(crate) fn bearer(parts: &Parts) -> Result<&str, ApiError> {
     parts
         .headers
         .get(AUTHORIZATION)
@@ -639,6 +639,77 @@ async fn read_reveal<B: Backend>(
     Ok(ok(&store.read_reveal(session, digest(&offer)?).await?))
 }
 
+async fn create_share<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments(workspace): Segments<String>,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let workspace = id(&workspace)?;
+    let request: CreateShareRequest = decode(&body(request).await?)?;
+    let expires_at = store
+        .create_share(
+            session,
+            workspace,
+            ShareCreation {
+                token_hash: request.token_hash,
+                domain: request.domain,
+                expires_in_days: request.expires_in_days,
+                share: request.share.0,
+            },
+        )
+        .await?;
+    Ok(ok(&ExpiresAtResponse { expires_at }))
+}
+
+async fn list_shares<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments(workspace): Segments<String>,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store.shares(session, id(&workspace)?).await?))
+}
+
+async fn update_share<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments((workspace, token_hash)): Segments<(String, String)>,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let workspace = id(&workspace)?;
+    let token_hash = digest(&token_hash)?;
+    let request: ShareBody = decode(&body(request).await?)?;
+    store
+        .update_share(session, workspace, token_hash, request.share.0)
+        .await?;
+    Ok(empty())
+}
+
+async fn revoke_share<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments((workspace, token_hash)): Segments<(String, String)>,
+) -> Result<Response, ApiError> {
+    store
+        .revoke_share(session, id(&workspace)?, digest(&token_hash)?)
+        .await?;
+    Ok(empty())
+}
+
+/// `GET /v2/shares/{token}`, which takes no session: the token alone names
+/// the link, and the snapshot reads only with the fragment's keys.
+async fn read_share<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Segments(token): Segments<String>,
+) -> Result<Response, ApiError> {
+    let token =
+        from_base64url::<16>(&token).map_err(|_| refused("not_found", "no such share link"))?;
+    let share = store.read_share(token).await?;
+    Ok(ok(&ShareBody {
+        share: Nested(share),
+    }))
+}
+
 async fn not_found() -> ApiError {
     refused("not_found", "no such route")
 }
@@ -704,7 +775,20 @@ pub fn router<B: Backend>(state: AppState<B>) -> Router {
         .route("/v2/workspaces/{w}/keys/current", get(current_keys::<B>))
         .route("/v2/workspaces/{w}/domains/{d}/rewrap", post(rewrap::<B>))
         .route("/v2/workspaces/{w}/ops", post(push::<B>))
+        .route(
+            "/v2/workspaces/{w}/shares",
+            get(list_shares::<B>).post(create_share::<B>),
+        )
+        .route(
+            "/v2/workspaces/{w}/shares/{token_hash}",
+            axum::routing::put(update_share::<B>).delete(revoke_share::<B>),
+        )
+        .route("/v2/shares/{token}", get(read_share::<B>))
         .route("/v2/workspaces/{w}/pull", post(pull::<B>))
+        .route(
+            "/v2/workspaces/{w}/realtime",
+            get(crate::realtime::open::<B>),
+        )
         .route(
             "/v2/workspaces/{w}/domains/{d}/epochs/{epoch}",
             get(epochs::<B>),

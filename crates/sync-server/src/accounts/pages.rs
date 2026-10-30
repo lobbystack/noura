@@ -63,3 +63,9 @@ pub struct DeviceConfirm<'a> {
     pub expires: u64,
     pub confirmation: &'a str,
 }
+
+/// The share viewer (§24): account-web fetches the snapshot, verifies and
+/// decrypts it with the keys in the fragment and fills the page.
+#[derive(Template)]
+#[template(path = "share.html")]
+pub struct Share;

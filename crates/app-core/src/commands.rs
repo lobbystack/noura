@@ -25,6 +25,8 @@ pub mod command_id {
     pub const SEARCH: &str = "search";
     pub const COMMAND_PALETTE: &str = "command-palette";
     pub const RENAME_FILE: &str = "rename-file";
+    /// Share a read-only link to the open note.
+    pub const SHARE_LINK: &str = "share-link";
     /// Save the open note now.
     pub const SAVE: &str = "save";
     pub const CLOSE_TAB: &str = "close-tab";

@@ -5,11 +5,15 @@
 //! section's state in step.
 //!
 //! The rounds share the account's one service, so the device keeps one
-//! view of its account chains. Each round's pull waits up to
-//! [`PULL_WAIT_SECONDS`] for new records when the driver has nothing else
-//! to poll. A change in the workspace's files or something you do ends the
-//! wait, so local changes go out at once (§15). The realtime channel
-//! replaces the wait in ticket 61.
+//! view of its account chains. When the driver has nothing else to poll,
+//! the folder follows the workspace's realtime channel (§23): it applies
+//! the records frames that follow on from its cursor, pulls on a gap or a
+//! notify and once a minute, and while the channel is down each round's
+//! pull waits up to [`PULL_WAIT_SECONDS`] for new records. A change in
+//! the workspace's files or something you do ends the wait, so local
+//! changes go out at once (§15).
+//!
+//! [`PULL_WAIT_SECONDS`]: crate::sync::workspace::PULL_WAIT_SECONDS
 
 use std::path::Path;
 use std::sync::Arc;
@@ -20,8 +24,9 @@ use crate::folder_sync::{
     ArchivedEntry, BranchEntry, ConflictEntry, FolderSyncAction, FolderSyncPhase, FolderSyncScreen,
     HeldEntry, HeldRootEntry,
 };
+use crate::sync::realtime::Live;
 use crate::sync::registry::Registry;
-use crate::sync::workspace::{PULL_WAIT_SECONDS, WorkspaceSync};
+use crate::sync::workspace::WorkspaceSync;
 use crate::sync::{Secrets, SyncError, SyncService};
 
 /// The open workspace and its sync.
@@ -36,6 +41,8 @@ pub(super) struct Folder {
     /// The folder's journal holds another replica ID: it waits for you to
     /// connect it.
     not_connected: bool,
+    /// The workspace's realtime channel and its pull schedule.
+    live: Live,
 }
 
 /// What a failed round or action tells you in the Workspace sync section.
@@ -157,6 +164,7 @@ impl Folder {
         app_data: &Path,
     ) {
         self.sync = None;
+        self.live = Live::default();
         self.last_error = None;
         self.rebuild = false;
         self.not_connected = false;
@@ -203,6 +211,11 @@ impl Folder {
         }
     }
 
+    /// The open workspace's sync, when it syncs.
+    pub(super) fn sync_mut(&mut self) -> Option<&mut WorkspaceSync> {
+        self.sync.as_mut()
+    }
+
     /// Whether the open workspace syncs and isn't paused, so a round's
     /// pull may wait for new records.
     pub(super) fn waits(&self) -> bool {
@@ -212,9 +225,10 @@ impl Folder {
     }
 
     /// One round, unless you paused sync, when a workspace that syncs is
-    /// open. Its pull waits up to [`PULL_WAIT_SECONDS`] when `long` and
-    /// until `wake` or a change in the workspace's files ends the wait. A
-    /// failed round keeps the outbox and shows why.
+    /// open. When `long`, it follows the realtime channel until a frame,
+    /// the minute's pull, `wake` or a change in the workspace's files, and
+    /// while the channel is down its pull waits up to the longest pull
+    /// wait. A failed round keeps the outbox and shows why.
     pub(super) async fn round(
         &mut self,
         service: Option<&mut SyncService>,
@@ -248,7 +262,7 @@ impl Folder {
         let result = if sync.paused() {
             sync.capture().map(|_| ())
         } else {
-            let wait = if long { PULL_WAIT_SECONDS } else { 0 };
+            let live = &mut self.live;
             let mut events = self.engine.as_ref().map(|engine| engine.subscribe());
             let changes = async {
                 loop {
@@ -265,8 +279,15 @@ impl Folder {
                     }
                 }
             };
+            let step = async {
+                if long {
+                    live.step(sync, service, wake).await.map(|_| ())
+                } else {
+                    sync.round_until(service, 0, wake).await.map(|_| ())
+                }
+            };
             tokio::select! {
-                result = sync.round_until(service, wait, wake) => result.map(|_| ()),
+                result = step => result,
                 () = changes => Ok(()),
             }
         };

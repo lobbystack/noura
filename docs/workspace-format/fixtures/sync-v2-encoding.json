@@ -3000,14 +3000,15 @@
 			"type": "create_share_request"
 		},
 		{
-			"digest": "0dd1928b2a130f5b960c4b0fcc6696deff8ac755c26a111e96dbaee20179f2b8",
+			"digest": "bc253851a7cbbac3f35891300a1c74e2d1cfa8c27bfad0b9a5996a42f0a0d716",
 			"expect": "ok",
-			"hex": "00000001d3064a937b750219f745744c0ea92d59f4dc248b4abba74f48bad16f94c0520a9ca500792f1985d383db653cc4c4427b0000000069153ec0",
+			"hex": "00000001d3064a937b750219f745744c0ea92d59f4dc248b4abba74f48bad16f94c0520a9ca500792f1985d383db653cc4c4427b98a2225467402ba93826b8c0cf7d6ea20000000069153ec0",
 			"name": "shares_response",
 			"type": "shares_response",
 			"value": {
 				"shares": [
 					{
+						"device": "98a2225467402ba93826b8c0cf7d6ea2",
 						"domain": "9ca500792f1985d383db653cc4c4427b",
 						"expires_at": 1763000000,
 						"token_hash": "d3064a937b750219f745744c0ea92d59f4dc248b4abba74f48bad16f94c0520a"

@@ -21,10 +21,12 @@ pub mod device_list;
 pub mod heads;
 pub mod journal;
 pub mod marks;
+pub mod realtime;
 pub mod recovery;
 pub mod registry;
 pub mod removal;
 mod routes;
+pub mod shares;
 pub mod upkeep;
 pub mod workspace;
 
@@ -599,6 +601,30 @@ impl SyncService {
             &*secrets,
         )?;
         Ok(chain)
+    }
+
+    /// Reads `account`'s chain under `genesis` after the realtime channel
+    /// said it moved (§7, §23), and keeps its later head, which the
+    /// device then records in the workspaces it shares with the account
+    /// (§8). The device's own chain is judged as [`SyncService::own_chain`]
+    /// judges it; a chain the device doesn't keep enters only through a
+    /// verified policy, so the hint alone reads nothing.
+    pub async fn follow_account(&mut self, account: Id, genesis: Digest) -> Result<(), SyncError> {
+        if account == self.credentials.account {
+            self.own_chain().await?;
+            return Ok(());
+        }
+        if self.heads.kept(&account, &genesis).is_none() {
+            return Ok(());
+        }
+        let (links, _) = self.client.whole_chain(account, Some(genesis)).await?;
+        let mut served = BTreeMap::new();
+        served.insert(genesis, links);
+        let listed = self.listed_elsewhere(account, genesis, &served).await?;
+        let secrets = self.secrets.clone();
+        self.heads
+            .accept(account, genesis, &served[&genesis], &listed, &*secrets)?;
+        Ok(())
     }
 
     /// The device IDs that the chains of `account` other than `genesis`

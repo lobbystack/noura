@@ -25,6 +25,7 @@ mod plugin_view;
 mod plugins;
 mod rail;
 mod settings;
+mod share;
 mod shortcuts;
 mod tab_bar;
 pub mod theme;
@@ -353,6 +354,7 @@ impl NouraUi {
             web_search::consent_prompt(ui, &mut self.app, &mut self.web_consent);
         }
         palette::show(ui, &mut self.app, &mut self.palette);
+        share::dialog(ui, &mut self.app);
         note::unsaved_prompt(ui, &mut self.app);
         self.notes.commit_hidden_drafts(&mut self.app);
         self.close_requested_windows(ui.ctx());

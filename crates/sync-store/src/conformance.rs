@@ -31,10 +31,12 @@ mod blobs;
 mod checkpoints;
 mod devices;
 mod keys;
+mod shares;
 pub use blobs::*;
 pub use checkpoints::*;
 pub use devices::*;
 pub use keys::*;
+pub use shares::*;
 
 /// Declares one `#[tokio::test]` per conformance case. `$open` is an async
 /// function returning a fresh store and a guard that keeps its database
@@ -99,6 +101,9 @@ macro_rules! conformance_tests {
             removals_make_checkpoints_due_and_leave_the_heads,
             replacements_make_checkpoints_due,
             checkpoint_routes_serve_the_chain_and_manifest,
+            share_links_follow_section_24,
+            share_links_outlive_their_creator_until_they_expire,
+            share_limit_holds_a_thousand_links,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
@@ -127,6 +132,7 @@ macro_rules! instance_tests {
             enrollments_at_once_take_one_card,
             chain_appends_race_pushes_recording_the_head,
             blob_uploads_race_pushes_and_policy_changes,
+            share_writes_race_pushes_and_policy_changes,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
