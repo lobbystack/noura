@@ -7,10 +7,14 @@ Noura keeps the providers, their keys and your consent on this device, and no ca
 ## Functions
 
 - `providers()`: the providers you set up and turned on in Settings > AI providers. Each has an `id`, a `name`, a `kind`, such as `openai` or `ollama`, and the `model` it answers with.
-- `chats()`: the workspace's chats, the one changed last first.
-- `readChat(id)`: a chat and its messages, oldest first. A message has a `kind`, a `status` and its `content`: Markdown, or JSON text for a tool call or a tool result.
+- `chats()`: the workspace's chats, the one changed last first. Each has a `title`, the `revision` of its `chat.md` and a `retention`: `permanent` until you delete it, or `ephemeral`, which Noura moves to the trash 30 days after the chat started.
+- `readChat(id)`: a chat and its messages, oldest first. A message has a `kind`, a `status` and its `content`: Markdown, or JSON text for a tool call or a tool result. `readChat` also reopens as `interrupted` any message that a crash or a quit left in progress, unless one of this session's runs still works in the chat.
 - `createChat()`: a new chat titled `New chat`. Noura writes its files when its first message goes out, and `chats` lists it from then on. A chat whose first message never goes out leaves no file.
 - `send(request)`: send a message in a chat to a provider, with the tools the model may ask to call, and get back a run. Until you consent for this workspace and provider, the run waits as `waiting-for-consent` while Noura asks you. Once you consent, Noura writes your message and an empty answer to the chat before the request leaves this device. The answer then streams into the run. A chat answers one message at a time, so a second `send` to it fails while the first runs.
+- `renameChat(id, title, expectedRevision)` and `setRetention(id, retention, expectedRevision)`: change a chat's title or how long Noura keeps it. Pass the `revision` you read. If someone changed `chat.md` since, the call throws `revision-conflict` and leaves the file as it is. A chat whose first message hasn't gone out can't change yet.
+- `workspaceTools()`: the tools of the plugins on in the workspace, named `<plugin>__<tool>`, such as `tasks__create`, to offer the model in `send` and `resume`.
+- `runTools(run)`: hand the tool calls of a completed run to Noura. Noura asks you about each call in its own prompt, runs the ones you allow and writes each result to the chat. The model then answers again in the same run. While Noura waits for you, the run shows as `waiting-for-approval`.
+- `resume(chat, provider, tools)`: answer your last message in the chat again, as after a crash or a quit cut its answer off. Noura writes no new message of yours.
 - `readRun(id)`: the run as it stands now, with the answer so far in `text`.
 - `answerTools(run, results, tools)`: answer the tool calls of a completed run, one result per call, and stream the model's next answer into the same run.
 - `stop(id)`: stop a run. The answer so far stays in the chat as a cancelled message.
@@ -18,7 +22,15 @@ Noura keeps the providers, their keys and your consent on this device, and no ca
 - `webSearch(query, maxResults)`: search the web with Brave Search and get each result's `title`, `url` and `snippet`. Pass from 1 to 10 for `maxResults`, or `undefined` for 10. The query must be one the model asked for in a `web_search` call.
 - `webFetch(url)`: read the page at an `https` address and get its `text`, the `url` that answered after redirects, its `contentType` and whether Noura cut the text at its size limit (`truncated`). The address must be one the model asked for in a `web_fetch` call.
 
-`readRun`, `answerTools` and `stop` reach only the plugin's own runs. Another plugin's run is `not-found`.
+`readRun`, `answerTools`, `runTools` and `stop` reach only the plugin's own runs. Another plugin's run is `not-found`.
+
+## Let the model use the workspace's tools
+
+Pass `workspaceTools()` in `send`. When a run completes with tool calls, call `runTools`. You can't run another plugin's tool yourself, and Noura runs a call only after you choose Allow once in its prompt. A result holds the tool's answer, `{"denied":true}` when you deny the call, close the prompt, stop the run or open another workspace, or `{"error":{"code","message"}}` with `tool-failed`, `tool-not-found` or `plugin-disabled`. If you turn off a plugin while a run uses its tools, the run ends as `interrupted` with `plugin-disabled`.
+
+`runTools` runs only the workspace's tools, so it answers a `web_search` or `web_fetch` call with `tool-not-found`. Answer a turn of web calls yourself with `answerTools`, as the next section shows.
+
+Each request starts with Noura's instructions for the model, then the body of the workspace's root `AGENTS.md` when it has one. When the chat outgrows the provider's context window, Noura asks the provider to summarize the earlier messages, writes the summary to the chat as a `context-summary` message and sends it in their place.
 
 ## Search the web for the model
 
@@ -177,4 +189,5 @@ export const view: ViewExports = {
 - A failed run's `failure` holds a stable `code`, such as `provider_request_failed`, and a message. It never holds the provider's own answer, its headers or a key.
 - A chat is a folder of Markdown files in the workspace: `chat.md` and one file per message. A plugin with `workspace-read` reads them like other files, but only `ai` changes them.
 - The mock host asks no provider. Pass `providers` to `createMockHost` to list some. A run there waits for consent until the plugin stops it.
+- In the mock host, your plugin is the only one on, so `workspaceTools` returns your plugin's own tools. No run there completes, so `runTools` and `resume` have nothing to do.
 - The mock host has no Brave Search key. Its `webReady` returns `false`, and `webSearch` and `webFetch` fail with `web_search_key_missing`, as Noura's do before you add a key.
