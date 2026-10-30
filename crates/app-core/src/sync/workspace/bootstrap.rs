@@ -13,16 +13,34 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::{Deserialize, Serialize};
 use sync_protocol::chain::ChainVerifier;
 use sync_protocol::keys::LogJudge;
 use sync_protocol::live::{LiveOp, LiveSet};
-use sync_protocol::manifest::{Manifest, heads_digest, verify_buckets, verify_descent};
+use sync_protocol::manifest::{
+    Manifest, heads_digest, skip_number, verify_buckets, verify_descent,
+};
 use sync_protocol::messages::{EntryRecord, LiveCursor, PageStatus, PullCursor};
 use sync_protocol::records::{CheckpointBundle, Operation, Signed};
-use sync_protocol::types::Id;
+use sync_protocol::types::{Digest, Id};
 
 use super::state::Log;
 use super::{Checked, CheckedRecord, SyncError, SyncService, WorkspaceSync};
+
+/// The journal file that keeps a bootstrap's progress through the live
+/// pages.
+const BOOTSTRAP_FILE: &str = "bootstrap.json";
+
+/// The live pages a bootstrap fetched so far (§18).
+#[derive(Clone, Serialize, Deserialize)]
+struct Progress {
+    /// The checkpoint the pages belong to.
+    checkpoint: Digest,
+    /// The cursor after the last page.
+    after: Option<LiveCursor>,
+    /// The operations the pages carried, with their sequences.
+    ops: Vec<(Signed<Operation>, u64)>,
+}
 
 /// Why a bootstrap stops: the client code of the check that failed.
 fn fail(code: &'static str) -> SyncError {
@@ -35,6 +53,16 @@ impl WorkspaceSync {
     /// `sync_manifest_rollback`, `sync_manifest_mismatch` or the check's own
     /// code, and installs nothing.
     pub(super) async fn bootstrap(&mut self, service: &mut SyncService) -> Result<bool, SyncError> {
+        let result = self.bootstrap_latest(service).await;
+        // A failed check drops the pages fetched so far; a lost connection
+        // keeps them for the next attempt.
+        if let Err(SyncError::Check(_)) = result {
+            self.journal.write(BOOTSTRAP_FILE, &None::<Progress>)?;
+        }
+        result
+    }
+
+    async fn bootstrap_latest(&mut self, service: &mut SyncService) -> Result<bool, SyncError> {
         let (workspace, domain) = (self.state.workspace, self.state.domain);
         let Some(latest) = service.client().checkpoint(workspace, domain).await? else {
             return Ok(false);
@@ -57,10 +85,28 @@ impl WorkspaceSync {
             .0;
         verify_buckets(&buckets, &c.manifest_root).map_err(|_| fail("sync_manifest_mismatch"))?;
 
-        // The live operations, page by page.
-        let mut ops: Vec<(Signed<Operation>, u64)> = Vec::new();
-        let mut after: Option<LiveCursor> = None;
+        // The live operations, page by page. The journal keeps the pages
+        // fetched so far, so a restart resumes after the last one (§18).
+        let digest = bundle.checkpoint.0.digest();
+        let kept = self
+            .journal
+            .read::<Option<Progress>>(BOOTSTRAP_FILE)?
+            .flatten();
+        let (mut ops, mut after) = match kept {
+            Some(progress) if progress.checkpoint == digest => (progress.ops, progress.after),
+            _ => (Vec::new(), None),
+        };
         loop {
+            if after.is_some() {
+                self.journal.write(
+                    BOOTSTRAP_FILE,
+                    &Progress {
+                        checkpoint: digest,
+                        after: after.clone(),
+                        ops: ops.clone(),
+                    },
+                )?;
+            }
             let page = service
                 .client()
                 .live(workspace, domain, c.covered_seq, None, after.as_ref())
@@ -151,6 +197,31 @@ impl WorkspaceSync {
         log.checkpoints.accept(&bundle, &mut log.live);
         log.checkpoints.reach(&bundle.checkpoint.0, entry_seq);
         log.checkpoints.bootstrap_seq = c.covered_seq;
+        // The checkpoints on the bootstrap checkpoint's skip chain: every
+        // later checkpoint's `skip` names one of them or one the device
+        // reaches in its log, so the device can sign and check the next
+        // ones (§17, Checkpoint chain).
+        let (mut digest, mut number) = (c.skip, skip_number(c.number));
+        while number != 0 {
+            let entry = service
+                .client()
+                .checkpoint_by_digest(workspace, domain, digest)
+                .await?
+                .ok_or(fail("sync_chain_gap"))?;
+            let EntryRecord::Checkpoint(found) = entry.record else {
+                return Err(fail("sync_chain_gap"));
+            };
+            let record = &found.checkpoint.0;
+            if record.digest() != digest
+                || record.body.number != number
+                || record.body.workspace != workspace
+                || record.body.domain != domain
+            {
+                return Err(fail("sync_chain_gap"));
+            }
+            log.checkpoints.reach(record, entry.seq);
+            (digest, number) = (record.body.skip, skip_number(number));
+        }
 
         let mut records = Vec::with_capacity(ops.len());
         for ((op, seq), class) in ops.into_iter().zip(classes) {
@@ -178,6 +249,7 @@ impl WorkspaceSync {
         self.clear_downloads();
         applied?;
         self.save()?;
+        self.journal.write(BOOTSTRAP_FILE, &None::<Progress>)?;
         Ok(true)
     }
 
@@ -229,7 +301,10 @@ impl WorkspaceSync {
         let kept = service
             .kept_heads()
             .checkpoint_anchor(&workspace, &domain)
-            .filter(|a| a.generation == self.state.generation);
+            .filter(|a| a.generation == self.state.generation)
+            // An offer or kit made before the domain's first checkpoint
+            // carries a covered_seq of 0 and 32 zero bytes: no anchor.
+            .filter(|a| !a.checkpoint.is_zero());
         let anchor = match (&accepted, kept) {
             (Some(a), _) => Some((a.record.body.covered_seq, a.record.digest())),
             (None, Some(k)) => Some((k.covered_seq, k.checkpoint)),
@@ -267,6 +342,7 @@ impl WorkspaceSync {
                 .into_iter()
                 .find(|p| p.domain == domain)
                 .ok_or(fail("sync_chain_gap"))?;
+            crate::sync::check_page(&page, after)?;
             if page.status != PageStatus::Ok || page.complete_through <= after {
                 return Err(fail("sync_chain_gap"));
             }

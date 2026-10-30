@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use sync_protocol::codec::{Nested, Sorted};
 use sync_protocol::keys::{EpochChain, LogJudge};
 use sync_protocol::live::LiveSet;
-use sync_protocol::manifest::{Manifest, heads_digest, skip_number};
+use sync_protocol::manifest::{ChainView, Manifest, check_checkpoint, heads_digest, skip_number};
 use sync_protocol::policy::PolicyChain;
 use sync_protocol::records::{Checkpoint, CheckpointBundle, Ref, Signed};
 use sync_protocol::types::{Digest, Id};
@@ -192,25 +192,25 @@ impl Checkpoints {
         let record = &bundle.checkpoint.0;
         let c = &record.body;
         let heads: &[Ref] = &bundle.heads;
-        if heads_digest(heads) != c.heads_digest || heads.iter().any(|h| h.seq > c.covered_seq) {
-            return Err("sync_manifest_mismatch");
-        }
-        // Its link to the last checkpoint reached.
-        let (previous, number) = self
-            .last_reached()
-            .map_or((Digest::ZERO, 0), |(n, r)| (r.digest, n));
-        let skip = skip_number(c.number);
-        let skip_digest = if skip == 0 {
-            Some(Digest::ZERO)
-        } else {
-            self.reached.get(&skip).map(|r| r.digest)
+        // The heads digest, the link to the last checkpoint reached, the
+        // rollback rules against the latest accepted one, and the root
+        // against the client's own live set, as `sync-v2-manifest.json`'s
+        // `checkpoint_check` cases pin them down.
+        let previous_revision = self.last_reached().map_or(0, |(_, r)| r.policy_revision);
+        let skip_of = |n: u64| self.reached.get(&n).map(|r| r.digest);
+        let view = ChainView {
+            last: self.last_reached().map(|(n, r)| (r.digest, n)),
+            skip_of: &skip_of,
+            accepted: self
+                .accepted
+                .as_ref()
+                .map(|a| (&a.record.body, a.heads.as_slice())),
         };
-        if c.previous != previous
-            || c.number != number + 1
-            || skip_digest.is_some_and(|s| s != c.skip)
-        {
-            return Err("sync_chain_gap");
-        }
+        let manifest = self.own_manifest(bundle, live);
+        check_checkpoint(record, heads, &manifest, &view, |device| {
+            policy.card_gone(device, previous_revision)
+        })
+        .map_err(|e| e.client_code())?;
         // The signer, by position and at its `policy_revision`.
         let card = policy
             .at(c.policy_revision)
@@ -238,28 +238,7 @@ impl Checkpoints {
         {
             return Err("sync_key_mismatch");
         }
-        // Nothing goes back.
-        if let Some(a) = &self.accepted {
-            let before = &a.record.body;
-            if c.floor < before.floor || c.covered_seq <= before.covered_seq {
-                return Err("sync_manifest_rollback");
-            }
-            let previous_revision = self.last_reached().map_or(0, |(_, r)| r.policy_revision);
-            for old in &a.heads {
-                match heads.iter().find(|h| h.device == old.device) {
-                    Some(new) if new.counter < old.counter => return Err("sync_manifest_rollback"),
-                    None if !policy.card_gone(&old.device, previous_revision) => {
-                        return Err("sync_manifest_rollback");
-                    }
-                    _ => {}
-                }
-            }
-        }
-        // The client's own live set and heads.
-        let manifest = self.own_manifest(bundle, live);
-        if manifest.root() != c.manifest_root || manifest.live_objects() != c.live_objects {
-            return Err("sync_manifest_mismatch");
-        }
+        // The client's own heads.
         let own = self.heads_at(c.covered_seq, policy);
         for head in heads {
             match own.iter().find(|o| o.device == head.device) {

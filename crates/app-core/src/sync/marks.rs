@@ -33,6 +33,11 @@ pub struct DomainMark {
     pub checkpoint_seq: u64,
     /// That checkpoint's digest.
     pub checkpoint: Digest,
+    /// The restore generation the device accepted that checkpoint in, so
+    /// an approval offer or a recovery kit anchors it with its generation
+    /// (§10, §12).
+    #[serde(default)]
+    pub checkpoint_generation: u64,
     /// The highest counter this device may sign in the domain.
     pub reserved: u64,
 }
@@ -57,6 +62,7 @@ impl Default for DomainMark {
             epoch_record: Digest::ZERO,
             checkpoint_seq: 0,
             checkpoint: Digest::ZERO,
+            checkpoint_generation: 0,
             reserved: 0,
         }
     }

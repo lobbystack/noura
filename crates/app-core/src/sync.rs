@@ -964,6 +964,22 @@ impl SyncService {
             .latest()
             .and_then(|latest| keys.get(&latest.record.body.epoch).cloned())
             .ok_or(SyncError::Check("sync_key_mismatch"))?;
+        // The latest checkpoint of the workspace domain that a sync of this
+        // workspace accepted, as the credential store's mark keeps it, which
+        // an approval offer and a recovery kit anchor (§10, §12).
+        let checkpoint = marks::Mark::read(&*self.secrets, &recipient.device(), &workspace)?
+            .and_then(|mark| mark.domains.get(&domain).cloned())
+            .filter(|d| d.checkpoint_seq > 0)
+            .map(|d| {
+                (
+                    sync_protocol::records::CheckpointAnchor {
+                        domain,
+                        covered_seq: d.checkpoint_seq,
+                        checkpoint: d.checkpoint,
+                    },
+                    d.checkpoint_generation,
+                )
+            });
         Ok(RemoteWorkspace {
             workspace,
             domain,
@@ -978,7 +994,7 @@ impl SyncService {
             live: LiveSet::new(),
             last: BTreeMap::new(),
             envelope,
-            checkpoint: None,
+            checkpoint,
         })
     }
 

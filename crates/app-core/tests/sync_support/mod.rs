@@ -383,6 +383,14 @@ pub type Lose = Box<dyn Fn(&str, &str) -> bool + Send + Sync>;
 /// Rewrites a request's path and query before the proxy forwards it.
 pub type Reroute = Box<dyn Fn(&str) -> String + Send + Sync>;
 
+/// Holds the next request whose path ends with `suffix` until the test
+/// releases it: the proxy signals `arrived`, then waits for `release`.
+struct Hold {
+    suffix: String,
+    arrived: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
 /// Rewrites each realtime frame the server sends: the frames to send in
 /// its place, none to drop it.
 pub type FrameTamper = Box<dyn Fn(Frame) -> Vec<Frame> + Send + Sync>;
@@ -398,6 +406,7 @@ pub struct Proxy {
     forge: Arc<Mutex<Option<Forge>>>,
     lose: Arc<Mutex<Option<Lose>>>,
     reroute: Arc<Mutex<Option<Reroute>>>,
+    hold: Arc<Mutex<Option<Hold>>>,
     upstream: Arc<Mutex<String>>,
     /// Every request the proxy received: its method, path with query,
     /// headers and body.
@@ -514,6 +523,8 @@ impl Proxy {
         let reroute: Arc<Mutex<Option<Reroute>>> = Arc::new(Mutex::new(None));
         let lose: Arc<Mutex<Option<Lose>>> = Arc::new(Mutex::new(None));
         let lost = lose.clone();
+        let hold: Arc<Mutex<Option<Hold>>> = Arc::new(Mutex::new(None));
+        let held = hold.clone();
         let upstream: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
         let requests: Arc<Mutex<Vec<Captured>>> = Arc::new(Mutex::new(Vec::new()));
         let captured = requests.clone();
@@ -531,6 +542,7 @@ impl Proxy {
             let forged = forged.clone();
             let rerouted = rerouted.clone();
             let lost = lost.clone();
+            let held = held.clone();
             let upstream = target.lock().unwrap().clone();
             let http = http.clone();
             let captured = captured.clone();
@@ -565,6 +577,21 @@ impl Proxy {
                         .header("content-type", "application/octet-stream")
                         .body(axum::body::Body::from(bytes))
                         .unwrap();
+                }
+                let waiting = {
+                    let mut hold = held.lock().unwrap();
+                    if hold
+                        .as_ref()
+                        .is_some_and(|h| parts.uri.path().ends_with(&h.suffix))
+                    {
+                        hold.take()
+                    } else {
+                        None
+                    }
+                };
+                if let Some(hold) = waiting {
+                    hold.arrived.notify_one();
+                    hold.release.notified().await;
                 }
                 if parts.uri.path().ends_with("/realtime") {
                     use axum::extract::FromRequestParts;
@@ -659,6 +686,7 @@ impl Proxy {
             forge,
             lose,
             reroute,
+            hold,
             upstream,
             requests,
             frames,
@@ -708,6 +736,20 @@ impl Proxy {
     /// Sends every later request to the path `reroute` gives it.
     pub fn reroute(&self, reroute: Reroute) {
         *self.reroute.lock().unwrap() = Some(reroute);
+    }
+
+    /// Holds the next request whose path ends with `suffix` before the
+    /// proxy forwards it. Returns the signal that it arrived and the one
+    /// that releases it.
+    pub fn hold(&self, suffix: &str) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+        let arrived = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        *self.hold.lock().unwrap() = Some(Hold {
+            suffix: suffix.to_owned(),
+            arrived: arrived.clone(),
+            release: release.clone(),
+        });
+        (arrived, release)
     }
 
     /// Forwards every later request and response unchanged.

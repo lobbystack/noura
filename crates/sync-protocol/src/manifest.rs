@@ -319,51 +319,13 @@ impl CheckpointChain {
         previous_heads: &[Ref],
         may_leave: impl Fn(&Id) -> bool,
     ) -> Result<(), CheckpointError> {
-        let body = &record.body;
-        if heads_digest(heads) != body.heads_digest
-            || heads.iter().any(|h| h.seq > body.covered_seq)
-        {
-            return Err(CheckpointError::Heads);
-        }
-        match self.latest() {
-            None => {
-                if body.number != 1 || !body.previous.is_zero() || !body.skip.is_zero() {
-                    return Err(CheckpointError::Link);
-                }
-            }
-            Some((digest, latest)) => {
-                if body.previous != *digest || body.number != latest.number + 1 {
-                    return Err(CheckpointError::Link);
-                }
-                let skip = skip_number(body.number);
-                let expected_skip = if skip == 0 {
-                    Some(Digest::ZERO)
-                } else {
-                    self.digest_of(skip)
-                };
-                if expected_skip.is_some_and(|s| s != body.skip) {
-                    return Err(CheckpointError::Link);
-                }
-                if body.floor < latest.floor || body.covered_seq <= latest.covered_seq {
-                    return Err(CheckpointError::Rollback);
-                }
-                for old in previous_heads {
-                    match heads.iter().find(|h| h.device == old.device) {
-                        Some(new) if new.counter < old.counter => {
-                            return Err(CheckpointError::Rollback);
-                        }
-                        None if !may_leave(&old.device) => {
-                            return Err(CheckpointError::Rollback);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        if manifest.root() != body.manifest_root || manifest.live_objects() != body.live_objects {
-            return Err(CheckpointError::Mismatch);
-        }
-        Ok(())
+        let latest = self.latest();
+        let view = ChainView {
+            last: latest.map(|(d, c)| (*d, c.number)),
+            skip_of: &|n| self.digest_of(n),
+            accepted: latest.map(|(_, c)| (c, previous_heads)),
+        };
+        check_checkpoint(record, heads, manifest, &view, may_leave)
     }
 
     /// Records an accepted checkpoint.
@@ -371,4 +333,69 @@ impl CheckpointChain {
         self.by_number
             .insert(record.body.number, (record.digest(), record.body.clone()));
     }
+}
+
+/// What a client holds of its checkpoint chain when it checks the next
+/// checkpoint in its log (§17, Checking a checkpoint).
+pub struct ChainView<'a> {
+    /// The digest and number of the last checkpoint the client reached,
+    /// `None` before the first.
+    pub last: Option<(Digest, u64)>,
+    /// The digest of the reached checkpoint with a number, when the client
+    /// holds it.
+    pub skip_of: &'a dyn Fn(u64) -> Option<Digest>,
+    /// The latest checkpoint the client accepted, with its heads.
+    pub accepted: Option<(&'a Checkpoint, &'a [Ref])>,
+}
+
+/// The checks of §17 on a checkpoint in the log that need no policy: its
+/// heads digest, its link to the last checkpoint reached through
+/// `previous`, `number` and `skip`, nothing going back from the latest
+/// accepted checkpoint, and its root and leaf count against `manifest`,
+/// the client's own live set at `covered_seq`. `may_leave` says whether a
+/// device the accepted checkpoint listed may leave the heads.
+pub fn check_checkpoint(
+    record: &Signed<Checkpoint>,
+    heads: &[Ref],
+    manifest: &Manifest,
+    view: &ChainView<'_>,
+    may_leave: impl Fn(&Id) -> bool,
+) -> Result<(), CheckpointError> {
+    let body = &record.body;
+    if heads_digest(heads) != body.heads_digest || heads.iter().any(|h| h.seq > body.covered_seq) {
+        return Err(CheckpointError::Heads);
+    }
+    let (previous, number) = view.last.unwrap_or((Digest::ZERO, 0));
+    let skip = skip_number(body.number);
+    let expected_skip = if skip == 0 {
+        Some(Digest::ZERO)
+    } else {
+        (view.skip_of)(skip)
+    };
+    if body.previous != previous
+        || body.number != number + 1
+        || expected_skip.is_some_and(|s| s != body.skip)
+    {
+        return Err(CheckpointError::Link);
+    }
+    if let Some((accepted, previous_heads)) = view.accepted {
+        if body.floor < accepted.floor || body.covered_seq <= accepted.covered_seq {
+            return Err(CheckpointError::Rollback);
+        }
+        for old in previous_heads {
+            match heads.iter().find(|h| h.device == old.device) {
+                Some(new) if new.counter < old.counter => {
+                    return Err(CheckpointError::Rollback);
+                }
+                None if !may_leave(&old.device) => {
+                    return Err(CheckpointError::Rollback);
+                }
+                _ => {}
+            }
+        }
+    }
+    if manifest.root() != body.manifest_root || manifest.live_objects() != body.live_objects {
+        return Err(CheckpointError::Mismatch);
+    }
+    Ok(())
 }

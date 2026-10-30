@@ -799,6 +799,7 @@ impl WorkspaceSync {
             if checkpoint_seq > domain.checkpoint_seq {
                 domain.checkpoint_seq = checkpoint_seq;
                 domain.checkpoint = checkpoint;
+                domain.checkpoint_generation = self.state.generation;
             }
             self.mark.policy_revision = revision;
             self.mark.policy_head = head;
@@ -2953,6 +2954,25 @@ impl WorkspaceSync {
                     // The checkpoint a client bootstrapped from, or one it
                     // fetched by digest, reaches it again (§17).
                     if log.checkpoints.has_reached(&record.digest()) {
+                        // The pull that follows a bootstrap reaches the
+                        // checkpoint's entry with every policy entry
+                        // before it judged, so the signer's write access
+                        // there gets its check by position again (§17).
+                        let bootstrapped = log
+                            .checkpoints
+                            .accepted
+                            .as_ref()
+                            .is_some_and(|a| a.record.digest() == record.digest())
+                            && log.checkpoints.bootstrap_seq == record.body.covered_seq;
+                        if bootstrapped {
+                            log.judge
+                                .check_writer(
+                                    &record.body.signer,
+                                    record.body.policy_revision,
+                                    policy,
+                                )
+                                .map_err(|e| SyncError::Check(e.client_code()))?;
+                        }
                         continue;
                     }
                     let checked = if record.body.workspace != self.state.workspace
