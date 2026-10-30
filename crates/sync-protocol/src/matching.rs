@@ -168,6 +168,169 @@ pub struct DomainRoot {
     pub domain: Id,
 }
 
+/// A restricted domain's marker as a device knows it (§9): the domain's
+/// `create_domain` and the live set of its `marker_rid` in the domain's own
+/// log.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkerView {
+    /// The domain.
+    pub domain: Id,
+    /// The `marker_rid` its `create_domain` names.
+    pub rid: Id,
+    /// The policy revision of that `create_domain`.
+    pub created_at: u64,
+    /// Whether the policy still lists the domain.
+    pub listed: bool,
+    /// The marker's live states.
+    pub live: Vec<LiveState>,
+}
+
+/// A domain root a device records: the folder of a valid marker (§9).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedRoot {
+    /// The folder that holds the marker.
+    pub folder: String,
+    /// Its domain.
+    pub domain: Id,
+    /// The marker's `rid`.
+    pub rid: Id,
+}
+
+/// Where an object's file sits on a device (§9).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Placement {
+    /// At its synced path.
+    At(String),
+    /// Under `<root> (shared)`, since its path lies beneath the root of
+    /// another domain.
+    Shared(String),
+    /// Nowhere new: the path left the object's own root (given here), so
+    /// the file stays at its last path inside and the change goes to
+    /// review.
+    Outside(String),
+}
+
+/// The folder a marker's path names, when the path ends in
+/// `/.noura-domain`.
+pub fn marker_folder(path: &str) -> Option<&str> {
+    path.strip_suffix(MARKER)?
+        .strip_suffix('/')
+        .filter(|folder| !folder.is_empty())
+}
+
+/// The roots that `markers` give a device (§9), sorted by folder. A marker
+/// is valid when its live set holds exactly one operation, a state whose
+/// path ends in `/.noura-domain`, and the policy lists the domain. A valid
+/// marker at or beneath the root of a domain created earlier, or at its
+/// path, gives way, so someone outside a domain can't redirect its files.
+pub fn valid_roots(markers: &[MarkerView]) -> Vec<RecordedRoot> {
+    let mut by_age: Vec<&MarkerView> = markers.iter().collect();
+    by_age.sort_by_key(|m| m.created_at);
+    let mut roots: Vec<RecordedRoot> = Vec::new();
+    for marker in by_age {
+        let [state] = marker.live.as_slice() else {
+            continue;
+        };
+        if !marker.listed || state.delete {
+            continue;
+        }
+        let Some(folder) = marker_folder(&state.path) else {
+            continue;
+        };
+        if roots.iter().any(|root| beneath(folder, &root.folder)) {
+            continue;
+        }
+        roots.push(RecordedRoot {
+            folder: folder.to_owned(),
+            domain: marker.domain,
+            rid: marker.rid,
+        });
+    }
+    roots.sort_by(|a, b| a.folder.cmp(&b.folder));
+    roots
+}
+
+fn innermost<'a>(path: &str, roots: &'a [RecordedRoot]) -> Option<&'a RecordedRoot> {
+    roots
+        .iter()
+        .filter(|root| beneath(path, &root.folder))
+        .max_by_key(|root| root.folder.len())
+}
+
+/// The domain a new file at `path` goes to (§9): that of the innermost
+/// recorded root that holds it, or `None` for the workspace domain.
+pub fn domain_of(path: &str, roots: &[RecordedRoot]) -> Option<Id> {
+    innermost(path, roots).map(|root| root.domain)
+}
+
+/// Whether a device may create a marker in `folder` (§9): the workspace's
+/// root takes none, and neither does a folder at or beneath a recorded
+/// root.
+pub fn marker_allowed(folder: &str, roots: &[RecordedRoot]) -> bool {
+    !folder.is_empty() && !roots.iter().any(|root| beneath(folder, &root.folder))
+}
+
+/// Where the file of an object of `domain` (`None` for the workspace
+/// domain) with synced path `path` sits on a device that records `roots`
+/// (§9).
+pub fn placement(path: &str, domain: Option<Id>, roots: &[RecordedRoot]) -> Placement {
+    if let Some(own) = roots.iter().find(|r| Some(r.domain) == domain)
+        && !beneath(path, &own.folder)
+    {
+        return Placement::Outside(own.folder.clone());
+    }
+    match innermost(path, roots) {
+        Some(root) if Some(root.domain) != domain => {
+            let rest = path.strip_prefix(&root.folder).unwrap_or_default();
+            Placement::Shared(format!("{} (shared){rest}", root.folder))
+        }
+        _ => Placement::At(path.to_owned()),
+    }
+}
+
+/// The synced path of a file at `local` (§9): a file under `<root> (shared)`
+/// keeps the path beneath the root it was relocated from.
+pub fn synced_path(local: &str, roots: &[RecordedRoot]) -> String {
+    roots
+        .iter()
+        .find_map(|root| {
+            let shared = format!("{} (shared)", root.folder);
+            beneath(local, &shared).then(|| {
+                let rest = local.strip_prefix(&shared).unwrap_or_default();
+                format!("{}{rest}", root.folder)
+            })
+        })
+        .unwrap_or_else(|| local.to_owned())
+}
+
+/// The held roots a bootstrap or journal rebuild records for `domain` when
+/// its marker is moved, deleted or in conflict (§9): one at each folder
+/// that directly holds a live object of the domain.
+pub fn bootstrap_held_roots(domain: Id, paths: &[String]) -> Vec<HeldRoot> {
+    let mut folders: Vec<&str> = paths
+        .iter()
+        .map(|path| path.rsplit_once('/').map_or("", |(folder, _)| folder))
+        .collect();
+    folders.sort_unstable();
+    folders.dedup();
+    folders
+        .into_iter()
+        .map(|folder| HeldRoot {
+            folder: folder.to_owned(),
+            domain: Some(domain),
+        })
+        .collect()
+}
+
+/// Whether a folder whose entries bear `names` holds its marker: an iCloud
+/// placeholder counts as present (§9).
+pub fn marker_present<'a>(names: impl IntoIterator<Item = &'a str>) -> bool {
+    names
+        .into_iter()
+        .any(|name| matches!(name, MARKER | ".noura-domain.icloud" | "..noura-domain.icloud"))
+}
+
 /// The held roots a folder that syncs without its journal records (§9):
 /// one at the folder of each local `.noura-domain` file other than a valid
 /// marker it applied, for the domain that file names.

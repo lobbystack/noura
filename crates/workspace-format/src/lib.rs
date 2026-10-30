@@ -764,6 +764,19 @@ pub fn serialize_workspace_manifest(manifest: &WorkspaceManifest) -> Result<Stri
     serde_yaml_ng::to_string(manifest).map_err(|_| FormatError::ManifestSerialization)
 }
 
+/// The marker file of a restricted folder. Scanners leave it out of the
+/// workspace's objects, and encrypted sync alone reads and writes it.
+pub const DOMAIN_MARKER: &str = ".noura-domain";
+
+/// Whether a file named `name` is a restricted folder's marker or an
+/// iCloud placeholder of one, which counts as the marker.
+pub fn is_domain_marker(name: &str) -> bool {
+    matches!(
+        name,
+        DOMAIN_MARKER | ".noura-domain.icloud" | "..noura-domain.icloud"
+    )
+}
+
 /// Checks whether an ID has the stable prefix and lowercase ULID required by the format.
 pub fn valid_object_id(id: &str, object_type: &str) -> bool {
     if !valid_object_type(object_type) {
@@ -1067,6 +1080,14 @@ mod tests {
         titles: Vec<TitleFixture>,
         file_names: Vec<FileNameFixture>,
         rewrites: Vec<RewriteFixture>,
+        domain_markers: Vec<DomainMarkerFixture>,
+    }
+
+    #[derive(Deserialize)]
+    struct DomainMarkerFixture {
+        name: String,
+        file: String,
+        marker: bool,
     }
 
     #[derive(Deserialize)]
@@ -1100,6 +1121,18 @@ mod tests {
             "../../../docs/workspace-format/fixtures/conformance-v1.json"
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn domain_markers_match_the_shared_fixtures() {
+        for fixture in conformance().domain_markers {
+            assert_eq!(
+                is_domain_marker(&fixture.file),
+                fixture.marker,
+                "{}",
+                fixture.name
+            );
+        }
     }
 
     #[test]

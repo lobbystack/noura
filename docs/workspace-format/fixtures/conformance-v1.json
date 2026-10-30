@@ -674,5 +674,14 @@
 			"existing": "---\r\nid: note_01j00000000000000000000000\r\ntype: note\r\ntags: [a,   b]\r\n---\r\nBody",
 			"expected": "---\r\nid: note_01j00000000000000000000000\r\ntype: note\r\ntags: [a,   b]\r\n---\r\nBody"
 		}
+	],
+	"domain_markers": [
+		{ "name": "the marker of a restricted folder", "file": ".noura-domain", "marker": true },
+		{ "name": "its placeholder as the spec names it", "file": ".noura-domain.icloud", "marker": true },
+		{ "name": "its placeholder as iCloud writes a dot file's", "file": "..noura-domain.icloud", "marker": true },
+		{ "name": "another dot file", "file": ".DS_Store", "marker": false },
+		{ "name": "a file that only contains the name", "file": ".noura-domain.md", "marker": false },
+		{ "name": "the name without its dot", "file": "noura-domain", "marker": false },
+		{ "name": "another file's placeholder", "file": ".Note.md.icloud", "marker": false }
 	]
 }

@@ -282,7 +282,7 @@ pub(crate) async fn apply_epoch(
         ));
     }
     if row.epoch == 0 {
-        return apply_first_epoch(txn, state, workspace, index, bundle).await;
+        return apply_first_epoch(txn, state, workspace, bundle).await;
     }
     if body.epoch <= row.epoch {
         return Err(refuse("epoch_conflict", "another rotation took this epoch"));
@@ -396,7 +396,6 @@ async fn apply_first_epoch(
     txn: &mut impl WriteTxn,
     state: &mut PushState,
     workspace: Id,
-    index: usize,
     bundle: &EpochBundle,
 ) -> Result<Vec<Receipt>> {
     let record = &bundle.epoch.0;

@@ -183,6 +183,607 @@
 					"folder": "Team/Pay"
 				}
 			]
+		},
+		{
+			"expect": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team",
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			],
+			"kind": "valid_roots",
+			"markers": [
+				{
+					"created_at": 3,
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"listed": true,
+					"live": [
+						{
+							"delete": false,
+							"path": "Team/.noura-domain",
+							"revision": "0000000000000000000000000000000000000000000000000000000000000000"
+						}
+					],
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			],
+			"name": "a_marker_with_one_live_state_roots_its_folder"
+		},
+		{
+			"expect": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Archive/Team",
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			],
+			"kind": "valid_roots",
+			"markers": [
+				{
+					"created_at": 3,
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"listed": true,
+					"live": [
+						{
+							"delete": false,
+							"path": "Archive/Team/.noura-domain",
+							"revision": "0000000000000000000000000000000000000000000000000000000000000000"
+						}
+					],
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			],
+			"name": "a_moved_marker_roots_the_folder_it_moved_to"
+		},
+		{
+			"expect": [],
+			"kind": "valid_roots",
+			"markers": [
+				{
+					"created_at": 3,
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"listed": true,
+					"live": [
+						{
+							"delete": false,
+							"path": "Team/.noura-domain",
+							"revision": "0000000000000000000000000000000000000000000000000000000000000000"
+						},
+						{
+							"delete": false,
+							"path": "Other/.noura-domain",
+							"revision": "0000000000000000000000000000000000000000000000000000000000000000"
+						}
+					],
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			],
+			"name": "a_marker_with_two_live_states_is_no_root"
+		},
+		{
+			"expect": [],
+			"kind": "valid_roots",
+			"markers": [
+				{
+					"created_at": 3,
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"listed": true,
+					"live": [
+						{
+							"delete": true,
+							"path": "",
+							"revision": "0000000000000000000000000000000000000000000000000000000000000000"
+						}
+					],
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			],
+			"name": "a_deleted_marker_is_no_root"
+		},
+		{
+			"expect": [],
+			"kind": "valid_roots",
+			"markers": [
+				{
+					"created_at": 3,
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"listed": true,
+					"live": [
+						{
+							"delete": false,
+							"path": "Team/.noura-domain",
+							"revision": "0000000000000000000000000000000000000000000000000000000000000000"
+						},
+						{
+							"delete": true,
+							"path": "",
+							"revision": "0000000000000000000000000000000000000000000000000000000000000000"
+						}
+					],
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			],
+			"name": "a_state_and_a_delete_are_no_root"
+		},
+		{
+			"expect": [],
+			"kind": "valid_roots",
+			"markers": [
+				{
+					"created_at": 3,
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"listed": true,
+					"live": [],
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			],
+			"name": "a_marker_the_log_never_carried_is_no_root"
+		},
+		{
+			"expect": [],
+			"kind": "valid_roots",
+			"markers": [
+				{
+					"created_at": 3,
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"listed": true,
+					"live": [
+						{
+							"delete": false,
+							"path": "Team/notes.md",
+							"revision": "0000000000000000000000000000000000000000000000000000000000000000"
+						}
+					],
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			],
+			"name": "a_marker_at_another_name_is_no_root"
+		},
+		{
+			"expect": [],
+			"kind": "valid_roots",
+			"markers": [
+				{
+					"created_at": 3,
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"listed": true,
+					"live": [
+						{
+							"delete": false,
+							"path": ".noura-domain",
+							"revision": "0000000000000000000000000000000000000000000000000000000000000000"
+						}
+					],
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			],
+			"name": "a_marker_at_the_workspace_root_is_no_root"
+		},
+		{
+			"expect": [],
+			"kind": "valid_roots",
+			"markers": [
+				{
+					"created_at": 3,
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"listed": false,
+					"live": [
+						{
+							"delete": false,
+							"path": "Team/.noura-domain",
+							"revision": "0000000000000000000000000000000000000000000000000000000000000000"
+						}
+					],
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			],
+			"name": "a_domain_the_policy_no_longer_lists_is_no_root"
+		},
+		{
+			"expect": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team",
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			],
+			"kind": "valid_roots",
+			"markers": [
+				{
+					"created_at": 3,
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"listed": true,
+					"live": [
+						{
+							"delete": false,
+							"path": "Team/.noura-domain",
+							"revision": "0000000000000000000000000000000000000000000000000000000000000000"
+						}
+					],
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				},
+				{
+					"created_at": 5,
+					"domain": "d1d8472de6d496006f2eccf0b34d283d",
+					"listed": true,
+					"live": [
+						{
+							"delete": false,
+							"path": "Team/Pay/.noura-domain",
+							"revision": "0000000000000000000000000000000000000000000000000000000000000000"
+						}
+					],
+					"rid": "ed9604a45dc0722643db31bf871d4aba"
+				}
+			],
+			"name": "an_earlier_root_evicts_a_later_marker_inside_it"
+		},
+		{
+			"expect": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team",
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			],
+			"kind": "valid_roots",
+			"markers": [
+				{
+					"created_at": 5,
+					"domain": "d1d8472de6d496006f2eccf0b34d283d",
+					"listed": true,
+					"live": [
+						{
+							"delete": false,
+							"path": "Team/.noura-domain",
+							"revision": "0000000000000000000000000000000000000000000000000000000000000000"
+						}
+					],
+					"rid": "ed9604a45dc0722643db31bf871d4aba"
+				},
+				{
+					"created_at": 3,
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"listed": true,
+					"live": [
+						{
+							"delete": false,
+							"path": "Team/.noura-domain",
+							"revision": "0000000000000000000000000000000000000000000000000000000000000000"
+						}
+					],
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			],
+			"name": "an_earlier_root_evicts_a_later_marker_at_its_path"
+		},
+		{
+			"expect": [
+				{
+					"domain": "d1d8472de6d496006f2eccf0b34d283d",
+					"folder": "Team",
+					"rid": "ed9604a45dc0722643db31bf871d4aba"
+				},
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team/Pay",
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			],
+			"kind": "valid_roots",
+			"markers": [
+				{
+					"created_at": 3,
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"listed": true,
+					"live": [
+						{
+							"delete": false,
+							"path": "Team/Pay/.noura-domain",
+							"revision": "0000000000000000000000000000000000000000000000000000000000000000"
+						}
+					],
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				},
+				{
+					"created_at": 5,
+					"domain": "d1d8472de6d496006f2eccf0b34d283d",
+					"listed": true,
+					"live": [
+						{
+							"delete": false,
+							"path": "Team/.noura-domain",
+							"revision": "0000000000000000000000000000000000000000000000000000000000000000"
+						}
+					],
+					"rid": "ed9604a45dc0722643db31bf871d4aba"
+				}
+			],
+			"name": "a_later_domains_root_may_hold_an_earlier_one"
+		},
+		{
+			"expect": null,
+			"kind": "new_file_domain",
+			"name": "a_file_outside_every_root_goes_to_the_workspace_domain",
+			"path": "Plan.md",
+			"roots": [
+				{
+					"domain": "d1d8472de6d496006f2eccf0b34d283d",
+					"folder": "Team",
+					"rid": "ed9604a45dc0722643db31bf871d4aba"
+				},
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team/Pay",
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			]
+		},
+		{
+			"expect": "d1d8472de6d496006f2eccf0b34d283d",
+			"kind": "new_file_domain",
+			"name": "a_new_file_goes_to_its_root",
+			"path": "Team/Plan.md",
+			"roots": [
+				{
+					"domain": "d1d8472de6d496006f2eccf0b34d283d",
+					"folder": "Team",
+					"rid": "ed9604a45dc0722643db31bf871d4aba"
+				},
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team/Pay",
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			]
+		},
+		{
+			"expect": "94ea3d5bad51f59ef16d365a29005a42",
+			"kind": "new_file_domain",
+			"name": "a_new_file_goes_to_the_innermost_root",
+			"path": "Team/Pay/Plan.md",
+			"roots": [
+				{
+					"domain": "d1d8472de6d496006f2eccf0b34d283d",
+					"folder": "Team",
+					"rid": "ed9604a45dc0722643db31bf871d4aba"
+				},
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team/Pay",
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			]
+		},
+		{
+			"expect": null,
+			"kind": "new_file_domain",
+			"name": "a_name_that_only_starts_like_the_root_is_outside",
+			"path": "Team 2/Plan.md",
+			"roots": [
+				{
+					"domain": "d1d8472de6d496006f2eccf0b34d283d",
+					"folder": "Team",
+					"rid": "ed9604a45dc0722643db31bf871d4aba"
+				},
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team/Pay",
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			]
+		},
+		{
+			"expect": true,
+			"folder": "Other",
+			"kind": "marker_allowed",
+			"name": "a_marker_outside_every_root_may_be_created",
+			"roots": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team",
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			]
+		},
+		{
+			"expect": false,
+			"folder": "Team/Sub",
+			"kind": "marker_allowed",
+			"name": "a_marker_inside_another_root_is_refused",
+			"roots": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team",
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			]
+		},
+		{
+			"expect": false,
+			"folder": "Team",
+			"kind": "marker_allowed",
+			"name": "a_marker_at_a_root_is_refused",
+			"roots": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team",
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			]
+		},
+		{
+			"expect": false,
+			"folder": "",
+			"kind": "marker_allowed",
+			"name": "the_workspace_root_takes_no_marker",
+			"roots": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team",
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			]
+		},
+		{
+			"expect": {
+				"at": "Team/Plan.md"
+			},
+			"kind": "placement",
+			"name": "an_object_of_the_root_sits_at_its_path",
+			"object_domain": "94ea3d5bad51f59ef16d365a29005a42",
+			"path": "Team/Plan.md",
+			"roots": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team",
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			]
+		},
+		{
+			"expect": {
+				"at": "Plan.md"
+			},
+			"kind": "placement",
+			"name": "a_workspace_object_outside_every_root_sits_at_its_path",
+			"object_domain": null,
+			"path": "Plan.md",
+			"roots": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team",
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			]
+		},
+		{
+			"expect": {
+				"shared": "Team (shared)/Plan.md"
+			},
+			"kind": "placement",
+			"name": "a_workspace_object_under_a_root_goes_under_shared",
+			"object_domain": null,
+			"path": "Team/Plan.md",
+			"roots": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team",
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			]
+		},
+		{
+			"expect": {
+				"shared": "Team (shared)/Sub/Plan.md"
+			},
+			"kind": "placement",
+			"name": "another_domains_object_under_a_root_goes_under_shared",
+			"object_domain": "d1d8472de6d496006f2eccf0b34d283d",
+			"path": "Team/Sub/Plan.md",
+			"roots": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team",
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			]
+		},
+		{
+			"expect": {
+				"outside": "Team"
+			},
+			"kind": "placement",
+			"name": "an_object_whose_path_leaves_its_root_stays_for_review",
+			"object_domain": "94ea3d5bad51f59ef16d365a29005a42",
+			"path": "Elsewhere/Plan.md",
+			"roots": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team",
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			]
+		},
+		{
+			"expect": "Team/Sub/Plan.md",
+			"kind": "synced_path",
+			"local": "Team (shared)/Sub/Plan.md",
+			"name": "an_edit_under_shared_uploads_at_its_synced_path",
+			"roots": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team",
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			]
+		},
+		{
+			"expect": "Team/Plan.md",
+			"kind": "synced_path",
+			"local": "Team/Plan.md",
+			"name": "a_path_elsewhere_stays",
+			"roots": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team",
+					"rid": "26c80be1787b61a6fda3671b77b94dea"
+				}
+			]
+		},
+		{
+			"domain": "94ea3d5bad51f59ef16d365a29005a42",
+			"expect": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team"
+				},
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Team/Sub/Deep"
+				}
+			],
+			"kind": "bootstrap_held_roots",
+			"name": "a_bootstrap_without_a_valid_marker_holds_each_folder_that_directly_holds_an_object",
+			"paths": [
+				"Team/Plan.md",
+				"Team/Notes.md",
+				"Team/Sub/Deep/Plan.md"
+			]
+		},
+		{
+			"expect": true,
+			"kind": "marker_present",
+			"name": "the_marker_counts_as_present",
+			"names": [
+				".noura-domain"
+			]
+		},
+		{
+			"expect": true,
+			"kind": "marker_present",
+			"name": "an_icloud_placeholder_counts_as_present",
+			"names": [
+				".noura-domain.icloud"
+			]
+		},
+		{
+			"expect": true,
+			"kind": "marker_present",
+			"name": "icloud_s_own_placeholder_of_a_dot_file_counts_too",
+			"names": [
+				"..noura-domain.icloud"
+			]
+		},
+		{
+			"expect": false,
+			"kind": "marker_present",
+			"name": "an_ordinary_file_doesnt",
+			"names": [
+				"Plan.md",
+				".DS_Store"
+			]
 		}
 	],
 	"description": "Restricted domain markers (sync-v2.md §9): the exact content of a `.noura-domain` file, one line `domain: <base64url domain ID>` and a line feed, and content that isn't a marker's. `stray_marker` asks whether a client refuses an object at a marker path, `held_roots` which local markers hold their folders after a sync without a journal, and `hold_ends` whether a hold ends without your confirmation.",

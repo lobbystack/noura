@@ -22,10 +22,10 @@ use sync_protocol::manifest::{
     BUCKETS, bucket_of, heads_digest, skip_number, verify_bucket, verify_buckets, verify_descent,
 };
 use sync_protocol::messages::{EntryRecord, PageStatus, PullCursor};
-use sync_protocol::records::{CheckpointBundle, Operation, Signed};
+use sync_protocol::records::{CheckpointBundle, OpClass, Operation, PolicyKind, Signed};
 use sync_protocol::types::{Digest, Id};
 
-use super::state::{BootstrapProgress, Log};
+use super::state::{BootstrapProgress, Log, OpKey, StateInfo};
 use super::{Checked, CheckedRecord, SyncError, SyncService, WorkspaceSync};
 use crate::sync::account_heads::KeptCheckpointAnchor;
 
@@ -124,6 +124,9 @@ impl WorkspaceSync {
             (bundle, entry.seq)
         };
         let c = bundle.checkpoint.0.body.clone();
+        // A restricted domain's marker comes before its other objects, so
+        // the root stands before the first file beneath it (§9).
+        self.read_marker_first(service, c.covered_seq).await?;
 
         // The bucket hashes, against the root.
         let buckets = service
@@ -276,6 +279,81 @@ impl WorkspaceSync {
         self.state.bootstrap_progress = None;
         self.save()?;
         Ok(true)
+    }
+
+    /// Reads the live states of the domain's marker at `at` into the
+    /// journal and takes the domain's root from them, before the buckets
+    /// bring its other objects.
+    async fn read_marker_first(
+        &mut self,
+        service: &mut SyncService,
+        at: u64,
+    ) -> Result<(), SyncError> {
+        let domain = self.state.domain;
+        let Some(active) = self.active else {
+            return Ok(());
+        };
+        let marker = self.state.policy.iter().find_map(|change| match &change.body.kind {
+            PolicyKind::CreateDomain {
+                domain: d,
+                marker_rid,
+                ..
+            } if *d == domain => Some(*marker_rid),
+            _ => None,
+        });
+        let Some(rid) = marker else {
+            return Ok(());
+        };
+        let page = service
+            .client()
+            .live(self.state.workspace, domain, at, Some(rid), None)
+            .await?;
+        for entry in page.entries.0 {
+            let EntryRecord::Operation(op) = entry.record else {
+                return Err(fail("sync_manifest_mismatch"));
+            };
+            if op.body.rid != rid || op.body.domain != domain {
+                return Err(fail("sync_manifest_mismatch"));
+            }
+            self.ensure_epoch(service, op.body.epoch).await?;
+            let remote = self
+                .remote
+                .as_ref()
+                .ok_or(fail("sync_workspace_unverified"))?;
+            let card = remote
+                .policy
+                .at(op.body.policy_revision)
+                .and_then(|s| s.devices.get(&op.body.device))
+                .ok_or(fail("sync_writer_not_authorized"))?;
+            op.verify(&card.card.signing_public)
+                .map_err(|_| fail("sync_writer_not_authorized"))?;
+            let payload = match (
+                remote.epochs.get(op.body.epoch),
+                self.keys.get(&op.body.epoch),
+            ) {
+                (Some(epoch), Some(key)) => {
+                    op.body.open_payload(key, &epoch.digest, OpClass::State).ok()
+                }
+                _ => None,
+            };
+            let content = payload.and_then(|p| super::carried(&p, &mut BTreeMap::new()));
+            let object = self.state.objects.entry(rid).or_default();
+            object.domain = Some(active);
+            object.states.insert(
+                OpKey {
+                    device: op.body.device,
+                    counter: op.body.counter,
+                },
+                StateInfo {
+                    digest: op.digest(),
+                    seq: Some(entry.seq),
+                    covers: op.body.supersedes.to_vec(),
+                    content,
+                    epoch: op.body.epoch,
+                },
+            );
+        }
+        self.update_roots()
     }
 
     /// Installs the buckets in `range` from `ops`, every live operation in

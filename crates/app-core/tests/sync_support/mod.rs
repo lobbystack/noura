@@ -411,6 +411,9 @@ pub struct Proxy {
     /// Every request the proxy received: its method, path with query,
     /// headers and body.
     requests: Arc<Mutex<Vec<Captured>>>,
+    /// Every response body and realtime frame the proxy passed on, with
+    /// the path it answered or `frame`.
+    received: Arc<Mutex<Vec<(String, Vec<u8>)>>>,
     frames: Arc<Mutex<Option<FrameTamper>>>,
     pings: Arc<AtomicUsize>,
     closing: tokio::sync::watch::Sender<u64>,
@@ -435,6 +438,7 @@ async fn bridge(
     frames: Arc<Mutex<Option<FrameTamper>>>,
     pings: Arc<AtomicUsize>,
     mut closing: tokio::sync::watch::Receiver<u64>,
+    received: Arc<Mutex<Vec<(String, Vec<u8>)>>>,
 ) {
     use axum::extract::ws::Message as Client;
     use futures::{SinkExt, StreamExt};
@@ -459,6 +463,7 @@ async fn bridge(
             message = from_server.next() => match message {
                 Some(Ok(Server::Binary(bytes))) => {
                     let frame = Frame::from_bytes(&bytes).expect("the server sends frames");
+                    received.lock().unwrap().push(("frame".to_owned(), bytes.to_vec()));
                     let sent = match frames.lock().unwrap().as_ref() {
                         Some(tamper) => tamper(frame),
                         None => vec![frame],
@@ -535,6 +540,8 @@ impl Proxy {
         let frames: Arc<Mutex<Option<FrameTamper>>> = Arc::new(Mutex::new(None));
         let pings = Arc::new(AtomicUsize::new(0));
         let (closing, _) = tokio::sync::watch::channel(0u64);
+        let received: Arc<Mutex<Vec<(String, Vec<u8>)>>> = Arc::new(Mutex::new(Vec::new()));
+        let recording = received.clone();
         let bridged = (frames.clone(), pings.clone(), closing.clone());
         let http = reqwest::Client::new();
         let app = axum::Router::new().fallback(move |request: axum::extract::Request| {
@@ -547,6 +554,7 @@ impl Proxy {
             let http = http.clone();
             let captured = captured.clone();
             let (frames, pings, closing) = bridged.clone();
+            let recording = recording.clone();
             async move {
                 let (mut parts, body) = request.into_parts();
                 let body = axum::body::to_bytes(body, 2 << 20)
@@ -613,7 +621,7 @@ impl Proxy {
                         Ok((server, _)) => {
                             let closing = closing.subscribe();
                             upgrade.on_upgrade(move |client| {
-                                bridge(client, server, frames, pings, closing)
+                                bridge(client, server, frames, pings, closing, recording)
                             })
                         }
                         Err(tokio_tungstenite::tungstenite::Error::Http(refused)) => {
@@ -666,6 +674,10 @@ impl Proxy {
                 {
                     bytes = tamper(parts.uri.path(), bytes);
                 }
+                recording
+                    .lock()
+                    .unwrap()
+                    .push((parts.uri.path().to_owned(), bytes.clone()));
                 let mut reply = axum::response::Response::builder().status(status.as_u16());
                 for (name, value) in &headers {
                     if name != "content-length" && name != "transfer-encoding" {
@@ -689,10 +701,17 @@ impl Proxy {
             hold,
             upstream,
             requests,
+            received,
             frames,
             pings,
             closing,
         }
+    }
+
+    /// Every response body and realtime frame the proxy passed on so far,
+    /// each with the path it answered or `frame`.
+    pub fn received(&self) -> Vec<(String, Vec<u8>)> {
+        self.received.lock().unwrap().clone()
     }
 
     /// Every request the proxy received so far.

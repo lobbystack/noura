@@ -25,7 +25,7 @@ use super::state::{Content as Carried, Local, OpKey};
 use super::{SyncError, WorkspaceSync, core, journal, same_state, stat};
 
 pub(crate) use sync_protocol::matching::fold;
-use sync_protocol::matching::refuses_marker_path;
+use sync_protocol::matching::{Placement, marker_folder, refuses_marker_path};
 
 /// The bytes of a version sync holds while it applies a page: in memory, as
 /// an inline payload carries them, or in a file outside the workspace, such
@@ -222,6 +222,17 @@ impl WorkspaceSync {
         let Some(content) = object.states.get(&target).and_then(|s| s.content.clone()) else {
             return Ok(());
         };
+        // Only `delete_domain` retires a marker: a delete of one, or a move
+        // off a marker path, keeps the file and the recorded root, and the
+        // files beneath it wait (§9).
+        if self.marker_objects().contains(&rid)
+            && (content.delete || marker_folder(&content.path).is_none())
+        {
+            if !self.state.refused.contains(&rid) {
+                self.state.refused.push(rid);
+            }
+            return self.keep_for_review(&rid, &target, contents);
+        }
         // An object at a `.noura-domain` path that no domain names as its
         // marker would hold files after a sync without the journal: the
         // device writes none and lists it for review (§9).
@@ -252,8 +263,15 @@ impl WorkspaceSync {
             object.base = Some(target);
             return Ok(());
         }
+        self.hold_uncovered(&rid, &content.path);
+        let synced = match self.placement_of(&rid, &content.path) {
+            Placement::At(path) | Placement::Shared(path) => path,
+            // A path that left the object's root: the file stays, and the
+            // change goes to review (§9).
+            Placement::Outside(_) => return self.keep_for_review(&rid, &target, contents),
+        };
         let body = self.content_body(&rid, &target, contents)?;
-        let (path, displaced) = self.destination(&rid, &target, &content.path);
+        let (path, displaced) = self.destination(&rid, &target, &synced);
         for other in displaced {
             if let Err(error) = self.move_aside(&other) {
                 tracing::warn!(%error, "a file that yields its path couldn't move aside");
@@ -612,7 +630,11 @@ impl WorkspaceSync {
                 let base = object.base?;
                 let local = object.local.as_ref()?;
                 let content = object.states.get(&base)?.content.as_ref()?;
-                (base.device == own && !content.delete && fold(&content.path) != fold(&local.path))
+                let shown = match self.placement_of(rid, &content.path) {
+                    Placement::At(path) | Placement::Shared(path) => path,
+                    Placement::Outside(_) => return None,
+                };
+                (base.device == own && !content.delete && fold(&shown) != fold(&local.path))
                     .then_some(*rid)
             })
             .collect()
