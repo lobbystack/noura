@@ -229,6 +229,99 @@ impl WorkspaceEngine {
         Ok(())
     }
 
+    /// The revision of the file at `relative`, hashed as it streams from
+    /// disk, or `None` when nothing is there. The checks match
+    /// [`Self::read_synced`]'s.
+    pub fn hash_synced(&self, relative: &str) -> Result<Option<String>> {
+        let path = resolve_for_write(&self.root, relative, OPERATION)?;
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {
+                revision_of_file(&path, relative, OPERATION).map(Some)
+            }
+            Ok(_) => Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                ensure_downloaded(&path, relative, OPERATION)?;
+                Ok(None)
+            }
+            Err(error) => Err(CoreError::io(error, OPERATION, Some(relative))),
+        }
+    }
+
+    /// Opens the file at `relative` for reading, or `None` when nothing is
+    /// there, so a caller can stream a large file. The checks match
+    /// [`Self::read_synced`]'s.
+    pub fn open_synced(&self, relative: &str) -> Result<Option<std::fs::File>> {
+        let path = resolve_for_write(&self.root, relative, OPERATION)?;
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {
+                ensure_downloaded(&path, relative, OPERATION)?;
+                File::open(&path)
+                    .map(Some)
+                    .map_err(|error| CoreError::io(error, OPERATION, Some(relative)))
+            }
+            Ok(_) => Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                ensure_downloaded(&path, relative, OPERATION)?;
+                Ok(None)
+            }
+            Err(error) => Err(CoreError::io(error, OPERATION, Some(relative))),
+        }
+    }
+
+    /// Like [`Self::write_synced`], with the bytes streamed from `source`,
+    /// a file outside the workspace such as a downloaded attachment, so a
+    /// large file never sits in memory. The bytes must hash to `revision`
+    /// as they stream, else the write fails with `sync_source_changed` and
+    /// leaves the destination alone.
+    pub fn write_synced_from(
+        &self,
+        relative: &str,
+        source: &Path,
+        revision: &str,
+        expected: &SyncedExpect,
+    ) -> Result<()> {
+        let path = resolve_for_write(&self.root, relative, OPERATION)?;
+        let _changes = self.hold_changes();
+        let guard = self.write_lock(OPERATION)?;
+        self.expect_own_write(relative, Some(revision));
+        let copy = |file: &mut atomic_write_file::AtomicWriteFile| -> Result<()> {
+            let source =
+                File::open(source).map_err(|error| CoreError::io(error, OPERATION, None))?;
+            let mut hashing = HashingReader {
+                inner: source,
+                hasher: blake3::Hasher::new(),
+            };
+            std::io::copy(&mut hashing, file)
+                .map_err(|error| CoreError::io(error, OPERATION, Some(relative)))?;
+            if hashing.hasher.finalize().to_hex().as_str() != revision {
+                return Err(CoreError::new(
+                    "sync_source_changed",
+                    ErrorCategory::Conflict,
+                    "The file to write changed before sync wrote it",
+                    OPERATION,
+                ));
+            }
+            Ok(())
+        };
+        let written = match expected {
+            SyncedExpect::Revision(expected) => atomic_write_checked_with(
+                &self.root,
+                Path::new(relative),
+                copy,
+                Some(expected),
+                OPERATION,
+            ),
+            SyncedExpect::Absent => write_new_with(&path, relative, copy),
+        };
+        if let Err(error) = written {
+            self.forget_own_write(relative);
+            return Err(error);
+        }
+        drop(guard);
+        self.follow_sync_change(&[relative]);
+        Ok(())
+    }
+
     /// Moves the file at `from`, whose bytes must still have
     /// `expected_revision`, to `to`, where nothing may be, except the file
     /// itself after a case-only rename. Folders the move empties go too.
@@ -238,8 +331,8 @@ impl WorkspaceEngine {
         let destination = resolve_for_write(&self.root, to, OPERATION)?;
         let _changes = self.hold_changes();
         let guard = self.write_lock(OPERATION)?;
-        let current = read_downloaded(&source, from, OPERATION)?;
-        check_revision(&current, expected_revision, OPERATION)?;
+        let current = revision_of_file(&source, from, OPERATION)?;
+        revision_matches(current, expected_revision, OPERATION)?;
         if std::fs::symlink_metadata(&destination).is_ok() && !same_file(&source, &destination) {
             return Err(CoreError::new(
                 "path_exists",
@@ -262,8 +355,8 @@ impl WorkspaceEngine {
         let source = resolve_for_write(&self.root, relative, OPERATION)?;
         let _changes = self.hold_changes();
         let guard = self.write_lock(OPERATION)?;
-        let current = read_downloaded(&source, relative, OPERATION)?;
-        check_revision(&current, expected_revision, OPERATION)?;
+        let current = revision_of_file(&source, relative, OPERATION)?;
+        revision_matches(current, expected_revision, OPERATION)?;
         let noted = self.expect_own_move(relative, None);
         if let Err(error) = self.discard(&source, relative, OPERATION) {
             if std::fs::symlink_metadata(&source).is_ok() {
@@ -317,13 +410,25 @@ impl WorkspaceEngine {
 /// Writes `bytes` to a new file at `path` through a temporary file, once
 /// nothing is there, then syncs the file and its folder.
 fn write_new(path: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
+    write_new_with(path, relative, |file| {
+        file.write_all(bytes)
+            .map_err(|error| CoreError::io(error, OPERATION, Some(relative)))
+    })
+}
+
+/// Like [`write_new`], with the bytes `write` puts into the temporary file.
+fn write_new_with(
+    path: &Path,
+    relative: &str,
+    write: impl FnOnce(&mut atomic_write_file::AtomicWriteFile) -> Result<()>,
+) -> Result<()> {
     if let Some(parent) = path.parent() {
         create_folders(parent, OPERATION)?;
     }
     let mut file = atomic_write_file::AtomicWriteFile::open(path)
         .map_err(|error| CoreError::io(error, OPERATION, Some(relative)))?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
+    write(&mut file)?;
+    file.sync_all()
         .map_err(|error| CoreError::io(error, OPERATION, Some(relative)))?;
     if std::fs::symlink_metadata(path).is_ok() {
         return Err(CoreError::new(
@@ -336,4 +441,18 @@ fn write_new(path: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
     file.commit()
         .map_err(|error| CoreError::io(error, OPERATION, Some(relative)))?;
     sync_parent(path, OPERATION)
+}
+
+/// A reader that hashes what passes through it.
+struct HashingReader<R> {
+    inner: R,
+    hasher: blake3::Hasher,
+}
+
+impl<R: std::io::Read> std::io::Read for HashingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.hasher.update(&buf[..n]);
+        Ok(n)
+    }
 }

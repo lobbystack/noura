@@ -237,9 +237,19 @@ async fn patch<B: Backend>(
             // Refuse a wrong offset before reading the body.
             let next = SEGMENT.min(upload.row.length.saturating_sub(upload.row.offset));
             Store::<B>::check_segment(&upload.row, offset, next)?;
-            let bytes = axum::body::to_bytes(request, SEGMENT_LEN)
-                .await
-                .map_err(|_| refused("too_large", "a PATCH appends at most 1 MiB"))?;
+            // The body lands in one buffer of the segment's size as it
+            // arrives, so a PATCH holds about one segment in memory.
+            let too_large = || refused("too_large", "a PATCH appends at most 1 MiB");
+            let mut body = bytes::BytesMut::with_capacity(usize::try_from(next).unwrap_or(0));
+            let mut frames = request.into_data_stream();
+            while let Some(frame) = futures::StreamExt::next(&mut frames).await {
+                let frame = frame.map_err(|_| refused("bad_request", "the body broke off"))?;
+                if body.len() + frame.len() > SEGMENT_LEN {
+                    return Err(too_large());
+                }
+                body.extend_from_slice(&frame);
+            }
+            let bytes = body.freeze();
             let len = bytes.len() as u64;
             Store::<B>::check_segment(&upload.row, offset, len)?;
             let hash = sync_protocol::crypto::hash(&bytes);
@@ -323,7 +333,7 @@ async fn read(
     start: u64,
     end: u64,
 ) -> std::io::Result<Bytes> {
-    let mut out = Vec::with_capacity(usize::try_from(end - start).unwrap_or(0));
+    let mut out = Vec::new();
     let mut at = start;
     while at < end {
         let index = at / SEGMENT;
@@ -334,7 +344,13 @@ async fn read(
         let within = at - index * SEGMENT;
         let take = (SEGMENT - within).min(end - at);
         let key = segment_key(workspace, &upload.row.blob, index, hash);
-        out.extend_from_slice(&blobs.get(&key, within..within + take).await?);
+        let bytes = blobs.get(&key, within..within + take).await?;
+        if at == start && take == end - start {
+            // A range inside one segment, as clients ask for, goes out as
+            // the store read it, without a copy.
+            return Ok(bytes);
+        }
+        out.extend_from_slice(&bytes);
         at += take;
     }
     Ok(Bytes::from(out))

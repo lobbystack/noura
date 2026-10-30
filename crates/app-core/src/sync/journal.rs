@@ -30,6 +30,9 @@ pub const STATE_FILE: &str = "journal.json";
 pub const CONFLICTS: &str = "conflicts";
 /// The folder of held local versions inside a journal (§15).
 pub const HELD: &str = "held";
+/// The folder of downloaded attachments inside a journal, which sync
+/// checks there before it writes them into the workspace (§21).
+pub const DOWNLOADS: &str = "downloads";
 /// The folder an earlier journal's review store moves to when you connect a
 /// folder again (§15).
 pub const ARCHIVE: &str = "archive";
@@ -208,6 +211,76 @@ impl Journal {
         Ok(bytes)
     }
 
+    /// Keeps the bytes `write` produces at `relative` in the journal folder,
+    /// through a temporary file that is on disk, with its folder entry,
+    /// before this returns, so a large file streams through without sitting
+    /// in memory.
+    pub fn keep_with<T, E: From<JournalError>>(
+        &self,
+        relative: &str,
+        write: impl FnOnce(&mut dyn Write) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let path = self.dir.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(io)?;
+        }
+        let mut file = atomic_write_file::AtomicWriteFile::open(&path).map_err(io)?;
+        let value = {
+            let mut buffered = std::io::BufWriter::with_capacity(1 << 16, &mut file);
+            let value = write(&mut buffered)?;
+            buffered.flush().map_err(io)?;
+            value
+        };
+        file.sync_all().map_err(io)?;
+        file.commit().map_err(io)?;
+        sync_folder(&path)?;
+        Ok(value)
+    }
+
+    /// Keeps a copy of the file at `source` in the review store at
+    /// `relative`, streaming it, when its bytes hash to `revision`; a file
+    /// that changed meanwhile is refused and nothing is kept.
+    pub fn keep_file(
+        &self,
+        relative: &str,
+        source: &Path,
+        revision: &Digest,
+    ) -> Result<(), JournalError> {
+        let path = self.dir.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(io)?;
+        }
+        let mut reader = std::fs::File::open(source).map_err(io)?;
+        let mut file = atomic_write_file::AtomicWriteFile::open(&path).map_err(io)?;
+        let mut hasher = blake3::Hasher::new();
+        let mut buffer = vec![0u8; 1 << 16];
+        loop {
+            let n = std::io::Read::read(&mut reader, &mut buffer).map_err(io)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buffer[..n]);
+            file.write_all(&buffer[..n]).map_err(io)?;
+        }
+        if Digest(*hasher.finalize().as_bytes()) != *revision {
+            return Err(JournalError::Refused);
+        }
+        file.sync_all().map_err(io)?;
+        file.commit().map_err(io)?;
+        sync_folder(&path)
+    }
+
+    /// The path of the review store's copy at `relative`, when it still has
+    /// `revision`, hashed as it streams; a copy another program changed is
+    /// refused.
+    pub fn kept_path(&self, relative: &str, revision: &Digest) -> Result<PathBuf, JournalError> {
+        let path = self.dir.join(relative);
+        if hash_file(&path).map_err(io)? != *revision {
+            return Err(JournalError::Refused);
+        }
+        Ok(path)
+    }
+
     /// Removes the review store's copy at `relative`, once you chose.
     pub fn forget(&self, relative: &str) {
         let path = self.dir.join(relative);
@@ -256,13 +329,27 @@ pub(crate) fn durable_write(path: &Path, bytes: &[u8]) -> Result<(), JournalErro
     file.write_all(bytes).map_err(io)?;
     file.sync_all().map_err(io)?;
     file.commit().map_err(io)?;
+    sync_folder(path)
+}
+
+/// Syncs the folder that holds `path`, so its entry is on disk.
+fn sync_folder(path: &Path) -> Result<(), JournalError> {
     #[cfg(unix)]
     if let Some(parent) = path.parent() {
         std::fs::File::open(parent)
             .and_then(|folder| folder.sync_all())
             .map_err(io)?;
     }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
+}
+
+/// The BLAKE3 hash of the file at `path`, read as it streams.
+pub(crate) fn hash_file(path: &Path) -> std::io::Result<Digest> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_reader(std::fs::File::open(path)?)?;
+    Ok(Digest(*hasher.finalize().as_bytes()))
 }
 
 #[cfg(test)]
@@ -329,6 +416,52 @@ mod tests {
             Err(JournalError::Refused)
         ));
         assert_eq!(journal.read::<Vec<u64>>("missing.json").unwrap(), None);
+    }
+
+    #[test]
+    fn large_copies_stream_into_the_review_store_and_are_checked_on_the_way_out() {
+        let root = tempfile::tempdir().unwrap();
+        let secrets = Memory::default();
+        let journal = Journal::open(root.path(), &Id([8; 16]), &secrets).unwrap();
+        let bytes: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        let revision = sync_protocol::crypto::hash(&bytes);
+        let source = root.path().join("download");
+        std::fs::write(&source, &bytes).unwrap();
+
+        // A source whose bytes don't match keeps nothing.
+        let wrong = sync_protocol::crypto::hash(b"other");
+        assert!(matches!(
+            journal.keep_file("conflicts/a/b", &source, &wrong),
+            Err(JournalError::Refused)
+        ));
+        assert!(!journal.dir().join("conflicts/a/b").exists());
+
+        journal
+            .keep_file("conflicts/a/b", &source, &revision)
+            .unwrap();
+        let kept = journal.kept_path("conflicts/a/b", &revision).unwrap();
+        assert!(std::fs::read(&kept).unwrap() == bytes);
+        std::fs::write(&kept, b"changed by another program").unwrap();
+        assert!(matches!(
+            journal.kept_path("conflicts/a/b", &revision),
+            Err(JournalError::Refused)
+        ));
+
+        // A streamed write lands whole, or not at all.
+        let written: Result<u32, SyncError> = journal.keep_with("uploads/x", |out| {
+            out.write_all(&bytes)
+                .map_err(|e| SyncError::Invalid(e.to_string()))?;
+            Ok(7)
+        });
+        assert_eq!(written.unwrap(), 7);
+        assert!(std::fs::read(journal.dir().join("uploads/x")).unwrap() == bytes);
+        let failed: Result<(), SyncError> = journal.keep_with("uploads/y", |out| {
+            out.write_all(b"part")
+                .map_err(|e| SyncError::Invalid(e.to_string()))?;
+            Err(SyncError::Invalid("the file changed".into()))
+        });
+        assert!(failed.is_err());
+        assert!(!journal.dir().join("uploads/y").exists());
     }
 
     #[test]

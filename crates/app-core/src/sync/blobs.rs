@@ -3,13 +3,12 @@
 //! connection, and a download in ranges of at most 1 MiB whose segment
 //! hashes the client checks against `ciphertext_digest` before it decrypts.
 
-use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use sync_protocol::blob::{SEGMENT_LEN, decrypt_blob, digest_of_segment_hashes};
-use sync_protocol::crypto::hash;
+use sync_protocol::blob::{SEGMENT_LEN, decrypt_blob_to, digest_of_segment_hashes};
 use sync_protocol::records::BlobRef;
 use sync_protocol::types::{Digest, Id};
 
@@ -141,22 +140,59 @@ impl SyncClient {
         }
     }
 
-    /// Downloads the blob `blob_ref` names in ranges of at most 1 MiB,
-    /// checks each segment's hash against `ciphertext_digest` before it
-    /// decrypts, and returns the file's bytes once `plaintext_length` equals
-    /// their length and, when given, their hash equals `revision`.
+    /// Downloads the blob `blob_ref` names in ranges of at most 1 MiB into
+    /// a temporary file in `dir`, hashing each segment as it arrives, and
+    /// checks the hashes against `ciphertext_digest` before it decrypts.
+    /// It then decrypts one chunk at a time into a second temporary file,
+    /// and returns that file's path once `plaintext_length` equals the
+    /// file's length and, when given, its hash equals `revision`. Memory
+    /// stays at about one segment whatever the blob's size. On any failure
+    /// both files are removed.
     pub async fn download_blob(
         &mut self,
         workspace: Id,
         blob_ref: &BlobRef,
         revision: Option<&Digest>,
-    ) -> Result<Vec<u8>, SyncError> {
+        dir: &Path,
+    ) -> Result<PathBuf, SyncError> {
+        let name = sync_protocol::types::to_hex(&blob_ref.blob.0);
+        let ciphertext = dir.join(format!("{name}.cipher"));
+        let plaintext = dir.join(format!("{name}.plain"));
+        let result = self
+            .download_into(workspace, blob_ref, revision, &ciphertext, &plaintext)
+            .await;
+        let _ = std::fs::remove_file(&ciphertext);
+        if result.is_err() {
+            let _ = std::fs::remove_file(&plaintext);
+        }
+        result.map(|()| plaintext)
+    }
+
+    async fn download_into(
+        &mut self,
+        workspace: Id,
+        blob_ref: &BlobRef,
+        revision: Option<&Digest>,
+        ciphertext: &Path,
+        plaintext: &Path,
+    ) -> Result<(), SyncError> {
+        let disk = |e: std::io::Error| SyncError::Invalid(format!("can't keep the download: {e}"));
+        if let Some(parent) = ciphertext.parent() {
+            std::fs::create_dir_all(parent).map_err(disk)?;
+        }
         let length = blob_ref.ciphertext_length;
-        let mut ciphertext = Vec::with_capacity(usize::try_from(length).map_err(network)?);
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(ciphertext)
+            .map_err(disk)?;
+        let mut received = 0u64;
         let mut hashes = Vec::new();
         let mut failures = 0;
-        while (ciphertext.len() as u64) < length {
-            let start = ciphertext.len() as u64;
+        while received < length {
+            let start = received;
             let end = (start + SEGMENT).min(length) - 1;
             let url = format!(
                 "{}{}",
@@ -167,19 +203,41 @@ impl SyncClient {
                 .http
                 .get(url)
                 .header("Range", format!("bytes={start}-{end}"));
+            let want = end + 1 - start;
+            // The segment streams to disk as it arrives and is hashed on
+            // the way, so it never sits whole in memory.
             let segment = match self.tus(request).await {
-                Ok(response) => response.bytes().await.map_err(network),
+                Ok(mut response) => {
+                    let mut hasher = blake3::Hasher::new();
+                    let mut got = 0u64;
+                    let streamed = async {
+                        while let Some(chunk) = response.chunk().await.map_err(network)? {
+                            got += chunk.len() as u64;
+                            if got > want {
+                                return Err(corrupt("came back in the wrong length"));
+                            }
+                            hasher.update(&chunk);
+                            file.write_all(&chunk).map_err(disk)?;
+                        }
+                        Ok(())
+                    }
+                    .await;
+                    streamed.map(|()| (got, Digest(*hasher.finalize().as_bytes())))
+                }
                 Err(error) => Err(error),
             };
             match segment {
-                Ok(segment) => {
-                    if segment.len() as u64 != end + 1 - start {
+                Ok((got, segment_hash)) => {
+                    if got != want {
                         return Err(corrupt("came back in the wrong length"));
                     }
-                    hashes.push(hash(&segment));
-                    ciphertext.extend_from_slice(&segment);
+                    hashes.push(segment_hash);
+                    received += got;
                 }
                 Err(SyncError::Network(message)) => {
+                    // Start the segment again where it began.
+                    file.set_len(start).map_err(disk)?;
+                    file.seek(SeekFrom::Start(start)).map_err(disk)?;
                     failures += 1;
                     if failures > RETRIES {
                         return Err(SyncError::Network(message));
@@ -191,6 +249,23 @@ impl SyncClient {
         if digest_of_segment_hashes(&hashes) != blob_ref.ciphertext_digest {
             return Err(corrupt("doesn't match its digest"));
         }
-        decrypt_blob(&ciphertext, blob_ref, revision).map_err(|e| corrupt(&e.to_string()))
+        file.seek(SeekFrom::Start(0)).map_err(disk)?;
+        let mut out = std::io::BufWriter::with_capacity(
+            1 << 16,
+            std::fs::File::create(plaintext).map_err(disk)?,
+        );
+        let file_hash = decrypt_blob_to(
+            std::io::BufReader::with_capacity(1 << 16, file),
+            blob_ref,
+            &mut out,
+        )
+        .map_err(|e| corrupt(&e.to_string()))?;
+        if revision.is_some_and(|revision| file_hash != *revision) {
+            return Err(corrupt(
+                &sync_protocol::blob::BlobError::Revision.to_string(),
+            ));
+        }
+        out.flush().map_err(disk)?;
+        Ok(())
     }
 }

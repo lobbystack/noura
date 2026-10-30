@@ -16,9 +16,9 @@
 //! devices show it there without writing until the move arrives.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 use local_core::SyncedExpect;
-use sync_protocol::crypto::hash;
 use sync_protocol::types::{Digest, Id};
 
 use super::state::{Content as Carried, Local, OpKey};
@@ -26,6 +26,41 @@ use super::{SyncError, WorkspaceSync, core, journal, same_state, stat};
 
 pub(crate) use sync_protocol::matching::fold;
 use sync_protocol::matching::refuses_marker_path;
+
+/// The bytes of a version sync holds while it applies a page: in memory, as
+/// an inline payload carries them, or in a file outside the workspace, such
+/// as a download in the journal's `downloads/` or a review store copy, which
+/// sync streams so a large attachment never sits in memory. Every write
+/// from a file checks the bytes against the version's revision as they
+/// stream.
+#[derive(Clone, Debug)]
+pub(crate) enum Body {
+    /// The bytes themselves.
+    Bytes(Vec<u8>),
+    /// A file whose bytes hashed to the version's revision.
+    File(PathBuf),
+}
+
+/// The bodies of the files a page carried, by revision.
+pub(crate) type Bodies = BTreeMap<Digest, Body>;
+
+impl Body {
+    /// The bytes, when they sit in memory.
+    pub(crate) fn bytes(&self) -> Option<&[u8]> {
+        match self {
+            Body::Bytes(bytes) => Some(bytes),
+            Body::File(_) => None,
+        }
+    }
+
+    /// How many bytes it holds.
+    pub(crate) fn len(&self) -> u64 {
+        match self {
+            Body::Bytes(bytes) => bytes.len() as u64,
+            Body::File(path) => std::fs::metadata(path).map_or(0, |m| m.len()),
+        }
+    }
+}
 
 /// `path` as the file system names it: each component as its folder lists
 /// it, which differs in case on a file system that ignores case.
@@ -108,11 +143,7 @@ impl WorkspaceSync {
 
     /// Brings `rid`'s file in line with its live set. `contents` holds the
     /// bytes of the files the page carried, by revision.
-    pub(super) fn settle(
-        &mut self,
-        rid: Id,
-        contents: &BTreeMap<Digest, Vec<u8>>,
-    ) -> Result<(), SyncError> {
+    pub(super) fn settle(&mut self, rid: Id, contents: &Bodies) -> Result<(), SyncError> {
         let Some(object) = self.state.objects.get(&rid).cloned() else {
             return Ok(());
         };
@@ -165,8 +196,8 @@ impl WorkspaceSync {
             {
                 false
             }
-            Some(_) => match self.engine.read_synced(&local.path) {
-                Ok(Some(bytes)) => hash(&bytes) != local.revision,
+            Some(_) => match self.engine.hash_synced(&local.path) {
+                Ok(Some(revision)) => revision != local.revision.to_hex(),
                 _ => true,
             },
         }
@@ -179,11 +210,13 @@ impl WorkspaceSync {
         rid: Id,
         target: OpKey,
         edited: bool,
-        contents: &BTreeMap<Digest, Vec<u8>>,
+        contents: &Bodies,
     ) -> Result<(), SyncError> {
         let own = self.credentials.keys.device();
         let object = &self.state.objects[&rid];
-        if object.base == Some(target) || target.device == own {
+        // This device's own state is on disk already, unless a lost
+        // journal left the object with no file, as when the file went too.
+        if object.base == Some(target) || (target.device == own && object.local.is_some()) {
             return Ok(());
         }
         let Some(content) = object.states.get(&target).and_then(|s| s.content.clone()) else {
@@ -219,7 +252,7 @@ impl WorkspaceSync {
             object.base = Some(target);
             return Ok(());
         }
-        let bytes = self.content_bytes(&rid, &target, contents)?;
+        let body = self.content_body(&rid, &target, contents)?;
         let (path, displaced) = self.destination(&rid, &target, &content.path);
         for other in displaced {
             if let Err(error) = self.move_aside(&other) {
@@ -227,7 +260,7 @@ impl WorkspaceSync {
                 return self.keep_for_review(&rid, &target, contents);
             }
         }
-        match self.place(&rid, &path, &bytes) {
+        match self.place(&rid, &path, &body, content.revision) {
             Ok(()) => {
                 self.state.objects.get_mut(&rid).expect("present").base = Some(target);
                 Ok(())
@@ -239,13 +272,29 @@ impl WorkspaceSync {
         }
     }
 
-    /// Puts `bytes` at `path` as `rid`'s file: moves its current file there
-    /// when it has one, writes the bytes when they differ, and records the
-    /// file in the journal. A file that changed since the journal saw it,
-    /// or another file at `path`, fails with `revision_conflict`.
-    pub(super) fn place(&mut self, rid: &Id, path: &str, bytes: &[u8]) -> Result<(), SyncError> {
-        let revision = hash(bytes);
+    /// Puts `body`, whose bytes hash to `revision`, at `path` as `rid`'s
+    /// file: moves its current file there when it has one, writes the bytes
+    /// when they differ, and records the file in the journal. A file that
+    /// changed since the journal saw it, or another file at `path`, fails
+    /// with `revision_conflict`.
+    pub(super) fn place(
+        &mut self,
+        rid: &Id,
+        path: &str,
+        body: &Body,
+        revision: Digest,
+    ) -> Result<(), SyncError> {
         let local = self.state.objects.get(rid).and_then(|o| o.local.clone());
+        let write = |expected: &SyncedExpect| {
+            match body {
+                Body::Bytes(bytes) => self.engine.write_synced(path, bytes, expected),
+                Body::File(source) => {
+                    self.engine
+                        .write_synced_from(path, source, &revision.to_hex(), expected)
+                }
+            }
+            .map_err(Box::new)
+        };
         match local {
             Some(local) => {
                 if local.path != path {
@@ -254,25 +303,20 @@ impl WorkspaceSync {
                         .map_err(core)?;
                 }
                 if local.revision != revision {
-                    self.engine
-                        .write_synced(
-                            path,
-                            bytes,
-                            &SyncedExpect::Revision(local.revision.to_hex()),
-                        )
-                        .map_err(core)?;
+                    write(&SyncedExpect::Revision(local.revision.to_hex()))
+                        .map_err(|error| core(*error))?;
                 }
             }
-            None => match self.engine.write_synced(path, bytes, &SyncedExpect::Absent) {
+            None => match write(&SyncedExpect::Absent) {
                 Ok(()) => {}
                 Err(error) if error.code == "revision_conflict" => {
                     // Already there, as after a restart mid-page.
-                    let there = self.engine.read_synced(path).ok().flatten();
-                    if there.as_deref().map(hash) != Some(revision) {
-                        return Err(core(error));
+                    let there = self.engine.hash_synced(path).ok().flatten();
+                    if there != Some(revision.to_hex()) {
+                        return Err(core(*error));
                     }
                 }
-                Err(error) => return Err(core(error)),
+                Err(error) => return Err(core(*error)),
             },
         }
         // A folder that differs only in case on a file system that ignores
@@ -291,33 +335,43 @@ impl WorkspaceSync {
         Ok(())
     }
 
-    /// The bytes of the state at `key`: from the page, the review store or
-    /// the file on disk.
-    pub(super) fn content_bytes(
+    /// The bytes of the state at `key`: from the page, the review store, or
+    /// a file on disk that holds them, its own or another object's, which
+    /// it hashes again first.
+    pub(super) fn content_body(
         &self,
         rid: &Id,
         key: &OpKey,
-        contents: &BTreeMap<Digest, Vec<u8>>,
-    ) -> Result<Vec<u8>, SyncError> {
+        contents: &Bodies,
+    ) -> Result<Body, SyncError> {
         let object = &self.state.objects[rid];
         let content = object
             .states
             .get(key)
             .and_then(|s| s.content.as_ref())
             .ok_or_else(|| SyncError::Invalid("that version didn't open".into()))?;
-        if let Some(bytes) = contents.get(&content.revision) {
-            return Ok(bytes.clone());
+        if let Some(body) = contents.get(&content.revision) {
+            return Ok(body.clone());
         }
         if let Some(kept) = &content.kept
-            && let Ok(bytes) = self.journal.kept(kept, &content.revision)
+            && let Ok(path) = self.journal.kept_path(kept, &content.revision)
         {
-            return Ok(bytes);
+            return Ok(Body::File(path));
         }
-        if let Some(local) = &object.local
-            && let Ok(Some(bytes)) = self.engine.read_synced(&local.path)
-            && hash(&bytes) == content.revision
-        {
-            return Ok(bytes);
+        let own = object.local.iter();
+        let others = self
+            .state
+            .objects
+            .iter()
+            .filter(|(other, _)| *other != rid)
+            .filter_map(|(_, o)| o.local.as_ref());
+        for local in own.chain(others) {
+            if local.revision == content.revision
+                && self.engine.hash_synced(&local.path).ok().flatten()
+                    == Some(content.revision.to_hex())
+            {
+                return Ok(Body::File(self.engine.root().join(&local.path)));
+            }
         }
         Err(SyncError::Invalid(
             "the bytes of that version are gone".into(),
@@ -330,7 +384,7 @@ impl WorkspaceSync {
         &mut self,
         rid: &Id,
         key: &OpKey,
-        contents: &BTreeMap<Digest, Vec<u8>>,
+        contents: &Bodies,
     ) -> Result<(), SyncError> {
         let object = &self.state.objects[rid];
         let Some(content) = object.states.get(key).and_then(|s| s.content.clone()) else {
@@ -346,7 +400,7 @@ impl WorkspaceSync {
         if on_disk {
             return Ok(());
         }
-        let Ok(bytes) = self.content_bytes(rid, key, contents) else {
+        let Ok(body) = self.content_body(rid, key, contents) else {
             return Ok(());
         };
         let digest = object.states[key].digest;
@@ -356,7 +410,12 @@ impl WorkspaceSync {
             rid.to_hex(),
             digest.to_hex()
         );
-        self.journal.keep(&relative, &bytes)?;
+        match &body {
+            Body::Bytes(bytes) => self.journal.keep(&relative, bytes)?,
+            Body::File(source) => self
+                .journal
+                .keep_file(&relative, source, &content.revision)?,
+        }
         if let Some(content) = self
             .state
             .objects
@@ -428,7 +487,7 @@ impl WorkspaceSync {
         path_branch: OpKey,
         content_branch: OpKey,
         edited: bool,
-        contents: &BTreeMap<Digest, Vec<u8>>,
+        contents: &Bodies,
     ) -> Result<(), SyncError> {
         if edited {
             self.keep_for_review(&rid, &path_branch, contents)?;
@@ -440,8 +499,13 @@ impl WorkspaceSync {
             .as_ref()
             .map(|c| c.path.clone())
             .expect("a file");
-        let bytes = self.content_bytes(&rid, &content_branch, contents)?;
-        match self.place(&rid, &path, &bytes) {
+        let revision = object.states[&content_branch]
+            .content
+            .as_ref()
+            .map(|c| c.revision)
+            .expect("a file");
+        let body = self.content_body(&rid, &content_branch, contents)?;
+        match self.place(&rid, &path, &body, revision) {
             Ok(()) => {}
             Err(SyncError::Invalid(message)) if message.starts_with("revision_conflict") => {
                 self.keep_for_review(&rid, &path_branch, contents)?;
@@ -458,7 +522,7 @@ impl WorkspaceSync {
         if writes && self.stopped.is_none() {
             let view = BTreeSet::from([path_branch, content_branch]);
             let covers = self.covers_of(&rid, &view);
-            let found = self.found_at(&path, bytes)?;
+            let found = self.found_on_disk(&path)?;
             self.sign_file(rid, &found, covers)?;
         } else {
             self.state.objects.get_mut(&rid).expect("present").base = Some(content_branch);
