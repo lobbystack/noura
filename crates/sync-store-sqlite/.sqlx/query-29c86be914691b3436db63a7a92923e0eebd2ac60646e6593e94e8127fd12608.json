@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO blob_segments (workspace, blob, idx, hash) VALUES (?1, ?2, ?3, ?4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "29c86be914691b3436db63a7a92923e0eebd2ac60646e6593e94e8127fd12608"
+}

@@ -650,6 +650,7 @@ pub const SERVER_ERRORS: &[(&str, u16)] = &[
     ("blob_incomplete", 409),
     ("blob_digest_mismatch", 422),
     ("blob_domain_mismatch", 422),
+    ("blob_offset_conflict", 409),
     ("quota_exceeded", 507),
     ("id_conflict", 409),
     ("rid_domain_mismatch", 409),

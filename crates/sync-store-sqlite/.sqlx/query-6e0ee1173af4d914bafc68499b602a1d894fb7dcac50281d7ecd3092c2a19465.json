@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT hash FROM blob_segments WHERE workspace = ?1 AND blob = ?2 ORDER BY idx",
+  "describe": {
+    "columns": [
+      {
+        "name": "hash",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "blob_segments",
+            "name": "hash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6e0ee1173af4d914bafc68499b602a1d894fb7dcac50281d7ecd3092c2a19465"
+}

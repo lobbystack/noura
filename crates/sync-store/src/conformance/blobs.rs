@@ -1,0 +1,446 @@
+//! Conformance cases for blob rows (§21): tus creation, segments, digest
+//! checks, the push checks for listed blobs and who may download.
+
+use std::collections::BTreeSet;
+use std::sync::Arc;
+
+use sync_protocol::blob::{SEGMENT_LEN, encrypt_blob};
+use sync_protocol::crypto::hash;
+use sync_protocol::keys::{EpochParams, build_epoch};
+use sync_protocol::records::{PolicyKind, Signed};
+use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
+
+use super::{World, head_of, manager, push_failure, refusal};
+use crate::{Backend, BlobCreation, BlobRow, Recorded, Store};
+
+/// A blob's ciphertext and the creation that names it, for a file of
+/// `file_len` bytes.
+pub fn blob_for(file_len: usize, domain: Id) -> (Vec<u8>, BlobCreation) {
+    let file: Vec<u8> = (0..file_len).map(|i| (i % 251) as u8).collect();
+    let blob = Id::random().expect("random");
+    let (ciphertext, blob_ref) =
+        encrypt_blob(&file, blob, SecretKey::random().expect("random")).expect("encrypts");
+    let creation = BlobCreation {
+        blob,
+        length: blob_ref.ciphertext_length,
+        digest: blob_ref.ciphertext_digest,
+        domain,
+    };
+    (ciphertext, creation)
+}
+
+/// Uploads every segment of `ciphertext` as `device`.
+pub async fn upload_all<B: Backend>(
+    world: &World<B>,
+    device: usize,
+    blob: Id,
+    ciphertext: &[u8],
+) -> Recorded {
+    let mut last = None;
+    for (index, segment) in ciphertext.chunks(SEGMENT_LEN).enumerate() {
+        last = Some(
+            world
+                .store
+                .record_segment(
+                    world.devices[device].session,
+                    world.workspace,
+                    blob,
+                    (index * SEGMENT_LEN) as u64,
+                    segment.len() as u64,
+                    hash(segment),
+                )
+                .await
+                .expect("segment recorded"),
+        );
+    }
+    last.expect("one segment at least")
+}
+
+/// Adds a domain that only the world's account manages, through an
+/// injected policy change, and returns it.
+pub async fn add_domain<B: Backend>(world: &mut World<B>) -> Id {
+    let restricted = Id::random().expect("random");
+    let change = world.change(
+        0,
+        vec![head_of(&world.links)],
+        PolicyKind::CreateDomain {
+            domain: restricted,
+            marker_rid: Id::random().expect("random"),
+            access: manager(world.account),
+        },
+    );
+    let creator = &world.devices[0];
+    let epoch = Signed::sign(
+        build_epoch(
+            &EpochParams {
+                workspace: world.workspace,
+                domain: restricted,
+                epoch: 1,
+                previous: Digest::ZERO,
+                policy_revision: world.head.0 + 1,
+                policy_head: change.digest(),
+                rotating_device: creator.id(),
+                recipients: BTreeSet::from([creator.id()]),
+            },
+            &SecretKey::random().expect("random"),
+            None,
+            Nonce::ZERO,
+        ),
+        creator.keys.signing(),
+    );
+    let domain = world.domain;
+    world
+        .inject_policy(change, vec![domain], Some((restricted, epoch)))
+        .await;
+    restricted
+}
+
+/// tus creation checks the length, names its domain, returns the original
+/// row to a retry and `id_conflict` to another creation under the ID; each
+/// `PATCH` appends exactly the next segment, and `HEAD` reads the offset.
+pub async fn blob_uploads_follow_tus<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 2).await;
+    let session = world.devices[0].session;
+    let (ciphertext, creation) = blob_for(1_500_000, world.domain);
+    let store = &world.store;
+    let w = world.workspace;
+
+    let odd = BlobCreation {
+        length: creation.length + 1,
+        ..creation
+    };
+    assert_eq!(
+        refusal(store.create_blob(session, w, odd).await).code,
+        "padding_invalid"
+    );
+    let huge = BlobCreation {
+        length: 1 << 40,
+        ..creation
+    };
+    assert_eq!(
+        refusal(store.create_blob(session, w, huge).await).code,
+        "too_large"
+    );
+    let elsewhere = BlobCreation {
+        domain: Id::random().expect("random"),
+        ..creation
+    };
+    assert_eq!(
+        refusal(store.create_blob(session, w, elsewhere).await).code,
+        "not_found"
+    );
+
+    let row = store
+        .create_blob(session, w, creation)
+        .await
+        .expect("created");
+    assert_eq!(
+        row,
+        BlobRow {
+            blob: creation.blob,
+            domain: world.domain,
+            device: world.devices[0].id(),
+            length: creation.length,
+            digest: creation.digest,
+            offset: 0,
+            complete: false,
+        }
+    );
+    assert_eq!(
+        store
+            .create_blob(session, w, creation)
+            .await
+            .expect("retry"),
+        row,
+        "a retried creation returns the original row"
+    );
+    let other = BlobCreation {
+        digest: Digest([7; 32]),
+        ..creation
+    };
+    assert_eq!(
+        refusal(store.create_blob(session, w, other).await).code,
+        "id_conflict"
+    );
+    assert_eq!(
+        refusal(
+            store
+                .create_blob(world.devices[1].session, w, creation)
+                .await
+        )
+        .code,
+        "id_conflict",
+        "blob IDs are unique within a workspace"
+    );
+
+    // Another device sees no upload.
+    assert_eq!(
+        refusal(
+            store
+                .blob_upload(world.devices[1].session, w, creation.blob)
+                .await
+        )
+        .code,
+        "not_found"
+    );
+
+    let first = &ciphertext[..SEGMENT_LEN];
+    let seg = SEGMENT_LEN as u64;
+    // A short segment that isn't the last, and an offset past the stored one.
+    assert_eq!(
+        refusal(
+            store
+                .record_segment(session, w, creation.blob, 0, 1000, hash(&first[..1000]))
+                .await
+        )
+        .code,
+        "bad_request"
+    );
+    assert_eq!(
+        refusal(
+            store
+                .record_segment(session, w, creation.blob, seg, seg, hash(first))
+                .await
+        )
+        .code,
+        "blob_offset_conflict"
+    );
+    let recorded = store
+        .record_segment(session, w, creation.blob, 0, seg, hash(first))
+        .await
+        .expect("first segment");
+    assert!(matches!(recorded, Recorded::Stored(ref r) if r.offset == seg && !r.complete));
+    let upload = store
+        .blob_upload(session, w, creation.blob)
+        .await
+        .expect("head");
+    assert_eq!(
+        (upload.row.offset, upload.segments),
+        (seg, vec![hash(first)])
+    );
+    // A retried PATCH at the old offset conflicts.
+    assert_eq!(
+        refusal(
+            store
+                .record_segment(session, w, creation.blob, 0, seg, hash(first))
+                .await
+        )
+        .code,
+        "blob_offset_conflict"
+    );
+    let rest = &ciphertext[SEGMENT_LEN..];
+    let last = store
+        .record_segment(
+            session,
+            w,
+            creation.blob,
+            seg,
+            rest.len() as u64,
+            hash(rest),
+        )
+        .await
+        .expect("last segment");
+    let Recorded::Stored(done) = last else {
+        panic!("the digest matches");
+    };
+    assert!(done.complete);
+    assert_eq!(done.offset, creation.length);
+    assert_eq!(
+        refusal(
+            store
+                .record_segment(session, w, creation.blob, done.offset, 0, hash(&[]))
+                .await
+        )
+        .code,
+        "blob_offset_conflict",
+        "a completed upload takes no more bytes"
+    );
+    assert_eq!(
+        refusal(store.abandon_blob(session, w, creation.blob).await).code,
+        "blob_offset_conflict",
+        "DELETE abandons only an incomplete upload"
+    );
+}
+
+/// An upload whose stored segment hashes miss its digest is discarded with
+/// every segment, and an abandoned upload frees its ID.
+pub async fn blob_digest_mismatch_discards_the_upload<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 1).await;
+    let session = world.devices[0].session;
+    let (mut ciphertext, creation) = blob_for(1_200_000, world.domain);
+    let store = &world.store;
+    let w = world.workspace;
+    store
+        .create_blob(session, w, creation)
+        .await
+        .expect("created");
+    let last = ciphertext.len() - 1;
+    ciphertext[last] ^= 1;
+    let Recorded::Discarded(segments) = upload_all(&world, 0, creation.blob, &ciphertext).await
+    else {
+        panic!("the digest misses");
+    };
+    assert_eq!(
+        segments,
+        ciphertext
+            .chunks(SEGMENT_LEN)
+            .map(hash)
+            .collect::<Vec<Digest>>()
+    );
+    assert_eq!(
+        refusal(store.blob_upload(session, w, creation.blob).await).code,
+        "not_found"
+    );
+
+    // Abandoning returns the stored segments and frees the ID.
+    store
+        .create_blob(session, w, creation)
+        .await
+        .expect("again");
+    let first = &ciphertext[..SEGMENT_LEN];
+    store
+        .record_segment(
+            session,
+            w,
+            creation.blob,
+            0,
+            SEGMENT_LEN as u64,
+            hash(first),
+        )
+        .await
+        .expect("first segment");
+    assert_eq!(
+        store
+            .abandon_blob(session, w, creation.blob)
+            .await
+            .expect("abandoned"),
+        vec![hash(first)]
+    );
+    let other = BlobCreation {
+        digest: Digest([1; 32]),
+        ..creation
+    };
+    store
+        .create_blob(session, w, other)
+        .await
+        .expect("the ID is free again");
+}
+
+/// A push lists only completed uploads of its own domain, and an
+/// operation lists at most 4 blobs.
+pub async fn pushes_list_completed_blobs_of_their_domain<B: Backend>(store: Store<B>) {
+    let mut world = World::new(store, 1).await;
+    let session = world.devices[0].session;
+    let w = world.workspace;
+    let (ciphertext, creation) = blob_for(10_000, world.domain);
+    world
+        .store
+        .create_blob(session, w, creation)
+        .await
+        .expect("created");
+
+    let unknown = world.op(0, |o| {
+        o.blobs =
+            sync_protocol::codec::Sorted::new(vec![Id::random().expect("random")]).expect("sorted");
+    });
+    assert_eq!(
+        push_failure(world.push(0, &[unknown]).await),
+        ("blob_incomplete", 0)
+    );
+    let listing = world.op(0, |o| {
+        o.blobs = sync_protocol::codec::Sorted::new(vec![creation.blob]).expect("sorted");
+    });
+    assert_eq!(
+        push_failure(world.push(0, std::slice::from_ref(&listing)).await),
+        ("blob_incomplete", 0),
+        "the upload isn't complete"
+    );
+    upload_all(&world, 0, creation.blob, &ciphertext).await;
+    let restricted = add_domain(&mut world).await;
+    let wrong = world.op(0, |o| {
+        o.domain = restricted;
+        o.blobs = sync_protocol::codec::Sorted::new(vec![creation.blob]).expect("sorted");
+    });
+    assert_eq!(
+        push_failure(world.push(0, &[wrong]).await),
+        ("blob_domain_mismatch", 0)
+    );
+    let listing = world.op(0, |o| {
+        o.blobs = sync_protocol::codec::Sorted::new(vec![creation.blob]).expect("sorted");
+    });
+    world.push(0, &[listing]).await.expect("lists the blob");
+
+    let five: Vec<Id> = (0..5).map(|_| Id::random().expect("random")).collect();
+    assert!(
+        sync_protocol::codec::Sorted::<Id, sync_protocol::codec::Whole, 4>::new(five).is_err(),
+        "an operation lists at most 4 blobs"
+    );
+}
+
+/// Only the uploader reads a blob before an operation lists it; then any
+/// active device that reads its domain does, and no other workspace's
+/// device ever does.
+pub async fn blob_downloads_follow_the_listing<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 2).await;
+    let w = world.workspace;
+    let (ciphertext, creation) = blob_for(2_500_000, world.domain);
+    let uploader = world.devices[0].session;
+    let other = world.devices[1].session;
+    world
+        .store
+        .create_blob(uploader, w, creation)
+        .await
+        .expect("created");
+    assert_eq!(
+        refusal(world.store.blob_download(uploader, w, creation.blob).await).code,
+        "blob_incomplete"
+    );
+    upload_all(&world, 0, creation.blob, &ciphertext).await;
+    let served = world
+        .store
+        .blob_download(uploader, w, creation.blob)
+        .await
+        .expect("the uploader reads it before it's listed");
+    assert_eq!(served.segments.len(), 3);
+    assert_eq!(
+        refusal(world.store.blob_download(other, w, creation.blob).await).code,
+        "not_found"
+    );
+    let listing = world.op(0, |o| {
+        o.blobs = sync_protocol::codec::Sorted::new(vec![creation.blob]).expect("sorted");
+    });
+    world.push(0, &[listing]).await.expect("listed");
+    let served = world
+        .store
+        .blob_download(other, w, creation.blob)
+        .await
+        .expect("a reader of the domain reads it once listed");
+    assert_eq!(served.row.digest, creation.digest);
+
+    let outsider = World::on(Arc::clone(&world.store), 1).await;
+    assert_eq!(
+        refusal(
+            world
+                .store
+                .blob_download(outsider.devices[0].session, w, creation.blob)
+                .await
+        )
+        .code,
+        "forbidden"
+    );
+    assert_eq!(
+        refusal(
+            world
+                .store
+                .blob_download(
+                    outsider.devices[0].session,
+                    outsider.workspace,
+                    creation.blob
+                )
+                .await
+        )
+        .code,
+        "not_found",
+        "blob rows belong to their workspace"
+    );
+}

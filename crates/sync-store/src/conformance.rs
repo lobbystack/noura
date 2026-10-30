@@ -27,8 +27,10 @@ use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 
 use crate::{Backend, Error, LockPlan, Refusal, Session, Store, WriteTxn};
 
+mod blobs;
 mod devices;
 mod keys;
+pub use blobs::*;
 pub use devices::*;
 pub use keys::*;
 
@@ -83,6 +85,10 @@ macro_rules! conformance_tests {
             rewraps_reach_readers_and_close,
             rewraps_follow_the_fixture_schedule,
             profile_pushes_follow_section_25,
+            blob_uploads_follow_tus,
+            blob_digest_mismatch_discards_the_upload,
+            pushes_list_completed_blobs_of_their_domain,
+            blob_downloads_follow_the_listing,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {

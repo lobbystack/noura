@@ -1184,7 +1184,7 @@ Uploads use tus 1.0.0 core with the `creation`, `termination` and `expiration` e
 |---|---|
 | `POST /v2/workspaces/{w}/blobs` with `Upload-Length` and `Upload-Metadata: blob <base64>,digest <base64>,domain <base64>` (standard base64, as tus requires) | create; the device must be able to write that domain, the upload must fit the workspace's quota (else `quota_exceeded`, [§20](#20-atomic-changes-and-quota)), and only operations of that domain may list the blob (else `blob_domain_mismatch`) |
 | `HEAD /v2/workspaces/{w}/blobs/{id}` | read `Upload-Offset` to resume |
-| `PATCH /v2/workspaces/{w}/blobs/{id}` with `Upload-Offset` and `Content-Type: application/offset+octet-stream` | append one segment: exactly 1 MiB at an offset that is a multiple of 1 MiB, or the rest of the upload |
+| `PATCH /v2/workspaces/{w}/blobs/{id}` with `Upload-Offset` and `Content-Type: application/offset+octet-stream` | append one segment: exactly 1 MiB at an offset that is a multiple of 1 MiB, or the rest of the upload; another offset, or a completed upload, gets `blob_offset_conflict` (409, as tus requires) |
 | `DELETE /v2/workspaces/{w}/blobs/{id}` | abandon an incomplete upload |
 
 The server stores each segment as its own object, records its hash, and flushes it to durable storage before it reports the new offset. When the offset reaches `Upload-Length`, it computes `ciphertext_digest` from the stored segment hashes, and on a mismatch discards the upload and answers `blob_digest_mismatch`. Incomplete uploads expire 24 hours after creation (`Upload-Expires`), and completed uploads that no operation lists 24 hours after completion ([§19](#19-compaction)). A filesystem store's file times (ctime, birth time) and an S3-compatible store's `LastModified` date each segment's upload, because no program can set ctime or birth time ([§29](#29-what-the-server-stores)).
@@ -1495,6 +1495,7 @@ Server error codes:
 | `manifest_mismatch` | 422 | a checkpoint's root, `live_objects` or `heads_digest` differs from the server's |
 | `cursor_compacted`, `pruned` | 410 | a `live` or `manifest` request names a checkpoint below the retention floor; the chain position was pruned |
 | `blob_incomplete`, `blob_digest_mismatch`, `blob_domain_mismatch` | 409, 422, 422 | a referenced blob isn't complete; an upload's digest doesn't match; the blob was created for another domain |
+| `blob_offset_conflict` | 409 | a tus `PATCH` names an `Upload-Offset` other than the upload's, or the upload is already complete |
 | `quota_exceeded` | 507 | the workspace is over its storage quota and the record would raise usage, or an upload wouldn't fit ([§20](#20-atomic-changes-and-quota)) |
 | `id_conflict` | 409 | a client-chosen or derived ID already exists with other bytes, a change would make one device ID active under two accounts, or an enrolled card's device was removed |
 | `rid_domain_mismatch` | 409 | the `rid` belongs to another domain |

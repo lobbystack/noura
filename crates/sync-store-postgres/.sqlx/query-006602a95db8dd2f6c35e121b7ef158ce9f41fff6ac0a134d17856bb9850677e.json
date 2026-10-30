@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM blob_segments WHERE workspace = $1 AND blob = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "006602a95db8dd2f6c35e121b7ef158ce9f41fff6ac0a134d17856bb9850677e"
+}

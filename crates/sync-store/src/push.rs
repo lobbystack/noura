@@ -604,12 +604,7 @@ async fn apply(
         &live,
     )
     .map_err(|e| refuse(e.server_code(), e.to_string()))?;
-    if !op.blobs.is_empty() {
-        return Err(refuse(
-            "blob_incomplete",
-            "the domain holds no completed upload with that ID",
-        ));
-    }
+    crate::blobs::check_listed(txn, workspace, domain, &op.blobs).await?;
 
     // The write.
     let seq = txn
@@ -621,6 +616,7 @@ async fn apply(
     let live_op = LiveOp { seq, ..live_op };
     txn.insert_operation(workspace, domain, &live_op, class)
         .await?;
+    crate::blobs::list(txn, workspace, domain, seq, &op.blobs).await?;
     txn.set_chain_head(
         workspace,
         domain,
