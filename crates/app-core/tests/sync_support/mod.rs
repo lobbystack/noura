@@ -1154,3 +1154,116 @@ pub fn not_found_body() -> Vec<u8> {
     }
     .to_bytes()
 }
+
+/// Invites `member`'s account to `inviter`'s synced workspace with `role`,
+/// through the whole flow of §10 and §11: the link, acceptance, the
+/// invited request, the offer, the matching codes and the `add_member`.
+/// The member's device then downloads the workspace into a new folder and
+/// records its own head there, as §10 step 6 says. Returns its sync and
+/// folder.
+pub async fn invite_and_join(
+    inviter: &mut Desktop,
+    inviter_sync: &mut app_core::sync::workspace::WorkspaceSync,
+    book: &mut app_core::sync::invitations::InvitationBook,
+    member: &mut Desktop,
+    role: sync_protocol::records::Role,
+) -> (app_core::sync::workspace::WorkspaceSync, Folder) {
+    use app_core::sync::approval::CandidateStep;
+    use app_core::sync::invitations::{InvitationLink, NewInvitation};
+
+    let workspace = inviter_sync.workspace();
+    let created = inviter
+        .service
+        .create_invitation(
+            book,
+            NewInvitation {
+                workspace,
+                role,
+                workspace_name: "Field notes",
+                inviter_name: "Ana",
+            },
+        )
+        .await
+        .expect("invited");
+    let link = InvitationLink::parse(&created.url).expect("the link reads");
+    let opened = member
+        .service
+        .open_invitation(&link)
+        .await
+        .expect("it opens");
+    member
+        .service
+        .accept_invitation(&link)
+        .await
+        .expect("accepted");
+    let mut candidate = member
+        .service
+        .request_invited_approval(&link, &opened)
+        .await
+        .expect("the request");
+    let requests = inviter
+        .service
+        .invited_requests(book, workspace)
+        .await
+        .expect("listed");
+    let request = requests
+        .iter()
+        .find(|r| r.commit == candidate.commit())
+        .expect("the request");
+    let mut offer = inviter
+        .service
+        .offer_invited(request, inviter_sync.remote_mut().expect("connected"))
+        .await
+        .expect("offered");
+    let CandidateStep::Code(code) = member
+        .service
+        .poll_invited(&mut candidate)
+        .await
+        .expect("polled")
+    else {
+        panic!("a code");
+    };
+    assert_eq!(
+        inviter.service.approval_code(&mut offer).await.unwrap(),
+        Some(code)
+    );
+    candidate.confirm();
+    inviter_sync
+        .approve_member(&mut inviter.service, offer)
+        .await
+        .expect("the approval commits");
+    assert!(
+        member
+            .service
+            .join_invited(&candidate)
+            .await
+            .expect("joined")
+    );
+    let mut folder = Folder::new("Member's copy");
+    let mut sync = app_core::sync::workspace::WorkspaceSync::download(
+        &mut member.service,
+        folder.engine.clone(),
+        workspace,
+        &mut folder.registry,
+    )
+    .await
+    .expect("the download starts");
+    sync.round(&mut member.service, 0).await.expect("a round");
+    let remote = sync.remote_mut().expect("connected");
+    let own = member
+        .service
+        .pending_heads(remote)
+        .await
+        .expect("pending")
+        .into_iter()
+        .find(|p| p.own);
+    if let Some(own) = own {
+        member
+            .service
+            .push_pending_head(remote, &own)
+            .await
+            .expect("recorded");
+    }
+    sync.round(&mut member.service, 0).await.expect("a round");
+    (sync, folder)
+}

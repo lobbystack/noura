@@ -1000,6 +1000,25 @@ impl WorkspaceSync {
         })
     }
 
+    /// Changes a member's role, removes a member, leaves, or transfers
+    /// ownership (§8), as [`SyncService::change_member`], and takes the
+    /// policy and keys that result. Returns the new policy revision.
+    pub async fn change_member(
+        &mut self,
+        service: &mut SyncService,
+        change: crate::sync::members::MemberChange,
+    ) -> Result<u64, SyncError> {
+        if self.remote.is_none() {
+            self.connect(service).await?;
+        }
+        let mut remote = self.remote.take().ok_or(SyncError::KeyMissing)?;
+        let changed = service.change_member(&mut remote, change).await;
+        self.adopt(remote)?;
+        let revision = changed?;
+        self.save()?;
+        Ok(revision)
+    }
+
     /// Renames the workspace by pushing a new profile, as an owner or admin
     /// device may (§25).
     pub async fn rename(&mut self, service: &mut SyncService, name: &str) -> Result<(), SyncError> {
@@ -2056,6 +2075,18 @@ impl WorkspaceSync {
             }
             "policy_regressed" => {
                 self.refresh(service).await?;
+                self.reseal_from(index, false)
+            }
+            "policy_stale" => {
+                // Signed under a revision at which the device couldn't
+                // write, such as a viewer's edit before the change that
+                // made it an editor: sealed again under the policy it
+                // accepts now, if that one moved on (§13).
+                let revision = self.accepted_revision();
+                self.refresh(service).await?;
+                if self.accepted_revision() == revision {
+                    return Err(refused());
+                }
                 self.reseal_from(index, false)
             }
             "chain_conflict" => {

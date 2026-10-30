@@ -491,6 +491,65 @@ fn card_indices_across_two_accounts_follow_account_order() {
     assert_eq!(indices[&zed.devices[1].id()], 3);
 }
 
+/// A `remove_member` drops the account from every restricted access list,
+/// as a grantee and as a manager, and an `add_member` that brings it back
+/// grants it nothing there until a manager grants it again (§8).
+#[test]
+fn a_member_invited_again_stays_out_of_every_access_list() {
+    let alice = Person::new("alice");
+    let bob = Person::new("bob");
+    let carol = Person::new("carol");
+    let people = [&alice, &bob, &carol];
+    let mut policy = genesis(&alice);
+    add_member(&mut policy, &alice, &bob, Role::Admin);
+    add_member(&mut policy, &alice, &carol, Role::Editor);
+    policy.push(
+        bob.first(),
+        vec![bob.chain.head()],
+        PolicyKind::CreateDomain {
+            domain: RESTRICTED,
+            marker_rid: MARKER,
+            access: access(&[(&bob, Level::Manage), (&carol, Level::Write)]),
+        },
+    );
+    for who in [&bob, &carol] {
+        policy.push(
+            alice.first(),
+            vec![alice.chain.head()],
+            PolicyKind::RemoveMember {
+                account: who.account(),
+            },
+        );
+    }
+    let verified = verify(&policy, &people).unwrap();
+    let domain = &verified.head_snapshot().domains[&RESTRICTED];
+    assert!(domain.access.is_empty(), "the manager and the grantee left");
+
+    add_member(&mut policy, &alice, &bob, Role::Admin);
+    add_member(&mut policy, &alice, &carol, Role::Editor);
+    let verified = verify(&policy, &people).unwrap();
+    let head = verified.head_snapshot();
+    assert!(head.domains[&RESTRICTED].access.is_empty());
+    assert!(!head.can_read(&bob.first().id(), &RESTRICTED));
+    assert!(!head.can_read(&carol.first().id(), &RESTRICTED));
+    assert!(head.can_read(&carol.first().id(), &WS_DOMAIN));
+
+    // An admin that no longer manages the domain only removes entries, so
+    // it can't grant itself access again.
+    policy.push(
+        bob.first(),
+        vec![bob.chain.head()],
+        PolicyKind::SetAccess {
+            domain: RESTRICTED,
+            access: access(&[(&bob, Level::Manage)]),
+        },
+    );
+    assert_eq!(
+        verify(&policy, &people).unwrap_err(),
+        PolicyError::Unauthorized { revision: 9 }
+    );
+}
+
 #[test]
 fn a_member_who_leaves_and_returns_keeps_its_card_indices() {
     let alice = Person::new("alice");

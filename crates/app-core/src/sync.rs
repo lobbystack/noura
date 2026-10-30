@@ -24,6 +24,7 @@ pub mod invitations;
 pub mod joining;
 pub mod journal;
 pub mod marks;
+pub mod members;
 pub mod realtime;
 pub mod recovery;
 pub mod registry;
