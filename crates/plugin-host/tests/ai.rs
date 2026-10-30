@@ -353,6 +353,36 @@ impl AiChats for NoWeb {
     fn stop(&self, id: &str) -> Result<(), ServiceError> {
         Err(ServiceError::NotFound(id.to_owned()))
     }
+
+    fn rename_chat(&self, id: &str, _title: &str, _revision: &str) -> Result<AiChat, ServiceError> {
+        Err(ServiceError::NotFound(id.to_owned()))
+    }
+
+    fn set_retention(
+        &self,
+        id: &str,
+        _retention: AiRetention,
+        _revision: &str,
+    ) -> Result<AiChat, ServiceError> {
+        Err(ServiceError::NotFound(id.to_owned()))
+    }
+
+    fn workspace_tools(&self) -> Result<Vec<AiToolDefinition>, ServiceError> {
+        Ok(Vec::new())
+    }
+
+    fn run_tools(&self, run: &str) -> Result<AiRun, ServiceError> {
+        Err(ServiceError::NotFound(run.to_owned()))
+    }
+
+    fn resume(
+        &self,
+        chat: &str,
+        _provider: &str,
+        _tools: Vec<AiToolDefinition>,
+    ) -> Result<AiRun, ServiceError> {
+        Err(ServiceError::NotFound(chat.to_owned()))
+    }
 }
 
 #[test]
