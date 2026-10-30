@@ -106,6 +106,20 @@ impl Server<PgBackend> {
     /// The server on a fresh database in the test binary's throwaway
     /// cluster under the target directory.
     pub async fn start_postgres() -> Self {
+        Self::start_postgres_with(sync_store::CheckpointInterval::default()).await
+    }
+
+    /// The server on PostgreSQL, with checkpoints falling due every
+    /// `entries` log entries (§17).
+    pub async fn start_postgres_with_interval(entries: u64) -> Self {
+        Self::start_postgres_with(sync_store::CheckpointInterval {
+            entries,
+            weight: u64::MAX,
+        })
+        .await
+    }
+
+    async fn start_postgres_with(interval: sync_store::CheckpointInterval) -> Self {
         let database = Cluster::shared(Path::new(env!("CARGO_TARGET_TMPDIR")))
             .database()
             .await;
@@ -118,7 +132,8 @@ impl Server<PgBackend> {
             .expect("migrated");
         let store = sync_server::postgres::open_store(&postgres)
             .await
-            .expect("the store opens");
+            .expect("the store opens")
+            .with_checkpoint_interval(interval);
         let dir = tempfile::tempdir().expect("temporary directory");
         Self::serve(store, dir, Some(database)).await
     }

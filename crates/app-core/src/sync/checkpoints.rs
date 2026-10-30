@@ -77,6 +77,10 @@ pub struct Checkpoints {
     pub epoch_entries: Vec<(u64, u64, Digest)>,
     /// The checkpoints that failed a check, reported.
     pub failures: Vec<Failure>,
+    /// The `covered_seq` of the checkpoint the device bootstrapped from,
+    /// 0 if it pulled from the start (§17, Checkpoint chain).
+    #[serde(default)]
+    pub bootstrap_seq: u64,
     /// The due point the server published last, 0 while none is due.
     pub due: u64,
     /// Unix seconds after which this device signs a checkpoint if one is

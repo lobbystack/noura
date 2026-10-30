@@ -506,3 +506,87 @@ async fn a_bootstrap_refuses_a_manifest_that_omits_an_object() {
     sync_b.round(&mut service, 0).await.expect("the download");
     assert_eq!(b.files(), a.files());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bootstrap_during_heavy_checkpointing_matches_the_log() {
+    heavy_checkpointing(Server::start_with_interval(3).await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bootstrap_during_heavy_checkpointing_matches_the_log_on_postgres() {
+    heavy_checkpointing(Server::start_postgres_with_interval(3).await).await;
+}
+
+async fn heavy_checkpointing<B: Backend>(server: Server<B>) {
+    use sync_support::{Folder, approve};
+
+    let mut pair = pair_on(server).await;
+    pair.sync_a.set_checkpoint_wait(Duration::ZERO);
+    pair.sync_b.set_checkpoint_wait(Duration::ZERO);
+    for i in 0..8 {
+        pair.a
+            .write(&format!("a{i}.md"), format!("# A {i}\n").as_bytes());
+        pair.b
+            .write(&format!("b{i}.md"), format!("# B {i}\n").as_bytes());
+        if i % 3 == 2 {
+            std::fs::remove_file(pair.a.path(&format!("a{}.md", i - 1))).unwrap();
+        }
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("a round");
+        pair.sync_b
+            .round(&mut pair.desktop.service, 0)
+            .await
+            .expect("a round");
+    }
+    let number = pair
+        .sync_a
+        .latest_checkpoint()
+        .map(|c| c.body.number)
+        .expect("checkpoints");
+    assert!(number >= 3, "checkpoints fell due often: {number}");
+
+    let mut third = approve(
+        &pair.server,
+        &mut pair.laptop,
+        std::slice::from_mut(pair.sync_a.remote_mut().expect("connected")),
+    )
+    .await;
+    let mut c = Folder::new("Third");
+    let mut sync_c = app_core::sync::workspace::WorkspaceSync::download(
+        &mut third.service,
+        c.engine.clone(),
+        pair.sync_a.workspace(),
+        &mut c.registry,
+    )
+    .await
+    .expect("the download starts");
+    sync_c.set_checkpoint_wait(Duration::ZERO);
+    for i in 0..4 {
+        pair.a.write(&format!("late{i}.md"), b"# Late\n");
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("a round");
+        sync_c.round(&mut third.service, 0).await.expect("a round");
+        pair.sync_b
+            .round(&mut pair.desktop.service, 0)
+            .await
+            .expect("a round");
+    }
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("a round");
+    sync_c.round(&mut third.service, 0).await.expect("a round");
+    assert_eq!(c.files(), pair.a.files());
+    assert_eq!(pair.b.files(), pair.a.files());
+    assert!(sync_c.checkpoint_failures().is_empty());
+    assert!(pair.sync_a.checkpoint_failures().is_empty());
+    assert!(pair.sync_b.checkpoint_failures().is_empty());
+}

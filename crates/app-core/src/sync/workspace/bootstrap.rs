@@ -150,6 +150,7 @@ impl WorkspaceSync {
             .note_epoch_entry(c.covered_seq, c.epoch, c.epoch_record);
         log.checkpoints.accept(&bundle, &mut log.live);
         log.checkpoints.reach(&bundle.checkpoint.0, entry_seq);
+        log.checkpoints.bootstrap_seq = c.covered_seq;
 
         let mut records = Vec::with_capacity(ops.len());
         for ((op, seq), class) in ops.into_iter().zip(classes) {

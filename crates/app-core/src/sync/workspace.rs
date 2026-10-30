@@ -2684,7 +2684,14 @@ impl WorkspaceSync {
             .last_reached()
             .map_or((0, Digest::ZERO), |(n, r)| (n, r.digest));
         let mut known: BTreeSet<Digest> = checkpoints.reached.values().map(|r| r.digest).collect();
-        let floor = self.state.log.retention_floor.max(page.retention_floor);
+        // A writer that lags names a checkpoint below the floor or below
+        // the device's bootstrap point, which needs no check.
+        let floor = self
+            .state
+            .log
+            .retention_floor
+            .max(page.retention_floor)
+            .max(checkpoints.bootstrap_seq);
         let mut extra = BTreeMap::new();
         for (index, entry) in page.entries.iter().enumerate() {
             let (named, then) = match &entry.record {
