@@ -2505,7 +2505,6 @@ impl WriteTxn for PgTxn {
         let index = int(index)?;
         let hash = &hash.0[..];
         let offset = int(offset)?;
-        let complete = complete;
         sqlx::query!(
             "INSERT INTO blob_segments (workspace, blob, idx, hash) VALUES ($1, $2, $3, $4)",
             workspace,

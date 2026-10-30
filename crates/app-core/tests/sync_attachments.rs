@@ -17,7 +17,7 @@ fn attachment(head: &[u8], len: usize, seed: u8) -> Vec<u8> {
     let mut bytes = head.to_vec();
     let mut i: usize = seed.into();
     while bytes.len() < len {
-        if i % 4096 == 0 {
+        if i.is_multiple_of(4096) {
             bytes.extend_from_slice(MARKER);
         } else {
             bytes.push((i.wrapping_mul(31) % 251) as u8);
