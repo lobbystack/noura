@@ -1495,7 +1495,8 @@ async fn a_new_device_bootstraps_right_after_a_replacement() {
     use sync_protocol::messages::{KeyRecord, KeysResponse};
     use sync_support::{Folder, approve};
 
-    let mut pair = pair_with_checkpoints(6).await;
+    let mut pair = sync_support::pair_of_accounts_on(Server::start_with_interval(6).await).await;
+    pair.sync_b.set_checkpoint_wait(Duration::ZERO);
     pair.sync_a
         .set_checkpoint_wait(Duration::from_secs(1 << 40));
     // A third device joins and the laptop removes it without recording the

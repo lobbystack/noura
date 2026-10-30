@@ -138,6 +138,8 @@ macro_rules! conformance_tests {
             history_yields_to_the_quota_only_as_far_as_it_must,
             usage_alone_over_quota_moves_no_floor,
             replacements_stop_at_honest_rotations,
+            a_closed_workspace_is_reclaimed_domain_by_domain,
+            an_account_belongs_to_at_most_a_thousand_workspaces,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
@@ -2522,6 +2524,24 @@ pub async fn pushes_into_several_domains_race_policy_changes<B: Backend>(
             }
         })
     };
+    // The collector and the pruner join the race on both instances (§15).
+    let collectors: Vec<_> = stores
+        .iter()
+        .map(|store| {
+            let store = store.clone();
+            tokio::spawn(async move {
+                loop {
+                    store.maintain().await.expect("a pass");
+                    for target in store.collectable_blobs().await.expect("due") {
+                        if store.mark_blob(target).await.expect("marked").is_some() {
+                            store.finish_blob(target).await.expect("finished");
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+        })
+        .collect();
     let pushed = tokio::time::timeout(Duration::from_secs(120), async {
         let mut pushed = BTreeSet::new();
         for pusher in pushers {
@@ -2532,6 +2552,10 @@ pub async fn pushes_into_several_domains_race_policy_changes<B: Backend>(
     })
     .await
     .expect("nothing deadlocks");
+    for collector in collectors {
+        assert!(!collector.is_finished(), "the collector kept running");
+        collector.abort();
+    }
     let mut found = BTreeSet::new();
     for domain in &written {
         for entry in domain_log(

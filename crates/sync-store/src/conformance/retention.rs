@@ -365,11 +365,7 @@ pub async fn pruning_keeps_servable_checkpoints_through_a_crash<B: Backend>(stor
         op.counter = head.counter + 1;
         op.previous = head.op_digest;
         op.rid = gone;
-        op.supersedes = Sorted::new(vec![Cover {
-            device: device,
-            counter: 4,
-        }])
-        .expect("sorted");
+        op.supersedes = Sorted::new(vec![Cover { device, counter: 4 }]).expect("sorted");
     });
     assert_eq!(
         push_failure(world.push(0, &[stale]).await),
@@ -1043,6 +1039,71 @@ pub async fn replacements_stop_at_honest_rotations<B: Backend>(store: Store<B>) 
         push_failure(world.push_records(viewer, own).await),
         ("epoch_conflict", 0),
         "a viewer can't skip what its own account rotated"
+    );
+}
+
+/// Closing a workspace reclaims each of its domains the way `delete_domain`
+/// reclaims one (§19): usage stops counting, then the batches take the rest.
+pub async fn a_closed_workspace_is_reclaimed_domain_by_domain<B: Backend>(store: Store<B>) {
+    let mut world = World::new(store, 1).await;
+    let restricted = add_domain(&mut world).await;
+    let mut track = Track::new(&world).await;
+    track.write(&world, 0).await;
+    let (w, d) = (world.workspace, world.domain);
+    let done = world
+        .store
+        .reclaim_workspace(w, vec![d, restricted])
+        .await
+        .expect("reclaimed");
+    assert!(done, "no blob holds a domain back");
+    for domain in [d, restricted] {
+        assert!(world.retained(domain).await.is_empty());
+        let row = world
+            .store
+            .backend()
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move { txn.domain(w, domain).await })
+            }))
+            .await
+            .expect("read");
+        assert_eq!(row, None);
+    }
+}
+
+/// An account belongs to at most 1,000 workspaces (§27): one more creation
+/// or `add_member` answers `workspace_limit`.
+pub async fn an_account_belongs_to_at_most_a_thousand_workspaces<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 1).await;
+    let account = world.account;
+    world
+        .store
+        .backend()
+        .write(Box::new(move |txn: &mut B::Write| {
+            Box::pin(async move {
+                for i in 0..1_000u32 {
+                    let mut id = [7; 16];
+                    id[..4].copy_from_slice(&i.to_be_bytes());
+                    txn.upsert_member(Id(id), account, 2).await?;
+                }
+                Ok(())
+            })
+        }))
+        .await
+        .expect("memberships");
+    let (body, _, _) = super::creation(
+        &world.devices[0].keys,
+        &world.links,
+        &[world.devices[0].keys.card(account)],
+    );
+    assert_eq!(
+        refusal(
+            world
+                .store
+                .create_workspace(world.devices[0].session, body)
+                .await
+        )
+        .code,
+        "workspace_limit"
     );
 }
 

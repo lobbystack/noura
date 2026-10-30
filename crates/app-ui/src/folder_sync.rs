@@ -92,6 +92,12 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
                     "Sync is on."
                 });
                 ui.label(pending_text(screen.pending));
+                if let Some(usage) = &screen.usage {
+                    ui.label(usage);
+                }
+                if screen.over_quota {
+                    ui.label("This workspace is full. New changes stay on this computer until you delete files.");
+                }
                 match &screen.last_success {
                     Some(when) => ui.label(format!("Last synced {when}.")),
                     None => muted(ui, "This computer hasn't finished a sync yet."),
@@ -194,6 +200,26 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
                         });
                     }
                 });
+            }
+            if !screen.deleted_away.is_empty() {
+                group(
+                    ui,
+                    "Deleted on another device while this one was away",
+                    |ui| {
+                        for path in &screen.deleted_away {
+                            ui.label(path);
+                            ui.horizontal(|ui| {
+                                if ui.button("Delete").clicked() {
+                                    actions
+                                        .push(FolderSyncAction::ConfirmDeletedAway(path.clone()));
+                                }
+                                if ui.button("Keep").clicked() {
+                                    actions.push(FolderSyncAction::KeepDeletedAway(path.clone()));
+                                }
+                            });
+                        }
+                    },
+                );
             }
             if !screen.unreadable.is_empty() {
                 group(ui, "Versions that couldn't be read", |ui| {

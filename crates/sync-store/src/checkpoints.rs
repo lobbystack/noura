@@ -979,6 +979,7 @@ mod tests {
             floor,
             record: Vec::new(),
             heads: Vec::new(),
+            log_weight: 0,
         }
     }
 

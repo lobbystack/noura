@@ -266,6 +266,7 @@ fn grant_row(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn checkpoint_row(
     number: i64,
     checkpoint: Vec<u8>,

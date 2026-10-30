@@ -17,7 +17,13 @@ use std::time::Duration;
 use sync_protocol::codec::{Bytes, Decode, Encode, ExactBytes, Text};
 use sync_protocol::messages::{ErrorBody, KeyRecord, KeysResponse, PushFailureDetail};
 use sync_protocol::types::Id;
-use sync_support::{Folder, Pair, Proxy, approve, pair};
+use sync_support::{Folder, Pair, Proxy, Server, approve, pair, pair_of_accounts_on};
+
+/// A laptop and a desktop of two accounts: a device doesn't replace an epoch
+/// its own account rotated (§9).
+async fn of_accounts() -> Pair<sync_store_sqlite::SqliteBackend> {
+    pair_of_accounts_on(Server::start().await).await
+}
 
 /// Damages, on their way to `reader`, the envelopes that `wrapper` signed,
 /// as a malicious member's or server's would arrive.
@@ -70,7 +76,7 @@ async fn desktop_rotates(pair: &mut Pair<sync_store_sqlite::SqliteBackend>) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_envelope_is_replaced_and_the_rotator_writes_again() {
-    let mut pair = pair().await;
+    let mut pair = of_accounts().await;
     desktop_rotates(&mut pair).await;
     // The desktop writes under epoch 2.
     pair.b.write("Plan.md", b"# Plan, under epoch 2\n");
@@ -171,7 +177,7 @@ async fn a_replacement_another_device_used_the_epoch_against_asks_for_a_rewrap()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reader_of_the_skipped_epoch_writes_a_gone_rotators_record_and_profile_again() {
-    let mut pair = pair().await;
+    let mut pair = of_accounts().await;
     let mut fourth = approve(
         &pair.server,
         &mut pair.laptop,
@@ -236,7 +242,7 @@ async fn a_reader_of_the_skipped_epoch_writes_a_gone_rotators_record_and_profile
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_rewrite_whose_cover_the_server_cant_return_writes_nothing_and_waits_for_review() {
-    let mut pair = pair().await;
+    let mut pair = of_accounts().await;
     desktop_rotates(&mut pair).await;
     pair.b.write("Plan.md", b"# Plan, under epoch 2\n");
     pair.sync_b

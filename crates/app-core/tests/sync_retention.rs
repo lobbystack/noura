@@ -1,0 +1,676 @@
+//! Retention, compaction and quota in the desktop client against the real
+//! server (seam 4, sync-v2.md §15, §18, §19, §20, §30).
+
+mod sync_support;
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use app_core::sync::SyncError;
+use app_core::sync::recovery::{Recovery, open_kit};
+use app_core::sync::workspace::WorkspaceSync;
+use sync_protocol::codec::{Decode, Encode, Sorted};
+use sync_protocol::messages::{Page, PageStatus, PullResponse};
+use sync_store::{Backend, Retention};
+use sync_support::{Folder, MemorySecrets, Pair, Proxy, Server, approve, cut_off, pair_on};
+
+const ENTRIES: u64 = 4;
+
+fn keep_little() -> Retention {
+    Retention {
+        retained_bytes: 1,
+        ..Retention::default()
+    }
+}
+
+fn quota(bytes: u64) -> Retention {
+    Retention {
+        quota_bytes: Some(bytes),
+        ..Retention::default()
+    }
+}
+
+async fn ready<B: Backend>(server: Server<B>) -> Pair<B> {
+    let mut pair = pair_on(server).await;
+    pair.sync_a.set_checkpoint_wait(Duration::ZERO);
+    pair.sync_b.set_checkpoint_wait(Duration::ZERO);
+    pair
+}
+
+/// Writes on the desktop alone for `rounds` rounds, with the server's
+/// background pass after each, so the floor walks away from the laptop.
+async fn walk_the_floor<B: Backend>(pair: &mut Pair<B>, prefix: &str, rounds: usize) {
+    for i in 0..rounds {
+        pair.b
+            .write(&format!("{prefix}{i}.md"), format!("# {i}\n").as_bytes());
+        pair.sync_b
+            .round(&mut pair.desktop.service, 0)
+            .await
+            .expect("a round on the desktop");
+        pair.server.store.maintain().await.expect("a pass");
+    }
+}
+
+async fn both_rounds<B: Backend>(pair: &mut Pair<B>) {
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round on the laptop");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("a round on the desktop");
+}
+
+async fn floor_of<B: Backend>(pair: &Pair<B>) -> u64 {
+    let (workspace, domain) = (pair.sync_b.workspace(), pair.sync_b.domain());
+    pair.server
+        .store
+        .backend()
+        .read(Box::new(move |txn: &mut B::Read| {
+            Box::pin(async move {
+                use sync_store::ReadTxn;
+                txn.domain(workspace, domain).await
+            })
+        }))
+        .await
+        .expect("read")
+        .expect("a head row")
+        .retention_floor
+}
+
+/// A device whose cursor fell below the floor loads what it lacks and
+/// nothing more: each bucket that differs comes down through its leaf refs
+/// and `live` with `rid`, and no `live` page lists the whole domain (§18).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_returning_device_downloads_only_what_it_lacks() {
+    let mut pair = ready(Server::start_with_retention(ENTRIES, keep_little()).await).await;
+    pair.a.write("Keep.md", b"# Keep\n");
+    pair.a.write("Edit.md", b"# Edit\n");
+    both_rounds(&mut pair).await;
+
+    pair.b.write("Edit.md", b"# Edited away\n");
+    walk_the_floor(&mut pair, "away", 16).await;
+    let laptop_cursor_floor = floor_of(&pair).await;
+    assert!(laptop_cursor_floor > 0, "the floor moved");
+
+    let seen = pair.proxy.requests().len();
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("the laptop returns");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("and settles");
+    assert_eq!(pair.a.files(), pair.b.files());
+    assert!(pair.sync_a.checkpoint_failures().is_empty());
+    let paths: Vec<String> = pair.proxy.requests()[seen..]
+        .iter()
+        .map(|r| r.path.clone())
+        .collect();
+    assert!(
+        paths.iter().any(|p| p.contains("level=3")),
+        "it read the leaf refs of the buckets that differ: {paths:?}"
+    );
+    assert!(
+        paths
+            .iter()
+            .filter(|p| p.contains("/live?"))
+            .all(|p| p.contains("rid=")),
+        "it fetched objects by rid: {paths:?}"
+    );
+    let fetched = paths.iter().filter(|p| p.contains("/live?")).count();
+    assert!(
+        fetched <= 18,
+        "it fetched what the desktop wrote, not the unchanged notes: {fetched}"
+    );
+}
+
+/// A returning device never deletes a file because the manifest lacks its
+/// object: it lists the file once and deletes it only when you confirm, and
+/// a changed copy uploads under a new `rid` (§18).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_deleted_while_away_waits_for_you() {
+    let mut pair = ready(Server::start_with_retention(ENTRIES, keep_little()).await).await;
+    pair.a.write("Gone.md", b"# Gone\n");
+    pair.a.write("Changed.md", b"# Changed\n");
+    both_rounds(&mut pair).await;
+
+    // Deleted on the desktop, and the delete leaves the manifest for good
+    // once a checkpoint's floor passes it.
+    std::fs::remove_file(pair.b.path("Gone.md")).expect("removed");
+    std::fs::remove_file(pair.b.path("Changed.md")).expect("removed");
+    walk_the_floor(&mut pair, "away", 30).await;
+    // The laptop changes one of them meanwhile, offline.
+    pair.a.write("Changed.md", b"# Changed here\n");
+
+    for _ in 0..3 {
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("the laptop returns");
+    }
+    assert!(pair.a.path("Gone.md").exists(), "the file stays");
+    assert_eq!(pair.sync_a.deleted_away(), ["Gone.md"]);
+    assert_eq!(pair.sync_a.status().deleted_away, 1);
+
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("a round on the desktop");
+    assert!(
+        pair.b.path("Changed.md").exists(),
+        "a changed copy uploads as a new object"
+    );
+    assert!(
+        !pair.b.path("Gone.md").exists(),
+        "a file that waits for you stays off the other devices"
+    );
+
+    pair.sync_a
+        .confirm_deleted_away("Gone.md")
+        .expect("confirmed");
+    assert!(!pair.a.path("Gone.md").exists());
+    assert!(pair.sync_a.deleted_away().is_empty());
+    both_rounds(&mut pair).await;
+    assert!(!pair.b.path("Gone.md").exists());
+}
+
+/// A bootstrapping device downloads a blob only when it holds no file at
+/// the payload's revision (§18): a move on another device costs a returning
+/// device no download.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_returning_device_downloads_no_blob_it_holds() {
+    let mut pair = ready(Server::start_with_retention(ENTRIES, keep_little()).await).await;
+    let attachment: Vec<u8> = (0..400 * 1024u32 / 32)
+        .flat_map(|i| sync_protocol::crypto::hash(&i.to_be_bytes()).0)
+        .collect();
+    pair.a.write("Photo.bin", &attachment);
+    both_rounds(&mut pair).await;
+    assert_eq!(pair.b.files()["Photo.bin"], attachment);
+
+    std::fs::create_dir_all(pair.b.path("Moved")).expect("a folder");
+    std::fs::rename(pair.b.path("Photo.bin"), pair.b.path("Moved/Photo.bin")).expect("moved");
+    walk_the_floor(&mut pair, "away", 16).await;
+    let seen = pair.proxy.requests().len();
+    for _ in 0..2 {
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("the laptop returns");
+    }
+    assert_eq!(pair.a.files()["Moved/Photo.bin"], attachment);
+    let downloads = pair.proxy.requests()[seen..]
+        .iter()
+        .filter(|r| r.method == "GET" && r.path.contains("/blobs/"))
+        .count();
+    assert_eq!(downloads, 0, "the file was already here");
+}
+
+/// Rewrites every pull page through `proxy`.
+fn tamper_pulls(proxy: &Proxy, change: impl Fn(&mut Page) + Send + Sync + 'static) {
+    proxy.tamper(Box::new(move |path, body| {
+        if !path.ends_with("/pull") {
+            return body;
+        }
+        let mut response = PullResponse::from_bytes(&body).expect("a pull response");
+        for page in response.pages.0.iter_mut() {
+            change(page);
+        }
+        response.to_bytes()
+    }));
+}
+
+fn compacted(page: &mut Page, floor: u64) {
+    page.status = PageStatus::Compacted;
+    page.complete_through = page.after;
+    page.head = 0;
+    page.retention_floor = floor;
+    page.checkpoint_due = 0;
+    page.entries = Sorted::default();
+}
+
+async fn expect_rollback<B: Backend>(pair: &mut Pair<B>, what: &str) {
+    let files = pair.a.files();
+    let error = pair
+        .sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect_err(what);
+    assert!(
+        matches!(error, SyncError::Check("sync_manifest_rollback")),
+        "{error:?}"
+    );
+    assert_eq!(pair.a.files(), files, "no file changed");
+    pair.proxy.honest();
+}
+
+/// The tampering proxy (§30): a floor below one reported, a claimed
+/// compaction of a cursor at or above the floor, and a bootstrap forced
+/// from a checkpoint below the cursor all report
+/// `sync_manifest_rollback`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_that_lowers_the_floor_or_claims_compaction_is_caught() {
+    let mut pair = ready(Server::start_with_retention(ENTRIES, keep_little()).await).await;
+    walk_the_floor(&mut pair, "first", 10).await;
+    both_rounds(&mut pair).await;
+    walk_the_floor(&mut pair, "second", 4).await;
+    both_rounds(&mut pair).await;
+    assert!(floor_of(&pair).await > 0);
+
+    tamper_pulls(&pair.proxy, |page| page.retention_floor = 0);
+    expect_rollback(&mut pair, "a lower floor").await;
+
+    // The cursor isn't below the floor the page names.
+    tamper_pulls(&pair.proxy, |page| {
+        let floor = page.after;
+        compacted(page, floor);
+    });
+    expect_rollback(&mut pair, "a claim at the floor").await;
+
+    // The page claims a floor past the cursor, so the device must bootstrap
+    // from a checkpoint that lies below its cursor.
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("the laptop passes the latest checkpoint");
+    tamper_pulls(&pair.proxy, |page| {
+        let floor = page.after + 1;
+        compacted(page, floor);
+    });
+    expect_rollback(&mut pair, "a forced bootstrap").await;
+
+    both_rounds(&mut pair).await;
+    assert_eq!(pair.a.files(), pair.b.files());
+}
+
+/// A writer whose cover names a pruned operation drops that cover on
+/// `supersedes_unknown` (§19): its edit still lands, as a conflict with the
+/// version it never saw.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cover_of_a_pruned_operation_goes_on_supersedes_unknown() {
+    let mut pair = ready(Server::start_with_retention(ENTRIES, keep_little()).await).await;
+    pair.a.write("Note.md", b"# Note\n");
+    both_rounds(&mut pair).await;
+
+    // Offline, the laptop signs an edit that covers what it holds.
+    pair.a.write("Note.md", b"# Note from the laptop\n");
+    cut_off(&pair.proxy);
+    assert!(pair.sync_a.round(&mut pair.service, 0).await.is_err());
+    assert_eq!(pair.sync_a.status().pending, 1);
+    pair.proxy.honest();
+
+    // The desktop edits the note again and again until pruning takes the
+    // operation the laptop covered.
+    for i in 0..24 {
+        pair.b
+            .write("Note.md", format!("# Desktop {i}\n").as_bytes());
+        pair.sync_b
+            .round(&mut pair.desktop.service, 0)
+            .await
+            .expect("a round on the desktop");
+        pair.server.store.maintain().await.expect("a pass");
+    }
+    for _ in 0..3 {
+        both_rounds(&mut pair).await;
+    }
+    assert_eq!(pair.sync_a.status().pending, 0, "the edit went out");
+    assert!(
+        pair.sync_b.status().conflicts >= 1 || pair.a.files() == pair.b.files(),
+        "the two versions meet"
+    );
+}
+
+async fn a_reader_keeps_up_with_old_cursors<B: Backend>(server: Server<B>) {
+    let mut pair = ready(server).await;
+    for round in 0..5 {
+        walk_the_floor(&mut pair, &format!("r{round}"), 6).await;
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("the old cursor stays correct");
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("a second round");
+        assert_eq!(pair.a.files(), pair.b.files(), "after walk {round}");
+    }
+    assert!(pair.sync_a.checkpoint_failures().is_empty());
+}
+
+/// A device that keeps pulling with an old cursor while the floor moves
+/// stays correct (§32).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_viewer_with_an_old_cursor_stays_correct() {
+    a_reader_keeps_up_with_old_cursors(Server::start_with_retention(ENTRIES, keep_little()).await)
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_viewer_with_an_old_cursor_stays_correct_on_postgres() {
+    a_reader_keeps_up_with_old_cursors(
+        Server::start_postgres_with_retention(ENTRIES, keep_little()).await,
+    )
+    .await;
+}
+
+async fn the_floor_overtakes_a_bootstrap<B: Backend>(server: Server<B>) {
+    let mut pair = ready(server).await;
+    for i in 0..6 {
+        pair.a.write(&format!("Stays{i}.md"), b"# Stays\n");
+    }
+    both_rounds(&mut pair).await;
+    pair.b.write("Plan.md", b"# Plan, changed\n");
+    walk_the_floor(&mut pair, "before", 16).await;
+    let before = floor_of(&pair).await;
+
+    // The laptop reaches its first leaf or live request, and the floor
+    // passes its checkpoint meanwhile.
+    let (arrived, release) = pair.proxy.hold("/live");
+    let Pair {
+        server,
+        service,
+        sync_a,
+        sync_b,
+        desktop,
+        b,
+        proxy,
+        ..
+    } = &mut pair;
+    let held = async {
+        arrived.notified().await;
+        for i in 0..16 {
+            b.write(&format!("during{i}.md"), b"# During\n");
+            sync_b
+                .round(&mut desktop.service, 0)
+                .await
+                .expect("a round on the desktop");
+            server.store.maintain().await.expect("a pass");
+        }
+        release.notify_one();
+    };
+    let (returned, ()) = tokio::join!(sync_a.round(service, 0), held);
+    let _ = proxy;
+    returned.expect("the bootstrap restarts from the latest checkpoint");
+    assert!(floor_of(&pair).await > before);
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("a round");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    assert_eq!(pair.a.files(), pair.b.files());
+    let answered: Vec<String> = pair
+        .proxy
+        .requests()
+        .iter()
+        .filter(|r| r.path.contains("/live?") && !r.path.contains("rid="))
+        .map(|r| r.path.clone())
+        .collect();
+    assert!(
+        answered.is_empty(),
+        "a restart keeps the buckets whose hashes match: {answered:?}"
+    );
+    let hashes = pair
+        .proxy
+        .requests()
+        .iter()
+        .filter(|r| r.path.contains("buckets=all"))
+        .count();
+    assert!(hashes >= 2, "it read the hashes of a later checkpoint too");
+}
+
+/// A bootstrap whose checkpoint falls below the floor before it ends
+/// restarts from the latest checkpoint, keeping the buckets whose hashes
+/// match (§18).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bootstrap_the_floor_overtakes_restarts() {
+    the_floor_overtakes_a_bootstrap(Server::start_with_retention(ENTRIES, keep_little()).await)
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bootstrap_the_floor_overtakes_restarts_on_postgres() {
+    the_floor_overtakes_a_bootstrap(
+        Server::start_postgres_with_retention(ENTRIES, keep_little()).await,
+    )
+    .await;
+}
+
+/// A record that gets `quota_exceeded` stays local, the next record takes
+/// its position, the change goes out once space frees up, and the status
+/// shows usage against the quota (§14, §20).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_change_over_quota_waits_until_space_frees_up() {
+    let mut pair = ready(Server::start_with_retention(1_000_000, quota(64 * 1024)).await).await;
+    // Bytes that don't compress.
+    let big: Vec<u8> = (0..40 * 1024u32 / 32)
+        .flat_map(|i| sync_protocol::crypto::hash(&i.to_be_bytes()).0)
+        .collect();
+    pair.a.write("Filler.md", &big);
+    both_rounds(&mut pair).await;
+    let usage = pair.sync_a.status().usage.expect("the server reported it");
+    assert_eq!(usage.quota, Some(64 * 1024));
+    assert!(usage.used > 40 * 1024);
+
+    // In one round: a note too big for what's left, then a small one.
+    pair.a.write("A big note.md", &big);
+    pair.a.write("B small note.md", b"# Small\n");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a refused record doesn't fail the round");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a second round");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("a round on the desktop");
+    assert!(
+        pair.b.path("B small note.md").exists(),
+        "the next record went"
+    );
+    assert!(!pair.b.path("A big note.md").exists(), "the big one waits");
+    assert!(pair.a.path("A big note.md").exists(), "and stays local");
+
+    // A delete commits and frees its usage.
+    std::fs::remove_file(pair.a.path("Filler.md")).expect("removed");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("the delete commits over quota");
+    for _ in 0..2 {
+        both_rounds(&mut pair).await;
+    }
+    assert_eq!(
+        pair.b.files().get("A big note.md").map(Vec::len),
+        Some(big.len()),
+        "the change went out once space freed up"
+    );
+    assert_eq!(pair.sync_a.status().pending, 0);
+}
+
+async fn over_quota_device_changes_go_through<B: Backend>(server: Server<B>) {
+    use sync_support::first_desktop;
+    let mut laptop = first_desktop(&server, "ana@example.com").await;
+    let mut a = Folder::new("Field notes");
+    a.write("Plan.md", &vec![b'x'; 2 * 1024]);
+    let mut sync_a = WorkspaceSync::turn_on(
+        &mut laptop.service,
+        a.engine.clone(),
+        "Field notes",
+        &mut a.registry,
+    )
+    .await
+    .expect("sync turns on");
+    sync_a.set_checkpoint_wait(Duration::ZERO);
+    let workspace = sync_a.workspace();
+    sync_a.round(&mut laptop.service, 0).await.expect("a round");
+
+    // A kit from before the workspace filled up.
+    let mut opened = laptop
+        .service
+        .open_workspace(workspace)
+        .await
+        .expect("opened");
+    let outside = tempfile::tempdir().unwrap();
+    let path = outside.path().join("Noura recovery kit");
+    let export = laptop
+        .service
+        .export_kit(&path, &[], std::slice::from_mut(&mut opened))
+        .await
+        .expect("exported");
+    sync_a.round(&mut laptop.service, 0).await.expect("a round");
+    for i in 0..40 {
+        a.write(&format!("Note{i}.md"), &vec![b'y'; 8 * 1024]);
+        sync_a.round(&mut laptop.service, 0).await.expect("a round");
+    }
+    let usage = laptop.service.client().workspaces().await.expect("listed");
+    let info = &usage.workspaces[0];
+    let quota = info.quota_bytes.expect("a quota");
+    assert!(info.used_bytes + 9 * 1024 > quota, "the workspace is full");
+
+    // A lost device's replacement goes through.
+    let replacement = approve(
+        &server,
+        &mut laptop,
+        std::slice::from_mut(sync_a.remote_mut().expect("connected")),
+    )
+    .await;
+    let mut b = Folder::new("Replacement");
+    let mut desktop = replacement;
+    let mut sync_b = WorkspaceSync::download(
+        &mut desktop.service,
+        b.engine.clone(),
+        workspace,
+        &mut b.registry,
+    )
+    .await
+    .expect("the download starts");
+    sync_b
+        .round(&mut desktop.service, 0)
+        .await
+        .expect("the replacement downloads");
+    assert!(b.files().contains_key("Plan.md"));
+
+    // So does a recovery with the kit.
+    let kit = open_kit(&path, export.secret.as_ref()).expect("the kit opens");
+    let signed_in = server
+        .sign_in(laptop.credentials.account, &server.base)
+        .await;
+    let secrets = Arc::new(MemorySecrets::default());
+    let state = tempfile::tempdir().unwrap();
+    let recovery = Recovery::begin(&signed_in, kit, secrets.clone(), state.path())
+        .await
+        .expect("the kit's identity proves");
+    let (mut service, _, _) = recovery.finish(&[], &*secrets).await.expect("recovered");
+    let mut c = Folder::new("Recovered");
+    let mut sync_c =
+        WorkspaceSync::download(&mut service, c.engine.clone(), workspace, &mut c.registry)
+            .await
+            .expect("the download starts");
+    sync_c
+        .round(&mut service, 0)
+        .await
+        .expect("the recovered device downloads");
+    assert!(c.files().contains_key("Plan.md"));
+}
+
+/// A workspace over its quota still takes a lost device's replacement and a
+/// recovery with a kit (§20).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn over_quota_a_replacement_and_a_kit_still_work() {
+    over_quota_device_changes_go_through(
+        Server::start_with_retention(10_000, quota(120 * 1024)).await,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn over_quota_a_replacement_and_a_kit_still_work_on_postgres() {
+    over_quota_device_changes_go_through(
+        Server::start_postgres_with_retention(10_000, quota(120 * 1024)).await,
+    )
+    .await;
+}
+
+async fn usage_alone_passes_the_quota<B: Backend>(server: Server<B>) {
+    let mut pair = ready(server).await;
+    // Filled through the desktop's own device changes and writes that fit.
+    for i in 0..6 {
+        pair.a.write(&format!("N{i}.md"), &vec![b'x'; 8 * 1024]);
+        both_rounds(&mut pair).await;
+    }
+    let (workspace, domain) = (pair.sync_a.workspace(), pair.sync_a.domain());
+    pair.server
+        .store
+        .backend()
+        .write(Box::new(move |txn: &mut B::Write| {
+            Box::pin(async move {
+                use sync_store::WriteTxn;
+                txn.add_usage(workspace, domain, 1 << 20, 0).await?;
+                txn.set_quota_pressure(workspace, true).await.map(|_| ())
+            })
+        }))
+        .await
+        .expect("usage past the quota");
+    let floor = floor_of(&pair).await;
+    for _ in 0..3 {
+        pair.server.store.maintain().await.expect("a pass");
+    }
+    assert_eq!(floor_of(&pair).await, floor, "floors keep to the rule");
+    // A device a checkpoint behind doesn't lose its cursor to the pressure.
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    assert!(pair.sync_a.checkpoint_failures().is_empty());
+}
+
+/// When usage alone passes the quota, history can't help, so the server
+/// raises no floor beyond the normal rule (§20).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn usage_alone_over_quota_keeps_the_floors() {
+    usage_alone_passes_the_quota(Server::start_with_retention(4, quota(1 << 20)).await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn usage_alone_over_quota_keeps_the_floors_on_postgres() {
+    usage_alone_passes_the_quota(Server::start_postgres_with_retention(4, quota(1 << 20)).await)
+        .await;
+}
+
+/// `retention_floor` in a page carries what the server persisted, and a
+/// restart of the client keeps the highest one it saw.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_floor_survives_a_page_without_news() {
+    let mut pair = ready(Server::start_with_retention(ENTRIES, keep_little()).await).await;
+    walk_the_floor(&mut pair, "walk", 10).await;
+    both_rounds(&mut pair).await;
+    let floor = floor_of(&pair).await;
+    assert!(floor > 0);
+    let response = pair
+        .service
+        .client()
+        .pull(
+            pair.sync_a.workspace(),
+            vec![sync_protocol::messages::PullCursor {
+                domain: pair.sync_a.domain(),
+                after: floor,
+            }],
+            0,
+        )
+        .await
+        .expect("a pull");
+    assert_eq!(response.pages.0[0].retention_floor, floor);
+    let _ = response.to_bytes();
+}

@@ -115,6 +115,10 @@ pub struct State {
     /// Objects whose deferred delete can settle now.
     #[serde(default)]
     pub moved_away: Vec<Id>,
+    /// Files a returning device's objects left behind: the manifest lacks
+    /// them, and they wait until you confirm their deletion (§18).
+    #[serde(default)]
+    pub deleted_away: Vec<DeletedAway>,
     /// Unix seconds from which a manager's device finishes the moves of a
     /// folder another device restricted (§9), by domain.
     #[serde(default)]
@@ -228,6 +232,17 @@ pub struct BootstrapProgress {
     /// Each device's highest `policy_revision` and `generation` among the
     /// installed operations.
     pub last: BTreeMap<Id, (u64, u64)>,
+}
+
+/// A file whose object was deleted on another device while this one was
+/// away (§18). It stays until you confirm, and a capture leaves it alone
+/// while its bytes stay these.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeletedAway {
+    /// Where it sits.
+    pub path: String,
+    /// The revision of its bytes.
+    pub revision: Digest,
 }
 
 /// The change that took this device's access to the domain (§15).

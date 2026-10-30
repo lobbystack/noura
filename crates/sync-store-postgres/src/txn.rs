@@ -278,6 +278,7 @@ pub(crate) fn pruning_keys(workspace: &Id, domain: &Id) -> (i32, i32) {
     (prefix(workspace), prefix(domain))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn checkpoint_row(
     number: i64,
     checkpoint: Vec<u8>,

@@ -107,6 +107,7 @@ pub(crate) fn changes(
     objects: &BTreeMap<Id, Object>,
     markers: &BTreeSet<Id>,
     held: &BTreeSet<Id>,
+    waiting: &BTreeMap<String, Digest>,
     held_root: impl Fn(&str) -> bool,
     mut read: impl FnMut(&SyncedFile) -> Option<(Digest, Option<Vec<u8>>)>,
 ) -> (Vec<Change>, Vec<Skipped>) {
@@ -151,6 +152,13 @@ pub(crate) fn changes(
             continue;
         }
         let known = by_path.get(path).copied();
+        if known.is_none() && waiting.contains_key(path) {
+            let same = read(file).is_some_and(|(revision, _)| waiting.get(path) == Some(&revision));
+            if same {
+                present.insert(path.to_owned());
+                continue;
+            }
+        }
         let unchanged = known
             .and_then(|rid| objects[&rid].local.as_ref().map(|l| (rid, l)))
             .filter(|(_, l)| {
@@ -351,6 +359,7 @@ mod tests {
             objects,
             &BTreeSet::new(),
             &BTreeSet::new(),
+            &BTreeMap::new(),
             |_| false,
             |f| {
                 files
