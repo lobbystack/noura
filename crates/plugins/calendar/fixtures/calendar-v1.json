@@ -1,0 +1,29 @@
+{
+	"description": "The calendar cases over the files of docs/workspace-format/fixtures/queries-v1.json. They moved here from that fixture when the kernel dropped its calendar query. The plugin's tests run each case through its entries and range rules, and app-core's calendar_entries test runs the valid ones through the plugin's day view. Each answer lists the entries in order, as each one's stable ID and the property it starts from.",
+	"queries": [
+		{
+			"start": "2026-09-04T00:00:00Z",
+			"end": "2026-09-05T00:00:00Z",
+			"expected": [
+				["project_01k00000000000000000000010", "start"],
+				["note_01k00000000000000000000030", "due"],
+				["note_01k00000000000000000000030", "due"],
+				["task_01k00000000000000000000001", "due"],
+				["task_01k00000000000000000000003", "start"]
+			]
+		},
+		{
+			"start": "2026-09-05",
+			"end": "2026-09-06",
+			"expected": [
+				["project_01k00000000000000000000010", "start"],
+				["note_01k00000000000000000000020", "date"]
+			]
+		},
+		{
+			"start": "2026-09-05T00:00:00Z",
+			"end": "2026-09-04T00:00:00Z",
+			"error": "invalid_calendar_range"
+		}
+	]
+}

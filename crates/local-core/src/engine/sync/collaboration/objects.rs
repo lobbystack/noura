@@ -64,7 +64,6 @@ impl WorkspaceEngine {
                 target.properties.insert(key, value);
             }
         }
-        normalize_domain_properties(&target.object_type, &mut target.properties)?;
         let metadata = metadata_patches(&object, &target)?;
         let document = TextDocument::restore(&state.update)?;
         let mut updates = Vec::new();

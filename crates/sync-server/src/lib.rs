@@ -14,6 +14,7 @@ pub mod data;
 pub mod http;
 pub mod logs;
 pub mod postgres;
+pub mod realtime;
 pub mod tus;
 
 use std::io::{Read, Write};

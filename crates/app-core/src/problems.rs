@@ -1,7 +1,10 @@
 //! Workspace problems you can fix yourself, such as files that share an ID,
 //! properties Noura can't read and names it can't represent.
 
-use local_core::WorkspaceEngine;
+use std::collections::BTreeMap;
+
+use local_core::{WorkspaceEngine, WorkspaceObject};
+use plugin_host::ObjectTypes;
 
 use crate::{AppError, error::Access};
 
@@ -55,6 +58,65 @@ pub(crate) fn collect(engine: &WorkspaceEngine, root: &str) -> Result<Vec<Proble
     problems.sort();
     problems.dedup();
     Ok(problems)
+}
+
+/// The objects whose properties don't fit the schema of the running plugin
+/// that holds their type, one problem for each, naming the first property
+/// in the schema's order that fails. The kernel holds no rules of its own
+/// for any type: with no plugin running there are none. `names` gives the
+/// name people see of each plugin, by plugin ID. Reads the index, which
+/// keeps each object's properties, and no file.
+pub(crate) fn schema(
+    engine: &WorkspaceEngine,
+    types: &ObjectTypes,
+    names: &BTreeMap<String, String>,
+) -> Vec<Problem> {
+    let mut problems = Vec::new();
+    for (object_type, plugin) in types.held() {
+        let objects = match engine.object_summaries_of_type(&object_type) {
+            Ok(objects) => objects,
+            Err(error) => {
+                tracing::warn!(code = %error.code, "couldn't check objects against their schema");
+                continue;
+            }
+        };
+        let plugin = names.get(&plugin).unwrap_or(&plugin);
+        for summary in objects {
+            let object = WorkspaceObject {
+                id: summary.id,
+                object_type: summary.object_type,
+                title: summary.title,
+                body: String::new(),
+                relative_path: summary.relative_path,
+                revision: summary.revision,
+                created: summary.created,
+                updated: summary.updated,
+                properties: summary.properties,
+            };
+            if let Some(problem) = types.problem(&object) {
+                problems.push(Problem {
+                    code: "invalid_property".into(),
+                    message: format!(
+                        "{} has a {} property that the {plugin} plugin doesn't accept.",
+                        object.relative_path, problem.property
+                    ),
+                    paths: vec![object.relative_path],
+                    object_id: Some(object.id),
+                });
+            }
+        }
+    }
+    problems
+}
+
+/// `listed`, the problems a listing found, with `schema`'s, sorted and
+/// without repeats.
+pub(crate) fn with_schema(listed: &[Problem], schema: Vec<Problem>) -> Vec<Problem> {
+    let mut problems = listed.to_vec();
+    problems.extend(schema);
+    problems.sort();
+    problems.dedup();
+    problems
 }
 
 /// The problem `code` that the index or the scan reported at `path`, in

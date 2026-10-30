@@ -1,6 +1,9 @@
-//! The browser build answers the same read queries without SQLite. Both run
-//! the shared fixture in `docs/workspace-format/fixtures/queries-v1.json`, so
-//! the two implementations cannot drift apart unnoticed.
+//! The native index answers the shared read queries in
+//! `docs/workspace-format/fixtures/queries-v1.json` against a real
+//! workspace folder. Object queries filter by type, path prefix and the
+//! value of a property they name, since the index knows no object type's
+//! fields. Summaries also leave out a property value, keep dates on or
+//! before a day and order by a property.
 
 use local_core::{ObjectFilter, ObjectSummaryQuery, WorkspaceEngine};
 use serde_json::{Value, json};
@@ -56,24 +59,6 @@ fn native_queries_match_the_shared_browser_fixture() {
             "objects_summaries {}",
             case["query"]
         );
-    }
-
-    for case in fixture["calendarQueries"].as_array().unwrap() {
-        let result = engine.calendar(
-            case["start"].as_str().unwrap(),
-            case["end"].as_str().unwrap(),
-        );
-        match case.get("error") {
-            Some(code) => assert_eq!(json!(result.unwrap_err().code), *code),
-            None => {
-                let entries = result
-                    .unwrap()
-                    .iter()
-                    .map(|entry| json!([entry.source_id, entry.property]))
-                    .collect::<Vec<_>>();
-                assert_eq!(Value::Array(entries), case["expected"], "calendar {case}");
-            }
-        }
     }
 
     let entries = engine

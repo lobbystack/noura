@@ -1,0 +1,67 @@
+{
+	"description": "The project type the Projects plugin declares. The plugin's tests run each case through workspace-format's generic validator and serializer with the plugin's schema, and plugin-host's tests check that the running plugin registers this schema. The property cases moved here from the project_properties section of docs/workspace-format/fixtures/conformance-v1.json, with the results the kernel's project rules gave.",
+	"schema": {
+		"properties": [
+			{
+				"name": "status",
+				"kind": {
+					"enum": [
+						"planned",
+						"active",
+						"on-hold",
+						"completed",
+						"cancelled"
+					]
+				},
+				"default": "planned"
+			}
+		]
+	},
+	"properties": [
+		{
+			"name": "canonical project values with unknown metadata",
+			"properties": {
+				"status": "active",
+				"custom": "kept"
+			},
+			"expected": {
+				"status": "active",
+				"custom": "kept"
+			}
+		},
+		{
+			"name": "project defaults are valid",
+			"properties": {},
+			"expected": {
+				"status": "planned"
+			}
+		},
+		{
+			"name": "unsupported project status",
+			"properties": {
+				"status": "later"
+			},
+			"error": {
+				"code": "not_allowed",
+				"property": "status"
+			}
+		},
+		{
+			"name": "project status must be a string",
+			"properties": {
+				"status": true
+			},
+			"error": {
+				"code": "wrong_type",
+				"property": "status"
+			}
+		}
+	],
+	"serialization": [
+		{
+			"name": "project folder note",
+			"markdown": "---\nid: project_01j00000000000000000000000\ntype: project\nstatus: active\nowner: Raphael\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Release 0.3\n\nShip the Rust app.\n",
+			"canonical": "---\nid: project_01j00000000000000000000000\ntype: project\nstatus: active\nowner: Raphael\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Release 0.3\n\nShip the Rust app.\n"
+		}
+	]
+}

@@ -20,7 +20,10 @@ use plugin_sdk::{
 };
 use serde_json::{Map, Value, json};
 
-use crate::project::{FIELDS, PLANNED, PROJECT};
+use crate::{
+    names,
+    project::{FIELDS, PLANNED, PROJECT},
+};
 
 /// Run the command `id` with `input`.
 pub(crate) fn run(id: &str, input: &str) -> Result<String, String> {
@@ -95,19 +98,31 @@ fn create(input: &Map<String, Value>) -> Result<Object, String> {
     new_project(title, &body, set).map_err(|error| failure(&error))
 }
 
-/// Create a project titled `title`, in a folder of its own.
+/// Create a project titled `title`, in a folder of its own, as
+/// `projects/Garden/Garden.md`. When a file already has that path, the
+/// project takes the next free name of `Garden 1`, `Garden 2` and so on,
+/// for its folder and its file.
 pub(crate) fn new_project(
     title: &str,
     body: &str,
     properties: Map<String, Value>,
 ) -> Result<Object, Error> {
-    objects::create(&NewObject {
-        object_type: PROJECT.to_owned(),
-        title: title.to_owned(),
-        path: None,
-        body: body.to_owned(),
-        properties: Value::Object(properties).to_string(),
-    })
+    let properties = Value::Object(properties).to_string();
+    let mut taken = None;
+    for name in names::candidates(title) {
+        let created = objects::create(&NewObject {
+            object_type: PROJECT.to_owned(),
+            title: name.clone(),
+            path: Some(names::project_path(&name)),
+            body: body.to_owned(),
+            properties: properties.clone(),
+        });
+        match created {
+            Err(Error::AlreadyExists(path)) => taken = Some(path),
+            created => return created,
+        }
+    }
+    Err(Error::AlreadyExists(taken.unwrap_or_default()))
 }
 
 fn update(input: &Map<String, Value>) -> Result<Object, String> {
