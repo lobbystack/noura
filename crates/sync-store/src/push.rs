@@ -395,6 +395,7 @@ pub(crate) async fn commit(
     if let Some((index, refusal)) = state.unmet() {
         return Err(failure(index, refusal));
     }
+    set_history_floors(txn, state.policy(), workspace, &pushed, &receipts).await?;
     let policy_revision = state.policy().head().0.max(row.policy_revision);
     if changes {
         cache.put(state.policy().clone());
@@ -403,6 +404,46 @@ pub(crate) async fn commit(
         policy_revision,
         receipts: List(receipts),
     })
+}
+
+/// Sets each new member's history floor in the workspace domain (§9): the
+/// `covered_seq` of the fresh checkpoint the approval's push carries last,
+/// or, in a push without one, the sequence of the `add_member`'s own entry,
+/// so the member reads nothing written before it joined either way.
+async fn set_history_floors(
+    txn: &mut impl WriteTxn,
+    policy: &PolicyChain,
+    workspace: Id,
+    pushed: &[Pushed],
+    receipts: &[sync_protocol::messages::Receipt],
+) -> Result<()> {
+    let domain = policy.head_snapshot().workspace_domain;
+    let checkpoint = pushed.iter().find_map(|p| match p {
+        Pushed::Checkpoint(_, bundle) if bundle.checkpoint.0.body.domain == domain => {
+            Some(bundle.checkpoint.0.body.covered_seq)
+        }
+        _ => None,
+    });
+    for record in pushed {
+        let Pushed::Change(_, change) = record else {
+            continue;
+        };
+        let PolicyKind::AddMember { account, .. } = change.body.kind else {
+            continue;
+        };
+        let digest = change.digest();
+        let floor = checkpoint.or_else(|| {
+            receipts
+                .iter()
+                .find(|r| r.domain == domain && r.record_digest == digest)
+                .map(|r| r.seq)
+        });
+        if let Some(floor) = floor {
+            txn.set_history_floor(workspace, account, domain, floor)
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 /// The checks of §25 for a pushed profile, then its write: an owner or

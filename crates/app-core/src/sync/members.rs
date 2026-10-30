@@ -91,10 +91,13 @@ impl SyncService {
             .policy
             .append(&signed, &chains)
             .map_err(|e| SyncError::Check(e.client_code()))?;
+        // The change stands from here on, so a rotation another key holder
+        // won meanwhile isn't a failure. A device that left reads nothing
+        // more, and the other key holders rotate.
         if next.rotations.contains(&remote.domain)
             && next.can_read(&self.credentials.keys.device(), &remote.domain)
         {
-            self.rotate(remote).await?;
+            self.rotate_if_pending(remote).await?;
         }
         Ok(signed.body.revision)
     }

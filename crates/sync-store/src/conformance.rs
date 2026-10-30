@@ -101,6 +101,7 @@ macro_rules! conformance_tests {
             checkpoint_heads_follow_the_fixture,
             racing_checkpoints_keep_the_first,
             a_checkpoint_goes_alone_or_last_in_an_approval,
+            history_floors_follow_section_9,
             removals_make_checkpoints_due_and_leave_the_heads,
             replacements_make_checkpoints_due,
             checkpoint_routes_serve_the_chain_and_manifest,

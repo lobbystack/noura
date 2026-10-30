@@ -79,7 +79,16 @@ fn the_section_shows_a_configuration_with_the_binary_and_the_workspace_folder_an
         .into_iter()
         .map(|section| section.title.clone())
         .collect();
-    assert_eq!(titles, ["Name and location", "Plugins", "Sync", "AI tools"]);
+    assert_eq!(
+        titles,
+        [
+            "Name and location",
+            "Plugins",
+            "Sync",
+            "Members",
+            "AI tools"
+        ]
+    );
     assert_eq!(app.settings().unwrap().section, settings_section::AI_TOOLS);
     let root = app.workspace().unwrap().root().to_owned();
     let configuration = app.mcp_setup().unwrap().configuration.unwrap();

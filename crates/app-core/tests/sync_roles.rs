@@ -415,11 +415,13 @@ async fn a_member_who_leaves_is_rotated_out_by_another_key_holder() {
         .change_member(&mut ben.service, MemberChange::Remove(own))
         .await
         .expect("Ben leaves");
-    let ended = ben_sync.status().ended;
-    assert!(
-        ended.is_none() || ended.is_some_and(|e| e.account_removed),
-        "leaving ends sync as a removal"
-    );
+    ben_sync
+        .round(&mut ben.service, 0)
+        .await
+        .expect("leaving isn't an error");
+    let ended = ben_sync.status().ended.expect("leaving ends sync");
+    assert!(ended.account_removed);
+    assert_eq!(ended.by_device, ben.id());
     let remote = ana.sync.remote_mut().unwrap();
     assert!(
         ana.desktop
@@ -674,4 +676,123 @@ async fn the_members_screen_follows_the_policy_and_the_server() {
             .all(|m| m.roles.is_empty() && !m.removable)
     );
     assert!(shown.may_leave);
+}
+
+/// History floors at seam 4 (§9): an approved member reads nothing at or
+/// below the `covered_seq` of the checkpoint its approval committed, its
+/// account's next device keeps that floor, and it still downloads the
+/// workspace from that checkpoint. Invited again, it gets the floor of the
+/// new approval's checkpoint.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_new_member_reads_nothing_below_its_history_floor() {
+    let server = Server::start().await;
+    let mut ana = owner(&server).await;
+    let workspace = ana.sync.workspace();
+    let domain = ana.sync.domain();
+    ana.folder
+        .write("Before.md", b"Written before Ben joined.\n");
+    ana.sync
+        .round(&mut ana.desktop.service, 0)
+        .await
+        .expect("a round");
+    let mut ben = first_desktop(&server, "ben@example.com").await;
+    let (mut ben_sync, folder) = ana.invite(&mut ben, Role::Editor).await;
+    assert_eq!(
+        folder.files()["Before.md"],
+        b"Written before Ben joined.\n",
+        "current content arrives through the checkpoint"
+    );
+    let floor = ana
+        .desktop
+        .service
+        .client()
+        .checkpoint(workspace, domain)
+        .await
+        .expect("served")
+        .expect("a checkpoint")
+        .bundle
+        .checkpoint
+        .0
+        .body
+        .covered_seq;
+    async fn page(device: &mut Desktop, workspace: Id, domain: Id, after: u64) -> PageStatus {
+        device
+            .service
+            .client()
+            .pull(workspace, vec![PullCursor { domain, after }], 0)
+            .await
+            .expect("a pull answers")
+            .pages
+            .0[0]
+            .status
+    }
+    assert_eq!(
+        page(&mut ben, workspace, domain, 0).await,
+        PageStatus::BeforeHistoryFloor
+    );
+    assert_eq!(
+        page(&mut ben, workspace, domain, floor).await,
+        PageStatus::Ok
+    );
+    assert_eq!(
+        page(&mut ana.desktop, workspace, domain, 0).await,
+        PageStatus::Ok
+    );
+    let owner = ana.desktop.id();
+    assert_eq!(
+        code(
+            ben.service
+                .client()
+                .chain_position(workspace, domain, owner, 1)
+                .await
+        ),
+        "before_history_floor"
+    );
+
+    // Ben's next device keeps his floor.
+    let remote = ben_sync.remote_mut().expect("connected");
+    let mut phone = approve(&server, &mut ben, std::slice::from_mut(remote)).await;
+    assert_eq!(
+        page(&mut phone, workspace, domain, 0).await,
+        PageStatus::BeforeHistoryFloor
+    );
+    assert_eq!(
+        page(&mut phone, workspace, domain, floor).await,
+        PageStatus::Ok
+    );
+
+    // Removed and invited again, his floor moves to the new approval's
+    // checkpoint.
+    ana.change(MemberChange::Remove(account(&ben)))
+        .await
+        .expect("removed");
+    ana.folder
+        .write("Away.md", b"Written while Ben was away.\n");
+    ana.sync
+        .round(&mut ana.desktop.service, 0)
+        .await
+        .expect("a round");
+    let (_again, again_folder) = ana.invite(&mut ben, Role::Editor).await;
+    let later = ana
+        .desktop
+        .service
+        .client()
+        .checkpoint(workspace, domain)
+        .await
+        .expect("served")
+        .expect("a checkpoint")
+        .bundle
+        .checkpoint
+        .0
+        .body
+        .covered_seq;
+    assert!(later > floor);
+    assert_eq!(
+        page(&mut ben, workspace, domain, floor).await,
+        PageStatus::BeforeHistoryFloor
+    );
+    assert_eq!(
+        again_folder.files()["Away.md"],
+        b"Written while Ben was away.\n"
+    );
 }

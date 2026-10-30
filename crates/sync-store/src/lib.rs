@@ -734,6 +734,13 @@ pub trait ReadTxn: Send {
         workspace: Id,
         domain: Id,
     ) -> impl Future<Output = Result<Option<DomainRow>>> + Send;
+    /// An account's history floor in a domain (§9), 0 when it has none.
+    fn history_floor(
+        &mut self,
+        workspace: Id,
+        account: Id,
+        domain: Id,
+    ) -> impl Future<Output = Result<u64>> + Send;
     /// At most `limit` log entries after `after`, by sequence.
     fn entries_after(
         &mut self,
@@ -950,6 +957,12 @@ pub trait ReadTxn: Send {
     /// Whether an operation lists the blob.
     fn blob_listed(&mut self, workspace: Id, blob: Id)
     -> impl Future<Output = Result<bool>> + Send;
+    /// The sequences of the operations that list the blob.
+    fn blob_listing_seqs(
+        &mut self,
+        workspace: Id,
+        blob: Id,
+    ) -> impl Future<Output = Result<Vec<u64>>> + Send;
     /// The invitation with this ID, expired or not.
     fn invitation(
         &mut self,
@@ -1048,6 +1061,14 @@ pub trait WriteTxn: ReadTxn {
         workspace: Id,
         account: Id,
         role: u8,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Sets an account's history floor in a domain (§9).
+    fn set_history_floor(
+        &mut self,
+        workspace: Id,
+        account: Id,
+        domain: Id,
+        floor: u64,
     ) -> impl Future<Output = Result<()>> + Send;
     /// Forgets a member account that `remove_member` took out.
     fn delete_member(

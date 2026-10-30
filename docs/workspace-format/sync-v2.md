@@ -535,7 +535,7 @@ With an honest server, nothing after a new epoch's entry uses a key that a remov
 
 ### History floor
 
-A domain key opens every earlier ciphertext in that domain through lineage, so the server decides how much history a new member sees. The server keeps a history floor per account and domain. It never serves an entry with a sequence at or below the floor through pulls or chain fetches. `live` and `manifest` answer only at a checkpoint whose `covered_seq` is at or above the floor, and there they serve every operation live at that checkpoint, whatever its sequence, because a member sees current content ([§18](#18-bootstrap)). The server serves a blob only when an operation that lists it sits above the floor or is live at the checkpoint the device reads.
+A domain key opens every earlier ciphertext in that domain through lineage, so the server decides how much history a new member sees. The server keeps a history floor per account and domain. It never serves an entry with a sequence at or below the floor through pulls or chain fetches, except that a chain fetch serves the requesting device its own records, which it signed. `live` and `manifest` answer only at a checkpoint whose `covered_seq` is at or above the floor, and there they serve every operation live at that checkpoint, whatever its sequence, because a member sees current content ([§18](#18-bootstrap)). The server serves a blob only when an operation that lists it sits above the floor or is live at the checkpoint the device reads.
 
 | Event | Floor |
 |---|---|
@@ -545,7 +545,7 @@ A domain key opens every earlier ciphertext in that domain through lineage, so t
 | A device restored from the member's recovery kit | the member's existing floor |
 | A member's account accepted after a reset | the account's existing floor |
 
-An approval or grant that sets a floor carries a fresh checkpoint for each affected domain, signed by a device that can write it, and the floor equals that checkpoint's `covered_seq`. That `covered_seq` may equal the sequence of the domain's latest checkpoint entry, so a quiet domain still takes one ([§17](#checkpoint)). Records that land between signing and commit sit above the floor, so the new device pulls them normally. The server answers a request below the floor with `before_history_floor`, and the client bootstraps.
+An approval or grant that sets a floor carries a fresh checkpoint for each affected domain, signed by a device that can write it, and the floor equals that checkpoint's `covered_seq`. When an `add_member`'s push carries no checkpoint of the workspace domain, the floor is the sequence of the change's own entry there, so the member reads nothing earlier and bootstraps once a later checkpoint commits. That `covered_seq` may equal the sequence of the domain's latest checkpoint entry, so a quiet domain still takes one ([§17](#checkpoint)). Records that land between signing and commit sit above the floor, so the new device pulls them normally. The server answers a request below the floor with `before_history_floor`, and the client bootstraps.
 
 History isolation for new members depends on the server. [§30](#30-threats) records that limit.
 

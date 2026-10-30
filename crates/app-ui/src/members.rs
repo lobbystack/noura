@@ -127,7 +127,7 @@ fn draw(
                 MembersAction::Leave,
             ),
         };
-        let modal = Modal::new(egui::Id::new("members-confirm")).show(ui.ctx(), |ui| {
+        let modal = Modal::new(egui::Id::unique("members-confirm")).show(ui.ctx(), |ui| {
             ui.set_width(380.0);
             group(ui, "Confirm", |ui| {
                 ui.label(question);

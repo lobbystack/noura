@@ -150,7 +150,8 @@ fn the_rail_s_settings_button_opens_settings_with_its_sections_by_group() {
                 vec![
                     "Name and location".to_owned(),
                     "Plugins".to_owned(),
-                    "Sync".to_owned()
+                    "Sync".to_owned(),
+                    "Members".to_owned()
                 ]
             ),
             (

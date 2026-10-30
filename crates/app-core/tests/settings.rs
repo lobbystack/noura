@@ -113,7 +113,8 @@ fn settings_lists_its_sections_under_this_computer_workspace_and_app() {
                 vec![
                     "Name and location".to_owned(),
                     "Plugins".to_owned(),
-                    "Sync".to_owned()
+                    "Sync".to_owned(),
+                    "Members".to_owned()
                 ]
             ),
             (
@@ -148,6 +149,7 @@ fn later_areas_add_their_sections_to_a_group_and_settings_shows_them() {
                 "Name and location".to_owned(),
                 "Plugins".to_owned(),
                 "Sync".to_owned(),
+                "Members".to_owned(),
                 "External tools".to_owned()
             ]
         )

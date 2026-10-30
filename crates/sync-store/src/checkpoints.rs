@@ -705,6 +705,16 @@ async fn servable(
         .domain(workspace, domain)
         .await?
         .ok_or_else(|| refuse("not_found", "no such domain"))?;
+    if at
+        < txn
+            .history_floor(workspace, session.account, domain)
+            .await?
+    {
+        return Err(refuse(
+            "before_history_floor",
+            "that checkpoint lies below the account's history floor",
+        ));
+    }
     match txn.checkpoint_at(workspace, domain, at).await? {
         Some(checkpoint) if at >= row.retention_floor => Ok(checkpoint),
         _ => Err(Error::Refused(Refusal {

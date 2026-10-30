@@ -100,6 +100,15 @@ pub(crate) async fn snapshot(
             pages.push(empty(PageStatus::NotFound));
             continue;
         };
+        // Nothing at or below the account's history floor (§9): the device
+        // bootstraps from a checkpoint at or above it instead.
+        let floor = txn
+            .history_floor(workspace, session.account, cursor.domain)
+            .await?;
+        if cursor.after < floor {
+            pages.push(empty(PageStatus::BeforeHistoryFloor));
+            continue;
+        }
         let mut entries = Vec::new();
         let mut complete_through = cursor.after;
         let mut truncated = false;

@@ -9,6 +9,7 @@ use sync_protocol::blob::{
     MAX_BLOB_FILE, SEGMENT_LEN, blob_ciphertext_len, digest_of_segment_hashes,
     is_valid_blob_ciphertext_len,
 };
+use sync_protocol::messages::EntryRecord;
 use sync_protocol::policy::PolicyChain;
 use sync_protocol::types::{Digest, Id};
 
@@ -315,12 +316,65 @@ impl<B: Backend> Store<B> {
                     if !row.complete {
                         return Err(refuse("blob_incomplete", "the upload isn't complete"));
                     }
+                    if listed && !above_history_floor(txn, session, workspace, blob, &row).await? {
+                        return Err(refuse(
+                            "before_history_floor",
+                            "only operations below the account's history floor list this blob",
+                        ));
+                    }
                     let segments = txn.blob_segments(workspace, blob).await?;
                     Ok(BlobUpload { row, segments })
                 })
             }))
             .await
     }
+}
+
+/// Whether the session's account may read a listed blob under its history
+/// floor (§9): an operation that lists it sits above the floor, or is live
+/// at a checkpoint the device can read, the floor's or the domain's latest.
+async fn above_history_floor(
+    txn: &mut impl ReadTxn,
+    session: Session,
+    workspace: Id,
+    blob: Id,
+    row: &BlobRow,
+) -> Result<bool> {
+    let floor = txn
+        .history_floor(workspace, session.account, row.domain)
+        .await?;
+    if floor == 0 {
+        return Ok(true);
+    }
+    let seqs = txn.blob_listing_seqs(workspace, blob).await?;
+    if seqs.iter().any(|seq| *seq > floor) {
+        return Ok(true);
+    }
+    let latest = txn
+        .domain(workspace, row.domain)
+        .await?
+        .map_or(floor, |d| d.checkpoint_seq.max(floor));
+    for seq in seqs {
+        let Some(raw) = txn
+            .entries_after(workspace, row.domain, seq.saturating_sub(1), 1)
+            .await?
+            .into_iter()
+            .next()
+            .filter(|e| e.seq == seq)
+        else {
+            continue;
+        };
+        let EntryRecord::Operation(op) = crate::pull::entry(raw)?.record else {
+            continue;
+        };
+        for at in [floor, latest] {
+            let live = txn.live_ops(workspace, op.body.rid, at).await?;
+            if live.iter().any(|(op, _)| op.seq == seq) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// The push checks of §21 for the blobs an operation lists, under the

@@ -44,6 +44,16 @@ impl Track {
     /// Pushes an operation of `device` on a new object and returns its
     /// sequence.
     async fn write<B: Backend>(&mut self, world: &World<B>, device: usize) -> u64 {
+        self.write_with(world, device, |_| {}).await
+    }
+
+    /// [`Track::write`] after `edit` changes the operation.
+    async fn write_with<B: Backend>(
+        &mut self,
+        world: &World<B>,
+        device: usize,
+        edit: impl FnOnce(&mut sync_protocol::records::Operation),
+    ) -> u64 {
         let id = world.devices[device].id();
         let (counter, previous) = self
             .heads
@@ -54,6 +64,7 @@ impl Track {
             op.counter = counter;
             op.previous = previous;
             op.epoch = epoch;
+            edit(op);
         });
         let receipt = world
             .push(device, std::slice::from_ref(&op))
@@ -563,6 +574,250 @@ pub async fn a_checkpoint_goes_alone_or_last_in_an_approval<B: Backend>(store: S
         .expect("the latest checkpoint");
     assert_eq!(latest.bundle.checkpoint.0, fresh.checkpoint.0);
     assert_eq!(latest.seq, head + 2);
+}
+
+/// History floors (§9): an approval sets the new member's floor in the
+/// workspace domain to the `covered_seq` of the fresh checkpoint its push
+/// carries. The member's pulls below it get status 3, a chain fetch of a
+/// record at or below it and `live` or `manifest` at an earlier checkpoint
+/// get `before_history_floor`, and from the floor on everything serves.
+pub async fn history_floors_follow_section_9<B: Backend>(store: Store<B>) {
+    use sync_protocol::messages::{PageStatus, PullCursor, PullRequest};
+
+    let mut world = World::new(store.with_checkpoint_interval(interval(2)), 1).await;
+    let mut track = Track::new(&world).await;
+    track.write(&world, 0).await;
+    let early = track.write(&world, 0).await;
+    let first = track.checkpoint(&world, 0, early, &[], |_, _| {}).await;
+    push_checkpoint(&world, 0, &first)
+        .await
+        .expect("the first checkpoint");
+    track.accepted.push(first.checkpoint.0.clone());
+    // One blob whose listing a later state supersedes before the floor,
+    // and one whose listing stays live there.
+    let listed = |blob: Id| {
+        move |op: &mut sync_protocol::records::Operation| {
+            op.blobs = Sorted::new(vec![blob]).expect("sorted");
+        }
+    };
+    let (gone_bytes, gone) = super::blobs::blob_for(1_000, world.domain);
+    let (kept_bytes, kept) = super::blobs::blob_for(1_000, world.domain);
+    let owner_session = world.devices[0].session;
+    for (bytes, creation) in [(&gone_bytes, &gone), (&kept_bytes, &kept)] {
+        world
+            .store
+            .create_blob(owner_session, world.workspace, *creation)
+            .await
+            .expect("created");
+        super::blobs::upload_all(&world, 0, creation.blob, bytes).await;
+    }
+    track.write_with(&world, 0, listed(gone.blob)).await;
+    let listing = track.heads[&world.devices[0].id()].clone();
+    let rid = *track.rids.last().expect("the object");
+    track
+        .write_with(&world, 0, |op| {
+            op.rid = rid;
+            op.supersedes = Sorted::new(vec![sync_protocol::records::Cover {
+                device: listing.device,
+                counter: listing.counter,
+            }])
+            .expect("sorted");
+        })
+        .await;
+    track.write_with(&world, 0, listed(kept.blob)).await;
+    let head = track.write(&world, 0).await;
+    let fresh = track.checkpoint(&world, 0, head, &[], |_, _| {}).await;
+
+    let (invite, invitee) = super::invitations::requested(&world, Role::Viewer).await;
+    let add = world.change(
+        0,
+        vec![super::head_of(&world.links), invitee.head()],
+        PolicyKind::AddMember {
+            account: invitee.account,
+            role: Role::Viewer,
+            invitation: invite.invitation,
+        },
+    );
+    let envelope = world.envelope(0, &invitee.keys.card(invitee.account), 1, &world.epoch_key);
+    let pushed = world
+        .push_records(
+            0,
+            vec![
+                RecordRef::Policy(add.clone()),
+                RecordRef::Envelope(envelope),
+                RecordRef::CheckpointBundle(fresh.clone()),
+            ],
+        )
+        .await
+        .expect("the approval commits");
+    world.head = (pushed.policy_revision, add.digest());
+    let floor = head;
+    let member = invitee.session;
+    let pull = |after| PullRequest {
+        cursors: sync_protocol::codec::List(vec![PullCursor {
+            domain: world.domain,
+            after,
+        }]),
+        wait_seconds: 0,
+    };
+    for after in [0, early, floor - 1] {
+        let page = &world
+            .store
+            .pull(member, world.workspace, pull(after))
+            .await
+            .expect("pulled")
+            .pages
+            .0[0];
+        assert_eq!(page.status, PageStatus::BeforeHistoryFloor, "after {after}");
+        assert!(page.entries.is_empty());
+    }
+    let page = &world
+        .store
+        .pull(member, world.workspace, pull(floor))
+        .await
+        .expect("pulled")
+        .pages
+        .0[0];
+    assert_eq!(page.status, PageStatus::Ok);
+    assert!(
+        page.entries.iter().all(|e| e.seq > floor),
+        "only what came after the floor"
+    );
+    assert!(
+        !page.entries.is_empty(),
+        "the add_member's entry and the checkpoint"
+    );
+    // The owner reads its history as before.
+    let page = &world
+        .store
+        .pull(world.devices[0].session, world.workspace, pull(0))
+        .await
+        .expect("pulled")
+        .pages
+        .0[0];
+    assert_eq!(page.status, PageStatus::Ok);
+
+    let owner = world.devices[0].id();
+    assert_eq!(
+        refusal(
+            world
+                .store
+                .chain_record(member, world.workspace, world.domain, owner, 1)
+                .await
+        )
+        .code,
+        "before_history_floor"
+    );
+    world
+        .store
+        .chain_record(
+            world.devices[0].session,
+            world.workspace,
+            world.domain,
+            owner,
+            1,
+        )
+        .await
+        .expect("the owner fetches its own chain");
+    assert_eq!(
+        refusal(
+            world
+                .store
+                .live(member, world.workspace, world.domain, early, None, None)
+                .await
+        )
+        .code,
+        "before_history_floor",
+        "live at an earlier checkpoint"
+    );
+    assert_eq!(
+        refusal(
+            world
+                .store
+                .manifest_buckets(member, world.workspace, world.domain, early)
+                .await
+        )
+        .code,
+        "before_history_floor"
+    );
+    let live = world
+        .store
+        .live(member, world.workspace, world.domain, floor, None, None)
+        .await
+        .expect("live at the fresh checkpoint");
+    assert_eq!(
+        live.entries.len(),
+        5,
+        "every operation live there, whatever its sequence"
+    );
+    world
+        .store
+        .manifest_buckets(member, world.workspace, world.domain, floor)
+        .await
+        .expect("the manifest at the fresh checkpoint");
+
+    // A blob serves while a listing sits above the floor or is live at a
+    // checkpoint the device reads.
+    assert_eq!(
+        refusal(
+            world
+                .store
+                .blob_download(member, world.workspace, gone.blob)
+                .await
+        )
+        .code,
+        "before_history_floor"
+    );
+    world
+        .store
+        .blob_download(owner_session, world.workspace, gone.blob)
+        .await
+        .expect("the owner has no floor");
+    world
+        .store
+        .blob_download(member, world.workspace, kept.blob)
+        .await
+        .expect("its listing is live at the checkpoint");
+    let (new_bytes, new_blob) = super::blobs::blob_for(1_000, world.domain);
+    world
+        .store
+        .create_blob(owner_session, world.workspace, new_blob)
+        .await
+        .expect("created");
+    super::blobs::upload_all(&world, 0, new_blob.blob, &new_bytes).await;
+    track.write_with(&world, 0, listed(new_blob.blob)).await;
+    world
+        .store
+        .blob_download(member, world.workspace, new_blob.blob)
+        .await
+        .expect("listed above the floor");
+
+    // A stale realtime watch forwards nothing at or below the floor.
+    let mut watch = world
+        .store
+        .realtime_watch(member, world.workspace)
+        .await
+        .expect("a watch");
+    watch.heads.insert(world.domain, 0);
+    let frames = world
+        .store
+        .realtime_frames(member, world.workspace, &mut watch)
+        .await
+        .expect("frames");
+    let mut seen = 0;
+    for frame in frames {
+        if let Frame::Records {
+            previous_seq,
+            entries,
+            ..
+        } = frame
+        {
+            assert_eq!(previous_seq, floor);
+            assert!(entries.iter().all(|e| e.seq > floor));
+            seen += entries.len();
+        }
+    }
+    assert!(seen > 0, "what came after the floor still arrives");
 }
 
 /// Racing checkpoints (§17): writers that each sign the due checkpoint and

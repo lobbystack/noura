@@ -722,6 +722,23 @@ impl ReadTxn for SqliteTxn {
         Ok(row.map(|r| r.record))
     }
 
+    async fn history_floor(&mut self, workspace: Id, account: Id, domain: Id) -> Result<u64> {
+        let workspace = &workspace.0[..];
+        let account = &account.0[..];
+        let domain = &domain.0[..];
+        let floor = sqlx::query_scalar!(
+            "SELECT floor FROM history_floors
+             WHERE workspace = ?1 AND account = ?2 AND domain = ?3",
+            workspace,
+            account,
+            domain
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        floor.map_or(Ok(0), uint)
+    }
+
     async fn domain(&mut self, workspace: Id, domain: Id) -> Result<Option<DomainRow>> {
         let workspace = &workspace.0[..];
         let domain = &domain.0[..];
@@ -1576,6 +1593,20 @@ impl ReadTxn for SqliteTxn {
         Ok(row.is_some())
     }
 
+    async fn blob_listing_seqs(&mut self, workspace: Id, blob: Id) -> Result<Vec<u64>> {
+        let workspace = &workspace.0[..];
+        let blob = &blob.0[..];
+        let rows = sqlx::query_scalar!(
+            "SELECT seq FROM blob_listings WHERE workspace = ?1 AND blob = ?2",
+            workspace,
+            blob
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter().map(uint).collect()
+    }
+
     async fn invitation(&mut self, invitation: Id) -> Result<Option<InvitationRow>> {
         let invitation = &invitation.0[..];
         let row = sqlx::query!(
@@ -1879,6 +1910,32 @@ impl WriteTxn for SqliteTxn {
             workspace,
             account,
             role
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn set_history_floor(
+        &mut self,
+        workspace: Id,
+        account: Id,
+        domain: Id,
+        floor: u64,
+    ) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let account = &account.0[..];
+        let domain = &domain.0[..];
+        let floor = int(floor)?;
+        sqlx::query!(
+            "INSERT INTO history_floors (workspace, account, domain, floor)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (workspace, account, domain) DO UPDATE SET floor = excluded.floor",
+            workspace,
+            account,
+            domain,
+            floor
         )
         .execute(self.c())
         .await
