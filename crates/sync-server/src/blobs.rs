@@ -12,8 +12,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use futures::TryStreamExt;
 use futures::future::BoxFuture;
-use object_store::{ObjectStore, ObjectStoreExt};
 use object_store::path::Path as ObjectPath;
+use object_store::{ObjectStore, ObjectStoreExt};
 use sync_protocol::types::{Digest, Id, to_hex};
 
 /// The directory under the data directory that a disk store uses.
@@ -73,11 +73,14 @@ impl DiskStore {
     fn path(&self, key: &str) -> io::Result<PathBuf> {
         // Keys come from segment_key alone; refuse anything else.
         let valid = key.split('/').count() == 3
-            && key
-                .split('/')
-                .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
+            && key.split('/').all(|part| {
+                !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            });
         if !valid {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a segment key"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a segment key",
+            ));
         }
         Ok(self.root.join(key))
     }
@@ -130,7 +133,8 @@ impl SegmentStore for DiskStore {
             use std::io::{Read, Seek, SeekFrom};
             let mut file = std::fs::File::open(path?)?;
             file.seek(SeekFrom::Start(range.start))?;
-            let mut bytes = vec![0; usize::try_from(range.end - range.start).map_err(io::Error::other)?];
+            let mut bytes =
+                vec![0; usize::try_from(range.end - range.start).map_err(io::Error::other)?];
             file.read_exact(&mut bytes)?;
             Ok(Bytes::from(bytes))
         })
@@ -221,7 +225,9 @@ impl Objects {
 
 fn object_error(error: object_store::Error) -> io::Error {
     match error {
-        object_store::Error::NotFound { .. } => io::Error::new(io::ErrorKind::NotFound, "no such object"),
+        object_store::Error::NotFound { .. } => {
+            io::Error::new(io::ErrorKind::NotFound, "no such object")
+        }
         other => io::Error::other(other),
     }
 }
@@ -298,8 +304,9 @@ pub struct Migration {
 pub async fn migrate(from: &dyn SegmentStore, to: &dyn SegmentStore) -> io::Result<Migration> {
     let mut migration = Migration::default();
     for key in from.list().await? {
-        let expected = key_hash(&key)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("{key} isn't a segment")))?;
+        let expected = key_hash(&key).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("{key} isn't a segment"))
+        })?;
         let bytes = from.get(&key, 0..from.size(&key).await?).await?;
         if digest_of(&bytes) != expected {
             return Err(io::Error::new(
@@ -344,20 +351,35 @@ pub mod conformance {
         let (k0, h0) = key(0, &first);
         let (k1, _) = key(1, &last);
         assert_eq!(key_hash(&k0), Some(h0));
-        store.put(&k0, Bytes::from(first.clone())).await.expect("put");
-        store.put(&k1, Bytes::from(last.clone())).await.expect("put");
+        store
+            .put(&k0, Bytes::from(first.clone()))
+            .await
+            .expect("put");
+        store
+            .put(&k1, Bytes::from(last.clone()))
+            .await
+            .expect("put");
         assert_eq!(
             store.get(&k0, 1000..2000).await.expect("range")[..],
             first[1000..2000]
         );
-        assert_eq!(store.get(&k1, 0..last.len() as u64).await.expect("get")[..], last[..]);
+        assert_eq!(
+            store.get(&k1, 0..last.len() as u64).await.expect("get")[..],
+            last[..]
+        );
         let mut keys = vec![k0.clone(), k1.clone()];
         keys.sort();
         assert_eq!(store.list().await.expect("list"), keys);
         // A second put of the same key replaces it whole.
-        store.put(&k1, Bytes::from(last.clone())).await.expect("again");
+        store
+            .put(&k1, Bytes::from(last.clone()))
+            .await
+            .expect("again");
         store.delete(&k1).await.expect("delete");
-        store.delete(&k1).await.expect("a missing object deletes quietly");
+        store
+            .delete(&k1)
+            .await
+            .expect("a missing object deletes quietly");
         assert!(store.get(&k1, 0..1).await.is_err());
         assert_eq!(store.list().await.expect("list"), vec![k0.clone()]);
         assert_eq!(store.size(&k0).await.expect("length"), first.len() as u64);
@@ -379,7 +401,9 @@ pub mod conformance {
         }
         // An interrupted run copied the first segment and stopped before
         // deleting it.
-        to.put(&keys[0], Bytes::from(segments[0].clone())).await.expect("put");
+        to.put(&keys[0], Bytes::from(segments[0].clone()))
+            .await
+            .expect("put");
         let migration = migrate(from, to).await.expect("migrates");
         assert_eq!(migration.moved, 3);
         assert!(from.list().await.expect("list").is_empty());
@@ -391,7 +415,9 @@ pub mod conformance {
 
         // A corrupt source segment stops the migration and stays put.
         let (bad, _) = key(9, b"expected");
-        from.put(&bad, Bytes::from_static(b"tampered")).await.expect("put");
+        from.put(&bad, Bytes::from_static(b"tampered"))
+            .await
+            .expect("put");
         assert!(migrate(from, to).await.is_err());
         assert_eq!(from.list().await.expect("list"), vec![bad]);
     }

@@ -282,6 +282,9 @@ async fn the_server_writes_nothing_outside_its_data_directory() {
             || name.starts_with("sync.sqlite3")
             || name == "logs"
             || (name.starts_with("logs/server-") && name.ends_with(".log"))
+            // The disk blob store and its temporary-file directory.
+            || name == "blobs"
+            || name == "blobs/.partial"
     };
     assert!(listed.iter().all(allowed), "unexpected files: {listed:?}");
 }

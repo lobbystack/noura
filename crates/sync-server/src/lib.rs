@@ -14,6 +14,7 @@ pub mod data;
 pub mod http;
 pub mod logs;
 pub mod postgres;
+pub mod tus;
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -69,6 +70,43 @@ pub struct Config {
     pub account_web: Option<PathBuf>,
     /// The PostgreSQL database to use instead of SQLite.
     pub postgres: Option<Postgres>,
+    /// Where blob segments live.
+    pub blob_store: BlobStoreConfig,
+}
+
+/// Where `serve` keeps blob segments (§21).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum BlobStoreConfig {
+    /// Files under the data directory's `blobs` directory.
+    #[default]
+    Disk,
+    /// An S3 bucket, at an S3-compatible endpoint when one is given, with
+    /// credentials from the standard `AWS_*` variables.
+    S3 {
+        /// The bucket.
+        bucket: String,
+        /// The endpoint of an S3-compatible service.
+        endpoint: Option<String>,
+    },
+}
+
+impl BlobStoreConfig {
+    /// Opens the store this names, for the data directory `data_dir`.
+    pub fn open(
+        &self,
+        data_dir: &std::path::Path,
+    ) -> Result<Arc<dyn blobs::SegmentStore>, CommandError> {
+        match self {
+            Self::Disk => Ok(Arc::new(
+                blobs::DiskStore::open(&data_dir.join(blobs::BLOB_DIR))
+                    .map_err(|e| CommandError(format!("can't open the blob directory: {e}")))?,
+            )),
+            Self::S3 { bucket, endpoint } => Ok(Arc::new(
+                blobs::Objects::s3(bucket, endpoint.as_deref())
+                    .map_err(|e| CommandError(format!("can't open the S3 bucket: {e}")))?,
+            )),
+        }
+    }
 }
 
 impl Config {
@@ -83,6 +121,7 @@ impl Config {
             mail: MailConfig::None,
             account_web: None,
             postgres: None,
+            blob_store: BlobStoreConfig::Disk,
         }
     }
 }
@@ -161,11 +200,23 @@ pub async fn spawn<B: Backend>(store: Arc<Store<B>>, address: &str) -> std::io::
 
 /// Serves `store` on a new listener at `address` in the background, with
 /// the account pages `accounts` builds for the origin
-/// `http://localhost:{port}`, and returns the bound address.
+/// `http://localhost:{port}` and blob segments in memory, and returns the
+/// bound address.
 pub async fn spawn_with<B: Backend>(
     store: Arc<Store<B>>,
     address: &str,
     accounts: impl FnOnce(PublicOrigin) -> Accounts,
+) -> std::io::Result<SocketAddr> {
+    spawn_with_blobs(store, address, accounts, Arc::new(blobs::Objects::memory())).await
+}
+
+/// [`spawn_with`] with blob segments in `blobs`, which several instances
+/// may share.
+pub async fn spawn_with_blobs<B: Backend>(
+    store: Arc<Store<B>>,
+    address: &str,
+    accounts: impl FnOnce(PublicOrigin) -> Accounts,
+    blobs: Arc<dyn blobs::SegmentStore>,
 ) -> std::io::Result<SocketAddr> {
     let listener = TcpListener::bind(address).await?;
     let bound = listener.local_addr()?;
@@ -174,6 +225,7 @@ pub async fn spawn_with<B: Backend>(
     let state = AppState {
         store,
         accounts: Arc::new(accounts(origin)),
+        blobs,
     };
     tokio::spawn(serve_on(state, listener, std::future::pending()));
     Ok(bound)
@@ -231,6 +283,7 @@ async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), Co
     let state = AppState {
         store: store.clone(),
         accounts: Arc::new(accounts),
+        blobs: config.blob_store.open(&config.data_dir)?,
     };
     let served = serve_on(state, listener, shutdown_signal()).await;
     pruning.abort();
@@ -239,6 +292,26 @@ async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), Co
     store.backend().close().await;
     tracing::info!("stopped");
     served.map_err(|e| CommandError(format!("the server failed: {e}")))
+}
+
+/// `sync-server blobs migrate-to-s3`: moves every segment of the data
+/// directory's disk store into the S3 bucket `target` names, checking each
+/// one's hash before it deletes the local copy. A rerun after an
+/// interruption finishes the job. Afterwards `serve` reads the bucket.
+pub async fn migrate_blobs_to_s3(
+    data_dir: &std::path::Path,
+    target: &BlobStoreConfig,
+) -> Result<blobs::Migration, CommandError> {
+    if *target == BlobStoreConfig::Disk {
+        return Err(CommandError(
+            "set NOURA_S3_BUCKET to the bucket the blobs move to".into(),
+        ));
+    }
+    let from = BlobStoreConfig::Disk.open(data_dir)?;
+    let to = target.open(data_dir)?;
+    blobs::migrate(from.as_ref(), to.as_ref())
+        .await
+        .map_err(|e| CommandError(format!("the migration stopped: {e}")))
 }
 
 /// Deletes the limiter's counts of ended windows every minute, so no count
