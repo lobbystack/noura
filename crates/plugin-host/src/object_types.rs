@@ -115,6 +115,8 @@ struct Table {
     held: BTreeMap<String, Held>,
     /// The schemas of `held`, as `workspace-format` checks them.
     schemas: ObjectTypeRegistry,
+    /// Counts the changes to `held`.
+    generation: u64,
 }
 
 impl Table {
@@ -207,6 +209,7 @@ impl ObjectTypes {
                 schema,
             },
         );
+        table.generation += 1;
         Ok(())
     }
 
@@ -219,6 +222,7 @@ impl ObjectTypes {
         }
         table.held.retain(|_, held| held.instance != instance);
         table.rebuild_schemas();
+        table.generation += 1;
     }
 
     /// The plugin that holds `object_type`.
@@ -245,6 +249,21 @@ impl ObjectTypes {
             .filter(|(_, held)| held.plugin == plugin)
             .map(|(object_type, _)| object_type.clone())
             .collect()
+    }
+
+    /// Every registered type with the plugin that holds it, sorted by type.
+    pub fn held(&self) -> Vec<(String, String)> {
+        self.read()
+            .held
+            .iter()
+            .map(|(object_type, held)| (object_type.clone(), held.plugin.clone()))
+            .collect()
+    }
+
+    /// Counts the times a type was registered or released, so a caller
+    /// can tell that the registered types or their schemas changed.
+    pub fn generation(&self) -> u64 {
+        self.read().generation
     }
 
     /// The registered schemas, for checking a write.

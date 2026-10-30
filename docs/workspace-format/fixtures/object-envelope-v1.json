@@ -1,23 +1,5 @@
 {
   "schemas": {
-    "task": {
-      "properties": [
-        { "name": "status", "kind": { "enum": ["todo", "in-progress", "done", "cancelled"] }, "default": "todo" },
-        { "name": "priority", "kind": { "enum": ["low", "medium", "high", "urgent"] }, "default": "medium" },
-        { "name": "project", "kind": { "reference": "project" }, "nullable": true },
-        { "name": "due", "kind": "date", "nullable": true },
-        { "name": "kanban_order", "kind": "string" }
-      ]
-    },
-    "project": {
-      "properties": [
-        {
-          "name": "status",
-          "kind": { "enum": ["planned", "active", "on-hold", "completed", "cancelled"] },
-          "default": "planned"
-        }
-      ]
-    },
     "recipe": {
       "properties": [
         { "name": "course", "kind": { "enum": ["starter", "main", "dessert"] }, "default": "main" },
@@ -57,28 +39,6 @@
       ]
     }
   },
-  "existing_serialization": [
-    {
-      "name": "note with an unknown property",
-      "markdown": "---\nid: note_01j00000000000000000000000\ntype: note\ncustom: kept\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Meeting notes\n\nDiscussed the release.\n"
-    },
-    {
-      "name": "dated note writes its calendar fields before unknown properties",
-      "markdown": "---\nid: note_01j00000000000000000000001\ntype: note\ndate: 2026-09-04\nstart: 2026-09-04T09:00:00+02:00\nend: 2026-09-04T10:00:00+02:00\nlocation: Office\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-28T09:15:00Z\n---\n\n# Standup\n"
-    },
-    {
-      "name": "task with every task field",
-      "markdown": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: in-progress\npriority: high\nproject: project_01j00000000000000000000000\ndue: 2026-09-04\nkanban_order: a0\nestimate: 3\ntags:\n- release\n- docs\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n"
-    },
-    {
-      "name": "task with a null project and no due date",
-      "markdown": "---\nid: task_01j00000000000000000000001\ntype: task\nstatus: todo\npriority: medium\nproject: null\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Triage inbox\n"
-    },
-    {
-      "name": "project folder note",
-      "markdown": "---\nid: project_01j00000000000000000000000\ntype: project\nstatus: active\nowner: Raphael\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Release 0.3\n\nShip the Rust app.\n"
-    }
-  ],
   "envelope": [
     {
       "name": "an object of any type keeps its ID, type, properties and body, and a heading is body text",
@@ -545,7 +505,7 @@
   ],
   "unregistered": [
     {
-      "name": "a type with no schema keeps every property as written, in the built-in order",
+      "name": "a type with no schema keeps every property as written, sorted by key",
       "registry": "schemas",
       "markdown": "---\nid: invoice_01j00000000000000000000000\ntype: invoice\nstatus: later\ndue: tomorrow\namount: '12.50'\nlines:\n- item: Paper\n  count: 2\npaid: null\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# March invoice\n",
       "properties": {
@@ -555,10 +515,10 @@
         "lines": [{ "item": "Paper", "count": 2 }],
         "paid": null
       },
-      "canonical": "---\nid: invoice_01j00000000000000000000000\ntype: invoice\nstatus: later\ndue: tomorrow\namount: '12.50'\nlines:\n- count: 2\n  item: Paper\npaid: null\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# March invoice\n"
+      "canonical": "---\nid: invoice_01j00000000000000000000000\ntype: invoice\namount: '12.50'\ndue: tomorrow\nlines:\n- count: 2\n  item: Paper\npaid: null\nstatus: later\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# March invoice\n"
     },
     {
-      "name": "a task file stays a managed object in today's order when no task schema is registered",
+      "name": "a task file stays a managed object with every property when the Tasks plugin is off",
       "registry": "empty",
       "markdown": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: later\npriority: 1\ndue: tomorrow\nproject: project_not-an-id\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Plugin turned off\n",
       "properties": {
@@ -567,7 +527,19 @@
         "due": "tomorrow",
         "project": "project_not-an-id"
       },
-      "canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: later\npriority: 1\nproject: project_not-an-id\ndue: tomorrow\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Plugin turned off\n"
+      "canonical": "---\nid: task_01j00000000000000000000000\ntype: task\ndue: tomorrow\npriority: 1\nproject: project_not-an-id\nstatus: later\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Plugin turned off\n"
+    },
+    {
+      "name": "a dated note keeps its dates as ordinary properties, sorted by key",
+      "registry": "empty",
+      "markdown": "---\nid: note_01j00000000000000000000001\ntype: note\ndate: 2026-09-04\nstart: 2026-09-04T09:00:00+02:00\nend: 2026-09-04T10:00:00+02:00\nlocation: Office\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-28T09:15:00Z\n---\n\n# Standup\n",
+      "properties": {
+        "date": "2026-09-04",
+        "start": "2026-09-04T09:00:00+02:00",
+        "end": "2026-09-04T10:00:00+02:00",
+        "location": "Office"
+      },
+      "canonical": "---\nid: note_01j00000000000000000000001\ntype: note\ndate: 2026-09-04\nend: 2026-09-04T10:00:00+02:00\nlocation: Office\nstart: 2026-09-04T09:00:00+02:00\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-28T09:15:00Z\n---\n\n# Standup\n"
     }
   ],
   "malformed": [
@@ -647,21 +619,6 @@
       "name": "a declared value that breaks the schema is still written as it is",
       "markdown": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nservings: many\n---\n\n# Feast\n",
       "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\nservings: many\n---\n\n# Feast\n"
-    },
-    {
-      "name": "a task schema declared in today's field order writes today's task order",
-      "markdown": "---\nid: task_01j00000000000000000000000\ntype: task\ndue: 2026-09-04\ncustom: kept\nproject: project_01j00000000000000000000000\npriority: high\nstatus: in-progress\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n",
-      "canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: in-progress\npriority: high\nproject: project_01j00000000000000000000000\ndue: 2026-09-04\ncustom: kept\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n"
-    },
-    {
-      "name": "a declared kanban_order comes before an unknown key that sorts ahead of it, as today",
-      "markdown": "---\nid: task_01j00000000000000000000000\ntype: task\nestimate: 3\nkanban_order: a0\npriority: low\nstatus: todo\n---\n\n# Sort the board\n",
-      "canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: todo\npriority: low\nkanban_order: a0\nestimate: 3\n---\n\n# Sort the board\n"
-    },
-    {
-      "name": "a built-in key that the task schema doesn't declare sorts with the unknown keys, unlike today",
-      "markdown": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: todo\npriority: low\ndate: 2026-09-04\ncustom: kept\n---\n\n# Plan the day\n",
-      "canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: todo\npriority: low\ncustom: kept\ndate: 2026-09-04\n---\n\n# Plan the day\n"
     }
   ],
   "line_separators": [
@@ -800,33 +757,6 @@
       "properties": { "a\u0085b": "v" },
       "updated": null,
       "canonical": "---\nid: recipe_01j00000000000000000000000\ntype: recipe\n? \"a\\Nb\"\n: v\n---\n\n# Pasta\n"
-    }
-  ],
-  "task_schema_differences": [
-    {
-      "name": "a due date that isn't a string",
-      "properties": { "due": 5 },
-      "schema_error": { "code": "wrong_type", "property": "due" }
-    },
-    {
-      "name": "a due value that is a boolean",
-      "properties": { "due": true },
-      "schema_error": { "code": "wrong_type", "property": "due" }
-    },
-    {
-      "name": "a project reference that isn't a string",
-      "properties": { "project": 5 },
-      "schema_error": { "code": "wrong_type", "property": "project" }
-    },
-    {
-      "name": "a project reference that is a list",
-      "properties": { "project": ["project_01j00000000000000000000000"] },
-      "schema_error": { "code": "wrong_type", "property": "project" }
-    },
-    {
-      "name": "a kanban_order that isn't a string",
-      "properties": { "kanban_order": 5 },
-      "schema_error": { "code": "wrong_type", "property": "kanban_order" }
     }
   ],
   "caller_bodies": [

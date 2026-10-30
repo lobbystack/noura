@@ -5,10 +5,11 @@
 //! non-increasing end makes it a point. Entries order by start, then
 //! title, stable ID and property.
 //!
-//! The calendar cases of the shared `queries-v1` fixture, which the
-//! kernel's index answers today, give the same answers through the
-//! plugin's day view in UTC. The fixture's one invalid range has no view:
-//! the plugin's own tests check it against its range rules.
+//! The calendar cases of the plugin's fixture, which the kernel's index
+//! answered before the kernel dropped its calendar query, give the same
+//! answers over the shared `queries-v1` files through the plugin's day
+//! view in UTC. The fixture's one invalid range has no view: the plugin's
+//! own tests check it against its range rules.
 
 mod support;
 
@@ -19,6 +20,9 @@ use support::{
 };
 
 const QUERIES: &str = include_str!("../../../docs/workspace-format/fixtures/queries-v1.json");
+
+/// The Calendar plugin's calendar cases over the files of `QUERIES`.
+const CALENDAR: &str = include_str!("../../plugins/calendar/fixtures/calendar-v1.json");
 
 /// An object's file of type `object_type` with the stable ID suffix
 /// `suffix` and `properties` as frontmatter lines.
@@ -134,7 +138,7 @@ fn any_objects_dates_become_entries_and_bad_values_drop_the_entry_or_make_it_a_p
 }
 
 #[test]
-fn the_queries_v1_calendar_cases_give_the_same_answers_through_the_plugin() {
+fn the_fixtures_calendar_cases_give_the_kernels_answers_through_the_plugin() {
     let fixture: Value = serde_json::from_str(QUERIES).unwrap();
     let files: Vec<(&str, &[u8])> = fixture["files"]
         .as_array()
@@ -156,8 +160,9 @@ fn the_queries_v1_calendar_cases_give_the_same_answers_through_the_plugin() {
     };
     show(&mut app, "day");
 
+    let calendar: Value = serde_json::from_str(CALENDAR).unwrap();
     let mut checked = 0;
-    for case in fixture["calendarQueries"].as_array().unwrap() {
+    for case in calendar["queries"].as_array().unwrap() {
         if case.get("error").is_some() {
             continue;
         }

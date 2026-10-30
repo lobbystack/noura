@@ -20,3 +20,7 @@ serde_json.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# The generic validator and serializer that check the project type's
+# fixture against the schema the plugin declares, and the file name rules
+# the plugin follows. Tests only: the plugin reaches files through the host.
+workspace-format = { version = "0.2.0", path = "../../workspace-format" }

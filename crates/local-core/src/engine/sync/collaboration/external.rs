@@ -85,7 +85,7 @@ impl WorkspaceEngine {
             markdown::parse_markdown(path, &prior_bytes),
             markdown::parse_markdown(path, &actual),
         ) {
-            (ParsedMarkdown::Managed(prior), ParsedMarkdown::Managed(mut target)) => {
+            (ParsedMarkdown::Managed(prior), ParsedMarkdown::Managed(target)) => {
                 if target.id != prior.id
                     || target.object_type != prior.object_type
                     || target.created != prior.created
@@ -93,15 +93,6 @@ impl WorkspaceEngine {
                     self.collaboration_record_external_review(
                         &state,
                         "protected_metadata_changed",
-                        Some(&actual),
-                    )?;
-                    return Ok(true);
-                }
-                if normalize_domain_properties(&target.object_type, &mut target.properties).is_err()
-                {
-                    self.collaboration_record_external_review(
-                        &state,
-                        "invalid_external_metadata",
                         Some(&actual),
                     )?;
                     return Ok(true);

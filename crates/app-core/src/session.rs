@@ -16,7 +16,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, Weak},
 };
 
-use local_core::ChangeCounts;
+use local_core::{ChangeCounts, WorkspaceEngine};
 
 use crate::{
     AppError, FileTree, PendingWrites, PluginTool, Preferences, Problem, System, Updates,
@@ -25,6 +25,7 @@ use crate::{
     app::{Change, Listeners},
     links::LinkFiles,
     plugins::{Plugins, SystemClock},
+    problems,
     remote_images::RemoteImages,
     view_state::{StoredView, StoredWindow, ViewStore},
     watch::{Rescans, Snapshot, Update, Watch},
@@ -497,13 +498,29 @@ impl Session {
         }
     }
 
+    /// `listed`, the problems a listing of `engine`'s workspace found,
+    /// with the objects whose properties don't fit the schema of the
+    /// running plugin that holds their type.
+    pub(crate) fn problems_with_schemas(
+        &self,
+        engine: &WorkspaceEngine,
+        listed: &[Problem],
+    ) -> Vec<Problem> {
+        // The plugins stay locked only while their types are copied, so
+        // the index read never holds up a window.
+        let (types, names) = self.plugins().type_owners();
+        problems::with_schema(listed, problems::schema(engine, &types, &names))
+    }
+
     /// The window `key` listed the files again as `snapshot`, shown as
     /// `tree`, when the engine's change counts were `counts`, after the
-    /// item at `moved.0` moved to `moved.1`. The other windows wake to
-    /// show it, and the watch thread compares its next listings with it.
-    /// Returns the listing version the window shows. When the watch thread
-    /// published a newer listing meanwhile, the session keeps that one, and
-    /// the window wakes to show it too.
+    /// item at `moved.0` moved to `moved.1`. `problems` are the listing's,
+    /// with the schema problems of [`Self::problems_with_schemas`]. The
+    /// other windows wake to show it, and the watch thread compares its
+    /// next listings with it. Returns the listing version the window
+    /// shows. When the watch thread published a newer listing meanwhile,
+    /// the session keeps that one, and the window wakes to show it too.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn publish_listing(
         &self,
         key: WindowKey,
@@ -511,6 +528,7 @@ impl Session {
         tree: &FileTree,
         moved: Option<(&str, &str)>,
         snapshot: &Snapshot,
+        problems: &[Problem],
         counts: ChangeCounts,
     ) -> u64 {
         let mut state = self.lock();
@@ -522,7 +540,7 @@ impl Session {
         if newest {
             state.tree = Some(tree.clone());
             self.link_files.list(tree, snapshot);
-            state.problems.clone_from(&snapshot.problems);
+            state.problems = problems.to_vec();
             state.recent.clone_from(&snapshot.recent);
             state.counts = counts;
         }
@@ -559,6 +577,7 @@ impl Session {
         opening: u64,
     ) -> Option<Watch> {
         let session: Weak<Self> = Arc::downgrade(self);
+        let engine = workspace.shared_engine();
         Watch::start(
             workspace.shared_engine(),
             workspace.root().to_owned(),
@@ -568,7 +587,7 @@ impl Session {
             Box::new(move |update| {
                 session
                     .upgrade()
-                    .is_some_and(|session| session.publish_watch(opening, update))
+                    .is_some_and(|session| session.publish_watch(opening, update, &engine))
             }),
         )
     }
@@ -576,8 +595,10 @@ impl Session {
     /// The watch thread listed the files of the workspace opening
     /// `opening` again after a change. Every window wakes and hears who
     /// made the change; the listing replaces the session's unless that is
-    /// newer. Returns false once that workspace has closed.
-    fn publish_watch(&self, opening: u64, update: Update) -> bool {
+    /// newer, with the schema problems of `engine`'s objects beside its
+    /// own. Returns false once that workspace has closed.
+    fn publish_watch(&self, opening: u64, update: Update, engine: &WorkspaceEngine) -> bool {
+        let problems = self.problems_with_schemas(engine, &update.snapshot.problems);
         let mut state = self.lock();
         if opening != state.opening {
             return false;
@@ -586,7 +607,7 @@ impl Session {
             state.listing += 1;
             self.link_files.list(&update.tree, &update.snapshot);
             state.tree = Some(update.tree);
-            state.problems = update.snapshot.problems;
+            state.problems = problems;
             state.recent = update.snapshot.recent;
             state.counts = update.counts;
         }
