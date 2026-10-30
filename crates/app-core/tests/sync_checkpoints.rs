@@ -716,3 +716,45 @@ async fn an_approved_device_bootstraps_only_from_its_anchor_or_a_descendant() {
         sync_a.latest_checkpoint().map(|c| c.body.number)
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bootstrap_refuses_a_live_operation_at_another_log_position() {
+    use sync_protocol::codec::{Encode, List};
+    use sync_protocol::messages::LiveResponse;
+
+    let Bootstrap {
+        sync_a,
+        proxy,
+        mut service,
+        mut b,
+        ..
+    } = bootstrap_setup().await;
+    // The server places one live operation one sequence earlier for this
+    // device than the checkpoint's root committed to.
+    proxy.tamper(Box::new(|path, body| {
+        if !path.ends_with("/live") {
+            return body;
+        }
+        let mut response = LiveResponse::from_bytes(&body).expect("a live page");
+        let mut entries = response.entries.0;
+        if let Some(entry) = entries.iter_mut().find(|e| e.seq > 1) {
+            entry.seq -= 1;
+        }
+        response.entries = List(entries);
+        response.to_bytes()
+    }));
+    let mut sync_b = app_core::sync::workspace::WorkspaceSync::download(
+        &mut service,
+        b.engine.clone(),
+        sync_a.workspace(),
+        &mut b.registry,
+    )
+    .await
+    .expect("the download starts");
+    let error = sync_b.round(&mut service, 0).await.expect_err("refused");
+    assert!(
+        matches!(error, SyncError::Check("sync_manifest_mismatch")),
+        "{error:?}"
+    );
+    assert!(b.files().is_empty(), "nothing installs");
+}
