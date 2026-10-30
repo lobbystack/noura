@@ -1141,17 +1141,18 @@ impl WorkspaceSync {
             .keys
             .get(&epoch.body.epoch)
             .ok_or(SyncError::Check("sync_key_mismatch"))?;
-        let head = self
-            .state
+        let (policy_revision, policy_head) = self
+            .remote
+            .as_ref()
+            .ok_or(SyncError::Check("sync_workspace_unverified"))?
             .policy
-            .last()
-            .ok_or(SyncError::Check("sync_workspace_unverified"))?;
+            .head();
         let mut profile = Profile {
             workspace: self.state.workspace,
             profile_revision: latest + 1,
             epoch: epoch.body.epoch,
-            policy_revision: head.body.revision,
-            policy_head: head.digest(),
+            policy_revision,
+            policy_head,
             signer: self.credentials.keys.device(),
             nonce: Nonce::ZERO,
             ciphertext: Bytes(Vec::new()),
@@ -2701,12 +2702,7 @@ impl WorkspaceSync {
         }
         let workspace = self.state.workspace;
         let answered = if wait_seconds == 0 {
-            Some(
-                service
-                    .client()
-                    .pull(workspace, cursors.clone(), 0)
-                    .await?,
-            )
+            Some(service.client().pull(workspace, cursors.clone(), 0).await?)
         } else {
             let request = service
                 .client()

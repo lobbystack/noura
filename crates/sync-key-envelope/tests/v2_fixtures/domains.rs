@@ -62,9 +62,7 @@ fn roots(f: &mut Fixture, domain: sync_protocol::types::Id) {
             "live": live,
         })
     };
-    let root = |folder: &str, domain: sync_protocol::types::Id, rid: sync_protocol::types::Id| {
-        json!({"folder": folder, "domain": domain.to_hex(), "rid": rid.to_hex()})
-    };
+    let root = |folder: &str, domain: sync_protocol::types::Id, rid: sync_protocol::types::Id| json!({"folder": folder, "domain": domain.to_hex(), "rid": rid.to_hex()});
     let team = state("Team/.noura-domain");
     let cases: Vec<(&str, Vec<serde_json::Value>, Vec<serde_json::Value>)> = vec![
         (
@@ -111,12 +109,24 @@ fn roots(f: &mut Fixture, domain: sync_protocol::types::Id) {
         ),
         (
             "a_marker_at_another_name_is_no_root",
-            vec![marker(early, early_rid, 3, true, vec![state("Team/notes.md")])],
+            vec![marker(
+                early,
+                early_rid,
+                3,
+                true,
+                vec![state("Team/notes.md")],
+            )],
             vec![],
         ),
         (
             "a_marker_at_the_workspace_root_is_no_root",
-            vec![marker(early, early_rid, 3, true, vec![state(".noura-domain")])],
+            vec![marker(
+                early,
+                early_rid,
+                3,
+                true,
+                vec![state(".noura-domain")],
+            )],
             vec![],
         ),
         (
@@ -128,7 +138,13 @@ fn roots(f: &mut Fixture, domain: sync_protocol::types::Id) {
             "an_earlier_root_evicts_a_later_marker_inside_it",
             vec![
                 marker(early, early_rid, 3, true, vec![team.clone()]),
-                marker(late, late_rid, 5, true, vec![state("Team/Pay/.noura-domain")]),
+                marker(
+                    late,
+                    late_rid,
+                    5,
+                    true,
+                    vec![state("Team/Pay/.noura-domain")],
+                ),
             ],
             vec![root("Team", early, early_rid)],
         ),
@@ -143,7 +159,13 @@ fn roots(f: &mut Fixture, domain: sync_protocol::types::Id) {
         (
             "a_later_domains_root_may_hold_an_earlier_one",
             vec![
-                marker(early, early_rid, 3, true, vec![state("Team/Pay/.noura-domain")]),
+                marker(
+                    early,
+                    early_rid,
+                    3,
+                    true,
+                    vec![state("Team/Pay/.noura-domain")],
+                ),
                 marker(late, late_rid, 5, true, vec![team.clone()]),
             ],
             vec![
@@ -161,7 +183,11 @@ fn roots(f: &mut Fixture, domain: sync_protocol::types::Id) {
         root("Team/Pay", early, early_rid),
     ];
     for (name, path, expect) in [
-        ("a_file_outside_every_root_goes_to_the_workspace_domain", "Plan.md", None),
+        (
+            "a_file_outside_every_root_goes_to_the_workspace_domain",
+            "Plan.md",
+            None,
+        ),
         ("a_new_file_goes_to_its_root", "Team/Plan.md", Some(late)),
         (
             "a_new_file_goes_to_the_innermost_root",
@@ -276,7 +302,11 @@ fn roots(f: &mut Fixture, domain: sync_protocol::types::Id) {
             vec!["..noura-domain.icloud"],
             true,
         ),
-        ("an_ordinary_file_doesnt", vec!["Plan.md", ".DS_Store"], false),
+        (
+            "an_ordinary_file_doesnt",
+            vec!["Plan.md", ".DS_Store"],
+            false,
+        ),
     ] {
         f.case(json!({
             "kind": "marker_present",

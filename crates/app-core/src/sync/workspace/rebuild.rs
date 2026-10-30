@@ -26,8 +26,8 @@ use super::{SyncError, SyncService, WorkspaceSync, core, profile_of};
 use crate::sync::journal::{self, Journal, STATE_FILE};
 use crate::sync::registry::Registry;
 
-pub use sync_protocol::matching::MARKER;
 use sync_protocol::matching::HeldRoot;
+pub use sync_protocol::matching::MARKER;
 /// The listing of an archived review store.
 const ARCHIVE_INDEX: &str = "archive.json";
 

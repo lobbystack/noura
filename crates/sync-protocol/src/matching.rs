@@ -326,9 +326,12 @@ pub fn bootstrap_held_roots(domain: Id, paths: &[String]) -> Vec<HeldRoot> {
 /// Whether a folder whose entries bear `names` holds its marker: an iCloud
 /// placeholder counts as present (§9).
 pub fn marker_present<'a>(names: impl IntoIterator<Item = &'a str>) -> bool {
-    names
-        .into_iter()
-        .any(|name| matches!(name, MARKER | ".noura-domain.icloud" | "..noura-domain.icloud"))
+    names.into_iter().any(|name| {
+        matches!(
+            name,
+            MARKER | ".noura-domain.icloud" | "..noura-domain.icloud"
+        )
+    })
 }
 
 /// The held roots a folder that syncs without its journal records (§9):

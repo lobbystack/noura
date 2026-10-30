@@ -293,14 +293,18 @@ impl WorkspaceSync {
         let Some(active) = self.active else {
             return Ok(());
         };
-        let marker = self.state.policy.iter().find_map(|change| match &change.body.kind {
-            PolicyKind::CreateDomain {
-                domain: d,
-                marker_rid,
-                ..
-            } if *d == domain => Some(*marker_rid),
-            _ => None,
-        });
+        let marker = self
+            .state
+            .policy
+            .iter()
+            .find_map(|change| match &change.body.kind {
+                PolicyKind::CreateDomain {
+                    domain: d,
+                    marker_rid,
+                    ..
+                } if *d == domain => Some(*marker_rid),
+                _ => None,
+            });
         let Some(rid) = marker else {
             return Ok(());
         };
@@ -332,9 +336,10 @@ impl WorkspaceSync {
                 remote.epochs.get(op.body.epoch),
                 self.keys.get(&op.body.epoch),
             ) {
-                (Some(epoch), Some(key)) => {
-                    op.body.open_payload(key, &epoch.digest, OpClass::State).ok()
-                }
+                (Some(epoch), Some(key)) => op
+                    .body
+                    .open_payload(key, &epoch.digest, OpClass::State)
+                    .ok(),
                 _ => None,
             };
             let content = payload.and_then(|p| super::carried(&p, &mut BTreeMap::new()));

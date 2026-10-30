@@ -413,11 +413,15 @@ pub struct Proxy {
     requests: Arc<Mutex<Vec<Captured>>>,
     /// Every response body and realtime frame the proxy passed on, with
     /// the path it answered or `frame`.
-    received: Arc<Mutex<Vec<(String, Vec<u8>)>>>,
+    received: Received,
     frames: Arc<Mutex<Option<FrameTamper>>>,
     pings: Arc<AtomicUsize>,
     closing: tokio::sync::watch::Sender<u64>,
 }
+
+/// The response bodies and frames a proxy passed on, each with the path it
+/// answered or `frame`.
+type Received = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 
 /// One request a proxy received.
 #[derive(Clone, Debug)]
@@ -438,7 +442,7 @@ async fn bridge(
     frames: Arc<Mutex<Option<FrameTamper>>>,
     pings: Arc<AtomicUsize>,
     mut closing: tokio::sync::watch::Receiver<u64>,
-    received: Arc<Mutex<Vec<(String, Vec<u8>)>>>,
+    received: Received,
 ) {
     use axum::extract::ws::Message as Client;
     use futures::{SinkExt, StreamExt};
@@ -540,7 +544,7 @@ impl Proxy {
         let frames: Arc<Mutex<Option<FrameTamper>>> = Arc::new(Mutex::new(None));
         let pings = Arc::new(AtomicUsize::new(0));
         let (closing, _) = tokio::sync::watch::channel(0u64);
-        let received: Arc<Mutex<Vec<(String, Vec<u8>)>>> = Arc::new(Mutex::new(Vec::new()));
+        let received: Received = Arc::new(Mutex::new(Vec::new()));
         let recording = received.clone();
         let bridged = (frames.clone(), pings.clone(), closing.clone());
         let http = reqwest::Client::new();

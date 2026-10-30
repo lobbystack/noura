@@ -1061,8 +1061,7 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
         }
 
         "valid_roots" => {
-            let markers: Vec<MarkerView> =
-                serde_json::from_value(case["markers"].clone()).unwrap();
+            let markers: Vec<MarkerView> = serde_json::from_value(case["markers"].clone()).unwrap();
             same(
                 serde_json::to_value(valid_roots(&markers)).unwrap(),
                 expect.clone(),
@@ -1071,10 +1070,7 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
         "new_file_domain" => {
             let roots: Vec<RecordedRoot> = serde_json::from_value(case["roots"].clone()).unwrap();
             let domain: Option<Id> = serde_json::from_value(expect.clone()).unwrap();
-            same(
-                domain_of(case["path"].as_str().unwrap(), &roots),
-                domain,
-            )
+            same(domain_of(case["path"].as_str().unwrap(), &roots), domain)
         }
         "marker_allowed" => {
             let roots: Vec<RecordedRoot> = serde_json::from_value(case["roots"].clone()).unwrap();
@@ -1085,8 +1081,7 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
         }
         "placement" => {
             let roots: Vec<RecordedRoot> = serde_json::from_value(case["roots"].clone()).unwrap();
-            let domain: Option<Id> =
-                serde_json::from_value(case["object_domain"].clone()).unwrap();
+            let domain: Option<Id> = serde_json::from_value(case["object_domain"].clone()).unwrap();
             same(
                 serde_json::to_value(placement(case["path"].as_str().unwrap(), domain, &roots))
                     .unwrap(),

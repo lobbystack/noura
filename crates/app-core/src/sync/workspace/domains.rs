@@ -324,17 +324,28 @@ impl WorkspaceSync {
         }
         roots.sort_by(|a, b| a.folder.cmp(&b.folder));
         self.state.roots = roots;
+        // A marker you moved away from its root leaves the synced marker
+        // valid, but the hold stands until the file is back (§9).
         let covering: Vec<DomainRoot> = valid
             .iter()
+            .filter(|root| !self.marker_moved_away(root))
             .map(|root| DomainRoot {
                 folder: root.folder.clone(),
                 domain: root.domain,
             })
             .collect();
+        // An iCloud placeholder can't name its domain, but at a valid root
+        // it counts as that root's marker.
+        let placeholders: Vec<String> = covering
+            .iter()
+            .filter(|root| !self.names_in(&root.folder).iter().any(|n| n == MARKER))
+            .map(|root| root.folder.clone())
+            .collect();
         let before = self.state.held_roots.len();
-        self.state
-            .held_roots
-            .retain(|held| !hold_ends(held, &covering));
+        self.state.held_roots.retain(|held| {
+            !hold_ends(held, &covering)
+                && !(held.domain.is_none() && placeholders.contains(&held.folder))
+        });
         self.rematch |= self.state.held_roots.len() != before;
         Ok(())
     }
@@ -449,8 +460,7 @@ impl WorkspaceSync {
             .get(&own)
             .map(|m| m.head.clone())
             .ok_or(SyncError::Check("sync_policy_unauthorized"))?;
-        let mut access: BTreeMap<Id, Level> =
-            grants.iter().map(|a| (a.account, a.level)).collect();
+        let mut access: BTreeMap<Id, Level> = grants.iter().map(|a| (a.account, a.level)).collect();
         access.insert(own, Level::Manage);
         let access = Sorted::new(
             access
@@ -703,6 +713,24 @@ impl WorkspaceSync {
             })
     }
 
+    /// The names in `folder` on disk.
+    fn names_in(&self, folder: &str) -> Vec<String> {
+        std::fs::read_dir(self.engine.root().join(folder))
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Whether `root`'s marker file left its folder for another one.
+    fn marker_moved_away(&self, root: &RecordedRoot) -> bool {
+        !marker_present(self.names_in(&root.folder).iter().map(String::as_str))
+            && self.moved_marker(root).is_some()
+    }
+
     /// Looks after each recorded root's marker file (§9): one that moved
     /// with its folder is signed at its new path, so the domain moves with
     /// it, unless that takes in another domain's files or the root is held,
@@ -718,15 +746,7 @@ impl WorkspaceSync {
                 .held_roots
                 .iter()
                 .any(|h| h.domain == Some(root.domain));
-            let folder = self.engine.root().join(&root.folder);
-            let names: Vec<String> = std::fs::read_dir(&folder)
-                .map(|entries| {
-                    entries
-                        .flatten()
-                        .filter_map(|e| e.file_name().to_str().map(str::to_owned))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let names = self.names_in(&root.folder);
             if !marker_present(names.iter().map(String::as_str)) {
                 match self.moved_marker(&root) {
                     Some(moved) if !held => {
