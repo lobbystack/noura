@@ -2572,11 +2572,12 @@ impl WorkspaceSync {
             }
         }
         let extra = self.fetch_hidden_checkpoints(service, &page).await?;
-        let checked = match self.judge_page(service, &page, &extra).await? {
+        let mut checked = match self.judge_page(service, &page, &extra).await? {
             Some(checked) => checked,
             None => return Ok((0, true)),
         };
         let fetched = self.fetch_blobs(service, &checked).await?;
+        let walks = std::mem::take(&mut checked.walks);
         let applied = self.apply(checked, fetched);
         self.clear_downloads();
         let applied = applied?;
@@ -2586,6 +2587,10 @@ impl WorkspaceSync {
                 self.settle(rid, &BTreeMap::new())?;
             }
         }
+        for (digest, at, own) in walks {
+            let differing = self.walk_manifest(service, at, &own).await;
+            self.state.log.checkpoints.set_differing(&digest, differing);
+        }
         self.state.log.cursor = page.complete_through;
         self.state.log.checkpoints.due = page.checkpoint_due;
         self.state.log.head = self.state.log.head.max(page.head);
@@ -2593,6 +2598,60 @@ impl WorkspaceSync {
         self.state.log.retention_floor = self.state.log.retention_floor.max(page.retention_floor);
         self.save()?;
         Ok((applied, false))
+    }
+
+    /// Walks the server's manifest at `at` against the device's own to
+    /// find the objects whose leaves differ (§17): the bucket hashes first,
+    /// then the leaf refs of each bucket that differs. A server that can't
+    /// serve the manifest leaves the list empty.
+    async fn walk_manifest(
+        &mut self,
+        service: &mut SyncService,
+        at: u64,
+        own: &sync_protocol::manifest::Manifest,
+    ) -> Vec<Id> {
+        let (workspace, domain) = (self.state.workspace, self.state.domain);
+        let Ok(theirs) = service
+            .client()
+            .manifest_buckets(workspace, domain, at)
+            .await
+        else {
+            return Vec::new();
+        };
+        let mine = own.bucket_hashes();
+        let mut differing = BTreeSet::new();
+        for (index, (a, b)) in mine.iter().zip(theirs.buckets.iter()).enumerate() {
+            if a == b {
+                continue;
+            }
+            let index = index as u16;
+            let mut leaves: BTreeMap<Id, Vec<sync_protocol::records::Ref>> = BTreeMap::new();
+            let mut after = None;
+            loop {
+                let Ok(page) = service
+                    .client()
+                    .manifest_leaves(workspace, domain, at, index, after.as_ref())
+                    .await
+                else {
+                    break;
+                };
+                for leaf in page.leaves.iter() {
+                    leaves.entry(leaf.rid).or_default().push(leaf.op.clone());
+                }
+                match page.next {
+                    Some(next) => after = Some(next),
+                    None => break,
+                }
+            }
+            let ours: BTreeMap<Id, Vec<sync_protocol::records::Ref>> =
+                own.bucket_leaves(index).into_iter().collect();
+            for rid in ours.keys().chain(leaves.keys()) {
+                if ours.get(rid) != leaves.get(rid) {
+                    differing.insert(*rid);
+                }
+            }
+        }
+        differing.into_iter().collect()
     }
 
     /// Fetches by digest the checkpoints a page's entries show the log
@@ -2784,6 +2843,7 @@ impl WorkspaceSync {
             }
         }
         let mut records = Vec::new();
+        let mut walks = Vec::new();
         // The checkpoints fetched by digest go in before the entry that
         // named them, oldest first, as if the page had carried them (§17).
         let entries = page.entries.iter().enumerate().flat_map(|(i, entry)| {
@@ -2857,6 +2917,12 @@ impl WorkspaceSync {
                                 "a checkpoint failed its checks"
                             );
                             log.checkpoints.fail(record, code);
+                            if code == "sync_manifest_mismatch" {
+                                let own = log.checkpoints.own_manifest(bundle, &log.live);
+                                if own.root() != record.body.manifest_root {
+                                    walks.push((record.digest(), record.body.covered_seq, own));
+                                }
+                            }
                         }
                     }
                     log.checkpoints.reach(record, entry.seq);
@@ -2887,14 +2953,18 @@ impl WorkspaceSync {
         {
             return Err(SyncError::Check("sync_chain_gap"));
         }
-        Ok(Some(Checked { log, records }))
+        Ok(Some(Checked {
+            log,
+            records,
+            walks,
+        }))
     }
 
     /// Applies a checked page: records each state in the journal, then
     /// brings each touched object's file in line with its live set.
     fn apply(&mut self, checked: Checked, fetched: Bodies) -> Result<usize, SyncError> {
         let own = self.credentials.keys.device();
-        let Checked { log, records } = checked;
+        let Checked { log, records, .. } = checked;
         self.state.log = log;
         let mut touched: Vec<Id> = Vec::new();
         let mut contents: Bodies = fetched;
@@ -3205,6 +3275,9 @@ struct CheckedRecord {
 struct Checked {
     log: Log,
     records: Vec<CheckedRecord>,
+    /// Checkpoints whose root differs from the device's own manifest at
+    /// their `covered_seq`, which the device then walks (§17).
+    walks: Vec<(Digest, u64, sync_protocol::manifest::Manifest)>,
 }
 
 /// Serves chain positions the device fetched, and notes the ones it

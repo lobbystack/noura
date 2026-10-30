@@ -252,10 +252,7 @@ impl Checkpoints {
             }
         }
         // The client's own live set and heads.
-        let manifest = Manifest::new(
-            self.live_with_floor(live, c.floor, c.covered_seq)
-                .leaves_at(c.covered_seq),
-        );
+        let manifest = self.own_manifest(bundle, live);
         if manifest.root() != c.manifest_root || manifest.live_objects() != c.live_objects {
             return Err("sync_manifest_mismatch");
         }
@@ -272,6 +269,23 @@ impl Checkpoints {
             return Err("sync_manifest_mismatch");
         }
         Ok(())
+    }
+
+    /// The client's own manifest at a checkpoint's `covered_seq`, with the
+    /// lone deletes its `floor` drops left out.
+    pub fn own_manifest(&self, bundle: &CheckpointBundle, live: &LiveSet) -> Manifest {
+        let c = &bundle.checkpoint.0.body;
+        Manifest::new(
+            self.live_with_floor(live, c.floor, c.covered_seq)
+                .leaves_at(c.covered_seq),
+        )
+    }
+
+    /// Records the objects a root mismatch found differing.
+    pub fn set_differing(&mut self, digest: &Digest, differing: Vec<Id>) {
+        if let Some(failure) = self.failures.iter_mut().find(|f| f.digest == *digest) {
+            failure.differing = differing;
+        }
     }
 
     /// Records a checkpoint the client reached at entry `seq`.

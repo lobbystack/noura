@@ -228,3 +228,137 @@ async fn a_checkpoint_that_fails_is_reported_and_holds_nothing() {
     until_checkpoint(&mut pair, 2, "next").await;
     assert_eq!(pair.sync_a.checkpoint_failures().len(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_root_mismatch_walks_the_tree_to_the_differing_objects() {
+    use std::sync::{Arc, Mutex};
+    use sync_protocol::codec::{Encode, List, Nested, Sorted};
+    use sync_protocol::manifest::{bucket_hash, leaf_hash, root_of_buckets};
+    use sync_protocol::messages::{LeafRef, ManifestBucketsResponse, ManifestLeavesResponse};
+    use sync_protocol::records::{CheckpointBundle, Ref, Signed};
+    use sync_protocol::types::{Digest, Id};
+
+    let mut pair = pair_with_checkpoints(6).await;
+    // Only the desktop signs, and the laptop pulls nothing meanwhile.
+    pair.sync_a
+        .set_checkpoint_wait(Duration::from_secs(1 << 40));
+    for i in 0..40 {
+        if pair.sync_b.latest_checkpoint().is_some() {
+            break;
+        }
+        pair.b.write(&format!("d{i}.md"), b"# Desktop\n");
+        pair.sync_b
+            .round(&mut pair.desktop.service, 0)
+            .await
+            .expect("a round on the desktop");
+    }
+    let real = pair.sync_b.latest_checkpoint().expect("accepted").clone();
+    let (workspace, domain) = (pair.sync_b.workspace(), pair.sync_b.domain());
+    let buckets = pair
+        .desktop
+        .service
+        .client()
+        .manifest_buckets(workspace, domain, real.body.covered_seq)
+        .await
+        .expect("the buckets")
+        .buckets
+        .0;
+    // A server that claims an object the log never carried, in a bucket
+    // that is empty in truth.
+    let (index, rid) = (0u16..4096)
+        .find_map(|i| {
+            (buckets[usize::from(i)] == bucket_hash(i, &[])).then(|| {
+                (
+                    i,
+                    Id([
+                        (i >> 4) as u8,
+                        ((i & 15) << 4) as u8,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        9,
+                    ]),
+                )
+            })
+        })
+        .expect("an empty bucket");
+    let fake = Ref {
+        device: pair.desktop.credentials.keys.device(),
+        counter: 999,
+        seq: 1,
+        op_digest: Digest([7; 32]),
+    };
+    let mut fake_buckets = buckets.clone();
+    fake_buckets[usize::from(index)] = bucket_hash(index, &[leaf_hash(&rid, &[fake.clone()])]);
+    let mut body = real.body.clone();
+    body.manifest_root = root_of_buckets(&fake_buckets);
+    body.live_objects += 1;
+    let forged = Signed::sign(body, pair.desktop.credentials.keys.signing());
+    let forged_digest = forged.digest();
+    let slot = Arc::new(Mutex::new(Some(forged)));
+    let leaf = LeafRef {
+        rid,
+        op: fake.clone(),
+    };
+    pair.proxy.tamper(Box::new(move |path, body| {
+        if path.ends_with("/pull") {
+            let mut response = PullResponse::from_bytes(&body).expect("a pull response");
+            for page in response.pages.0.iter_mut() {
+                let entries: Vec<_> = page
+                    .entries
+                    .iter()
+                    .cloned()
+                    .map(|mut e| {
+                        if let EntryRecord::Checkpoint(bundle) = &mut e.record
+                            && let Some(forged) = slot.lock().unwrap().clone()
+                        {
+                            *bundle = CheckpointBundle {
+                                checkpoint: Nested(forged),
+                                heads: bundle.heads.clone(),
+                            };
+                        }
+                        e
+                    })
+                    .collect();
+                page.entries = Sorted::new(entries).expect("sorted");
+            }
+            return response.to_bytes();
+        }
+        // The proxy sees no query: the laptop asks for every bucket hash,
+        // then for the leaves of the one bucket that differs.
+        if path.ends_with("/manifest") && ManifestBucketsResponse::from_bytes(&body).is_ok() {
+            return ManifestBucketsResponse {
+                buckets: List(fake_buckets.clone()),
+            }
+            .to_bytes();
+        }
+        if path.ends_with("/manifest") {
+            return ManifestLeavesResponse {
+                leaves: Sorted::new(vec![leaf.clone()]).expect("sorted"),
+                next: None,
+            }
+            .to_bytes();
+        }
+        body
+    }));
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round on the laptop");
+    let failures = pair.sync_a.checkpoint_failures().to_vec();
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert_eq!(failures[0].digest, forged_digest);
+    assert_eq!(failures[0].code, "sync_manifest_mismatch");
+    assert_eq!(failures[0].differing, vec![rid]);
+    assert!(pair.sync_a.latest_checkpoint().is_none());
+}
