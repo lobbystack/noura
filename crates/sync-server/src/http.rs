@@ -16,9 +16,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use sync_protocol::codec::{Bytes, Decode, Encode, Text};
 use sync_protocol::messages::{
-    ChainAppendRequest, ChainsRequest, DeviceTokenRequest, EnrollRequest, ErrorBody, MAX_BODY,
-    MEDIA_TYPE, OfferRequest, PullRequest, RESTORE_GENERATION_HEADER, RecoveryRequest, RevealBody,
-    RewrapBody,
+    ChainAppendRequest, ChainsRequest, DeviceTokenRequest, EnrollRequest, ErrorBody, LiveCursor,
+    MAX_BODY, MEDIA_TYPE, OfferRequest, PullRequest, RESTORE_GENERATION_HEADER, RecoveryRequest,
+    RevealBody, RewrapBody,
 };
 use sync_protocol::types::{Digest, Id, from_decimal};
 use sync_store::devices::UNBOUND;
@@ -382,6 +382,105 @@ async fn heads<B: Backend>(
         .await?))
 }
 
+async fn checkpoint<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments((workspace, domain)): Segments<(String, String)>,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store
+        .checkpoint(session, id(&workspace)?, id(&domain)?)
+        .await?))
+}
+
+async fn checkpoint_by_digest<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments((workspace, domain, checkpoint)): Segments<(String, String, String)>,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store
+        .checkpoint_by_digest(session, id(&workspace)?, id(&domain)?, digest(&checkpoint)?)
+        .await?))
+}
+
+/// A required query parameter.
+fn required<'a>(parameters: &HashMap<&str, &'a str>, name: &str) -> Result<&'a str, ApiError> {
+    parameters
+        .get(name)
+        .copied()
+        .ok_or_else(|| refused("bad_request", "a required query parameter is missing"))
+}
+
+fn live_cursor(parameters: &HashMap<&str, &str>) -> Result<Option<LiveCursor>, ApiError> {
+    parameters
+        .get("after")
+        .map(|text| {
+            LiveCursor::from_query(text)
+                .map_err(|_| refused("bad_request", "after isn't a live_cursor"))
+        })
+        .transpose()
+}
+
+async fn checkpoint_chain<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments((workspace, domain)): Segments<(String, String)>,
+    RawQuery(raw): RawQuery,
+) -> Result<Response, ApiError> {
+    let parameters = query(raw.as_deref())?;
+    let from = digest(required(&parameters, "from")?)?;
+    let to = digest(required(&parameters, "to")?)?;
+    Ok(ok(&store
+        .checkpoint_chain(session, id(&workspace)?, id(&domain)?, from, to)
+        .await?))
+}
+
+async fn live<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments((workspace, domain)): Segments<(String, String)>,
+    RawQuery(raw): RawQuery,
+) -> Result<Response, ApiError> {
+    let parameters = query(raw.as_deref())?;
+    let at = number(required(&parameters, "at")?)?;
+    let rid = parameters.get("rid").map(|r| id(r)).transpose()?;
+    let after = live_cursor(&parameters)?;
+    Ok(ok(&store
+        .live(session, id(&workspace)?, id(&domain)?, at, rid, after)
+        .await?))
+}
+
+async fn manifest<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments((workspace, domain)): Segments<(String, String)>,
+    RawQuery(raw): RawQuery,
+) -> Result<Response, ApiError> {
+    let parameters = query(raw.as_deref())?;
+    let (workspace, domain) = (id(&workspace)?, id(&domain)?);
+    let at = number(required(&parameters, "at")?)?;
+    if let Some(buckets) = parameters.get("buckets") {
+        if *buckets != "all" {
+            return Err(refused("bad_request", "buckets takes only all"));
+        }
+        return Ok(ok(&store
+            .manifest_buckets(session, workspace, domain, at)
+            .await?));
+    }
+    let level = u8::try_from(number(required(&parameters, "level")?)?)
+        .map_err(|_| refused("bad_request", "level is 0 to 3"))?;
+    let index = u16::try_from(number(required(&parameters, "index")?)?)
+        .map_err(|_| refused("bad_request", "no such manifest node"))?;
+    if level == 3 {
+        let after = live_cursor(&parameters)?;
+        return Ok(ok(&store
+            .manifest_leaves(session, workspace, domain, at, index, after)
+            .await?));
+    }
+    Ok(ok(&store
+        .manifest_node(session, workspace, domain, at, level, index)
+        .await?))
+}
+
 async fn append_chain<B: Backend>(
     State(store): State<Arc<Store<B>>>,
     Auth(session): Auth,
@@ -617,6 +716,23 @@ pub fn router<B: Backend>(state: AppState<B>) -> Router {
         .route(
             "/v2/workspaces/{w}/domains/{d}/heads/{device}",
             get(heads::<B>),
+        )
+        .route(
+            "/v2/workspaces/{w}/domains/{d}/checkpoint",
+            get(checkpoint::<B>),
+        )
+        .route(
+            "/v2/workspaces/{w}/domains/{d}/checkpoints/{digest}",
+            get(checkpoint_by_digest::<B>),
+        )
+        .route(
+            "/v2/workspaces/{w}/domains/{d}/checkpoint-chain",
+            get(checkpoint_chain::<B>),
+        )
+        .route("/v2/workspaces/{w}/domains/{d}/live", get(live::<B>))
+        .route(
+            "/v2/workspaces/{w}/domains/{d}/manifest",
+            get(manifest::<B>),
         )
         .fallback(not_found)
         .method_not_allowed_fallback(not_found)

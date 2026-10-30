@@ -1,0 +1,102 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT number, digest, seq, covered_seq, floor, record, heads FROM checkpoints\n             WHERE workspace = $1 AND domain = $2 AND number = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "checkpoints",
+            "name": "number"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "digest",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "checkpoints",
+            "name": "digest"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "checkpoints",
+            "name": "seq"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "covered_seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "checkpoints",
+            "name": "covered_seq"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "floor",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "checkpoints",
+            "name": "floor"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "record",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "checkpoints",
+            "name": "record"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "heads",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "checkpoints",
+            "name": "heads"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "05afd9facae0bb8a1c18bf3ce38f70ce35f93dafe0c69fed54f2247e4cfb73e0"
+}

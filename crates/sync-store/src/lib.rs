@@ -18,6 +18,7 @@
 mod accounts;
 mod blobs;
 mod chains;
+mod checkpoints;
 mod create;
 pub mod devices;
 mod hub;
@@ -387,6 +388,54 @@ pub struct DomainRow {
     pub epoch_policy_revision: u64,
     /// The highest retention floor the server published (§19).
     pub retention_floor: u64,
+    /// The latest checkpoint's `covered_seq`, 0 before the first.
+    pub checkpoint_seq: u64,
+    /// The due point the server publishes (§17), or 0.
+    pub checkpoint_due: u64,
+    /// Entries after the latest checkpoint's entry.
+    pub entries_since_checkpoint: u64,
+    /// Their weight (§19).
+    pub weight_since_checkpoint: u64,
+}
+
+/// A checkpoint as stored (§17, §19): its record, which the server keeps
+/// while the domain exists, and the heads it lists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckpointRow {
+    /// Its `number`.
+    pub number: u64,
+    /// The signed record's digest.
+    pub digest: Digest,
+    /// The sequence of its log entry.
+    pub seq: u64,
+    /// Its `covered_seq`.
+    pub covered_seq: u64,
+    /// Its `floor`.
+    pub floor: u64,
+    /// The signed checkpoint record.
+    pub record: Vec<u8>,
+    /// Its heads, as an encoded `list<ref>`.
+    pub heads: Vec<u8>,
+}
+
+/// When a checkpoint falls due by volume (§17): at the entry that brings
+/// a domain's log to `entries` entries or `weight` bytes of weight since
+/// its latest checkpoint entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CheckpointInterval {
+    /// Entries since the latest checkpoint entry.
+    pub entries: u64,
+    /// Weight since the latest checkpoint entry.
+    pub weight: u64,
+}
+
+impl Default for CheckpointInterval {
+    fn default() -> Self {
+        Self {
+            entries: 10_000,
+            weight: 64 << 20,
+        }
+    }
 }
 
 /// A device's chain head in one domain, with the fields the next record is
@@ -719,6 +768,72 @@ pub trait ReadTxn: Send {
         covered_seq: u64,
         digest: Digest,
     ) -> impl Future<Output = Result<bool>> + Send;
+    /// The domain's latest checkpoint.
+    fn latest_checkpoint(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+    ) -> impl Future<Output = Result<Option<CheckpointRow>>> + Send;
+    /// The domain's checkpoint numbered `number`.
+    fn checkpoint_by_number(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        number: u64,
+    ) -> impl Future<Output = Result<Option<CheckpointRow>>> + Send;
+    /// The domain's checkpoint with this digest.
+    fn checkpoint_by_digest(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        digest: Digest,
+    ) -> impl Future<Output = Result<Option<CheckpointRow>>> + Send;
+    /// The domain's checkpoint with this `covered_seq`.
+    fn checkpoint_at(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        covered_seq: u64,
+    ) -> impl Future<Output = Result<Option<CheckpointRow>>> + Send;
+    /// The 4,096 bucket hashes stored for checkpoint `number`, concatenated.
+    fn checkpoint_buckets(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        number: u64,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>>> + Send;
+    /// The latest log entry of `record_type` at or below sequence `at`.
+    fn latest_entry(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        record_type: u8,
+        at: u64,
+    ) -> impl Future<Output = Result<Option<RawEntry>>> + Send;
+    /// The operations of a domain with a sequence in (`after`, `through`],
+    /// each with its `rid`, by sequence.
+    fn ops_between(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        after: u64,
+        through: u64,
+    ) -> impl Future<Output = Result<Vec<(Id, Ref)>>> + Send;
+    /// At most `limit` `rid`s of a domain in [`from`, `through`], sorted.
+    fn domain_rids(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        from: Id,
+        through: Id,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<Id>>> + Send;
+    /// The devices with a chain head in a domain.
+    fn chain_head_devices(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+    ) -> impl Future<Output = Result<Vec<Id>>> + Send;
     /// A domain's epoch record by number.
     fn epoch(
         &mut self,
@@ -880,6 +995,25 @@ pub trait WriteTxn: ReadTxn {
         record_type: u8,
         record: &[u8],
     ) -> impl Future<Output = Result<u64>> + Send;
+    /// Stores an accepted checkpoint with its bucket hashes, concatenated,
+    /// and makes it the domain's latest.
+    fn insert_checkpoint(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        row: &CheckpointRow,
+        buckets: &[u8],
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Sets the domain's entries and weight since its latest checkpoint
+    /// entry, and its due point.
+    fn set_checkpoint_progress(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        entries: u64,
+        weight: u64,
+        due: u64,
+    ) -> impl Future<Output = Result<()>> + Send;
     /// Records an operation's live-set fields, its covers included.
     fn insert_operation(
         &mut self,
@@ -1231,6 +1365,7 @@ pub struct Store<B: Backend> {
     hub: EventHub,
     generation: u64,
     retained_bytes: u64,
+    interval: CheckpointInterval,
     secret: Option<SecretKey>,
     clock: Clock,
 }
@@ -1254,9 +1389,16 @@ impl<B: Backend> Store<B> {
             hub,
             generation,
             retained_bytes: DEFAULT_RETAINED_BYTES,
+            interval: CheckpointInterval::default(),
             secret: None,
             clock: Clock::default(),
         })
+    }
+
+    /// Sets when checkpoints fall due by volume (§17); tests shorten it.
+    pub fn with_checkpoint_interval(mut self, interval: CheckpointInterval) -> Self {
+        self.interval = interval;
+        self
     }
 
     /// Sets the server secret that account IDs derive from (§14).
@@ -1552,11 +1694,14 @@ impl<B: Backend> Store<B> {
         let chain = self.session_chain(session).await?;
         create::check_signatures(&checked, session, &chain)?;
         let cache = self.policies.clone();
+        let interval = self.interval;
         let digest = sync_protocol::crypto::hash(&body);
         let response = self
             .backend
             .write(Box::new(move |txn: &mut B::Write| {
-                Box::pin(async move { create::commit(txn, &cache, session, checked, digest).await })
+                Box::pin(async move {
+                    create::commit(txn, &cache, interval, session, checked, digest).await
+                })
             }))
             .await?;
         let response = PushResponse::from_bytes(&response).map_err(Error::internal)?;
@@ -1728,20 +1873,28 @@ impl<B: Backend> Store<B> {
         workspace: Id,
         body: Vec<u8>,
     ) -> Result<PushResponse> {
-        let ops = push::decode(&body, workspace, session)?;
+        let mut ops = push::decode(&body, workspace, session)?;
         let chain = self.session_chain(session).await?;
         push::check_signatures(&ops, session, &chain)?;
         let cache = self.policies.clone();
         let generation = self.generation;
-        let group = push::group(workspace, &ops);
-        let job: WriteJob<B::Write, PushResponse> = Box::new(move |txn: &mut B::Write| {
-            Box::pin(
-                async move { push::commit(txn, &cache, generation, session, workspace, ops).await },
-            )
-        });
-        let response = match group {
-            Some(group) => self.backend.write_grouped(group, job).await?,
-            None => self.backend.write(job).await?,
+        let interval = self.interval;
+        let response = if let [push::Pushed::Checkpoint(..)] = ops.as_slice() {
+            let Some(push::Pushed::Checkpoint(_, bundle)) = ops.pop() else {
+                unreachable!("one checkpoint");
+            };
+            self.push_checkpoint(session, workspace, bundle).await?
+        } else {
+            let group = push::group(workspace, &ops);
+            let job: WriteJob<B::Write, PushResponse> = Box::new(move |txn: &mut B::Write| {
+                Box::pin(async move {
+                    push::commit(txn, &cache, interval, generation, session, workspace, ops).await
+                })
+            });
+            match group {
+                Some(group) => self.backend.write_grouped(group, job).await?,
+                None => self.backend.write(job).await?,
+            }
         };
         if !response.receipts.is_empty() {
             self.hub.notify(workspace);
@@ -1754,6 +1907,182 @@ impl<B: Backend> Store<B> {
                 .announce(workspace, heads.into_iter().collect());
         }
         Ok(response)
+    }
+
+    /// A push of one checkpoint bundle (§17): the checks and the
+    /// recomputation in a read transaction, then the commit under the
+    /// domain's head row.
+    async fn push_checkpoint(
+        &self,
+        session: Session,
+        workspace: Id,
+        bundle: sync_protocol::records::CheckpointBundle,
+    ) -> Result<PushResponse> {
+        let in_record = |e: Error| match e {
+            Error::Refused(refusal) => push::failure(0, refusal),
+            internal => internal,
+        };
+        let bundle = Arc::new(bundle);
+        let cache = self.policies.clone();
+        let read_bundle = bundle.clone();
+        let plan = self
+            .backend
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move {
+                    checkpoints::plan(txn, &cache, session, workspace, &read_bundle).await
+                })
+            }))
+            .await
+            .map_err(in_record)?;
+        let cache = self.policies.clone();
+        self.backend
+            .write(Box::new(move |txn: &mut B::Write| {
+                Box::pin(async move {
+                    checkpoints::commit(txn, &cache, session, workspace, &bundle, plan).await
+                })
+            }))
+            .await
+            .map_err(in_record)
+    }
+
+    /// `GET /v2/workspaces/{w}/domains/{d}/checkpoint`.
+    pub async fn checkpoint(
+        &self,
+        session: Session,
+        workspace: Id,
+        domain: Id,
+    ) -> Result<sync_protocol::messages::CheckpointResponse> {
+        let cache = self.policies.clone();
+        self.backend
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move {
+                    checkpoints::latest(txn, &cache, session, workspace, domain).await
+                })
+            }))
+            .await
+    }
+
+    /// `GET /v2/workspaces/{w}/domains/{d}/checkpoints/{digest}`.
+    pub async fn checkpoint_by_digest(
+        &self,
+        session: Session,
+        workspace: Id,
+        domain: Id,
+        digest: Digest,
+    ) -> Result<sync_protocol::messages::Entry> {
+        let cache = self.policies.clone();
+        self.backend
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move {
+                    checkpoints::by_digest(txn, &cache, session, workspace, domain, digest).await
+                })
+            }))
+            .await
+    }
+
+    /// `GET /v2/workspaces/{w}/domains/{d}/checkpoint-chain`.
+    pub async fn checkpoint_chain(
+        &self,
+        session: Session,
+        workspace: Id,
+        domain: Id,
+        from: Digest,
+        to: Digest,
+    ) -> Result<sync_protocol::messages::CheckpointChainResponse> {
+        let cache = self.policies.clone();
+        self.backend
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move {
+                    checkpoints::chain(txn, &cache, session, workspace, domain, from, to).await
+                })
+            }))
+            .await
+    }
+
+    /// `GET /v2/workspaces/{w}/domains/{d}/live`.
+    pub async fn live(
+        &self,
+        session: Session,
+        workspace: Id,
+        domain: Id,
+        at: u64,
+        rid: Option<Id>,
+        after: Option<sync_protocol::messages::LiveCursor>,
+    ) -> Result<sync_protocol::messages::LiveResponse> {
+        let cache = self.policies.clone();
+        self.backend
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move {
+                    checkpoints::live(txn, &cache, session, workspace, domain, at, rid, after).await
+                })
+            }))
+            .await
+    }
+
+    /// `GET /v2/workspaces/{w}/domains/{d}/manifest?at&buckets=all`.
+    pub async fn manifest_buckets(
+        &self,
+        session: Session,
+        workspace: Id,
+        domain: Id,
+        at: u64,
+    ) -> Result<sync_protocol::messages::ManifestBucketsResponse> {
+        let cache = self.policies.clone();
+        self.backend
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move {
+                    checkpoints::manifest_buckets(txn, &cache, session, workspace, domain, at).await
+                })
+            }))
+            .await
+    }
+
+    /// `GET /v2/workspaces/{w}/domains/{d}/manifest`, levels 0 to 2.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn manifest_node(
+        &self,
+        session: Session,
+        workspace: Id,
+        domain: Id,
+        at: u64,
+        level: u8,
+        index: u16,
+    ) -> Result<sync_protocol::messages::ManifestNodeResponse> {
+        let cache = self.policies.clone();
+        self.backend
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move {
+                    checkpoints::manifest_node(
+                        txn, &cache, session, workspace, domain, at, level, index,
+                    )
+                    .await
+                })
+            }))
+            .await
+    }
+
+    /// `GET /v2/workspaces/{w}/domains/{d}/manifest`, level 3.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn manifest_leaves(
+        &self,
+        session: Session,
+        workspace: Id,
+        domain: Id,
+        at: u64,
+        index: u16,
+        after: Option<sync_protocol::messages::LiveCursor>,
+    ) -> Result<sync_protocol::messages::ManifestLeavesResponse> {
+        let cache = self.policies.clone();
+        self.backend
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move {
+                    checkpoints::manifest_leaves(
+                        txn, &cache, session, workspace, domain, at, index, after,
+                    )
+                    .await
+                })
+            }))
+            .await
     }
 
     /// `POST /v2/workspaces/{w}/pull`: one page per listed domain, waiting

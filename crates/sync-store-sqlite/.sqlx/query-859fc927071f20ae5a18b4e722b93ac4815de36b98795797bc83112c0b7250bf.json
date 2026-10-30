@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT seq, record_type, record FROM entries\n             WHERE workspace = ?1 AND domain = ?2 AND record_type = ?3 AND seq <= ?4\n             ORDER BY seq DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "seq",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "entries",
+            "name": "seq"
+          }
+        }
+      },
+      {
+        "name": "record_type",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "entries",
+            "name": "record_type"
+          }
+        }
+      },
+      {
+        "name": "record",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "entries",
+            "name": "record"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "859fc927071f20ae5a18b4e722b93ac4815de36b98795797bc83112c0b7250bf"
+}

@@ -28,9 +28,11 @@ use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 use crate::{Backend, Error, LockPlan, Refusal, Session, Store, WriteTxn};
 
 mod blobs;
+mod checkpoints;
 mod devices;
 mod keys;
 pub use blobs::*;
+pub use checkpoints::*;
 pub use devices::*;
 pub use keys::*;
 
@@ -89,6 +91,12 @@ macro_rules! conformance_tests {
             blob_digest_mismatch_discards_the_upload,
             pushes_list_completed_blobs_of_their_domain,
             blob_downloads_follow_the_listing,
+            checkpoints_fall_due_by_volume,
+            checkpoints_fall_due_by_weight,
+            checkpoint_checks_answer_their_codes,
+            removals_make_checkpoints_due_and_leave_the_heads,
+            replacements_make_checkpoints_due,
+            checkpoint_routes_serve_the_chain_and_manifest,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {

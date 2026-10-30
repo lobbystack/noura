@@ -738,6 +738,26 @@ impl PolicyChain {
         self.changes.get(index)
     }
 
+    /// Whether `device` may leave a checkpoint's heads whose previous
+    /// checkpoint has `policy_revision` `revision` (§17): its card can't
+    /// come back, because a change at or below `revision` recorded a head
+    /// of its account at which a link had removed the card, or a head on a
+    /// chain other than the card's. The account is still a member there,
+    /// yet its recorded head no longer lists the card. A device whose
+    /// account `remove_member` removed, or that only lost access, stays.
+    pub fn card_gone(&self, device: &Id, revision: u64) -> bool {
+        let Some(at) = self.at(revision) else {
+            return false;
+        };
+        if at.is_device(device) {
+            return false;
+        }
+        (1..revision)
+            .rev()
+            .find_map(|r| self.at(r).and_then(|s| s.account_of(device)))
+            .is_some_and(|account| at.members.contains_key(&account))
+    }
+
     /// Whether some change in (`after`, `through`] makes `domain` due for
     /// rotation, and the highest such revision.
     pub fn rotation_required(&self, domain: &Id, after: u64, through: u64) -> Option<u64> {

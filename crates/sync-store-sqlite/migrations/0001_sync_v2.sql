@@ -81,6 +81,13 @@ CREATE TABLE domains (
     -- The highest retention floor the server published (§19); ticket 59
     -- raises it.
     retention_floor INTEGER NOT NULL DEFAULT 0,
+    -- The latest checkpoint's covered_seq, the due point the server
+    -- publishes, and the entries and weight since the latest checkpoint
+    -- entry (§17).
+    checkpoint_seq INTEGER NOT NULL DEFAULT 0,
+    checkpoint_due INTEGER NOT NULL DEFAULT 0,
+    entries_since_checkpoint INTEGER NOT NULL DEFAULT 0,
+    weight_since_checkpoint INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (workspace, domain)
 ) STRICT, WITHOUT ROWID;
 
@@ -94,6 +101,10 @@ CREATE TABLE entries (
     record BLOB NOT NULL,
     PRIMARY KEY (workspace, domain, seq)
 ) STRICT, WITHOUT ROWID;
+
+-- A checkpoint names the latest policy and epoch entries at or below its
+-- covered_seq (§17).
+CREATE INDEX entries_by_type ON entries (workspace, domain, record_type, seq);
 
 -- The cleartext fields of each operation that chains and live sets need
 -- (§13, §14). The record itself is the entry at the same sequence.
@@ -175,11 +186,21 @@ CREATE TABLE key_entries (
     PRIMARY KEY (workspace, key_seq)
 ) STRICT, WITHOUT ROWID;
 
--- Checkpoint records, which operations name (§17). Ticket 58 fills it.
+-- Checkpoints (§17, §19): each record, kept while the domain exists,
+-- with its heads and, while it stays servable, its 4,096 bucket hashes.
 CREATE TABLE checkpoints (
     workspace BLOB NOT NULL,
     domain BLOB NOT NULL,
-    covered_seq INTEGER NOT NULL,
+    number INTEGER NOT NULL,
     digest BLOB NOT NULL,
-    PRIMARY KEY (workspace, domain, covered_seq, digest)
-) STRICT, WITHOUT ROWID;
+    seq INTEGER NOT NULL,
+    covered_seq INTEGER NOT NULL,
+    floor INTEGER NOT NULL,
+    record BLOB NOT NULL,
+    heads BLOB NOT NULL,
+    buckets BLOB,
+    PRIMARY KEY (workspace, domain, number)
+) STRICT;
+
+CREATE UNIQUE INDEX checkpoints_by_digest ON checkpoints (workspace, domain, digest);
+CREATE UNIQUE INDEX checkpoints_by_covered_seq ON checkpoints (workspace, domain, covered_seq);

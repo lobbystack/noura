@@ -7,7 +7,7 @@ use sync_protocol::messages::DeviceRemovedDetail;
 use sync_protocol::records::{AccountHead, OpClass, Ref};
 use sync_protocol::types::{Digest, Id, Key};
 use sync_store::{
-    ApprovalRequestRow, BlobRow, CeremonyKind, CeremonyRow, ChainHeadRow, DeleteRow,
+    ApprovalRequestRow, BlobRow, CeremonyKind, CeremonyRow, ChainHeadRow, CheckpointRow, DeleteRow,
     DeviceGrantRow, DomainRow, EpochRow, Error, KeyRow, LinkRow, LockPlan, OfferRow, PasskeyRow,
     PendingPasskeyRow, RawEntry, ReadTxn, RemovedBy, Result, RewrapRow, Session, SessionRow,
     WorkspaceRow, WriteTxn,
@@ -238,6 +238,26 @@ fn grant_row(
         interval: uint(poll_interval)?,
         next_poll: uint(next_poll)?,
         expires_at: uint(expires_at)?,
+    })
+}
+
+fn checkpoint_row(
+    number: i64,
+    checkpoint: Vec<u8>,
+    seq: i64,
+    covered_seq: i64,
+    floor: i64,
+    record: Vec<u8>,
+    heads: Vec<u8>,
+) -> Result<CheckpointRow> {
+    Ok(CheckpointRow {
+        number: uint(number)?,
+        digest: digest(checkpoint)?,
+        seq: uint(seq)?,
+        covered_seq: uint(covered_seq)?,
+        floor: uint(floor)?,
+        record,
+        heads,
     })
 }
 
@@ -682,7 +702,9 @@ impl ReadTxn for SqliteTxn {
         let workspace = &workspace.0[..];
         let domain = &domain.0[..];
         let row = sqlx::query!(
-            "SELECT head_seq, epoch, epoch_digest, epoch_policy_revision, retention_floor
+            "SELECT head_seq, epoch, epoch_digest, epoch_policy_revision, retention_floor,
+                    checkpoint_seq, checkpoint_due, entries_since_checkpoint,
+                    weight_since_checkpoint
              FROM domains WHERE workspace = ?1 AND domain = ?2",
             workspace,
             domain
@@ -697,6 +719,10 @@ impl ReadTxn for SqliteTxn {
                 epoch_digest: digest(r.epoch_digest)?,
                 epoch_policy_revision: uint(r.epoch_policy_revision)?,
                 retention_floor: uint(r.retention_floor)?,
+                checkpoint_seq: uint(r.checkpoint_seq)?,
+                checkpoint_due: uint(r.checkpoint_due)?,
+                entries_since_checkpoint: uint(r.entries_since_checkpoint)?,
+                weight_since_checkpoint: uint(r.weight_since_checkpoint)?,
             })
         })
         .transpose()
@@ -1013,6 +1039,270 @@ impl ReadTxn for SqliteTxn {
         .await
         .map_err(db)?;
         Ok(row.exists)
+    }
+
+    async fn latest_checkpoint(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+    ) -> Result<Option<CheckpointRow>> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let row = sqlx::query!(
+            "SELECT number, digest, seq, covered_seq, floor, record, heads FROM checkpoints
+             WHERE workspace = ?1 AND domain = ?2 ORDER BY number DESC LIMIT 1",
+            workspace,
+            domain
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| {
+            checkpoint_row(
+                r.number,
+                r.digest,
+                r.seq,
+                r.covered_seq,
+                r.floor,
+                r.record,
+                r.heads,
+            )
+        })
+        .transpose()
+    }
+
+    async fn checkpoint_by_number(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        number: u64,
+    ) -> Result<Option<CheckpointRow>> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let number = at_most(number);
+        let row = sqlx::query!(
+            "SELECT number, digest, seq, covered_seq, floor, record, heads FROM checkpoints
+             WHERE workspace = ?1 AND domain = ?2 AND number = ?3",
+            workspace,
+            domain,
+            number
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| {
+            checkpoint_row(
+                r.number,
+                r.digest,
+                r.seq,
+                r.covered_seq,
+                r.floor,
+                r.record,
+                r.heads,
+            )
+        })
+        .transpose()
+    }
+
+    async fn checkpoint_by_digest(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        checkpoint: Digest,
+    ) -> Result<Option<CheckpointRow>> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let checkpoint = &checkpoint.0[..];
+        let row = sqlx::query!(
+            "SELECT number, digest, seq, covered_seq, floor, record, heads FROM checkpoints
+             WHERE workspace = ?1 AND domain = ?2 AND digest = ?3",
+            workspace,
+            domain,
+            checkpoint
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| {
+            checkpoint_row(
+                r.number,
+                r.digest,
+                r.seq,
+                r.covered_seq,
+                r.floor,
+                r.record,
+                r.heads,
+            )
+        })
+        .transpose()
+    }
+
+    async fn checkpoint_at(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        covered_seq: u64,
+    ) -> Result<Option<CheckpointRow>> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let covered_seq = at_most(covered_seq);
+        let row = sqlx::query!(
+            "SELECT number, digest, seq, covered_seq, floor, record, heads FROM checkpoints
+             WHERE workspace = ?1 AND domain = ?2 AND covered_seq = ?3",
+            workspace,
+            domain,
+            covered_seq
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| {
+            checkpoint_row(
+                r.number,
+                r.digest,
+                r.seq,
+                r.covered_seq,
+                r.floor,
+                r.record,
+                r.heads,
+            )
+        })
+        .transpose()
+    }
+
+    async fn checkpoint_buckets(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        number: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let number = at_most(number);
+        let row = sqlx::query!(
+            "SELECT buckets FROM checkpoints WHERE workspace = ?1 AND domain = ?2 AND number = ?3",
+            workspace,
+            domain,
+            number
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        Ok(row.and_then(|r| r.buckets))
+    }
+
+    async fn latest_entry(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        record_type: u8,
+        at: u64,
+    ) -> Result<Option<RawEntry>> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let record_type = i64::from(record_type);
+        let at = at_most(at);
+        let row = sqlx::query!(
+            "SELECT seq, record_type, record FROM entries
+             WHERE workspace = ?1 AND domain = ?2 AND record_type = ?3 AND seq <= ?4
+             ORDER BY seq DESC LIMIT 1",
+            workspace,
+            domain,
+            record_type,
+            at
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| {
+            Ok(RawEntry {
+                seq: uint(r.seq)?,
+                record_type: byte(r.record_type)?,
+                record: r.record,
+            })
+        })
+        .transpose()
+    }
+
+    async fn ops_between(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        after: u64,
+        through: u64,
+    ) -> Result<Vec<(Id, Ref)>> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let after = at_most(after);
+        let through = at_most(through);
+        let rows = sqlx::query!(
+            "SELECT rid, device, counter, seq, digest FROM operations
+             WHERE workspace = ?1 AND domain = ?2 AND seq > ?3 AND seq <= ?4
+             ORDER BY seq",
+            workspace,
+            domain,
+            after,
+            through
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|r| {
+                Ok((
+                    id(r.rid)?,
+                    Ref {
+                        device: id(r.device)?,
+                        counter: counter(r.counter)?,
+                        seq: uint(r.seq)?,
+                        op_digest: digest(r.digest)?,
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    async fn domain_rids(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        from: Id,
+        through: Id,
+        limit: u32,
+    ) -> Result<Vec<Id>> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let from = &from.0[..];
+        let through = &through.0[..];
+        let limit = i64::from(limit);
+        let rows = sqlx::query!(
+            "SELECT rid FROM rids
+             WHERE workspace = ?1 AND rid >= ?2 AND rid <= ?3 AND domain = ?4
+             ORDER BY rid LIMIT ?5",
+            workspace,
+            from,
+            through,
+            domain,
+            limit
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter().map(|r| id(r.rid)).collect()
+    }
+
+    async fn chain_head_devices(&mut self, workspace: Id, domain: Id) -> Result<Vec<Id>> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let rows = sqlx::query!(
+            "SELECT device FROM chain_heads WHERE workspace = ?1 AND domain = ?2",
+            workspace,
+            domain
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter().map(|r| id(r.device)).collect()
     }
 
     async fn epoch(&mut self, workspace: Id, domain: Id, epoch: u64) -> Result<Option<EpochRow>> {
@@ -1494,6 +1784,81 @@ impl WriteTxn for SqliteTxn {
         .await
         .map_err(db)?;
         uint(seq)
+    }
+
+    async fn insert_checkpoint(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        row: &CheckpointRow,
+        buckets: &[u8],
+    ) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let number = int(row.number)?;
+        let checkpoint = &row.digest.0[..];
+        let seq = int(row.seq)?;
+        let covered_seq = int(row.covered_seq)?;
+        let floor = int(row.floor)?;
+        let record = &row.record[..];
+        let heads = &row.heads[..];
+        sqlx::query!(
+            "INSERT INTO checkpoints
+               (workspace, domain, number, digest, seq, covered_seq, floor, record, heads, buckets)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            workspace,
+            domain,
+            number,
+            checkpoint,
+            seq,
+            covered_seq,
+            floor,
+            record,
+            heads,
+            buckets
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        sqlx::query!(
+            "UPDATE domains SET checkpoint_seq = ?3 WHERE workspace = ?1 AND domain = ?2",
+            workspace,
+            domain,
+            covered_seq
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn set_checkpoint_progress(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        entries: u64,
+        weight: u64,
+        due: u64,
+    ) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let entries = at_most(entries);
+        let weight = at_most(weight);
+        let due = int(due)?;
+        sqlx::query!(
+            "UPDATE domains
+             SET entries_since_checkpoint = ?3, weight_since_checkpoint = ?4, checkpoint_due = ?5
+             WHERE workspace = ?1 AND domain = ?2",
+            workspace,
+            domain,
+            entries,
+            weight,
+            due
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
     }
 
     async fn insert_operation(

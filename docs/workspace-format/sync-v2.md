@@ -1040,10 +1040,10 @@ The heads are the chain head, as a `ref` with its sequence, of every device with
 A `checkpoint_bundle` is `bytes checkpoint | list<ref> heads`. The server checks:
 
 - that the signer can write the domain at the latest policy entry ([§8](#policy-entries)), else `forbidden`;
-- that `policy_revision` and `policy_head` name the latest policy entry at or below `covered_seq`, and `epoch` and `epoch_record` the latest epoch entry at or below it;
-- that `previous` names the domain's latest checkpoint, else `checkpoint_stale`, and that `number` and `skip` follow from it;
-- that `covered_seq` sits at or above that checkpoint's entry sequence and at or above the retention floor;
-- that `floor` lies between the previous checkpoint's `floor` and the current retention floor;
+- that `policy_revision` and `policy_head` name the latest policy entry at or below `covered_seq`, and `epoch` and `epoch_record` the latest epoch entry at or below it, else `manifest_mismatch`;
+- that `previous` names the domain's latest checkpoint, else `checkpoint_stale`, and that `number` and `skip` follow from it, else `manifest_mismatch`;
+- that `covered_seq` sits at or above that checkpoint's entry sequence and at or above the retention floor, and at or below the domain's latest sequence, else `checkpoint_not_due`;
+- that `floor` lies between the previous checkpoint's `floor` and the current retention floor, else `manifest_mismatch`;
 - that a checkpoint is due and `covered_seq` reaches the due point it published, or that the checkpoint comes in the same push as an approval or grant that sets a history floor ([§9](#history-floor)), else `checkpoint_not_due`.
 
 Before it opens the committing transaction, the server recomputes, at `covered_seq`, the root, the number of leaves and the chain heads, from the bucket hashes and heads it stored for the previous checkpoint, the records between the two, and the lone deletes that the rising `floor` drops ([§17](#leaves-and-tree)). It rejects a root, `live_objects` or `heads_digest` that differs with `manifest_mismatch`, so an honest server and an honest writer always agree, and a bootstrapping device never starts from heads a writer made up. The records at or below `covered_seq` are already committed, and pruning reaches them only after a later checkpoint commits, because the floor never passes the latest checkpoint, so this work needs no lock. The server checks `previous` again under its locks, and before it reports a mismatch, so a racing checkpoint gets `checkpoint_stale`. An accepted checkpoint becomes a log entry with its own sequence.
@@ -1052,6 +1052,7 @@ The server decides when a checkpoint falls due and publishes the due point as `c
 
 - at the entry that brings the domain's log to 10,000 entries or 64 MiB of weight ([§19](#19-compaction)) since the last checkpoint entry;
 - at a policy entry that ends the write access of the latest checkpoint's signer or of any device with a chain head in the domain;
+- at a replacement's epoch entry ([§9](#rotation)), since the latest checkpoint may name the epoch it skips, which devices that never accepted that epoch fail with `sync_key_mismatch`; the fresh checkpoint names the replacement, so new devices can bootstrap the domain again;
 - once each time its workspace's usage and history together go from within its quota to above it ([§20](#20-atomic-changes-and-quota)), at the next entry of each domain with entries after its latest checkpoint.
 
 Writers don't compute due points: blob weights hide inside payloads they may not read, and a bootstrapped device doesn't know which blobs pruned history listed. A writer device that has applied the domain past the published due point waits a random 0 to 60 seconds, then signs a checkpoint if none has arrived since. The server keeps the first one and answers the rest with `checkpoint_stale`. A writer that gets `checkpoint_not_due` drops its checkpoint and waits for the next due point. Every policy change adds an entry to each log, so even a quiet domain gains an entry after a demotion, and the fresh checkpoint has something to cover.
@@ -1492,7 +1493,7 @@ Server error codes:
 | `policy_stale`, `policy_conflict` | 409 | a record names a revision above the head; another change took this revision, or `policy_head` differs from it |
 | `policy_regressed` | 422 | a record's `policy_revision` or `generation` is below the previous record's in its chain |
 | `recipients_invalid` | 422 | an epoch's recipients or an envelope's recipient don't match the authorized devices |
-| `manifest_mismatch` | 422 | a checkpoint's root, `live_objects` or `heads_digest` differs from the server's |
+| `manifest_mismatch` | 422 | a checkpoint's root, `live_objects` or `heads_digest` differs from the server's, or its `number`, `skip`, `floor`, policy or epoch fields don't follow from the server's log |
 | `cursor_compacted`, `pruned` | 410 | a `live` or `manifest` request names a checkpoint below the retention floor; the chain position was pruned |
 | `blob_incomplete`, `blob_digest_mismatch`, `blob_domain_mismatch` | 409, 422, 422 | a referenced blob isn't complete; an upload's digest doesn't match; the blob was created for another domain |
 | `blob_offset_conflict` | 409 | a tus `PATCH` names an `Upload-Offset` other than the upload's, or the upload is already complete |
@@ -1686,7 +1687,7 @@ Logs keep route templates, request IDs and status codes, for at most 14 days. Th
 | Lists an unauthorized recipient in an epoch | yes | recipients checked against the verified policy |
 | Serves a manifest that omits an object | yes, with an honest signer | the recomputed root differs from the signed checkpoint |
 | Rolls a device back to an older checkpoint | yes | `sync_manifest_rollback`, against the latest accepted checkpoint and the anchors in approvals and kits |
-| Seeds a new device from a checkpoint that a removed device signed, placed before the removal's entry, or from a checkpoint off the anchor's chain | yes | the bootstrap checkpoint must descend from the device's anchor, and no removal in the device's verified chain may postdate its `policy_revision` for its signer or a device in its heads |
+| Seeds a new device from a checkpoint that a removed device signed, placed before the removal's entry, or from a checkpoint off the anchor's chain | yes, except a checkpoint off the chain in a restricted domain of an approved device, which holds no anchor there | the bootstrap checkpoint must descend from the device's anchor, and no removal in the device's verified chain may postdate its `policy_revision` for its signer or a device in its heads; in a restricted domain without an anchor, the signer and recency checks still apply, and a checkpoint off the chain that a writer signed is a colluding writer's (see "A colluding writer" below), which the device detects when the next real checkpoint arrives and doesn't name it as `previous` |
 | Claims compaction or lowers the retention floor to force a bootstrap from an old checkpoint | yes | the published floor never drops within a generation, and the bootstrap checkpoint must cover the client's cursor |
 | Serves a live operation at different log positions to different clients | when a checkpoint arrives | sequences in leaf refs make the roots differ |
 | Shows two recipients two different epoch records for one epoch (with the rotating member) | when either sees the other | the epoch record chain, checkpoints naming the epoch record, records that stop decrypting |

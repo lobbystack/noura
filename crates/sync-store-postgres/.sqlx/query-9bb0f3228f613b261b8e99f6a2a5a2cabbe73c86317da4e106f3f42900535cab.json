@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE domains\n             SET entries_since_checkpoint = $3, weight_since_checkpoint = $4, checkpoint_due = $5\n             WHERE workspace = $1 AND domain = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9bb0f3228f613b261b8e99f6a2a5a2cabbe73c86317da4e106f3f42900535cab"
+}

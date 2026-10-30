@@ -127,6 +127,8 @@ pub(crate) async fn snapshot(
             complete_through,
             head: domain.head_seq,
             retention_floor: domain.retention_floor,
+            checkpoint_seq: domain.checkpoint_seq,
+            checkpoint_due: domain.checkpoint_due,
             entries: Sorted::new(entries).map_err(|e| Error::internal(e.name()))?,
             ..empty(PageStatus::Ok)
         });
