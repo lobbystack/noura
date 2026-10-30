@@ -5,9 +5,15 @@ mod sync_support;
 
 use std::time::{Duration, Instant};
 
+use app_core::sync::SyncService;
+use app_core::sync::realtime::Channel;
+use app_core::sync::workspace::WorkspaceSync;
+use app_core::sync::workspace::presence::{CURSOR_LIFETIME, SelectionRange};
 use app_core::sync::workspace::text::{Entered, IDLE, IDLE_ANY_WRITER, Judgement};
+use app_core::text_bridge::TextBridge;
 use collab_sandbox::SandboxDocument;
 use editor_core::text_mode::{CollabDocument, Utf16Splice};
+use sync_protocol::messages::Frame;
 use sync_store::Backend;
 use sync_support::{Pair, Server, pair, pair_on};
 
@@ -26,7 +32,10 @@ fn type_at(document: &mut SandboxDocument, start: usize, text: &str) {
 
 async fn both_rounds<B: Backend>(pair: &mut Pair<B>) {
     for _ in 0..3 {
-        pair.sync_a.round(&mut pair.service, 0).await.expect("round");
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("round");
         pair.sync_b
             .round(&mut pair.desktop.service, 0)
             .await
@@ -109,7 +118,11 @@ async fn the_journal_rebuilds_a_note_after_a_restart() {
     type_at(&mut a, 6, " one");
     both_rounds(&mut pair).await;
     let rid = pair.sync_b.rid_at(PLAN).unwrap();
-    let file = pair.sync_b.text_file(&rid).unwrap().expect("in the journal");
+    let file = pair
+        .sync_b
+        .text_file(&rid)
+        .unwrap()
+        .expect("in the journal");
     assert!(
         file.records
             .iter()
@@ -304,4 +317,174 @@ async fn deleting_a_text_mode_note_ends_it_on_both_desktops() {
     both_rounds(&mut pair).await;
     assert!(!pair.b.files().contains_key(PLAN));
     assert!(!pair.sync_b.in_text_mode(&rid));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_windows_get_a_document_that_holds_the_edit_that_asked_for_it() {
+    let mut pair = pair().await;
+    both_rounds(&mut pair).await;
+    let bridge = TextBridge::default();
+    bridge.open(PLAN);
+    bridge.serve(&mut pair.sync_a);
+    let document = bridge.take_document(PLAN).expect("the document");
+    let rid = document.rid;
+    let _editor = document.catch_up("# Plan typed\n");
+    both_rounds(&mut pair).await;
+    assert_eq!(read(&pair.b, PLAN), "# Plan typed\n");
+
+    // Closing the note leaves it in text mode with its file in place.
+    bridge.close(rid);
+    bridge.serve(&mut pair.sync_a);
+    assert!(pair.sync_a.in_text_mode(&rid));
+    assert_eq!(read(&pair.a, PLAN), "# Plan typed\n");
+}
+
+/// Hands every frame that waits on `channel` to `sync`, until it goes quiet.
+async fn drain(channel: &mut Channel, sync: &mut WorkspaceSync, service: &mut SyncService) {
+    while let Ok(frame) = tokio::time::timeout(Duration::from_millis(300), channel.next()).await {
+        sync.on_frame(service, &frame.expect("the channel stays open"))
+            .await
+            .expect("handled");
+    }
+}
+
+/// Both desktops hold the note open, each on its realtime channel.
+async fn cursors_ready(
+    pair: &mut Pair<sync_store_sqlite::SqliteBackend>,
+) -> (SandboxDocument, SandboxDocument, Channel, Channel) {
+    let (a, b) = open_both(pair).await;
+    let mut channel_a = Channel::open(pair.service.client(), pair.sync_a.workspace())
+        .await
+        .expect("the channel opens");
+    let mut channel_b = Channel::open(pair.desktop.service.client(), pair.sync_b.workspace())
+        .await
+        .expect("the channel opens");
+    pair.sync_a.presence_connected().unwrap();
+    pair.sync_b.presence_connected().unwrap();
+    for frame in pair.sync_a.presence_frames().unwrap() {
+        channel_a.send(&frame).await.unwrap();
+    }
+    for frame in pair.sync_b.presence_frames().unwrap() {
+        channel_b.send(&frame).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    (a, b, channel_a, channel_b)
+}
+
+async fn send_selection(
+    pair: &mut Pair<sync_store_sqlite::SqliteBackend>,
+    channel: &mut Channel,
+    at: u32,
+) {
+    pair.sync_a.set_selections(
+        PLAN,
+        vec![SelectionRange {
+            anchor: at,
+            head: at,
+        }],
+        true,
+    );
+    for frame in pair.sync_a.presence_frames().unwrap() {
+        channel.send(&frame).await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_collaborators_cursor_stays_on_its_character_and_goes_with_them() {
+    let mut pair = pair().await;
+    let (mut a, _b, mut channel_a, mut channel_b) = cursors_ready(&mut pair).await;
+    send_selection(&mut pair, &mut channel_a, 6).await;
+    drain(&mut channel_b, &mut pair.sync_b, &mut pair.desktop.service).await;
+    let cursors = pair.sync_b.cursors(PLAN, Instant::now());
+    assert_eq!(cursors.len(), 1, "{cursors:?}");
+    assert_eq!(cursors[0].device, pair.sync_a.device());
+    assert_eq!(cursors[0].selections[0].head, 6);
+
+    // Text arrives before the cursor, and the cursor moves with its
+    // character.
+    type_at(&mut a, 0, "New ");
+    both_rounds(&mut pair).await;
+    let rid = pair.sync_b.rid_at(PLAN).unwrap();
+    assert!(pair.sync_b.text_body(&rid).is_some());
+    let cursors = pair.sync_b.cursors(PLAN, Instant::now());
+    assert_eq!(cursors[0].selections[0].head, 10);
+
+    // Thirty seconds after its last record it goes.
+    let later = Instant::now() + CURSOR_LIFETIME + Duration::from_secs(1);
+    assert!(pair.sync_b.cursors(PLAN, later).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cursor_goes_when_the_server_says_its_session_ended() {
+    let mut pair = pair().await;
+    let (_a, _b, mut channel_a, mut channel_b) = cursors_ready(&mut pair).await;
+    send_selection(&mut pair, &mut channel_a, 2).await;
+    drain(&mut channel_b, &mut pair.sync_b, &mut pair.desktop.service).await;
+    assert_eq!(pair.sync_b.cursors(PLAN, Instant::now()).len(), 1);
+    drop(channel_a);
+    drain(&mut channel_b, &mut pair.sync_b, &mut pair.desktop.service).await;
+    assert!(pair.sync_b.cursors(PLAN, Instant::now()).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_receiver_rejects_an_old_presence_record() {
+    let mut pair = pair().await;
+    let (_a, _b, mut channel_a, mut channel_b) = cursors_ready(&mut pair).await;
+    pair.sync_a
+        .set_selections(PLAN, vec![SelectionRange { anchor: 1, head: 1 }], true);
+    let frames = pair.sync_a.presence_frames().unwrap();
+    let old = frames.last().cloned().expect("a record");
+    let Frame::Presence { record } = old.clone() else {
+        panic!("a presence record");
+    };
+    channel_a.send(&old).await.unwrap();
+    drain(&mut channel_b, &mut pair.sync_b, &mut pair.desktop.service).await;
+    let now = Instant::now();
+    // The server forwards the same record again.
+    assert!(!pair.sync_b.take_presence(&record, now));
+
+    // One from outside the two-minute window.
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    let mut stale = record.clone();
+    stale.body.sequence += 1;
+    stale.body.minute -= 3;
+    assert!(
+        !pair.sync_b.take_presence(&stale, now),
+        "signature or clock"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_server_stores_no_presence() {
+    let server = Server::start().await;
+    let mut pair = pair_on(server).await;
+    let (_a, _b, mut channel_a, mut channel_b) = cursors_ready(&mut pair).await;
+    pair.sync_a
+        .set_selections(PLAN, vec![SelectionRange { anchor: 1, head: 1 }], true);
+    let frames = pair.sync_a.presence_frames().unwrap();
+    let Some(Frame::Presence { record }) = frames.last().cloned() else {
+        panic!("a presence record");
+    };
+    channel_a
+        .send(&Frame::Presence {
+            record: record.clone(),
+        })
+        .await
+        .unwrap();
+    drain(&mut channel_b, &mut pair.sync_b, &mut pair.desktop.service).await;
+    for path in pair.server.stored_files().await {
+        let bytes = std::fs::read(path).unwrap_or_default();
+        assert!(
+            !bytes
+                .windows(16)
+                .any(|window| window == record.body.channel.0),
+            "a stored file holds the channel"
+        );
+        assert!(
+            !bytes
+                .windows(32)
+                .any(|window| window == &record.body.ciphertext.0[..32]),
+            "a stored file holds the ciphertext"
+        );
+    }
 }

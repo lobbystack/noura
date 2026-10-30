@@ -558,9 +558,9 @@ impl WorkspaceSync {
         };
         match (content, &record.blob) {
             (Content::Inline { bytes }, _) => Ok(Some(bytes.0)),
-            (Content::Blob(_), Some(blob)) => Ok(Some(
-                self.journal.kept(&record_path(rid, blob), blob)?,
-            )),
+            (Content::Blob(_), Some(blob)) => {
+                Ok(Some(self.journal.kept(&record_path(rid, blob), blob)?))
+            }
             (Content::Blob(_), None) => Ok(None),
         }
     }
@@ -642,7 +642,10 @@ impl WorkspaceSync {
     /// when a live `file` operation matches its file, and its edits go to
     /// the document from here on. Call [`Self::close_text`] when the editor
     /// lets go of it.
-    pub fn open_text(&mut self, path: &str) -> Result<(Entered, Option<SandboxDocument>), SyncError> {
+    pub fn open_text(
+        &mut self,
+        path: &str,
+    ) -> Result<(Entered, Option<SandboxDocument>), SyncError> {
         let Some(rid) = self.rid_at(path) else {
             return Ok((Entered::NotYet, None));
         };
@@ -665,15 +668,25 @@ impl WorkspaceSync {
         Ok((Entered::Yes, handle.map(SandboxDocument::new)))
     }
 
-    /// The editor let go of the note: the idle rule runs now (§22).
+    /// The editor let go of the note at `path`: see
+    /// [`Self::close_text_note`].
     pub fn close_text(&mut self, path: &str) -> Result<(), SyncError> {
-        let Some(rid) = self.rid_at(path) else {
-            return Ok(());
-        };
+        match self.rid_at(path) {
+            Some(rid) => self.close_text_note(rid),
+            None => Ok(()),
+        }
+    }
+
+    /// The editor let go of the note: the idle rule runs now (§22).
+    pub fn close_text_note(&mut self, rid: Id) -> Result<(), SyncError> {
+        self.close_presence(&rid);
         if let Some(session) = self.text.sessions.get_mut(&rid) {
             session.editing = false;
         }
-        self.text.activity.entry(rid).and_modify(|a| a.closed = true);
+        self.text
+            .activity
+            .entry(rid)
+            .and_modify(|a| a.closed = true);
         self.send_text(rid)?;
         self.text_upkeep_note(rid, Instant::now())?;
         self.close_session(&rid)
@@ -1274,10 +1287,7 @@ impl WorkspaceSync {
                         writer: record.writer,
                         card_count: record.card_count,
                         place: record.place(),
-                        payload: self
-                            .journal
-                            .dir()
-                            .join(record_path(&rid, &record.payload)),
+                        payload: self.journal.dir().join(record_path(&rid, &record.payload)),
                         blob: record
                             .blob
                             .map(|blob| self.journal.dir().join(record_path(&rid, &blob))),
@@ -1691,7 +1701,10 @@ impl WorkspaceSync {
             self.absorb(rid, &mut file)?;
             if let Some(session) = self.text.sessions.get(&rid)
                 && session.body.len() > TEXT_LIMIT
-                && let Some(path) = self.state.objects[&rid].local.as_ref().map(|l| l.path.clone())
+                && let Some(path) = self.state.objects[&rid]
+                    .local
+                    .as_ref()
+                    .map(|l| l.path.clone())
             {
                 self.write_note(rid, &mut file)?;
                 let found = self.found_on_disk(&path)?;
@@ -1898,7 +1911,8 @@ impl WorkspaceSync {
             .live_ops(rid)
             .into_iter()
             .filter(|key| {
-                key.device == own || key.counter < lowest.get(&key.device).copied().unwrap_or(u64::MAX)
+                key.device == own
+                    || key.counter < lowest.get(&key.device).copied().unwrap_or(u64::MAX)
             })
             .collect();
         self.covers_of(rid, &view)
@@ -1914,9 +1928,8 @@ impl WorkspaceSync {
         let Some(mut file) = self.text_file(&rid)? else {
             return Ok(());
         };
-        file.records.retain(|r| {
-            r.key.device != record.body.device || r.key.counter != record.body.counter
-        });
+        file.records
+            .retain(|r| r.key.device != record.body.device || r.key.counter != record.body.counter);
         self.store_text(&rid, &file)
     }
 
@@ -1977,7 +1990,9 @@ impl WorkspaceSync {
         if !keep {
             self.close_session(rid)?;
         }
-        Ok(compose_note(&properties, &body).ok().map(String::into_bytes))
+        Ok(compose_note(&properties, &body)
+            .ok()
+            .map(String::into_bytes))
     }
 }
 
@@ -1994,7 +2009,12 @@ impl LiveWeight {
 mod tests {
     use super::*;
 
-    fn record(seq: u64, snapshot: bool, digest: u8, entries: &[(&str, u64, Option<&str>)]) -> TextRecord {
+    fn record(
+        seq: u64,
+        snapshot: bool,
+        digest: u8,
+        entries: &[(&str, u64, Option<&str>)],
+    ) -> TextRecord {
         TextRecord {
             key: OpKey {
                 device: Id([1; 16]),
@@ -2033,7 +2053,12 @@ mod tests {
     #[test]
     fn concurrent_edits_to_different_keys_both_survive() {
         let merged = merged_meta(&[
-            record(1, true, 1, &[("path", 0, Some("a.md")), ("p:a", 0, Some("1"))]),
+            record(
+                1,
+                true,
+                1,
+                &[("path", 0, Some("a.md")), ("p:a", 0, Some("1"))],
+            ),
             record(2, false, 2, &[("p:a", 0, Some("2"))]),
             record(3, false, 3, &[("p:b", 0, Some("3"))]),
         ]);

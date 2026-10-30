@@ -143,10 +143,7 @@ const HOSTILE: &[u8] = &[
 fn an_item_that_would_land_elsewhere_on_a_booted_device_is_refused() {
     let mut note = note(vec![first("fuzz 😀 base\n")]);
     let reported = events(&mut note, update(1, 1, 1, HOSTILE));
-    assert!(
-        reported.contains(&Event::Refused { id: 1 }),
-        "{reported:?}"
-    );
+    assert!(reported.contains(&Event::Refused { id: 1 }), "{reported:?}");
     assert_eq!(note.text().unwrap(), "fuzz 😀 base\n");
     assert_eq!(note.status(), LineageStatus::Merging);
     // The next valid record merges.
@@ -172,10 +169,7 @@ fn a_snapshot_that_holds_a_refused_item_is_refused_too() {
         .var(0)
         .0;
     let reported = events(&mut note, snapshot(1, 1, 1, &[], &hostile));
-    assert!(
-        reported.contains(&Event::Refused { id: 1 }),
-        "{reported:?}"
-    );
+    assert!(reported.contains(&Event::Refused { id: 1 }), "{reported:?}");
     assert_eq!(note.text().unwrap(), "base");
 }
 
@@ -191,10 +185,7 @@ fn two_first_inserts_into_an_empty_lineage_both_merge() {
     // item was there to see.
     let again = insert(client(1, 1), 1, "c");
     let reported = events(&mut note, update(3, 1, 2, &again));
-    assert!(
-        reported.contains(&Event::Refused { id: 3 }),
-        "{reported:?}"
-    );
+    assert!(reported.contains(&Event::Refused { id: 3 }), "{reported:?}");
 }
 
 /// A note with `base`, an edit `"xy"` after it by card 1, and that edit's
@@ -235,10 +226,7 @@ fn an_honest_snapshot_agrees_and_merges() {
     let (mut holder, _, _, _) = note_with_a_delete();
     let state = holder.state().unwrap();
     let (mut other, _, _, _) = note_with_a_delete();
-    let reported = events(
-        &mut other,
-        snapshot(9, 3, 1, &[(1, 1), (2, 1)], &state),
-    );
+    let reported = events(&mut other, snapshot(9, 3, 1, &[(1, 1), (2, 1)], &state));
     assert!(merged(&reported), "{reported:?}");
     assert!(
         !reported
@@ -387,9 +375,7 @@ fn deferred_records_stay_within_their_memory_and_come_back_from_the_journal() {
                 bytes: first("x"),
             }],
             balances: vec![(WRITER, -1)],
-            loader: Some(Box::new(move |id| {
-                source.lock().unwrap().get(&id).cloned()
-            })),
+            loader: Some(Box::new(move |id| source.lock().unwrap().get(&id).cloned())),
         },
         client_ids(),
     )
@@ -424,7 +410,11 @@ fn deferred_records_stay_within_their_memory_and_come_back_from_the_journal() {
         note.wake(later);
     }
     assert_eq!(note.len(), 1 + 100 * 200_000);
-    assert!(note.balances(later).iter().any(|(w, b)| *w == WRITER && *b <= ALLOWANCE_FUEL));
+    assert!(
+        note.balances(later)
+            .iter()
+            .any(|(w, b)| *w == WRITER && *b <= ALLOWANCE_FUEL)
+    );
 }
 
 #[test]

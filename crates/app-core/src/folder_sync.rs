@@ -247,6 +247,11 @@ pub trait FolderSyncBackend: Send + Sync {
     fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>);
     /// The workspace the windows show, or `None` once none is open.
     fn attach(&self, engine: Option<Arc<WorkspaceEngine>>);
+    /// Where the windows reach text-mode notes, when the workspace can
+    /// sync.
+    fn text_bridge(&self) -> Option<Arc<crate::text_bridge::TextBridge>> {
+        None
+    }
 }
 
 /// The backend of an app that runs without sync: the workspace never

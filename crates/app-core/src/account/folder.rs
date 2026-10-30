@@ -262,6 +262,11 @@ impl Folder {
         self.sync.as_mut()
     }
 
+    /// Whether a note's document is open.
+    pub(super) fn text_active(&self) -> bool {
+        self.sync.as_ref().is_some_and(WorkspaceSync::text_active)
+    }
+
     /// Whether the open workspace syncs and isn't paused, so a round's
     /// pull may wait for new records.
     pub(super) fn waits(&self) -> bool {
@@ -282,6 +287,7 @@ impl Folder {
         app_data: &Path,
         long: bool,
         wake: &tokio::sync::Notify,
+        text: &crate::text_bridge::TextBridge,
     ) {
         let Some(service) = service else {
             return;
@@ -305,6 +311,7 @@ impl Folder {
         let Some(sync) = self.sync.as_mut() else {
             return;
         };
+        text.serve(sync);
         let result = if sync.paused() {
             sync.capture().map(|_| ())
         } else {

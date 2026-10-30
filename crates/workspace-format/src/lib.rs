@@ -15,10 +15,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use ts_rs::TS;
 
-pub mod text_note;
 pub mod merge;
 mod object_type;
 pub mod raw_text;
+pub mod text_note;
 
 pub use object_type::{
     ObjectTypeRegistry, PropertyDeclaration, PropertyError, PropertyKind, PropertySchema,

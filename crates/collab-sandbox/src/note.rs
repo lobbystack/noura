@@ -513,10 +513,13 @@ impl Note {
 
     fn allowance(&mut self, writer: u32, now: Instant) -> &mut Allowance {
         let opening = self.opening_balances.remove(&writer);
-        let allowance = self.allowances.entry(writer).or_insert_with(|| match opening {
-            Some(balance) => Allowance::with_balance(balance, now),
-            None => Allowance::new(now),
-        });
+        let allowance = self
+            .allowances
+            .entry(writer)
+            .or_insert_with(|| match opening {
+                Some(balance) => Allowance::with_balance(balance, now),
+                None => Allowance::new(now),
+            });
         allowance.refill(now);
         allowance
     }
@@ -769,8 +772,11 @@ impl Note {
             }
         }
         let run = || -> Result<(bool, u64), Failure> {
-            let mut guest =
-                Guest::new(&self.sandbox, INTEGRATION_MEMORY_BYTES, INTEGRATION_FUEL_LIMIT)?;
+            let mut guest = Guest::new(
+                &self.sandbox,
+                INTEGRATION_MEMORY_BYTES,
+                INTEGRATION_FUEL_LIMIT,
+            )?;
             let ptr = guest.write(&input)?;
             let code: u32 = guest.call("compare_records", (ptr, input.len() as u32))?;
             Ok((code != 0, guest.used()))
@@ -804,7 +810,8 @@ impl Note {
             record.place == Place::default()
                 || !live.iter().any(|snapshot| snapshot.covers(&record.place))
         });
-        self.journal.sort_by_key(|record| (!record.snapshot, record.id));
+        self.journal
+            .sort_by_key(|record| (!record.snapshot, record.id));
         match self.rebuild() {
             Ok(fuel) => self.allowance(writer, now).charge(fuel),
             Err(_) => {

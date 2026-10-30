@@ -107,9 +107,68 @@ impl App {
             return;
         };
         if session.edited(version, text, at) {
+            self.ask_for_document(tab);
             self.keep_tab(tab);
             self.listeners.emit(Change::Note);
             self.edited_while_leaving();
+        }
+    }
+
+    /// Where the note in `tab` stands with its document, once the windows
+    /// reach one: an edit asks for it, and it arrives through
+    /// [`Self::take_note_document`].
+    fn ask_for_document(&self, tab: TabId) {
+        let Some(bridge) = self.text_bridge() else {
+            return;
+        };
+        if let Some(session) = self.notes.sessions.get(&tab)
+            && session.may_enter_text_mode()
+        {
+            bridge.open(session.relative_path());
+        }
+    }
+
+    /// The document of the note in `tab`, once it arrived, caught up with
+    /// `shown`, the editor's text. The editor takes the note's edits from
+    /// here on, and the note's file follows the document.
+    pub fn take_note_document(
+        &mut self,
+        tab: TabId,
+        shown: &str,
+    ) -> Option<Box<dyn editor_core::text_mode::CollabDocument>> {
+        let bridge = self.text_bridge()?;
+        let session = self.notes.sessions.get_mut(&tab)?;
+        if session.text_mode().is_some() {
+            return None;
+        }
+        let document = bridge.take_document(session.relative_path())?;
+        session.enter_text_mode(document.rid);
+        Some(document.catch_up(shown))
+    }
+
+    /// Tells the sync client where your cursors are in the note in `tab`.
+    pub fn set_note_selections(
+        &self,
+        tab: TabId,
+        ranges: Vec<crate::sync::workspace::presence::SelectionRange>,
+        typing: bool,
+    ) {
+        if let (Some(bridge), Some(rid)) = (
+            self.text_bridge(),
+            self.notes.sessions.get(&tab).and_then(|s| s.text_mode()),
+        ) {
+            bridge.set_selections(rid, ranges, typing);
+        }
+    }
+
+    /// The collaborators' cursors in the note in `tab`.
+    pub fn note_cursors(&self, tab: TabId) -> Vec<crate::sync::workspace::presence::Cursor> {
+        match (
+            self.text_bridge(),
+            self.notes.sessions.get(&tab).and_then(|s| s.text_mode()),
+        ) {
+            (Some(bridge), Some(rid)) => bridge.cursors(&rid),
+            _ => Vec::new(),
         }
     }
 

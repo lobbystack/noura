@@ -342,7 +342,10 @@ mod tests {
 
     #[test]
     fn a_managed_note_splits_into_canonical_properties_and_its_body() {
-        let file = managed("tags: [a, b]\nsize: 3\nratio: 0.5\nopen: true\n", "# Plan\n");
+        let file = managed(
+            "tags: [a, b]\nsize: 3\nratio: 0.5\nopen: true\n",
+            "# Plan\n",
+        );
         let NoteParts::Managed { properties, body } = parts(&file) else {
             panic!("a managed note");
         };
@@ -391,7 +394,10 @@ mod tests {
         let long = format!("{}: 1\n", "k".repeat(257));
         assert_eq!(parts(&managed(&long, "x")), NoteParts::Outside);
         let fits = format!("{}: 1\n", "k".repeat(256));
-        assert!(matches!(parts(&managed(&fits, "x")), NoteParts::Managed { .. }));
+        assert!(matches!(
+            parts(&managed(&fits, "x")),
+            NoteParts::Managed { .. }
+        ));
         assert_eq!(parts(b"\xff\xfe"), NoteParts::Outside);
         assert_eq!(parts(b"---\nid: x\n"), NoteParts::Outside);
     }
@@ -441,7 +447,8 @@ mod tests {
 
     #[test]
     fn strings_and_keys_follow_rfc_8785() {
-        let value = serde_json::json!({"b": "é\n\u{1}", "a": [null, true], "\u{1f600}": 1, "\u{e000}": 2});
+        let value =
+            serde_json::json!({"b": "é\n\u{1}", "a": [null, true], "\u{1f600}": 1, "\u{e000}": 2});
         assert_eq!(
             canonical_json(&value),
             "{\"a\":[null,true],\"b\":\"é\\n\\u0001\",\"\u{1f600}\":1,\"\u{e000}\":2}"

@@ -61,6 +61,7 @@ mod store;
 pub mod sync;
 mod system;
 mod tabs;
+pub mod text_bridge;
 mod updates;
 mod view_state;
 mod viewers;

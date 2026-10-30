@@ -5,13 +5,18 @@
 //! preview, and plain-text and code files and notes with broken properties
 //! as source.
 
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
+use app_core::sync::workspace::presence::SelectionRange;
 use app_core::{App, ConflictChoice, OpenAs, PluginView, Property, PropertyValue, TabId};
-use editor_egui::{Editor, MdConfig, SpellChecker};
+use editor_egui::{Editor, MdConfig, RemoteCursor, SpellChecker};
 use egui::{
-    Button, Event, Frame, Grid, Id, Key, Margin, Modifiers, Panel, RichText, ScrollArea, Stroke,
-    TextEdit, Ui, UiBuilder,
+    Button, Color32, Event, Frame, Grid, Id, Key, Margin, Modifiers, Panel, RichText, ScrollArea,
+    Stroke, TextEdit, Ui, UiBuilder,
     accesskit::{Action, NodeId, Role},
     text::{CCursor, CCursorRange},
     text_edit::TextEditState,
@@ -202,6 +207,23 @@ fn typed_value(property: &Property, typed: &str) -> Option<PropertyValue> {
     }
 }
 
+/// Eight colors that stay readable on both themes, for collaborators.
+const CURSOR_COLORS: [Color32; 8] = [
+    Color32::from_rgb(0xd9, 0x4f, 0x4f),
+    Color32::from_rgb(0x2f, 0x8f, 0x5b),
+    Color32::from_rgb(0x3b, 0x6f, 0xd9),
+    Color32::from_rgb(0xc2, 0x7a, 0x12),
+    Color32::from_rgb(0x8e, 0x4f, 0xc9),
+    Color32::from_rgb(0x12, 0x8f, 0x9e),
+    Color32::from_rgb(0xc9, 0x4f, 0x9a),
+    Color32::from_rgb(0x6f, 0x7f, 0x2a),
+];
+
+/// The color of a collaborator's cursor, the same on every device.
+fn cursor_color(index: u8) -> Color32 {
+    CURSOR_COLORS[usize::from(index) % CURSOR_COLORS.len()]
+}
+
 fn name_field_id(tab: TabId) -> Id {
     Id::unique(("note-name", tab))
 }
@@ -316,6 +338,40 @@ pub(crate) fn show(
         let (version, shown) = note.editor.flush_for_save();
         note.editor.record_disk_save(version, shown);
         note.editor.apply_disk_version(text);
+    }
+    // The note's document arrived: the editor sends it your edits from
+    // here on, and shows what it merges as it arrives.
+    if !note.editor.edit.renderer.in_text_mode()
+        && let Some(document) = app.take_note_document(tab, note.editor.text())
+    {
+        note.editor.edit.renderer.enter_text_mode(document);
+    }
+    if note.editor.edit.renderer.in_text_mode() {
+        note.editor.edit.renderer.sync_text_mode();
+        let (anchor, head) = note.editor.edit.renderer.selection_utf16();
+        app.set_note_selections(
+            tab,
+            vec![SelectionRange {
+                anchor: anchor as u32,
+                head: head as u32,
+            }],
+            note.editor.focused(ui.ctx()),
+        );
+        note.editor.edit.remote_cursors = app
+            .note_cursors(tab)
+            .iter()
+            .flat_map(|cursor| {
+                let color = cursor_color(cursor.color);
+                let edit = &note.editor.edit;
+                cursor.selections.iter().map(move |range| RemoteCursor {
+                    anchor: edit.renderer.offset_of_utf16(range.anchor as usize),
+                    head: edit.renderer.offset_of_utf16(range.head as usize),
+                    color,
+                })
+            })
+            .collect();
+        // Remote edits and cursors arrive without any input.
+        ui.ctx().request_repaint_after(Duration::from_millis(100));
     }
     view.drawn = Some(tab);
     header(ui, app, note, tab);

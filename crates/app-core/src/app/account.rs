@@ -39,6 +39,11 @@ impl App {
         self.session.folder_sync().screen()
     }
 
+    /// Where the windows reach text-mode notes.
+    pub(crate) fn text_bridge(&self) -> Option<Arc<crate::text_bridge::TextBridge>> {
+        self.session.folder_sync().text_bridge()
+    }
+
     /// Carries out what you did in the Workspace sync section.
     pub fn folder_sync_action(&self, action: FolderSyncAction) {
         self.session.folder_sync().act(action);

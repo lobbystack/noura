@@ -287,6 +287,9 @@ pub struct NoteSession {
     /// save is in.
     look_again: bool,
     conflict: Option<NoteConflict>,
+    /// The note's text lives in a document in the collaboration sandbox,
+    /// and its file follows the document, so nothing here saves it.
+    text_mode: Option<sync_protocol::types::Id>,
     /// Another program deleted the file while the note had unsaved edits:
     /// saves wait, and Restore writes the note back.
     deleted: bool,
@@ -329,6 +332,7 @@ impl NoteSession {
             name_problem: None,
             look_again: false,
             conflict: None,
+            text_mode: None,
             deleted: false,
             restore_problem: None,
             uses_crlf: read.uses_crlf,
@@ -499,7 +503,33 @@ impl NoteSession {
     /// Whether the note has edits that aren't on disk yet, counting a save
     /// that's still running.
     pub fn is_unsaved(&self) -> bool {
+        if self.text_mode.is_some() {
+            return self.writing.is_some() || !self.property_edits.is_empty();
+        }
         self.text != self.body() || self.writing.is_some() || !self.property_edits.is_empty()
+    }
+
+    /// The note in text mode, when its text lives in a document.
+    pub fn text_mode(&self) -> Option<sync_protocol::types::Id> {
+        self.text_mode
+    }
+
+    /// The note's text lives in the document of `rid` from now on.
+    pub(crate) fn enter_text_mode(&mut self, rid: sync_protocol::types::Id) {
+        self.text_mode = Some(rid);
+        self.first_unsaved = None;
+        self.last_edit = None;
+    }
+
+    /// Whether a change in the editor could put this note in text mode: a
+    /// Markdown file whose text the editor holds as the file does.
+    pub(crate) fn may_enter_text_mode(&self) -> bool {
+        self.text_mode.is_none()
+            && !self.text_file
+            && !self.has_bom
+            && !self.uses_crlf
+            && !self.deleted
+            && self.conflict.is_none()
     }
 
     /// Whether a save is running.
@@ -591,6 +621,9 @@ impl NoteSession {
         if self.writing.is_some() || self.waiting_for_edit {
             return false;
         }
+        if self.text_mode.is_some() {
+            return !self.property_edits.is_empty() && !self.properties_held;
+        }
         if self.conflict.is_some() || self.deleted {
             // Autosave waits for your choice, or for Restore. Try again
             // still looks, in case the file changed back.
@@ -608,6 +641,7 @@ impl NoteSession {
             || self.waiting_for_edit
             || self.conflict.is_some()
             || self.deleted
+            || self.text_mode.is_some()
             || self.text == self.body()
         {
             return None;
@@ -1021,6 +1055,10 @@ impl NoteSession {
             return FileCheck::Same;
         }
         self.look_again = false;
+        if self.text_mode.is_some() {
+            // The editor hears of the file's changes from the document.
+            return FileCheck::Same;
+        }
         if !self.is_unsaved() {
             return if self.reread(engine) {
                 FileCheck::Shown

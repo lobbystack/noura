@@ -189,7 +189,10 @@ fn check(sandbox: &Sandbox, note: &mut Note, events: &[Event], changes: &[Op]) {
     };
     let booted_text = booted.text().expect("the booted text reads");
     assert_eq!(booted_text.encode_utf16().count(), booted.len() as usize);
-    assert_eq!(booted_text, text, "a booted device shows the note: {events:?}");
+    assert_eq!(
+        booted_text, text,
+        "a booted device shows the note: {events:?}"
+    );
 }
 
 /// `changes` applied to `text` as the editor applies them, splice by

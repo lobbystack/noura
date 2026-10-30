@@ -87,20 +87,31 @@ impl WorkspaceSync {
     /// Sets this device's selections in the note at `path`.
     pub fn set_selections(&mut self, path: &str, ranges: Vec<SelectionRange>, active: bool) {
         if let Some(rid) = self.rid_at(path) {
-            self.presence.selections.insert(rid, (ranges, active));
+            self.set_note_selections(rid, ranges, active);
         }
     }
 
-    /// Stops telling others of this device's selections in the note at
-    /// `path`.
-    pub fn clear_selections(&mut self, path: &str) {
-        if let Some(rid) = self.rid_at(path) {
-            self.presence.selections.remove(&rid);
-        }
+    /// Sets this device's selections in the note.
+    pub fn set_note_selections(&mut self, rid: Id, ranges: Vec<SelectionRange>, active: bool) {
+        self.presence.selections.insert(rid, (ranges, active));
+    }
+
+    /// Stops telling others of this device's selections in the note.
+    pub(super) fn close_presence(&mut self, rid: &Id) {
+        self.presence.selections.remove(rid);
+        self.presence.sent.remove(rid);
     }
 
     /// The current epoch's key and record digest for `rid`'s domain.
-    fn presence_epoch(&mut self, rid: &Id) -> Option<(Id, u64, sync_protocol::types::SecretKey, sync_protocol::types::Digest)> {
+    fn presence_epoch(
+        &mut self,
+        rid: &Id,
+    ) -> Option<(
+        Id,
+        u64,
+        sync_protocol::types::SecretKey,
+        sync_protocol::types::Digest,
+    )> {
         let domain = self.object_domain(rid);
         self.in_domain(domain, |sync| {
             let epoch = sync.state.epochs.last()?;
@@ -277,12 +288,17 @@ impl WorkspaceSync {
     /// The collaborators' cursors in the note at `path` as of `now`: each
     /// goes 30 seconds after its last record.
     pub fn cursors(&mut self, path: &str, now: Instant) -> Vec<Cursor> {
+        match self.rid_at(path) {
+            Some(rid) => self.note_cursors(rid, now),
+            None => Vec::new(),
+        }
+    }
+
+    /// The collaborators' cursors in the note as of `now`.
+    pub fn note_cursors(&mut self, rid: Id, now: Instant) -> Vec<Cursor> {
         self.presence
             .heard
             .retain(|_, heard| now.saturating_duration_since(heard.at) < CURSOR_LIFETIME);
-        let Some(rid) = self.rid_at(path) else {
-            return Vec::new();
-        };
         let Some(note) = self.text_shared(&rid) else {
             return Vec::new();
         };

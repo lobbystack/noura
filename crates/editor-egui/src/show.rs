@@ -832,6 +832,21 @@ impl MdEdit {
             ui.painter()
                 .set(pre.selection_shape, egui::Shape::Vec(shapes));
 
+            // Collaborators' selections and cursors, each in their color.
+            for cursor in &self.remote_cursors {
+                let range = (
+                    cursor.anchor.min(cursor.head),
+                    cursor.anchor.max(cursor.head),
+                );
+                if range.0 != range.1 {
+                    let fill = cursor.color.gamma_multiply(0.25);
+                    for rect in self.range_rects(range) {
+                        ui.painter().rect_filled(rect, 2.0, fill);
+                    }
+                }
+                self.show_offset(ui, cursor.head, cursor.color, None);
+            }
+
             let now = ui.ctx().input(|i| i.time);
             if self.in_progress_selection.is_some()
                 || (focused && self.cursor_last_interact.is_none())
