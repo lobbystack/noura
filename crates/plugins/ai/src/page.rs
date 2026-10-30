@@ -321,10 +321,7 @@ fn draw_message(view: &mut View, message: &Message, run: Option<&Run>, providers
 /// Whether a tool call or result message is a web search's or a page
 /// read's.
 fn is_web_call(message: &Message) -> bool {
-    matches!(
-        message.tool_name.as_deref(),
-        Some(web::SEARCH | web::FETCH)
-    )
+    matches!(message.tool_name.as_deref(), Some(web::SEARCH | web::FETCH))
 }
 
 /// A web search or page read the model asked for, and what came back:

@@ -14,8 +14,7 @@ use std::{
 use plugin_host::{
     AiChat, AiChats, AiFailure, AiMessage, AiProvider, AiRequest, AiRetention, AiRun, AiRunStatus,
     AiToolCall, AiToolDefinition, AiToolResult, AiWebPage, AiWebResult, Capability, ObjectTypes,
-    RunningPlugin,
-    ServiceError, Services, read_manifest,
+    RunningPlugin, ServiceError, Services, read_manifest,
 };
 use serde_json::Value;
 use support::plugins::{self, FakeObjects};
