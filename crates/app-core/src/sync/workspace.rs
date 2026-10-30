@@ -15,10 +15,12 @@
 //! capture changes; the calls that reach the server take the device's
 //! [`SyncService`].
 
+mod access;
 mod approve;
 mod bootstrap;
 mod capture;
 mod domains;
+mod moves;
 pub mod rebuild;
 mod settle;
 pub mod state;
@@ -39,7 +41,8 @@ use sync_protocol::live::LiveOp;
 use sync_protocol::matching::{domain_of, synced_path};
 use sync_protocol::messages::{
     ChainConflictDetail, Entry, EntryRecord, Frame, FrameAction, MAX_BODY, Page, PageStatus,
-    PullCursor, PushFailureDetail, RecordRef, records_frame_action, records_frame_is_well_formed,
+    PullCursor, PushFailureDetail, Receipt, RecordRef, records_frame_action,
+    records_frame_is_well_formed,
 };
 use sync_protocol::policy::PolicyChain;
 use sync_protocol::records::{
@@ -50,6 +53,7 @@ use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 
 use capture::{Change, Found};
 pub use capture::{SkipWhy, Skipped};
+pub use moves::{HeldFile, MOVE_WAIT, MoveReview};
 use settle::{Bodies, Body};
 pub use state::Ended;
 use state::{
@@ -186,6 +190,22 @@ pub struct WorkspaceSync {
     parked: BTreeMap<Id, domains::Runtime>,
     /// Whether a hold ended, so the files beneath it wait to be matched.
     rematch: bool,
+    /// The moves that wait for you, from the latest capture.
+    reviews: Vec<MoveReview>,
+    /// The moves you confirmed, which the next capture signs.
+    confirmed_moves: BTreeSet<Id>,
+    /// The files you moved into a restricted folder, until you dismiss the
+    /// notice (§9).
+    moved_in: Vec<(Id, String)>,
+    /// What the running capture leaves out.
+    skipped_now: Vec<Skipped>,
+    /// How long a manager's device leaves another's moves (§9).
+    move_wait: std::time::Duration,
+    /// The longest random wait before the device rotates a restricted
+    /// domain whose rotation is pending (§9).
+    rotation_wait: std::time::Duration,
+    /// When the device rotates each such domain.
+    rotation_due: BTreeMap<Id, std::time::Instant>,
 }
 
 /// What handling one realtime frame did (§23).
@@ -349,6 +369,9 @@ impl WorkspaceSync {
             rewrite_due: 0,
             profile_recheck: false,
             ended: None,
+            deferred_moves: BTreeMap::new(),
+            moved_away: Vec::new(),
+            move_due: BTreeMap::new(),
             bootstrap: false,
             bootstrap_progress: None,
         };
@@ -387,6 +410,13 @@ impl WorkspaceSync {
             active: None,
             parked: BTreeMap::new(),
             rematch: false,
+            reviews: Vec::new(),
+            confirmed_moves: BTreeSet::new(),
+            moved_in: Vec::new(),
+            skipped_now: Vec::new(),
+            move_wait: MOVE_WAIT,
+            rotation_wait: super::upkeep::KEY_HOLDER_WAIT.end,
+            rotation_due: BTreeMap::new(),
         };
         sync.want_entries();
         sync.save()?;
@@ -502,6 +532,13 @@ impl WorkspaceSync {
             active: None,
             parked: BTreeMap::new(),
             rematch: false,
+            reviews: Vec::new(),
+            confirmed_moves: BTreeSet::new(),
+            moved_in: Vec::new(),
+            skipped_now: Vec::new(),
+            move_wait: MOVE_WAIT,
+            rotation_wait: super::upkeep::KEY_HOLDER_WAIT.end,
+            rotation_due: BTreeMap::new(),
             state,
         };
         if let Some(next) = next.get(&sync.state.domain) {
@@ -942,18 +979,14 @@ impl WorkspaceSync {
             return Err(error);
         }
         let mut captured = self.capture()?;
-        let mut pushed = self.push(service).await?;
-        for domain in self.loaded_domains() {
-            self.swap_domain(domain);
-            let result = self.push(service).await;
-            self.swap_domain(domain);
-            pushed += result?;
-        }
+        let mut pushed = self.push_everything(service).await?;
         if self.state.profile_recheck && unix_now() >= self.state.rewrite_due {
             self.state.profile_recheck = false;
             self.follow_profile(service).await?;
         }
         let (applied, waiting_for_key) = self.pull_until(service, wait_seconds, wake).await?;
+        self.settle_moved_away()?;
+        self.rotate_domains(service, false).await?;
         self.sign_checkpoint(service).await?;
         for domain in self.loaded_domains() {
             self.swap_domain(domain);
@@ -1103,6 +1136,9 @@ impl WorkspaceSync {
         let changed = service.change_member(&mut remote, change).await;
         self.adopt(remote)?;
         let revision = changed?;
+        // The signer rotates each restricted domain it still reads (§9).
+        self.sync_domains(service).await?;
+        self.rotate_domains(service, true).await?;
         self.save()?;
         Ok(revision)
     }
@@ -1438,6 +1474,7 @@ impl WorkspaceSync {
             |file| read_for_sync(&engine, &file.relative_path, file.size),
         );
         let mut signed = rewritten + moved_markers;
+        self.reviews.clear();
         for change in changes {
             match change {
                 Change::Touch { rid, found } => {
@@ -1485,9 +1522,11 @@ impl WorkspaceSync {
                     }
                     let domain = self.object_domain(&rid);
                     // A file that crossed a root is a move between domains,
-                    // which waits here (§9).
-                    if domain_of(&found.file.relative_path, &self.state.roots) != domain {
-                        skipped.push(self.skip_crossing(&found.file.relative_path));
+                    // and a workspace-domain object inside a new root waits
+                    // for its move (§9).
+                    let target = domain_of(&found.file.relative_path, &self.state.roots);
+                    if target != domain {
+                        signed += self.crossing(rid, &found, domain, target)?;
                         continue;
                     }
                     self.in_domain(domain, |sync| {
@@ -1522,6 +1561,8 @@ impl WorkspaceSync {
             })?;
             signed += 1;
         }
+        signed += self.finish_moves()?;
+        skipped.append(&mut self.skipped_now);
         skipped.sort();
         self.skipped = skipped;
         self.save()?;
@@ -1599,6 +1640,17 @@ impl WorkspaceSync {
     }
 
     fn sign_file(&mut self, rid: Id, found: &Found, covers: Vec<Cover>) -> Result<(), SyncError> {
+        self.sign_file_from(rid, found, covers, None)
+    }
+
+    /// [`Self::sign_file`], with the `origin` of a move between domains.
+    fn sign_file_from(
+        &mut self,
+        rid: Id,
+        found: &Found,
+        covers: Vec<Cover>,
+        origin: Option<sync_protocol::records::Origin>,
+    ) -> Result<(), SyncError> {
         // A file relocated under `<root> (shared)` keeps its synced path
         // (§9).
         let existing = self
@@ -1646,7 +1698,7 @@ impl WorkspaceSync {
                 path,
                 revision: found.revision,
                 content,
-                origin: None,
+                origin,
             },
         };
         let carried = Carried {
@@ -1769,6 +1821,18 @@ impl WorkspaceSync {
     }
 
     fn sign_delete(&mut self, rid: Id, covers: Vec<Cover>) -> Result<(), SyncError> {
+        self.sign_removal(rid, covers, DeleteReason::Deleted, None)
+    }
+
+    /// Signs a delete of `rid`: an ordinary one, or the source half of a
+    /// move, which names the `target`.
+    fn sign_removal(
+        &mut self,
+        rid: Id,
+        covers: Vec<Cover>,
+        reason: DeleteReason,
+        target: Option<sync_protocol::records::Origin>,
+    ) -> Result<(), SyncError> {
         let object = &self.state.objects[&rid];
         let revision = object.local.as_ref().map_or(Digest::ZERO, |l| l.revision);
         let payload = Payload {
@@ -1777,8 +1841,8 @@ impl WorkspaceSync {
                 object_id: Text::new(object.object_id.clone())
                     .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
                 revision,
-                reason: DeleteReason::Deleted,
-                target: None,
+                reason,
+                target,
             },
         };
         let carried = Carried {
@@ -1845,6 +1909,7 @@ impl WorkspaceSync {
             reseals: 0,
             rewrite: false,
             upload: None,
+            pair: None,
         });
         Ok(key)
     }
@@ -2010,6 +2075,26 @@ impl WorkspaceSync {
         }
     }
 
+    /// Pushes every domain's outbox, with each move between domains in one
+    /// push. Returns how many records the server acknowledged.
+    async fn push_everything(&mut self, service: &mut SyncService) -> Result<usize, SyncError> {
+        let mut pushed = 0;
+        loop {
+            pushed += self.push(service).await?;
+            for domain in self.loaded_domains() {
+                self.swap_domain(domain);
+                let result = self.push(service).await;
+                self.swap_domain(domain);
+                pushed += result?;
+            }
+            let moved = self.push_pairs(service).await?;
+            pushed += moved;
+            if moved == 0 {
+                return Ok(pushed);
+            }
+        }
+    }
+
     /// Pushes the outbox in order, one push at a time, each at most 1 MiB,
     /// until it's empty or the server refuses a record that waits (§15).
     /// The same bytes go out on every retry. Returns how many records the
@@ -2033,7 +2118,8 @@ impl WorkspaceSync {
             self.save()?;
         }
         self.upload_blobs(service).await?;
-        while !self.state.outbox.is_empty() {
+        // A move's records leave in one push across domains (§9).
+        while self.state.outbox.first().is_some_and(|o| o.pair.is_none()) {
             // At the re-seal cap the device signs nothing more there, but
             // retries the last attempt's bytes (§14).
             let at_cap = self.stopped == Some("sync_reseal_limit");
@@ -2051,7 +2137,9 @@ impl WorkspaceSync {
             for outgoing in &self.state.outbox {
                 let record = RecordRef::Operation(outgoing.record.clone());
                 let len = record.to_bytes().len();
-                if !batch.is_empty() && size + len > MAX_BODY - PUSH_MARGIN {
+                if outgoing.pair.is_some()
+                    || (!batch.is_empty() && size + len > MAX_BODY - PUSH_MARGIN)
+                {
                     break;
                 }
                 size += len;
@@ -2060,32 +2148,10 @@ impl WorkspaceSync {
             let sent = batch.len();
             match service.client().push(self.state.workspace, batch).await {
                 Ok(response) => {
-                    for (outgoing, receipt) in self
-                        .state
-                        .outbox
-                        .drain(..sent)
-                        .zip(response.receipts.0.iter())
+                    let outgoing: Vec<Outgoing> = self.state.outbox.drain(..sent).collect();
+                    for (outgoing, receipt) in outgoing.into_iter().zip(response.receipts.0.iter())
                     {
-                        let record = &outgoing.record;
-                        if receipt.record_digest != record.digest() {
-                            return Err(SyncError::Network(
-                                "the push returned another record's receipt".into(),
-                            ));
-                        }
-                        self.state.own.acked =
-                            Some((record.body.counter, record.digest(), receipt.seq));
-                        let key = OpKey {
-                            device: record.body.device,
-                            counter: record.body.counter,
-                        };
-                        if let Some(state) = self
-                            .state
-                            .objects
-                            .get_mut(&record.body.rid)
-                            .and_then(|o| o.states.get_mut(&key))
-                        {
-                            state.seq = Some(receipt.seq);
-                        }
+                        self.acknowledge(outgoing, receipt)?;
                     }
                     acknowledged += sent;
                     if at_cap {
@@ -2111,6 +2177,30 @@ impl WorkspaceSync {
         Ok(acknowledged)
     }
 
+    /// Records the server's receipt for a record that left the outbox.
+    fn acknowledge(&mut self, outgoing: Outgoing, receipt: &Receipt) -> Result<(), SyncError> {
+        let record = &outgoing.record;
+        if receipt.record_digest != record.digest() {
+            return Err(SyncError::Network(
+                "the push returned another record's receipt".into(),
+            ));
+        }
+        self.state.own.acked = Some((record.body.counter, record.digest(), receipt.seq));
+        let key = OpKey {
+            device: record.body.device,
+            counter: record.body.counter,
+        };
+        if let Some(state) = self
+            .state
+            .objects
+            .get_mut(&record.body.rid)
+            .and_then(|o| o.states.get_mut(&key))
+        {
+            state.seq = Some(receipt.seq);
+        }
+        Ok(())
+    }
+
     /// Handles a refused push (§14): checks the reason against what the
     /// device can verify, then re-seals, replaces, drops or keeps the
     /// failing record. Returns an error when the record waits.
@@ -2129,6 +2219,19 @@ impl WorkspaceSync {
             ),
             None => (0, code, None),
         };
+        self.refused_at(service, index, record_code, record_detail)
+            .await
+    }
+
+    /// [`Self::refused`], for the record at `index` of the outbox.
+    async fn refused_at(
+        &mut self,
+        service: &mut SyncService,
+        index: usize,
+        record_code: &str,
+        record_detail: Option<Vec<u8>>,
+    ) -> Result<(), SyncError> {
+        let code = record_code;
         if index >= self.state.outbox.len() {
             return Err(SyncError::Refused {
                 code: code.to_owned(),
@@ -3412,6 +3515,9 @@ impl WorkspaceSync {
                         .map_err(|e| SyncError::Check(e.client_code()))?;
                     log.checkpoints
                         .note_policy_entry(entry.seq, policy_entry.revision);
+                    if matches!(change.body.kind, PolicyKind::CreateDomain { .. }) {
+                        log.domain_entries.insert(policy_entry.revision, entry.seq);
+                    }
                 }
                 EntryRecord::Epoch(epoch) => {
                     log.wanted
@@ -3536,6 +3642,8 @@ impl WorkspaceSync {
         let mut touched: Vec<Id> = Vec::new();
         let mut contents: Bodies = fetched;
         let mut applied = 0;
+        let mut arrivals = Vec::new();
+        let mut departures = Vec::new();
         for record in records {
             let op = &record.op;
             let key = OpKey {
@@ -3557,6 +3665,18 @@ impl WorkspaceSync {
                 }
             }
             applied += 1;
+            match record.payload.as_ref().map(|p| &p.kind) {
+                Some(PayloadKind::File {
+                    origin: Some(origin),
+                    ..
+                }) => arrivals.push((op.body.rid, origin.clone())),
+                Some(PayloadKind::Delete {
+                    reason: DeleteReason::Moved,
+                    target: Some(target),
+                    ..
+                }) => departures.push((op.body.rid, target.clone())),
+                _ => {}
+            }
             let content = match record.payload {
                 Some(payload) => carried(&payload, &mut contents),
                 None => {
@@ -3588,6 +3708,17 @@ impl WorkspaceSync {
             }
             if !touched.contains(&op.body.rid) {
                 touched.push(op.body.rid);
+            }
+        }
+        // A move's create comes before its delete: the new object takes
+        // the file, and a delete whose create hasn't arrived waits (§9).
+        for (moved, origin) in arrivals {
+            self.arrive(moved, origin);
+        }
+        for (rid, target) in departures {
+            if self.defers_delete(&target) {
+                self.state.deferred_moves.insert(rid, target.rid);
+                touched.retain(|t| *t != rid);
             }
         }
         // Every marker in the page stands as a root before any file beneath

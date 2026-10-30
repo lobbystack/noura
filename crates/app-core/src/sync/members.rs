@@ -9,6 +9,7 @@
 
 use sync_protocol::codec::Sorted;
 use sync_protocol::messages::RecordRef;
+use sync_protocol::policy::{AccountChains, Snapshot};
 use sync_protocol::records::{PolicyChange, PolicyKind, Role, Signed};
 use sync_protocol::types::Id;
 
@@ -43,22 +44,21 @@ impl MemberChange {
 }
 
 impl SyncService {
-    /// Signs and pushes `change` in `remote`, then rotates the workspace
-    /// domain when the change makes it due and this device still reads it
-    /// (§9). The verified policy refuses a change your role doesn't allow
+    /// Signs a policy change of `kind` at the verified head, recording this
+    /// account at the head the workspace records, so the change takes no
+    /// card out; a later head goes in its own `account_heads` change first
+    /// (§8). The verified policy refuses a change your role doesn't allow
     /// with `sync_policy_unauthorized` before anything goes out. Returns
-    /// the new policy revision.
-    pub async fn change_member(
+    /// the change, the policy after it, and the chains it was checked
+    /// against.
+    pub(crate) async fn sign_change(
         &mut self,
         remote: &mut RemoteWorkspace,
-        change: MemberChange,
-    ) -> Result<u64, SyncError> {
+        kind: PolicyKind,
+    ) -> Result<(Signed<PolicyChange>, Snapshot, AccountChains), SyncError> {
         self.refresh_policy(remote).await?;
         let chains = self.chains_of(remote).await?;
         let own = self.credentials.account;
-        // The signer's account at the head the workspace records, so the
-        // change takes no card out; a later head goes in its own
-        // `account_heads` change first (§8).
         let own_head = remote
             .policy
             .head_snapshot()
@@ -76,7 +76,7 @@ impl SyncService {
                 signer: keys.device(),
                 heads: Sorted::new(vec![own_head])
                     .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
-                kind: change.kind(),
+                kind,
             },
             keys.signing(),
         );
@@ -84,6 +84,20 @@ impl SyncService {
             .policy
             .check(&signed, &chains)
             .map_err(|e| SyncError::Check(e.client_code()))?;
+        Ok((signed, next, chains))
+    }
+
+    /// Signs and pushes `change` in `remote`, then rotates the workspace
+    /// domain when the change makes it due and this device still reads it
+    /// (§9). The verified policy refuses a change your role doesn't allow
+    /// with `sync_policy_unauthorized` before anything goes out. Returns
+    /// the new policy revision.
+    pub async fn change_member(
+        &mut self,
+        remote: &mut RemoteWorkspace,
+        change: MemberChange,
+    ) -> Result<u64, SyncError> {
+        let (signed, next, chains) = self.sign_change(remote, change.kind()).await?;
         self.client
             .push(remote.workspace, vec![RecordRef::Policy(signed.clone())])
             .await?;

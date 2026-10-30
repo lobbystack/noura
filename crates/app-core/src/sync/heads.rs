@@ -124,6 +124,12 @@ impl SyncService {
             Err(SyncError::Check("sync_key_mismatch")) if remote.epochs.latest().is_some() => {
                 return self.replace_or_rewrap(remote).await;
             }
+            // The wrapper lost its access since, so the envelope waits for
+            // the epoch's entry (§9), but a device that accepted this epoch
+            // holds its key already and can go on, such as to rotate.
+            Err(SyncError::KeyMissing) if self.holds_latest_epoch(remote).await? => {
+                return Ok(());
+            }
             Err(error) => return Err(error),
         };
         if let Some(old) = remote.epochs.latest() {
@@ -588,6 +594,22 @@ impl SyncService {
             }
             Err(error) => Err(error),
         }
+    }
+
+    /// Whether the server's current epoch of `remote`'s domain is the one
+    /// the device accepted.
+    async fn holds_latest_epoch(&mut self, remote: &RemoteWorkspace) -> Result<bool, SyncError> {
+        let Some(accepted) = remote.epochs.latest().map(|e| e.digest) else {
+            return Ok(false);
+        };
+        let current = self
+            .client
+            .current_keys(remote.workspace, self.credentials.keys.device())
+            .await?;
+        Ok(current.entries.0.iter().any(|e| {
+            matches!(&e.record, KeyRecord::Epoch(epoch)
+                if epoch.body.domain == remote.domain && epoch.digest() == accepted)
+        }))
     }
 
     /// Whether a rotation of the workspace domain is pending in the

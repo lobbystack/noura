@@ -108,6 +108,17 @@ pub struct State {
     /// after which it pulls and pushes nothing there (§15).
     #[serde(default)]
     pub ended: Option<Ended>,
+    /// Each object whose reason-2 delete arrived before its move's create,
+    /// with the new `rid`: the delete waits for the target domain (§9).
+    #[serde(default)]
+    pub deferred_moves: BTreeMap<Id, Id>,
+    /// Objects whose deferred delete can settle now.
+    #[serde(default)]
+    pub moved_away: Vec<Id>,
+    /// Unix seconds from which a manager's device finishes the moves of a
+    /// folder another device restricted (§9), by domain.
+    #[serde(default)]
+    pub move_due: BTreeMap<Id, u64>,
     /// Whether the device still loads the domain from its latest
     /// checkpoint before it pulls, as a new device does (§18).
     #[serde(default)]
@@ -287,6 +298,10 @@ pub struct Log {
     /// latest policy entry before its forked record.
     #[serde(default)]
     pub forked: BTreeMap<Id, u64>,
+    /// The sequence of each `create_domain`'s entry the device saw, by
+    /// revision: a workspace-domain object below it awaits its move (§9).
+    #[serde(default)]
+    pub domain_entries: BTreeMap<u64, u64>,
 }
 
 impl Log {
@@ -306,6 +321,7 @@ impl Log {
             skipped_rotators: BTreeMap::new(),
             checkpoints: Default::default(),
             forked: BTreeMap::new(),
+            domain_entries: BTreeMap::new(),
         }
     }
 }
@@ -450,6 +466,20 @@ pub struct Outgoing {
     /// ciphertext lies in the journal at [`upload_path`].
     #[serde(default)]
     pub upload: Option<sync_protocol::records::BlobRef>,
+    /// The move between domains this record is half of, which goes in one
+    /// push with its other half (§9).
+    #[serde(default)]
+    pub pair: Option<MovePair>,
+}
+
+/// A move between domains: the object's `rid` in the source domain and
+/// the new one in the target (§9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct MovePair {
+    /// The source `rid`, whose reason-2 delete is one half.
+    pub source: Id,
+    /// The new `rid`, whose state operation is the other.
+    pub target: Id,
 }
 
 /// Where the journal keeps a blob's ciphertext until its upload completes.

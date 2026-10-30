@@ -264,7 +264,7 @@ impl WorkspaceSync {
             return Ok(());
         }
         self.hold_uncovered(&rid, &content.path);
-        let synced = match self.placement_of(&rid, &content.path) {
+        let synced = match self.placement_with_exception(&rid, &content.path) {
             Placement::At(path) | Placement::Shared(path) => path,
             // A path that left the object's root: the file stays, and the
             // change goes to review (§9).
@@ -630,7 +630,7 @@ impl WorkspaceSync {
                 let base = object.base?;
                 let local = object.local.as_ref()?;
                 let content = object.states.get(&base)?.content.as_ref()?;
-                let shown = match self.placement_of(rid, &content.path) {
+                let shown = match self.placement_with_exception(rid, &content.path) {
                     Placement::At(path) | Placement::Shared(path) => path,
                     Placement::Outside(_) => return None,
                 };

@@ -225,6 +225,11 @@ impl WorkspaceSync {
             .collect()
     }
 
+    /// The revision of `domain`'s `create_domain`.
+    pub(super) fn created_revision(&self, domain: &Id) -> Option<u64> {
+        self.created_markers().get(domain).map(|(_, at)| *at)
+    }
+
     /// The markers this device follows, with their objects' `rid`s.
     pub(super) fn marker_objects(&self) -> BTreeSet<Id> {
         self.created_markers()
@@ -273,13 +278,14 @@ impl WorkspaceSync {
     /// recorded and holds its files, and a marker valid again ends the
     /// hold, after which the files beneath it are matched.
     pub(super) fn update_roots(&mut self) -> Result<(), SyncError> {
-        let Some(listed) = self
-            .remote
-            .as_ref()
-            .map(|r| r.policy.head_snapshot().domains.clone())
-        else {
+        let Some(snapshot) = self.remote.as_ref().map(|r| r.policy.head_snapshot().clone()) else {
             return Ok(());
         };
+        // A domain the policy dropped, or that this device no longer
+        // reads, holds its files: new ones can't reach it, and they stay
+        // out of any other (§9).
+        let device = self.credentials.keys.device();
+        let listed = |domain: &Id| snapshot.can_read(&device, domain);
         let created = self.created_markers();
         let views: Vec<MarkerView> = created
             .iter()
@@ -288,7 +294,7 @@ impl WorkspaceSync {
                 domain: *domain,
                 rid: *rid,
                 created_at: *created_at,
-                listed: listed.contains_key(domain),
+                listed: listed(domain),
                 live: self.marker_states(*domain, rid),
             })
             .collect();
@@ -421,7 +427,8 @@ impl WorkspaceSync {
             .push_new_domain(service, &mut remote, path, grants)
             .await;
         self.adopt(remote)?;
-        let (domain, frame, runtime, object, marker_rid) = committed?;
+        let (domain, frame, runtime, object, marker_rid, entry) = committed?;
+        self.state.log.domain_entries.extend(entry);
         self.state.restricted.insert(domain, frame);
         self.parked.insert(domain, runtime);
         self.state.objects.insert(marker_rid, object);
@@ -437,6 +444,10 @@ impl WorkspaceSync {
             rid: marker_rid,
         };
         self.restore_marker(&root)?;
+        // Each object already under the folder moves in, starting now;
+        // rounds push the pairs (§9).
+        self.state.move_due.insert(domain, 0);
+        self.finish_moves()?;
         self.save()?;
         Ok(domain)
     }
@@ -449,7 +460,7 @@ impl WorkspaceSync {
         remote: &mut RemoteWorkspace,
         path: SyncPath,
         grants: &[Access],
-    ) -> Result<(Id, Frame, Runtime, Object, Id), SyncError> {
+    ) -> Result<(Id, Frame, Runtime, Object, Id, Option<(u64, u64)>), SyncError> {
         service.refresh_policy(remote).await?;
         let chains = service.chains_of(remote).await?;
         let own = service.credentials.account;
@@ -597,6 +608,12 @@ impl WorkspaceSync {
             .find(|r| r.record_digest == op.digest())
             .map(|r| r.seq)
             .ok_or_else(|| SyncError::Network("the push left the marker out".into()))?;
+        let entry = response
+            .receipts
+            .0
+            .iter()
+            .find(|r| r.record_digest == change.digest() && r.domain == self.state.domain)
+            .map(|r| (change.body.revision, r.seq));
         remote
             .policy
             .append(&change, &chains)
@@ -655,6 +672,7 @@ impl WorkspaceSync {
             },
             object,
             marker_rid,
+            entry,
         ))
     }
 
