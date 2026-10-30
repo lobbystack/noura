@@ -8,6 +8,7 @@
 //! both insert at one place, the sandbox's text goes first.
 
 use std::fmt;
+use std::time::Duration;
 
 /// One component of an [`Op`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,6 +54,53 @@ pub struct Mismatch;
 
 fn utf16_len(text: &str) -> u32 {
     text.encode_utf16().count() as u32
+}
+
+/// How long a diff of an outside edit may look for a small change before it
+/// settles for a larger one.
+const DIFF_DEADLINE: Duration = Duration::from_millis(250);
+
+/// The change that turns `from` into `to`, diffed on code points, so it
+/// never splits a surrogate pair, even between two characters that share a
+/// high surrogate.
+pub fn difference(from: &str, to: &str) -> Op {
+    let prefix: usize = from
+        .chars()
+        .zip(to.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .sum();
+    let (from_tail, to_tail) = (&from[prefix..], &to[prefix..]);
+    let suffix: usize = from_tail
+        .chars()
+        .rev()
+        .zip(to_tail.chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .sum();
+    let old = &from_tail[..from_tail.len() - suffix];
+    let new = &to_tail[..to_tail.len() - suffix];
+    let mut op = Op::default();
+    op.retain(utf16_len(&from[..prefix]));
+    if old.is_empty() || new.is_empty() {
+        op.delete(utf16_len(old));
+        op.insert(new);
+    } else {
+        let diff = similar::TextDiff::configure()
+            .algorithm(similar::Algorithm::Myers)
+            .deadline(std::time::Instant::now() + DIFF_DEADLINE)
+            .diff_chars(old, new);
+        for change in diff.iter_all_changes() {
+            let text = change.value();
+            match change.tag() {
+                similar::ChangeTag::Equal => op.retain(utf16_len(text)),
+                similar::ChangeTag::Delete => op.delete(utf16_len(text)),
+                similar::ChangeTag::Insert => op.insert(text),
+            }
+        }
+    }
+    op.retain(utf16_len(&from_tail[from_tail.len() - suffix..]));
+    op
 }
 
 impl Op {

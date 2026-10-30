@@ -2,11 +2,12 @@
 //! document, the records it merged, and each writer's fuel allowance.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::time::Instant;
 
 use sync_protocol::codec::Decode;
-use sync_protocol::records::{Content, Payload, PayloadKind};
+use sync_protocol::records::{Content, Cover, Payload, PayloadKind};
+use sync_protocol::types::Id;
 
 use crate::allowance::Allowance;
 use crate::guest::{Failure, Guest};
@@ -25,9 +26,79 @@ pub const INTEGRATION_MEMORY_BYTES: usize = 1 << 30;
 /// relative position.
 const LOCAL_FUEL: u64 = 10_000_000_000;
 
+/// How many bytes of deferred records stay in memory when the journal can
+/// hand back the rest.
+pub const DEFERRED_MEMORY_BYTES: usize = 8 << 20;
+
 const PENDING: u32 = 1;
 const TEXT_TOO_LARGE: u32 = 2;
 const DOCUMENT_TOO_LARGE: u32 = 4;
+const MISPLACED: u32 = 8;
+const OVERLAP: u32 = 16;
+/// The bits of a client ID below its card index (§22).
+const LOAD_BITS: u32 = 29;
+
+/// Where a record sits in its signer's chain, which tells what a snapshot
+/// covers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Place {
+    /// The signing device.
+    pub device: Id,
+    /// Its counter.
+    pub counter: u64,
+    /// The record's covers, for a snapshot.
+    pub covers: Vec<Cover>,
+}
+
+impl Default for Place {
+    fn default() -> Self {
+        Self {
+            device: Id([0; 16]),
+            counter: 0,
+            covers: Vec::new(),
+        }
+    }
+}
+
+impl Place {
+    /// Whether a snapshot at this place covers the record at `other`.
+    fn covers(&self, other: &Place) -> bool {
+        self.covers
+            .iter()
+            .any(|cover| cover.device == other.device && other.counter <= cover.counter)
+    }
+}
+
+/// A record the journal holds and the sandbox judged readable, as a note
+/// opens from it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JournalRecord {
+    /// The caller's name for the record: its log sequence, or a number past
+    /// every sequence for this device's records not yet committed.
+    pub id: u64,
+    /// Whether it's a snapshot.
+    pub snapshot: bool,
+    /// Where it sits in its signer's chain.
+    pub place: Place,
+    /// Its yrs bytes.
+    pub bytes: Vec<u8>,
+}
+
+/// What a note opens from: its records in canonical order, each writer's
+/// balance when the note last closed, and where deferred records come back
+/// from.
+#[derive(Default)]
+pub struct Opened {
+    /// The readable records of the lineage, in canonical order.
+    pub records: Vec<JournalRecord>,
+    /// Each writer's balance, so a writer in debt stays in debt.
+    pub balances: Vec<(u32, i64)>,
+    /// Hands back a deferred record the sandbox doesn't keep in memory.
+    pub loader: Option<Loader>,
+}
+
+/// Reads a deferred record back from the journal by its ID.
+pub type Loader = Box<dyn FnMut(u64) -> Option<RemoteRecord> + Send>;
 
 /// A remote `text_snapshot` or `text_update` that passed the client checks
 /// of §13 and reached the journal.
@@ -45,9 +116,22 @@ pub struct RemoteRecord {
     pub payload: Vec<u8>,
     /// The blob's file, when the payload's content is a blob.
     pub blob: Option<Vec<u8>>,
+    /// Where it sits in its signer's chain.
+    pub place: Place,
 }
 
 impl RemoteRecord {
+    /// How many bytes the record holds in memory.
+    fn size(&self) -> usize {
+        self.payload.len() + self.blob.as_ref().map_or(0, Vec::len)
+    }
+
+    /// Whether it's a snapshot.
+    fn is_snapshot(&self) -> bool {
+        Payload::from_bytes(&self.payload)
+            .is_ok_and(|payload| matches!(payload.kind, PayloadKind::TextSnapshot { .. }))
+    }
+
     fn as_record(&self) -> Record<'_> {
         Record {
             payload: &self.payload,
@@ -134,6 +218,21 @@ pub enum Event {
     Skipped {
         /// The record.
         id: u64,
+    },
+    /// The record holds an item that sits where its writer couldn't have
+    /// put it (§22), so it doesn't merge and goes to review.
+    Refused {
+        /// The record.
+        id: u64,
+    },
+    /// The record disagrees with what this device holds of the lineage. A
+    /// snapshot made the device rebuild the document in canonical order.
+    /// Either way it goes to review with its signer.
+    Disagrees {
+        /// The record.
+        id: u64,
+        /// The signer's card index.
+        writer: u32,
     },
     /// yrs started or stopped holding updates whose dependencies haven't
     /// arrived, such as an update that depends on an unreadable record.
@@ -237,11 +336,22 @@ pub struct Note {
     /// The text's length in UTF-16 units.
     len: u32,
     allowances: HashMap<u32, Allowance>,
-    /// Records waiting on their writer's allowance, in arrival order.
-    deferred: VecDeque<RemoteRecord>,
+    /// Each writer's balance from the journal, until the writer first
+    /// shows up.
+    opening_balances: HashMap<u32, i64>,
+    /// Records waiting on their writer's allowance or on an earlier update
+    /// of the writer that yrs holds, in arrival order.
+    deferred: VecDeque<Waiting>,
+    /// The bytes of deferred records in memory.
+    deferred_bytes: usize,
+    loader: Option<Loader>,
     /// The yrs bytes of every record and local change merged, in order, to
     /// rebuild the document from.
-    journal: Vec<Vec<u8>>,
+    journal: Vec<JournalRecord>,
+    /// The next number for a local change in the journal.
+    next_local: u64,
+    /// The writers whose updates wait in yrs.
+    pending_writers: BTreeSet<u32>,
     /// Local changes not yet taken for a `text_update`, with the client ID
     /// each went in under.
     unsent: Vec<(u64, Vec<u8>)>,
@@ -255,6 +365,16 @@ pub struct Note {
     trap_next: bool,
 }
 
+/// A record that waits, in memory or in the journal.
+struct Waiting {
+    id: u64,
+    writer: u32,
+    snapshot: bool,
+    size: usize,
+    /// The record, or `None` while only the journal holds it.
+    record: Option<RemoteRecord>,
+}
+
 impl Note {
     /// Loads a note's document from the records the journal holds for its
     /// lineage, in canonical order, skipping the ones judged unreadable.
@@ -263,17 +383,50 @@ impl Note {
     pub fn open(
         sandbox: &Sandbox,
         journal: Vec<Vec<u8>>,
+        client_ids: ClientIds,
+    ) -> Result<Self, DocumentError> {
+        let records = journal
+            .into_iter()
+            .enumerate()
+            .map(|(id, bytes)| JournalRecord {
+                id: id as u64,
+                snapshot: id == 0,
+                place: Place::default(),
+                bytes,
+            })
+            .collect();
+        Self::open_lineage(
+            sandbox,
+            Opened {
+                records,
+                ..Opened::default()
+            },
+            client_ids,
+        )
+    }
+
+    /// [`Self::open`] from the journal's records with their places, each
+    /// writer's balance, and where deferred records come back from.
+    pub fn open_lineage(
+        sandbox: &Sandbox,
+        opened: Opened,
         mut client_ids: ClientIds,
     ) -> Result<Self, DocumentError> {
         let client = client_ids().ok_or(DocumentError::NoLoad)?;
-        let (guest, len, pending) = load(sandbox, client, &journal)?;
-        Ok(Self {
+        let journal = opened.records;
+        let (guest, len, pending, _) = load(sandbox, client, &journal)?;
+        let mut note = Self {
             sandbox: sandbox.clone(),
             verdicts: sandbox.clone(),
             guest,
             len,
             allowances: HashMap::new(),
+            opening_balances: opened.balances.into_iter().collect(),
             deferred: VecDeque::new(),
+            deferred_bytes: 0,
+            loader: opened.loader,
+            next_local: journal.iter().map(|r| r.id + 1).max().unwrap_or(0),
+            pending_writers: BTreeSet::new(),
             journal,
             unsent: Vec::new(),
             stop: None,
@@ -281,7 +434,29 @@ impl Note {
             client,
             client_ids,
             trap_next: false,
-        })
+        };
+        note.note_pending();
+        Ok(note)
+    }
+
+    /// Asks the document which writers' updates wait in yrs.
+    fn note_pending(&mut self) {
+        self.pending_writers.clear();
+        if !self.pending {
+            return;
+        }
+        self.guest.begin(LOCAL_FUEL);
+        let clients = match self.guest.call::<(), u32>("doc_pending_clients", ()) {
+            Ok(0) => self.guest.output().unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        self.pending_writers = clients
+            .chunks_exact(8)
+            .map(|word| {
+                let client = u64::from_le_bytes(word.try_into().expect("eight bytes"));
+                (client >> LOAD_BITS) as u32
+            })
+            .collect();
     }
 
     /// The text's length in UTF-16 units.
@@ -337,29 +512,93 @@ impl Note {
     }
 
     fn allowance(&mut self, writer: u32, now: Instant) -> &mut Allowance {
-        let allowance = self
-            .allowances
-            .entry(writer)
-            .or_insert_with(|| Allowance::new(now));
+        let opening = self.opening_balances.remove(&writer);
+        let allowance = self.allowances.entry(writer).or_insert_with(|| match opening {
+            Some(balance) => Allowance::with_balance(balance, now),
+            None => Allowance::new(now),
+        });
         allowance.refill(now);
         allowance
+    }
+
+    /// Each writer's balance as of `now`, which the journal keeps, so
+    /// reopening the note doesn't clear a writer's debt.
+    pub fn balances(&mut self, now: Instant) -> Vec<(u32, i64)> {
+        let writers: Vec<u32> = self
+            .allowances
+            .keys()
+            .chain(self.opening_balances.keys())
+            .copied()
+            .collect();
+        let mut balances: Vec<(u32, i64)> = writers
+            .into_iter()
+            .map(|writer| (writer, self.balance(writer, now)))
+            .collect();
+        balances.sort_unstable();
+        balances
     }
 
     /// Takes in a remote record: judges and merges it, or defers it while
     /// its writer's allowance is spent.
     pub fn receive(&mut self, record: RemoteRecord, now: Instant) -> Effects {
         let mut effects = Effects::default();
+        let snapshot = record.is_snapshot();
         let waiting = self
             .deferred
             .iter()
             .any(|deferred| deferred.writer == record.writer);
-        if waiting || !self.allowance(record.writer, now).in_credit() {
+        if waiting
+            || !self.allowance(record.writer, now).in_credit()
+            || (!snapshot && self.pending_writers.contains(&record.writer))
+        {
             effects.events.push(Event::Deferred { id: record.id });
-            self.deferred.push_back(record);
+            self.defer(record, snapshot);
         } else {
+            let released = !self.pending_writers.is_empty();
             effects.extend(self.process(&record, now));
+            if released {
+                effects.extend(self.wake(now));
+            }
         }
         effects
+    }
+
+    /// Keeps a record for later: in memory while the waiting records fit,
+    /// and otherwise only in the journal, when the journal can hand it back.
+    fn defer(&mut self, record: RemoteRecord, snapshot: bool) {
+        let size = record.size();
+        let fits = self.deferred_bytes + size <= DEFERRED_MEMORY_BYTES;
+        let keep = fits || self.loader.is_none();
+        if keep {
+            self.deferred_bytes += size;
+        }
+        self.deferred.push_back(Waiting {
+            id: record.id,
+            writer: record.writer,
+            snapshot,
+            size,
+            record: keep.then_some(record),
+        });
+    }
+
+    /// Takes the waiting record at `index`, from memory or the journal.
+    fn take_waiting(&mut self, index: usize) -> Option<RemoteRecord> {
+        let waiting = self
+            .deferred
+            .remove(index)
+            .expect("the index came from the queue");
+        match waiting.record {
+            Some(record) => {
+                self.deferred_bytes -= waiting.size;
+                Some(record)
+            }
+            None => self.loader.as_mut().and_then(|load| load(waiting.id)),
+        }
+    }
+
+    /// How many bytes of waiting records sit in memory.
+    pub fn deferred_bytes(&self) -> usize {
+        self.deferred_bytes
     }
 
     /// Runs the deferred records whose writers' allowances refilled by
@@ -368,20 +607,20 @@ impl Note {
         let mut effects = Effects::default();
         loop {
             // Each writer's first waiting record, in arrival order.
-            let mut firsts: Vec<(usize, u32)> = Vec::new();
+            let mut firsts: Vec<(usize, u32, bool)> = Vec::new();
             for (index, record) in self.deferred.iter().enumerate() {
-                if !firsts.iter().any(|(_, writer)| *writer == record.writer) {
-                    firsts.push((index, record.writer));
+                if !firsts.iter().any(|(_, writer, _)| *writer == record.writer) {
+                    firsts.push((index, record.writer, record.snapshot));
                 }
             }
-            let ready = firsts
-                .into_iter()
-                .find(|(_, writer)| self.allowance(*writer, now).in_credit());
-            let Some((index, _)) = ready else { break };
-            let record = self
-                .deferred
-                .remove(index)
-                .expect("the index came from the queue");
+            let ready = firsts.into_iter().find(|(_, writer, snapshot)| {
+                self.allowance(*writer, now).in_credit()
+                    && (*snapshot || !self.pending_writers.contains(writer))
+            });
+            let Some((index, _, _)) = ready else { break };
+            let Some(record) = self.take_waiting(index) else {
+                continue;
+            };
             effects.extend(self.process(&record, now));
         }
         effects
@@ -392,6 +631,7 @@ impl Note {
     pub fn next_wake(&self) -> Option<Instant> {
         self.deferred
             .iter()
+            .filter(|record| !self.pending_writers.contains(&record.writer))
             .filter_map(|record| self.allowances.get(&record.writer))
             .map(Allowance::next_refill)
             .min()
@@ -417,16 +657,52 @@ impl Note {
             effects.events.push(Event::Skipped { id: record.id });
             return effects;
         };
+        let entry = JournalRecord {
+            id: record.id,
+            snapshot: record.is_snapshot(),
+            place: record.place.clone(),
+            bytes: bytes.to_vec(),
+        };
+        if entry.snapshot {
+            let (disagrees, fuel) = self.compare(&entry);
+            self.allowance(record.writer, now).charge(fuel);
+            if disagrees {
+                self.rebuild_with(record.writer, entry, now, &mut effects);
+                return effects;
+            }
+        }
         let trap = std::mem::take(&mut self.trap_next);
         let stop = match integrate(&mut self.guest, &bytes, self.len, trap) {
             Ok((op, status, fuel)) => {
                 self.allowance(record.writer, now).charge(fuel);
+                if status & MISPLACED != 0 {
+                    // The instance holds the record: go back without it.
+                    effects.events.push(Event::Refused { id: record.id });
+                    match self.rebuild() {
+                        Ok(fuel) => {
+                            self.allowance(record.writer, now).charge(fuel);
+                            effects.events.push(Event::Rebuilt);
+                        }
+                        Err(_) => self.stop = Some(StopReason::Trap),
+                    }
+                    return effects;
+                }
                 if status & TEXT_TOO_LARGE != 0 {
                     Some(StopReason::TextTooLarge)
                 } else if status & DOCUMENT_TOO_LARGE != 0 {
                     Some(StopReason::DocumentTooLarge)
                 } else {
-                    self.journal.push(bytes.to_vec());
+                    if status & OVERLAP != 0 && !entry.snapshot {
+                        let (disagrees, fuel) = self.compare(&entry);
+                        self.allowance(record.writer, now).charge(fuel);
+                        if disagrees {
+                            effects.events.push(Event::Disagrees {
+                                id: record.id,
+                                writer: record.writer,
+                            });
+                        }
+                    }
+                    self.journal.push(entry);
                     self.len = op.target_len();
                     effects.changes.push(op);
                     effects.events.push(Event::Merged {
@@ -438,6 +714,7 @@ impl Note {
                         self.pending = pending;
                         effects.events.push(Event::Pending(pending));
                     }
+                    self.note_pending();
                     None
                 }
             }
@@ -461,17 +738,97 @@ impl Note {
         effects
     }
 
+    /// Compares a record with what the device holds of its lineage: the
+    /// records in the journal and those that wait. Returns whether they
+    /// disagree and the fuel the comparison used. A comparison that fails
+    /// counts as a disagreement.
+    fn compare(&mut self, entry: &JournalRecord) -> (bool, u64) {
+        let mut input = Vec::new();
+        let push = |input: &mut Vec<u8>, bytes: &[u8]| {
+            input.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            input.extend_from_slice(bytes);
+        };
+        push(&mut input, &entry.bytes);
+        let covers = |place: &Place| entry.snapshot && entry.place.covers(place);
+        for held in &self.journal {
+            input.push(u8::from(covers(&held.place)));
+            push(&mut input, &held.bytes);
+        }
+        let waiting: Vec<u64> = self.deferred.iter().map(|w| w.id).collect();
+        for id in waiting {
+            let index = self.deferred.iter().position(|w| w.id == id);
+            let Some(index) = index else { continue };
+            let record = match &self.deferred[index].record {
+                Some(record) => Some(record.clone()),
+                None => self.loader.as_mut().and_then(|load| load(id)),
+            };
+            let Some(record) = record else { continue };
+            if let Some(bytes) = record.yrs_bytes() {
+                input.push(u8::from(covers(&record.place)));
+                push(&mut input, &bytes);
+            }
+        }
+        let run = || -> Result<(bool, u64), Failure> {
+            let mut guest =
+                Guest::new(&self.sandbox, INTEGRATION_MEMORY_BYTES, INTEGRATION_FUEL_LIMIT)?;
+            let ptr = guest.write(&input)?;
+            let code: u32 = guest.call("compare_records", (ptr, input.len() as u32))?;
+            Ok((code != 0, guest.used()))
+        };
+        run().unwrap_or((true, 0))
+    }
+
+    /// Takes in a snapshot that disagrees with what the device holds:
+    /// discards the document and rebuilds it from the lineage's live
+    /// records in canonical order, charging the work to the signer.
+    fn rebuild_with(
+        &mut self,
+        writer: u32,
+        entry: JournalRecord,
+        now: Instant,
+        effects: &mut Effects,
+    ) {
+        let id = entry.id;
+        let Ok(before) = self.text() else {
+            self.stop = Some(StopReason::Trap);
+            return;
+        };
+        self.journal.push(entry);
+        let live: Vec<Place> = self
+            .journal
+            .iter()
+            .filter(|record| record.snapshot)
+            .map(|record| record.place.clone())
+            .collect();
+        self.journal.retain(|record| {
+            record.place == Place::default()
+                || !live.iter().any(|snapshot| snapshot.covers(&record.place))
+        });
+        self.journal.sort_by_key(|record| (!record.snapshot, record.id));
+        match self.rebuild() {
+            Ok(fuel) => self.allowance(writer, now).charge(fuel),
+            Err(_) => {
+                self.stop = Some(StopReason::Trap);
+                return;
+            }
+        }
+        let after = self.text().unwrap_or_default();
+        effects.changes.push(crate::op::difference(&before, &after));
+        effects.events.push(Event::Disagrees { id, writer });
+        effects.events.push(Event::Rebuilt);
+    }
+
     /// Discards the instance and loads the journal into a new one, under the
-    /// next client ID.
-    fn rebuild(&mut self) -> Result<(), DocumentError> {
+    /// next client ID. Returns the fuel it used.
+    fn rebuild(&mut self) -> Result<u64, DocumentError> {
         let client = (self.client_ids)().ok_or(DocumentError::NoLoad)?;
-        let (guest, len, pending) = load(&self.sandbox, client, &self.journal)?;
-        debug_assert_eq!(len, self.len, "the journal rebuilds the same text");
+        let (guest, len, pending, fuel) = load(&self.sandbox, client, &self.journal)?;
         self.guest = guest;
         self.len = len;
         self.pending = pending;
         self.client = client;
-        Ok(())
+        self.note_pending();
+        Ok(fuel)
     }
 
     /// After a failed call: rebuild, and stop the lineage if even that
@@ -489,7 +846,13 @@ impl Note {
         self.guest.call::<(), u32>("doc_take_update", ())?;
         let update = self.guest.output()?;
         if !update.is_empty() {
-            self.journal.push(update.clone());
+            self.journal.push(JournalRecord {
+                id: self.next_local,
+                snapshot: false,
+                place: Place::default(),
+                bytes: update.clone(),
+            });
+            self.next_local += 1;
             self.unsent.push((self.client, update));
         }
         Ok(())
@@ -734,12 +1097,13 @@ impl Note {
 }
 
 /// A new instance holding a document that inserts under `client`, with the
-/// journal merged in.
+/// journal merged in: the instance, the text's length, whether yrs holds
+/// pending updates and the fuel it used.
 fn load(
     sandbox: &Sandbox,
     client: u64,
-    journal: &[Vec<u8>],
-) -> Result<(Guest, u32, bool), DocumentError> {
+    journal: &[JournalRecord],
+) -> Result<(Guest, u32, bool, u64), DocumentError> {
     let mut guest =
         Guest::new(sandbox, INTEGRATION_MEMORY_BYTES, LOCAL_FUEL).map_err(sandbox_error)?;
     guest.begin(LOCAL_FUEL);
@@ -751,13 +1115,15 @@ fn load(
     }
     let mut len = 0;
     let mut pending = false;
-    for bytes in journal {
-        let (op, status, _) = integrate(&mut guest, bytes, len, false)
+    let mut used = 0;
+    for record in journal {
+        let (op, status, fuel) = integrate(&mut guest, &record.bytes, len, false)
             .map_err(|(failure, _)| sandbox_error(failure))?;
         len = op.target_len();
         pending = status & PENDING != 0;
+        used += fuel;
     }
-    Ok((guest, len, pending))
+    Ok((guest, len, pending, used))
 }
 
 /// Merges yrs bytes into the guest's document, returning the text change,
@@ -885,6 +1251,7 @@ mod tests {
                             card_count: receive["card_count"].as_u64().unwrap() as u32,
                             payload: hex(&receive["payload"]),
                             blob: None,
+                            place: Place::default(),
                         },
                         Instant::now(),
                     );

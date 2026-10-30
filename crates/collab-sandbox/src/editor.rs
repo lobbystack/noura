@@ -162,6 +162,7 @@ mod tests {
                         card_count: receive["card_count"].as_u64().unwrap() as u32,
                         payload: hex(&receive["payload"]),
                         blob: None,
+                        place: Default::default(),
                     })
                     .unwrap();
                     note.settle().unwrap();

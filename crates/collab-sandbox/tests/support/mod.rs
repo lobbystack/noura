@@ -299,6 +299,7 @@ pub fn update_record(
         card_count,
         payload: update_payload(load, yrs),
         blob: None,
+        place: Default::default(),
     }
 }
 
@@ -315,6 +316,7 @@ pub fn snapshot_record(
         card_count,
         payload: snapshot_payload(yrs),
         blob: None,
+        place: Default::default(),
     }
 }
 

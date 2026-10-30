@@ -63,6 +63,47 @@ pub struct Store {
 }
 
 impl Store {
+    /// The clients whose structs wait in the pending update for elements
+    /// that haven't arrived.
+    pub fn pending_clients(&self) -> Vec<ClientID> {
+        match &self.pending {
+            Some(pending) => pending
+                .update
+                .state_vector_lower()
+                .iter()
+                .map(|(c, _)| *c)
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Whether an item integrated since `before` sits where its writer
+    /// couldn't have put it: not between its origin and its right origin,
+    /// or with no origins in a text its writer had seen items of. Client ID
+    /// 0 holds a lineage's first document, which every writer has seen, so
+    /// an item of any other client with no origins can only stand in a
+    /// lineage whose first document is empty, as its writer's first item.
+    /// The walk from an item to its origins stays within the items written
+    /// concurrently, so an honest record pays little.
+    pub fn misplaced_since(&self, before: &crate::StateVector) -> bool {
+        let first_document = self.blocks.get_clock(&ClientID::new(0)) > 0;
+        for (client, blocks) in self.blocks.iter() {
+            let since = before.get(client);
+            for index in (0..blocks.len()).rev() {
+                let Some(BlockCell::Block(item)) = blocks.get(index) else {
+                    continue;
+                };
+                if item.id.clock + item.len <= since {
+                    break;
+                }
+                if misplaced(item, *client, first_document) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Create a new empty store in context of a given `client_id`.
     pub(crate) fn new(options: &Options) -> Self {
         Store {
@@ -543,6 +584,36 @@ pub type UpdateFn = Box<dyn Fn(&TransactionMut, &UpdateEvent) + 'static>;
 pub type SubdocsFn = Box<dyn Fn(&TransactionMut, &SubdocsEvent) + 'static>;
 #[cfg(not(feature = "sync"))]
 pub type DestroyFn = Box<dyn Fn(&TransactionMut, &Doc) + 'static>;
+
+/// Whether `item` of `client` breaks [`Store::misplaced_since`]'s rule.
+fn misplaced(item: &crate::block::Item, client: ClientID, first_document: bool) -> bool {
+    match (&item.origin, &item.right_origin) {
+        (None, None) => client != ClientID::new(0) && (first_document || item.id.clock > 0),
+        (origin, right_origin) => {
+            if let Some(origin) = origin {
+                let mut left = item.left;
+                loop {
+                    match left {
+                        None => return true,
+                        Some(block) if block.contains(origin) => break,
+                        Some(block) => left = block.left,
+                    }
+                }
+            }
+            if let Some(right_origin) = right_origin {
+                let mut right = item.right;
+                loop {
+                    match right {
+                        None => return true,
+                        Some(block) if block.contains(right_origin) => break,
+                        Some(block) => right = block.right,
+                    }
+                }
+            }
+            false
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct StoreEvents {

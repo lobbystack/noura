@@ -19,6 +19,7 @@
 //! A panic aborts, which traps, and the host treats the trap as the call's
 //! failure.
 
+pub mod compare;
 pub mod document;
 pub mod json;
 pub mod lib0;
@@ -359,6 +360,37 @@ pub extern "C" fn doc_decode_position(ptr: u32, len: u32) -> u32 {
             put(index.to_le_bytes().to_vec());
             0
         }
+    }
+}
+
+/// Puts the clients whose structs wait in yrs in the output, each as a
+/// little-endian `u64`.
+#[unsafe(no_mangle)]
+pub extern "C" fn doc_pending_clients() -> u32 {
+    match with_note(|note| note.pending_clients()) {
+        None => NO_DOCUMENT,
+        Some(clients) => {
+            put(clients.iter().flat_map(|c| c.to_le_bytes()).collect());
+            0
+        }
+    }
+}
+
+/// Compares a record with the lineage's other records (§22, Snapshot
+/// check). The input holds the record, then the others, each as a
+/// little-endian `u32` length, for the others a flag byte that is 1 when the
+/// record covers it, and that many bytes. Returns 0 when they agree, 1 when
+/// they disagree, and 2 when the input doesn't parse.
+#[unsafe(no_mangle)]
+pub extern "C" fn compare_records(ptr: u32, len: u32) -> u32 {
+    let bytes = take(ptr, len);
+    let Some(input) = compare::Input::parse(&bytes) else {
+        return 2;
+    };
+    match compare::disagrees(input.subject, &input.others) {
+        Ok(false) => 0,
+        Ok(true) => 1,
+        Err(_) => 2,
     }
 }
 

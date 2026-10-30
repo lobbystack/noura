@@ -476,6 +476,7 @@ fn client_ids_past_32_bits_round_trip_through_the_editor() {
             card_count: card,
             payload,
             blob: None,
+            place: Default::default(),
         });
         reader.settle();
         assert_eq!(reader.doc.text(), "wide");
@@ -495,6 +496,7 @@ fn client_ids_past_32_bits_round_trip_through_the_editor() {
             card_count: card,
             payload: hex(&case["payload"]),
             blob: None,
+            place: Default::default(),
         });
         reader.settle();
         assert_eq!(reader.doc.text(), case["text"]);
@@ -542,6 +544,7 @@ fn an_unreadable_record_leaves_text_selection_and_file_as_they_were() {
             card_count: case["card_count"].as_u64().unwrap() as u32,
             payload: hex(&case["payload"]),
             blob,
+            place: Default::default(),
         });
     }
     editor.settle();
@@ -580,6 +583,7 @@ fn an_update_that_depends_on_an_unreadable_record_waits_for_a_rewrite() {
                 card_count: receive["card_count"].as_u64().unwrap() as u32,
                 payload: hex(&receive["payload"]),
                 blob: None,
+                place: Default::default(),
             });
             editor.settle();
             assert_eq!(editor.doc.text(), step["text"], "{name}");
@@ -611,6 +615,7 @@ fn a_trap_during_integration_stops_the_lineage_at_its_last_good_state() {
                 card_count: receive["card_count"].as_u64().unwrap() as u32,
                 payload: hex(&receive["payload"]),
                 blob: None,
+                place: Default::default(),
             });
             editor.settle();
         }
@@ -660,6 +665,7 @@ fn an_overdrawn_writer_waits_while_others_keep_merging() {
                     card_count: receive["card_count"].as_u64().unwrap() as u32,
                     payload: hex(&receive["payload"]),
                     blob: None,
+                    place: Default::default(),
                 });
                 editor.settle();
                 let events = editor.events();
@@ -820,6 +826,7 @@ fn surrogate_splits_reach_the_editor_as_they_reach_the_document() {
             card_count: case["card_count"].as_u64().unwrap() as u32,
             payload: hex(&case["payload"]),
             blob: None,
+            place: Default::default(),
         });
         editor.settle();
         assert_eq!(editor.doc.text(), expected, "{name}");

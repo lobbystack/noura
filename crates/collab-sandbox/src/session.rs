@@ -30,9 +30,10 @@ use std::time::{Duration, Instant};
 
 use crate::Sandbox;
 use crate::note::{
-    ClientIds, DocumentError, Effects, Event, LineageStatus, LocalUpdate, Note, RemoteRecord,
+    ClientIds, DocumentError, Effects, Event, LineageStatus, LocalUpdate, Note, Opened,
+    RemoteRecord,
 };
-use crate::op::{Mismatch, Op, transform};
+use crate::op::{Mismatch, Op, difference, transform};
 
 /// An edit, undo or redo from the editor.
 struct ClientMessage {
@@ -68,6 +69,13 @@ enum Request {
         at: u64,
     },
     EndUndoStep,
+    /// Moves the document to this text as an outside edit of the file.
+    Replace {
+        text: String,
+        at: u64,
+        answer: Answer<()>,
+    },
+    Balances(Answer<Vec<(u32, i64)>>),
     Record(Box<RemoteRecord>),
     TakeUpdates(Answer<Vec<LocalUpdate>>),
     State(Answer<Vec<u8>>),
@@ -211,6 +219,29 @@ impl NoteHandle {
     /// shows its file, which holds the last merged state, until
     /// [`Opening::poll`] hands over the handle and the document's text.
     pub fn start(sandbox: &Sandbox, journal: Vec<Vec<u8>>, client_ids: ClientIds) -> Opening {
+        let records = journal
+            .into_iter()
+            .enumerate()
+            .map(|(id, bytes)| crate::note::JournalRecord {
+                id: id as u64,
+                snapshot: id == 0,
+                place: crate::note::Place::default(),
+                bytes,
+            })
+            .collect();
+        Self::start_lineage(
+            sandbox,
+            Opened {
+                records,
+                ..Opened::default()
+            },
+            client_ids,
+        )
+    }
+
+    /// [`Self::start`] from the journal's records with their places, each
+    /// writer's balance and where deferred records come back from.
+    pub fn start_lineage(sandbox: &Sandbox, source: Opened, client_ids: ClientIds) -> Opening {
         let (requests, inbox) = mpsc::channel();
         let (outbox, replies) = mpsc::channel();
         let (opened_tx, opened) = mpsc::channel();
@@ -220,7 +251,7 @@ impl NoteHandle {
         let spawned = std::thread::Builder::new()
             .name("collab-sandbox".into())
             .spawn(move || {
-                let mut note = match Note::open(&sandbox, journal, client_ids) {
+                let mut note = match Note::open_lineage(&sandbox, source, client_ids) {
                     Ok(note) => note,
                     Err(error) => {
                         let _ = opened_tx.send(Err(error));
@@ -443,13 +474,13 @@ pub struct Opening {
     opened: Option<Receiver<Result<(String, u32), DocumentError>>>,
 }
 
-type Opened = Result<(NoteHandle, String), HandleError>;
+type OpenedNote = Result<(NoteHandle, String), HandleError>;
 
 impl Opening {
     /// The handle and the document's text once the journal loaded, without
     /// waiting: `None` while it still loads, and an error when it failed.
     /// After it returns `Some`, it returns [`HandleError::Closed`].
-    pub fn poll(&mut self) -> Option<Opened> {
+    pub fn poll(&mut self) -> Option<OpenedNote> {
         let result = match &self.opened {
             None => Err(HandleError::Closed),
             Some(opened) => match opened.try_recv() {
@@ -463,7 +494,7 @@ impl Opening {
 
     /// Waits until the journal loaded, then returns the handle and the
     /// document's text.
-    pub fn wait(mut self) -> Opened {
+    pub fn wait(mut self) -> OpenedNote {
         let result = match &self.opened {
             None => Err(HandleError::Closed),
             Some(opened) => match opened.recv() {
@@ -474,7 +505,7 @@ impl Opening {
         self.finish(result)
     }
 
-    fn finish(&mut self, result: Result<(String, u32), HandleError>) -> Opened {
+    fn finish(&mut self, result: Result<(String, u32), HandleError>) -> OpenedNote {
         self.opened = None;
         let (text, len) = result?;
         let (shared, replies) = self.parts.take().ok_or(HandleError::Closed)?;
@@ -515,6 +546,19 @@ impl SharedNote {
     /// Hands the thread a remote record to judge and merge.
     pub fn receive(&self, record: RemoteRecord) -> Result<(), HandleError> {
         self.send(Request::Record(Box::new(record)))
+    }
+
+    /// Moves the document to `text` as an outside edit of the file: a
+    /// change computed from the difference, which undo never takes back and
+    /// which reaches the editor like a collaborator's. Waits for the
+    /// requests ahead of it.
+    pub fn replace_text(&self, text: String, at: u64) -> Result<(), HandleError> {
+        self.ask(|answer| Request::Replace { text, at, answer })
+    }
+
+    /// Each writer's balance, which the journal keeps.
+    pub fn balances(&self) -> Result<Vec<(u32, i64)>, HandleError> {
+        self.ask(Request::Balances)
     }
 
     /// Your changes since the last call, one update per load, for the
@@ -740,6 +784,24 @@ fn serve(mut note: Note, inbox: &Receiver<Request>, outbox: &Sender<Reply>, shar
                 }
             }
             Some(Request::EndUndoStep) => failed = note.end_undo_step().err(),
+            Some(Request::Replace {
+                text,
+                at,
+                answer: to,
+            }) => {
+                let result = note.text().and_then(|current| {
+                    let op = difference(&current, &text);
+                    note.local(&op, false, at).map(|()| op)
+                });
+                reply = match result {
+                    Ok(op) => {
+                        effects.changes.push(op);
+                        answer(to, Ok(()))
+                    }
+                    Err(error) => answer(to, Err(error)),
+                };
+            }
+            Some(Request::Balances(to)) => reply = answer(to, Ok(note.balances(now))),
             Some(Request::TakeUpdates(to)) => reply = answer(to, note.take_updates()),
             Some(Request::State(to)) => reply = answer(to, note.state()),
             Some(Request::Text(to)) => reply = answer(to, note.text()),

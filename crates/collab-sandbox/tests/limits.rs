@@ -55,6 +55,7 @@ fn blob_record(id: u64, yrs: Vec<u8>) -> RemoteRecord {
         card_count: 2,
         payload,
         blob: Some(yrs),
+        place: Default::default(),
     }
 }
 
@@ -65,6 +66,7 @@ fn inline_record(id: u64, yrs: &[u8]) -> RemoteRecord {
         card_count: 2,
         payload: update_payload(1, yrs),
         blob: None,
+        place: Default::default(),
     }
 }
 

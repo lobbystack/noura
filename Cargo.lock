@@ -2251,6 +2251,7 @@ dependencies = [
  "plugin-host",
  "proptest",
  "serde_json",
+ "similar",
  "sync-protocol",
  "thiserror 2.0.20",
  "wasmtime",
