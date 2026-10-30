@@ -22,7 +22,7 @@ use local_core::WorkspaceEngine;
 
 use crate::folder_sync::{
     ArchivedEntry, BranchEntry, ConflictEntry, FolderSyncAction, FolderSyncPhase, FolderSyncScreen,
-    HeldEntry, HeldRootEntry,
+    HeldEntry, HeldRootEntry, StoppedNoteEntry,
 };
 use crate::sync::realtime::Live;
 use crate::sync::registry::Registry;
@@ -116,6 +116,11 @@ impl Folder {
                             })
                             .collect(),
                     })
+                    .collect();
+                screen.stopped_notes = sync
+                    .stopped_notes()
+                    .into_iter()
+                    .map(|(rid, path)| StoppedNoteEntry { rid, path })
                     .collect();
                 screen.held = sync
                     .held()
@@ -431,6 +436,11 @@ impl Folder {
             FolderSyncAction::Choose { rid, key } => {
                 if let Some(sync) = self.sync.as_mut() {
                     sync.choose(rid, key)?;
+                }
+            }
+            FolderSyncAction::KeepLastGood(rid) => {
+                if let Some(sync) = self.sync.as_mut() {
+                    sync.keep_last_good(rid)?;
                 }
             }
             FolderSyncAction::KeepHeld { rid, choice } => {

@@ -85,6 +85,16 @@ pub struct ArchivedEntry {
     pub path: String,
 }
 
+/// A note whose edits stopped merging on this computer, waiting for you
+/// (§22).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoppedNoteEntry {
+    /// The object.
+    pub rid: Id,
+    /// The note's path.
+    pub path: String,
+}
+
 /// What the Workspace sync section shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FolderSyncScreen {
@@ -94,6 +104,8 @@ pub struct FolderSyncScreen {
     pub pending: usize,
     /// The conflicts waiting for you.
     pub conflicts: Vec<ConflictEntry>,
+    /// The notes whose edits stopped merging.
+    pub stopped_notes: Vec<StoppedNoteEntry>,
     /// The local versions held for review.
     pub held: Vec<HeldEntry>,
     /// The folders whose files wait for you.
@@ -131,6 +143,7 @@ impl FolderSyncScreen {
             } else {
                 FolderSyncPhase::On
             },
+            stopped_notes: Vec::new(),
             pending: status.pending,
             conflicts: Vec::new(),
             held: Vec::new(),
@@ -216,6 +229,9 @@ pub enum FolderSyncAction {
         /// The version.
         key: OpKey,
     },
+    /// Keep a stopped note's last good state, which ends its live editing
+    /// on every computer.
+    KeepLastGood(Id),
     /// Decide about a held local version.
     KeepHeld {
         /// The object.

@@ -1577,6 +1577,12 @@ impl WorkspaceSync {
             let Ok(found) = self.found_on_disk(&local.path) else {
                 continue;
             };
+            // A text-mode note moves by a text update that writes `path`
+            // (§22).
+            if self.in_text_mode(&rid) {
+                signed += self.capture_text(rid, &found)?;
+                continue;
+            }
             let domain = self.object_domain(&rid);
             self.in_domain(domain, |sync| {
                 let covers = sync.edit_covers(&rid);

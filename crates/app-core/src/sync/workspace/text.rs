@@ -284,6 +284,50 @@ fn entries_of(meta: &sync_protocol::records::MetaList) -> Vec<MetaEntry> {
         .collect()
 }
 
+/// What the snapshot rules of §22 look at.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SnapshotFacts {
+    /// The note's live patches.
+    pub patches: usize,
+    /// Their ciphertext, blobs included.
+    pub bytes: u64,
+    /// The encoded size of the note's last snapshot.
+    pub snapshot_size: u64,
+    /// Whether this device has the lowest device ID among the patch
+    /// holders.
+    pub designated: bool,
+    /// Whether this device wrote the note's latest update.
+    pub wrote_latest: bool,
+    /// How long the note has had no edit.
+    pub idle: Duration,
+    /// Whether you closed the note since your last edit.
+    pub closed: bool,
+    /// How long ago this device last snapshotted the note.
+    pub since_snapshot: Option<Duration>,
+    /// Whether the server answered `snapshot_required`.
+    pub required: bool,
+}
+
+/// Whether this device writes a snapshot now (§22).
+pub fn snapshot_due(facts: &SnapshotFacts) -> bool {
+    if facts.required {
+        return true;
+    }
+    if facts
+        .since_snapshot
+        .is_some_and(|since| since < SNAPSHOT_EVERY)
+    {
+        return false;
+    }
+    let threshold = (facts.snapshot_size / 4).clamp(VOLUME_BYTES.0, VOLUME_BYTES.1);
+    let past = facts.patches > VOLUME_PATCHES || facts.bytes > threshold;
+    let far_past = facts.patches > 2 * VOLUME_PATCHES || facts.bytes > 2 * threshold;
+    let rested = facts.wrote_latest && (facts.idle >= IDLE || facts.closed);
+    (past && facts.designated)
+        || far_past
+        || (facts.patches > IDLE_PATCHES && (rested || facts.idle >= IDLE_ANY_WRITER))
+}
+
 /// How a request to edit a note in text mode turned out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Entered {
@@ -1759,6 +1803,47 @@ impl WorkspaceSync {
         Ok(signed)
     }
 
+    /// Signs an update holding what `yrs` builds for this device's client
+    /// ID, whatever it holds, as a hostile writer would.
+    #[cfg(feature = "test-hooks")]
+    pub fn sign_hostile_update(
+        &mut self,
+        path: &str,
+        yrs: impl FnOnce(u64) -> Vec<u8>,
+    ) -> Result<(), SyncError> {
+        let rid = self
+            .rid_at(path)
+            .ok_or_else(|| SyncError::Invalid("no such note".into()))?;
+        let load = 536_870_911;
+        let client = yrs_client_id(self.card_index()?, load)
+            .ok_or_else(|| SyncError::Invalid("no client ID".into()))?;
+        let mut file = self
+            .text_file(&rid)?
+            .ok_or_else(|| SyncError::Invalid("not in text mode".into()))?;
+        self.sign_update(rid, &mut file, load, yrs(client), &[])?;
+        self.store_text(&rid, &file)
+    }
+
+    /// Notes whose lineage stopped on this device, which wait for your
+    /// choice.
+    pub fn stopped_notes(&self) -> Vec<(Id, String)> {
+        self.state
+            .objects
+            .iter()
+            .filter(|(_, object)| object.text.is_some())
+            .filter(|(rid, _)| {
+                self.text_file(rid)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|file| file.stopped)
+            })
+            .map(|(rid, object)| {
+                let path = object.local.as_ref().map(|l| l.path.clone());
+                (*rid, path.unwrap_or_default())
+            })
+            .collect()
+    }
+
     /// Whether the client ticks: a note's document is open.
     pub fn text_active(&self) -> bool {
         !self.text.sessions.is_empty()
@@ -1786,34 +1871,29 @@ impl WorkspaceSync {
             .iter()
             .filter(|r| !r.snapshot && live.contains(&r.key))
             .collect();
-        let count = patches.len();
-        let bytes: u64 = patches.iter().map(|r| r.weight).sum();
-        let latest = patches.iter().max_by_key(|r| r.id());
-        let wrote_latest = latest.is_some_and(|r| r.key.device == own);
-        let snapshot_size = file
-            .records
-            .iter()
-            .filter(|r| r.snapshot)
-            .map(|r| r.weight)
-            .max()
-            .unwrap_or(0);
-        let threshold = (snapshot_size / 4).clamp(VOLUME_BYTES.0, VOLUME_BYTES.1);
-        let lowest_holder = patches.iter().map(|r| r.key.device).min();
-        let designated = lowest_holder == Some(own);
-        let idle = now.saturating_duration_since(activity.last_edit);
-        let due = required
-            || (count > VOLUME_PATCHES || bytes > threshold) && designated
-            || count > 2 * VOLUME_PATCHES
-            || bytes > 2 * threshold
-            || count > IDLE_PATCHES
-                && ((wrote_latest && (idle >= IDLE || activity.closed)) || idle >= IDLE_ANY_WRITER);
-        if !due {
-            return Ok(false);
-        }
-        let recent = activity
-            .last_snapshot
-            .is_some_and(|at| now.saturating_duration_since(at) < SNAPSHOT_EVERY);
-        if recent && !required {
+        let facts = SnapshotFacts {
+            patches: patches.len(),
+            bytes: patches.iter().map(|r| r.weight).sum(),
+            snapshot_size: file
+                .records
+                .iter()
+                .filter(|r| r.snapshot)
+                .map(|r| r.weight)
+                .max()
+                .unwrap_or(0),
+            designated: patches.iter().map(|r| r.key.device).min() == Some(own),
+            wrote_latest: patches
+                .iter()
+                .max_by_key(|r| r.id())
+                .is_some_and(|r| r.key.device == own),
+            idle: now.saturating_duration_since(activity.last_edit),
+            closed: activity.closed,
+            since_snapshot: activity
+                .last_snapshot
+                .map(|at| now.saturating_duration_since(at)),
+            required,
+        };
+        if !snapshot_due(&facts) {
             return Ok(false);
         }
         self.write_snapshot(rid, false)?;
@@ -2048,6 +2128,88 @@ mod tests {
             .value
             .clone()
             .map(|v| String::from_utf8(v).unwrap())
+    }
+
+    #[test]
+    fn the_device_that_wrote_last_snapshots_a_resting_note() {
+        let facts = SnapshotFacts {
+            patches: 9,
+            wrote_latest: true,
+            idle: IDLE,
+            ..SnapshotFacts::default()
+        };
+        assert!(snapshot_due(&facts));
+        assert!(!snapshot_due(&SnapshotFacts {
+            patches: 8,
+            ..facts
+        }));
+        assert!(!snapshot_due(&SnapshotFacts {
+            idle: IDLE - Duration::from_secs(1),
+            ..facts
+        }));
+        assert!(snapshot_due(&SnapshotFacts {
+            idle: Duration::ZERO,
+            closed: true,
+            ..facts
+        }));
+        assert!(!snapshot_due(&SnapshotFacts {
+            wrote_latest: false,
+            ..facts
+        }));
+        assert!(snapshot_due(&SnapshotFacts {
+            wrote_latest: false,
+            idle: IDLE_ANY_WRITER,
+            ..facts
+        }));
+    }
+
+    #[test]
+    fn the_designated_device_snapshots_past_the_volume_and_others_past_twice_it() {
+        let facts = SnapshotFacts {
+            patches: 513,
+            ..SnapshotFacts::default()
+        };
+        assert!(!snapshot_due(&facts));
+        assert!(snapshot_due(&SnapshotFacts {
+            designated: true,
+            ..facts
+        }));
+        assert!(snapshot_due(&SnapshotFacts {
+            patches: 1_025,
+            ..facts
+        }));
+        // The byte threshold grows with the snapshot, up to 2 MiB.
+        let bytes = SnapshotFacts {
+            bytes: 1_500_000,
+            designated: true,
+            ..SnapshotFacts::default()
+        };
+        assert!(snapshot_due(&bytes));
+        assert!(!snapshot_due(&SnapshotFacts {
+            snapshot_size: 8 << 20,
+            ..bytes
+        }));
+        assert!(snapshot_due(&SnapshotFacts {
+            bytes: (4 << 20) + 1,
+            snapshot_size: 32 << 20,
+            designated: false,
+            ..bytes
+        }));
+    }
+
+    #[test]
+    fn a_device_snapshots_a_note_once_in_ten_seconds_unless_the_server_asks() {
+        let facts = SnapshotFacts {
+            patches: 2_000,
+            designated: true,
+            since_snapshot: Some(Duration::from_secs(9)),
+            ..SnapshotFacts::default()
+        };
+        assert!(!snapshot_due(&facts));
+        assert!(snapshot_due(&SnapshotFacts {
+            required: true,
+            ..facts
+        }));
     }
 
     #[test]

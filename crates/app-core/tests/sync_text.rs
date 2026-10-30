@@ -9,9 +9,9 @@ use app_core::sync::SyncService;
 use app_core::sync::realtime::Channel;
 use app_core::sync::workspace::WorkspaceSync;
 use app_core::sync::workspace::presence::{CURSOR_LIFETIME, SelectionRange};
-use app_core::sync::workspace::text::{Entered, IDLE, IDLE_ANY_WRITER, Judgement};
+use app_core::sync::workspace::text::{Entered, IDLE, IDLE_ANY_WRITER, Judgement, TextReviewKind};
 use app_core::text_bridge::TextBridge;
-use collab_sandbox::SandboxDocument;
+use collab_sandbox::{LineageStatus, SandboxDocument};
 use editor_core::text_mode::{CollabDocument, Utf16Splice};
 use sync_protocol::messages::Frame;
 use sync_store::Backend;
@@ -487,4 +487,207 @@ async fn the_server_stores_no_presence() {
             "a stored file holds the ciphertext"
         );
     }
+}
+
+fn varint(mut value: u64, out: &mut Vec<u8>) {
+    loop {
+        let byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+/// One item of `client` after the first document's first element.
+fn item(client: u64, text: &str) -> Vec<u8> {
+    let mut out = vec![1, 1];
+    varint(client, &mut out);
+    out.push(0);
+    out.push(0x84);
+    out.push(0);
+    out.push(0);
+    varint(text.len() as u64, &mut out);
+    out.extend_from_slice(text.as_bytes());
+    out.push(0);
+    out
+}
+
+/// `count` items of `client`, one element each, each after the one before.
+fn keystrokes(client: u64, count: u64) -> Vec<u8> {
+    let mut out = vec![1];
+    varint(count, &mut out);
+    varint(client, &mut out);
+    out.push(0);
+    for index in 0..count {
+        out.push(0x84);
+        if index == 0 {
+            out.extend_from_slice(&[0, 0]);
+        } else {
+            varint(client, &mut out);
+            varint(index - 1, &mut out);
+        }
+        out.push(1);
+        out.push(b'k');
+    }
+    out.push(0);
+    out
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hostile_update_is_unreadable_and_leaves_the_note_to_the_others() {
+    let mut pair = pair().await;
+    let (mut a, _b) = open_both(&mut pair).await;
+    let rid = pair.sync_a.rid_at(PLAN).unwrap();
+    pair.sync_b
+        .sign_hostile_update(PLAN, |_| vec![1, 2, 3])
+        .expect("signed");
+    both_rounds(&mut pair).await;
+    let reviews = pair.sync_a.text_reviews();
+    assert_eq!(reviews.len(), 1, "{reviews:?}");
+    assert_eq!(reviews[0].kind, TextReviewKind::Unreadable);
+    assert_eq!(reviews[0].signer, Some(pair.sync_b.device()));
+    type_at(&mut a, 6, "!");
+    both_rounds(&mut pair).await;
+    assert_eq!(read(&pair.a, PLAN), "# Plan!\n");
+    assert_eq!(read(&pair.b, PLAN), "# Plan!\n");
+    assert!(pair.sync_a.in_text_mode(&rid));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_writer_who_floods_a_note_slows_only_their_own_edits() {
+    let mut pair = pair().await;
+    let (mut a, _b) = open_both(&mut pair).await;
+    let rid = pair.sync_a.rid_at(PLAN).unwrap();
+    // One record overdraws the writer's allowance.
+    pair.sync_b
+        .sign_hostile_update(PLAN, |client| keystrokes(client, 600_000))
+        .expect("signed");
+    both_rounds(&mut pair).await;
+    assert!(read(&pair.a, PLAN).contains("kkk"));
+    // The next records wait.
+    pair.sync_b
+        .sign_hostile_update(PLAN, |client| item(client + 1, "later"))
+        .ok();
+    both_rounds(&mut pair).await;
+    // The other editor keeps typing, and the note stays writable.
+    type_at(&mut a, 0, "still here ");
+    both_rounds(&mut pair).await;
+    let text = read(&pair.a, PLAN);
+    assert!(text.starts_with("still here "), "{}", &text[..40]);
+    assert!(!text.contains("later"));
+    assert_eq!(pair.sync_a.text_status(&rid), Some(LineageStatus::Merging));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_record_that_jumps_past_the_limits_stops_the_lineage_until_you_keep_the_last_good_state()
+{
+    let mut pair = pair().await;
+    let (_a, _b) = open_both(&mut pair).await;
+    let rid = pair.sync_a.rid_at(PLAN).unwrap();
+    let huge = "x".repeat(9 << 20);
+    pair.sync_b
+        .sign_hostile_update(PLAN, |client| item(client, &huge))
+        .expect("signed");
+    both_rounds(&mut pair).await;
+    assert_eq!(read(&pair.a, PLAN), "# Plan\n", "the last good state stays");
+    assert_eq!(pair.sync_a.stopped_notes(), [(rid, PLAN.to_owned())]);
+    assert!(
+        pair.sync_a
+            .text_reviews()
+            .iter()
+            .any(|review| review.kind == TextReviewKind::Stopped)
+    );
+
+    pair.sync_a.keep_last_good(rid).expect("kept");
+    both_rounds(&mut pair).await;
+    assert!(!pair.sync_a.in_text_mode(&rid));
+    assert!(!pair.sync_b.in_text_mode(&rid));
+    assert_eq!(read(&pair.a, PLAN), "# Plan\n");
+    assert_eq!(read(&pair.b, PLAN), "# Plan\n");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_large_note_travels_in_blobs() {
+    let mut pair = pair().await;
+    let long = "line of the note\n".repeat(20_000);
+    pair.a.write(PLAN, long.as_bytes());
+    both_rounds(&mut pair).await;
+    assert_eq!(read(&pair.b, PLAN), long);
+    let (mut a, _b) = open_both(&mut pair).await;
+    type_at(&mut a, 0, "first ");
+    both_rounds(&mut pair).await;
+    assert_eq!(read(&pair.b, PLAN), format!("first {long}"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn your_edit_past_4_mib_ends_text_mode() {
+    let mut pair = pair().await;
+    let (mut a, _b) = open_both(&mut pair).await;
+    let rid = pair.sync_a.rid_at(PLAN).unwrap();
+    type_at(&mut a, 0, &"y".repeat((4 << 20) + 1));
+    both_rounds(&mut pair).await;
+    assert!(!pair.sync_a.in_text_mode(&rid));
+    assert!(!pair.sync_b.in_text_mode(&rid));
+    assert_eq!(pair.a.files(), pair.b.files());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_remote_edit_reaches_disk_before_the_round_that_applies_it_ends() {
+    let mut pair = pair().await;
+    let (mut a, _b) = open_both(&mut pair).await;
+    type_at(&mut a, 6, " durable");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("round");
+    let root = pair.b.engine.root().to_owned();
+    let service = &mut pair.desktop.service;
+    let sync = &mut pair.sync_b;
+    let (result, synced) = local_core::durability_probe::record(|| {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(sync.round(service, 0))
+        })
+    });
+    result.expect("round");
+    assert_eq!(read(&pair.b, PLAN), "# Plan durable\n");
+    assert!(synced.contains(&root), "{synced:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_text_mode_note_that_yields_its_path_moves_by_a_text_update() {
+    let mut pair = pair().await;
+    let (_a, _b) = open_both(&mut pair).await;
+    // Another object takes a colliding name: the digests decide who moves.
+    pair.b.write("plan.md", b"# Other\n");
+    both_rounds(&mut pair).await;
+    both_rounds(&mut pair).await;
+    assert_eq!(pair.a.files(), pair.b.files());
+    assert_eq!(pair.a.files().len(), pair.b.files().len());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_changed_journal_file_is_refused_and_a_restart_rebuilds_the_note() {
+    let mut pair = pair().await;
+    let (mut a, _b) = open_both(&mut pair).await;
+    type_at(&mut a, 6, " kept");
+    both_rounds(&mut pair).await;
+    let rid = pair.sync_b.rid_at(PLAN).unwrap();
+    let journal = pair
+        .b
+        .dir
+        .path()
+        .join(".noura/sync")
+        .join(pair.sync_b.device().to_hex())
+        .join(format!("text-{}.json", rid.to_hex()));
+    let bytes = std::fs::read(&journal).unwrap();
+    let mut changed = bytes.clone();
+    let last = changed.len() - 2;
+    changed[last] ^= 1;
+    std::fs::write(&journal, changed).unwrap();
+    assert!(pair.sync_b.text_file(&rid).is_err());
+    std::fs::write(&journal, bytes).unwrap();
+    assert!(pair.sync_b.text_file(&rid).unwrap().is_some());
 }
