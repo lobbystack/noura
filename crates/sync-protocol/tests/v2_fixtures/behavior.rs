@@ -10,7 +10,9 @@ use sync_protocol::blob::{
     BlobError, blob_ciphertext_len, ciphertext_digest, decrypt_blob, encrypt_blob, header,
     nonce_prefix,
 };
-use sync_protocol::chain::{ChainFetcher, ChainRecord, ChainVerifier, Fetched};
+use sync_protocol::chain::{
+    ChainError, ChainFetcher, ChainRecord, ChainVerifier, Fetched, NoFetch,
+};
 use sync_protocol::codec::{Bytes, Decode, Encode};
 use sync_protocol::crypto::{derive_key, hash};
 use sync_protocol::ids::{
@@ -799,6 +801,40 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
             same(json!(verdicts), expect.clone())
         }
 
+        "fork_resolution" => {
+            let records = |v: &Value| -> Vec<ChainRecord> {
+                v.as_array().unwrap().iter().map(chain_record).collect()
+            };
+            let mut verifier = ChainVerifier::new();
+            for page in case["applied"].as_array().unwrap() {
+                verifier
+                    .process_page(&records(page), &mut NoFetch)
+                    .map_err(|e| format!("an applied page failed: {e:?}"))?;
+            }
+            let forked = records(&case["forked"]);
+            match verifier.clone().process_page(&forked, &mut NoFetch) {
+                Err((_, ChainError::Forked)) => {}
+                other => return Err(format!("the page should fork: {other:?}")),
+            }
+            let kept = chain_record(&case["kept"]);
+            let kept = Ref {
+                device: kept.device,
+                counter: kept.counter,
+                seq: kept.seq,
+                op_digest: kept.digest,
+            };
+            match verifier.resolve_fork(&kept, &records(&case["records"])) {
+                Err(e) => same(
+                    json!({"error": e.client_code().trim_start_matches("sync_chain_")}),
+                    expect.clone(),
+                ),
+                Ok(()) => match verifier.process_page(&forked, &mut NoFetch) {
+                    Ok(verdicts) => same(serde_json::to_value(verdicts).unwrap(), expect.clone()),
+                    Err((i, e)) => Err(format!("record {i} failed after settling: {e:?}")),
+                },
+            }
+        }
+
         "checkpoint_walk" => {
             use sync_protocol::manifest::{
                 ChainLink, CheckpointFetcher, CheckpointWalk, WalkEntry,
@@ -1100,7 +1136,7 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
         }
         // The server's checks need a store, so the store conformance suite
         // runs these on each store.
-        "server_check" => Ok(()),
+        "server_check" | "server_heads" => Ok(()),
         "heads_may_leave" => same(
             policy(case).card_gone(&id_of(&case["device"]), u64_of(&case["revision"])),
             expect.as_bool().unwrap(),

@@ -5,7 +5,7 @@
 //! map from each `rid` to its local file and the states its operations
 //! carried, and the review store's index.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use sync_protocol::chain::ChainVerifier;
@@ -172,6 +172,10 @@ pub struct Log {
     /// need (§17).
     #[serde(default)]
     pub checkpoints: crate::sync::checkpoints::Checkpoints,
+    /// The devices whose chain forked, which hold the cursor until a
+    /// checkpoint settles the fork (§14).
+    #[serde(default)]
+    pub forked: BTreeSet<Id>,
 }
 
 /// A log entry the device requires.

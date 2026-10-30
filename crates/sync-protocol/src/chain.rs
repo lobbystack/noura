@@ -161,6 +161,10 @@ struct Position {
 struct DeviceChain {
     head: Option<Head>,
     positions: BTreeMap<u64, Position>,
+    /// The records of a forked chain's other branch, which the client
+    /// ignores once a checkpoint settled the fork (§14).
+    #[serde(default)]
+    ignored: BTreeSet<Digest>,
 }
 
 /// The verifier state of one domain: per device, the accepted head and the
@@ -191,6 +195,7 @@ impl ChainVerifier {
                         seq: head.seq,
                     }),
                     positions: BTreeMap::new(),
+                    ignored: BTreeSet::new(),
                 },
             );
         }
@@ -212,7 +217,85 @@ impl ChainVerifier {
             if let Some(head) = chain.head {
                 chain.positions.retain(|&counter, _| counter > head.counter);
             }
+            chain.ignored.clear();
         }
+    }
+
+    /// Whether the record is on the other branch of a settled fork, which
+    /// the client ignores (§14).
+    pub fn ignores(&self, device: &Id, digest: &Digest) -> bool {
+        self.devices
+            .get(device)
+            .is_some_and(|chain| chain.ignored.contains(digest))
+    }
+
+    /// Settles a fork in `kept.device`'s chain (§14). The client holds
+    /// `sync_chain_forked` for that device and accepted a policy change
+    /// that ends its write access; `kept` is the device's head in the
+    /// first checkpoint that covers that change's entry, and `records`
+    /// are the log's records from the client's cursor through that
+    /// checkpoint's `covered_seq`. The branch that ends at `kept` must
+    /// extend the client's head, through `previous` links or as a later
+    /// attempt of the head; the device's other records there are ignored
+    /// from now on. A branch that doesn't extend the head, as when the
+    /// client already applied the other branch past it, reports
+    /// `sync_chain_forked`.
+    pub fn resolve_fork(&mut self, kept: &Ref, records: &[ChainRecord]) -> Result<(), ChainError> {
+        let device = kept.device;
+        let head = self.head(&device);
+        let mine: BTreeMap<Digest, &ChainRecord> = records
+            .iter()
+            .filter(|r| r.device == device)
+            .map(|r| (r.digest, r))
+            .collect();
+        if kept.op_digest == head.digest {
+            if kept.counter != head.counter || kept.seq != head.seq {
+                return Err(ChainError::Forked);
+            }
+        } else if !mine
+            .get(&kept.op_digest)
+            .is_some_and(|r| r.counter == kept.counter && r.seq == kept.seq)
+        {
+            return Err(ChainError::Forked);
+        }
+        // Earlier attempts of a kept record are harmless: the verifier
+        // ignores them, or replaces them with the later one.
+        let attempts = |from: Digest, keep: &mut BTreeSet<Digest>| -> bool {
+            let mut current = from;
+            loop {
+                if current == head.digest && !current.is_zero() {
+                    return true;
+                }
+                let Some(record) = mine.get(&current) else {
+                    return false;
+                };
+                if !keep.insert(current) {
+                    return false;
+                }
+                current = record.previous_attempt;
+            }
+        };
+        let mut keep = BTreeSet::new();
+        let mut current = kept.op_digest;
+        while current != head.digest {
+            let record = mine.get(&current).ok_or(ChainError::Forked)?;
+            match record.counter.cmp(&head.counter) {
+                std::cmp::Ordering::Greater => {
+                    attempts(current, &mut keep);
+                    current = record.previous;
+                }
+                // A later attempt of the head, whose line reaches it.
+                std::cmp::Ordering::Equal if attempts(current, &mut keep) => break,
+                _ => return Err(ChainError::Forked),
+            }
+        }
+        let chain = self.devices.entry(device).or_default();
+        chain.ignored = mine
+            .keys()
+            .filter(|digest| !keep.contains(*digest))
+            .copied()
+            .collect();
+        Ok(())
     }
 
     /// Judges a page of records in sequence order. On an error the caller
@@ -249,6 +332,9 @@ impl ChainVerifier {
         carried: &BTreeMap<(Id, u64, Digest), Digest>,
         fetcher: &mut impl ChainFetcher,
     ) -> Result<ChainVerdict, ChainError> {
+        if self.ignores(&record.device, &record.digest) {
+            return Ok(ChainVerdict::Ignore);
+        }
         let head = self.head(&record.device);
         if record.counter <= head.counter {
             return self.rule_one(record, head, carried);

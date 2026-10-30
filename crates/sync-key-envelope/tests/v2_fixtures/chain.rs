@@ -87,7 +87,7 @@ fn schedule(
 pub fn fixture() -> Fixture {
     let mut f = Fixture::new(
         "sync-v2-chain.json",
-        "Device chains (sync-v2.md §14): schedules of served records and what the chain verifier reports for each. `server` lists what `GET .../chain/{device}/{counter}` serves (the record at that counter or the device's next one above it), `start_heads` the heads a bootstrap checkpoint gave, and `expect` either the verdict of each record of each page or the error and the page and index where it occurs. A `checkpoint_walk` case (§17, Checkpoint chain) gives the checkpoints a client `reached`, its `floor` and restore `generation`, the checkpoints `GET .../checkpoints/{digest}` serves, and a page's `entries`, and `expect` lists the checkpoints the client fetches before each entry, oldest first, or the index of the entry where the walk reports `sync_chain_gap`.",
+        "Device chains (sync-v2.md §14): schedules of served records and what the chain verifier reports for each. `server` lists what `GET .../chain/{device}/{counter}` serves (the record at that counter or the device's next one above it), `start_heads` the heads a bootstrap checkpoint gave, and `expect` either the verdict of each record of each page or the error and the page and index where it occurs. A `checkpoint_walk` case (§17, Checkpoint chain) gives the checkpoints a client `reached`, its `floor` and restore `generation`, the checkpoints `GET .../checkpoints/{digest}` serves, and a page's `entries`, and `expect` lists the checkpoints the client fetches before each entry, oldest first, or the index of the entry where the walk reports `sync_chain_gap`. A `fork_resolution` case gives the pages a reader `applied`, the page that `forked`, the head the first checkpoint covering the change that ends the device's write access `kept`, and the log's `records` from the reader's cursor through that checkpoint's `covered_seq`; `expect` holds the verdicts of the forked page judged again once the fork settles, or the error settling reports.",
     );
     let accept = json!({"verdict": "accept"});
     let ignore = json!({"verdict": "ignore"});
@@ -345,7 +345,142 @@ pub fn fixture() -> Fixture {
         "expect": {"error": "pruned", "page": 0, "index": 1},
     }));
     checkpoint_walks(&mut f);
+    fork_resolutions(&mut f);
     f
+}
+
+/// A `fork_resolution` case (§14): the reader applies `applied`, then
+/// `forked` reports `sync_chain_forked`. Once the reader accepts the
+/// change that ends the device's write access, the first checkpoint
+/// covering its entry lists `kept` as the device's head, and `records` are
+/// the log's records from the reader's cursor through that checkpoint's
+/// `covered_seq`. `expect` holds the verdicts of `forked` judged again
+/// after the fork settles, or the error that settling reports.
+fn fork_resolution(
+    f: &mut Fixture,
+    name: &str,
+    applied: &[Vec<ChainRecord>],
+    forked: &[ChainRecord],
+    records: &[ChainRecord],
+    kept: &ChainRecord,
+    expect: Value,
+) {
+    f.case(json!({
+        "kind": "fork_resolution",
+        "name": name,
+        "applied": applied.iter().map(|p| p.iter().map(rec).collect::<Vec<_>>()).collect::<Vec<_>>(),
+        "forked": forked.iter().map(rec).collect::<Vec<_>>(),
+        "records": records.iter().map(rec).collect::<Vec<_>>(),
+        "kept": rec(kept),
+        "expect": expect,
+    }));
+}
+
+fn fork_resolutions(f: &mut Fixture) {
+    let accept = json!({"verdict": "accept"});
+    let ignore = json!({"verdict": "ignore"});
+    let forked = json!({"error": "forked"});
+
+    // Two branches after `a`: `b` then `c`, and `b2` then `c2`.
+    let mut one = Device::new("forking device");
+    let a = at(one.sign("fork a"), 1);
+    let mut two = Device {
+        id: one.id,
+        records: one.records.clone(),
+    };
+    let b = at(one.sign("fork b"), 2);
+    let b2 = at(two.sign("fork b2"), 3);
+    let c = at(one.sign("fork c"), 4);
+    let c2 = at(two.sign("fork c2"), 5);
+    let page = vec![b, b2, c, c2];
+    fork_resolution(
+        f,
+        "a_fork_settled_on_the_branch_served_second",
+        &[vec![a]],
+        &page,
+        &page,
+        &c2,
+        json!([ignore, accept, ignore, accept]),
+    );
+    fork_resolution(
+        f,
+        "a_fork_settled_on_the_branch_served_first",
+        &[vec![a]],
+        &page,
+        &page,
+        &c,
+        json!([accept, ignore, accept, ignore]),
+    );
+    fork_resolution(
+        f,
+        "a_fork_settled_at_the_readers_own_head",
+        &[vec![a]],
+        &page,
+        &page,
+        &a,
+        json!([ignore, ignore, ignore, ignore]),
+    );
+    let stray = ChainRecord {
+        digest: hash_parts(&[b"chain fixture", b"fork stray"]),
+        ..c2
+    };
+    fork_resolution(
+        f,
+        "a_kept_head_the_records_dont_hold",
+        &[vec![a]],
+        &page,
+        &page,
+        &stray,
+        forked.clone(),
+    );
+    fork_resolution(
+        f,
+        "a_kept_head_at_another_sequence",
+        &[vec![a]],
+        &page,
+        &page,
+        &at(c2, 6),
+        forked.clone(),
+    );
+    // The reader applied one branch past the fork before the other
+    // arrived: the kept branch doesn't extend its head.
+    fork_resolution(
+        f,
+        "a_kept_branch_that_doesnt_extend_the_readers_head",
+        &[vec![a, b, c]],
+        &[b2, c2],
+        &[b2, c2],
+        &c2,
+        forked,
+    );
+
+    // Sibling re-seal attempts of the reader's head.
+    let mut d = Device::new("forking device");
+    let first = at(d.sign("fork attempt 1"), 1);
+    let second = at(d.reseal("fork attempt 2"), 2);
+    let sibling = ChainRecord {
+        digest: hash_parts(&[b"chain fixture", b"fork attempt 2 sibling"]),
+        seq: 3,
+        ..second
+    };
+    let next = ChainRecord {
+        counter: 2,
+        previous: sibling.digest,
+        previous_attempt: Digest::ZERO,
+        digest: hash_parts(&[b"chain fixture", b"fork after the sibling"]),
+        seq: 4,
+        ..sibling
+    };
+    let page = vec![second, sibling, next];
+    fork_resolution(
+        f,
+        "sibling_attempts_settled_on_the_later_sibling",
+        &[vec![first]],
+        &page,
+        &page,
+        &next,
+        json!([ignore, {"verdict": "replace", "replaced": first.digest.to_hex()}, accept]),
+    );
 }
 
 fn link(r: &ChainLink) -> Value {

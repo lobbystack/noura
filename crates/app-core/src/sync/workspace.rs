@@ -27,7 +27,9 @@ use std::sync::Arc;
 
 use local_core::WorkspaceEngine;
 use sync_key_envelope::v2::unwrap;
-use sync_protocol::chain::{ChainFetcher, ChainRecord, ChainVerdict, ChainVerifier, Fetched};
+use sync_protocol::chain::{
+    ChainError, ChainFetcher, ChainRecord, ChainVerdict, ChainVerifier, Fetched,
+};
 use sync_protocol::codec::{Bytes, Decode, Encode, Sorted, Text};
 use sync_protocol::crypto::{hash, random_nonce};
 use sync_protocol::keys::{
@@ -321,6 +323,7 @@ impl WorkspaceSync {
                 epoch_entries: 0,
                 skipped_rotators: BTreeMap::new(),
                 checkpoints: Default::default(),
+                forked: BTreeSet::new(),
             },
             own: Own {
                 next,
@@ -2620,6 +2623,7 @@ impl WorkspaceSync {
                 Err(error) => return Err(error),
             }
         }
+        self.settle_forks(service).await?;
         let extra = self.fetch_hidden_checkpoints(service, &page).await?;
         let mut checked = match self.judge_page(service, &page, &extra).await? {
             Some(checked) => checked,
@@ -2647,6 +2651,102 @@ impl WorkspaceSync {
         self.state.log.retention_floor = self.state.log.retention_floor.max(page.retention_floor);
         self.save()?;
         Ok((applied, false))
+    }
+
+    /// Settles each fork the log holds (§14): once the accepted policy
+    /// ends the forked device's write access to the domain at a change r,
+    /// the device fetches checkpoints from the latest back through
+    /// `previous` to the first whose `policy_revision` is at or above r,
+    /// reads the log from its cursor through that checkpoint's
+    /// `covered_seq`, and keeps the branch whose head the checkpoint lists.
+    /// A fork it can't settle yet keeps holding the cursor.
+    async fn settle_forks(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
+        let (workspace, domain) = (self.state.workspace, self.state.domain);
+        for device in self.state.log.forked.clone() {
+            let Some(remote) = self.remote.as_ref() else {
+                return Ok(());
+            };
+            let policy = &remote.policy;
+            if policy.head_snapshot().can_write(&device, &domain) {
+                continue;
+            }
+            let head = policy.head().0;
+            let Some(ended) = (2..=head).rev().find(|&r| {
+                policy
+                    .at(r - 1)
+                    .is_some_and(|s| s.can_write(&device, &domain))
+                    && policy.at(r).is_some_and(|s| !s.can_write(&device, &domain))
+            }) else {
+                continue;
+            };
+            let Some(latest) = service.client().checkpoint(workspace, domain).await? else {
+                continue;
+            };
+            let mut covering = latest.bundle;
+            if covering.checkpoint.0.body.policy_revision < ended {
+                continue;
+            }
+            loop {
+                let previous = covering.checkpoint.0.body.previous;
+                if previous.is_zero() {
+                    break;
+                }
+                let Some(entry) = service
+                    .client()
+                    .checkpoint_by_digest(workspace, domain, previous)
+                    .await?
+                else {
+                    return Err(SyncError::Check("sync_chain_gap"));
+                };
+                let EntryRecord::Checkpoint(before) = entry.record else {
+                    return Err(SyncError::Check("sync_chain_gap"));
+                };
+                if before.checkpoint.0.digest() != previous {
+                    return Err(SyncError::Check("sync_chain_gap"));
+                }
+                if before.checkpoint.0.body.policy_revision < ended {
+                    break;
+                }
+                covering = before;
+            }
+            let Some(kept) = covering.heads.iter().find(|h| h.device == device).cloned() else {
+                continue;
+            };
+            let covered = covering.checkpoint.0.body.covered_seq;
+            let mut records = Vec::new();
+            let mut after = self.state.log.cursor;
+            while after < covered {
+                let response = service
+                    .client()
+                    .pull(workspace, vec![PullCursor { domain, after }], 0)
+                    .await?;
+                let Some(page) = response.pages.0.into_iter().find(|p| p.domain == domain) else {
+                    return Err(SyncError::Check("sync_chain_gap"));
+                };
+                if page.complete_through <= after {
+                    break;
+                }
+                for entry in page.entries.iter().filter(|e| e.seq <= covered) {
+                    if let EntryRecord::Operation(op) = &entry.record
+                        && op.body.device == device
+                    {
+                        records.push(ChainRecord::from_operation(op, entry.seq));
+                    }
+                }
+                after = page.complete_through;
+            }
+            if self
+                .state
+                .log
+                .verifier
+                .resolve_fork(&kept, &records)
+                .is_ok()
+            {
+                self.state.log.forked.remove(&device);
+                self.save()?;
+            }
+        }
+        Ok(())
     }
 
     /// Walks the server's manifest at `at` against the device's own to
@@ -2825,9 +2925,17 @@ impl WorkspaceSync {
             let mut fetcher = Cached {
                 cache: &cache,
                 misses: Vec::new(),
+                forked: None,
             };
             let outcome = self.judge_with(page, extra, &mut fetcher);
             let misses = std::mem::take(&mut fetcher.misses);
+            if let (Err(SyncError::Check("sync_chain_forked")), Some(device)) =
+                (&outcome, fetcher.forked)
+                && misses.is_empty()
+                && self.state.log.forked.insert(device)
+            {
+                self.save()?;
+            }
             match outcome {
                 Err(error) if !misses.is_empty() => {
                     let _ = error;
@@ -3372,6 +3480,8 @@ impl sync_protocol::manifest::CheckpointFetcher for CachedCheckpoints<'_> {
 struct Cached<'a> {
     cache: &'a BTreeMap<(Id, u64), Fetched>,
     misses: Vec<(Id, u64)>,
+    /// The device whose record reported `sync_chain_forked`.
+    forked: Option<Id>,
 }
 
 impl ChainFetcher for Cached<'_> {
@@ -3416,6 +3526,10 @@ fn check_operation(
         .ok_or(SyncError::Check("sync_writer_not_authorized"))?;
     op.verify(&device.card.signing_public)
         .map_err(|_| SyncError::Check("sync_writer_not_authorized"))?;
+    // The other branch of a settled fork: the client ignores it (§14).
+    if log.verifier.ignores(&body.device, &op.digest()) {
+        return Ok(Judged::Ignored);
+    }
     let change = policy
         .change(body.policy_revision)
         .ok_or(SyncError::Check("sync_writer_not_authorized"))?;
@@ -3433,7 +3547,12 @@ fn check_operation(
     let verdict = log
         .verifier
         .process_one(&ChainRecord::from_operation(op, seq), fetcher)
-        .map_err(|e| SyncError::Check(e.client_code()))?;
+        .map_err(|e| {
+            if e == ChainError::Forked {
+                fetcher.forked = Some(body.device);
+            }
+            SyncError::Check(e.client_code())
+        })?;
     // The key of its epoch, from an envelope or a later key's lineage, or
     // an epoch this device accepted before a replacement ended it.
     let epoch_record = remote
