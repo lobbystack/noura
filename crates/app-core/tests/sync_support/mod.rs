@@ -8,12 +8,14 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use app_core::sync::{DeviceCredentials, KeptHeads, Secrets, SyncError, SyncService};
 use local_core::{CoreError, ErrorCategory, sync::SyncCredentials};
 use sync_key_envelope::v2::{DeviceKeys, genesis_link, next_link};
-use sync_protocol::codec::{Encode, Nested};
+use sync_protocol::codec::{Decode, Encode, Nested};
+use sync_protocol::messages::Frame;
 use sync_protocol::records::{AccountHead, AccountLink, LinkKind, Signed};
 use sync_protocol::types::{Digest, Id, to_base64url};
 use sync_store::{Backend, Session, Store};
@@ -346,15 +348,75 @@ pub type Forge = Box<dyn Fn(&str, &str) -> Option<(u16, Vec<u8>)> + Send + Sync>
 /// Rewrites a request's path and query before the proxy forwards it.
 pub type Reroute = Box<dyn Fn(&str) -> String + Send + Sync>;
 
+/// Rewrites each realtime frame the server sends: the frames to send in
+/// its place, none to drop it.
+pub type FrameTamper = Box<dyn Fn(Frame) -> Vec<Frame> + Send + Sync>;
+
 /// A proxy between a client and the server that forwards every request
 /// and lets a test rewrite responses, or answer in the server's place, as
-/// a malicious server or relay would.
+/// a malicious server or relay would. It bridges realtime channels too,
+/// and can rewrite or drop their frames, count the client's pings and
+/// close every channel.
 pub struct Proxy {
     pub base: String,
     tamper: Arc<Mutex<Option<Tamper>>>,
     forge: Arc<Mutex<Option<Forge>>>,
     reroute: Arc<Mutex<Option<Reroute>>>,
     upstream: Arc<Mutex<String>>,
+    frames: Arc<Mutex<Option<FrameTamper>>>,
+    pings: Arc<AtomicUsize>,
+    closing: tokio::sync::watch::Sender<u64>,
+}
+
+/// Bridges a client's realtime channel to the server's, passing each
+/// frame the server sends through `frames`.
+async fn bridge(
+    client: axum::extract::ws::WebSocket,
+    server: tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    frames: Arc<Mutex<Option<FrameTamper>>>,
+    pings: Arc<AtomicUsize>,
+    mut closing: tokio::sync::watch::Receiver<u64>,
+) {
+    use axum::extract::ws::Message as Client;
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message as Server;
+    let (mut to_client, mut from_client) = client.split();
+    let (mut to_server, mut from_server) = server.split();
+    loop {
+        tokio::select! {
+            _ = closing.changed() => return,
+            message = from_client.next() => match message {
+                Some(Ok(Client::Binary(bytes))) => {
+                    if to_server.send(Server::Binary(bytes)).await.is_err() {
+                        return;
+                    }
+                }
+                Some(Ok(Client::Ping(_))) => {
+                    pings.fetch_add(1, Ordering::SeqCst);
+                }
+                Some(Ok(Client::Close(_)) | Err(_)) | None => return,
+                Some(Ok(_)) => {}
+            },
+            message = from_server.next() => match message {
+                Some(Ok(Server::Binary(bytes))) => {
+                    let frame = Frame::from_bytes(&bytes).expect("the server sends frames");
+                    let sent = match frames.lock().unwrap().as_ref() {
+                        Some(tamper) => tamper(frame),
+                        None => vec![frame],
+                    };
+                    for frame in sent {
+                        if to_client.send(Client::Binary(frame.to_bytes().into())).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+                Some(Ok(Server::Close(_)) | Err(_)) | None => return,
+                Some(Ok(_)) => {}
+            },
+        }
+    }
 }
 
 impl Proxy {
@@ -407,6 +469,10 @@ impl Proxy {
         let forged = forge.clone();
         let rerouted = reroute.clone();
         let target = upstream.clone();
+        let frames: Arc<Mutex<Option<FrameTamper>>> = Arc::new(Mutex::new(None));
+        let pings = Arc::new(AtomicUsize::new(0));
+        let (closing, _) = tokio::sync::watch::channel(0u64);
+        let bridged = (frames.clone(), pings.clone(), closing.clone());
         let http = reqwest::Client::new();
         let app = axum::Router::new().fallback(move |request: axum::extract::Request| {
             let shared = shared.clone();
@@ -414,8 +480,9 @@ impl Proxy {
             let rerouted = rerouted.clone();
             let upstream = target.lock().unwrap().clone();
             let http = http.clone();
+            let (frames, pings, closing) = bridged.clone();
             async move {
-                let (parts, body) = request.into_parts();
+                let (mut parts, body) = request.into_parts();
                 let answer = forged
                     .lock()
                     .unwrap()
@@ -427,6 +494,40 @@ impl Proxy {
                         .header("content-type", "application/octet-stream")
                         .body(axum::body::Body::from(bytes))
                         .unwrap();
+                }
+                if parts.uri.path().ends_with("/realtime") {
+                    use axum::extract::FromRequestParts;
+                    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+                    let upgrade =
+                        axum::extract::ws::WebSocketUpgrade::from_request_parts(&mut parts, &())
+                            .await
+                            .expect("a WebSocket upgrade");
+                    let url = format!(
+                        "{}{}",
+                        upstream.replace("http://", "ws://"),
+                        parts.uri.path()
+                    );
+                    let mut request = url.into_client_request().unwrap();
+                    if let Some(token) = parts.headers.get("authorization") {
+                        request.headers_mut().insert("authorization", token.clone());
+                    }
+                    return match tokio_tungstenite::connect_async(request).await {
+                        Ok((server, _)) => {
+                            let closing = closing.subscribe();
+                            upgrade.on_upgrade(move |client| {
+                                bridge(client, server, frames, pings, closing)
+                            })
+                        }
+                        Err(tokio_tungstenite::tungstenite::Error::Http(refused)) => {
+                            let (head, body) = refused.into_parts();
+                            axum::response::Response::builder()
+                                .status(head.status.as_u16())
+                                .header("content-type", "application/octet-stream")
+                                .body(axum::body::Body::from(body.unwrap_or_default()))
+                                .unwrap()
+                        }
+                        Err(error) => panic!("the server's channel didn't open: {error}"),
+                    };
                 }
                 let body = axum::body::to_bytes(body, 2 << 20)
                     .await
@@ -479,7 +580,26 @@ impl Proxy {
             forge,
             reroute,
             upstream,
+            frames,
+            pings,
+            closing,
         }
+    }
+
+    /// Rewrites or drops every later realtime frame with `tamper`.
+    pub fn tamper_frames(&self, tamper: FrameTamper) {
+        *self.frames.lock().unwrap() = Some(tamper);
+    }
+
+    /// The pings the clients sent on their realtime channels.
+    pub fn pings(&self) -> usize {
+        self.pings.load(Ordering::SeqCst)
+    }
+
+    /// Closes every realtime channel open through the proxy, as a lost
+    /// connection would.
+    pub fn close_channels(&self) {
+        self.closing.send_modify(|n| *n += 1);
     }
 
     /// Answers every later request that `forge` picks in the server's
@@ -500,6 +620,7 @@ impl Proxy {
 
     /// Forwards every later request and response unchanged.
     pub fn honest(&self) {
+        *self.frames.lock().unwrap() = None;
         *self.tamper.lock().unwrap() = None;
         *self.forge.lock().unwrap() = None;
         *self.reroute.lock().unwrap() = None;

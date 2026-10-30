@@ -34,8 +34,8 @@ use sync_protocol::keys::{
 };
 use sync_protocol::live::{LiveOp, LiveSet};
 use sync_protocol::messages::{
-    ChainConflictDetail, EntryRecord, MAX_BODY, Page, PageStatus, PullCursor, PushFailureDetail,
-    RecordRef,
+    ChainConflictDetail, EntryRecord, Frame, FrameAction, MAX_BODY, Page, PageStatus, PullCursor,
+    PushFailureDetail, RecordRef, records_frame_action, records_frame_is_well_formed,
 };
 use sync_protocol::policy::PolicyChain;
 use sync_protocol::records::{
@@ -164,6 +164,19 @@ pub struct WorkspaceSync {
     /// The longest random wait before the device writes again other
     /// devices' records under a skipped epoch (§9).
     rewrite_wait: std::time::Duration,
+    /// The restore generation of the latest `restored` frame, which every
+    /// other frame is judged against (§23).
+    frame_generation: Option<u64>,
+}
+
+/// What handling one realtime frame did (§23).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameOutcome {
+    /// Other devices' records it applied.
+    pub applied: usize,
+    /// Whether it pulled, for a gap, a notify, a frame that failed a
+    /// check or a restore generation the device hasn't seen.
+    pub pulled: bool,
 }
 
 impl std::fmt::Debug for WorkspaceSync {
@@ -347,6 +360,7 @@ impl WorkspaceSync {
             cache: BTreeMap::new(),
             entry_hint: None,
             armed: BTreeSet::new(),
+            frame_generation: None,
         };
         sync.want_entries();
         sync.save()?;
@@ -439,6 +453,7 @@ impl WorkspaceSync {
             cache: BTreeMap::new(),
             entry_hint: None,
             armed: BTreeSet::new(),
+            frame_generation: None,
             state,
         };
         if let Some(next) = next.get(&sync.state.domain) {
@@ -505,6 +520,12 @@ impl WorkspaceSync {
                 .find(|c| !c.delete)
                 .map(|c| c.path.clone())
         })
+    }
+
+    /// The workspace domain's cursor: the log position through which the
+    /// device applied every record (§15).
+    pub fn cursor(&self) -> u64 {
+        self.state.log.cursor
     }
 
     /// The workspace's name, from its profile.
@@ -2216,6 +2237,138 @@ impl WorkspaceSync {
             .into_iter()
             .find(|p| p.domain == self.state.domain)
             .ok_or(SyncError::Check("sync_chain_gap"))?;
+        self.take_page(service, page).await
+    }
+
+    /// Handles a frame of the realtime channel (§23). A records frame that
+    /// follows straight on from the cursor goes through every check a
+    /// pulled page does, and the cursor moves to its last entry only after
+    /// every file change reaches disk; a gap, a frame inside the cursor, a
+    /// notify of a later head, a frame that fails a check, or a restore
+    /// generation the device hasn't seen sends the device to pull. A frame
+    /// the cursor already covers changes nothing. A policy or key hint
+    /// fetches the policy and keys, so they arrive before the next push,
+    /// and an account chain hint reads that chain.
+    pub async fn on_frame(
+        &mut self,
+        service: &mut SyncService,
+        frame: &Frame,
+    ) -> Result<FrameOutcome, SyncError> {
+        if self.state.ended.is_some() || self.paused {
+            return Ok(FrameOutcome::default());
+        }
+        let current = self.frame_generation == Some(self.state.generation);
+        match frame {
+            Frame::Restored { restore_generation } => {
+                self.frame_generation = Some(*restore_generation);
+                if *restore_generation == self.state.generation {
+                    return Ok(FrameOutcome::default());
+                }
+                // The generation's verdict comes from the pull, whose
+                // pages carry it as the server's claim (§14).
+                self.pull_after_frame(service).await
+            }
+            Frame::Records {
+                domain,
+                previous_seq,
+                checkpoint_due,
+                entries,
+            } if *domain == self.state.domain => {
+                let (Some(first), Some(last)) = (entries.first(), entries.last()) else {
+                    return self.pull_after_frame(service).await;
+                };
+                let cursor = self.state.log.cursor;
+                let action = records_frame_action(cursor, *previous_seq, first.seq, last.seq);
+                match action {
+                    FrameAction::Ignore if current => Ok(FrameOutcome::default()),
+                    FrameAction::Apply
+                        if current && records_frame_is_well_formed(*previous_seq, entries) =>
+                    {
+                        let page = Page {
+                            domain: *domain,
+                            status: PageStatus::Ok,
+                            after: cursor,
+                            complete_through: last.seq,
+                            // The frame says nothing of later entries; the
+                            // head the device saw last still stands.
+                            head: last.seq.max(self.state.log.head),
+                            retention_floor: self.state.log.retention_floor,
+                            checkpoint_seq: self.state.log.checkpoint_seq,
+                            restore_generation: self.state.generation,
+                            policy_revision: self.accepted_revision(),
+                            checkpoint_due: *checkpoint_due,
+                            entries: entries.clone(),
+                        };
+                        // A frame names no head, so it bounds none of the
+                        // entries the log waits for: the next pull's page
+                        // does (§8, §9).
+                        self.armed = BTreeSet::new();
+                        match self.take_page(service, page).await {
+                            Ok((applied, false)) => Ok(FrameOutcome {
+                                applied,
+                                pulled: false,
+                            }),
+                            // A frame that fails a check, or whose key
+                            // hasn't arrived, counts like such a page: the
+                            // cursor stays and the device pulls.
+                            Ok((_, true)) | Err(_) => self.pull_after_frame(service).await,
+                        }
+                    }
+                    _ => self.pull_after_frame(service).await,
+                }
+            }
+            Frame::Notify { domain, head, .. }
+                if *domain == self.state.domain && *head > self.state.log.cursor =>
+            {
+                self.pull_after_frame(service).await
+            }
+            Frame::PolicyChanged { revision } if *revision > self.accepted_revision() => {
+                self.refresh(service).await?;
+                Ok(FrameOutcome::default())
+            }
+            Frame::KeysChanged => {
+                match self.refresh(service).await {
+                    // An envelope still on its way arrives with a later
+                    // hint or pull.
+                    Ok(()) | Err(SyncError::KeyMissing) => {}
+                    Err(error) => return Err(error),
+                }
+                Ok(FrameOutcome::default())
+            }
+            Frame::AccountChanged {
+                account, genesis, ..
+            } => {
+                service.follow_account(*account, *genesis).await?;
+                Ok(FrameOutcome::default())
+            }
+            Frame::Error { code, .. } => {
+                tracing::warn!(code = %code.as_str(), "the realtime channel refused a frame");
+                Ok(FrameOutcome::default())
+            }
+            _ => Ok(FrameOutcome::default()),
+        }
+    }
+
+    /// A pull without waiting, in place of a frame.
+    async fn pull_after_frame(
+        &mut self,
+        service: &mut SyncService,
+    ) -> Result<FrameOutcome, SyncError> {
+        let (applied, _) = self.pull(service, 0).await?;
+        Ok(FrameOutcome {
+            applied,
+            pulled: true,
+        })
+    }
+
+    /// Checks a page of the workspace domain, verifies its records and
+    /// applies them, then advances the cursor once every file change
+    /// reached disk (§15).
+    async fn take_page(
+        &mut self,
+        service: &mut SyncService,
+        page: Page,
+    ) -> Result<(usize, bool), SyncError> {
         self.check_page(&page)?;
         match page.status {
             PageStatus::Ok => {}
