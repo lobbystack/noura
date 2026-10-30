@@ -76,7 +76,7 @@ pub struct InvitationEntry {
     /// approve the new member.
     pub sent_here: bool,
     /// Set when the account that accepted it was a member before: once
-    /// approved, it can read what was written while it was away (§9).
+    /// approved, it can read what members wrote while it was away (§9).
     pub returning: Option<String>,
 }
 
@@ -208,7 +208,7 @@ impl MembersScreen {
                         .accepted_by
                         .filter(|a| snapshot.former.contains_key(a))
                         .map(|_| {
-                            "This account was a member before. Once you approve it, it can read what was written while it was away.".to_owned()
+                            "This account was a member before. Once you approve it, it can read what members wrote while it was away.".to_owned()
                         }),
                 })
                 .collect()

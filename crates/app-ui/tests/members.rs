@@ -114,7 +114,7 @@ fn admin_screen() -> MembersScreen {
             InvitationEntry {
                 sent_here: false,
                 returning: Some(
-                    "This account was a member before. Once you approve it, it can read what was written while it was away.".into(),
+                    "This account was a member before. Once you approve it, it can read what members wrote while it was away.".into(),
                 ),
                 ..invitation(
                     ACCEPTED,
@@ -179,7 +179,7 @@ fn invitations_show_their_role_and_status_and_leave_once_they_end() {
     accepted.get_by_label("Another computer sent this one. Only it can approve the new member.");
     accepted.get_by_role_and_label(
         accesskit::Role::Alert,
-        "This account was a member before. Once you approve it, it can read what was written while it was away.",
+        "This account was a member before. Once you approve it, it can read what members wrote while it was away.",
     );
     accepted
         .get_by_role_and_label(accesskit::Role::Button, "Revoke")
@@ -191,11 +191,11 @@ fn invitations_show_their_role_and_status_and_leave_once_they_end() {
     // approved or expired.
     members.show(MembersScreen {
         invitations: Vec::new(),
-        notice: Some("Invitation revoked. Its link no longer opens.".into()),
+        notice: Some("You revoked the invitation. Its link no longer opens.".into()),
         ..admin_screen()
     });
     harness.run();
-    harness.get_by_label("Invitation revoked. Its link no longer opens.");
+    harness.get_by_label("You revoked the invitation. Its link no longer opens.");
     harness.get_by_label("No open invitations.");
     assert!(
         harness
@@ -289,7 +289,7 @@ fn roles_change_and_a_removal_asks_first() {
     );
     let confirm = harness.get_by_role_and_label(accesskit::Role::Group, "Confirm");
     confirm.get_by_label(
-        "Remove Account 03030303? Their devices stop syncing this workspace, and the workspace gets a new key. Copies of files they already have stay with them.",
+        "Remove Account 03030303? Their devices stop syncing this workspace, and Noura changes its key. They keep copies of files they already have.",
     );
     confirm
         .get_by_role_and_label(accesskit::Role::Button, "Remove")
@@ -299,11 +299,11 @@ fn roles_change_and_a_removal_asks_first() {
 
     members.show(MembersScreen {
         members: admin_screen().members[..3].to_vec(),
-        notice: Some("Member removed. Copies of files they already have stay with them.".into()),
+        notice: Some("You removed the member. They keep copies of files they already have.".into()),
         ..admin_screen()
     });
     harness.run();
-    harness.get_by_label("Member removed. Copies of files they already have stay with them.");
+    harness.get_by_label("You removed the member. They keep copies of files they already have.");
     assert!(
         harness
             .query_by_role_and_label(accesskit::Role::Group, "Account 03030303, viewer, 1 device")

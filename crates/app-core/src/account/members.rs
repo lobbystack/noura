@@ -101,20 +101,20 @@ impl Membership {
                     .await?;
                 self.screen.copy = Some(LinkText(created.url));
                 Some(format!(
-                    "{} invitation link copied. Send it over a channel you trust. Keep this computer: only it can approve the new member.",
-                    role_name(role)
+                    "Noura copied the {} invitation link. Send it over a channel you trust. Only this computer can approve the new member.",
+                    role_name(role).to_lowercase()
                 ))
             }
             MembersAction::CopyLink(invitation) => {
                 let url = service.invitation_url(&book, &invitation)?;
                 self.screen.copy = Some(LinkText(url));
-                Some("Invitation link copied.".into())
+                Some("Noura copied the invitation link.".into())
             }
             MembersAction::Revoke(invitation) => {
                 service
                     .revoke_invitation(&mut book, workspace, invitation)
                     .await?;
-                Some("Invitation revoked. Its link no longer opens.".into())
+                Some("You revoked the invitation. Its link no longer opens.".into())
             }
             MembersAction::SetRole { account, role } => {
                 sync.change_member(service, MemberChange::SetRole { account, role })
@@ -127,12 +127,12 @@ impl Membership {
             MembersAction::Remove(account) => {
                 sync.change_member(service, MemberChange::Remove(account))
                     .await?;
-                Some("Member removed. Copies of files they already have stay with them.".into())
+                Some("You removed the member. They keep copies of files they already have.".into())
             }
             MembersAction::TransferOwner(account) => {
                 sync.change_member(service, MemberChange::TransferOwner(account))
                     .await?;
-                Some("Ownership transferred. You're an admin now.".into())
+                Some("You made them the owner. You're an admin now.".into())
             }
             MembersAction::Leave => {
                 let own = service.credentials().account;

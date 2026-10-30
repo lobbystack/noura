@@ -653,7 +653,7 @@ async fn the_members_screen_follows_the_policy_and_the_server() {
         shown.invitations[0]
             .returning
             .as_deref()
-            .is_some_and(|w| w.contains("read what was written while it was away"))
+            .is_some_and(|w| w.contains("read what members wrote while it was away"))
     );
 
     // An editor sees no invitations and changes no one.

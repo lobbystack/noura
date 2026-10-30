@@ -110,7 +110,7 @@ fn draw(
         let (question, button, action) = match &confirm {
             Confirm::Remove(account, who) => (
                 format!(
-                    "Remove {who}? Their devices stop syncing this workspace, and the workspace gets a new key. Copies of files they already have stay with them."
+                    "Remove {who}? Their devices stop syncing this workspace, and Noura changes its key. They keep copies of files they already have."
                 ),
                 "Remove",
                 MembersAction::Remove(*account),
