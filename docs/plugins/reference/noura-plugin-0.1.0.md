@@ -669,6 +669,19 @@ A chat is a folder of Markdown files in the workspace, `chat.md` and one
 file per message, in the workspace format's chat layout. Noura writes
 them, and each write is on disk before the call that made it returns.
 
+`web-search` and `web-fetch` let the model search the web with Brave
+Search and read pages. Noura sends each request for the plugin, so the
+plugin opens no connection of its own. They work once you add your
+Brave Search key in Settings and allow web search for the workspace in
+Noura's own prompt, which is a separate choice from a provider's
+consent. Noura asks nothing per call.
+
+Noura sends a search or a page read only to answer the model. One of
+the plugin's runs must have completed with a call to the `web_search`
+tool whose `query` argument matches, or to `web_fetch` whose `url`
+argument matches, and still wait for `answer-tools`. Any other call
+fails with `web_call_not_requested`, and nothing leaves the device.
+
 ----
 
 ### Types
@@ -884,6 +897,61 @@ A message you sent and its answer, as it streams in.
 - <a id="run.tool_calls"></a>`tool-calls`: list<[`tool-call`](#tool_call)>
 - <a id="run.failure"></a>`failure`: option<[`failure`](#failure)>
 
+#### <a id="web_result"></a>`record web-result`
+
+A page a web search found.
+
+##### Record Fields
+
+- <a id="web_result.title"></a>`title`: `string`
+- <a id="web_result.url"></a>`url`: `string`
+  <p>The page's `https` address.
+
+- <a id="web_result.snippet"></a>`snippet`: `string`
+  <p>The lines of the page Brave Search shows, as plain text.
+
+
+#### <a id="web_page"></a>`record web-page`
+
+A web page, as text.
+
+##### Record Fields
+
+- <a id="web_page.url"></a>`url`: `string`
+  <p>The `https` address that answered, after any redirects.
+
+- <a id="web_page.content_type"></a>`content-type`: `string`
+  <p>The page's media type: `text/html`, `application/xhtml+xml`,
+  `text/plain` or `text/markdown`.
+
+- <a id="web_page.text"></a>`text`: `string`
+  <p>The page's text. An HTML page loses its markup, keeps emphasis as
+  Markdown does and lists its links as numbered footnotes.
+
+- <a id="web_page.truncated"></a>`truncated`: `bool`
+  <p>Whether Noura cut the text at its size limit.
+
+
+#### <a id="web_error"></a>`variant web-error`
+
+Why a web search or a page read failed.
+
+##### Variant Cases
+
+- <a id="web_error.refused"></a>`refused`: [`error`](#error)
+  <p>Noura refused the call as it refuses this interface's other calls,
+  such as `capability-not-declared` with `ai` for a plugin that
+  doesn't hold it.
+
+- <a id="web_error.failed"></a>`failed`: [`failure`](#failure)
+  <p>Noura or the web refused or failed. The code says why, such as
+  `web_search_key_missing`, `web_consent_required`,
+  `web_call_not_requested`, `web_search_key_rejected`,
+  `web_search_rate_limited`, `web_url_not_https` or
+  `web_url_unsafe_host`. The failure never holds the key or what
+  Brave Search or the site answered.
+
+
 ----
 
 ### Functions
@@ -992,6 +1060,51 @@ a cancelled message.
 ##### Return values
 
 - <a id="stop.0"></a> result<_, [`error`](#error)>
+
+#### <a id="web_ready"></a>`web-ready: func`
+
+Whether the model may search the web and read pages in this
+workspace: you added a Brave Search key and allowed web search for the
+workspace. Offer the model web tools only then.
+
+##### Return values
+
+- <a id="web_ready.0"></a> result<`bool`, [`error`](#error)>
+
+#### <a id="web_search"></a>`web-search: func`
+
+Search the web with Brave Search for `query`, for at most
+`max-results` results, from 1 to 10. Without a limit Noura asks for
+10. Noura leaves out results without an `https` address. The query
+must be one the model asked for in a `web_search` call.
+
+##### Params
+
+- <a id="web_search.query"></a>`query`: `string`
+- <a id="web_search.max_results"></a>`max-results`: option<`u32`>
+
+##### Return values
+
+- <a id="web_search.0"></a> result<list<[`web-result`](#web_result)>, [`web-error`](#web_error)>
+
+#### <a id="web_fetch"></a>`web-fetch: func`
+
+Read the page at `url`, an `https` address on a public host that the
+model asked for in a `web_fetch` call. Noura follows up to three
+redirects, checks every address each host resolves to, and refuses a
+local or private address before it connects. It reads only HTML and
+plain text, up to 5 MiB, and cuts the text at 1 MiB. It gives up on a
+page after 15 seconds, turning it into text included, and refuses a
+page whose elements nest more than 1,024 deep. The time spent waiting
+doesn't count toward the call's deadline.
+
+##### Params
+
+- <a id="web_fetch.url"></a>`url`: `string`
+
+##### Return values
+
+- <a id="web_fetch.0"></a> result<[`web-page`](#web_page), [`web-error`](#web_error)>
 
 ## <a id="noura_plugin_ui_0_1_0"></a>Import interface noura:plugin/ui@0.1.0
 

@@ -67,7 +67,10 @@ mod workspace;
 mod writes;
 
 pub use agent::AgentWorkspace;
-pub use ai::{AI_POLICY_VERSION, AiConsentPrompt, AiProviderInput, AiProviderRow, NEW_CHAT_TITLE};
+pub use ai::{
+    AI_POLICY_VERSION, AiConsentPrompt, AiProviderInput, AiProviderRow, NEW_CHAT_TITLE,
+    WEB_POLICY_VERSION, WEB_SEARCH_PROVIDER_NAME, WebConsentPrompt, WebSearchRow,
+};
 pub use app::{
     App, Change, CommandPalette, DragOut, IgnoredFiles, NameDraft, Notice, NoticeKind, Origin,
     Palette, PaletteMode, PluginPlace, Question, QuickOpen, Rename, Screen, Search, UnsavedPrompt,
@@ -108,6 +111,16 @@ pub mod ai_client {
         AiContentPart, AiProviderConfig, AiProviderEventStream, AiProviderStreamEvent,
         AiStopReason, AiStreamer, AiToolCall, AiTransportMessage, AiUsage, CoreError,
         ErrorCategory, ResolvedAiStreamRequest, Result,
+    };
+}
+
+/// What a client passes to [`App::set_web_client`] searches the web and
+/// reads pages in these terms. Noura uses Brave Search unless a client
+/// sets another, as tests do with a fake web provider.
+pub mod web_client {
+    pub use local_core::{
+        BraveClient, WebAccessFuture, WebAccessProvider, WebClient, WebFetchRequest,
+        WebFetchResponse, WebSearchRequest, WebSearchResponse, WebSearchResult,
     };
 }
 pub use login::{LoginItem, NoLoginItem, OpenAtLogin};

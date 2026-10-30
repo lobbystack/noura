@@ -121,6 +121,9 @@ eframe = { version = "0.37", default-features = false, features = ["accesskit", 
 egui = "0.37"
 egui-wgpu = { version = "0.37", default-features = false }
 egui_kittest = "0.37"
+# Decodes a web page in the character set its server names, for the AI's
+# page reads. (Apache-2.0 OR MIT) AND BSD-3-Clause.
+encoding_rs = "0.8.35"
 # The properties panel's date picker. MIT OR Apache-2.0.
 egui_extras = { version = "0.37", default-features = false, features = ["datepicker"] }
 # Shapes the editor's text and paints it through eframe's wgpu renderer.
@@ -135,6 +138,12 @@ genai = "=0.6.5"
 # THIRD_PARTY_NOTICES.md.
 hayro = "0.8.0"
 hkdf = "=0.12.4"
+# Turns a web page the AI reads into plain text, links kept as footnotes.
+# MIT.
+html2text = "0.17.4"
+# Parses a page the AI reads for html2text, which builds on it, so Noura
+# can stop a page nested too deeply while it parses. MIT OR Apache-2.0.
+html5ever = "0.40.1"
 hmac = "=0.12.1"
 # Bounds the sync server's caches of verified policy and account chains,
 # dropping the least recently used first. sqlx already uses this release.
