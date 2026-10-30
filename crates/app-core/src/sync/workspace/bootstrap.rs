@@ -222,22 +222,36 @@ impl WorkspaceSync {
                 return Err(fail("sync_key_mismatch"));
             }
         }
-        // Descent from the device's anchor, when it holds one.
-        if let Some(anchor) = accepted {
-            let anchor = anchor.record.digest();
-            if anchor != record.digest() {
-                let walk = service
-                    .client()
-                    .checkpoint_chain(workspace, domain, record.digest(), anchor)
-                    .await?
-                    .checkpoints
-                    .0;
-                let walk: Vec<_> = walk.into_iter().map(|n| n.0).collect();
-                if walk.first().map(Signed::digest) != Some(record.digest()) {
-                    return Err(fail("sync_manifest_rollback"));
-                }
-                verify_descent(&walk, &anchor).map_err(|_| fail("sync_manifest_rollback"))?;
+        // Descent from the device's anchor, when it holds one: its latest
+        // accepted checkpoint, or else the checkpoint its approval or kit
+        // anchored in this restore generation. A restore that lost that
+        // anchor leaves the other checks (ticket 60).
+        let kept = service
+            .kept_heads()
+            .checkpoint_anchor(&workspace, &domain)
+            .filter(|a| a.generation == self.state.generation);
+        let anchor = match (&accepted, kept) {
+            (Some(a), _) => Some((a.record.body.covered_seq, a.record.digest())),
+            (None, Some(k)) => Some((k.covered_seq, k.checkpoint)),
+            (None, None) => None,
+        };
+        if anchor.is_some_and(|(covered_seq, _)| c.covered_seq < covered_seq) {
+            return Err(fail("sync_manifest_rollback"));
+        }
+        if let Some((_, anchor)) = anchor
+            && anchor != record.digest()
+        {
+            let walk = service
+                .client()
+                .checkpoint_chain(workspace, domain, record.digest(), anchor)
+                .await?
+                .checkpoints
+                .0;
+            let walk: Vec<_> = walk.into_iter().map(|n| n.0).collect();
+            if walk.first().map(Signed::digest) != Some(record.digest()) {
+                return Err(fail("sync_manifest_rollback"));
             }
+            verify_descent(&walk, &anchor).map_err(|_| fail("sync_manifest_rollback"))?;
         }
         // The policy entries up to the checkpoint's entry, applying nothing.
         let mut latest_entry = c.policy_revision;

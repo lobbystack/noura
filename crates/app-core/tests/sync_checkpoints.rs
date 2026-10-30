@@ -590,3 +590,129 @@ async fn heavy_checkpointing<B: Backend>(server: Server<B>) {
     assert!(pair.sync_a.checkpoint_failures().is_empty());
     assert!(pair.sync_b.checkpoint_failures().is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_approved_device_bootstraps_only_from_its_anchor_or_a_descendant() {
+    use sync_protocol::codec::{Encode, List};
+    use sync_protocol::messages::{CheckpointChainResponse, CheckpointResponse};
+    use sync_support::{Folder, Proxy, approve, first_desktop};
+
+    let server = Server::start_with_interval(6).await;
+    let mut laptop = first_desktop(&server, "ana@example.com").await;
+    let mut a = Folder::new("Field notes");
+    a.write("First.md", b"# First\n");
+    let mut sync_a = app_core::sync::workspace::WorkspaceSync::turn_on(
+        &mut laptop.service,
+        a.engine.clone(),
+        "Field notes",
+        &mut a.registry,
+    )
+    .await
+    .expect("sync turns on");
+    sync_a.set_checkpoint_wait(Duration::ZERO);
+    let mut first = None;
+    for i in 0..60 {
+        let latest = sync_a.latest_checkpoint().cloned();
+        if first.is_none() {
+            first = latest.clone().filter(|c| c.body.number == 1);
+        }
+        if latest.is_some_and(|c| c.body.number == 2) {
+            break;
+        }
+        a.write(&format!("n{i}.md"), b"# Note\n");
+        sync_a.round(&mut laptop.service, 0).await.expect("a round");
+    }
+    let first = first.expect("checkpoint 1");
+    let anchor = sync_a.latest_checkpoint().expect("checkpoint 2").clone();
+    assert_eq!(anchor.body.number, 2);
+    let (workspace, domain) = (sync_a.workspace(), sync_a.domain());
+    let older = laptop
+        .service
+        .client()
+        .checkpoint_by_digest(workspace, domain, first.digest())
+        .await
+        .expect("served")
+        .expect("checkpoint 1");
+    let EntryRecord::Checkpoint(older_bundle) = older.record else {
+        panic!("a checkpoint entry");
+    };
+    // The offer anchors checkpoint 2.
+    let desktop = approve(
+        &server,
+        &mut laptop,
+        std::slice::from_mut(sync_a.remote_mut().expect("connected")),
+    )
+    .await;
+    let proxy = Proxy::start(&server.base).await;
+    let mut service = desktop.connect_through(&proxy.base).await;
+    let mut b = Folder::new("Downloaded");
+    let mut sync_b = app_core::sync::workspace::WorkspaceSync::download(
+        &mut service,
+        b.engine.clone(),
+        workspace,
+        &mut b.registry,
+    )
+    .await
+    .expect("the download starts");
+
+    // A server that rolls the new device back below its anchor.
+    let seq = older.seq;
+    proxy.tamper(Box::new(move |path, body| {
+        if path.ends_with("/checkpoint") {
+            return CheckpointResponse {
+                seq,
+                bundle: older_bundle.clone(),
+            }
+            .to_bytes();
+        }
+        body
+    }));
+    let error = sync_b.round(&mut service, 0).await.expect_err("refused");
+    assert!(
+        matches!(error, SyncError::Check("sync_manifest_rollback")),
+        "{error:?}"
+    );
+    assert!(b.files().is_empty());
+
+    // The laptop goes on to checkpoint 3, which descends from the anchor.
+    proxy.honest();
+    for i in 0..60 {
+        if sync_a
+            .latest_checkpoint()
+            .is_some_and(|c| c.body.number == 3)
+        {
+            break;
+        }
+        a.write(&format!("m{i}.md"), b"# More\n");
+        sync_a.round(&mut laptop.service, 0).await.expect("a round");
+    }
+    // A walk that doesn't reach the anchor fails.
+    proxy.tamper(Box::new(|path, body| {
+        if path.ends_with("/checkpoint-chain") {
+            return CheckpointChainResponse {
+                checkpoints: List(Vec::new()),
+            }
+            .to_bytes();
+        }
+        body
+    }));
+    let error = sync_b.round(&mut service, 0).await.expect_err("refused");
+    assert!(
+        matches!(error, SyncError::Check("sync_manifest_rollback")),
+        "{error:?}"
+    );
+    proxy.honest();
+    sync_b.round(&mut service, 0).await.expect("the download");
+    assert_eq!(b.files(), a.files());
+    assert!(
+        proxy
+            .requests()
+            .iter()
+            .any(|r| r.path.contains("/checkpoint-chain?")),
+        "the device checked the descent"
+    );
+    assert_eq!(
+        sync_b.latest_checkpoint().map(|c| c.body.number),
+        sync_a.latest_checkpoint().map(|c| c.body.number)
+    );
+}

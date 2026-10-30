@@ -447,7 +447,18 @@ impl WorkspaceSync {
             state.epochs.last().map_or(0, |e| e.body.epoch),
         )]);
         let revision = state.policy.last().map_or(0, |c| c.body.revision);
-        if mark.above(revision, &epochs) {
+        let checkpoint_seq = state
+            .log
+            .checkpoints
+            .accepted
+            .as_ref()
+            .map_or(0, |a| a.record.body.covered_seq);
+        if mark.above(revision, &epochs)
+            || mark
+                .domains
+                .get(&state.domain)
+                .is_some_and(|d| d.checkpoint_seq > checkpoint_seq)
+        {
             return Err(SyncError::Check("sync_journal_rollback"));
         }
         let next = mark.start();
@@ -747,6 +758,24 @@ impl WorkspaceSync {
 
     fn save(&mut self) -> Result<(), SyncError> {
         self.journal.write(STATE_FILE, &self.state)?;
+        // An approval offer anchors the latest accepted checkpoint (§10).
+        let accepted = self
+            .state
+            .log
+            .checkpoints
+            .accepted
+            .as_ref()
+            .map(|a| (a.record.body.covered_seq, a.record.digest()));
+        if let (Some(remote), Some((covered_seq, checkpoint))) = (self.remote.as_mut(), accepted) {
+            remote.checkpoint = Some((
+                sync_protocol::records::CheckpointAnchor {
+                    domain: self.state.domain,
+                    covered_seq,
+                    checkpoint,
+                },
+                self.state.generation,
+            ));
+        }
         // The mark follows the journal, never ahead of it (§15).
         let revision = self.state.policy.last().map_or(0, |c| c.body.revision);
         let head = self
@@ -760,9 +789,17 @@ impl WorkspaceSync {
             .epochs
             .last()
             .map_or((0, Digest::ZERO), |e| (e.body.epoch, e.digest()));
-        if revision != self.mark.policy_revision || epoch != domain.epoch {
+        let (checkpoint_seq, checkpoint) = accepted.unwrap_or((0, Digest::ZERO));
+        if revision != self.mark.policy_revision
+            || epoch != domain.epoch
+            || checkpoint_seq > domain.checkpoint_seq
+        {
             domain.epoch = epoch;
             domain.epoch_record = record;
+            if checkpoint_seq > domain.checkpoint_seq {
+                domain.checkpoint_seq = checkpoint_seq;
+                domain.checkpoint = checkpoint;
+            }
             self.mark.policy_revision = revision;
             self.mark.policy_head = head;
             self.mark.write(

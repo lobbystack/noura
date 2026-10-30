@@ -422,6 +422,9 @@ pub struct RemoteWorkspace {
     /// The envelope of the latest epoch that this device accepted, kept
     /// still wrapped in its journal (§15).
     envelope: Option<Signed<Envelope>>,
+    /// The latest checkpoint of the workspace domain this device accepted,
+    /// as an approval offer anchors it, with its restore generation (§10).
+    checkpoint: Option<(sync_protocol::records::CheckpointAnchor, u64)>,
 }
 
 impl RemoteWorkspace {
@@ -474,6 +477,7 @@ impl RemoteWorkspace {
             live: LiveSet::new(),
             last: BTreeMap::new(),
             envelope,
+            checkpoint: None,
         })
     }
 }
@@ -933,6 +937,7 @@ impl SyncService {
             live: LiveSet::new(),
             last: BTreeMap::new(),
             envelope: own_envelope,
+            checkpoint: None,
         })
     }
 
@@ -973,6 +978,7 @@ impl SyncService {
             live: LiveSet::new(),
             last: BTreeMap::new(),
             envelope,
+            checkpoint: None,
         })
     }
 

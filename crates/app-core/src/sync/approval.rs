@@ -195,6 +195,13 @@ impl Candidate {
         for anchor in offer.body.anchors.iter() {
             heads.set_anchor(anchor.workspace, anchor.revision, anchor.policy_head)?;
             heads.first_trusted(anchor.workspace, anchor.revision)?;
+            heads.set_checkpoint_anchor(super::account_heads::KeptCheckpointAnchor {
+                workspace: anchor.workspace,
+                domain: anchor.checkpoint.domain,
+                covered_seq: anchor.checkpoint.covered_seq,
+                checkpoint: anchor.checkpoint.checkpoint,
+                generation: anchor.generation,
+            })?;
         }
         let server = self.client.base().to_owned();
         let mut stored = StoredDevice::load(store, &server)?
@@ -278,19 +285,24 @@ impl SyncService {
         for remote in workspaces.iter_mut() {
             self.refresh_policy(remote).await?;
             let (revision, policy_head) = remote.policy.head();
-            // Until checkpoints exist, the anchor names none: a covered_seq
-            // of 0 and 32 zero bytes, as an operation names no checkpoint
-            // (§10, ticket 58).
-            anchors.push(Anchor {
-                workspace: remote.workspace,
-                revision,
-                policy_head,
-                generation: self.client.restore_generation(),
-                checkpoint: CheckpointAnchor {
+            // The approver's latest accepted checkpoint of the workspace
+            // domain, with its restore generation; before the first, a
+            // covered_seq of 0 and 32 zero bytes (§10).
+            let generation = self.client.restore_generation();
+            let (checkpoint, generation) = remote.checkpoint.clone().unwrap_or((
+                CheckpointAnchor {
                     domain: remote.domain,
                     covered_seq: 0,
                     checkpoint: Digest::ZERO,
                 },
+                generation,
+            ));
+            anchors.push(Anchor {
+                workspace: remote.workspace,
+                revision,
+                policy_head,
+                generation,
+                checkpoint,
             });
         }
         let keys = &self.credentials.keys;
