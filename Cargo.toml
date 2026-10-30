@@ -105,6 +105,15 @@ zeroize = { version = "1", features = ["derive"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 atomic-write-file = "0.3.1"
 blake3 = "1.8"
+bytes = "1"
+# The sync server's blob store on S3-compatible storage (sync-v2.md §21).
+# MIT OR Apache-2.0.
+object_store = { version = "0.14.2", default-features = false, features = ["aws"] }
+# An S3-compatible emulator over a directory, for the blob store's tests.
+# Apache-2.0.
+s3s = "0.17.0"
+s3s-fs = "0.17.0"
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 # The desktop app's updater. It checks the signatures cargo-packager writes
 # with minisign, which the desktop tests use to sign a local feed.
 cargo-packager-updater = "0.2.3"

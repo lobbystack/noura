@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod accounts;
+pub mod blobs;
 pub mod data;
 pub mod http;
 pub mod logs;
