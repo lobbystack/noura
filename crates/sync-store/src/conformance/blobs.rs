@@ -444,3 +444,156 @@ pub async fn blob_downloads_follow_the_listing<B: Backend>(store: Store<B>) {
         "blob rows belong to their workspace"
     );
 }
+
+/// tus creations, segment records and pushes that list blobs, in several
+/// domains from two instances, race policy changes without a deadlock:
+/// each takes the domain's head row before any blob row (§15).
+pub async fn blob_uploads_race_pushes_and_policy_changes<B: Backend>(
+    first: Arc<Store<B>>,
+    second: Arc<Store<B>>,
+) {
+    use std::collections::BTreeMap;
+    use std::time::Duration;
+
+    use sync_protocol::codec::{Encode, List, Sorted};
+    use sync_protocol::messages::{PushRequest, RecordRef};
+    use sync_protocol::records::{Operation, PolicyChange};
+
+    let mut world = World::on(first, 3).await;
+    let mut domains = vec![world.domain];
+    for _ in 0..2 {
+        domains.push(add_domain(&mut world).await);
+    }
+    let written = domains.clone();
+    let world = Arc::new(world);
+    let head = Arc::new(std::sync::Mutex::new(world.head));
+    let stores = [world.store.clone(), second];
+
+    let mut uploaders = Vec::new();
+    for device in 0..3 {
+        let world = world.clone();
+        let head = head.clone();
+        let store = stores[device % 2].clone();
+        let mut order = written.clone();
+        order.rotate_left(device);
+        uploaders.push(tokio::spawn(async move {
+            let session = world.devices[device].session;
+            let mut chains: BTreeMap<Id, (u64, Digest)> = BTreeMap::new();
+            let mut listed = 0;
+            for _ in 0..6 {
+                let mut ops: Vec<Signed<Operation>> = Vec::new();
+                for domain in &order {
+                    let (ciphertext, creation) = blob_for(1_000, *domain);
+                    store
+                        .create_blob(session, world.workspace, creation)
+                        .await
+                        .expect("no creation fails or deadlocks");
+                    store
+                        .record_segment(
+                            session,
+                            world.workspace,
+                            creation.blob,
+                            0,
+                            ciphertext.len() as u64,
+                            hash(&ciphertext),
+                        )
+                        .await
+                        .expect("no segment fails or deadlocks");
+                    let (revision, policy_head) = *head.lock().expect("the head");
+                    let (counter, previous) =
+                        chains.get(domain).copied().unwrap_or((0, Digest::ZERO));
+                    let op = world.op(device, |op| {
+                        op.domain = *domain;
+                        op.counter = counter + 1;
+                        op.previous = previous;
+                        op.policy_revision = revision;
+                        op.policy_head = policy_head;
+                        op.blobs = Sorted::new(vec![creation.blob]).expect("sorted");
+                    });
+                    chains.insert(*domain, (counter + 1, op.digest()));
+                    ops.push(op);
+                }
+                let body = PushRequest {
+                    records: List(ops.iter().cloned().map(RecordRef::Operation).collect()),
+                }
+                .to_bytes();
+                store
+                    .push(session, world.workspace, body)
+                    .await
+                    .expect("no push fails or deadlocks");
+                listed += ops.len();
+            }
+            listed
+        }));
+    }
+    let changer = {
+        let world = world.clone();
+        let head = head.clone();
+        let stores = stores.clone();
+        tokio::spawn(async move {
+            let mut domains = domains;
+            for round in 0..4 {
+                let (revision, digest) = *head.lock().expect("the head");
+                let domain = Id::random().expect("random");
+                let body = PolicyChange {
+                    revision: revision + 1,
+                    previous: digest,
+                    ..world
+                        .change(
+                            0,
+                            vec![head_of(&world.links)],
+                            PolicyKind::CreateDomain {
+                                domain,
+                                marker_rid: Id::random().expect("random"),
+                                access: manager(world.account),
+                            },
+                        )
+                        .body
+                };
+                let change = Signed::sign(body, world.devices[0].keys.signing());
+                let creator = &world.devices[0];
+                let epoch = Signed::sign(
+                    build_epoch(
+                        &EpochParams {
+                            workspace: world.workspace,
+                            domain,
+                            epoch: 1,
+                            previous: Digest::ZERO,
+                            policy_revision: change.body.revision,
+                            policy_head: change.digest(),
+                            rotating_device: creator.id(),
+                            recipients: BTreeSet::from([creator.id()]),
+                        },
+                        &SecretKey::random().expect("random"),
+                        None,
+                        Nonce::ZERO,
+                    ),
+                    creator.keys.signing(),
+                );
+                let next = (change.body.revision, change.digest());
+                super::inject_change(
+                    &stores[round % 2],
+                    change,
+                    domains.clone(),
+                    Some((domain, epoch)),
+                )
+                .await
+                .expect("no policy change fails or deadlocks");
+                domains.push(domain);
+                *head.lock().expect("the head") = next;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+    };
+    let listed = tokio::time::timeout(Duration::from_secs(120), async {
+        let mut listed = 0;
+        for uploader in uploaders {
+            listed += uploader.await.expect("the uploads end");
+        }
+        changer.await.expect("the changes end");
+        listed
+    })
+    .await
+    .expect("nothing deadlocks");
+    assert_eq!(listed, 3 * 6 * written.len());
+}

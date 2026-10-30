@@ -116,6 +116,7 @@ macro_rules! instance_tests {
             geneses_at_once_start_one_chain,
             enrollments_at_once_take_one_card,
             chain_appends_race_pushes_recording_the_head,
+            blob_uploads_race_pushes_and_policy_changes,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
