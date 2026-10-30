@@ -16,13 +16,14 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 pub use sync_protocol::messages::InvitationStatus;
-use sync_protocol::policy::Snapshot;
-pub use sync_protocol::records::Role;
+use sync_protocol::policy::{PolicyChain, Snapshot};
+pub use sync_protocol::records::{Level, Role};
 pub use sync_protocol::types::Id;
 
 use crate::folder_sync::local_time;
 pub use crate::shares::LinkText;
 use crate::sync::invitations::WorkspaceInvitation;
+use crate::sync::workspace::WorkspaceSync;
 
 /// What the section says on a computer without a sync account.
 pub const NEEDS_ACCOUNT: &str = "Members need a sync account. Sign in under Settings > Sync account, then turn on sync for this workspace.";
@@ -80,6 +81,64 @@ pub struct InvitationEntry {
     pub returning: Option<String>,
 }
 
+/// An account on a restricted folder's access list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FolderGrant {
+    /// The account.
+    pub account: Id,
+    /// What the list shows.
+    pub label: String,
+    /// Whether you may take it off the list.
+    pub removable: bool,
+    /// Whether you may hand the folder to it and take yourself off.
+    pub may_hand_off: bool,
+}
+
+/// A member you may give access to a restricted folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FolderCandidate {
+    /// The account.
+    pub account: Id,
+    /// What the list shows.
+    pub label: String,
+    /// Set when the account had access before: it can read what people
+    /// wrote there while it was away (§9).
+    pub returning: Option<String>,
+}
+
+/// One restricted folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FolderEntry {
+    /// The domain.
+    pub domain: Id,
+    /// The folder's path, when this device knows it.
+    pub label: String,
+    /// Who reads it.
+    pub grants: Vec<FolderGrant>,
+    /// Who you may give access.
+    pub candidates: Vec<FolderCandidate>,
+    /// Whether you may delete the restriction.
+    pub deletable: bool,
+}
+
+/// A file that waits for you before it reaches more people (§9).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MoveEntry {
+    /// The object.
+    pub rid: Id,
+    /// What the row says.
+    pub label: String,
+}
+
+/// A held folder, whose files wait for you (§9).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldEntry {
+    /// The folder.
+    pub folder: String,
+    /// What the row says.
+    pub label: String,
+}
+
 /// What the Members section shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MembersScreen {
@@ -97,6 +156,16 @@ pub struct MembersScreen {
     /// Whether you may leave the workspace; the owner transfers ownership
     /// first.
     pub may_leave: bool,
+    /// Whether you may restrict a folder.
+    pub may_restrict: bool,
+    /// The restricted folders you read or manage.
+    pub folders: Vec<FolderEntry>,
+    /// The files that would reach more people, waiting for you.
+    pub moves: Vec<MoveEntry>,
+    /// The held folders.
+    pub held: Vec<HeldEntry>,
+    /// The warning about files you moved into a restricted folder.
+    pub moved_in: Option<String>,
     /// A link to put on the clipboard, which the window copies once.
     pub copy: Option<LinkText>,
     /// What the last action did.
@@ -227,8 +296,133 @@ impl MembersScreen {
             invitations,
             invite_roles,
             may_leave: you.is_some_and(|r| r != Role::Owner),
+            may_restrict: manages,
             ..Self::default()
         }
+    }
+
+    /// Adds the restricted folders, and what waits for you on this device.
+    pub fn with_folders(mut self, policy: &PolicyChain, account: Id, sync: &WorkspaceSync) -> Self {
+        let snapshot = policy.head_snapshot();
+        let admin = matches!(snapshot.role(&account), Some(Role::Owner | Role::Admin));
+        let name = |id: &Id| {
+            if *id == account {
+                "You".to_owned()
+            } else {
+                format!("Account {}", short(id))
+            }
+        };
+        for (domain, entry) in snapshot.domains.iter().filter(|(_, d)| d.restricted) {
+            let manages = snapshot.manages(&account, domain);
+            if !manages && !admin && !entry.access.contains_key(&account) {
+                continue;
+            }
+            let label = sync
+                .domain_roots()
+                .iter()
+                .find(|root| root.domain == *domain)
+                .map_or_else(
+                    || format!("Restricted folder {}", short(domain)),
+                    |root| root.folder.clone(),
+                );
+            let grants = entry
+                .access
+                .iter()
+                .map(|(id, level)| FolderGrant {
+                    account: *id,
+                    label: format!("{}, {}", name(id), level_word(*level)),
+                    removable: *id != account && (manages || admin),
+                    may_hand_off: *id != account && manages,
+                })
+                .collect();
+            let had_access = |id: &Id| {
+                (1..snapshot.revision).any(|revision| {
+                    policy
+                        .at(revision)
+                        .and_then(|s| s.domains.get(domain))
+                        .is_some_and(|d| d.access.contains_key(id))
+                })
+            };
+            let candidates = if manages {
+                snapshot
+                    .members
+                    .keys()
+                    .filter(|id| !entry.access.contains_key(id))
+                    .map(|id| FolderCandidate {
+                        account: *id,
+                        label: name(id),
+                        returning: had_access(id).then(|| {
+                            "This account had access before. Grant it again and it can read what people wrote here while it was away.".to_owned()
+                        }),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            self.folders.push(FolderEntry {
+                domain: *domain,
+                label,
+                grants,
+                candidates,
+                deletable: manages || admin,
+            });
+        }
+        let people = |n: usize| match n {
+            1 => "1 more person".to_owned(),
+            n => format!("{n} more people"),
+        };
+        self.moves = sync
+            .moves_for_review()
+            .iter()
+            .map(|review| MoveEntry {
+                rid: review.rid,
+                label: format!(
+                    "{} left a restricted folder. Moving it shows it to {}.",
+                    review.path,
+                    people(review.people)
+                ),
+            })
+            .collect();
+        let held = sync.held_files();
+        let mut folders: Vec<&str> = held.iter().map(|f| f.folder.as_str()).collect();
+        folders.dedup();
+        self.held = folders
+            .into_iter()
+            .map(|folder| {
+                let files: Vec<_> = held.iter().filter(|f| f.folder == folder).collect();
+                let reach = files.iter().map(|f| f.people).max().unwrap_or(0);
+                let count = match files.len() {
+                    1 => "1 file".to_owned(),
+                    n => format!("{n} files"),
+                };
+                HeldEntry {
+                    folder: folder.to_owned(),
+                    label: format!(
+                        "{count} in {folder} wait for you. Confirming shows them to {}.",
+                        people(reach)
+                    ),
+                }
+            })
+            .collect();
+        self.moved_in = match sync.moved_in() {
+            [] => None,
+            [(_, path)] => Some(format!(
+                "You moved {path} into a restricted folder. Its earlier versions stay in the log of the folder it left, and anyone who reads that log keeps them."
+            )),
+            many => Some(format!(
+                "You moved {} files into a restricted folder. Their earlier versions stay in the log of the folder they left, and anyone who reads that log keeps them.",
+                many.len()
+            )),
+        };
+        self
+    }
+}
+
+fn level_word(level: Level) -> &'static str {
+    match level {
+        Level::Read => "can read",
+        Level::Write => "can edit",
+        Level::Manage => "manages",
     }
 }
 
@@ -263,6 +457,39 @@ pub enum MembersAction {
     TransferOwner(Id),
     /// Leave the workspace.
     Leave,
+    /// Restrict a folder to you, for now.
+    Restrict(String),
+    /// Give an account access to a restricted folder.
+    Grant {
+        /// The folder's domain.
+        domain: Id,
+        /// The account.
+        account: Id,
+        /// What it may do.
+        level: Level,
+    },
+    /// Take an account off a restricted folder.
+    TakeOff {
+        /// The folder's domain.
+        domain: Id,
+        /// The account.
+        account: Id,
+    },
+    /// Hand a restricted folder to an account and take yourself off.
+    HandOff {
+        /// The folder's domain.
+        domain: Id,
+        /// The account.
+        account: Id,
+    },
+    /// Delete a restricted folder's restriction.
+    DeleteFolder(Id),
+    /// Confirm a move that would show a file to more people.
+    ConfirmMove(Id),
+    /// Confirm where a held folder's files go.
+    ConfirmHeld(String),
+    /// Dismiss the warning about files moved into a restricted folder.
+    DismissMovedIn,
 }
 
 impl std::fmt::Debug for MembersAction {
@@ -284,6 +511,24 @@ impl std::fmt::Debug for MembersAction {
             MembersAction::Remove(id) => f.debug_tuple("Remove").field(id).finish(),
             MembersAction::TransferOwner(id) => f.debug_tuple("TransferOwner").field(id).finish(),
             MembersAction::Leave => f.write_str("Leave"),
+            MembersAction::Restrict(_) => f.write_str("Restrict"),
+            MembersAction::Grant { domain, level, .. } => f
+                .debug_struct("Grant")
+                .field("domain", domain)
+                .field("level", level)
+                .finish_non_exhaustive(),
+            MembersAction::TakeOff { domain, .. } => f
+                .debug_struct("TakeOff")
+                .field("domain", domain)
+                .finish_non_exhaustive(),
+            MembersAction::HandOff { domain, .. } => f
+                .debug_struct("HandOff")
+                .field("domain", domain)
+                .finish_non_exhaustive(),
+            MembersAction::DeleteFolder(id) => f.debug_tuple("DeleteFolder").field(id).finish(),
+            MembersAction::ConfirmMove(id) => f.debug_tuple("ConfirmMove").field(id).finish(),
+            MembersAction::ConfirmHeld(_) => f.write_str("ConfirmHeld"),
+            MembersAction::DismissMovedIn => f.write_str("DismissMovedIn"),
         }
     }
 }

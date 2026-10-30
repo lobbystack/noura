@@ -295,7 +295,11 @@ impl WorkspaceSync {
     /// recorded and holds its files, and a marker valid again ends the
     /// hold, after which the files beneath it are matched.
     pub(super) fn update_roots(&mut self) -> Result<(), SyncError> {
-        let Some(snapshot) = self.remote.as_ref().map(|r| r.policy.head_snapshot().clone()) else {
+        let Some(snapshot) = self
+            .remote
+            .as_ref()
+            .map(|r| r.policy.head_snapshot().clone())
+        else {
             return Ok(());
         };
         // A domain the policy dropped, or that this device no longer
@@ -936,6 +940,18 @@ impl WorkspaceSync {
         })
     }
 
+    /// The latest epoch of `domain` this device accepted.
+    pub fn domain_epoch(&self, domain: &Id) -> u64 {
+        let epochs = match self.active {
+            Some(active) if active == *domain => &self.state.epochs,
+            _ => match self.state.restricted.get(domain) {
+                Some(frame) => &frame.epochs,
+                None => return 0,
+            },
+        };
+        epochs.last().map_or(0, |e| e.body.epoch)
+    }
+
     /// The latest checkpoint of `domain` this device accepted.
     pub fn domain_checkpoint(
         &self,
@@ -946,7 +962,10 @@ impl WorkspaceSync {
     }
 
     /// The checkpoints of `domain` that failed their checks here.
-    pub fn domain_checkpoint_failures(&self, domain: &Id) -> Vec<crate::sync::checkpoints::Failure> {
+    pub fn domain_checkpoint_failures(
+        &self,
+        domain: &Id,
+    ) -> Vec<crate::sync::checkpoints::Failure> {
         self.log_of(Some(*domain)).checkpoints.failures.clone()
     }
 

@@ -214,9 +214,7 @@ pub(crate) async fn apply_change(
         } => {
             // An approved invitation ends: its link no longer opens.
             txn.delete_invitation(*invitation).await?;
-            state
-                .floors
-                .push((next.workspace_domain, *account, digest));
+            state.floors.push((next.workspace_domain, *account, digest));
         }
         PolicyKind::SetAccess { domain, access } => {
             let before = prev.domains.get(domain).map(|d| &d.access);

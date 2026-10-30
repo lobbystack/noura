@@ -45,7 +45,14 @@ impl WorkspaceSync {
             self.swap_domain(domain);
         }
         let pushed = self
-            .push_policy_change(service, domain, PolicyKind::SetAccess { domain, access: list })
+            .push_policy_change(
+                service,
+                domain,
+                PolicyKind::SetAccess {
+                    domain,
+                    access: list,
+                },
+            )
             .await;
         if reads {
             self.swap_domain(domain);
@@ -114,9 +121,7 @@ impl WorkspaceSync {
         kind: PolicyKind,
     ) -> Result<u64, SyncError> {
         let mut remote = self.remote.take().ok_or(SyncError::KeyMissing)?;
-        let pushed = self
-            .sign_and_push(service, &mut remote, domain, kind)
-            .await;
+        let pushed = self.sign_and_push(service, &mut remote, domain, kind).await;
         if let Err(error) = &pushed {
             tracing::warn!(%error, "a policy change didn't go through");
         }
@@ -195,7 +200,8 @@ impl WorkspaceSync {
             self.swap_domain(domain);
             rotated?;
         }
-        self.rotation_due.retain(|domain, _| pending.contains(domain));
+        self.rotation_due
+            .retain(|domain, _| pending.contains(domain));
         Ok(())
     }
 

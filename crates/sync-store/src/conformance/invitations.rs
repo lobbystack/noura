@@ -90,7 +90,10 @@ impl Invitee {
     pub async fn with_cards<B: Backend>(store: &Store<B>, count: usize) -> (Self, Vec<DeviceKeys>) {
         let (account, keys, links) = account(count);
         for key in &keys {
-            store.enroll_card(key.card(account)).await.expect("enrolled");
+            store
+                .enroll_card(key.card(account))
+                .await
+                .expect("enrolled");
         }
         let session = Session::new(account, keys[0].device());
         store

@@ -10,8 +10,9 @@ mod support;
 use std::sync::{Arc, Mutex};
 
 use app_core::members::{
-    Id, InvitationEntry, InvitationStatus, LinkText, MemberEntry, MembersAction, MembersBackend,
-    MembersScreen, NEEDS_ACCOUNT, Role,
+    FolderCandidate, FolderEntry, FolderGrant, HeldEntry, Id, InvitationEntry, InvitationStatus,
+    Level, LinkText, MemberEntry, MembersAction, MembersBackend, MembersScreen, MoveEntry,
+    NEEDS_ACCOUNT, Role,
 };
 use app_core::{App, settings_section};
 use app_ui::NouraUi;
@@ -375,4 +376,130 @@ fn the_owner_transfers_ownership_before_leaving() {
         .click();
     harness.run();
     assert_eq!(members.taken(), vec![MembersAction::TransferOwner(BEN)]);
+}
+
+const PAY: Id = Id([6; 16]);
+
+fn folders_screen() -> MembersScreen {
+    MembersScreen {
+        you: Some(Role::Owner),
+        may_restrict: true,
+        folders: vec![FolderEntry {
+            domain: PAY,
+            label: "Pay".into(),
+            grants: vec![FolderGrant {
+                account: BEN,
+                label: "Account 02020202, can read".into(),
+                removable: true,
+                may_hand_off: true,
+            }],
+            candidates: vec![FolderCandidate {
+                account: CLEO,
+                label: "Account 03030303".into(),
+                returning: Some("This account had access before. Grant it again and it can read what people wrote here while it was away.".into()),
+            }],
+            deletable: true,
+        }],
+        moves: vec![MoveEntry {
+            rid: PENDING,
+            label: "Salaries.md left a restricted folder. Moving it shows it to 1 more person.".into(),
+        }],
+        held: vec![HeldEntry {
+            folder: "Old".into(),
+            label: "2 files in Old wait for you. Confirming shows them to 3 more people.".into(),
+        }],
+        moved_in: Some("You moved Plan.md into a restricted folder. Its earlier versions stay in the log of the folder it left, and anyone who reads that log keeps them.".into()),
+        ..MembersScreen::default()
+    }
+}
+
+#[test]
+fn moves_and_held_folders_wait_with_their_counts_and_the_warning_shows() {
+    let app_data = tempfile::tempdir().unwrap();
+    let members = Arc::new(FakeMembers::default());
+    members.show(folders_screen());
+    let mut harness = harness(app_data.path(), members.clone());
+    members.taken();
+
+    harness.get_by_role_and_label(
+        accesskit::Role::Alert,
+        "You moved Plan.md into a restricted folder. Its earlier versions stay in the log of the folder it left, and anyone who reads that log keeps them.",
+    );
+    harness
+        .get_by_role_and_label(
+            accesskit::Role::Group,
+            "Salaries.md left a restricted folder. Moving it shows it to 1 more person.",
+        )
+        .get_by_role_and_label(accesskit::Role::Button, "Move it")
+        .click();
+    harness.run();
+    assert_eq!(members.taken(), vec![MembersAction::ConfirmMove(PENDING)]);
+
+    harness
+        .get_by_role_and_label(
+            accesskit::Role::Group,
+            "2 files in Old wait for you. Confirming shows them to 3 more people.",
+        )
+        .get_by_role_and_label(accesskit::Role::Button, "Confirm")
+        .click();
+    harness.run();
+    assert_eq!(
+        members.taken(),
+        vec![MembersAction::ConfirmHeld("Old".into())]
+    );
+}
+
+#[test]
+fn taking_a_member_off_a_folder_says_their_copies_stay_and_a_returning_grant_warns() {
+    let app_data = tempfile::tempdir().unwrap();
+    let members = Arc::new(FakeMembers::default());
+    members.show(folders_screen());
+    let mut harness = harness(app_data.path(), members.clone());
+    members.taken();
+
+    harness.get_by_role_and_label(
+        accesskit::Role::Alert,
+        "This account had access before. Grant it again and it can read what people wrote here while it was away.",
+    );
+    harness
+        .get_by_role_and_label(accesskit::Role::Group, "Pay")
+        .get_by_role_and_label(accesskit::Role::Button, "Take off")
+        .click();
+    harness.run();
+    assert!(members.taken().is_empty(), "it asks first");
+    harness.get_by_label_contains("Copies they already have stay with them.");
+    harness
+        .get_by_role_and_label(accesskit::Role::Group, "Confirm")
+        .get_by_role_and_label(accesskit::Role::Button, "Take off")
+        .click();
+    harness.run();
+    assert_eq!(
+        members.taken(),
+        vec![MembersAction::TakeOff {
+            domain: PAY,
+            account: BEN
+        }]
+    );
+}
+
+#[test]
+fn a_grant_reaches_the_backend() {
+    let app_data = tempfile::tempdir().unwrap();
+    let members = Arc::new(FakeMembers::default());
+    members.show(folders_screen());
+    let mut harness = harness(app_data.path(), members.clone());
+    members.taken();
+    harness
+        .get_by_role_and_label(accesskit::Role::Group, "Pay")
+        .get_by_role_and_label(accesskit::Role::Button, "Let edit")
+        .click();
+    harness.run();
+    assert_eq!(
+        members.taken(),
+        vec![MembersAction::Grant {
+            domain: PAY,
+            account: CLEO,
+            level: Level::Write
+        }]
+    );
 }

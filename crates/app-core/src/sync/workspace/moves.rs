@@ -315,9 +315,10 @@ impl WorkspaceSync {
         self.state.held_roots.retain(|root| root.folder != folder);
         for domain in held.into_iter().flatten() {
             let device = self.credentials.keys.device();
-            let writes = self.remote.as_ref().is_some_and(|remote| {
-                remote.policy.head_snapshot().can_write(&device, &domain)
-            });
+            let writes = self
+                .remote
+                .as_ref()
+                .is_some_and(|remote| remote.policy.head_snapshot().can_write(&device, &domain));
             let recorded = self
                 .state
                 .roots
@@ -421,7 +422,10 @@ impl WorkspaceSync {
                 continue;
             }
             for rid in rids {
-                let Some(path) = self.state.objects[&rid].local.as_ref().map(|l| l.path.clone())
+                let Some(path) = self.state.objects[&rid]
+                    .local
+                    .as_ref()
+                    .map(|l| l.path.clone())
                 else {
                     continue;
                 };
@@ -553,8 +557,12 @@ impl WorkspaceSync {
             } else {
                 ((b_frame, b), (a_frame, a))
             };
-            let len = RecordRef::Operation(target.1.record.clone()).to_bytes().len()
-                + RecordRef::Operation(source.1.record.clone()).to_bytes().len();
+            let len = RecordRef::Operation(target.1.record.clone())
+                .to_bytes()
+                .len()
+                + RecordRef::Operation(source.1.record.clone())
+                    .to_bytes()
+                    .len();
             if !batch.is_empty() && size + len > MAX_BODY - PUSH_MARGIN {
                 return batch;
             }
@@ -588,11 +596,7 @@ impl WorkspaceSync {
                     "the server keeps refusing the push".into(),
                 ));
             }
-            let records: Vec<RecordRef> = batch
-                .iter()
-                .cloned()
-                .map(RecordRef::Operation)
-                .collect();
+            let records: Vec<RecordRef> = batch.iter().cloned().map(RecordRef::Operation).collect();
             match service.client().push(self.state.workspace, records).await {
                 Ok(response) => {
                     for (record, receipt) in batch.iter().zip(response.receipts.0.iter()) {
@@ -627,9 +631,7 @@ impl WorkspaceSync {
                         .iter()
                         .filter(|r| r.body.domain == domain)
                         .count();
-                    let record_code = failure
-                        .as_ref()
-                        .map_or(code.clone(), |f| f.code.0.clone());
+                    let record_code = failure.as_ref().map_or(code.clone(), |f| f.code.0.clone());
                     let record_detail = failure
                         .as_ref()
                         .and_then(|f| f.record_detail.as_ref().map(|d| d.0.clone()));
@@ -675,11 +677,8 @@ impl WorkspaceSync {
             }
             for frame in self.frames() {
                 self.in_domain(frame, |sync| {
-                    if let Some(index) = sync
-                        .state
-                        .outbox
-                        .iter()
-                        .position(|o| o.pair == Some(*pair))
+                    if let Some(index) =
+                        sync.state.outbox.iter().position(|o| o.pair == Some(*pair))
                     {
                         let rejected = sync.state.outbox.remove(index);
                         sync.forget_own(&rejected.record);

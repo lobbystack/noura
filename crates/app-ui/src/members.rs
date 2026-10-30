@@ -5,7 +5,7 @@
 //! screen holds and hands each choice to it.
 
 use app_core::App;
-use app_core::members::{Id, MembersAction, MembersScreen, Role, role_name};
+use app_core::members::{FolderEntry, Id, Level, MembersAction, MembersScreen, Role, role_name};
 use egui::{Button, Modal, RichText, TextEdit, Ui, UiBuilder, accesskit};
 
 use crate::common::{muted, primary_button};
@@ -18,6 +18,8 @@ pub(crate) struct MembersView {
     pub(crate) refreshed: bool,
     /// Your name, as invitees see it.
     your_name: String,
+    /// The folder you're about to restrict.
+    new_folder: String,
     /// The change waiting for you to confirm.
     confirm: Option<Confirm>,
 }
@@ -27,6 +29,9 @@ enum Confirm {
     Remove(Id, String),
     Transfer(Id, String),
     Leave,
+    TakeOff(Id, Id, String),
+    HandOff(Id, Id, String),
+    DeleteFolder(Id, String),
 }
 
 fn group(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
@@ -125,6 +130,33 @@ fn draw(
                     .to_owned(),
                 "Leave",
                 MembersAction::Leave,
+            ),
+            Confirm::TakeOff(domain, account, who) => (
+                format!(
+                    "Take {who} off this folder? Noura changes its key, so they can't read what people write there next. Copies they already have stay with them."
+                ),
+                "Take off",
+                MembersAction::TakeOff {
+                    domain: *domain,
+                    account: *account,
+                },
+            ),
+            Confirm::HandOff(domain, account, who) => (
+                format!(
+                    "Hand this folder to {who}? They become a manager, and you lose access. Copies you already have stay on this computer."
+                ),
+                "Hand over",
+                MembersAction::HandOff {
+                    domain: *domain,
+                    account: *account,
+                },
+            ),
+            Confirm::DeleteFolder(domain, folder) => (
+                format!(
+                    "Delete the restriction on {folder}? Each device keeps the files and holds them until you confirm where they go."
+                ),
+                "Delete restriction",
+                MembersAction::DeleteFolder(*domain),
             ),
         };
         let modal = Modal::new(egui::Id::unique("members-confirm")).show(ui.ctx(), |ui| {
@@ -236,6 +268,7 @@ fn draw(
             });
         }
     }
+    restricted(ui, screen, view, actions, idle);
     if screen.may_leave {
         ui.add_space(8.0);
         if ui
@@ -251,4 +284,117 @@ fn draw(
             "To leave this workspace, make another member the owner first.",
         );
     }
+}
+
+fn restricted(
+    ui: &mut Ui,
+    screen: &MembersScreen,
+    view: &mut MembersView,
+    actions: &mut Vec<MembersAction>,
+    idle: bool,
+) {
+    if !screen.may_restrict
+        && screen.folders.is_empty()
+        && screen.moves.is_empty()
+        && screen.held.is_empty()
+        && screen.moved_in.is_none()
+    {
+        return;
+    }
+    ui.add_space(8.0);
+    ui.label(RichText::new("Restricted folders").strong());
+    if let Some(warning) = &screen.moved_in {
+        alert(ui, warning);
+        if ui.button("Dismiss").clicked() {
+            actions.push(MembersAction::DismissMovedIn);
+        }
+    }
+    for entry in &screen.moves {
+        group(ui, &entry.label, |ui| {
+            ui.label(&entry.label);
+            if ui.add_enabled(idle, Button::new("Move it")).clicked() {
+                actions.push(MembersAction::ConfirmMove(entry.rid));
+            }
+        });
+    }
+    for entry in &screen.held {
+        group(ui, &entry.label, |ui| {
+            ui.label(&entry.label);
+            if ui.add_enabled(idle, Button::new("Confirm")).clicked() {
+                actions.push(MembersAction::ConfirmHeld(entry.folder.clone()));
+            }
+        });
+    }
+    for folder in &screen.folders {
+        folder_row(ui, folder, view, actions, idle);
+    }
+    if screen.may_restrict {
+        ui.horizontal(|ui| {
+            ui.label("Folder to restrict");
+            ui.add(
+                TextEdit::singleline(&mut view.new_folder)
+                    .desired_width(200.0)
+                    .hint_text("Path in the workspace"),
+            );
+            let filled = !view.new_folder.trim().is_empty();
+            if ui
+                .add_enabled(idle && filled, Button::new("Restrict"))
+                .clicked()
+            {
+                actions.push(MembersAction::Restrict(std::mem::take(
+                    &mut view.new_folder,
+                )));
+            }
+        });
+    }
+}
+
+fn folder_row(
+    ui: &mut Ui,
+    folder: &FolderEntry,
+    view: &mut MembersView,
+    actions: &mut Vec<MembersAction>,
+    idle: bool,
+) {
+    group(ui, &folder.label, |ui| {
+        ui.label(&folder.label);
+        for grant in &folder.grants {
+            let who = grant.label.split(',').next().unwrap_or_default().to_owned();
+            ui.horizontal_wrapped(|ui| {
+                ui.label(&grant.label);
+                if grant.removable && ui.add_enabled(idle, Button::new("Take off")).clicked() {
+                    view.confirm =
+                        Some(Confirm::TakeOff(folder.domain, grant.account, who.clone()));
+                }
+                if grant.may_hand_off && ui.add_enabled(idle, Button::new("Hand over")).clicked() {
+                    view.confirm =
+                        Some(Confirm::HandOff(folder.domain, grant.account, who.clone()));
+                }
+            });
+        }
+        for candidate in &folder.candidates {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(&candidate.label);
+                for (text, level) in [("Let read", Level::Read), ("Let edit", Level::Write)] {
+                    if ui.add_enabled(idle, Button::new(text)).clicked() {
+                        actions.push(MembersAction::Grant {
+                            domain: folder.domain,
+                            account: candidate.account,
+                            level,
+                        });
+                    }
+                }
+            });
+            if let Some(warning) = &candidate.returning {
+                alert(ui, warning);
+            }
+        }
+        if folder.deletable
+            && ui
+                .add_enabled(idle, Button::new("Delete restriction"))
+                .clicked()
+        {
+            view.confirm = Some(Confirm::DeleteFolder(folder.domain, folder.label.clone()));
+        }
+    });
 }

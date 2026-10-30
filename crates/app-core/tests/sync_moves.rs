@@ -34,7 +34,10 @@ struct Team {
 impl Team {
     async fn settle(&mut self) {
         for _ in 0..3 {
-            self.sync.round(&mut self.owner.service, 0).await.expect("a round");
+            self.sync
+                .round(&mut self.owner.service, 0)
+                .await
+                .expect("a round");
             self.grantee_sync
                 .round(&mut self.grantee.service, 0)
                 .await
@@ -59,11 +62,7 @@ impl Team {
         let account = self.grantee_account();
         let domain = self
             .sync
-            .restrict_folder(
-                &mut self.owner.service,
-                "Pay",
-                &[Access { account, level }],
-            )
+            .restrict_folder(&mut self.owner.service, "Pay", &[Access { account, level }])
             .await
             .expect("restricted");
         self.settle().await;
@@ -71,8 +70,7 @@ impl Team {
     }
 }
 
-async fn team<B: Backend>(server: &Server<B>, base: Option<&str>) -> Team {
-    let _ = base;
+async fn team<B: Backend>(server: &Server<B>) -> Team {
     let mut owner = first_desktop(server, "ana@example.com").await;
     let mut folder = Folder::new("Field notes");
     folder.write("Plan.md", b"# Plan\n");
@@ -90,8 +88,14 @@ async fn team<B: Backend>(server: &Server<B>, base: Option<&str>) -> Team {
     let (grantee_sync, grantee_folder) =
         invite_and_join(&mut owner, &mut sync, &mut book, &mut grantee, Role::Editor).await;
     let mut outsider = first_desktop(server, "cy@example.com").await;
-    let (outsider_sync, outsider_folder) =
-        invite_and_join(&mut owner, &mut sync, &mut book, &mut outsider, Role::Editor).await;
+    let (outsider_sync, outsider_folder) = invite_and_join(
+        &mut owner,
+        &mut sync,
+        &mut book,
+        &mut outsider,
+        Role::Editor,
+    )
+    .await;
     let mut team = Team {
         owner,
         sync,
@@ -117,7 +121,7 @@ fn rename(folder: &Folder, from: &str, to: &str) {
 #[tokio::test]
 async fn a_file_moved_into_a_restricted_folder_writes_both_records_in_one_push() {
     let (server, proxy) = Proxy::in_front().await;
-    let mut team = team(&server, None).await;
+    let mut team = team(&server).await;
     let mut proxied = team.owner.connect_through(&proxy.base).await;
     let domain = team.restrict(Level::Write).await;
     let old = team.sync.rid_at("Plan.md").expect("mapped");
@@ -155,7 +159,10 @@ async fn a_file_moved_into_a_restricted_folder_writes_both_records_in_one_push()
 
     team.settle().await;
     assert_eq!(
-        team.grantee_folder.files().get("Pay/Plan.md").map(Vec::as_slice),
+        team.grantee_folder
+            .files()
+            .get("Pay/Plan.md")
+            .map(Vec::as_slice),
         Some(&b"# Plan\n"[..]),
         "a reader of both keeps one file"
     );
@@ -172,7 +179,7 @@ async fn a_file_moved_into_a_restricted_folder_writes_both_records_in_one_push()
 #[tokio::test]
 async fn a_file_leaving_a_restricted_folder_waits_for_review_with_the_count() {
     let server = Server::start().await;
-    let mut team = team(&server, None).await;
+    let mut team = team(&server).await;
     let domain = team.restrict(Level::Write).await;
     team.folder.write("Pay/Salaries.md", b"secret\n");
     team.settle().await;
@@ -201,11 +208,17 @@ async fn a_file_leaving_a_restricted_folder_waits_for_review_with_the_count() {
     team.settle().await;
     assert!(team.sync.moves_for_review().is_empty());
     assert_eq!(
-        team.outsider_folder.files().get("Salaries.md").map(Vec::as_slice),
+        team.outsider_folder
+            .files()
+            .get("Salaries.md")
+            .map(Vec::as_slice),
         Some(&b"secret\n"[..])
     );
     assert_eq!(
-        team.grantee_folder.files().get("Salaries.md").map(Vec::as_slice),
+        team.grantee_folder
+            .files()
+            .get("Salaries.md")
+            .map(Vec::as_slice),
         Some(&b"secret\n"[..]),
         "a reader of both applied the deferred delete after the create"
     );
@@ -216,7 +229,7 @@ async fn a_file_leaving_a_restricted_folder_waits_for_review_with_the_count() {
 #[tokio::test]
 async fn a_moved_attachment_gets_a_new_blob() {
     let server = Server::start().await;
-    let mut team = team(&server, None).await;
+    let mut team = team(&server).await;
     team.restrict(Level::Write).await;
     let bytes = vec![7; 400_000];
     team.folder.write("Scan.png", &bytes);
@@ -239,7 +252,7 @@ async fn a_moved_attachment_gets_a_new_blob() {
 #[tokio::test]
 async fn restricting_a_folder_moves_what_it_holds_and_each_file_stays_at_its_path() {
     let server = Server::start().await;
-    let mut team = team(&server, None).await;
+    let mut team = team(&server).await;
     team.folder.write("Pay/One.md", b"one\n");
     team.folder.write("Pay/Two.md", b"two\n");
     team.settle().await;
@@ -251,11 +264,17 @@ async fn restricting_a_folder_moves_what_it_holds_and_each_file_stays_at_its_pat
         .restrict_folder(
             &mut team.owner.service,
             "Pay",
-            &[Access { account, level: Level::Write }],
+            &[Access {
+                account,
+                level: Level::Write,
+            }],
         )
         .await
         .expect("restricted");
-    assert_eq!(team.folder.files().get("Pay/One.md").map(Vec::as_slice), Some(&b"one\n"[..]));
+    assert_eq!(
+        team.folder.files().get("Pay/One.md").map(Vec::as_slice),
+        Some(&b"one\n"[..])
+    );
 
     // The grantee reads the new root before any move lands, and the file
     // stays at its path rather than going under ` (shared)`.
@@ -267,7 +286,12 @@ async fn restricting_a_folder_moves_what_it_holds_and_each_file_stays_at_its_pat
     }
     assert_eq!(team.grantee_sync.domain_roots().len(), 1);
     assert!(team.grantee_folder.files().contains_key("Pay/One.md"));
-    assert!(!team.grantee_folder.files().contains_key("Pay (shared)/One.md"));
+    assert!(
+        !team
+            .grantee_folder
+            .files()
+            .contains_key("Pay (shared)/One.md")
+    );
 
     team.settle().await;
     let moved = team.sync.rid_at("Pay/One.md").expect("mapped");
@@ -277,7 +301,11 @@ async fn restricting_a_folder_moves_what_it_holds_and_each_file_stays_at_its_pat
     assert!(files.contains_key("Pay/One.md") && files.contains_key("Pay/Two.md"));
     assert!(!files.keys().any(|p| p.contains("(shared)")));
     assert!(
-        !team.outsider_folder.files().keys().any(|p| p.starts_with("Pay")),
+        !team
+            .outsider_folder
+            .files()
+            .keys()
+            .any(|p| p.starts_with("Pay")),
         "outside the domain the files left"
     );
 }
@@ -285,7 +313,7 @@ async fn restricting_a_folder_moves_what_it_holds_and_each_file_stays_at_its_pat
 #[tokio::test]
 async fn a_grantees_edit_waits_until_the_move_lands() {
     let server = Server::start().await;
-    let mut team = team(&server, None).await;
+    let mut team = team(&server).await;
     team.folder.write("Pay/One.md", b"one\n");
     team.settle().await;
     let account = team.grantee_account();
@@ -293,7 +321,10 @@ async fn a_grantees_edit_waits_until_the_move_lands() {
         .restrict_folder(
             &mut team.owner.service,
             "Pay",
-            &[Access { account, level: Level::Write }],
+            &[Access {
+                account,
+                level: Level::Write,
+            }],
         )
         .await
         .expect("restricted");
@@ -310,7 +341,11 @@ async fn a_grantees_edit_waits_until_the_move_lands() {
         .round(&mut team.grantee.service, 0)
         .await
         .expect("a round");
-    assert_eq!(team.grantee_sync.status().pending, 0, "the edit uploads nothing");
+    assert_eq!(
+        team.grantee_sync.status().pending,
+        0,
+        "the edit uploads nothing"
+    );
     assert!(
         team.grantee_sync
             .status()
@@ -331,7 +366,7 @@ async fn a_grantees_edit_waits_until_the_move_lands() {
 #[tokio::test]
 async fn any_managers_device_finishes_moves_the_creating_device_left() {
     let server = Server::start().await;
-    let mut team = team(&server, None).await;
+    let mut team = team(&server).await;
     team.folder.write("Pay/One.md", b"one\n");
     team.settle().await;
     // The creating device stops after the marker: the moves never leave.
@@ -341,7 +376,10 @@ async fn any_managers_device_finishes_moves_the_creating_device_left() {
         .restrict_folder(
             &mut team.owner.service,
             "Pay",
-            &[Access { account, level: Level::Manage }],
+            &[Access {
+                account,
+                level: Level::Manage,
+            }],
         )
         .await
         .expect("restricted");
@@ -366,7 +404,7 @@ async fn any_managers_device_finishes_moves_the_creating_device_left() {
 #[tokio::test]
 async fn taking_a_member_off_rotates_and_a_grant_sets_a_floor() {
     let server = Server::start().await;
-    let mut team = team(&server, None).await;
+    let mut team = team(&server).await;
     let domain = team.restrict(Level::Write).await;
     team.folder.write("Pay/Early.md", b"early\n");
     team.settle().await;
@@ -428,7 +466,7 @@ async fn taking_a_member_off_rotates_and_a_grant_sets_a_floor() {
 #[tokio::test]
 async fn a_remover_who_cant_read_the_folder_leaves_the_rotation_to_a_grantee() {
     let server = Server::start().await;
-    let mut team = team(&server, None).await;
+    let mut team = team(&server).await;
     // The grantee creates nothing here: the owner hands the folder over,
     // then only removes entries as a workspace owner.
     let domain = team.restrict(Level::Manage).await;
@@ -484,7 +522,7 @@ async fn a_remover_who_cant_read_the_folder_leaves_the_rotation_to_a_grantee() {
 #[tokio::test]
 async fn a_hand_off_goes_in_two_changes() {
     let server = Server::start().await;
-    let mut team = team(&server, None).await;
+    let mut team = team(&server).await;
     let domain = team.restrict(Level::Read).await;
     let before = team.sync.policy_revision();
     let ben = team.grantee_account();
@@ -504,7 +542,7 @@ async fn a_hand_off_goes_in_two_changes() {
 #[tokio::test]
 async fn deleting_a_domain_keeps_the_files_and_holds_them_for_review() {
     let server = Server::start().await;
-    let mut team = team(&server, None).await;
+    let mut team = team(&server).await;
     let domain = team.restrict(Level::Write).await;
     team.folder.write("Pay/Salaries.md", b"secret\n");
     team.settle().await;
@@ -537,7 +575,10 @@ async fn deleting_a_domain_keeps_the_files_and_holds_them_for_review() {
     assert_eq!(team.sync.status().held_roots, 0);
     assert!(!team.folder.path(&format!("Pay/{MARKER}")).exists());
 
-    let refused = team.sync.delete_domain(&mut team.owner.service, domain).await;
+    let refused = team
+        .sync
+        .delete_domain(&mut team.owner.service, domain)
+        .await;
     assert!(matches!(refused, Err(SyncError::Check(_))));
 }
 
@@ -567,7 +608,7 @@ async fn bootstrap_with_side_checkpoint(serve_it: bool) -> Option<&'static str> 
     use sync_protocol::messages::CheckpointResponse;
 
     let server = Server::start_with_interval(6).await;
-    let mut team = team(&server, None).await;
+    let mut team = team(&server).await;
     let domain = team.restrict(Level::Write).await;
     team.sync.set_checkpoint_wait(Duration::from_secs(3_600));
     team.grantee_sync
@@ -586,10 +627,16 @@ async fn bootstrap_with_side_checkpoint(serve_it: bool) -> Option<&'static str> 
     // The real checkpoint commits at the same point.
     team.sync.set_checkpoint_wait(Duration::ZERO);
     for _ in 0..3 {
-        team.sync.round(&mut team.owner.service, 0).await.expect("a round");
+        team.sync
+            .round(&mut team.owner.service, 0)
+            .await
+            .expect("a round");
     }
     team.settle().await;
-    let real = team.sync.domain_checkpoint(&domain).expect("the real checkpoint");
+    let real = team
+        .sync
+        .domain_checkpoint(&domain)
+        .expect("the real checkpoint");
     assert_eq!(real.body.covered_seq, side.checkpoint.0.body.covered_seq);
     assert_ne!(real.digest(), side.checkpoint.0.digest());
     let seq = team
@@ -647,4 +694,189 @@ async fn bootstrap_with_side_checkpoint(serve_it: bool) -> Option<&'static str> 
         "the device installed the checkpoint's files"
     );
     stopped
+}
+
+/// The section's rows come from real state: who reads each folder, a move
+/// that waits with its count, and the warning for a returning grantee.
+#[tokio::test]
+async fn the_members_screen_reports_folders_and_what_waits() {
+    use app_core::members::MembersScreen;
+
+    let server = Server::start().await;
+    let mut team = team(&server).await;
+    let domain = team.restrict(Level::Write).await;
+    team.folder.write("Pay/Salaries.md", b"secret\n");
+    team.settle().await;
+    let own = team.owner.credentials.account;
+    let cy = team.outsider_account();
+    team.sync
+        .set_access(
+            &mut team.owner.service,
+            domain,
+            &[Access {
+                account: own,
+                level: Level::Manage,
+            }],
+        )
+        .await
+        .expect("the grantee leaves the list");
+    rename(&team.folder, "Pay/Salaries.md", "Salaries.md");
+    team.sync
+        .round(&mut team.owner.service, 0)
+        .await
+        .expect("a round");
+
+    let policy = team.sync.remote_mut().expect("connected").policy().clone();
+    let screen =
+        MembersScreen::of(policy.head_snapshot(), own, &[]).with_folders(&policy, own, &team.sync);
+    let folder = &screen.folders[0];
+    assert_eq!(folder.label, "Pay");
+    let ben = folder
+        .candidates
+        .iter()
+        .find(|c| c.account == team.grantee_account())
+        .expect("a candidate");
+    assert!(ben.returning.is_some(), "it warns before a second grant");
+    let new = folder
+        .candidates
+        .iter()
+        .find(|c| c.account == cy)
+        .expect("a candidate");
+    assert!(new.returning.is_none());
+    assert_eq!(
+        screen.moves[0].label,
+        "Salaries.md left a restricted folder. Moving it shows it to 2 more people."
+    );
+}
+
+/// `remove_member` drops the account from each access list, as a grantee
+/// and as a manager, and the signer rotates each domain it reads; a domain
+/// it doesn't read rotates from another key holder (§8, §9).
+#[tokio::test]
+async fn removing_a_member_drops_its_grants_and_each_domain_rotates() {
+    use app_core::sync::members::MemberChange;
+
+    let server = Server::start().await;
+    let mut team = team(&server).await;
+    let domain = team.restrict(Level::Manage).await;
+    let (ben, cy) = (team.grantee_account(), team.outsider_account());
+    // A second folder the owner doesn't read, which Cy and Ben do.
+    team.sync
+        .change_member(
+            &mut team.owner.service,
+            MemberChange::SetRole {
+                account: cy,
+                role: Role::Admin,
+            },
+        )
+        .await
+        .expect("an admin");
+    team.settle().await;
+    let other = team
+        .outsider_sync
+        .restrict_folder(
+            &mut team.outsider.service,
+            "Ops",
+            &[Access {
+                account: ben,
+                level: Level::Write,
+            }],
+        )
+        .await
+        .expect("an admin restricts a folder");
+    team.outsider_folder.write("Ops/Run.md", b"run\n");
+    team.settle().await;
+    assert!(team.grantee_folder.files().contains_key("Ops/Run.md"));
+
+    assert_eq!(team.sync.domain_epoch(&domain), 1);
+    team.sync
+        .change_member(&mut team.owner.service, MemberChange::Remove(ben))
+        .await
+        .expect("removed");
+    assert_eq!(team.sync.domain_epoch(&domain), 2, "the signer rotated");
+    let policy = team.sync.remote_mut().expect("connected").policy().clone();
+    let snapshot = policy.head_snapshot();
+    assert!(!snapshot.domains[&domain].access.contains_key(&ben));
+    assert!(!snapshot.domains[&other].access.contains_key(&ben));
+
+    team.sync
+        .round(&mut team.owner.service, 0)
+        .await
+        .expect("a round");
+    for _ in 0..3 {
+        team.outsider_sync
+            .round(&mut team.outsider.service, 0)
+            .await
+            .expect("a round");
+    }
+    assert_eq!(
+        team.outsider_sync.domain_epoch(&other),
+        2,
+        "a key holder rotated the rest"
+    );
+
+    // An editor restricts nothing.
+    let refused = team
+        .grantee_sync
+        .restrict_folder(&mut team.grantee.service, "Mine", &[])
+        .await;
+    assert!(refused.is_err());
+}
+
+/// A member removed and invited again stays out of every access list until
+/// a manager grants it again (§8).
+#[tokio::test]
+async fn a_member_invited_again_stays_out_of_restricted_folders_until_granted() {
+    use app_core::sync::members::MemberChange;
+
+    let server = Server::start().await;
+    let mut team = team(&server).await;
+    let domain = team.restrict(Level::Write).await;
+    team.folder.write("Pay/Salaries.md", b"secret\n");
+    team.settle().await;
+    let ben = team.grantee_account();
+    team.sync
+        .change_member(&mut team.owner.service, MemberChange::Remove(ben))
+        .await
+        .expect("removed");
+    let mut book = InvitationBook::open(team.owner.state.path(), team.owner.id()).unwrap();
+    let (mut again, again_folder) = invite_and_join(
+        &mut team.owner,
+        &mut team.sync,
+        &mut book,
+        &mut team.grantee,
+        Role::Editor,
+    )
+    .await;
+    for _ in 0..3 {
+        again
+            .round(&mut team.grantee.service, 0)
+            .await
+            .expect("a round");
+    }
+    let policy = team.sync.remote_mut().expect("connected").policy().clone();
+    assert!(
+        !policy.head_snapshot().domains[&domain]
+            .access
+            .contains_key(&ben)
+    );
+    assert!(
+        !again_folder.files().keys().any(|p| p.starts_with("Pay/")),
+        "the folder stays out of its new copy"
+    );
+}
+
+/// A move spans two domains' head rows in one transaction on PostgreSQL
+/// too, and each domain's reader ends with one file (§15, §9).
+#[tokio::test]
+async fn a_move_commits_on_postgres() {
+    let server = Server::start_postgres().await;
+    let mut team = team(&server).await;
+    team.restrict(Level::Write).await;
+    rename(&team.folder, "Plan.md", "Pay/Plan.md");
+    team.settle().await;
+    assert!(team.grantee_folder.files().contains_key("Pay/Plan.md"));
+    assert!(!team.grantee_folder.files().contains_key("Plan.md"));
+    assert!(!team.outsider_folder.files().contains_key("Plan.md"));
+    assert_eq!(team.sync.status().pending, 0);
 }

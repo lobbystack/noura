@@ -3,7 +3,11 @@
 //! sync service, changes roles, removes members and leaves through the
 //! open workspace's sync, and lists the section again after each action.
 
+use std::collections::BTreeMap;
 use std::path::Path;
+
+use sync_protocol::records::{Access, Level};
+use sync_protocol::types::Id;
 
 use super::folder::Folder;
 use crate::members::{
@@ -11,6 +15,7 @@ use crate::members::{
 };
 use crate::sync::invitations::{InvitationBook, NewInvitation};
 use crate::sync::members::MemberChange;
+use crate::sync::workspace::WorkspaceSync;
 use crate::sync::{SyncError, SyncService};
 
 /// What a failed action tells you.
@@ -29,6 +34,25 @@ fn members_message(error: &SyncError) -> String {
         SyncError::Invalid(text) => text.clone(),
         other => format!("That didn't work: {other}."),
     }
+}
+
+/// A restricted folder's access list at the accepted policy.
+fn access_of(sync: &mut WorkspaceSync, domain: Id) -> Result<BTreeMap<Id, Level>, SyncError> {
+    sync.remote_mut()
+        .and_then(|remote| {
+            let snapshot = remote.policy().head_snapshot();
+            snapshot.domains.get(&domain).map(|d| d.access.clone())
+        })
+        .ok_or_else(|| SyncError::Invalid("That restricted folder is gone.".into()))
+}
+
+fn entries(list: &BTreeMap<Id, Level>) -> Vec<Access> {
+    list.iter()
+        .map(|(account, level)| Access {
+            account: *account,
+            level: *level,
+        })
+        .collect()
 }
 
 /// The section's state between actions.
@@ -147,6 +171,53 @@ impl Membership {
                 };
                 return Ok(None);
             }
+            MembersAction::Restrict(path) => {
+                let path = path.trim().trim_matches('/').to_owned();
+                sync.restrict_folder(service, &path, &[]).await?;
+                Some(format!(
+                    "You restricted {path}. Only you read it for now. Noura moves its files in as sync runs."
+                ))
+            }
+            MembersAction::Grant {
+                domain,
+                account,
+                level,
+            } => {
+                let mut list = access_of(sync, domain)?;
+                list.insert(account, level);
+                sync.set_access(service, domain, &entries(&list)).await?;
+                Some("You gave them access. Their devices fetch the folder as sync runs.".into())
+            }
+            MembersAction::TakeOff { domain, account } => {
+                let mut list = access_of(sync, domain)?;
+                list.remove(&account);
+                sync.set_access(service, domain, &entries(&list)).await?;
+                Some(
+                    "You took them off. Noura changes the folder's key, so they can't read what people write there next. Copies they already have stay with them.".into(),
+                )
+            }
+            MembersAction::HandOff { domain, account } => {
+                sync.hand_off_domain(service, domain, account).await?;
+                Some("You handed the folder over and took yourself off. Copies you already have stay on this computer.".into())
+            }
+            MembersAction::DeleteFolder(domain) => {
+                sync.delete_domain(service, domain).await?;
+                Some("You deleted the restriction. Each device keeps the files and holds them until you confirm where they go.".into())
+            }
+            MembersAction::ConfirmMove(rid) => {
+                sync.confirm_move(rid);
+                sync.round(service, 0).await?;
+                Some("You confirmed the move.".into())
+            }
+            MembersAction::ConfirmHeld(path) => {
+                sync.confirm_held(&path)?;
+                sync.round(service, 0).await?;
+                Some("You confirmed where those files go.".into())
+            }
+            MembersAction::DismissMovedIn => {
+                sync.dismiss_moved_in();
+                None
+            }
         };
         self.refresh(service, folder, &mut book).await?;
         Ok(notice)
@@ -170,7 +241,8 @@ impl Membership {
             return Ok(());
         };
         service.refresh_policy(remote).await?;
-        let snapshot = remote.policy().head_snapshot().clone();
+        let policy = remote.policy().clone();
+        let snapshot = policy.head_snapshot().clone();
         let account = service.credentials().account;
         let manages = matches!(
             snapshot.role(&account),
@@ -182,7 +254,8 @@ impl Membership {
             Vec::new()
         };
         let copy = self.screen.copy.take();
-        self.screen = MembersScreen::of(&snapshot, account, &invitations);
+        self.screen = MembersScreen::of(&snapshot, account, &invitations)
+            .with_folders(&policy, account, sync);
         self.screen.copy = copy;
         Ok(())
     }
