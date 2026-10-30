@@ -124,12 +124,6 @@ impl SyncService {
             Err(SyncError::Check("sync_key_mismatch")) if remote.epochs.latest().is_some() => {
                 return self.replace_or_rewrap(remote).await;
             }
-            // The wrapper lost its access since, so the envelope waits for
-            // the epoch's entry (§9), but a device that accepted this epoch
-            // holds its key already and can go on, such as to rotate.
-            Err(SyncError::KeyMissing) if self.holds_latest_epoch(remote).await? => {
-                return Ok(());
-            }
             Err(error) => return Err(error),
         };
         if let Some(old) = remote.epochs.latest() {
@@ -647,7 +641,13 @@ impl SyncService {
         remote: &mut RemoteWorkspace,
     ) -> Result<bool, SyncError> {
         self.refresh_policy(remote).await?;
-        self.refresh_keys(remote).await?;
+        match self.refresh_keys(remote).await {
+            // The wrapper lost its access since, so the envelope waits for
+            // the epoch's entry (§9), but a device that accepted this
+            // epoch holds its key and rotates from it.
+            Err(SyncError::KeyMissing) if self.holds_latest_epoch(remote).await? => {}
+            refreshed => refreshed?,
+        }
         let reads = remote
             .policy
             .head_snapshot()

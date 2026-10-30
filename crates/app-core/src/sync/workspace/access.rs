@@ -228,8 +228,6 @@ impl WorkspaceSync {
             return Ok(());
         }
         let remote = self.remote.as_mut().ok_or(SyncError::KeyMissing)?;
-        service.refresh_policy(remote).await?;
-        service.refresh_keys(remote).await?;
         service.rotate_if_pending(remote).await?;
         let remote = self.remote.take().ok_or(SyncError::KeyMissing)?;
         self.adopt(remote)

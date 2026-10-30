@@ -2248,7 +2248,17 @@ impl WorkspaceSync {
             "epoch_stale" | "rotation_pending" => {
                 let before = self.accepted_epoch();
                 let revision = self.accepted_revision();
-                self.refresh(service).await?;
+                // An envelope that waits for its epoch's entry holds up no
+                // rotation: the device took the policy, and it rotates from
+                // the key it accepted.
+                match self.refresh(service).await {
+                    Err(SyncError::KeyMissing)
+                        if self
+                            .remote
+                            .as_ref()
+                            .is_some_and(|remote| service.rotation_pending(remote)) => {}
+                    refreshed => refreshed?,
+                }
                 if let Some(remote) = self.remote.as_mut()
                     && service.rotation_pending(remote)
                 {
@@ -3060,6 +3070,13 @@ impl WorkspaceSync {
                 // holds its cursor until the key arrives (§9, §13).
                 Err(SyncError::KeyMissing) if unknown_epoch => {
                     return Ok((0, true));
+                }
+                // The device holds the key of every epoch here. Its latest
+                // envelope only waits again, since the wrapper lost its
+                // access, so it takes the policy (§9).
+                Err(SyncError::KeyMissing) => {
+                    let remote = self.remote.take().ok_or(SyncError::KeyMissing)?;
+                    self.adopt(remote)?;
                 }
                 Err(error) => return Err(error),
             }
