@@ -1,5 +1,5 @@
 //! The browser side: the module's start function wires each passkey form
-//! to its ceremony.
+//! to its ceremony, and runs the share viewer on a share page.
 
 use serde_json::{Value, json};
 use wasm_bindgen::JsCast;
@@ -48,10 +48,16 @@ pub fn start() {
     let Some(window) = window() else {
         return;
     };
-    let webauthn = js_sys::Reflect::has(&window, &"PublicKeyCredential".into()).unwrap_or(false);
-    let (true, Some(document)) = (webauthn, window.document()) else {
+    let Some(document) = window.document() else {
         return;
     };
+    if let Ok(Some(page)) = document.query_selector("[data-share]") {
+        spawn_local(async move { view_share(page).await });
+    }
+    let webauthn = js_sys::Reflect::has(&window, &"PublicKeyCredential".into()).unwrap_or(false);
+    if !webauthn {
+        return;
+    }
     let Ok(forms) = document.query_selector_all("form[data-passkey]") else {
         return;
     };
@@ -189,4 +195,117 @@ async fn post(window: &web_sys::Window, path: &str, body: &Value) -> Result<Valu
             .to_owned());
     }
     Ok(value)
+}
+
+fn part(page: &web_sys::Element, name: &str) -> Option<web_sys::Element> {
+    page.query_selector(&format!("[data-share-{name}]"))
+        .ok()
+        .flatten()
+}
+
+/// Shows `text` as the viewer's error page and renders nothing.
+fn share_error(page: &web_sys::Element, heading: &str, text: &str) {
+    if let Some(status) = part(page, "status") {
+        status.set_text_content(Some(text));
+        let _ = status.set_attribute("role", "alert");
+    }
+    if let Some(document) = window().and_then(|w| w.document()) {
+        document.set_title(&format!("{heading} · Noura"));
+    }
+}
+
+/// Fetches the snapshot at `path`: its body, `Ok(None)` when the link is
+/// gone, or the error to show.
+async fn fetch_snapshot(window: &web_sys::Window, path: &str) -> Result<Option<Vec<u8>>, ()> {
+    let init = RequestInit::new();
+    init.set_method("GET");
+    init.set_credentials(RequestCredentials::Omit);
+    let request = Request::new_with_str_and_init(path, &init).map_err(|_| ())?;
+    let response: Response = JsFuture::from(window.fetch_with_request(&request))
+        .await
+        .map_err(|_| ())?
+        .dyn_into()
+        .map_err(|_| ())?;
+    if response.status() == 404 {
+        return Ok(None);
+    }
+    if !response.ok() {
+        return Err(());
+    }
+    let buffer = JsFuture::from(response.array_buffer().map_err(|_| ())?)
+        .await
+        .map_err(|_| ())?;
+    Ok(Some(js_sys::Uint8Array::new(&buffer).to_vec()))
+}
+
+/// The share viewer: fetches the snapshot of the token in the path,
+/// verifies and decrypts it with the keys in the fragment, which never
+/// leave the browser, and fills the page.
+async fn view_share(page: web_sys::Element) {
+    use crate::share::{ViewError, open_snapshot, revision_key, revision_warning, token_of};
+    let broken = "This note can't be opened";
+    let Some(window) = window() else {
+        return;
+    };
+    let place = window.location();
+    let token = match token_of(&place.pathname().unwrap_or_default()) {
+        Ok(token) => token,
+        Err(error) => return share_error(&page, broken, error.text()),
+    };
+    let fragment = place.hash().unwrap_or_default();
+    let fragment = fragment.trim_start_matches('#');
+    if fragment.is_empty() {
+        return share_error(&page, broken, ViewError::BadKey.text());
+    }
+    let path = format!("/v2/shares/{}", sync_protocol::types::to_base64url(&token));
+    let body = match fetch_snapshot(&window, &path).await {
+        Ok(Some(body)) => body,
+        Ok(None) => {
+            return share_error(
+                &page,
+                "This link doesn't open",
+                "The link expired, or someone revoked it. Ask the person who shared it for a new one.",
+            );
+        }
+        Err(()) => return share_error(&page, broken, "The server can't be reached. Try again."),
+    };
+    let opened = match open_snapshot(&token, &body, fragment) {
+        Ok(opened) => opened,
+        Err(error) => return share_error(&page, broken, error.text()),
+    };
+    let key = revision_key(&token);
+    let storage = window.local_storage().ok().flatten();
+    let highest = storage
+        .as_ref()
+        .and_then(|s| s.get_item(&key).ok().flatten())
+        .and_then(|v| v.parse::<u64>().ok());
+    if let (Some(text), Some(warning)) = (
+        revision_warning(highest, opened.revision),
+        part(&page, "warning"),
+    ) {
+        warning.set_text_content(Some(&text));
+        let _ = warning.remove_attribute("hidden");
+    }
+    if highest.is_none_or(|h| opened.revision > h)
+        && let Some(storage) = &storage
+    {
+        let _ = storage.set_item(&key, &opened.revision.to_string());
+    }
+    if let Some(title) = part(&page, "title") {
+        title.set_text_content(Some(&opened.title));
+    }
+    if let Some(body) = part(&page, "body") {
+        // The renderer escapes all text and emits only allowlisted
+        // elements, and the page's policy blocks inline script.
+        body.set_inner_html(&opened.html);
+    }
+    if let Some(note) = part(&page, "note") {
+        let _ = note.remove_attribute("hidden");
+    }
+    if let Some(status) = part(&page, "status") {
+        let _ = status.set_attribute("hidden", "");
+    }
+    if let Some(document) = window.document() {
+        document.set_title(&format!("{} · Noura", opened.title));
+    }
 }

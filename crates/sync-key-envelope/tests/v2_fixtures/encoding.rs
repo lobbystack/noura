@@ -813,6 +813,7 @@ pub fn fixture() -> Fixture {
             shares: List(vec![ShareInfo {
                 token_hash: share.body.token_hash,
                 domain: w.ws_domain,
+                device: w.alice_laptop.device(),
                 expires_at: 1_763_000_000,
             }]),
         },

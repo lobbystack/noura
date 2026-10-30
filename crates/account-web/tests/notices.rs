@@ -56,3 +56,35 @@ fn the_repository_notices_name_webauthn_rs_under_mpl_2_0() {
         .expect("a paragraph on webauthn-rs");
     assert!(paragraph.contains("MPL-2.0"), "{paragraph}");
 }
+
+/// The newest version of `name` that Cargo.lock pins, since the legacy v1
+/// code still pins older dalek releases.
+fn newest_locked_version(name: &str) -> String {
+    let entry = format!("name = \"{name}\"\nversion = \"");
+    LOCK.match_indices(&entry)
+        .map(|(at, _)| {
+            let start = at + entry.len();
+            let end = LOCK[start..].find('"').expect("a version") + start;
+            LOCK[start..end].to_owned()
+        })
+        .max_by_key(|v| {
+            v.split('.')
+                .map(|p| p.parse::<u64>().unwrap_or(0))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| panic!("Cargo.lock holds {name}"))
+}
+
+#[test]
+fn the_notice_carries_the_bsd_text_of_the_share_viewers_signature_crates() {
+    for name in ["curve25519-dalek", "ed25519-dalek", "subtle"] {
+        let version = newest_locked_version(name);
+        assert!(
+            NOTICE.contains(&format!("{name} {version}")),
+            "the notice names {name} {version}"
+        );
+    }
+    assert!(NOTICE.contains("BSD 3-Clause License text"));
+    assert!(NOTICE.contains("Redistributions in binary form must reproduce"));
+    assert!(NOTICE.contains("- MIT: pulldown-cmark"));
+}

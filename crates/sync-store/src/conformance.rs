@@ -30,9 +30,11 @@ use crate::{Backend, Error, LockPlan, Refusal, Session, Store, WriteTxn};
 mod blobs;
 mod devices;
 mod keys;
+mod shares;
 pub use blobs::*;
 pub use devices::*;
 pub use keys::*;
+pub use shares::*;
 
 /// Declares one `#[tokio::test]` per conformance case. `$open` is an async
 /// function returning a fresh store and a guard that keeps its database
@@ -89,6 +91,9 @@ macro_rules! conformance_tests {
             blob_digest_mismatch_discards_the_upload,
             pushes_list_completed_blobs_of_their_domain,
             blob_downloads_follow_the_listing,
+            share_links_follow_section_24,
+            share_links_outlive_their_creator_until_they_expire,
+            share_limit_holds_a_thousand_links,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
@@ -117,6 +122,7 @@ macro_rules! instance_tests {
             enrollments_at_once_take_one_card,
             chain_appends_race_pushes_recording_the_head,
             blob_uploads_race_pushes_and_policy_changes,
+            share_writes_race_pushes_and_policy_changes,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
