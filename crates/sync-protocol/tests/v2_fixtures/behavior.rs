@@ -1027,6 +1027,13 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
                 expect.as_str().unwrap(),
             )
         }
+        // The server's checks need a store, so the store conformance suite
+        // runs these on each store.
+        "server_check" => Ok(()),
+        "heads_may_leave" => same(
+            policy(case).card_gone(&id_of(&case["device"]), u64_of(&case["revision"])),
+            expect.as_bool().unwrap(),
+        ),
         "checkpoint_check" => {
             let mut chain = CheckpointChain::new();
             for c in case["accepted"].as_array().unwrap() {

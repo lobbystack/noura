@@ -742,20 +742,23 @@ impl PolicyChain {
     /// checkpoint has `policy_revision` `revision` (§17): its card can't
     /// come back, because a change at or below `revision` recorded a head
     /// of its account at which a link had removed the card, or a head on a
-    /// chain other than the card's. The account is still a member there,
-    /// yet its recorded head no longer lists the card. A device whose
-    /// account `remove_member` removed, or that only lost access, stays.
+    /// chain other than the card's. Such a change leaves the account a
+    /// member while the device is no longer one of its devices, whatever
+    /// later changes do to the account. A device whose account
+    /// `remove_member` removed, or that only lost access, stays.
     pub fn card_gone(&self, device: &Id, revision: u64) -> bool {
-        let Some(at) = self.at(revision) else {
-            return false;
-        };
-        if at.is_device(device) {
-            return false;
+        let mut account = None;
+        for r in 1..=revision {
+            let Some(at) = self.at(r) else {
+                break;
+            };
+            if let Some(owner) = at.account_of(device) {
+                account = Some(owner);
+            } else if account.is_some_and(|a| at.members.contains_key(&a)) {
+                return true;
+            }
         }
-        (1..revision)
-            .rev()
-            .find_map(|r| self.at(r).and_then(|s| s.account_of(device)))
-            .is_some_and(|account| at.members.contains_key(&account))
+        false
     }
 
     /// Whether some change in (`after`, `through`] makes `domain` due for

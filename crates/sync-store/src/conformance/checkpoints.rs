@@ -5,6 +5,9 @@
 //! routes.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+use serde_json::Value;
 
 use sync_protocol::codec::{Decode, Nested, Sorted};
 use sync_protocol::manifest::{
@@ -12,12 +15,12 @@ use sync_protocol::manifest::{
 };
 use sync_protocol::messages::{CursorCompactedDetail, EntryRecord, LiveCursor, RecordRef};
 use sync_protocol::records::{
-    Card, Checkpoint, CheckpointBundle, Epoch, EpochBundle, LinkKind, PolicyKind, Ref, Signed,
+    Card, Checkpoint, CheckpointBundle, Epoch, EpochBundle, LinkKind, PolicyKind, Ref, Role, Signed,
 };
 use sync_protocol::types::{Digest, Id, SecretKey};
 
 use super::{World, push_failure, refusal};
-use crate::{Backend, CheckpointInterval, Store};
+use crate::{Backend, CheckpointInterval, Session, Store};
 
 /// What a test wrote: each device's chain, the objects it made and the
 /// checkpoints the server accepted.
@@ -267,91 +270,155 @@ pub async fn checkpoints_fall_due_by_weight<B: Backend>(store: Store<B>) {
     assert_eq!(world.pull(0, 0).await.checkpoint_due, seq);
 }
 
-/// The server's checks on a pushed checkpoint (§17): the signer, the policy
-/// and epoch fields, `previous`, `number` and `skip`, the bounds of
-/// `covered_seq` and `floor`, and the recomputed root, `live_objects` and
-/// heads.
-pub async fn checkpoint_checks_answer_their_codes<B: Backend>(store: Store<B>) {
+/// The `server_check` cases of `sync-v2-manifest.json` (§17): the signer,
+/// the policy and epoch fields, `previous`, `number` and `skip`, the bounds
+/// of `covered_seq` and `floor`, and the recomputed root, `live_objects`
+/// and heads. Each case runs on a fresh workspace: an owner's two writer
+/// devices and a viewer's device, then one operation from each writer.
+pub async fn checkpoint_checks_match_the_fixture<B: Backend>(store: Store<B>) {
+    let doc = super::fixture("sync-v2-manifest.json");
+    // The viewer's injected policy entry doesn't count toward the interval,
+    // so the genesis, epoch 1 and the two operations make four entries.
+    let store = Arc::new(store.with_checkpoint_interval(interval(4)));
+    let mut ran = 0;
+    for case in doc["cases"].as_array().expect("cases") {
+        if case["kind"] != "server_check" {
+            continue;
+        }
+        ran += 1;
+        let label = case["name"].as_str().expect("a name");
+        let mut world = World::on(store.clone(), 2).await;
+        add_viewer(&mut world).await;
+        let mut track = Track::new(&world).await;
+        track.write(&world, 0).await;
+        let mut head = track.write(&world, 1).await;
+        let mut due = world.pull(0, 0).await.checkpoint_due;
+        assert_eq!(due, head, "{label}: due at the second writer's operation");
+        let mut previous_entry = 0;
+        if case["after_one_checkpoint"].as_bool().expect("a flag") {
+            let first = track.checkpoint(&world, 0, due, &[], |_, _| {}).await;
+            let receipt = push_checkpoint(&world, 0, &first)
+                .await
+                .expect("the first checkpoint commits");
+            previous_entry = receipt.receipts[0].seq;
+            track.accepted.push(first.checkpoint.0.clone());
+            due = 0;
+            let mut writer = 0;
+            while due == 0 {
+                head = track.write(&world, writer).await;
+                writer = 1 - writer;
+                due = world.pull(0, 0).await.checkpoint_due;
+            }
+        }
+        let covered = match case["covered_seq"].as_str().expect("a point") {
+            "due" => due,
+            "due - 1" => due - 1,
+            "head + 1" => head + 1,
+            "previous entry - 1" => previous_entry - 1,
+            other => panic!("{label}: unknown point {other}"),
+        };
+        let device = |role: &Value| match role.as_str().expect("a role") {
+            "writer" => 0,
+            "other writer" => 1,
+            "viewer" => 2,
+            other => panic!("{label}: unknown device {other}"),
+        };
+        let signer = device(&case["signer"]);
+        let pusher = device(&case["pushed_by"]);
+        let edit = case["edit"].as_object().expect("an edit").clone();
+        let drop_head = case["drop_head"].as_bool().expect("a flag");
+        let bundle = track
+            .checkpoint(&world, signer, covered, &[], move |c, heads| {
+                for (field, value) in &edit {
+                    let digest = || Digest::from_hex(value.as_str().expect("hex")).expect("hex");
+                    let add = || value.as_u64().expect("a number");
+                    match field.as_str() {
+                        "manifest_root" => c.manifest_root = digest(),
+                        "heads_digest" => c.heads_digest = digest(),
+                        "skip" => c.skip = digest(),
+                        "previous" => c.previous = digest(),
+                        "policy_head" => c.policy_head = digest(),
+                        "epoch_record" => c.epoch_record = digest(),
+                        "live_objects" => c.live_objects += add(),
+                        "number" => c.number += add(),
+                        "policy_revision" => c.policy_revision += add(),
+                        "epoch" => c.epoch += add(),
+                        "floor" => c.floor += add(),
+                        other => panic!("unknown field {other}"),
+                    }
+                }
+                if drop_head {
+                    heads.pop();
+                }
+            })
+            .await;
+        let result = push_checkpoint(&world, pusher, &bundle).await;
+        match case["expect"].as_str().expect("a code") {
+            "ok" => {
+                let receipt = result.unwrap_or_else(|e| panic!("{label}: {e:?}"));
+                assert_eq!(
+                    receipt.receipts[0].record_digest,
+                    bundle.checkpoint.0.digest()
+                );
+            }
+            code => assert_eq!(push_failure(result), (code, 0), "{label}"),
+        }
+        if signer == 2 {
+            // The viewer is active and signs its own push, so the refusal
+            // comes from the signer's write access.
+            let again = refusal(push_checkpoint(&world, pusher, &bundle).await);
+            assert!(
+                again.message.contains("can't write the domain"),
+                "{label}: {}",
+                again.message
+            );
+        }
+    }
+    assert!(ran >= 19, "the fixture's server checks ran");
+}
+
+/// Adds an account with one device as a viewer of the workspace, signed in
+/// as `world.devices[2]`.
+async fn add_viewer<B: Backend>(world: &mut World<B>) {
+    let (viewer, keys, links) = super::account(1);
+    world
+        .store
+        .append_account_links(links.clone())
+        .await
+        .expect("the viewer's chain");
+    let add = world.change(
+        0,
+        vec![super::head_of(&world.links), super::head_of(&links)],
+        PolicyKind::AddMember {
+            account: viewer,
+            role: Role::Viewer,
+            invitation: Id::random().expect("random"),
+        },
+    );
+    let domain = world.domain;
+    world.inject_policy(add, vec![domain], None).await;
+    let keys = keys.into_iter().next().expect("one device");
+    let session = Session::new(viewer, keys.device());
+    let token = sync_protocol::crypto::random_array().expect("random");
+    world
+        .store
+        .create_session(token, session)
+        .await
+        .expect("a session");
+    world.devices.push(super::Device {
+        keys,
+        session,
+        token,
+    });
+}
+
+/// A checkpoint goes in a push of its own until approvals and grants carry
+/// one (ticket 50).
+pub async fn a_checkpoint_goes_in_a_push_of_its_own<B: Backend>(store: Store<B>) {
     let world = World::new(store.with_checkpoint_interval(interval(4)), 2).await;
     let mut track = Track::new(&world).await;
     track.write(&world, 0).await;
     track.write(&world, 1).await;
-    assert_eq!(world.pull(0, 0).await.checkpoint_due, 4);
-    type Edit = Box<dyn FnOnce(&mut Checkpoint, &mut Vec<Ref>)>;
-    let cases: Vec<(&str, &'static str, Edit)> = vec![
-        (
-            "a root that differs",
-            "manifest_mismatch",
-            Box::new(|c, _| c.manifest_root = Digest([1; 32])),
-        ),
-        (
-            "a leaf count that differs",
-            "manifest_mismatch",
-            Box::new(|c, _| c.live_objects += 1),
-        ),
-        (
-            "heads that leave a writer out",
-            "manifest_mismatch",
-            Box::new(|_, heads| {
-                heads.pop();
-            }),
-        ),
-        (
-            "a heads digest that the heads don't hash to",
-            "manifest_mismatch",
-            Box::new(|c, _| c.heads_digest = Digest([2; 32])),
-        ),
-        (
-            "a number that skips",
-            "manifest_mismatch",
-            Box::new(|c, _| c.number = 2),
-        ),
-        (
-            "a skip on the first",
-            "manifest_mismatch",
-            Box::new(|c, _| c.skip = Digest([3; 32])),
-        ),
-        (
-            "a previous the domain doesn't hold",
-            "checkpoint_stale",
-            Box::new(|c, _| c.previous = Digest([4; 32])),
-        ),
-        (
-            "a policy head that isn't the latest policy entry's",
-            "manifest_mismatch",
-            Box::new(|c, _| c.policy_head = Digest([5; 32])),
-        ),
-        (
-            "an epoch record that isn't the latest epoch entry's",
-            "manifest_mismatch",
-            Box::new(|c, _| c.epoch_record = Digest([6; 32])),
-        ),
-        (
-            "a floor above the retention floor",
-            "manifest_mismatch",
-            Box::new(|c, _| c.floor = 1),
-        ),
-        (
-            "a covered_seq above the log",
-            "checkpoint_not_due",
-            Box::new(|c, _| c.covered_seq = 99),
-        ),
-    ];
-    for (case, code, edit) in cases {
-        let bundle = track.checkpoint(&world, 0, 4, &[], edit).await;
-        assert_eq!(
-            push_failure(push_checkpoint(&world, 0, &bundle).await),
-            (code, 0),
-            "{case}"
-        );
-    }
-    // Another device's checkpoint, pushed by this one.
-    let theirs = track.checkpoint(&world, 1, 4, &[], |_, _| {}).await;
-    assert_eq!(
-        push_failure(push_checkpoint(&world, 0, &theirs).await),
-        ("forbidden", 0)
-    );
-    // A checkpoint goes in a push of its own.
     let honest = track.checkpoint(&world, 0, 4, &[], |_, _| {}).await;
     let op = world.op(0, |op| {
         op.counter = 2;
@@ -373,18 +440,41 @@ pub async fn checkpoint_checks_answer_their_codes<B: Backend>(store: Store<B>) {
     );
     push_checkpoint(&world, 0, &honest)
         .await
-        .expect("the honest checkpoint commits");
-    track.accepted.push(honest.checkpoint.0.clone());
-    // The next one covers at least the previous one's entry.
-    track.write(&world, 0).await;
-    track.write(&world, 1).await;
-    track.write(&world, 0).await;
-    track.write(&world, 1).await;
-    let below = track.checkpoint(&world, 0, 4, &[], |_, _| {}).await;
-    assert_eq!(
-        push_failure(push_checkpoint(&world, 0, &below).await),
-        ("checkpoint_not_due", 0)
+        .expect("alone, it commits");
+}
+
+/// Racing checkpoints (§17): writers that each sign the due checkpoint and
+/// push at once leave exactly one committed, and every other one gets
+/// `checkpoint_stale`, never `manifest_mismatch`, since the server checks
+/// `previous` again under the domain's lock before it compares the rest.
+pub async fn racing_checkpoints_keep_the_first<B: Backend>(store: Store<B>) {
+    let world = World::new(store.with_checkpoint_interval(interval(6)), 4).await;
+    let mut track = Track::new(&world).await;
+    for device in 0..4 {
+        track.write(&world, device).await;
+    }
+    let due = world.pull(0, 0).await.checkpoint_due;
+    assert_eq!(due, 6);
+    let mut bundles = Vec::new();
+    for device in 0..4 {
+        bundles.push(track.checkpoint(&world, device, due, &[], |_, _| {}).await);
+    }
+    let (a, b, c, d) = tokio::join!(
+        push_checkpoint(&world, 0, &bundles[0]),
+        push_checkpoint(&world, 1, &bundles[1]),
+        push_checkpoint(&world, 2, &bundles[2]),
+        push_checkpoint(&world, 3, &bundles[3]),
     );
+    let mut committed = 0;
+    for result in [a, b, c, d] {
+        match result {
+            Ok(_) => committed += 1,
+            failed => assert_eq!(push_failure(failed), ("checkpoint_stale", 0)),
+        }
+    }
+    assert_eq!(committed, 1, "the server keeps the first");
+    let page = world.pull(0, 0).await;
+    assert_eq!((page.checkpoint_due, page.checkpoint_seq), (0, 6));
 }
 
 /// Due points and heads around a removal (§17): the policy entry that
@@ -666,4 +756,27 @@ pub async fn checkpoint_routes_serve_the_chain_and_manifest<B: Backend>(store: S
         .collect();
     verify_bucket(index, &grouped, &buckets.buckets[usize::from(index)])
         .expect("the leaves hash to the bucket");
+}
+
+/// Writes operations from `world.devices[0]` and commits `count` honest
+/// checkpoints, each at its due point, for tests at other seams. Returns
+/// each checkpoint with its entry's sequence.
+pub async fn commit_checkpoints<B: Backend>(
+    world: &World<B>,
+    count: usize,
+) -> Vec<(Signed<Checkpoint>, u64)> {
+    let mut track = Track::new(world).await;
+    let mut committed = Vec::new();
+    for _ in 0..count {
+        let mut due = 0;
+        while due == 0 {
+            track.write(world, 0).await;
+            due = world.pull(0, 0).await.checkpoint_due;
+        }
+        let bundle = track.checkpoint(world, 0, due, &[], |_, _| {}).await;
+        let receipt = push_checkpoint(world, 0, &bundle).await.expect("commits");
+        track.accepted.push(bundle.checkpoint.0.clone());
+        committed.push((bundle.checkpoint.0, receipt.receipts[0].seq));
+    }
+    committed
 }

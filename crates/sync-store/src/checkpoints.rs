@@ -877,3 +877,72 @@ pub(crate) async fn manifest_leaves(
         next,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn checkpoint(covered_seq: u64, floor: u64) -> Checkpoint {
+        Checkpoint {
+            workspace: Id([1; 16]),
+            domain: Id([2; 16]),
+            previous: Digest::ZERO,
+            number: 2,
+            skip: Digest::ZERO,
+            covered_seq,
+            floor,
+            policy_revision: 1,
+            policy_head: Digest::ZERO,
+            live_objects: 0,
+            manifest_root: Digest::ZERO,
+            heads_digest: Digest::ZERO,
+            epoch: 1,
+            epoch_record: Digest::ZERO,
+            signer: Id([3; 16]),
+        }
+    }
+
+    fn previous(seq: u64, floor: u64) -> CheckpointRow {
+        CheckpointRow {
+            number: 1,
+            digest: Digest::ZERO,
+            seq,
+            covered_seq: seq - 1,
+            floor,
+            record: Vec::new(),
+            heads: Vec::new(),
+        }
+    }
+
+    fn code(result: Result<()>) -> &'static str {
+        match result {
+            Ok(()) => "ok",
+            Err(Error::Refused(refusal)) => refusal.code,
+            Err(other) => panic!("{other:?}"),
+        }
+    }
+
+    /// The bounds of §17 against a raised retention floor, which no store
+    /// raises until pruning lands: `covered_seq` at or above the previous
+    /// checkpoint's entry and the floor, and `floor` between the previous
+    /// checkpoint's and the retention floor.
+    #[test]
+    fn bounds_follow_the_retention_floor() {
+        let prev = previous(5, 2);
+        let check = |covered, floor, retention| {
+            code(check_bounds(
+                &checkpoint(covered, floor),
+                Some(&prev),
+                retention,
+                40,
+            ))
+        };
+        assert_eq!(check(20, 10, 10), "ok");
+        assert_eq!(check(9, 2, 10), "checkpoint_not_due", "below the floor");
+        assert_eq!(check(10, 2, 10), "ok", "at the floor");
+        assert_eq!(check(4, 2, 2), "checkpoint_not_due", "below the entry");
+        assert_eq!(check(41, 2, 2), "checkpoint_not_due", "above the log");
+        assert_eq!(check(20, 11, 10), "manifest_mismatch", "above the floor");
+        assert_eq!(check(20, 1, 10), "manifest_mismatch", "below the previous");
+    }
+}

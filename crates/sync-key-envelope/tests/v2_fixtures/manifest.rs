@@ -7,11 +7,12 @@ use sync_protocol::codec::{Encode, Sorted};
 use sync_protocol::manifest::{
     Manifest, bucket_hash, bucket_of, descent_path, heads_digest, leaf_hash, node_hash, skip_number,
 };
-use sync_protocol::records::{Checkpoint, Ref, Signed};
+use sync_protocol::policy::PolicyChain;
+use sync_protocol::records::{Access, Checkpoint, Level, LinkKind, PolicyKind, Ref, Role, Signed};
 use sync_protocol::types::{Digest, Id, to_hex};
 
 use super::common::{Actor, Fixture, Shape, id};
-use super::world::world;
+use super::world::{Chain, verified_chains, world};
 
 fn refs(n: u8) -> Vec<Ref> {
     vec![Ref {
@@ -65,7 +66,7 @@ pub fn fixture() -> Fixture {
     let w = world();
     let mut f = Fixture::new(
         "sync-v2-manifest.json",
-        "The manifest and checkpoints (sync-v2.md §17): leaf, bucket, node and heads hashes, roots that change with each leaf, bucket checks that catch an omitted object, the checkpoint record and bundle, number and skip links, descent walks, and the checks a client runs on each checkpoint it reaches.",
+        "The manifest and checkpoints (sync-v2.md §17): leaf, bucket, node and heads hashes, roots that change with each leaf, bucket checks that catch an omitted object, the checkpoint record and bundle, number and skip links, descent walks, the checks a client runs on each checkpoint it reaches, the server's checks on a pushed checkpoint, which the store conformance suite runs, and the heads rule.",
     );
     f.actor(&w.alice_laptop);
     let rid = id("manifest rid");
@@ -221,5 +222,266 @@ pub fn fixture() -> Fixture {
         "mismatch",
     ));
     let _ = floor_falls;
+
+    server_checks(&mut f);
+    heads_rule(&mut f, &w);
     f
+}
+
+/// The server's checks on a pushed checkpoint (§17), which the store
+/// conformance suite runs on each store. Each case starts from the same
+/// log: an owner's two writer devices and a viewer's device in one
+/// workspace, then one operation from each writer, with a checkpoint due
+/// at the second writer's operation. The pusher signs an honest
+/// checkpoint at `covered_seq`, applies `edit` to its fields (a digest
+/// replaces the field, a number adds to it), drops the last head when
+/// `drop_head` holds, and pushes it. With `after_one_checkpoint`, an
+/// honest checkpoint commits first and the writers write on to the next
+/// due point. A `covered_seq` of `due - 1`, `head + 1` or
+/// `previous entry - 1` names a sequence by those points.
+fn server_checks(f: &mut Fixture) {
+    let digest = |b: u8| Digest([b; 32]).to_hex();
+    let case = |name: &str, edit: Value, expect: &str| {
+        json!({
+            "kind": "server_check",
+            "name": name,
+            "signer": "writer",
+            "pushed_by": "writer",
+            "covered_seq": "due",
+            "edit": edit,
+            "drop_head": false,
+            "after_one_checkpoint": false,
+            "expect": expect,
+        })
+    };
+    let with = |mut base: Value, key: &str, value: Value| {
+        base[key] = value;
+        base
+    };
+    f.case(case("an_honest_checkpoint", json!({}), "ok"));
+    f.case(case(
+        "a_root_that_differs",
+        json!({"manifest_root": digest(1)}),
+        "manifest_mismatch",
+    ));
+    f.case(case(
+        "a_leaf_count_that_differs",
+        json!({"live_objects": 1}),
+        "manifest_mismatch",
+    ));
+    f.case(with(
+        case(
+            "heads_that_leave_a_writer_out",
+            json!({}),
+            "manifest_mismatch",
+        ),
+        "drop_head",
+        json!(true),
+    ));
+    f.case(case(
+        "a_heads_digest_the_heads_dont_hash_to",
+        json!({"heads_digest": digest(2)}),
+        "manifest_mismatch",
+    ));
+    f.case(case(
+        "a_number_that_skips",
+        json!({"number": 1}),
+        "manifest_mismatch",
+    ));
+    f.case(case(
+        "a_skip_on_the_first",
+        json!({"skip": digest(3)}),
+        "manifest_mismatch",
+    ));
+    f.case(case(
+        "a_previous_the_domain_doesnt_hold",
+        json!({"previous": digest(4)}),
+        "checkpoint_stale",
+    ));
+    f.case(case(
+        "a_policy_revision_that_isnt_the_latest_policy_entrys",
+        json!({"policy_revision": 1}),
+        "manifest_mismatch",
+    ));
+    f.case(case(
+        "a_policy_head_that_isnt_the_latest_policy_entrys",
+        json!({"policy_head": digest(5)}),
+        "manifest_mismatch",
+    ));
+    f.case(case(
+        "an_epoch_that_isnt_the_latest_epoch_entrys",
+        json!({"epoch": 1}),
+        "manifest_mismatch",
+    ));
+    f.case(case(
+        "an_epoch_record_that_isnt_the_latest_epoch_entrys",
+        json!({"epoch_record": digest(6)}),
+        "manifest_mismatch",
+    ));
+    f.case(case(
+        "a_floor_above_the_retention_floor",
+        json!({"floor": 1}),
+        "manifest_mismatch",
+    ));
+    f.case(with(
+        case(
+            "a_covered_seq_above_the_log",
+            json!({}),
+            "checkpoint_not_due",
+        ),
+        "covered_seq",
+        json!("head + 1"),
+    ));
+    f.case(with(
+        case(
+            "a_covered_seq_short_of_the_due_point",
+            json!({}),
+            "checkpoint_not_due",
+        ),
+        "covered_seq",
+        json!("due - 1"),
+    ));
+    f.case(with(
+        with(
+            case("a_viewer_signs_its_own", json!({}), "forbidden"),
+            "signer",
+            json!("viewer"),
+        ),
+        "pushed_by",
+        json!("viewer"),
+    ));
+    f.case(with(
+        with(
+            case("another_writers_checkpoint", json!({}), "forbidden"),
+            "signer",
+            json!("other writer"),
+        ),
+        "pushed_by",
+        json!("writer"),
+    ));
+    let after = |name: &str, covered: &str, edit: Value, expect: &str| {
+        with(
+            with(
+                case(name, edit, expect),
+                "after_one_checkpoint",
+                json!(true),
+            ),
+            "covered_seq",
+            json!(covered),
+        )
+    };
+    f.case(after("the_second_checkpoint", "due", json!({}), "ok"));
+    f.case(after(
+        "a_covered_seq_below_the_previous_checkpoints_entry",
+        "previous entry - 1",
+        json!({}),
+        "checkpoint_not_due",
+    ));
+}
+
+/// The heads rule (§17): whether a device may leave the heads of a
+/// checkpoint whose previous checkpoint has `revision` as its
+/// `policy_revision`. Alice owns the workspace; Bob joins as an editor,
+/// adds and records a phone, removes it by a link and records that, is
+/// then cut out of the restricted domain, demoted to viewer, and removed.
+fn heads_rule(f: &mut Fixture, w: &super::world::World) {
+    let bob_phone = Actor::new("bob", "bob phone");
+    f.actor(&bob_phone);
+    f.actor(&w.bob_laptop);
+    f.actor(&w.alice_phone);
+    let mut bob: Chain = w.bob.clone();
+    let mut policy = w.policy.clone();
+    bob.add_device(&w.bob_laptop, &bob_phone);
+    policy.push(&w.bob_laptop, vec![bob.head()], PolicyKind::AccountHeads); // 4
+    bob.push(
+        &w.bob_laptop,
+        LinkKind::Remove {
+            device: bob_phone.device(),
+            keep: Sorted::default(),
+        },
+    );
+    policy.push(&w.bob_laptop, vec![bob.head()], PolicyKind::AccountHeads); // 5
+    policy.push(
+        &w.alice_laptop,
+        vec![w.alice.head()],
+        PolicyKind::SetAccess {
+            domain: w.restricted,
+            access: Sorted::new(vec![Access {
+                account: w.alice_laptop.account,
+                level: Level::Manage,
+            }])
+            .unwrap(),
+        },
+    ); // 6
+    policy.push(
+        &w.alice_laptop,
+        vec![w.alice.head()],
+        PolicyKind::SetRole {
+            account: w.bob_laptop.account,
+            role: Role::Viewer,
+        },
+    ); // 7
+    policy.push(
+        &w.alice_laptop,
+        vec![w.alice.head()],
+        PolicyKind::RemoveMember {
+            account: w.bob_laptop.account,
+        },
+    ); // 8
+    let verified = PolicyChain::verify(&policy.changes, &verified_chains(&[&w.alice, &bob]))
+        .expect("the heads-rule policy verifies");
+    let chains = json!(
+        [&w.alice, &bob]
+            .iter()
+            .map(|c| c
+                .links
+                .iter()
+                .map(|l| to_hex(&l.to_bytes()))
+                .collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+    );
+    let changes: Vec<String> = policy
+        .changes
+        .iter()
+        .map(|c| to_hex(&c.to_bytes()))
+        .collect();
+    for (name, device, revision, expect) in [
+        ("a_listed_card_stays", &bob_phone, 4, false),
+        ("a_card_a_recorded_link_removed_leaves", &bob_phone, 5, true),
+        (
+            "a_grantee_cut_out_of_a_domain_stays",
+            &w.bob_laptop,
+            6,
+            false,
+        ),
+        ("a_demoted_device_stays", &w.bob_laptop, 7, false),
+        (
+            "a_device_remove_member_removed_stays",
+            &w.bob_laptop,
+            8,
+            false,
+        ),
+        (
+            "a_removed_card_stays_gone_after_remove_member",
+            &bob_phone,
+            8,
+            true,
+        ),
+        ("another_accounts_device_stays", &w.alice_phone, 8, false),
+    ] {
+        assert_eq!(
+            verified.card_gone(&device.device(), revision),
+            expect,
+            "{name}"
+        );
+        f.case(json!({
+            "kind": "heads_may_leave",
+            "name": name,
+            "account_chains": chains,
+            "changes": changes,
+            "device": device.device().to_hex(),
+            "revision": revision,
+            "expect": expect,
+        }));
+    }
 }
