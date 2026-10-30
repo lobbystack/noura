@@ -99,6 +99,10 @@ pub struct State {
     /// after which it pulls and pushes nothing there (§15).
     #[serde(default)]
     pub ended: Option<Ended>,
+    /// Whether the device still loads the domain from its latest
+    /// checkpoint before it pulls, as a new device does (§18).
+    #[serde(default)]
+    pub bootstrap: bool,
 }
 
 /// The change that took this device's access to the domain (§15).

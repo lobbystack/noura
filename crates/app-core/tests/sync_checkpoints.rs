@@ -344,3 +344,165 @@ async fn a_root_mismatch_walks_the_tree_to_the_differing_objects() {
     assert_eq!(failures[0].differing, vec![rid]);
     assert!(pair.sync_a.latest_checkpoint().is_none());
 }
+
+/// A laptop that synced a folder until its log holds a checkpoint, with
+/// one more note after it, and a second desktop of the account that
+/// connects through a proxy, ready to download the workspace.
+struct Bootstrap {
+    _server: Server,
+    laptop: sync_support::Desktop,
+    a: sync_support::Folder,
+    sync_a: app_core::sync::workspace::WorkspaceSync,
+    checkpoint: sync_protocol::records::Signed<sync_protocol::records::Checkpoint>,
+    proxy: sync_support::Proxy,
+    service: app_core::sync::SyncService,
+    b: sync_support::Folder,
+}
+
+async fn bootstrap_setup() -> Bootstrap {
+    use sync_support::{Folder, Proxy, approve, first_desktop};
+
+    let server = Server::start_with_interval(6).await;
+    let mut laptop = first_desktop(&server, "ana@example.com").await;
+    let mut a = Folder::new("Field notes");
+    a.write("Old.md", b"# Old\n");
+    let mut sync_a = app_core::sync::workspace::WorkspaceSync::turn_on(
+        &mut laptop.service,
+        a.engine.clone(),
+        "Field notes",
+        &mut a.registry,
+    )
+    .await
+    .expect("sync turns on");
+    sync_a.set_checkpoint_wait(Duration::ZERO);
+    sync_a.round(&mut laptop.service, 0).await.expect("a round");
+    std::fs::remove_file(a.path("Old.md")).unwrap();
+    for i in 0..40 {
+        if sync_a.latest_checkpoint().is_some() {
+            break;
+        }
+        a.write(&format!("n{i}.md"), format!("# Note {i}\n").as_bytes());
+        sync_a.round(&mut laptop.service, 0).await.expect("a round");
+    }
+    let checkpoint = sync_a.latest_checkpoint().expect("a checkpoint").clone();
+    // Records after the checkpoint arrive by pulling on from it.
+    a.write("After.md", b"# After\n");
+    sync_a.round(&mut laptop.service, 0).await.expect("a round");
+
+    let desktop = approve(
+        &server,
+        &mut laptop,
+        std::slice::from_mut(sync_a.remote_mut().expect("connected")),
+    )
+    .await;
+    let proxy = Proxy::start(&server.base).await;
+    let service = desktop.connect_through(&proxy.base).await;
+    Bootstrap {
+        _server: server,
+        laptop,
+        a,
+        sync_a,
+        checkpoint,
+        proxy,
+        service,
+        b: Folder::new("Downloaded"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_device_bootstraps_from_the_latest_checkpoint() {
+    use sync_protocol::messages::PullRequest;
+
+    let Bootstrap {
+        mut laptop,
+        a,
+        mut sync_a,
+        checkpoint,
+        proxy,
+        mut service,
+        mut b,
+        ..
+    } = bootstrap_setup().await;
+    let mut sync_b = app_core::sync::workspace::WorkspaceSync::download(
+        &mut service,
+        b.engine.clone(),
+        sync_a.workspace(),
+        &mut b.registry,
+    )
+    .await
+    .expect("the download starts");
+    sync_b.round(&mut service, 0).await.expect("the download");
+    assert_eq!(b.files(), a.files());
+    assert_eq!(
+        sync_b.latest_checkpoint().map(|c| c.digest()),
+        Some(checkpoint.digest()),
+        "the new device starts its checkpoint chain at the bootstrap"
+    );
+    let requests = proxy.requests();
+    assert!(requests.iter().any(|r| r.path.contains("/live?")));
+    assert!(requests.iter().any(|r| r.path.contains("buckets=all")));
+    let pulled_from: Vec<u64> = requests
+        .iter()
+        .filter(|r| r.path.ends_with("/pull"))
+        .map(|r| PullRequest::from_bytes(&r.body).expect("a pull").cursors.0[0].after)
+        .collect();
+    assert!(
+        pulled_from
+            .iter()
+            .all(|after| *after >= checkpoint.body.covered_seq),
+        "the device never pulls history below the checkpoint: {pulled_from:?}"
+    );
+
+    // Both devices keep syncing afterwards.
+    b.write("FromDesktop.md", b"# From the desktop\n");
+    sync_b.round(&mut service, 0).await.expect("a round");
+    a.write("FromLaptop.md", b"# From the laptop\n");
+    sync_a.round(&mut laptop.service, 0).await.expect("a round");
+    sync_b.round(&mut service, 0).await.expect("a round");
+    assert_eq!(b.files(), a.files());
+    assert!(sync_b.checkpoint_failures().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bootstrap_refuses_a_manifest_that_omits_an_object() {
+    use sync_protocol::codec::{Encode, List};
+    use sync_protocol::messages::LiveResponse;
+
+    let Bootstrap {
+        a,
+        sync_a,
+        proxy,
+        mut service,
+        mut b,
+        ..
+    } = bootstrap_setup().await;
+    proxy.tamper(Box::new(|path, body| {
+        if !path.ends_with("/live") {
+            return body;
+        }
+        let mut response = LiveResponse::from_bytes(&body).expect("a live page");
+        let mut entries = response.entries.0;
+        entries.pop();
+        response.entries = List(entries);
+        response.to_bytes()
+    }));
+    let mut sync_b = app_core::sync::workspace::WorkspaceSync::download(
+        &mut service,
+        b.engine.clone(),
+        sync_a.workspace(),
+        &mut b.registry,
+    )
+    .await
+    .expect("the download starts");
+    let error = sync_b.round(&mut service, 0).await.expect_err("refused");
+    assert!(
+        matches!(error, SyncError::Check("sync_manifest_mismatch")),
+        "{error:?}"
+    );
+    assert!(b.files().is_empty(), "nothing installs");
+    assert!(sync_b.latest_checkpoint().is_none());
+    // An honest server lets it finish.
+    proxy.honest();
+    sync_b.round(&mut service, 0).await.expect("the download");
+    assert_eq!(b.files(), a.files());
+}

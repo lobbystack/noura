@@ -15,6 +15,7 @@
 //! capture changes; the calls that reach the server take the device's
 //! [`SyncService`].
 
+mod bootstrap;
 mod capture;
 pub mod rebuild;
 mod settle;
@@ -268,9 +269,13 @@ impl WorkspaceSync {
         let credentials = service.credentials().clone();
         let replica = registry.connect(&server, credentials.account, workspace, engine.root())?;
         let generation = service.client().restore_generation();
-        Self::start(
+        let mut sync = Self::start(
             service, engine, remote, server, replica, generation, &name, profile,
-        )
+        )?;
+        // A new device loads the domain from its latest checkpoint (§18).
+        sync.state.bootstrap = true;
+        sync.save()?;
+        Ok(sync)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -337,6 +342,7 @@ impl WorkspaceSync {
             rewrite_due: 0,
             profile_recheck: false,
             ended: None,
+            bootstrap: false,
         };
         // A device accepts no policy head or epoch below its mark, also
         // when it starts again without a journal (§15).
@@ -2324,6 +2330,11 @@ impl WorkspaceSync {
         wait_seconds: u32,
         wake: &tokio::sync::Notify,
     ) -> Result<(usize, bool), SyncError> {
+        if self.state.bootstrap {
+            self.bootstrap(service).await?;
+            self.state.bootstrap = false;
+            self.save()?;
+        }
         // An entry the device learned of before this request is owed by
         // the head of the page it answers; one it learns of while handling
         // the page, by the next page's (§8, §9).
