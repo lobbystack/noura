@@ -7,8 +7,8 @@
 //! The Inbox's Due today section lists what is due by tonight and adds a
 //! task due today in one step. Other plugins list and change tasks through
 //! its `create`, `update`, `complete`, `reopen` and `list` commands, which
-//! [`commands`] documents, and AI assistants through its `list`, `create`
-//! and `update` tools, which [`tools`] lists.
+//! [`commands`] documents, and AI assistants through its `list`, `create`,
+//! `update` and `complete` tools, which [`tools`] lists.
 //!
 //! Build it with `crates/plugin-sdk/build-plugins.sh`, then install the
 //! folder holding `plugin.toml` and the built `tasks_plugin.wasm`.

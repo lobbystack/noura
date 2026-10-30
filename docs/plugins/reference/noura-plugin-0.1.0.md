@@ -669,6 +669,13 @@ A chat is a folder of Markdown files in the workspace, `chat.md` and one
 file per message, in the workspace format's chat layout. Noura writes
 them, and each write is on disk before the call that made it returns.
 
+Each request starts with Noura's instructions for the model, followed
+by the body of the workspace's `AGENTS.md` when it has one. When a
+chat's messages no longer fit the provider's context window, Noura
+first asks the provider to summarize the earlier ones, writes the
+summary to the chat as a context summary, and from then on sends the
+summary in their place. Their files stay in the chat.
+
 `web-search` and `web-fetch` let the model search the web with Brave
 Search and read pages. Noura sends each request for the plugin, so the
 plugin opens no connection of its own. They work once you add your
@@ -709,6 +716,21 @@ A provider you set up and turned on in Settings.
   <p>The model it answers with.
 
 
+#### <a id="retention"></a>`enum retention`
+
+How long Noura keeps a chat.
+
+##### Enum Cases
+
+- <a id="retention.permanent"></a>`permanent`
+  <p>Until you delete it. New chats start this way.
+
+- <a id="retention.ephemeral"></a>`ephemeral`
+  <p>Noura moves the chat's folder to the trash 30 days after the chat
+  started, but only while every file in it is one Noura wrote and
+  nothing changed since the 30 days ended.
+
+
 #### <a id="chat"></a>`record chat`
 
 A chat, as its `chat.md` holds it.
@@ -720,6 +742,12 @@ A chat, as its `chat.md` holds it.
 - <a id="chat.updated"></a>`updated`: `string`
   <p>When it last changed, in RFC 3339.
 
+- <a id="chat.revision"></a>`revision`: `string`
+  <p>The revision of its `chat.md`, which `rename-chat` and
+  `set-retention` carry. Empty for a chat whose files Noura hasn't
+  written yet.
+
+- <a id="chat.retention"></a>`retention`: [`retention`](#retention)
 
 #### <a id="message_kind"></a>`enum message-kind`
 
@@ -767,6 +795,9 @@ A message of a chat.
 
 - <a id="message.created"></a>`created`: `string`
   <p>When Noura wrote it, in RFC 3339.
+
+- <a id="message.tool_name"></a>`tool-name`: option<`string`>
+  <p>The tool a tool call or a tool result names.
 
 
 #### <a id="tool_definition"></a>`record tool-definition`
@@ -858,6 +889,16 @@ A message you wrote in a chat, for a provider to answer.
 
 - <a id="run_status.failed"></a>`failed`
   <p>The provider or Noura failed. `failure` says why.
+
+- <a id="run_status.waiting_for_approval"></a>`waiting-for-approval`
+  <p>Noura is asking you whether to run one of the run's tool calls,
+  after `run-tools`.
+
+- <a id="run_status.interrupted"></a>`interrupted`
+  <p>A plugin the run relied on was turned off: the plugin that sent it,
+  or one whose tools it offered. Its failure's code is
+  `plugin-disabled`, and the answer so far stays in the chat as an
+  interrupted message.
 
 
 #### <a id="failure"></a>`record failure`
@@ -974,7 +1015,12 @@ The workspace's chats, the one changed last first.
 
 #### <a id="read_chat"></a>`read-chat: func`
 
-A chat and its messages, oldest first.
+A chat and its messages, oldest first. An answer or a tool call that
+a crash or a quit left in progress, with no run of this session
+behind it, reads as interrupted, and Noura writes it so: a tool call
+reads as completed only when the chat holds its result, from the
+same run, with the same call ID and tool name. Noura never runs such
+a call again by itself.
 
 ##### Params
 
@@ -995,6 +1041,48 @@ it.
 ##### Return values
 
 - <a id="create_chat.0"></a> result<[`chat`](#chat), [`error`](#error)>
+
+#### <a id="rename_chat"></a>`rename-chat: func`
+
+Give the chat a new title. Fails with `revision-conflict` when its
+`chat.md` no longer holds `expected-revision`, as after an edit in
+another app, and then writes nothing.
+
+##### Params
+
+- <a id="rename_chat.id"></a>`id`: `string`
+- <a id="rename_chat.title"></a>`title`: `string`
+- <a id="rename_chat.expected_revision"></a>`expected-revision`: `string`
+
+##### Return values
+
+- <a id="rename_chat.0"></a> result<[`chat`](#chat), [`error`](#error)>
+
+#### <a id="set_retention"></a>`set-retention: func`
+
+Keep the chat until you delete it, or have Noura move it to the
+trash 30 days after it started. Fails with `revision-conflict` as
+`rename-chat` does.
+
+##### Params
+
+- <a id="set_retention.id"></a>`id`: `string`
+- <a id="set_retention.retention"></a>`retention`: [`retention`](#retention)
+- <a id="set_retention.expected_revision"></a>`expected-revision`: `string`
+
+##### Return values
+
+- <a id="set_retention.0"></a> result<[`chat`](#chat), [`error`](#error)>
+
+#### <a id="workspace_tools"></a>`workspace-tools: func`
+
+The tools that the plugins on in this workspace register under their
+`tools` capability, for a request to offer the model. Each is named
+`<plugin>__<tool>`, such as `tasks__create`.
+
+##### Return values
+
+- <a id="workspace_tools.0"></a> result<list<[`tool-definition`](#tool_definition)>, [`error`](#error)>
 
 #### <a id="send"></a>`send: func`
 
@@ -1033,6 +1121,43 @@ to call next.
 ##### Return values
 
 - <a id="answer_tools.0"></a> result<[`run`](#run), [`error`](#error)>
+
+#### <a id="run_tools"></a>`run-tools: func`
+
+Run the tool calls of a completed run that name workspace tools, one
+at a time, then stream the model's next answer into the same run.
+For each call Noura asks you, in a prompt of its own that names the
+tool, its plugin and its input, and runs the call in that plugin only
+if you allow that one call. Meanwhile the run is
+`waiting-for-approval`. Each call's result goes to the chat after the
+call: the tool's answer, `{"denied":true}` when you deny the call or
+close the prompt, or an `error` object. Stop, or opening another
+workspace, denies the calls still waiting and ends the run. The next
+request offers the tools the run offered whose plugins are still on.
+
+##### Params
+
+- <a id="run_tools.run"></a>`run`: `string`
+
+##### Return values
+
+- <a id="run_tools.0"></a> result<[`run`](#run), [`error`](#error)>
+
+#### <a id="resume"></a>`resume: func`
+
+Answer the chat's last message of yours again, as after a crash or a
+quit stopped its answer, with `provider` and `tools`. Noura writes no
+new message of yours, and asks for your consent as `send` does.
+
+##### Params
+
+- <a id="resume.chat"></a>`chat`: `string`
+- <a id="resume.provider"></a>`provider`: `string`
+- <a id="resume.tools"></a>`tools`: list<[`tool-definition`](#tool_definition)>
+
+##### Return values
+
+- <a id="resume.0"></a> result<[`run`](#run), [`error`](#error)>
 
 #### <a id="read_run"></a>`read-run: func`
 

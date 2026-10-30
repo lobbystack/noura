@@ -43,6 +43,7 @@ async fn the_server_names_itself_and_lists_todays_tools_and_the_new_project_tool
             "projects.create",
             "projects.list",
             "projects.update",
+            "tasks.complete",
             "tasks.create",
             "tasks.list",
             "tasks.update",

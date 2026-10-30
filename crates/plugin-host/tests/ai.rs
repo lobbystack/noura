@@ -12,9 +12,9 @@ use std::{
 };
 
 use plugin_host::{
-    AiChat, AiChats, AiFailure, AiMessage, AiProvider, AiRequest, AiRun, AiRunStatus, AiToolCall,
-    AiToolDefinition, AiToolResult, AiWebPage, AiWebResult, Capability, ObjectTypes, RunningPlugin,
-    ServiceError, Services, read_manifest,
+    AiChat, AiChats, AiFailure, AiMessage, AiProvider, AiRequest, AiRetention, AiRun, AiRunStatus,
+    AiToolCall, AiToolDefinition, AiToolResult, AiWebPage, AiWebResult, Capability, ObjectTypes,
+    RunningPlugin, ServiceError, Services, read_manifest,
 };
 use serde_json::Value;
 use support::plugins::{self, FakeObjects};
@@ -89,11 +89,38 @@ impl AiChats for FakeAi {
 
     fn create_chat(&self) -> Result<AiChat, ServiceError> {
         self.record("create-chat");
-        Ok(AiChat {
-            id: "chat_01jbcdefghjkmnpqrstvwxyz0a".to_owned(),
-            title: "New chat".to_owned(),
-            updated: "2026-10-24T10:00:00Z".to_owned(),
-        })
+        Ok(chat("New chat", AiRetention::Permanent))
+    }
+
+    fn rename_chat(
+        &self,
+        id: &str,
+        title: &str,
+        expected_revision: &str,
+    ) -> Result<AiChat, ServiceError> {
+        self.record(format!("rename-chat {id} {expected_revision} {title}"));
+        Err(ServiceError::RevisionConflict(id.to_owned()))
+    }
+
+    fn set_retention(
+        &self,
+        id: &str,
+        retention: AiRetention,
+        expected_revision: &str,
+    ) -> Result<AiChat, ServiceError> {
+        self.record(format!(
+            "set-retention {id} {expected_revision} {retention:?}"
+        ));
+        Ok(chat("Plan the garden", retention))
+    }
+
+    fn workspace_tools(&self) -> Result<Vec<AiToolDefinition>, ServiceError> {
+        self.record("workspace-tools");
+        Ok(vec![AiToolDefinition {
+            name: "tasks__create".to_owned(),
+            description: "Create a task.".to_owned(),
+            input_schema: "{}".to_owned(),
+        }])
     }
 
     fn send(&self, request: AiRequest) -> Result<AiRun, ServiceError> {
@@ -123,6 +150,21 @@ impl AiChats for FakeAi {
             tools.len()
         ));
         Ok(self.run(run))
+    }
+
+    fn run_tools(&self, run: &str) -> Result<AiRun, ServiceError> {
+        self.record(format!("run-tools {run}"));
+        Ok(self.run(run))
+    }
+
+    fn resume(
+        &self,
+        chat: &str,
+        provider: &str,
+        tools: Vec<AiToolDefinition>,
+    ) -> Result<AiRun, ServiceError> {
+        self.record(format!("resume {chat} {provider} {}", tools.len()));
+        Ok(self.run("run_2"))
     }
 
     fn read_run(&self, id: &str) -> Result<AiRun, ServiceError> {
@@ -170,6 +212,17 @@ impl AiChats for FakeAi {
     }
 }
 
+/// A chat titled `title`, kept as `retention` says.
+fn chat(title: &str, retention: AiRetention) -> AiChat {
+    AiChat {
+        id: "chat_01jbcdefghjkmnpqrstvwxyz0a".to_owned(),
+        title: title.to_owned(),
+        updated: "2026-10-24T10:00:00Z".to_owned(),
+        revision: "rev1".to_owned(),
+        retention,
+    }
+}
+
 /// The probe, as a plugin holding `capabilities`, with `ai` as its AI
 /// service.
 fn probe(
@@ -209,6 +262,11 @@ fn a_plugin_without_the_ai_capability_reaches_no_provider_or_chat() {
         "ai:answer-tools:run_1:{}",
         "ai:read-run:run_1",
         "ai:stop:run_1",
+        "ai:rename-chat:chat_01jbcdefghjkmnpqrstvwxyz0a:rev1:Garden",
+        "ai:set-retention:chat_01jbcdefghjkmnpqrstvwxyz0a:rev1:ephemeral",
+        "ai:workspace-tools",
+        "ai:run-tools:run_1",
+        "ai:resume:chat_01jbcdefghjkmnpqrstvwxyz0a:local",
         "ai:web-ready",
         "ai:web-search:tomatoes",
         "ai:web-fetch:https://garden.example.com/tomatoes",
@@ -293,6 +351,36 @@ impl AiChats for NoWeb {
 
     fn stop(&self, id: &str) -> Result<(), ServiceError> {
         Err(ServiceError::NotFound(id.to_owned()))
+    }
+
+    fn rename_chat(&self, id: &str, _title: &str, _revision: &str) -> Result<AiChat, ServiceError> {
+        Err(ServiceError::NotFound(id.to_owned()))
+    }
+
+    fn set_retention(
+        &self,
+        id: &str,
+        _retention: AiRetention,
+        _revision: &str,
+    ) -> Result<AiChat, ServiceError> {
+        Err(ServiceError::NotFound(id.to_owned()))
+    }
+
+    fn workspace_tools(&self) -> Result<Vec<AiToolDefinition>, ServiceError> {
+        Ok(Vec::new())
+    }
+
+    fn run_tools(&self, run: &str) -> Result<AiRun, ServiceError> {
+        Err(ServiceError::NotFound(run.to_owned()))
+    }
+
+    fn resume(
+        &self,
+        chat: &str,
+        _provider: &str,
+        _tools: Vec<AiToolDefinition>,
+    ) -> Result<AiRun, ServiceError> {
+        Err(ServiceError::NotFound(chat.to_owned()))
     }
 }
 
@@ -389,6 +477,26 @@ fn a_plugin_with_the_ai_capability_sends_and_hears_failures_as_public_codes() {
     lines(&plugin, "ai:answer-tools:run_1:{\"text\":\"hi\"}");
     assert_eq!(lines(&plugin, "ai:stop:run_1"), ["stopped"]);
     assert_eq!(
+        lines(&plugin, "ai:workspace-tools"),
+        ["tool tasks__create Create a task."]
+    );
+    lines(&plugin, "ai:run-tools:run_1");
+    lines(&plugin, "ai:resume:chat_01jbcdefghjkmnpqrstvwxyz0a:local");
+    assert_eq!(
+        lines(
+            &plugin,
+            "ai:rename-chat:chat_01jbcdefghjkmnpqrstvwxyz0a:rev1:Garden"
+        ),
+        ["error revision-conflict chat_01jbcdefghjkmnpqrstvwxyz0a"]
+    );
+    assert_eq!(
+        lines(
+            &plugin,
+            "ai:set-retention:chat_01jbcdefghjkmnpqrstvwxyz0a:rev1:ephemeral"
+        ),
+        ["chat chat_01jbcdefghjkmnpqrstvwxyz0a rev1 Retention::Ephemeral Plan the garden"]
+    );
+    assert_eq!(
         lines(&plugin, "ai:read-chat:chat_01jbcdefghjkmnpqrstvwxyz0z"),
         ["error not-found chat_01jbcdefghjkmnpqrstvwxyz0z"]
     );
@@ -400,6 +508,12 @@ fn a_plugin_with_the_ai_capability_sends_and_hears_failures_as_public_codes() {
             "read-run run_1",
             "answer-tools run_1 call_1={\"text\":\"hi\"} 1",
             "stop run_1",
+            "workspace-tools",
+            "run-tools run_1",
+            "workspace-tools",
+            "resume chat_01jbcdefghjkmnpqrstvwxyz0a local 1",
+            "rename-chat chat_01jbcdefghjkmnpqrstvwxyz0a rev1 Garden",
+            "set-retention chat_01jbcdefghjkmnpqrstvwxyz0a rev1 Retention::Ephemeral",
             "read-chat chat_01jbcdefghjkmnpqrstvwxyz0z",
         ]
     );

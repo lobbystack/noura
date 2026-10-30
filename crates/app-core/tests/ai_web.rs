@@ -37,6 +37,7 @@ struct Searching {
     id: String,
     system: Arc<FakeSystem>,
     _plugin: PluginFolder,
+    _tasks: Option<PluginFolder>,
     fixture: Fixture,
 }
 
@@ -56,9 +57,19 @@ const READY: Setup = Setup {
 
 impl Searching {
     fn new(setup: Setup) -> Option<Self> {
+        Self::with(setup, false)
+    }
+
+    /// The same, with the Tasks plugin on too when `tasks` says so.
+    fn with(setup: Setup, tasks: bool) -> Option<Self> {
         let fixture = Fixture::new(&[]);
         let system = FakeSystem::new();
         let mut app = fixture.app_with(system.clone());
+        let tasks = if tasks {
+            Some(support::tasks::with_tasks(&mut app)?)
+        } else {
+            None
+        };
         let provider = FakeProvider::new();
         let web = FakeWeb::new();
         app.set_web_client(Arc::new(FakeWebClient(web.clone())));
@@ -84,6 +95,7 @@ impl Searching {
             id,
             system,
             _plugin: plugin,
+            _tasks: tasks,
             fixture,
         })
     }
@@ -282,6 +294,68 @@ fn a_scripted_search_gets_titles_addresses_and_snippets_and_the_chat_records_eac
                 Some("https://notes.example.com/prune".to_owned())
             ),
         ]
+    );
+}
+
+/// The model sees the workspace's tools beside the web tools in every
+/// request. The AI plugin answers a turn of web calls itself, with no
+/// prompt, and hands a turn with a workspace tool call to Noura, which
+/// asks you first. Noura runs only workspace tools, so a web call in that
+/// turn gets `tool-not-found`.
+#[test]
+fn web_calls_skip_the_tool_prompt_and_workspace_tools_stay_offered_beside_them() {
+    let Some(mut chat) = Searching::with(READY, true) else {
+        return;
+    };
+    let offered = |chat: &Searching, index: usize| {
+        let tools = chat.provider.requests()[index].tools.clone();
+        for name in [
+            "tasks__create",
+            "tasks__complete",
+            "web_search",
+            "web_fetch",
+        ] {
+            assert!(tools.iter().any(|tool| tool == name), "{name}: {tools:?}");
+        }
+    };
+    chat.send("Find a tomato guide and add a task");
+    chat.requests(1);
+    offered(&chat, 0);
+
+    chat.call(0, "call_1", "web_search", search("tomato care"));
+    assert_eq!(chat.web.calls(), [WebCall::Search("tomato care".into())]);
+    assert!(chat.result(1, "call_1")["results"].is_array());
+    assert!(chat.app.ai_tool_prompt().is_none());
+    offered(&chat, 1);
+
+    chat.provider.call_tools(
+        1,
+        vec![
+            AiToolCall {
+                call_id: "call_2".into(),
+                name: "tasks__create".into(),
+                arguments: json!({ "title": "Water the tomatoes" }),
+            },
+            AiToolCall {
+                call_id: "call_3".into(),
+                name: "web_search".into(),
+                arguments: search("tomato pruning"),
+            },
+        ],
+    );
+    let prompt = ai::tool_prompt(&mut chat.app);
+    assert_eq!(prompt.tool, "create");
+    chat.app.answer_ai_tool(&prompt, true);
+    chat.requests(3);
+    assert!(chat.result(2, "call_2").get("error").is_none());
+    assert_eq!(chat.result(2, "call_3")["error"]["code"], "tool-not-found");
+    assert_eq!(chat.web.calls().len(), 1);
+    offered(&chat, 2);
+    chat.answer(2, "Done.");
+    assert!(
+        chat.files()
+            .iter()
+            .any(|text| text.contains("tool_name: tasks__create")),
     );
 }
 

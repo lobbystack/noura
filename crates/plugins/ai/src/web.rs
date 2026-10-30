@@ -77,8 +77,8 @@ pub(crate) fn tools() -> Vec<ToolDefinition> {
 }
 
 /// Answer each tool call of `run`, which completed asking for them, and
-/// let the model go on in the same run.
-pub(crate) fn answer(run: &Run) -> Result<Run, Error> {
+/// let the model go on in the same run, offered `tools`.
+pub(crate) fn answer(run: &Run, tools: &[ToolDefinition]) -> Result<Run, Error> {
     let results: Vec<ToolResult> = run
         .tool_calls
         .iter()
@@ -96,7 +96,7 @@ pub(crate) fn answer(run: &Run) -> Result<Run, Error> {
             },
         })
         .collect();
-    ai::answer_tools(&run.id, &results, &tools())
+    ai::answer_tools(&run.id, &results, tools)
 }
 
 /// What one call answers, as JSON text.

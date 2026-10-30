@@ -123,12 +123,17 @@ impl WorkspaceEngine {
     }
 
     /// Reconcile only when the watcher reported a change since the last
-    /// walk. Reads use this; mutations that move files walk unconditionally.
+    /// walk, or a chat change a crash or a failed write cut off completes
+    /// here and leaves files the index never recorded. Reads use this;
+    /// mutations that move files walk unconditionally.
     pub(super) fn reconcile_if_needed(&self) -> Result<()> {
+        if !self.needs_reconcile() {
+            self.recover_pending_chat_mutations()?;
+        }
         if self.needs_reconcile() {
             self.reconcile()
         } else {
-            self.recover_pending_chat_mutations()
+            Ok(())
         }
     }
 

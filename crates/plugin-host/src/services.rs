@@ -5,8 +5,8 @@
 use std::fmt;
 
 use crate::{
-    AiChat, AiFailure, AiMessage, AiProvider, AiRequest, AiRun, AiToolDefinition, AiToolResult,
-    AiWebPage, AiWebResult,
+    AiChat, AiFailure, AiMessage, AiProvider, AiRequest, AiRetention, AiRun, AiToolDefinition,
+    AiToolResult, AiWebPage, AiWebResult,
 };
 
 /// A workspace-relative path that crossed the plugin boundary: not empty,
@@ -286,6 +286,27 @@ pub trait AiChats: Send + Sync {
     /// A new chat, titled `New chat`.
     fn create_chat(&self) -> Result<AiChat, ServiceError>;
 
+    /// Give the chat `id` the title `title`, when its `chat.md` still
+    /// holds `expected_revision`.
+    fn rename_chat(
+        &self,
+        id: &str,
+        title: &str,
+        expected_revision: &str,
+    ) -> Result<AiChat, ServiceError>;
+
+    /// Keep the chat `id` as `retention` says, when its `chat.md` still
+    /// holds `expected_revision`.
+    fn set_retention(
+        &self,
+        id: &str,
+        retention: AiRetention,
+        expected_revision: &str,
+    ) -> Result<AiChat, ServiceError>;
+
+    /// The tools the plugins on in the workspace register, for the model.
+    fn workspace_tools(&self) -> Result<Vec<AiToolDefinition>, ServiceError>;
+
     /// Write the message and an in-progress answer, then ask the provider,
     /// once you consent.
     fn send(&self, request: AiRequest) -> Result<AiRun, ServiceError>;
@@ -296,6 +317,18 @@ pub trait AiChats: Send + Sync {
         &self,
         run: &str,
         results: Vec<AiToolResult>,
+        tools: Vec<AiToolDefinition>,
+    ) -> Result<AiRun, ServiceError>;
+
+    /// Run the workspace tool calls of the completed run `run`, each once
+    /// you allow it, and ask the provider again.
+    fn run_tools(&self, run: &str) -> Result<AiRun, ServiceError>;
+
+    /// Answer the last message of yours in the chat `chat` again.
+    fn resume(
+        &self,
+        chat: &str,
+        provider: &str,
         tools: Vec<AiToolDefinition>,
     ) -> Result<AiRun, ServiceError>;
 

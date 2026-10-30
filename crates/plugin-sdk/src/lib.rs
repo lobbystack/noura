@@ -125,20 +125,26 @@ pub mod navigation {
 ///     chat: chat.id,
 ///     provider: provider.id,
 ///     message: "What should I plant in October?".into(),
-///     tools: Vec::new(),
+///     // The tools of the plugins on in the workspace.
+///     tools: ai::workspace_tools().unwrap(),
 /// })
 /// .unwrap();
 /// // Noura draws the plugin's views again as the answer streams in.
 /// let now = ai::read_run(&run.id).unwrap();
 /// if now.status == RunStatus::Streaming {
 ///     ai::stop(&run.id).unwrap();
+/// } else if now.status == RunStatus::Completed && !now.tool_calls.is_empty() {
+///     // Noura asks you about each call, runs the ones you allow, and
+///     // streams the next answer into the same run.
+///     ai::run_tools(&run.id).unwrap();
 /// }
 /// ```
 pub mod ai {
     pub use crate::noura::plugin::ai::{
-        Chat, Failure, Message, MessageKind, MessageStatus, Provider, Request, Run, RunStatus,
-        ToolCall, ToolDefinition, ToolResult, WebError, WebPage, WebResult, answer_tools, chats,
-        create_chat, providers, read_chat, read_run, send, stop, web_fetch, web_ready, web_search,
+        Chat, Failure, Message, MessageKind, MessageStatus, Provider, Request, Retention, Run,
+        RunStatus, ToolCall, ToolDefinition, ToolResult, WebError, WebPage, WebResult,
+        answer_tools, chats, create_chat, providers, read_chat, read_run, rename_chat, resume,
+        run_tools, send, set_retention, stop, web_fetch, web_ready, web_search, workspace_tools,
     };
 }
 
