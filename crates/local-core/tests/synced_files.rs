@@ -267,6 +267,154 @@ fn a_read_returns_the_bytes_or_nothing() {
     );
 }
 
+/// A large file sync streams from outside the workspace, as a downloaded
+/// attachment.
+fn attachment(len: usize) -> Vec<u8> {
+    (0..len).map(|i| (i % 251) as u8).collect()
+}
+
+#[test]
+fn a_streamed_write_lands_whole_and_durable_from_a_file_outside() {
+    let (workspace, _app_data, engine) = engine();
+    let outside = tempdir().unwrap();
+    let source = outside.path().join("download.plain");
+    let bytes = attachment(3 * 1024 * 1024 + 17);
+    std::fs::write(&source, &bytes).unwrap();
+    let (result, synced) = local_core::durability_probe::record(|| {
+        engine.write_synced_from(
+            "Docs/Week/Report.pdf",
+            &source,
+            &revision(&bytes),
+            &SyncedExpect::Absent,
+        )
+    });
+    result.unwrap();
+    assert!(std::fs::read(workspace.path().join("Docs/Week/Report.pdf")).unwrap() == bytes);
+    let root = workspace.path().canonicalize().unwrap();
+    let synced: Vec<_> = synced
+        .iter()
+        .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()))
+        .collect();
+    for folder in ["Docs/Week", "Docs", ""] {
+        assert!(
+            synced.contains(&root.join(folder).canonicalize().unwrap()),
+            "{folder} wasn't synced: {synced:?}"
+        );
+    }
+    assert_eq!(
+        engine.hash_synced("Docs/Week/Report.pdf").unwrap(),
+        Some(revision(&bytes))
+    );
+    assert!(engine.hash_synced("Missing.pdf").unwrap().is_none());
+    let mut opened = Vec::new();
+    std::io::Read::read_to_end(
+        &mut engine.open_synced("Docs/Week/Report.pdf").unwrap().unwrap(),
+        &mut opened,
+    )
+    .unwrap();
+    assert!(opened == bytes);
+
+    // The same bytes again over the file with its revision round-trip.
+    engine
+        .write_synced_from(
+            "Docs/Week/Report.pdf",
+            &source,
+            &revision(&bytes),
+            &SyncedExpect::Revision(revision(&bytes)),
+        )
+        .unwrap();
+    assert!(std::fs::read(workspace.path().join("Docs/Week/Report.pdf")).unwrap() == bytes);
+}
+
+#[test]
+fn a_streamed_write_never_replaces_an_outside_edit_or_writes_changed_bytes() {
+    let (workspace, _app_data, engine) = engine();
+    let outside = tempdir().unwrap();
+    let source = outside.path().join("download.plain");
+    let theirs = attachment(400_000);
+    std::fs::write(&source, &theirs).unwrap();
+    let file = workspace.path().join("Report.pdf");
+    std::fs::write(&file, b"mine").unwrap();
+
+    for expected in [
+        SyncedExpect::Absent,
+        SyncedExpect::Revision(revision(b"before")),
+    ] {
+        let error = engine
+            .write_synced_from("Report.pdf", &source, &revision(&theirs), &expected)
+            .unwrap_err();
+        assert_eq!(error.code, "revision_conflict");
+        assert_eq!(std::fs::read(&file).unwrap(), b"mine");
+    }
+
+    // A source whose bytes no longer have the revision writes nothing.
+    let error = engine
+        .write_synced_from(
+            "Report.pdf",
+            &source,
+            &revision(b"other"),
+            &SyncedExpect::Revision(revision(b"mine")),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "sync_source_changed");
+    assert_eq!(std::fs::read(&file).unwrap(), b"mine");
+    let error = engine
+        .write_synced_from(
+            "New.pdf",
+            &source,
+            &revision(b"other"),
+            &SyncedExpect::Absent,
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "sync_source_changed");
+    assert!(!workspace.path().join("New.pdf").exists());
+}
+
+#[test]
+fn a_streamed_write_and_read_stay_inside_the_workspace() {
+    let (workspace, _app_data, engine) = engine();
+    let outside = tempdir().unwrap();
+    let source = outside.path().join("download.plain");
+    std::fs::write(&source, b"x").unwrap();
+    for path in [
+        "../outside.pdf",
+        "/etc/hosts",
+        ".noura/sync/state",
+        ".git/x",
+    ] {
+        let error = engine
+            .write_synced_from(path, &source, &revision(b"x"), &SyncedExpect::Absent)
+            .unwrap_err();
+        assert!(
+            ["unsafe_path", "absolute_path", "reserved_path"].contains(&error.code.as_str()),
+            "{path}: {}",
+            error.code
+        );
+        assert!(engine.hash_synced(path).is_err(), "{path}");
+        assert!(engine.open_synced(path).is_err(), "{path}");
+    }
+    #[cfg(unix)]
+    {
+        let elsewhere = tempdir().unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), workspace.path().join("Linked")).unwrap();
+        let error = engine
+            .write_synced_from(
+                "Linked/Report.pdf",
+                &source,
+                &revision(b"x"),
+                &SyncedExpect::Absent,
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "symlink_escape");
+        assert!(
+            std::fs::read_dir(elsewhere.path())
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+}
+
 fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut found = Vec::new();
     let mut stack = vec![dir.to_owned()];

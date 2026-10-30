@@ -281,6 +281,10 @@ pub struct Content {
     pub object_id: String,
     /// The review store's copy of the bytes, when the device keeps one.
     pub kept: Option<String>,
+    /// The blob that carries the bytes, for a file above the inline limit
+    /// (§21). A move inside the domain reuses it.
+    #[serde(default)]
+    pub blob: Option<sync_protocol::records::BlobRef>,
 }
 
 /// A signed record waiting for its acknowledgement.
@@ -295,6 +299,15 @@ pub struct Outgoing {
     /// skipped, which keeps its cover or writes nothing (§9).
     #[serde(default)]
     pub rewrite: bool,
+    /// The blob the record lists that still waits for its upload. Its
+    /// ciphertext lies in the journal at [`upload_path`].
+    #[serde(default)]
+    pub upload: Option<sync_protocol::records::BlobRef>,
+}
+
+/// Where the journal keeps a blob's ciphertext until its upload completes.
+pub fn upload_path(blob: &sync_protocol::types::Id) -> String {
+    format!("uploads/{}", sync_protocol::types::to_hex(&blob.0))
 }
 
 /// A record that passed every check but didn't open.

@@ -8,6 +8,7 @@ pub mod plugins;
 pub mod projects;
 pub mod recipes;
 pub mod tasks;
+pub mod web;
 
 use std::{
     io,

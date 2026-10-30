@@ -37,7 +37,9 @@ pub struct Request {
     pub model: String,
     pub endpoint: Option<String>,
     pub key: Option<String>,
-    /// Each message as `role: text`, tool calls and results as JSON.
+    /// The text of each system message, Noura's instructions first.
+    pub system: Vec<String>,
+    /// Each other message as `role: text`, tool calls and results as JSON.
     pub messages: Vec<String>,
     pub tools: Vec<String>,
 }
@@ -134,7 +136,27 @@ impl AiStreamer for FakeProvider {
             model: request.provider.model.clone(),
             endpoint: request.provider.endpoint.clone(),
             key: request.credential.clone(),
-            messages: request.messages.iter().map(message_line).collect(),
+            system: request
+                .messages
+                .iter()
+                .filter(|message| message.role == "system")
+                .map(|message| {
+                    message
+                        .content
+                        .iter()
+                        .map(|part| match part {
+                            AiContentPart::Text { text } => text.clone(),
+                            other => format!("{other:?}"),
+                        })
+                        .collect()
+                })
+                .collect(),
+            messages: request
+                .messages
+                .iter()
+                .filter(|message| message.role != "system")
+                .map(message_line)
+                .collect(),
             tools: request.tools.iter().map(|tool| tool.name.clone()).collect(),
         };
         let (sender, receiver) = unbounded_channel();
@@ -214,6 +236,7 @@ pub fn provider(name: &str, kind: &str, model: &str, key: Option<&str>) -> AiPro
         endpoint: None,
         enabled: true,
         key: key.map(str::to_owned),
+        context_window: None,
     }
 }
 
@@ -403,4 +426,152 @@ fn walk(folder: &std::path::Path, root: &std::path::Path, found: &mut Vec<(Strin
 /// Poll until `done` holds, for up to 20 seconds.
 pub fn wait_until(app: &mut App, what: &str, done: impl Fn(&App) -> bool) {
     plugins::wait_until(app, what, done);
+}
+
+/// The tool call Noura asks about, once it asks.
+pub fn tool_prompt(app: &mut App) -> app_core::AiToolPrompt {
+    wait_until(app, "Noura asks about a tool call", |app| {
+        app.ai_tool_prompt().is_some()
+    });
+    app.ai_tool_prompt().unwrap()
+}
+
+/// The chat message files of the workspace, oldest first by name, with
+/// their text.
+pub fn message_files(root: &std::path::Path) -> Vec<String> {
+    chat_files(root)
+        .into_iter()
+        .filter(|(path, _)| !path.ends_with("/chat.md"))
+        .map(|(_, text)| text)
+        .collect()
+}
+
+/// The value of the frontmatter line `key: value` in `text`.
+pub fn frontmatter(text: &str, key: &str) -> Option<String> {
+    let (front, _) = text.strip_prefix("---\n")?.split_once("\n---\n")?;
+    front
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{key}: ")))
+        .map(|value| value.trim_matches('"').to_owned())
+}
+
+/// The body of a chat message file: what follows its frontmatter.
+pub fn body(text: &str) -> &str {
+    let rest = text.strip_prefix("---\n").unwrap_or(text);
+    rest.split_once("\n---\n").map_or(rest, |(_, body)| body)
+}
+
+/// The file of the message of `kind`, such as `tool-result`, for the tool
+/// call `call`, once Noura wrote it.
+pub fn tool_message(app: &mut App, root: &std::path::Path, kind: &str, call: &str) -> String {
+    let find = || {
+        message_files(root).into_iter().find(|text| {
+            frontmatter(text, "kind").as_deref() == Some(kind)
+                && frontmatter(text, "tool_call_id").as_deref() == Some(call)
+        })
+    };
+    wait_until(app, &format!("the {kind} of {call} is written"), |_| {
+        find().is_some()
+    });
+    find().unwrap()
+}
+
+/// The JSON a tool result for the call `call` holds, once Noura wrote it.
+pub fn tool_result(app: &mut App, root: &std::path::Path, call: &str) -> serde_json::Value {
+    let text = tool_message(app, root, "tool-result", call);
+    serde_json::from_str(body(&text).trim()).unwrap_or_else(|_| panic!("not JSON: {text}"))
+}
+
+/// The ID of the menu item in the sidebar whose ID starts with `prefix`,
+/// such as `rename:` and a chat's ID, and whether it's enabled.
+pub fn menu_item(app: &App, prefix: &str) -> Option<(String, bool)> {
+    let Some(Ok(view)) = app.plugin_sidebar(PAGE) else {
+        return None;
+    };
+    find_menu_item(view.root(), prefix)
+}
+
+fn find_menu_item(node: &ViewNode, prefix: &str) -> Option<(String, bool)> {
+    if let ViewKind::MenuItem { enabled, .. } = &node.kind
+        && node.id.starts_with(prefix)
+    {
+        return Some((node.id.clone(), *enabled));
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_menu_item(child, prefix))
+}
+
+/// Choose the sidebar's menu item whose ID starts with `prefix`.
+pub fn choose(app: &mut App, prefix: &str) {
+    let (item, enabled) = menu_item(app, prefix).unwrap_or_else(|| panic!("no menu item {prefix}"));
+    assert!(enabled, "{prefix} is enabled");
+    app.send_plugin_sidebar_event(PAGE, &PluginEvent::Chosen(item));
+    super::settle(app);
+}
+
+/// The name field the sidebar shows to rename a chat, with what it holds.
+pub fn name_field(app: &App) -> Option<String> {
+    let Some(Ok(view)) = app.plugin_sidebar(PAGE) else {
+        return None;
+    };
+    match &find(view.root(), "chat-name")?.kind {
+        ViewKind::NameField { value, .. } => Some(value.clone()),
+        _ => None,
+    }
+}
+
+/// Name the chat whose sidebar item shows the name field `name`, as Enter
+/// in the field does.
+pub fn name_chat(app: &mut App, name: &str) {
+    app.send_plugin_sidebar_event(
+        PAGE,
+        &PluginEvent::Named(app_core::PluginNaming {
+            node: "chat-name".to_owned(),
+            name: name.to_owned(),
+        }),
+    );
+    super::settle(app);
+}
+
+/// The detail the sidebar shows under each chat, top to bottom.
+pub fn chat_details(app: &App) -> Vec<Option<String>> {
+    let Some(Ok(view)) = app.plugin_sidebar(PAGE) else {
+        return Vec::new();
+    };
+    find(view.root(), "chats")
+        .map(|list| {
+            list.children
+                .iter()
+                .filter_map(|item| match &item.kind {
+                    ViewKind::Item { detail, .. } => Some(detail.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The path and text of the only chat's `chat.md` in `root`.
+pub fn chat_file(root: &std::path::Path) -> (String, String) {
+    chat_files(root)
+        .into_iter()
+        .find(|(path, _)| path.ends_with("/chat.md"))
+        .expect("the chat has its chat.md")
+}
+
+/// Send `text` from the page, stream `answer` back, and wait until it
+/// shows.
+pub fn chat_once(app: &mut App, provider: &FakeProvider, id: &str, text: &str, answer: &str) {
+    let sent = provider.requests().len();
+    send(app, text, id);
+    wait_until(app, "the request leaves", |_| {
+        provider.requests().len() == sent + 1
+    });
+    provider.say(sent, answer);
+    provider.finish(sent);
+    let shown = format!("md: {answer}");
+    wait_until(app, "the answer shows", |app| {
+        lines(app).contains(&shown) && buttons(app).is_empty()
+    });
 }

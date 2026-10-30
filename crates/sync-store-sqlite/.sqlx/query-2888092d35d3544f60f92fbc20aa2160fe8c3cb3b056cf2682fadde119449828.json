@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT domain, device, length, digest, upload_offset, complete FROM blobs WHERE workspace = ?1 AND blob = ?2",
+  "describe": {
+    "columns": [
+      {
+        "name": "domain",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "domain"
+          }
+        }
+      },
+      {
+        "name": "device",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "device"
+          }
+        }
+      },
+      {
+        "name": "length",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "length"
+          }
+        }
+      },
+      {
+        "name": "digest",
+        "ordinal": 3,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "digest"
+          }
+        }
+      },
+      {
+        "name": "upload_offset",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "upload_offset"
+          }
+        }
+      },
+      {
+        "name": "complete",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "complete"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2888092d35d3544f60f92fbc20aa2160fe8c3cb3b056cf2682fadde119449828"
+}

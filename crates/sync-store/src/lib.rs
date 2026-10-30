@@ -16,6 +16,7 @@
 #![forbid(unsafe_code)]
 
 mod accounts;
+mod blobs;
 mod chains;
 mod create;
 pub mod devices;
@@ -51,6 +52,7 @@ use sync_protocol::records::{
 };
 
 pub use accounts::{SIGN_IN_TOKEN_LEN, SignInToken};
+pub use blobs::{BlobCreation, BlobUpload, Recorded};
 pub use chains::SIGN_IN_TTL;
 use sync_protocol::types::{Digest, Id, SecretKey};
 
@@ -456,6 +458,27 @@ pub struct LinkRow {
     pub link: Vec<u8>,
 }
 
+/// A blob's row (§21, §29): what its creation named and how far its upload
+/// reached. It holds no unpadded size and no time; the blob store's file
+/// times date the upload.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlobRow {
+    /// The blob ID, unique within its workspace.
+    pub blob: Id,
+    /// The domain it was created for; only that domain's operations list it.
+    pub domain: Id,
+    /// The device that created the upload.
+    pub device: Id,
+    /// The padded ciphertext length, `Upload-Length`.
+    pub length: u64,
+    /// `ciphertext_digest`, as creation named it.
+    pub digest: Digest,
+    /// The bytes stored so far, `Upload-Offset`.
+    pub offset: u64,
+    /// Whether the upload completed and its digest matched.
+    pub complete: bool,
+}
+
 /// A lone delete a rising checkpoint floor may drop (§17).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeleteRow {
@@ -748,6 +771,21 @@ pub trait ReadTxn: Send {
         &mut self,
         token_hash: Digest,
     ) -> impl Future<Output = Result<Option<Id>>> + Send;
+    /// The blob's row.
+    fn blob(
+        &mut self,
+        workspace: Id,
+        blob: Id,
+    ) -> impl Future<Output = Result<Option<BlobRow>>> + Send;
+    /// The hashes of the blob's stored segments, in offset order.
+    fn blob_segments(
+        &mut self,
+        workspace: Id,
+        blob: Id,
+    ) -> impl Future<Output = Result<Vec<Digest>>> + Send;
+    /// Whether an operation lists the blob.
+    fn blob_listed(&mut self, workspace: Id, blob: Id)
+    -> impl Future<Output = Result<bool>> + Send;
 }
 
 /// The writes a store's write transaction offers, besides its reads.
@@ -1067,6 +1105,33 @@ pub trait WriteTxn: ReadTxn {
     /// device grant, approval request and approval offer that expires at or
     /// before `now`, and returns how many it deleted.
     fn delete_expired(&mut self, now: u64) -> impl Future<Output = Result<u64>> + Send;
+    /// Stores a new blob row at offset 0.
+    fn insert_blob(
+        &mut self,
+        workspace: Id,
+        row: &BlobRow,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Records the segment at `index` with its hash, and moves the blob's
+    /// offset to `offset`, marking it complete when `complete`.
+    fn append_blob_segment(
+        &mut self,
+        workspace: Id,
+        blob: Id,
+        index: u64,
+        hash: Digest,
+        offset: u64,
+        complete: bool,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Deletes the blob's row and its segment rows.
+    fn delete_blob(&mut self, workspace: Id, blob: Id) -> impl Future<Output = Result<()>> + Send;
+    /// Records that the operation at `seq` in `domain` lists the blob.
+    fn insert_blob_listing(
+        &mut self,
+        workspace: Id,
+        blob: Id,
+        domain: Id,
+        seq: u64,
+    ) -> impl Future<Output = Result<()>> + Send;
 }
 
 /// A job that runs in one read transaction.

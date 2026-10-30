@@ -53,6 +53,11 @@ pub struct AiProviderConfig {
     #[ts(optional = nullable)]
     pub credential_ref: Option<String>,
     pub enabled: bool,
+    /// How many tokens the model reads at most, when you set it. Chats
+    /// summarize their earlier messages to stay within it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub context_window: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
@@ -658,6 +663,7 @@ mod tests {
             endpoint: Some("https://example.test/v1/".into()),
             credential_ref: None,
             enabled: true,
+            context_window: None,
         }
     }
 

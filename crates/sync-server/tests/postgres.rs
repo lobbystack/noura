@@ -6,6 +6,7 @@
 //! two instances on one database serve the same log and wake each other's
 //! pulls only after a commit (§15).
 
+mod emulator;
 mod support;
 
 use std::path::{Path, PathBuf};
@@ -120,7 +121,7 @@ async fn migrate_then_serve_on_an_empty_postgres_database() {
     ));
     assert!(first.status.success(), "{}", stderr(&first));
     assert!(
-        stderr(&first).contains("ran 3 migration(s)"),
+        stderr(&first).contains("ran 4 migration(s)"),
         "{}",
         stderr(&first)
     );
@@ -615,4 +616,118 @@ async fn a_pull_on_one_instance_wakes_when_the_other_commits_and_only_then() {
     let entries = &response.pages[0].entries;
     assert_eq!(entries.len(), 1);
     assert!(matches!(&entries[0].record, EntryRecord::Operation(op) if *op == good));
+}
+
+/// On PostgreSQL with S3 storage, an upload whose segments reach two
+/// different instances completes, and either instance serves it (§21).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_upload_across_two_instances_completes_on_postgres_and_s3() {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+    use sync_protocol::blob::{SEGMENT_LEN, decrypt_blob, encrypt_blob};
+    use sync_protocol::codec::Sorted;
+    use sync_protocol::types::Id;
+
+    let secret = random_secret();
+    let (database, _root) = migrated(&secret).await;
+    let config = sync_server::Postgres {
+        url: database.url.clone(),
+        secret: Some(secret.clone()),
+    };
+    let first = Arc::new(
+        sync_server::postgres::open_store(&config)
+            .await
+            .expect("opens"),
+    );
+    let second = Arc::new(
+        sync_server::postgres::open_store(&config)
+            .await
+            .expect("opens"),
+    );
+    let world = sync_store::conformance::World::on(first.clone(), 1).await;
+    let emulator = emulator::Emulator::start().await;
+    let mut bases = Vec::new();
+    for store in [first, second] {
+        let address = sync_server::spawn_with_blobs(
+            store,
+            "127.0.0.1:0",
+            sync_server::Accounts::local,
+            Arc::new(emulator.store()),
+        )
+        .await
+        .expect("serving");
+        bases.push(format!("http://{address}"));
+    }
+
+    let plaintext: Vec<u8> = (0..2_500_000u32).map(|i| (i % 249) as u8).collect();
+    let blob = Id::random().expect("random");
+    let (ciphertext, blob_ref) =
+        encrypt_blob(&plaintext, blob, SecretKey::random().expect("random")).expect("encrypts");
+    let http = reqwest::Client::new();
+    let token = world.devices[0].bearer();
+    let created = http
+        .post(format!(
+            "{}/v2/workspaces/{}/blobs",
+            bases[0],
+            world.workspace.to_base64url()
+        ))
+        .bearer_auth(&token)
+        .header("Tus-Resumable", "1.0.0")
+        .header("Upload-Length", blob_ref.ciphertext_length)
+        .header(
+            "Upload-Metadata",
+            format!(
+                "blob {},digest {},domain {}",
+                STANDARD.encode(blob.0),
+                STANDARD.encode(blob_ref.ciphertext_digest.0),
+                STANDARD.encode(world.domain.0)
+            ),
+        )
+        .send()
+        .await
+        .expect("creation");
+    assert_eq!(created.status(), reqwest::StatusCode::CREATED);
+    let location = created.headers()["Location"]
+        .to_str()
+        .expect("text")
+        .to_owned();
+    for (index, chunk) in ciphertext.chunks(SEGMENT_LEN).enumerate() {
+        let response = http
+            .patch(format!("{}{location}", bases[index % 2]))
+            .bearer_auth(&token)
+            .header("Tus-Resumable", "1.0.0")
+            .header("Upload-Offset", index * SEGMENT_LEN)
+            .header("Content-Type", "application/offset+octet-stream")
+            .body(chunk.to_vec())
+            .send()
+            .await
+            .expect("patch");
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::NO_CONTENT,
+            "segment {index}"
+        );
+    }
+    let listing = world.op(0, |o| {
+        o.blobs = Sorted::new(vec![blob]).expect("sorted");
+    });
+    world.push(0, &[listing]).await.expect("listed");
+    for base in &bases {
+        let mut downloaded = Vec::new();
+        while downloaded.len() < ciphertext.len() {
+            let response = http
+                .get(format!("{base}{location}"))
+                .bearer_auth(&token)
+                .header("Range", format!("bytes={}-", downloaded.len()))
+                .send()
+                .await
+                .expect("get");
+            assert_eq!(response.status(), reqwest::StatusCode::PARTIAL_CONTENT);
+            downloaded.extend_from_slice(&response.bytes().await.expect("body"));
+        }
+        assert_eq!(
+            decrypt_blob(&downloaded, &blob_ref, None).expect("decrypts"),
+            plaintext
+        );
+    }
 }

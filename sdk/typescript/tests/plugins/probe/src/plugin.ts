@@ -14,7 +14,15 @@ import {
 	providers,
 	readChat,
 	readRun,
+	renameChat,
+	resume,
+	runTools,
 	send,
+	setRetention,
+	webFetch,
+	webReady,
+	webSearch,
+	workspaceTools,
 } from 'noura:plugin/ai@0.1.0';
 import { call as callCommand } from 'noura:plugin/command-calls@0.1.0';
 import { now } from 'noura:plugin/clock@0.1.0';
@@ -146,6 +154,16 @@ const CALLS: Record<string, () => unknown> = {
 		}).id,
 	'ai-read-chat-missing': () => readChat('chat_01j9qv6m0000000000000000cc'),
 	'ai-read-run-missing': () => readRun('run_missing'),
+	'ai-rename-new-chat': () => renameChat(createChat().id, 'Garden', ''),
+	'ai-rename-missing': () =>
+		renameChat('chat_01j9qv6m0000000000000000cc', 'Garden', 'rev'),
+	'ai-keep-new-chat': () => setRetention(createChat().id, 'ephemeral', ''),
+	'ai-resume-new-chat': () => resume(createChat().id, 'missing', []),
+	'ai-run-tools-missing': () => runTools('run_missing'),
+	'ai-workspace-tools': () => workspaceTools().map((tool) => tool.name),
+	'ai-web-ready': () => webReady(),
+	'ai-web-search': () => webSearch('tomatoes', 3),
+	'ai-web-fetch': () => webFetch('https://garden.example.com/'),
 };
 
 function get(url: string): number {

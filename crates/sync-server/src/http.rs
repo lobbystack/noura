@@ -33,7 +33,7 @@ impl From<Error> for ApiError {
     }
 }
 
-fn refused(code: &'static str, message: &str) -> ApiError {
+pub(crate) fn refused(code: &'static str, message: &str) -> ApiError {
     ApiError(Error::Refused(Refusal::new(code, message)))
 }
 
@@ -190,6 +190,8 @@ pub struct AppState<B: Backend> {
     pub store: Arc<Store<B>>,
     /// The account pages, sign-in and mail.
     pub accounts: Arc<crate::accounts::Accounts>,
+    /// Where blob segments live (§21).
+    pub blobs: Arc<dyn crate::blobs::SegmentStore>,
 }
 
 impl<B: Backend> Clone for AppState<B> {
@@ -197,6 +199,7 @@ impl<B: Backend> Clone for AppState<B> {
         Self {
             store: self.store.clone(),
             accounts: self.accounts.clone(),
+            blobs: self.blobs.clone(),
         }
     }
 }
@@ -223,7 +226,7 @@ fn decode<T: Decode>(bytes: &[u8]) -> Result<T, ApiError> {
     })
 }
 
-fn id(text: &str) -> Result<Id, ApiError> {
+pub(crate) fn id(text: &str) -> Result<Id, ApiError> {
     Id::from_base64url(text)
         .ok()
         .filter(|id| !id.is_zero())
@@ -592,6 +595,7 @@ pub fn router<B: Backend>(state: AppState<B>) -> Router {
         )
         .route("/v2/recovery", post(recovery::<B>))
         .merge(crate::accounts::routes::<B>())
+        .merge(crate::tus::routes::<B>())
         .route(
             "/v2/workspaces",
             get(list_workspaces::<B>).post(create_workspace::<B>),

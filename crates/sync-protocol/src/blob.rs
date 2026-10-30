@@ -10,6 +10,8 @@
 //! ciphertext  = header || chunk 0 || chunk 1 || ...
 //! ```
 
+use std::io::{Read, Write};
+
 use aead_stream::{NewStream, StreamBE32, StreamPrimitive};
 use chacha20poly1305::XChaCha20Poly1305;
 use chacha20poly1305::aead::{KeyInit, Payload};
@@ -124,11 +126,65 @@ pub enum BlobError {
     /// The file's BLAKE3 hash differs from the payload's `revision`.
     #[error("file revision mismatch")]
     Revision,
+    /// The file yielded more or fewer bytes than its length while it was
+    /// read, as when it changes meanwhile.
+    #[error("the file changed while it was read")]
+    FileChanged,
+    /// Reading or writing the stream failed.
+    #[error("blob stream I/O failed: {0:?}")]
+    Io(std::io::ErrorKind),
 }
 
 fn stream(key: &SecretKey, prefix: &[u8; NONCE_PREFIX_LEN]) -> StreamBE32<XChaCha20Poly1305> {
     let aead = XChaCha20Poly1305::new(key.expose().into());
     StreamBE32::from_aead(aead, prefix.into())
+}
+
+/// Hashes ciphertext in 1 MiB segments as it passes, for
+/// `ciphertext_digest`.
+struct SegmentHasher {
+    hashes: Vec<Digest>,
+    current: blake3::Hasher,
+    filled: usize,
+    total: u64,
+}
+
+impl SegmentHasher {
+    fn new() -> Self {
+        Self {
+            hashes: Vec::new(),
+            current: blake3::Hasher::new(),
+            filled: 0,
+            total: 0,
+        }
+    }
+
+    fn update(&mut self, mut bytes: &[u8]) {
+        self.total += bytes.len() as u64;
+        while !bytes.is_empty() {
+            let take = (SEGMENT_LEN - self.filled).min(bytes.len());
+            self.current.update(&bytes[..take]);
+            self.filled += take;
+            bytes = &bytes[take..];
+            if self.filled == SEGMENT_LEN {
+                let full = std::mem::replace(&mut self.current, blake3::Hasher::new());
+                self.hashes.push(Digest(*full.finalize().as_bytes()));
+                self.filled = 0;
+            }
+        }
+    }
+
+    fn finish(mut self) -> (Digest, u64) {
+        if self.filled > 0 {
+            self.hashes
+                .push(Digest(*self.current.finalize().as_bytes()));
+        }
+        (digest_of_segment_hashes(&self.hashes), self.total)
+    }
+}
+
+fn io(error: std::io::Error) -> BlobError {
+    BlobError::Io(error.kind())
 }
 
 /// Encrypts `file` as blob `blob` under its fresh random `blob_key`,
@@ -140,45 +196,83 @@ pub fn encrypt_blob(
     blob: Id,
     blob_key: SecretKey,
 ) -> Result<(Vec<u8>, BlobRef), BlobError> {
-    let file_len = file.len() as u64;
+    let mut ciphertext = Vec::new();
+    let (blob_ref, _) = encrypt_blob_to(file, file.len() as u64, blob, blob_key, &mut ciphertext)?;
+    Ok((ciphertext, blob_ref))
+}
+
+/// Encrypts the `file_len` bytes `file` yields as blob `blob` under
+/// `blob_key`, writing the ciphertext to `out` one 65,536-byte chunk at a
+/// time, so memory stays bounded whatever the file's size. Returns the
+/// `blob_ref` and the BLAKE3 hash of the bytes it read. A file that yields
+/// more or fewer than `file_len` bytes fails with
+/// [`BlobError::FileChanged`]. The bytes equal [`encrypt_blob`]'s.
+pub fn encrypt_blob_to(
+    mut file: impl Read,
+    file_len: u64,
+    blob: Id,
+    blob_key: SecretKey,
+    mut out: impl Write,
+) -> Result<(BlobRef, Digest), BlobError> {
     if file_len > MAX_BLOB_FILE {
         return Err(BlobError::TooLarge);
     }
-    let p = usize::try_from(padded_length(file_len + 8)).map_err(|_| BlobError::TooLarge)?;
-    let mut plaintext = Vec::with_capacity(p);
-    plaintext.extend_from_slice(&file_len.to_be_bytes());
-    plaintext.extend_from_slice(file);
-    plaintext.resize(p, 0);
-
+    let p = padded_length(file_len + 8);
     let prefix = nonce_prefix(&blob_key, &blob);
     let header = header(&blob, &prefix);
     let cipher = stream(&blob_key, &prefix);
-    let chunk_count = p.div_ceil(CHUNK_LEN);
-    let mut ciphertext = header.clone();
-    ciphertext.reserve(p + chunk_count * AEAD_TAG_LEN);
-    for (i, chunk) in plaintext.chunks(CHUNK_LEN).enumerate() {
-        let last = i + 1 == chunk_count;
+    let chunk_count = p.div_ceil(CHUNK_LEN as u64);
+    let mut segments = SegmentHasher::new();
+    let mut file_hash = blake3::Hasher::new();
+    out.write_all(&header).map_err(io)?;
+    segments.update(&header);
+    let mut chunk = zeroize::Zeroizing::new(vec![0u8; CHUNK_LEN]);
+    let mut remaining = file_len;
+    for i in 0..chunk_count {
+        let len = (p - i * CHUNK_LEN as u64).min(CHUNK_LEN as u64) as usize;
+        let mut filled = 0;
+        if i == 0 {
+            chunk[..8].copy_from_slice(&file_len.to_be_bytes());
+            filled = 8;
+        }
+        let take = ((len - filled) as u64).min(remaining) as usize;
+        file.read_exact(&mut chunk[filled..filled + take])
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::UnexpectedEof => BlobError::FileChanged,
+                _ => io(error),
+            })?;
+        file_hash.update(&chunk[filled..filled + take]);
+        remaining -= take as u64;
+        filled += take;
+        chunk[filled..len].fill(0);
         let sealed = cipher
             .encrypt(
                 i as u32,
-                last,
+                i + 1 == chunk_count,
                 Payload {
-                    msg: chunk,
+                    msg: &chunk[..len],
                     aad: &header,
                 },
             )
             .map_err(|_| BlobError::TooLarge)?;
-        ciphertext.extend_from_slice(&sealed);
+        out.write_all(&sealed).map_err(io)?;
+        segments.update(&sealed);
     }
-    zeroize::Zeroize::zeroize(&mut plaintext);
+    let mut extra = [0u8; 1];
+    match file.read(&mut extra) {
+        Ok(0) => {}
+        Ok(_) => return Err(BlobError::FileChanged),
+        Err(error) => return Err(io(error)),
+    }
+    let (ciphertext_digest, ciphertext_length) = segments.finish();
     let blob_ref = BlobRef {
         blob,
-        ciphertext_length: ciphertext.len() as u64,
-        ciphertext_digest: ciphertext_digest(&ciphertext),
+        ciphertext_length,
+        ciphertext_digest,
         blob_key,
         plaintext_length: file_len,
     };
-    Ok((ciphertext, blob_ref))
+    Ok((blob_ref, Digest(*file_hash.finalize().as_bytes())))
 }
 
 /// Decrypts a downloaded blob: checks its length and segment hashes
@@ -198,46 +292,97 @@ pub fn decrypt_blob(
     if ciphertext_digest(ciphertext) != blob_ref.ciphertext_digest {
         return Err(BlobError::Digest);
     }
+    let mut file = Vec::new();
+    let file_hash = decrypt_blob_to(ciphertext, blob_ref, &mut file)?;
+    if revision.is_some_and(|revision| file_hash != *revision) {
+        return Err(BlobError::Revision);
+    }
+    Ok(file)
+}
+
+/// Decrypts the ciphertext `ciphertext` yields, whose segment hashes the
+/// caller already checked against `ciphertext_digest`, one chunk at a time,
+/// and writes the file's bytes to `out`. Checks the header, every chunk,
+/// the padding and `plaintext_length`, and returns the file's BLAKE3 hash
+/// for the caller to compare with the payload's `revision`. On an error,
+/// `out` may hold part of the file, so the caller discards it.
+pub fn decrypt_blob_to(
+    mut ciphertext: impl Read,
+    blob_ref: &BlobRef,
+    mut out: impl Write,
+) -> Result<Digest, BlobError> {
+    let length = blob_ref.ciphertext_length;
+    if !is_valid_blob_ciphertext_len(length) {
+        return Err(BlobError::Length);
+    }
+    let read = |reader: &mut dyn Read, buffer: &mut [u8]| {
+        reader
+            .read_exact(buffer)
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::UnexpectedEof => BlobError::Length,
+                _ => io(error),
+            })
+    };
     let prefix = nonce_prefix(&blob_ref.blob_key, &blob_ref.blob);
     let expected_header = header(&blob_ref.blob, &prefix);
-    let (found_header, body) = ciphertext.split_at(expected_header.len());
+    let mut found_header = vec![0u8; expected_header.len()];
+    read(&mut ciphertext, &mut found_header)?;
     if found_header != expected_header {
         return Err(BlobError::Header);
     }
     let cipher = stream(&blob_ref.blob_key, &prefix);
-    let sealed_chunk = CHUNK_LEN + AEAD_TAG_LEN;
-    let chunk_count = body.len().div_ceil(sealed_chunk);
-    let mut plaintext = Vec::with_capacity(body.len());
-    for (i, chunk) in body.chunks(sealed_chunk).enumerate() {
-        let last = i + 1 == chunk_count;
-        let opened = cipher
-            .decrypt(
-                i as u32,
-                last,
-                Payload {
-                    msg: chunk,
-                    aad: &expected_header,
-                },
-            )
-            .map_err(|_| BlobError::Decrypt)?;
-        plaintext.extend_from_slice(&opened);
+    let sealed_chunk = (CHUNK_LEN + AEAD_TAG_LEN) as u64;
+    let body = length - expected_header.len() as u64;
+    let chunk_count = body.div_ceil(sealed_chunk);
+    let mut sealed = vec![0u8; sealed_chunk as usize];
+    let mut file_hash = blake3::Hasher::new();
+    // The file's length, and how many of its bytes are still to come.
+    let mut file_len = 0u64;
+    let mut remaining = 0u64;
+    let mut padding_ok = true;
+    for i in 0..chunk_count {
+        let len = (body - i * sealed_chunk).min(sealed_chunk) as usize;
+        read(&mut ciphertext, &mut sealed[..len])?;
+        let opened = zeroize::Zeroizing::new(
+            cipher
+                .decrypt(
+                    i as u32,
+                    i + 1 == chunk_count,
+                    Payload {
+                        msg: &sealed[..len],
+                        aad: &expected_header,
+                    },
+                )
+                .map_err(|_| BlobError::Decrypt)?,
+        );
+        let mut start = 0;
+        if i == 0 {
+            file_len = u64::from_be_bytes(opened[..8].try_into().expect("at least 256 bytes"));
+            let padded = body - chunk_count * AEAD_TAG_LEN as u64;
+            if file_len.checked_add(8).is_none_or(|end| end > padded) {
+                return Err(BlobError::Padding);
+            }
+            remaining = file_len;
+            start = 8;
+        }
+        let take = ((opened.len() - start) as u64).min(remaining) as usize;
+        let bytes = &opened[start..start + take];
+        file_hash.update(bytes);
+        out.write_all(bytes).map_err(io)?;
+        remaining -= take as u64;
+        padding_ok &= opened[start + take..].iter().all(|&b| b == 0);
     }
-    let file_len = u64::from_be_bytes(plaintext[..8].try_into().expect("at least 256 bytes"));
-    let end = usize::try_from(file_len)
-        .ok()
-        .and_then(|n| n.checked_add(8))
-        .filter(|&end| end <= plaintext.len())
-        .ok_or(BlobError::Padding)?;
-    if plaintext[end..].iter().any(|&b| b != 0) {
+    let mut extra = [0u8; 1];
+    match ciphertext.read(&mut extra) {
+        Ok(0) => {}
+        Ok(_) => return Err(BlobError::Length),
+        Err(error) => return Err(io(error)),
+    }
+    if !padding_ok {
         return Err(BlobError::Padding);
     }
     if file_len != blob_ref.plaintext_length {
         return Err(BlobError::PlaintextLength);
     }
-    plaintext.truncate(end);
-    let file = plaintext.split_off(8);
-    if revision.is_some_and(|revision| hash(&file) != *revision) {
-        return Err(BlobError::Revision);
-    }
-    Ok(file)
+    Ok(Digest(*file_hash.finalize().as_bytes()))
 }

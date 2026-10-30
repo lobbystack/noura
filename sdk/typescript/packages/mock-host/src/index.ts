@@ -268,6 +268,8 @@ export class MockHost {
 	private readonly startedChats = new Map<string, Chat>();
 	/** The plugin's AI runs, by ID. */
 	private readonly runs = new Map<string, Run>();
+	/** The plugin's tools as the model sees them, read when it starts. */
+	private modelTools: ToolDefinition[] = [];
 
 	private constructor(
 		readonly manifest: Manifest,
@@ -322,6 +324,16 @@ export class MockHost {
 				}
 			}
 		}
+		// The plugin is the only one on in the mock workspace, so its own
+		// tools are the workspace's, named as Noura names them for a model.
+		this.modelTools = this.declares('tools')
+			? (this.call('tools', 'tools') as Tool[])
+					.map((tool) => ({
+						...tool,
+						name: `${this.manifest.id}__${tool.name}`,
+					}))
+					.filter((tool) => tool.name.length <= 64)
+			: [];
 	}
 
 	/** Call the export `name` of the interface `face`. */
@@ -388,7 +400,34 @@ export class MockHost {
 				refused('ai');
 			}
 		};
+		// The mock host has no Brave Search key, so web calls fail closed as
+		// Noura's do without one. A refusal comes wrapped as `refused`.
+		const web = (): never => {
+			if (!this.declares('ai')) {
+				throw {
+					tag: 'refused',
+					val: { tag: 'capability-not-declared', val: 'ai' },
+				};
+			}
+			throw {
+				tag: 'failed',
+				val: {
+					code: 'web_search_key_missing',
+					message:
+						'Add a Brave Search key in Settings, under Web search, to search the web.',
+				},
+			};
+		};
 		const providers = () => this.options.providers ?? [];
+		const unwritten = (id: string): never => {
+			if (!this.startedChats.has(id)) {
+				notFound(id);
+			}
+			throw {
+				tag: 'failed',
+				val: "This chat isn't saved until its first message goes out, so it can't change yet.",
+			};
+		};
 		const run = (id: string) => this.runs.get(id) ?? notFound(id);
 		// Noura opens and trashes things only in answer to an event in one
 		// of the plugin's views or a command you ran from the palette.
@@ -529,6 +568,8 @@ export class MockHost {
 						id: `chat_${ulid()}`,
 						title: 'New chat',
 						updated: instant(),
+						revision: '',
+						retention: 'permanent',
 					};
 					this.startedChats.set(chat.id, chat);
 					return { ...chat };
@@ -579,6 +620,41 @@ export class MockHost {
 						val: "This run isn't waiting for tool results.",
 					};
 				},
+				// A chat started here waits for its first message, which never
+				// goes out, so it can't change.
+				renameChat: (id: string) => {
+					ai();
+					return unwritten(id);
+				},
+				setRetention: (id: string) => {
+					ai();
+					return unwritten(id);
+				},
+				workspaceTools: () => {
+					ai();
+					return this.modelTools.map((tool) => ({ ...tool }));
+				},
+				runTools: (id: string) => {
+					ai();
+					run(id);
+					// No run here completes, so none has tool calls to run.
+					throw {
+						tag: 'failed',
+						val: 'This run has no tool calls waiting to run.',
+					};
+				},
+				// A chat started here has no message of yours yet, and one that
+				// wasn't started isn't here.
+				resume: (chat: string) => {
+					ai();
+					if (!this.startedChats.has(chat)) {
+						notFound(chat);
+					}
+					throw {
+						tag: 'failed',
+						val: 'This chat has no message of yours to answer again.',
+					};
+				},
 				readRun: (id: string) => {
 					ai();
 					return { ...run(id) };
@@ -590,6 +666,12 @@ export class MockHost {
 						found.status = 'cancelled';
 					}
 				},
+				webReady: () => {
+					ai();
+					return false;
+				},
+				webSearch: () => web(),
+				webFetch: () => web(),
 			},
 		};
 	}

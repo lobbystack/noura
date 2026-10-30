@@ -45,4 +45,6 @@ egui_kittest.workspace = true
 futures.workspace = true
 # A test breaks the index to see search say it isn't available.
 rusqlite.workspace = true
+# The fake AI provider's tool calls carry JSON arguments.
+serde_json.workspace = true
 tempfile.workspace = true

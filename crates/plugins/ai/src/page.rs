@@ -1,12 +1,16 @@
-//! The AI page and its sidebar section: the chats, the open chat's
-//! messages, the answer streaming in, Stop, and the message box.
+//! The AI page and its sidebar section: the chats, each with a menu to
+//! rename it or have it removed after 30 days, the open chat's messages,
+//! the answer streaming in, Stop, Resume, and the message box.
 
 use plugin_sdk::{
     Event, Node, Value, View,
-    ai::{self, Message, MessageKind, MessageStatus, Provider, Request, Run, RunStatus},
+    ai::{
+        self, Chat, Message, MessageKind, MessageStatus, Provider, Request, Retention, Run,
+        RunStatus, ToolDefinition,
+    },
 };
 
-use crate::{State, reason};
+use crate::{State, reason, web};
 
 /// The title a chat has until its first message names it.
 const NEW_CHAT: &str = "New chat";
@@ -17,10 +21,21 @@ const CHATS: &str = "chats";
 const COMPOSER: &str = "composer";
 const PROVIDER: &str = "provider";
 const STOP: &str = "stop";
+const RESUME: &str = "resume";
+const CHAT_NAME: &str = "chat-name";
+
+/// The menu items of a chat in the sidebar, each followed by the chat's
+/// ID, a colon and the revision of its `chat.md` the menu showed, which
+/// the change carries: a chat that changed elsewhere since keeps that
+/// change.
+const RENAME: &str = "rename:";
+const KEEP: &str = "keep:";
+const EPHEMERAL: &str = "ephemeral:";
 
 /// The page: the open chat's messages, then Stop while an answer comes in
 /// or the message box.
 pub(crate) fn render(state: &mut State) -> Vec<Node> {
+    hand_over_tool_calls(state);
     let mut view = View::panel("ai", Some("AI"));
     if let Some(notice) = &state.notice {
         view.text(View::ROOT, "notice", notice);
@@ -32,14 +47,15 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
             return view.into_nodes();
         }
     };
+    let mut chat = None;
     let mut messages = Vec::new();
     match state.chat.clone().map(|id| ai::read_chat(&id)) {
         None => {
             view.text(View::ROOT, "title", NEW_CHAT);
         }
-        Some(Ok((chat, read))) => {
-            view.text(View::ROOT, "title", &chat.title);
-            messages = read;
+        Some(Ok((read, read_messages))) => {
+            chat = Some(read);
+            messages = read_messages;
         }
         Some(Err(error)) => {
             // A chat that went, as when its folder moved to the trash,
@@ -56,15 +72,13 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
         .as_ref()
         .and_then(|chat| state.runs.get(chat))
         .and_then(|id| ai::read_run(id).ok());
+    let busy = run.as_ref().is_some_and(busy);
+    if let Some(chat) = &chat {
+        draw_title(&mut view, chat);
+    }
     for message in &messages {
         draw_message(&mut view, message, run.as_ref(), &providers);
     }
-    let busy = run.as_ref().is_some_and(|run| {
-        matches!(
-            run.status,
-            RunStatus::Streaming | RunStatus::WaitingForConsent
-        )
-    });
     if let Some(run) = &run {
         // A message Noura didn't write to the chat, as when you said no or
         // the write failed, comes back to the message box.
@@ -85,9 +99,125 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
             "Add an AI provider in Settings, under AI providers, to start a chat.",
         );
     } else {
+        if stopped_before_answering(&messages) {
+            view.button(View::ROOT, RESUME, "Resume");
+        }
         draw_composer(&mut view, state, &providers, &messages);
     }
     view.into_nodes()
+}
+
+/// Whether a run is still at work: Noura asks you something, or the
+/// answer streams in.
+fn busy(run: &Run) -> bool {
+    matches!(
+        run.status,
+        RunStatus::Streaming | RunStatus::WaitingForConsent | RunStatus::WaitingForApproval
+    )
+}
+
+/// The tools a message offers the model: those of the plugins on in the
+/// workspace, then web search and page reads while they work.
+fn offered_tools() -> Vec<ToolDefinition> {
+    let mut tools = ai::workspace_tools().unwrap_or_default();
+    tools.extend(web::tools());
+    tools
+}
+
+/// Settle each run's tool calls once the model asked for them. The plugin
+/// answers a turn of web calls itself, through the host AI interface.
+/// Noura gets any other turn: it asks you about each call in turn and
+/// runs the ones you allow. Then the model answers again in the same run.
+fn hand_over_tool_calls(state: &mut State) {
+    let mut problem = None;
+    let ids: Vec<String> = state.runs.values().cloned().collect();
+    for id in ids {
+        let Ok(run) = ai::read_run(&id) else {
+            continue;
+        };
+        if run.status != RunStatus::Completed || run.tool_calls.is_empty() {
+            continue;
+        }
+        let web_only = run
+            .tool_calls
+            .iter()
+            .all(|call| matches!(call.name.as_str(), web::SEARCH | web::FETCH));
+        if !web_only {
+            if let Err(error) = ai::run_tools(&id) {
+                problem = Some(reason(&error));
+            }
+            continue;
+        }
+        let turn = std::iter::once(run.id.as_str())
+            .chain(run.tool_calls.iter().map(|call| call.id.as_str()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if state.failed_turns.contains(&turn) {
+            continue;
+        }
+        if let Err(error) = web::answer(&run, &offered_tools()) {
+            problem = Some(reason(&error));
+            state.failed_turns.insert(turn);
+        }
+    }
+    if problem.is_some() {
+        state.notice = problem;
+    }
+}
+
+/// Whether Noura stopped before your last message got its answer, as
+/// after a crash or a quit: a message after it is interrupted, with no
+/// code that says a plugin went, and no answer completed since.
+fn stopped_before_answering(messages: &[Message]) -> bool {
+    let Some(last) = messages
+        .iter()
+        .rposition(|message| message.kind == MessageKind::User)
+    else {
+        return false;
+    };
+    let after = &messages[last + 1..];
+    let Some(cut) = after.iter().rposition(|message| {
+        message.status == MessageStatus::Interrupted && message.error_code.is_none()
+    }) else {
+        return false;
+    };
+    !after[cut + 1..].iter().any(|message| {
+        message.kind == MessageKind::Assistant && message.status == MessageStatus::Completed
+    })
+}
+
+/// The chat's title, and how long Noura keeps it when that isn't until
+/// you delete it.
+fn draw_title(view: &mut View, chat: &Chat) {
+    view.text(View::ROOT, "title", &chat.title);
+    if chat.retention == Retention::Ephemeral {
+        view.text(
+            View::ROOT,
+            "retention",
+            "Noura moves this chat to the trash 30 days after it started.",
+        );
+    }
+}
+
+/// The menu of a chat in the sidebar: rename it, or choose how long Noura
+/// keeps it.
+fn draw_chat_menu(view: &mut View, item: u32, chat: &Chat) {
+    let menu = view.menu(item, &format!("menu:{}", chat.id), "Chat options");
+    let item = |action: &str| format!("{action}{}:{}", chat.id, chat.revision);
+    view.menu_item(menu, &item(RENAME), "Rename", true);
+    view.separator(menu, &format!("separator:{}", chat.id));
+    view.menu_item(
+        menu,
+        &item(KEEP),
+        "Keep until I delete it",
+        chat.retention != Retention::Permanent,
+    );
+    view.menu_item(
+        menu,
+        &item(EPHEMERAL),
+        "Remove after 30 days",
+        chat.retention != Retention::Ephemeral,
+    );
 }
 
 /// One message of the chat. The answer that streams in shows the text
@@ -125,6 +255,11 @@ fn draw_message(view: &mut View, message: &Message, run: Option<&Run>, providers
                 MessageStatus::InProgress => None,
                 MessageStatus::Completed => None,
                 MessageStatus::Cancelled => Some("Stopped."),
+                MessageStatus::Interrupted
+                    if message.error_code.as_deref() == Some("plugin-disabled") =>
+                {
+                    Some("You turned off a plugin this answer used.")
+                }
                 MessageStatus::Interrupted => Some("Noura stopped before this answer finished."),
                 MessageStatus::Failed => Some("This answer failed."),
             };
@@ -132,12 +267,103 @@ fn draw_message(view: &mut View, message: &Message, run: Option<&Run>, providers
                 view.text(panel, &format!("{}-status", message.id), note);
             }
         }
-        MessageKind::ToolCall | MessageKind::ToolResult | MessageKind::ContextSummary => {}
+        MessageKind::ToolCall | MessageKind::ToolResult if is_web_call(message) => {
+            draw_web_call(view, message);
+        }
+        MessageKind::ToolCall => {
+            let tool = message.tool_name.as_deref().unwrap_or("a tool");
+            let panel = view.add_panel(View::ROOT, &message.id, Some("Tool call"));
+            view.text(
+                panel,
+                &format!("{}-tool", message.id),
+                &format!("Tool call: {tool}"),
+            );
+            let note = match message.status {
+                MessageStatus::InProgress => Some("Waiting to run."),
+                MessageStatus::Completed | MessageStatus::Cancelled => None,
+                MessageStatus::Interrupted
+                    if message.error_code.as_deref() == Some("plugin-disabled") =>
+                {
+                    Some("You turned off the plugin that offers this tool, so the call didn't run.")
+                }
+                MessageStatus::Interrupted => {
+                    Some("Noura stopped before this call finished, and won't run it on its own.")
+                }
+                MessageStatus::Failed => Some("This call failed."),
+            };
+            if let Some(note) = note {
+                view.text(panel, &format!("{}-status", message.id), note);
+            }
+        }
+        MessageKind::ToolResult => {
+            let denied = serde_json::from_str::<serde_json::Value>(&message.content)
+                .is_ok_and(|result| result["denied"] == true);
+            let line = if denied {
+                "You didn't allow this call, so it didn't run.".to_owned()
+            } else {
+                format!("Result: {}", message.content)
+            };
+            view.text(View::ROOT, &message.id, &line);
+        }
+        MessageKind::ContextSummary => {
+            let panel = view.add_panel(View::ROOT, &message.id, Some("Summary"));
+            view.text(
+                panel,
+                &format!("{}-about", message.id),
+                "Noura summarized the messages above to keep this chat within the model's \
+                 context.",
+            );
+            view.markdown(panel, &format!("{}-text", message.id), &message.content);
+        }
+    }
+}
+
+/// Whether a tool call or result message is a web search's or a page
+/// read's.
+fn is_web_call(message: &Message) -> bool {
+    matches!(message.tool_name.as_deref(), Some(web::SEARCH | web::FETCH))
+}
+
+/// A web search or page read the model asked for, and what came back:
+/// the query or the address, then the sources a search found.
+fn draw_web_call(view: &mut View, message: &Message) {
+    let shown = match message.kind {
+        MessageKind::ToolCall => web::shown_call(&message.content),
+        _ => web::shown_result(&message.content),
+    };
+    let Some(shown) = shown else {
+        return;
+    };
+    let id = format!("{}-web", message.id);
+    match shown {
+        web::Shown::Searched(query) => {
+            view.text(
+                View::ROOT,
+                &id,
+                &format!("Searched the web for \u{201c}{query}\u{201d}."),
+            );
+        }
+        web::Shown::Read(url) => {
+            view.text(View::ROOT, &id, &format!("Read {url}."));
+        }
+        web::Shown::Sources(sources) if sources.is_empty() => {
+            view.text(View::ROOT, &id, "The search found nothing.");
+        }
+        web::Shown::Sources(sources) => {
+            let list = view.list(View::ROOT, &id, "Sources");
+            for (index, (title, url)) in sources.iter().enumerate() {
+                view.item(list, &format!("{id}-{index}"), title, Some(url));
+            }
+        }
+        web::Shown::Page => {}
+        web::Shown::Failed(reason) => {
+            view.text(View::ROOT, &id, &format!("The web call failed: {reason}"));
+        }
     }
 }
 
 /// What the run of the last message you sent says, when the messages
-/// don't: it waits for your consent, you said no, or it failed.
+/// don't: it waits for you, you said no, or it ended early.
 fn draw_run_status(view: &mut View, run: &Run, providers: &[Provider], state: &State) {
     let name = providers
         .iter()
@@ -147,6 +373,9 @@ fn draw_run_status(view: &mut View, run: &Run, providers: &[Provider], state: &S
         RunStatus::WaitingForConsent => Some(format!(
             "Noura is asking you whether {name} may receive this workspace's content."
         )),
+        RunStatus::WaitingForApproval => {
+            Some("Noura is asking you whether to run a tool the model wants to use.".to_owned())
+        }
         RunStatus::Denied => Some(format!(
             "You didn't let {name} receive this workspace's content, so Noura sent nothing."
         )),
@@ -154,6 +383,9 @@ fn draw_run_status(view: &mut View, run: &Run, providers: &[Provider], state: &S
             .failure
             .as_ref()
             .map(|failure| format!("The answer failed: {}", failure.message)),
+        RunStatus::Interrupted => {
+            Some("You turned off a plugin this answer relied on, so the answer stopped.".to_owned())
+        }
         RunStatus::Streaming | RunStatus::Completed | RunStatus::Cancelled => None,
     };
     if let Some(line) = line {
@@ -207,7 +439,18 @@ pub(crate) fn sidebar(state: &State) -> Vec<Node> {
             let list = view.list(View::ROOT, CHATS, "Chats");
             view.open_on_click(list);
             for chat in &chats {
-                view.item(list, &chat.id, &chat.title, None);
+                let detail =
+                    (chat.retention == Retention::Ephemeral).then_some("Removed after 30 days");
+                let item = view.item(list, &chat.id, &chat.title, detail);
+                if state
+                    .renaming
+                    .as_ref()
+                    .is_some_and(|(renaming, _)| renaming == &chat.id)
+                {
+                    view.name_field(item, CHAT_NAME, "Chat name", &chat.title);
+                } else {
+                    draw_chat_menu(&mut view, item, chat);
+                }
             }
             // A new chat isn't listed until its first message goes out.
             if let Some(chat) = &state.chat
@@ -232,6 +475,7 @@ pub(crate) fn handle(state: &mut State, event: Event) {
         Event::Pressed(node) if node == NEW_CHAT_BUTTON => {
             state.chat = None;
             state.notice = None;
+            state.renaming = None;
         }
         Event::Pressed(node) if node == STOP => {
             let run = state.chat.as_ref().and_then(|chat| state.runs.get(chat));
@@ -241,6 +485,23 @@ pub(crate) fn handle(state: &mut State, event: Event) {
                 state.notice = Some(reason(&error));
             }
         }
+        Event::Pressed(node) if node == RESUME => resume(state),
+        Event::Chosen(node) => {
+            let chosen = |action: &str| {
+                node.strip_prefix(action)
+                    .and_then(|rest| rest.split_once(':'))
+                    .map(|(chat, revision)| (chat.to_owned(), revision.to_owned()))
+            };
+            if let Some(chat) = chosen(RENAME) {
+                state.renaming = Some(chat);
+            } else if let Some((chat, revision)) = chosen(KEEP) {
+                keep(state, &chat, &revision, Retention::Permanent);
+            } else if let Some((chat, revision)) = chosen(EPHEMERAL) {
+                keep(state, &chat, &revision, Retention::Ephemeral);
+            }
+        }
+        Event::Named(naming) if naming.node == CHAT_NAME => rename(state, &naming.name),
+        Event::Cancelled(node) if node == CHAT_NAME => state.renaming = None,
         Event::Selected(target) | Event::Activated(target) if target.node == CHATS => {
             state.chat = Some(target.item);
             state.notice = None;
@@ -267,8 +528,51 @@ pub(crate) fn handle(state: &mut State, event: Event) {
     }
 }
 
+/// Give the chat you rename the name `title`. A chat that changed
+/// elsewhere since you chose Rename keeps that change, and the page says
+/// so.
+fn rename(state: &mut State, title: &str) {
+    let Some((chat, revision)) = state.renaming.take() else {
+        return;
+    };
+    state.notice = ai::rename_chat(&chat, title, &revision)
+        .err()
+        .map(|error| reason(&error));
+}
+
+/// Keep the chat `chat` as `retention` says, unless it changed elsewhere
+/// since its `chat.md` held `revision`.
+fn keep(state: &mut State, chat: &str, revision: &str, retention: Retention) {
+    state.notice = ai::set_retention(chat, retention, revision)
+        .err()
+        .map(|error| reason(&error));
+}
+
+/// Answer your last message in the open chat again, with the provider you
+/// picked.
+fn resume(state: &mut State) {
+    let Some(chat) = state.chat.clone() else {
+        return;
+    };
+    state.notice = None;
+    let providers = ai::providers().unwrap_or_default();
+    let messages = ai::read_chat(&chat)
+        .map(|(_, messages)| messages)
+        .unwrap_or_default();
+    let Some(provider) = chosen_provider(state, &providers, &messages) else {
+        return;
+    };
+    match ai::resume(&chat, &provider, &offered_tools()) {
+        Ok(run) => {
+            state.runs.insert(chat, run.id);
+            state.provider = Some(provider);
+        }
+        Err(error) => state.notice = Some(reason(&error)),
+    }
+}
+
 /// Send `message` to the provider you picked, in the open chat or in a new
-/// one.
+/// one, offering the tools of the plugins on in the workspace.
 fn send(state: &mut State, message: String) {
     if message.trim().is_empty() {
         return;
@@ -300,7 +604,7 @@ fn send(state: &mut State, message: String) {
         chat: chat.clone(),
         provider: provider.clone(),
         message: message.clone(),
-        tools: Vec::new(),
+        tools: offered_tools(),
     };
     match ai::send(&request) {
         Ok(run) => {

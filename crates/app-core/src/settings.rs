@@ -50,6 +50,9 @@ pub mod settings_section {
     /// The AI providers on this device, their keys, and your consent for
     /// the open workspace.
     pub const AI: &str = "ai-providers";
+    /// The Brave Search key on this device, and your web consent for the
+    /// open workspace.
+    pub const WEB_SEARCH: &str = "web-search";
     /// The version, license, links and Copy diagnostics.
     pub const ABOUT: &str = "about";
     /// Check for updates, and where updating stands.
@@ -93,6 +96,11 @@ pub(crate) fn kernel_sections() -> Vec<SettingsSection> {
         (
             settings_section::AI,
             "AI providers",
+            SettingsGroup::ThisComputer,
+        ),
+        (
+            settings_section::WEB_SEARCH,
+            "Web search",
             SettingsGroup::ThisComputer,
         ),
         (

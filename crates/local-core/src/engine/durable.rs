@@ -37,20 +37,41 @@ pub(super) fn atomic_write_checked(
     expected_revision: Option<&str>,
     operation: &str,
 ) -> Result<()> {
+    atomic_write_checked_with(
+        root,
+        relative,
+        |file| {
+            file.write_all(bytes)
+                .map_err(|error| CoreError::io(error, operation, None))
+        },
+        expected_revision,
+        operation,
+    )
+}
+
+/// Like [`atomic_write_checked`], with the bytes that `write` puts into the
+/// temporary file, so a caller can stream a large file through it.
+pub(super) fn atomic_write_checked_with(
+    root: &Path,
+    relative: &Path,
+    write: impl FnOnce(&mut atomic_write_file::AtomicWriteFile) -> Result<()>,
+    expected_revision: Option<&str>,
+    operation: &str,
+) -> Result<()> {
     let destination = root.join(relative);
     if let Some(parent) = destination.parent() {
         create_folders(parent, operation)?;
     }
     let mut file = atomic_write_file::AtomicWriteFile::open(&destination)
         .map_err(|error| CoreError::io(error, operation, destination.to_str()))?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
+    write(&mut file)?;
+    file.sync_all()
         .map_err(|error| CoreError::io(error, operation, destination.to_str()))?;
     if let Some(expected) = expected_revision {
         let shown = relative.to_string_lossy().replace('\\', "/");
         // The file may have gone online-only since the caller read it.
-        let current = read_downloaded(&destination, &shown, operation)?;
-        check_revision(&current, expected, operation)?;
+        let current = revision_of_file(&destination, &shown, operation)?;
+        revision_matches(current, expected, operation)?;
     }
     file.commit()
         .map_err(|error| CoreError::io(error, operation, destination.to_str()))?;
@@ -165,7 +186,23 @@ pub(super) fn mtime_ns(path: &Path) -> i64 {
 }
 
 pub(super) fn check_revision(bytes: &[u8], expected: &str, operation: &str) -> Result<()> {
-    let current = markdown::revision(bytes);
+    revision_matches(markdown::revision(bytes), expected, operation)
+}
+
+/// The revision of the workspace file at `path`, which `relative` names,
+/// hashed as it streams from disk, so a large file never sits in memory.
+/// A file that lives only in the cloud fails with `file_not_downloaded`.
+pub(super) fn revision_of_file(path: &Path, relative: &str, operation: &str) -> Result<String> {
+    ensure_downloaded(path, relative, operation)?;
+    let file = File::open(path).map_err(|error| CoreError::io(error, operation, Some(relative)))?;
+    let mut hasher = blake3::Hasher::new();
+    hasher
+        .update_reader(file)
+        .map_err(|error| CoreError::io(error, operation, Some(relative)))?;
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+pub(super) fn revision_matches(current: String, expected: &str, operation: &str) -> Result<()> {
     if current != expected {
         let mut error = CoreError::new(
             "revision_conflict",

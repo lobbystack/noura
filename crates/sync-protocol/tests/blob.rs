@@ -2,7 +2,7 @@
 
 use sync_protocol::blob::{
     BlobError, CHUNK_LEN, SEGMENT_LEN, blob_ciphertext_len, ciphertext_digest, decrypt_blob,
-    encrypt_blob, is_valid_blob_ciphertext_len, nonce_prefix,
+    decrypt_blob_to, encrypt_blob, encrypt_blob_to, is_valid_blob_ciphertext_len, nonce_prefix,
 };
 use sync_protocol::crypto::{context, derive_key, hash};
 use sync_protocol::padding::padded_length;
@@ -112,5 +112,92 @@ fn a_wrong_key_fails_to_decrypt() {
     assert_eq!(
         decrypt_blob(&ciphertext, &blob_ref, None),
         Err(BlobError::Header)
+    );
+}
+
+/// A reader that hands out at most `step` bytes per call, as a file on a
+/// slow disk may.
+struct Trickle<'a> {
+    bytes: &'a [u8],
+    step: usize,
+}
+
+impl std::io::Read for Trickle<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.step.min(buf.len()).min(self.bytes.len());
+        buf[..n].copy_from_slice(&self.bytes[..n]);
+        self.bytes = &self.bytes[n..];
+        Ok(n)
+    }
+}
+
+#[test]
+fn streaming_gives_the_same_bytes_as_encrypting_in_memory() {
+    for len in [0, 1_000, CHUNK_LEN - 8, CHUNK_LEN * 3 + 17, SEGMENT_LEN + 5] {
+        let bytes = file(len);
+        let (ciphertext, blob_ref) = encrypt_blob(&bytes, BLOB, key()).unwrap();
+        let mut streamed = Vec::new();
+        let reader = Trickle {
+            bytes: &bytes,
+            step: 7_001,
+        };
+        let (streamed_ref, file_hash) =
+            encrypt_blob_to(reader, len as u64, BLOB, key(), &mut streamed).unwrap();
+        assert_eq!(streamed, ciphertext, "{len} bytes");
+        assert_eq!(streamed_ref, blob_ref);
+        assert_eq!(file_hash, hash(&bytes));
+
+        let mut opened = Vec::new();
+        let reader = Trickle {
+            bytes: &ciphertext,
+            step: 5_003,
+        };
+        assert_eq!(
+            decrypt_blob_to(reader, &blob_ref, &mut opened),
+            Ok(hash(&bytes))
+        );
+        assert!(opened == bytes, "{len} bytes");
+    }
+}
+
+#[test]
+fn a_file_that_changes_length_while_it_streams_fails() {
+    let bytes = file(5_000);
+    let mut out = Vec::new();
+    assert_eq!(
+        encrypt_blob_to(&bytes[..], 5_001, BLOB, key(), &mut out).map(|_| ()),
+        Err(BlobError::FileChanged)
+    );
+    assert_eq!(
+        encrypt_blob_to(&bytes[..], 4_999, BLOB, key(), &mut out).map(|_| ()),
+        Err(BlobError::FileChanged)
+    );
+}
+
+#[test]
+fn streaming_decryption_refuses_short_long_and_corrupt_ciphertext() {
+    let (ciphertext, blob_ref) = encrypt_blob(&file(CHUNK_LEN * 2), BLOB, key()).unwrap();
+    let mut out = Vec::new();
+    assert_eq!(
+        decrypt_blob_to(&ciphertext[..ciphertext.len() - 1], &blob_ref, &mut out),
+        Err(BlobError::Length)
+    );
+    let mut longer = ciphertext.clone();
+    longer.push(0);
+    assert_eq!(
+        decrypt_blob_to(&longer[..], &blob_ref, &mut out),
+        Err(BlobError::Length)
+    );
+    let mut corrupt = ciphertext.clone();
+    corrupt[CHUNK_LEN + 200] ^= 1;
+    assert_eq!(
+        decrypt_blob_to(&corrupt[..], &blob_ref, &mut out),
+        Err(BlobError::Decrypt)
+    );
+    let mut shorter = blob_ref;
+    shorter.plaintext_length -= 1;
+    assert_eq!(
+        decrypt_blob_to(&ciphertext[..], &shorter, &mut Vec::new()),
+        Err(BlobError::PlaintextLength)
     );
 }

@@ -11,9 +11,10 @@ use sync_protocol::messages::DeviceRemovedDetail;
 use sync_protocol::records::{AccountHead, OpClass, Ref};
 use sync_protocol::types::{Digest, Id, Key};
 use sync_store::{
-    ApprovalRequestRow, CeremonyKind, CeremonyRow, ChainHeadRow, DeleteRow, DeviceGrantRow,
-    DomainRow, EpochRow, Error, KeyRow, LinkRow, LockPlan, OfferRow, PasskeyRow, PendingPasskeyRow,
-    RawEntry, ReadTxn, RemovedBy, Result, RewrapRow, Session, SessionRow, WorkspaceRow, WriteTxn,
+    ApprovalRequestRow, BlobRow, CeremonyKind, CeremonyRow, ChainHeadRow, DeleteRow,
+    DeviceGrantRow, DomainRow, EpochRow, Error, KeyRow, LinkRow, LockPlan, OfferRow, PasskeyRow,
+    PendingPasskeyRow, RawEntry, ReadTxn, RemovedBy, Result, RewrapRow, Session, SessionRow,
+    WorkspaceRow, WriteTxn,
 };
 
 /// One transaction: a read-only REPEATABLE READ snapshot for reads, or a
@@ -1222,6 +1223,59 @@ impl ReadTxn for PgTxn {
         .map_err(db)?;
         row.map(|r| id(r.account)).transpose()
     }
+
+    async fn blob(&mut self, workspace: Id, blob: Id) -> Result<Option<BlobRow>> {
+        let workspace = &workspace.0[..];
+        let blob_id = &blob.0[..];
+        let row = sqlx::query!(
+            "SELECT domain, device, length, digest, upload_offset, complete FROM blobs WHERE workspace = $1 AND blob = $2",
+            workspace,
+            blob_id
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| {
+            Ok(BlobRow {
+                blob,
+                domain: id(r.domain)?,
+                device: id(r.device)?,
+                length: uint(r.length)?,
+                digest: digest(r.digest)?,
+                offset: uint(r.upload_offset)?,
+                complete: r.complete,
+            })
+        })
+        .transpose()
+    }
+
+    async fn blob_segments(&mut self, workspace: Id, blob: Id) -> Result<Vec<Digest>> {
+        let workspace = &workspace.0[..];
+        let blob = &blob.0[..];
+        let rows = sqlx::query!(
+            "SELECT hash FROM blob_segments WHERE workspace = $1 AND blob = $2 ORDER BY idx",
+            workspace,
+            blob
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter().map(|r| digest(r.hash)).collect()
+    }
+
+    async fn blob_listed(&mut self, workspace: Id, blob: Id) -> Result<bool> {
+        let workspace = &workspace.0[..];
+        let blob = &blob.0[..];
+        let row = sqlx::query!(
+            "SELECT seq FROM blob_listings WHERE workspace = $1 AND blob = $2 LIMIT 1",
+            workspace,
+            blob
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        Ok(row.is_some())
+    }
 }
 
 fn kind_code(kind: CeremonyKind) -> i16 {
@@ -1287,9 +1341,24 @@ impl WriteTxn for PgTxn {
                 .await
                 .map_err(db)?;
             }
+            // The blobs' rows, in blob-ID order after the head rows. A blob
+            // a creation inserts has no row yet; its primary key then
+            // serializes two creations under one ID.
+            let mut blobs = plan.blobs.clone();
+            blobs.sort();
+            blobs.dedup();
+            for blob in &blobs {
+                let blob = &blob.0[..];
+                sqlx::query!(
+                    "SELECT complete FROM blobs WHERE workspace = $1 AND blob = $2 FOR UPDATE",
+                    workspace,
+                    blob
+                )
+                .fetch_optional(self.c())
+                .await
+                .map_err(db)?;
+            }
         }
-        // Blob rows arrive with ticket 49, which locks them here in blob-ID
-        // order after the head rows.
         Ok(())
     }
 
@@ -2394,5 +2463,114 @@ impl WriteTxn for PgTxn {
             .map_err(db)?
             .rows_affected();
         Ok(deleted)
+    }
+
+    async fn insert_blob(&mut self, workspace: Id, row: &BlobRow) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let blob = &row.blob.0[..];
+        let domain = &row.domain.0[..];
+        let device = &row.device.0[..];
+        let length = int(row.length)?;
+        let digest = &row.digest.0[..];
+        let offset = int(row.offset)?;
+        let complete = row.complete;
+        sqlx::query!(
+            "INSERT INTO blobs (workspace, blob, domain, device, length, digest, upload_offset, complete) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            workspace,
+            blob,
+            domain,
+            device,
+            length,
+            digest,
+            offset,
+            complete
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn append_blob_segment(
+        &mut self,
+        workspace: Id,
+        blob: Id,
+        index: u64,
+        hash: Digest,
+        offset: u64,
+        complete: bool,
+    ) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let blob = &blob.0[..];
+        let index = int(index)?;
+        let hash = &hash.0[..];
+        let offset = int(offset)?;
+        sqlx::query!(
+            "INSERT INTO blob_segments (workspace, blob, idx, hash) VALUES ($1, $2, $3, $4)",
+            workspace,
+            blob,
+            index,
+            hash
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        sqlx::query!(
+            "UPDATE blobs SET upload_offset = $3, complete = $4 WHERE workspace = $1 AND blob = $2",
+            workspace,
+            blob,
+            offset,
+            complete
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn delete_blob(&mut self, workspace: Id, blob: Id) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let blob = &blob.0[..];
+        sqlx::query!(
+            "DELETE FROM blob_segments WHERE workspace = $1 AND blob = $2",
+            workspace,
+            blob
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        sqlx::query!(
+            "DELETE FROM blobs WHERE workspace = $1 AND blob = $2",
+            workspace,
+            blob
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn insert_blob_listing(
+        &mut self,
+        workspace: Id,
+        blob: Id,
+        domain: Id,
+        seq: u64,
+    ) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let blob = &blob.0[..];
+        let domain = &domain.0[..];
+        let seq = int(seq)?;
+        sqlx::query!(
+            "INSERT INTO blob_listings (workspace, blob, domain, seq) VALUES ($1, $2, $3, $4)",
+            workspace,
+            blob,
+            domain,
+            seq
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
     }
 }

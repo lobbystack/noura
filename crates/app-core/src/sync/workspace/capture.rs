@@ -93,15 +93,16 @@ pub(crate) fn object_id_of(path: &str, bytes: &[u8]) -> String {
     }
 }
 
-/// What a walk found, against the journal's `objects`. `read` reads a
-/// file's bytes; `held` names objects that take no change for now, such
+/// What a walk found, against the journal's `objects`. `read` returns a
+/// file's revision, and its bytes when it read them, which it does for
+/// Markdown files and files that fit inline; `held` names objects that take no change for now, such
 /// as one under review.
 pub(crate) fn changes(
     listing: &SyncedListing,
     objects: &BTreeMap<Id, Object>,
     held: &BTreeSet<Id>,
     held_root: impl Fn(&str) -> bool,
-    mut read: impl FnMut(&str) -> Option<Vec<u8>>,
+    mut read: impl FnMut(&SyncedFile) -> Option<(Digest, Option<Vec<u8>>)>,
 ) -> (Vec<Change>, Vec<Skipped>) {
     let mut skipped: Vec<Skipped> = listing
         .skipped
@@ -162,7 +163,7 @@ pub(crate) fn changes(
             ));
             continue;
         }
-        let Some(bytes) = read(path) else {
+        let Some((revision, bytes)) = read(file) else {
             skipped.push(Skipped {
                 path: path.to_owned(),
                 why: SkipWhy::Unreadable,
@@ -174,9 +175,12 @@ pub(crate) fn changes(
             known,
             Found {
                 file: file.clone(),
-                revision: sync_protocol::crypto::hash(&bytes),
-                object_id: object_id_of(path, &bytes),
-                bytes: Some(bytes),
+                revision,
+                object_id: bytes
+                    .as_deref()
+                    .map(|bytes| object_id_of(path, bytes))
+                    .unwrap_or_default(),
+                bytes,
             },
         ));
     }
@@ -339,7 +343,11 @@ mod tests {
             objects,
             &BTreeSet::new(),
             |_| false,
-            |p| files.get(p).cloned(),
+            |f| {
+                files
+                    .get(&f.relative_path)
+                    .map(|b| (sync_protocol::crypto::hash(b), Some(b.clone())))
+            },
         )
     }
 

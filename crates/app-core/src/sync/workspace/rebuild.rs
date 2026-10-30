@@ -20,7 +20,7 @@ use sync_protocol::matching::{LiveObject, LiveState, LocalFile, Matched, match_f
 use sync_protocol::types::{Digest, Id};
 
 use super::capture::{Found, object_id_of};
-use super::settle::free_name;
+use super::settle::{Bodies, Body, free_name};
 use super::state::{Held, OpKey, State};
 use super::{SyncError, SyncService, WorkspaceSync, core, profile_of};
 use crate::sync::journal::{self, Journal, STATE_FILE};
@@ -217,12 +217,17 @@ impl WorkspaceSync {
             {
                 continue;
             }
-            let Ok(Some(bytes)) = self.engine.read_synced(&file.relative_path) else {
+            let Some((revision, bytes)) =
+                super::read_for_sync(&self.engine, &file.relative_path, file.size)
+            else {
                 continue;
             };
             locals.push(Found {
-                revision: hash(&bytes),
-                object_id: object_id_of(&file.relative_path, &bytes),
+                revision,
+                object_id: bytes
+                    .as_deref()
+                    .map(|bytes| object_id_of(&file.relative_path, bytes))
+                    .unwrap_or_default(),
                 file,
                 bytes: None,
             });
@@ -281,12 +286,7 @@ impl WorkspaceSync {
 
     /// Takes a matched local file as `rid`'s: adopted when it equals a live
     /// state in path and revision, else held for review.
-    fn adopt_match(
-        &mut self,
-        rid: Id,
-        found: Found,
-        cache: &BTreeMap<Digest, Vec<u8>>,
-    ) -> Result<(), SyncError> {
+    fn adopt_match(&mut self, rid: Id, found: Found, cache: &Bodies) -> Result<(), SyncError> {
         let live = self.live_contents(&rid);
         let local = found.local();
         let same = live
@@ -323,14 +323,9 @@ impl WorkspaceSync {
         let live = self.live_contents(&rid);
         match choice {
             HeldChoice::KeepMine => {
-                let bytes = self
-                    .engine
-                    .read_synced(&held.path)
-                    .map_err(core)?
-                    .ok_or_else(|| SyncError::Invalid("the file went away".into()))?;
                 let view: BTreeSet<OpKey> = self.live_states(&rid).into_iter().collect();
                 let covers = self.covers_of(&rid, &view);
-                let found = self.found_at(&held.path, bytes)?;
+                let found = self.found_on_disk(&held.path)?;
                 self.state.held.remove(&rid);
                 self.sign_file(rid, &found, covers)?;
             }
@@ -339,18 +334,35 @@ impl WorkspaceSync {
                 self.adopt_live(rid, &live)?;
             }
             HeldChoice::KeepBoth => {
-                let bytes = self
-                    .engine
-                    .read_synced(&held.path)
-                    .map_err(core)?
-                    .ok_or_else(|| SyncError::Invalid("the file went away".into()))?;
                 let root = self.engine.root().to_owned();
                 let taken = |candidate: &str| root.join(candidate).exists();
                 let copy = free_name(&held.path, &taken);
-                let copied = new_identity(&copy, &bytes)?;
-                self.engine
-                    .write_synced(&copy, &copied, &SyncedExpect::Absent)
-                    .map_err(core)?;
+                if copy.ends_with(".md") {
+                    let bytes = self
+                        .engine
+                        .read_synced(&held.path)
+                        .map_err(core)?
+                        .ok_or_else(|| SyncError::Invalid("the file went away".into()))?;
+                    let copied = new_identity(&copy, &bytes)?;
+                    self.engine
+                        .write_synced(&copy, &copied, &SyncedExpect::Absent)
+                        .map_err(core)?;
+                } else {
+                    // Any other file keeps its bytes, which stream across.
+                    let revision = self
+                        .engine
+                        .hash_synced(&held.path)
+                        .map_err(core)?
+                        .ok_or_else(|| SyncError::Invalid("the file went away".into()))?;
+                    self.engine
+                        .write_synced_from(
+                            &copy,
+                            &root.join(&held.path),
+                            &revision,
+                            &SyncedExpect::Absent,
+                        )
+                        .map_err(core)?;
+                }
                 self.state.held.remove(&rid);
                 self.adopt_live(rid, &live)?;
             }
@@ -379,19 +391,14 @@ impl WorkspaceSync {
             object.base = Some(key);
             return Ok(());
         }
-        let bytes = self.content_bytes(&rid, &key, &BTreeMap::new())?;
-        self.place(&rid, &content.path, &bytes)?;
+        let body = self.content_body(&rid, &key, &BTreeMap::new())?;
+        self.place(&rid, &content.path, &body, content.revision)?;
         self.state.objects.get_mut(&rid).expect("listed").base = Some(key);
         Ok(())
     }
 
     /// Keeps a live branch's bytes in the review store, for a held object.
-    fn keep_branch(
-        &mut self,
-        rid: &Id,
-        key: &OpKey,
-        cache: &BTreeMap<Digest, Vec<u8>>,
-    ) -> Result<(), SyncError> {
+    fn keep_branch(&mut self, rid: &Id, key: &OpKey, cache: &Bodies) -> Result<(), SyncError> {
         let object = &self.state.objects[rid];
         let Some(content) = object.states.get(key).and_then(|s| s.content.clone()) else {
             return Ok(());
@@ -399,7 +406,7 @@ impl WorkspaceSync {
         if content.delete || content.kept.is_some() {
             return Ok(());
         }
-        let Ok(bytes) = self.content_bytes(rid, key, cache) else {
+        let Ok(body) = self.content_body(rid, key, cache) else {
             return Ok(());
         };
         let relative = format!(
@@ -408,7 +415,12 @@ impl WorkspaceSync {
             rid.to_hex(),
             object.states[key].digest.to_hex()
         );
-        self.journal.keep(&relative, &bytes)?;
+        match &body {
+            Body::Bytes(bytes) => self.journal.keep(&relative, bytes)?,
+            Body::File(source) => self
+                .journal
+                .keep_file(&relative, source, &content.revision)?,
+        }
         if let Some(content) = self
             .state
             .objects

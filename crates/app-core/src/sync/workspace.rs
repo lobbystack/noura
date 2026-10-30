@@ -46,6 +46,7 @@ use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 
 use capture::{Change, Found};
 pub use capture::{SkipWhy, Skipped};
+use settle::{Bodies, Body};
 pub use state::Ended;
 use state::{
     Content as Carried, Held, Log, Object, OpKey, Outgoing, Own, ProfileMark, State, StateInfo,
@@ -153,7 +154,7 @@ pub struct WorkspaceSync {
     /// a sync without the journal (§15).
     matching: bool,
     /// The files those pulls carried, by revision, until the matching.
-    cache: BTreeMap<Digest, Vec<u8>>,
+    cache: Bodies,
     /// The latest policy entry before an epoch entry the device hasn't
     /// accepted yet, from the page that carried it (§9, Envelopes).
     entry_hint: Option<u64>,
@@ -599,6 +600,7 @@ impl WorkspaceSync {
             delete: true,
             object_id: String::new(),
             kept: None,
+            blob: None,
         };
         self.sign(rid, false, covers, &payload, carried)?;
         self.save()
@@ -1192,7 +1194,7 @@ impl WorkspaceSync {
             &self.state.objects,
             &held,
             |path| roots.iter().any(|root| rebuild::beneath(path, root)),
-            |path| engine.read_synced(path).ok().flatten(),
+            |file| read_for_sync(&engine, &file.relative_path, file.size),
         );
         let mut signed = rewritten;
         for change in changes {
@@ -1203,11 +1205,7 @@ impl WorkspaceSync {
                     }
                 }
                 Change::Create(found) => {
-                    if !capture::fits_inline(
-                        &found.file.relative_path,
-                        &found.object_id,
-                        found.file.size,
-                    ) {
+                    if found.file.size > sync_protocol::blob::MAX_BLOB_FILE {
                         skipped.push(Skipped {
                             path: found.file.relative_path.clone(),
                             why: SkipWhy::TooLarge,
@@ -1226,11 +1224,7 @@ impl WorkspaceSync {
                     signed += 1;
                 }
                 Change::Update { rid, found } => {
-                    if !capture::fits_inline(
-                        &found.file.relative_path,
-                        &found.object_id,
-                        found.file.size,
-                    ) {
+                    if found.file.size > sync_protocol::blob::MAX_BLOB_FILE {
                         skipped.push(Skipped {
                             path: found.file.relative_path.clone(),
                             why: SkipWhy::TooLarge,
@@ -1254,10 +1248,9 @@ impl WorkspaceSync {
             let Some(local) = self.state.objects[&rid].local.clone() else {
                 continue;
             };
-            let Ok(Some(bytes)) = self.engine.read_synced(&local.path) else {
+            let Ok(found) = self.found_on_disk(&local.path) else {
                 continue;
             };
-            let found = self.found_at(&local.path, bytes)?;
             let covers = self.edit_covers(&rid);
             self.sign_file(rid, &found, covers)?;
             signed += 1;
@@ -1339,16 +1332,33 @@ impl WorkspaceSync {
     }
 
     fn sign_file(&mut self, rid: Id, found: &Found, covers: Vec<Cover>) -> Result<(), SyncError> {
-        let bytes = match &found.bytes {
-            Some(bytes) => bytes.clone(),
-            None => self
-                .engine
-                .read_synced(&found.file.relative_path)
-                .map_err(core)?
-                .ok_or_else(|| SyncError::Invalid("the file went away".into()))?,
-        };
         let path = SyncPath::new(found.file.relative_path.clone())
             .map_err(|e| SyncError::Invalid(format!("path: {}", e.name())))?;
+        let size = found
+            .bytes
+            .as_ref()
+            .map_or(found.file.size, |bytes| bytes.len() as u64);
+        let (content, blob, upload) =
+            if capture::fits_inline(&found.file.relative_path, &found.object_id, size) {
+                let bytes = match &found.bytes {
+                    Some(bytes) => bytes.clone(),
+                    None => self
+                        .engine
+                        .read_synced(&found.file.relative_path)
+                        .map_err(core)?
+                        .ok_or_else(|| SyncError::Invalid("the file went away".into()))?,
+                };
+                (
+                    Content::Inline {
+                        bytes: Bytes(bytes),
+                    },
+                    None,
+                    None,
+                )
+            } else {
+                let (blob, upload) = self.blob_for(rid, found)?;
+                (Content::Blob(blob.clone()), Some(blob), upload)
+            };
         let payload = Payload {
             rid,
             kind: PayloadKind::File {
@@ -1356,9 +1366,7 @@ impl WorkspaceSync {
                     .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
                 path,
                 revision: found.revision,
-                content: Content::Inline {
-                    bytes: Bytes(bytes),
-                },
+                content,
                 origin: None,
             },
         };
@@ -1368,13 +1376,116 @@ impl WorkspaceSync {
             delete: false,
             object_id: found.object_id.clone(),
             kept: None,
+            blob,
         };
         let key = self.sign(rid, false, covers, &payload, carried)?;
+        if let Some(outgoing) = self.state.outbox.last_mut() {
+            outgoing.upload = upload;
+        }
         let object = self.state.objects.get_mut(&rid).expect("signed for it");
         object.local = Some(found.local());
         object.object_id = found.object_id.clone();
         object.base = Some(key);
         object.cover_all = false;
+        Ok(())
+    }
+
+    /// The blob for `found`'s bytes (§21). A state of the object that
+    /// already carries those bytes in a blob lends its `blob_ref`, so a move
+    /// inside the domain uploads nothing. Otherwise the bytes go into a new
+    /// blob under a fresh key, encrypted as they stream from the file, or
+    /// from memory when the walk read them, into the journal, which keeps
+    /// the ciphertext until the upload completes; the second value is that
+    /// pending upload. A file whose bytes no longer hash to `found`'s
+    /// revision fails, and the next round captures it again.
+    fn blob_for(
+        &self,
+        rid: Id,
+        found: &Found,
+    ) -> Result<
+        (
+            sync_protocol::records::BlobRef,
+            Option<sync_protocol::records::BlobRef>,
+        ),
+        SyncError,
+    > {
+        let revision = found.revision;
+        if let Some(object) = self.state.objects.get(&rid)
+            && let Some(blob) = object
+                .states
+                .values()
+                .filter_map(|state| state.content.as_ref())
+                .find(|content| content.revision == revision && content.blob.is_some())
+                .and_then(|content| content.blob.clone())
+        {
+            return Ok((blob, None));
+        }
+        let blob = random(Id::random())?;
+        let key = random(SecretKey::random())?;
+        let encrypt = |out: &mut dyn std::io::Write| -> Result<_, SyncError> {
+            let result = match &found.bytes {
+                Some(bytes) => sync_protocol::blob::encrypt_blob_to(
+                    &bytes[..],
+                    bytes.len() as u64,
+                    blob,
+                    key,
+                    out,
+                ),
+                None => {
+                    let file = self
+                        .engine
+                        .open_synced(&found.file.relative_path)
+                        .map_err(core)?
+                        .ok_or_else(|| SyncError::Invalid("the file went away".into()))?;
+                    let len = file
+                        .metadata()
+                        .map_err(|e| SyncError::Invalid(format!("can't read the file: {e}")))?
+                        .len();
+                    sync_protocol::blob::encrypt_blob_to(
+                        std::io::BufReader::with_capacity(1 << 16, file),
+                        len,
+                        blob,
+                        key,
+                        out,
+                    )
+                }
+            };
+            let (blob_ref, file_hash) = result.map_err(|e| SyncError::Invalid(e.to_string()))?;
+            if file_hash != revision {
+                return Err(SyncError::Invalid(
+                    "the file changed while sync read it".into(),
+                ));
+            }
+            Ok(blob_ref)
+        };
+        let upload = state::upload_path(&blob);
+        let blob_ref = match self.journal.keep_with(&upload, encrypt) {
+            Ok(blob_ref) => blob_ref,
+            Err(error) => {
+                self.journal.forget(&upload);
+                return Err(error);
+            }
+        };
+        Ok((blob_ref.clone(), Some(blob_ref)))
+    }
+
+    /// Uploads each blob the outbox's records list that hasn't reached the
+    /// server yet, and drops its ciphertext from the journal once the
+    /// upload completes (§21).
+    async fn upload_blobs(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
+        for index in 0..self.state.outbox.len() {
+            let Some(blob) = self.state.outbox[index].upload.clone() else {
+                continue;
+            };
+            let path = self.journal.dir().join(state::upload_path(&blob.blob));
+            service
+                .client()
+                .upload_blob(self.state.workspace, self.state.domain, &blob, &path)
+                .await?;
+            self.state.outbox[index].upload = None;
+            self.save()?;
+            self.journal.forget(&state::upload_path(&blob.blob));
+        }
         Ok(())
     }
 
@@ -1397,6 +1508,7 @@ impl WorkspaceSync {
             delete: true,
             object_id: object.object_id.clone(),
             kept: None,
+            blob: None,
         };
         let key = self.sign(rid, true, covers, &payload, carried)?;
         let object = self.state.objects.get_mut(&rid).expect("signed for it");
@@ -1453,6 +1565,7 @@ impl WorkspaceSync {
             record: signed,
             reseals: 0,
             rewrite: false,
+            upload: None,
         });
         Ok(key)
     }
@@ -1500,7 +1613,8 @@ impl WorkspaceSync {
             rid,
             delete,
             supersedes: Sorted::new(covers).map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
-            blobs: Sorted::default(),
+            blobs: Sorted::new(listed_blobs(payload))
+                .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
             nonce: Nonce::ZERO,
             ciphertext: Bytes(Vec::new()),
         };
@@ -1637,6 +1751,7 @@ impl WorkspaceSync {
             self.reseal_from(index, true)?;
             self.save()?;
         }
+        self.upload_blobs(service).await?;
         while !self.state.outbox.is_empty() {
             // At the re-seal cap the device signs nothing more there, but
             // retries the last attempt's bytes (§14).
@@ -1993,23 +2108,23 @@ impl WorkspaceSync {
             if content.delete {
                 self.sign_delete(rid, covers)?;
             } else {
-                let bytes = self.content_bytes(&rid, &key, &BTreeMap::new())?;
+                let body = self.content_body(&rid, &key, &BTreeMap::new())?;
                 let path = self.state.objects[&rid]
                     .local
                     .as_ref()
                     .map_or(content.path.clone(), |l| l.path.clone());
-                let found = match self.found_at(&path, bytes.clone()) {
-                    Ok(found) => found,
-                    Err(_) => Found {
+                let found = match self.found_on_disk(&path) {
+                    Ok(found) if found.revision == content.revision => found,
+                    _ => Found {
                         file: local_core::SyncedFile {
                             relative_path: content.path.clone(),
-                            size: bytes.len() as u64,
+                            size: body.len(),
                             modified_ns: 0,
                             file_id: None,
                         },
-                        revision: hash(&bytes),
+                        revision: content.revision,
                         object_id: content.object_id.clone(),
-                        bytes: Some(bytes),
+                        bytes: body.bytes().map(<[u8]>::to_vec),
                     },
                 };
                 self.sign_file(rid, &found, covers)?;
@@ -2179,7 +2294,10 @@ impl WorkspaceSync {
             Some(checked) => checked,
             None => return Ok((0, true)),
         };
-        let applied = self.apply(checked)?;
+        let fetched = self.fetch_blobs(service, &checked).await?;
+        let applied = self.apply(checked, fetched);
+        self.clear_downloads();
+        let applied = applied?;
         // Objects a file in their way held back before get another try.
         if !self.matching {
             for rid in self.unsettled() {
@@ -2362,12 +2480,12 @@ impl WorkspaceSync {
 
     /// Applies a checked page: records each state in the journal, then
     /// brings each touched object's file in line with its live set.
-    fn apply(&mut self, checked: Checked) -> Result<usize, SyncError> {
+    fn apply(&mut self, checked: Checked, fetched: Bodies) -> Result<usize, SyncError> {
         let own = self.credentials.keys.device();
         let Checked { log, records } = checked;
         self.state.log = log;
         let mut touched: Vec<Id> = Vec::new();
-        let mut contents: BTreeMap<Digest, Vec<u8>> = BTreeMap::new();
+        let mut contents: Bodies = fetched;
         let mut applied = 0;
         for record in records {
             let op = &record.op;
@@ -2430,6 +2548,109 @@ impl WorkspaceSync {
             self.settle(rid, &contents)?;
         }
         Ok(applied)
+    }
+
+    /// Fetches the blobs a checked page's records carry before the page
+    /// applies (§18, §21). Each one streams into the journal's
+    /// `downloads/` folder, where its segment hashes, `plaintext_length` and
+    /// revision are checked before any file in the workspace changes. A
+    /// file this device holds at the payload's revision lends its bytes
+    /// instead: the object's own file is used where it is, and another
+    /// object's file, such as the original of a copy, is copied into
+    /// `downloads/` and hashed again as it is copied, else the blob
+    /// downloads. A blob that fails a check fails the pull, and the cursor
+    /// stays where it was.
+    async fn fetch_blobs(
+        &mut self,
+        service: &mut SyncService,
+        checked: &Checked,
+    ) -> Result<Bodies, SyncError> {
+        self.clear_downloads();
+        let own = self.credentials.keys.device();
+        let downloads = self.journal.dir().join(journal::DOWNLOADS);
+        let mut fetched = Bodies::new();
+        for record in &checked.records {
+            let Some(Payload {
+                kind:
+                    PayloadKind::File {
+                        revision,
+                        content: Content::Blob(blob),
+                        ..
+                    },
+                ..
+            }) = &record.payload
+            else {
+                continue;
+            };
+            let rid = record.op.body.rid;
+            let key = OpKey {
+                device: record.op.body.device,
+                counter: record.op.body.counter,
+            };
+            let object = self.state.objects.get(&rid);
+            // This device's own record, which the journal still holds: its
+            // file holds it, or the review store does.
+            if key.device == own && object.is_some_and(|o| o.states.contains_key(&key)) {
+                continue;
+            }
+            if fetched.contains_key(revision) {
+                continue;
+            }
+            let holds = |local: &state::Local| {
+                local.revision == *revision
+                    && self.engine.hash_synced(&local.path).ok().flatten()
+                        == Some(revision.to_hex())
+            };
+            if object.and_then(|o| o.local.as_ref()).is_some_and(holds) {
+                continue;
+            }
+            let lent = self
+                .state
+                .objects
+                .iter()
+                .filter(|(other, _)| **other != rid)
+                .filter_map(|(_, o)| o.local.as_ref())
+                .filter(|local| local.revision == *revision)
+                .find_map(|local| {
+                    let copy = downloads.join(format!("{}.copy", revision.to_hex()));
+                    copy_checked(&self.engine.root().join(&local.path), &copy, revision)
+                        .then_some(copy)
+                });
+            let path = match lent {
+                Some(path) => path,
+                None => {
+                    service
+                        .client()
+                        .download_blob(self.state.workspace, blob, Some(revision), &downloads)
+                        .await?
+                }
+            };
+            fetched.insert(*revision, Body::File(path));
+        }
+        Ok(fetched)
+    }
+
+    /// Removes the files in the journal's `downloads/` folder that no
+    /// matching still waits for.
+    fn clear_downloads(&self) {
+        let downloads = self.journal.dir().join(journal::DOWNLOADS);
+        let waiting: BTreeSet<&std::path::PathBuf> = self
+            .cache
+            .values()
+            .filter_map(|body| match body {
+                Body::File(path) => Some(path),
+                Body::Bytes(_) => None,
+            })
+            .collect();
+        for entry in std::fs::read_dir(&downloads)
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            if !waiting.contains(&entry.path()) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
     }
 
     /// Lists the objects in conflict (§16).
@@ -2509,18 +2730,21 @@ impl WorkspaceSync {
             self.state.objects.get_mut(&rid).expect("checked").local = None;
             self.sign_delete(rid, covers)?;
         } else {
-            let bytes = self.content_bytes(&rid, &chosen, &BTreeMap::new())?;
-            self.place(&rid, &content.path, &bytes)?;
-            let found = self.found_at(&content.path, bytes)?;
+            let body = self.content_body(&rid, &chosen, &BTreeMap::new())?;
+            self.place(&rid, &content.path, &body, content.revision)?;
+            let found = self.found_on_disk(&content.path)?;
             self.sign_file(rid, &found, covers)?;
         }
         self.save()
     }
 
-    /// The bytes of a file the journal saw at `path`, as the walk would
-    /// find them.
-    fn found_at(&self, path: &str, bytes: Vec<u8>) -> Result<Found, SyncError> {
+    /// The file at `path`, as the walk would find it: its bytes when it's
+    /// Markdown or fits inline, else only its revision, hashed as it
+    /// streams.
+    fn found_on_disk(&self, path: &str) -> Result<Found, SyncError> {
         let (size, modified_ns, file_id) = stat(self.engine.root(), path)
+            .ok_or_else(|| SyncError::Invalid("the file went away".into()))?;
+        let (revision, bytes) = read_for_sync(&self.engine, path, size)
             .ok_or_else(|| SyncError::Invalid("the file went away".into()))?;
         Ok(Found {
             file: local_core::SyncedFile {
@@ -2529,10 +2753,30 @@ impl WorkspaceSync {
                 modified_ns,
                 file_id,
             },
-            revision: hash(&bytes),
-            object_id: capture::object_id_of(path, &bytes),
-            bytes: Some(bytes),
+            revision,
+            object_id: bytes
+                .as_deref()
+                .map(|bytes| capture::object_id_of(path, bytes))
+                .unwrap_or_default(),
+            bytes,
         })
+    }
+}
+
+/// What sync needs of the file at `path`, whose size is `size`: its
+/// revision, and its bytes when it's Markdown or fits inline. A larger file
+/// is hashed as it streams, so an attachment never sits in memory.
+pub(super) fn read_for_sync(
+    engine: &WorkspaceEngine,
+    path: &str,
+    size: u64,
+) -> Option<(Digest, Option<Vec<u8>>)> {
+    if path.ends_with(".md") || capture::fits_inline(path, "", size) {
+        let bytes = engine.read_synced(path).ok().flatten()?;
+        Some((hash(&bytes), Some(bytes)))
+    } else {
+        let revision = engine.hash_synced(path).ok().flatten()?;
+        Some((Digest::from_hex(&revision)?, None))
     }
 }
 
@@ -2667,9 +2911,49 @@ fn check_operation(
     })))
 }
 
+/// Copies the file at `from` to `to`, streaming, and reports whether its
+/// bytes hashed to `revision`; a copy that doesn't is removed.
+fn copy_checked(from: &Path, to: &Path, revision: &Digest) -> bool {
+    let copied = (|| -> std::io::Result<bool> {
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut reader = std::fs::File::open(from)?;
+        let mut writer = std::io::BufWriter::new(std::fs::File::create(to)?);
+        let mut hasher = blake3::Hasher::new();
+        let mut buffer = vec![0u8; 1 << 16];
+        loop {
+            let n = std::io::Read::read(&mut reader, &mut buffer)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buffer[..n]);
+            std::io::Write::write_all(&mut writer, &buffer[..n])?;
+        }
+        std::io::Write::flush(&mut writer)?;
+        Ok(Digest(*hasher.finalize().as_bytes()) == *revision)
+    })();
+    if copied.as_ref().is_ok_and(|same| *same) {
+        return true;
+    }
+    let _ = std::fs::remove_file(to);
+    false
+}
+
+/// The blobs a payload references, which its operation lists (§21).
+fn listed_blobs(payload: &Payload) -> Vec<Id> {
+    match &payload.kind {
+        PayloadKind::File {
+            content: Content::Blob(blob),
+            ..
+        } => vec![blob.blob],
+        _ => Vec::new(),
+    }
+}
+
 /// What a payload carries, keeping a file's bytes in `contents` by the
 /// revision they hash to.
-fn carried(payload: &Payload, contents: &mut BTreeMap<Digest, Vec<u8>>) -> Option<Carried> {
+fn carried(payload: &Payload, contents: &mut Bodies) -> Option<Carried> {
     match &payload.kind {
         PayloadKind::File {
             object_id,
@@ -2681,13 +2965,14 @@ fn carried(payload: &Payload, contents: &mut BTreeMap<Digest, Vec<u8>>) -> Optio
             if hash(&bytes.0) != *revision {
                 return None;
             }
-            contents.insert(*revision, bytes.0.clone());
+            contents.insert(*revision, Body::Bytes(bytes.0.clone()));
             Some(Carried {
                 path: path.as_str().to_owned(),
                 revision: *revision,
                 delete: false,
                 object_id: object_id.0.clone(),
                 kept: None,
+                blob: None,
             })
         }
         PayloadKind::Delete {
@@ -2700,8 +2985,23 @@ fn carried(payload: &Payload, contents: &mut BTreeMap<Digest, Vec<u8>>) -> Optio
             delete: true,
             object_id: object_id.0.clone(),
             kept: None,
+            blob: None,
         }),
-        // Attachments (ticket 49) and text mode (ticket 55) come later.
+        PayloadKind::File {
+            object_id,
+            path,
+            revision,
+            content: Content::Blob(blob),
+            ..
+        } => Some(Carried {
+            path: path.as_str().to_owned(),
+            revision: *revision,
+            delete: false,
+            object_id: object_id.0.clone(),
+            kept: None,
+            blob: Some(blob.clone()),
+        }),
+        // Text mode (ticket 55) comes later.
         _ => None,
     }
 }

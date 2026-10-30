@@ -127,7 +127,7 @@ impl WorkspaceEngine {
                     &chat_parsed,
                 )
             });
-        let (chat_index_status, mut warnings) = self.index_outcome(chat_result);
+        let (chat_index_status, mut warnings) = self.chat_index_outcome(chat_result);
         let message_parsed = ParsedMarkdown::Managed(message.workspace_object());
         let message_destination = resolve_for_write(&self.root, &message.relative_path, operation)?;
         let message_result = self
@@ -142,7 +142,7 @@ impl WorkspaceEngine {
                     &message_parsed,
                 )
             });
-        let (message_index_status, message_warnings) = self.index_outcome(message_result);
+        let (message_index_status, message_warnings) = self.chat_index_outcome(message_result);
         warnings.extend(message_warnings);
         Ok((chat_index_status, message_index_status, warnings))
     }
@@ -187,6 +187,9 @@ impl WorkspaceEngine {
             match self.recover_chat_mutation(&path, &relative) {
                 Ok(()) => {
                     let _ = self.clear_chat_mutation_intent(&path, "chat_mutation_recover");
+                    // The index never recorded the files the change wrote,
+                    // so the next look at the index walks the workspace.
+                    self.dirty.store(true, Ordering::SeqCst);
                 }
                 // Reading a file that lives only in the cloud would start a
                 // download and block. The intent waits until it downloads.

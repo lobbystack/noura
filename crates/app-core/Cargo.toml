@@ -15,6 +15,8 @@ test-hooks = ["local-core/test-hooks", "plugin-host/test-hooks"]
 # Finds the workspace's names in log lines for Copy diagnostics.
 aho-corasick.workspace = true
 atomic-write-file.workspace = true
+# Hashes attachments as they stream, so a large file never sits in memory.
+blake3.workspace = true
 directories.workspace = true
 # Draws the pages of PDFs, finds their text and unlocks them, on each PDF
 # tab's own thread.
@@ -24,6 +26,8 @@ hayro.workspace = true
 jiff.workspace = true
 jsonschema.workspace = true
 local-core = { version = "0.2.0", path = "../local-core" }
+# tus `Upload-Metadata` values for blob uploads (sync-v2.md §21).
+base64.workspace = true
 nucleo-matcher.workspace = true
 plugin-host = { version = "0.2.0", path = "../plugin-host" }
 # The sync service's HTTP client for the v2 API.

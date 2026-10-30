@@ -5,6 +5,7 @@
 //! sync-server serve       [--data DIR] [--database-url URL] [--listen ADDRESS]
 //!                         [--origin ORIGIN]
 //! sync-server healthcheck [--listen ADDRESS]
+//! sync-server blobs migrate-to-s3 [--data DIR]
 //! sync-server version
 //! ```
 //!
@@ -24,6 +25,14 @@
 //! - `NOURA_SMTP_URL`, or `NOURA_RESEND_API_KEY` with an optional
 //!   `NOURA_RESEND_ENDPOINT`: how the server sends mail.
 //! - `NOURA_ACCOUNT_WEB_DIR`: the account-web build the pages load.
+//! - `NOURA_S3_BUCKET`, with an optional `NOURA_S3_ENDPOINT` for an
+//!   S3-compatible service: keep blob segments in that bucket instead of the
+//!   data directory's `blobs` directory. The standard `AWS_*` variables give
+//!   the credentials and region.
+//!
+//! `blobs migrate-to-s3` moves a disk store's segments into the bucket those
+//! variables name, checks each one's hash, and deletes the local copy only
+//! then. Stop `serve` first, and rerun it after an interruption.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -31,7 +40,7 @@ use std::process::ExitCode;
 
 use sync_server::postgres::{SECRET_FILE_VARIABLE, SECRET_VARIABLE, secret_from};
 
-const USAGE: &str = "usage: sync-server <migrate|serve|healthcheck|version> [--data DIR] \
+const USAGE: &str = "usage: sync-server <migrate|serve|healthcheck|blobs migrate-to-s3|version> [--data DIR] \
                      [--database-url URL] [--listen ADDRESS] [--origin ORIGIN]";
 
 /// A set, non-empty environment variable.
@@ -49,7 +58,11 @@ struct Arguments {
 
 fn arguments() -> Result<Arguments, String> {
     let mut args = std::env::args().skip(1);
-    let command = args.next().ok_or_else(|| USAGE.to_owned())?;
+    let mut command = args.next().ok_or_else(|| USAGE.to_owned())?;
+    if command == "blobs" {
+        let sub = args.next().ok_or_else(|| USAGE.to_owned())?;
+        command = format!("blobs {sub}");
+    }
     let mut data_dir =
         std::env::var_os("NOURA_DATA_DIR").map_or_else(|| PathBuf::from("data"), PathBuf::from);
     let mut database_url = std::env::var("NOURA_DATABASE_URL")
@@ -144,9 +157,36 @@ fn serve(arguments: Arguments) -> Result<(), String> {
     }
     config.mail = mail;
     config.account_web = env("NOURA_ACCOUNT_WEB_DIR").map(PathBuf::from);
+    config.blob_store = blob_store();
     runtime()
         .block_on(sync_server::serve(config))
         .map_err(|e| e.to_string())
+}
+
+/// The blob store `NOURA_S3_BUCKET` and `NOURA_S3_ENDPOINT` name, or the
+/// data directory's.
+fn blob_store() -> sync_server::BlobStoreConfig {
+    match env("NOURA_S3_BUCKET") {
+        Some(bucket) => sync_server::BlobStoreConfig::S3 {
+            bucket,
+            endpoint: env("NOURA_S3_ENDPOINT"),
+        },
+        None => sync_server::BlobStoreConfig::Disk,
+    }
+}
+
+fn migrate_blobs(arguments: Arguments) -> Result<(), String> {
+    let migration = runtime()
+        .block_on(sync_server::migrate_blobs_to_s3(
+            &arguments.data_dir,
+            &blob_store(),
+        ))
+        .map_err(|e| e.to_string())?;
+    eprintln!(
+        "sync-server: moved {} blob segment(s) to S3; set NOURA_S3_BUCKET when you serve",
+        migration.moved
+    );
+    Ok(())
 }
 
 fn main() -> ExitCode {
@@ -160,6 +200,7 @@ fn main() -> ExitCode {
     let result = match arguments.command.as_str() {
         "migrate" => migrate(arguments),
         "serve" => serve(arguments),
+        "blobs migrate-to-s3" => migrate_blobs(arguments),
         "healthcheck" => listen_address(&arguments.listen).and_then(|listen| {
             if sync_server::healthcheck(listen) {
                 Ok(())

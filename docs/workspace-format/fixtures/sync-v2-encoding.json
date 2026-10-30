@@ -4209,6 +4209,10 @@
 			"status": 422
 		},
 		{
+			"code": "blob_offset_conflict",
+			"status": 409
+		},
+		{
 			"code": "quota_exceeded",
 			"status": 507
 		},

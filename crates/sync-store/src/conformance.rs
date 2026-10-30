@@ -27,8 +27,10 @@ use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 
 use crate::{Backend, Error, LockPlan, Refusal, Session, Store, WriteTxn};
 
+mod blobs;
 mod devices;
 mod keys;
+pub use blobs::*;
 pub use devices::*;
 pub use keys::*;
 
@@ -83,6 +85,10 @@ macro_rules! conformance_tests {
             rewraps_reach_readers_and_close,
             rewraps_follow_the_fixture_schedule,
             profile_pushes_follow_section_25,
+            blob_uploads_follow_tus,
+            blob_digest_mismatch_discards_the_upload,
+            pushes_list_completed_blobs_of_their_domain,
+            blob_downloads_follow_the_listing,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
@@ -110,6 +116,7 @@ macro_rules! instance_tests {
             geneses_at_once_start_one_chain,
             enrollments_at_once_take_one_card,
             chain_appends_race_pushes_recording_the_head,
+            blob_uploads_race_pushes_and_policy_changes,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {

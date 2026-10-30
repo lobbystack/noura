@@ -34,12 +34,12 @@ pub use archive::{ARCHIVE_SUFFIX, Archive};
 pub use error::{InstallError, InstallErrorCode};
 pub use host::{Candidate, CodeSource, LoadedPlugin, PluginHost};
 pub use instance::{
-    AiChat, AiFailure, AiMessage, AiMessageKind, AiMessageStatus, AiProvider, AiRequest, AiRun,
-    AiRunStatus, AiToolCall, AiToolDefinition, AiToolResult, Calendar, CalendarEntry, CalendarMode,
-    Check, Choice, Column, ColumnPress, Command, Event, Field, Form, InboxSection, Input, Item,
-    ItemList, MenuItem, Move, NameField, Naming, Node, NodeKind, ObjectType, Page, Placement,
-    PluginError, Registration, Services, SortOrder, Submission, Table, Target, Tool, Value,
-    VirtualList, VirtualRow,
+    AiChat, AiFailure, AiMessage, AiMessageKind, AiMessageStatus, AiProvider, AiRequest,
+    AiRetention, AiRun, AiRunStatus, AiToolCall, AiToolDefinition, AiToolResult, AiWebPage,
+    AiWebResult, Calendar, CalendarEntry, CalendarMode, Check, Choice, Column, ColumnPress,
+    Command, Event, Field, Form, InboxSection, Input, Item, ItemList, MenuItem, Move, NameField,
+    Naming, Node, NodeKind, ObjectType, Page, Placement, PluginError, Registration, Services,
+    SortOrder, Submission, Table, Target, Tool, Value, VirtualList, VirtualRow,
 };
 pub use manifest::{
     Capability, Grant, INTERFACE_VERSIONS, MANIFEST_FILE, Platform, PluginManifest, read_manifest,
