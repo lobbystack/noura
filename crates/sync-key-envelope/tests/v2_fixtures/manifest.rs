@@ -410,14 +410,21 @@ fn server_checks(f: &mut Fixture) {
 
 /// The heads rule (§17): whether a device may leave the heads of a
 /// checkpoint whose previous checkpoint has `revision` as its
-/// `policy_revision`. Alice owns the workspace; Bob joins as an editor,
-/// adds and records a phone, removes it by a link and records that, is
-/// then cut out of the restricted domain, demoted to viewer, and removed.
+/// `policy_revision`. Alice owns the workspace and Bob joins as an editor.
+/// On the main line Bob adds and records a phone, removes it by a link and
+/// records that, is cut out of the restricted domain, demoted to viewer,
+/// removed, and added back at the same chain. Branches off it accept a
+/// reset of Bob's account, add Bob back after a reset, cut Bob from write
+/// back to read, and let Bob remove his own account in a change that
+/// records the link that removed his phone.
 fn heads_rule(f: &mut Fixture, w: &super::world::World) {
     let bob_phone = Actor::new("bob", "bob phone");
+    let bob_reset = Actor::new("bob", "bob reset laptop");
     f.actor(&bob_phone);
+    f.actor(&bob_reset);
     f.actor(&w.bob_laptop);
     f.actor(&w.alice_phone);
+    let reset_chain = Chain::genesis(&bob_reset);
     let mut bob: Chain = w.bob.clone();
     let mut policy = w.policy.clone();
     bob.add_device(&w.bob_laptop, &bob_phone);
@@ -429,19 +436,48 @@ fn heads_rule(f: &mut Fixture, w: &super::world::World) {
             keep: Sorted::default(),
         },
     );
+    // Bob removes his own account, recording the link that removed his
+    // phone in the same change (5 on this branch).
+    let mut self_removal = policy.clone();
+    self_removal.push(
+        &w.bob_laptop,
+        vec![bob.head()],
+        PolicyKind::RemoveMember {
+            account: w.bob_laptop.account,
+        },
+    );
     policy.push(&w.bob_laptop, vec![bob.head()], PolicyKind::AccountHeads); // 5
-    policy.push(
-        &w.alice_laptop,
-        vec![w.alice.head()],
+    let access = |bob_level: Option<Level>| {
+        let mut access = vec![Access {
+            account: w.alice_laptop.account,
+            level: Level::Manage,
+        }];
+        if let Some(level) = bob_level {
+            access.push(Access {
+                account: w.bob_laptop.account,
+                level,
+            });
+        }
+        access.sort_by_key(|a| a.account);
         PolicyKind::SetAccess {
             domain: w.restricted,
-            access: Sorted::new(vec![Access {
-                account: w.alice_laptop.account,
-                level: Level::Manage,
-            }])
-            .unwrap(),
-        },
-    ); // 6
+            access: Sorted::new(access).unwrap(),
+        }
+    };
+    // Bob's grant goes up to write and back to read (6 and 7 on this
+    // branch).
+    let mut cut_to_read = policy.clone();
+    cut_to_read.push(
+        &w.alice_laptop,
+        vec![w.alice.head()],
+        access(Some(Level::Write)),
+    );
+    cut_to_read.push(
+        &w.alice_laptop,
+        vec![w.alice.head()],
+        access(Some(Level::Read)),
+    );
+    policy.push(&w.alice_laptop, vec![w.alice.head()], access(None)); // 6
     policy.push(
         &w.alice_laptop,
         vec![w.alice.head()],
@@ -457,56 +493,191 @@ fn heads_rule(f: &mut Fixture, w: &super::world::World) {
             account: w.bob_laptop.account,
         },
     ); // 8
-    let verified = PolicyChain::verify(&policy.changes, &verified_chains(&[&w.alice, &bob]))
-        .expect("the heads-rule policy verifies");
-    let chains = json!(
-        [&w.alice, &bob]
-            .iter()
-            .map(|c| c
-                .links
-                .iter()
-                .map(|l| to_hex(&l.to_bytes()))
-                .collect::<Vec<_>>())
-            .collect::<Vec<_>>()
+    // Bob comes back after a reset (9 on this branch).
+    let mut back_after_reset = policy.clone();
+    back_after_reset.push(
+        &w.alice_laptop,
+        vec![w.alice.head(), reset_chain.head()],
+        PolicyKind::AddMember {
+            account: w.bob_laptop.account,
+            role: Role::Editor,
+            invitation: id("heads rule invitation after reset"),
+        },
     );
-    let changes: Vec<String> = policy
-        .changes
-        .iter()
-        .map(|c| to_hex(&c.to_bytes()))
-        .collect();
-    for (name, device, revision, expect) in [
-        ("a_listed_card_stays", &bob_phone, 4, false),
-        ("a_card_a_recorded_link_removed_leaves", &bob_phone, 5, true),
+    policy.push(
+        &w.alice_laptop,
+        vec![w.alice.head(), bob.head()],
+        PolicyKind::AddMember {
+            account: w.bob_laptop.account,
+            role: Role::Editor,
+            invitation: id("heads rule invitation"),
+        },
+    ); // 9
+    // A reset accepted while Bob is a member (4 on this branch).
+    let mut accept_reset = w.policy.clone();
+    accept_reset.push(
+        &w.alice_laptop,
+        vec![w.alice.head(), reset_chain.head()],
+        PolicyKind::AcceptReset {
+            account: w.bob_laptop.account,
+        },
+    );
+
+    let to_json = |chains: &[&Chain], policy: &super::world::Policy| {
+        let account_chains = json!(
+            chains
+                .iter()
+                .map(|c| c
+                    .links
+                    .iter()
+                    .map(|l| to_hex(&l.to_bytes()))
+                    .collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        );
+        let changes: Vec<String> = policy
+            .changes
+            .iter()
+            .map(|c| to_hex(&c.to_bytes()))
+            .collect();
+        (account_chains, changes)
+    };
+    let main: &[&Chain] = &[&w.alice, &bob];
+    let reset: &[&Chain] = &[&w.alice, &bob, &reset_chain];
+    for (name, chains, line, device, revision, expect) in [
+        ("a_listed_card_stays", main, &policy, &bob_phone, 4, false),
+        (
+            "a_card_a_recorded_link_removed_leaves",
+            main,
+            &policy,
+            &bob_phone,
+            5,
+            true,
+        ),
         (
             "a_grantee_cut_out_of_a_domain_stays",
+            main,
+            &policy,
             &w.bob_laptop,
             6,
             false,
         ),
-        ("a_demoted_device_stays", &w.bob_laptop, 7, false),
+        (
+            "a_grantee_cut_back_to_read_stays",
+            main,
+            &cut_to_read,
+            &w.bob_laptop,
+            7,
+            false,
+        ),
+        (
+            "a_demoted_device_stays",
+            main,
+            &policy,
+            &w.bob_laptop,
+            7,
+            false,
+        ),
         (
             "a_device_remove_member_removed_stays",
+            main,
+            &policy,
             &w.bob_laptop,
             8,
             false,
         ),
         (
             "a_removed_card_stays_gone_after_remove_member",
+            main,
+            &policy,
             &bob_phone,
             8,
             true,
         ),
-        ("another_accounts_device_stays", &w.alice_phone, 8, false),
+        (
+            "a_device_added_back_on_its_chain_stays",
+            main,
+            &policy,
+            &w.bob_laptop,
+            9,
+            false,
+        ),
+        (
+            "a_card_its_own_accounts_removal_recorded_removed_leaves",
+            main,
+            &self_removal,
+            &bob_phone,
+            5,
+            true,
+        ),
+        (
+            "the_signer_of_its_own_accounts_removal_stays",
+            main,
+            &self_removal,
+            &w.bob_laptop,
+            5,
+            false,
+        ),
+        (
+            "a_card_before_an_accept_reset_stays",
+            reset,
+            &accept_reset,
+            &w.bob_laptop,
+            3,
+            false,
+        ),
+        (
+            "a_card_an_accept_reset_retired_leaves",
+            reset,
+            &accept_reset,
+            &w.bob_laptop,
+            4,
+            true,
+        ),
+        (
+            "a_reset_card_an_accept_reset_brought_in_stays",
+            reset,
+            &accept_reset,
+            &bob_reset,
+            4,
+            false,
+        ),
+        (
+            "a_card_an_add_member_after_a_reset_retired_leaves",
+            reset,
+            &back_after_reset,
+            &w.bob_laptop,
+            9,
+            true,
+        ),
+        (
+            "a_card_removed_by_remove_member_stays_before_the_add_member",
+            reset,
+            &back_after_reset,
+            &w.bob_laptop,
+            8,
+            false,
+        ),
+        (
+            "another_accounts_device_stays",
+            main,
+            &policy,
+            &w.alice_phone,
+            9,
+            false,
+        ),
     ] {
+        let verified = PolicyChain::verify(&line.changes, &verified_chains(chains))
+            .unwrap_or_else(|e| panic!("{name}: the heads-rule policy verifies: {e:?}"));
         assert_eq!(
             verified.card_gone(&device.device(), revision),
             expect,
             "{name}"
         );
+        let (account_chains, changes) = to_json(chains, line);
         f.case(json!({
             "kind": "heads_may_leave",
             "name": name,
-            "account_chains": chains,
+            "account_chains": account_chains,
             "changes": changes,
             "device": device.device().to_hex(),
             "revision": revision,
