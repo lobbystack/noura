@@ -132,8 +132,8 @@ impl WorkspaceSync {
                 e.paused = true
             })?;
         }
-        let remote = service.open_workspace(entry.workspace).await?;
-        let (name, profile) = profile_of(service, &remote).await?;
+        let mut remote = service.open_workspace(entry.workspace).await?;
+        let (name, profile) = profile_of(service, &mut remote).await?;
         let generation = service.client().restore_generation();
         let mut sync = Self::start(
             service, engine, remote, server, replica, generation, &name, profile,

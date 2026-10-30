@@ -103,6 +103,32 @@ pub struct State {
     /// checkpoint before it pulls, as a new device does (§18).
     #[serde(default)]
     pub bootstrap: bool,
+    /// How far that bootstrap got through the live pages (§18, step 5),
+    /// saved with the files of each bucket it installed.
+    #[serde(default)]
+    pub bootstrap_progress: Option<BootstrapProgress>,
+}
+
+/// A bootstrap's progress through the `live` pages of one checkpoint (§18,
+/// step 5). The buckets below `next_bucket` are installed: their hashes
+/// passed and their files are written, and the domain's live set holds
+/// their operations.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BootstrapProgress {
+    /// The checkpoint the pages belong to.
+    pub checkpoint: Digest,
+    /// The cursor after the last page.
+    pub after: Option<sync_protocol::messages::LiveCursor>,
+    /// The first bucket not installed yet.
+    pub next_bucket: u32,
+    /// The operations fetched for buckets not complete yet, with their
+    /// sequences.
+    pub pending: Vec<(Signed<Operation>, u64)>,
+    /// The leaves of the installed buckets.
+    pub live_objects: u64,
+    /// Each device's highest `policy_revision` and `generation` among the
+    /// installed operations.
+    pub last: BTreeMap<Id, (u64, u64)>,
 }
 
 /// The change that took this device's access to the domain (§15).

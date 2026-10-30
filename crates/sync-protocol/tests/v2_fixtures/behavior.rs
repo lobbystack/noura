@@ -838,7 +838,10 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
                             reverted.iter().map(|r| r.digest.to_hex()).collect();
                         let verdicts = serde_json::to_value(verdicts).unwrap();
                         if expect.get("verdicts").is_some() {
-                            same(json!({"reverted": reverted, "verdicts": verdicts}), expect.clone())
+                            same(
+                                json!({"reverted": reverted, "verdicts": verdicts}),
+                                expect.clone(),
+                            )
                         } else if reverted.is_empty() {
                             same(verdicts, expect.clone())
                         } else {

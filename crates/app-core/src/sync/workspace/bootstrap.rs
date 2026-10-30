@@ -6,42 +6,28 @@
 //! digest, `policy_head` and epoch record, its descent from the device's
 //! anchor when it holds one, its signer by position after pulling the log
 //! up to the checkpoint's entry, and the recency of its policy. It then
-//! checks the bucket hashes against the root, fetches the live operations,
-//! checks each bucket's hash and the leaf count, and only then writes the
-//! files. The chain verifier starts at the checkpoint's heads, and the
-//! device pulls on from `covered_seq`.
+//! checks the bucket hashes against the root and fetches the live
+//! operations page by page. As each bucket completes, it checks the
+//! bucket's hash, writes its files and records its progress, so a restart
+//! resumes at the next bucket; the leaf count is checked after the last.
+//! The chain verifier starts at the checkpoint's heads, and the device
+//! pulls on from `covered_seq`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Serialize};
 use sync_protocol::chain::ChainVerifier;
 use sync_protocol::keys::LogJudge;
 use sync_protocol::live::{LiveOp, LiveSet};
 use sync_protocol::manifest::{
-    Manifest, heads_digest, skip_number, verify_buckets, verify_descent,
+    BUCKETS, bucket_of, heads_digest, skip_number, verify_bucket, verify_buckets, verify_descent,
 };
-use sync_protocol::messages::{EntryRecord, LiveCursor, PageStatus, PullCursor};
+use sync_protocol::messages::{EntryRecord, PageStatus, PullCursor};
 use sync_protocol::records::{CheckpointBundle, Operation, Signed};
 use sync_protocol::types::{Digest, Id};
 
-use super::state::Log;
+use super::state::{BootstrapProgress, Log};
 use super::{Checked, CheckedRecord, SyncError, SyncService, WorkspaceSync};
 use crate::sync::account_heads::KeptCheckpointAnchor;
-
-/// The journal file that keeps a bootstrap's progress through the live
-/// pages.
-const BOOTSTRAP_FILE: &str = "bootstrap.json";
-
-/// The live pages a bootstrap fetched so far (§18).
-#[derive(Clone, Serialize, Deserialize)]
-struct Progress {
-    /// The checkpoint the pages belong to.
-    checkpoint: Digest,
-    /// The cursor after the last page.
-    after: Option<LiveCursor>,
-    /// The operations the pages carried, with their sequences.
-    ops: Vec<(Signed<Operation>, u64)>,
-}
 
 /// Why a bootstrap stops: the client code of the check that failed.
 fn fail(code: &'static str) -> SyncError {
@@ -55,12 +41,43 @@ impl WorkspaceSync {
     /// code, and installs nothing.
     pub(super) async fn bootstrap(&mut self, service: &mut SyncService) -> Result<bool, SyncError> {
         let result = self.bootstrap_latest(service).await;
-        // A failed check drops the pages fetched so far; a lost connection
-        // keeps them for the next attempt.
+        // A failed check drops the progress; a lost connection keeps it,
+        // and the next attempt resumes at the next bucket.
         if let Err(SyncError::Check(_)) = result {
-            self.journal.write(BOOTSTRAP_FILE, &None::<Progress>)?;
+            self.state.bootstrap_progress = None;
+            self.save()?;
         }
         result
+    }
+
+    /// The checkpoint an interrupted bootstrap was installing, when the
+    /// server still serves it and it still passes the bootstrap checks.
+    async fn resumed_checkpoint(
+        &mut self,
+        service: &mut SyncService,
+    ) -> Result<Option<(CheckpointBundle, u64)>, SyncError> {
+        let Some(digest) = self.state.bootstrap_progress.as_ref().map(|p| p.checkpoint) else {
+            return Ok(None);
+        };
+        let (workspace, domain) = (self.state.workspace, self.state.domain);
+        let Some(entry) = service
+            .client()
+            .checkpoint_by_digest(workspace, domain, digest)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let EntryRecord::Checkpoint(bundle) = entry.record else {
+            return Ok(None);
+        };
+        if bundle.checkpoint.0.digest() != digest
+            || !self
+                .check_bootstrap_checkpoint(service, &bundle, entry.seq)
+                .await?
+        {
+            return Ok(None);
+        }
+        Ok(Some((bundle, entry.seq)))
     }
 
     async fn bootstrap_latest(&mut self, service: &mut SyncService) -> Result<bool, SyncError> {
@@ -71,7 +88,10 @@ impl WorkspaceSync {
         if self.remote.is_none() {
             self.connect(service).await?;
         }
-        let (bundle, entry_seq) = if self
+        let resumed = self.resumed_checkpoint(service).await?;
+        let (bundle, entry_seq) = if let Some(resumed) = resumed {
+            resumed
+        } else if self
             .check_bootstrap_checkpoint(service, &latest.bundle, latest.seq)
             .await?
         {
@@ -114,79 +134,87 @@ impl WorkspaceSync {
             .0;
         verify_buckets(&buckets, &c.manifest_root).map_err(|_| fail("sync_manifest_mismatch"))?;
 
-        // The live operations, page by page. The journal keeps the pages
-        // fetched so far, so a restart resumes after the last one (§18).
+        // The live operations, page by page, installed bucket by bucket:
+        // pages come ordered by `rid`, so every bucket below the next
+        // page's first `rid` is complete. The journal keeps the progress
+        // with each bucket's files, so a restart resumes at the next
+        // bucket (§18, step 5).
         let digest = bundle.checkpoint.0.digest();
-        let kept = self
-            .journal
-            .read::<Option<Progress>>(BOOTSTRAP_FILE)?
-            .flatten();
-        let (mut ops, mut after) = match kept {
-            Some(progress) if progress.checkpoint == digest => (progress.ops, progress.after),
-            _ => (Vec::new(), None),
-        };
-        loop {
-            if after.is_some() {
-                self.journal.write(
-                    BOOTSTRAP_FILE,
-                    &Progress {
-                        checkpoint: digest,
-                        after: after.clone(),
-                        ops: ops.clone(),
-                    },
-                )?;
+        let mut progress = match self.state.bootstrap_progress.take() {
+            Some(progress) if progress.checkpoint == digest => progress,
+            _ => {
+                self.state.log.live = LiveSet::new();
+                BootstrapProgress {
+                    checkpoint: digest,
+                    after: None,
+                    next_bucket: 0,
+                    pending: Vec::new(),
+                    live_objects: 0,
+                    last: BTreeMap::new(),
+                }
             }
+        };
+        self.state.bootstrap_progress = Some(progress.clone());
+        while (progress.next_bucket as usize) < BUCKETS {
             let page = service
                 .client()
-                .live(workspace, domain, c.covered_seq, None, after.as_ref())
+                .live(
+                    workspace,
+                    domain,
+                    c.covered_seq,
+                    None,
+                    progress.after.as_ref(),
+                )
                 .await?;
             for entry in page.entries.0 {
                 let EntryRecord::Operation(op) = entry.record else {
                     return Err(fail("sync_manifest_mismatch"));
                 };
-                if entry.seq > c.covered_seq {
+                if entry.seq > c.covered_seq
+                    || u32::from(bucket_of(&op.body.rid)) < progress.next_bucket
+                {
                     return Err(fail("sync_manifest_mismatch"));
                 }
-                ops.push((op, entry.seq));
+                progress.pending.push((op, entry.seq));
             }
-            match page.next {
-                Some(next) => after = Some(next),
-                None => break,
+            let complete = match &page.next {
+                Some(next) => u32::from(bucket_of(&next.rid)),
+                None => BUCKETS as u32,
+            };
+            if progress
+                .pending
+                .iter()
+                .any(|(op, _)| u32::from(bucket_of(&op.body.rid)) > complete)
+            {
+                return Err(fail("sync_manifest_mismatch"));
             }
+            if complete > progress.next_bucket {
+                let (ready, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut progress.pending)
+                    .into_iter()
+                    .partition(|(op, _)| u32::from(bucket_of(&op.body.rid)) < complete);
+                progress.pending = rest;
+                self.install_buckets(
+                    service,
+                    &bundle,
+                    &buckets,
+                    progress.next_bucket..complete,
+                    ready,
+                    &mut progress,
+                )
+                .await?;
+                progress.next_bucket = complete;
+            }
+            progress.after = page.next;
+            self.state.bootstrap_progress = Some(progress.clone());
+            self.save()?;
+        }
+        if progress.live_objects != c.live_objects || !progress.pending.is_empty() {
+            return Err(fail("sync_manifest_mismatch"));
         }
         let remote = self
             .remote
             .as_ref()
             .ok_or(fail("sync_workspace_unverified"))?;
-        let policy = &remote.policy;
-        // The checks of §13 that need no chain or position, which the
-        // checkpoint's signer applied.
-        for (op, _) in &ops {
-            let body = &op.body;
-            if body.workspace != workspace || body.domain != domain {
-                return Err(fail("sync_manifest_mismatch"));
-            }
-            let card = policy
-                .at(body.policy_revision)
-                .and_then(|s| s.devices.get(&body.device))
-                .ok_or(fail("sync_writer_not_authorized"))?;
-            op.verify(&card.card.signing_public)
-                .map_err(|_| fail("sync_writer_not_authorized"))?;
-            if policy.change(body.policy_revision).map(|h| h.digest()) != Some(body.policy_head) {
-                return Err(fail("sync_policy_forked"));
-            }
-        }
-        ops.sort_by_key(|(_, seq)| *seq);
-        let mut live = LiveSet::new();
-        let mut classes = Vec::with_capacity(ops.len());
-        for (op, seq) in &ops {
-            classes.push(live.apply(LiveOp::from_operation(op, *seq)));
-        }
-        let manifest = Manifest::new(live.leaves_at(c.covered_seq));
-        let ours = manifest.bucket_hashes();
-        if ours != buckets || manifest.live_objects() != c.live_objects {
-            return Err(fail("sync_manifest_mismatch"));
-        }
 
         // The log as it stands at the checkpoint.
         let epoch_policy_revision = remote
@@ -201,15 +229,7 @@ impl WorkspaceSync {
         log.judge =
             LogJudge::from_checkpoint(domain, c.policy_revision, c.epoch, epoch_policy_revision);
         log.verifier = ChainVerifier::from_heads(&bundle.heads);
-        log.live = live;
-        log.last = BTreeMap::new();
-        for (op, _) in &ops {
-            let entry = log.last.entry(op.body.device).or_insert((0, 0));
-            *entry = (
-                entry.0.max(op.body.policy_revision),
-                entry.1.max(op.body.generation),
-            );
-        }
+        log.last = progress.last.clone();
         log.wanted.retain(|w| {
             if w.epoch {
                 w.number > c.epoch
@@ -252,6 +272,95 @@ impl WorkspaceSync {
             (digest, number) = (record.body.skip, skip_number(number));
         }
 
+        self.state.log = log;
+        self.state.bootstrap_progress = None;
+        self.save()?;
+        Ok(true)
+    }
+
+    /// Installs the buckets in `range` from `ops`, every live operation in
+    /// them (§18, step 5): runs the checks of §13 that need no chain or
+    /// position on each, checks each bucket's hash, then writes their files
+    /// and adds them to the domain's live set. A bucket that fails its hash
+    /// reports `sync_manifest_mismatch` and installs nothing.
+    async fn install_buckets(
+        &mut self,
+        service: &mut SyncService,
+        bundle: &CheckpointBundle,
+        buckets: &[Digest],
+        range: std::ops::Range<u32>,
+        mut ops: Vec<(Signed<Operation>, u64)>,
+        progress: &mut BootstrapProgress,
+    ) -> Result<(), SyncError> {
+        let (workspace, domain) = (self.state.workspace, self.state.domain);
+        let c = &bundle.checkpoint.0.body;
+        {
+            let remote = self
+                .remote
+                .as_ref()
+                .ok_or(fail("sync_workspace_unverified"))?;
+            let policy = &remote.policy;
+            for (op, _) in &ops {
+                let body = &op.body;
+                if body.workspace != workspace || body.domain != domain {
+                    return Err(fail("sync_manifest_mismatch"));
+                }
+                let card = policy
+                    .at(body.policy_revision)
+                    .and_then(|s| s.devices.get(&body.device))
+                    .ok_or(fail("sync_writer_not_authorized"))?;
+                op.verify(&card.card.signing_public)
+                    .map_err(|_| fail("sync_writer_not_authorized"))?;
+                if policy.change(body.policy_revision).map(|h| h.digest()) != Some(body.policy_head)
+                {
+                    return Err(fail("sync_policy_forked"));
+                }
+            }
+        }
+        ops.sort_by_key(|(_, seq)| *seq);
+        // The buckets' own live set, from which their leaves and hashes
+        // come; their `rid`s are new to the domain's live set.
+        let mut live = self.state.log.live.clone();
+        let mut fresh = LiveSet::new();
+        let mut classes = Vec::with_capacity(ops.len());
+        for (op, seq) in &ops {
+            fresh.apply(LiveOp::from_operation(op, *seq));
+            classes.push(live.apply(LiveOp::from_operation(op, *seq)));
+        }
+        let leaves = fresh.leaves_at(c.covered_seq);
+        for index in range {
+            let index = index as u16;
+            let mine: Vec<_> = leaves
+                .iter()
+                .filter(|(rid, refs)| bucket_of(rid) == index && !refs.is_empty())
+                .map(|(rid, refs)| {
+                    let mut refs = refs.clone();
+                    refs.sort_by_key(|r| (r.device, r.counter));
+                    (*rid, refs)
+                })
+                .collect();
+            verify_bucket(index, &mine, &buckets[usize::from(index)])
+                .map_err(|_| fail("sync_manifest_mismatch"))?;
+            progress.live_objects += mine.len() as u64;
+        }
+        for (op, _) in &ops {
+            let entry = progress.last.entry(op.body.device).or_insert((0, 0));
+            *entry = (
+                entry.0.max(op.body.policy_revision),
+                entry.1.max(op.body.generation),
+            );
+        }
+        // Older epoch records only now that a live operation names one.
+        let mut epochs: Vec<u64> = ops.iter().map(|(op, _)| op.body.epoch).collect();
+        epochs.sort_unstable();
+        epochs.dedup();
+        for epoch in epochs {
+            self.ensure_epoch(service, epoch).await?;
+        }
+        let remote = self
+            .remote
+            .as_ref()
+            .ok_or(fail("sync_workspace_unverified"))?;
         let mut records = Vec::with_capacity(ops.len());
         for ((op, seq), class) in ops.into_iter().zip(classes) {
             let payload = match (
@@ -268,6 +377,8 @@ impl WorkspaceSync {
                 payload,
             });
         }
+        let mut log = self.state.log.clone();
+        log.live = live;
         let checked = Checked {
             log,
             records,
@@ -277,9 +388,7 @@ impl WorkspaceSync {
         let applied = self.apply(checked, fetched);
         self.clear_downloads();
         applied?;
-        self.save()?;
-        self.journal.write(BOOTSTRAP_FILE, &None::<Progress>)?;
-        Ok(true)
+        Ok(())
     }
 
     /// The checkpoint anchor the device's approval or kit gave this domain
@@ -325,6 +434,9 @@ impl WorkspaceSync {
         {
             return Err(fail("sync_manifest_rollback"));
         }
+        // The checkpoint's epoch record, walked back to when it is older
+        // than the current one (§18, step 1).
+        self.ensure_epoch(service, c.epoch).await?;
         {
             let remote = self
                 .remote

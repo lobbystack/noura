@@ -233,7 +233,7 @@ impl WorkspaceSync {
         name: &str,
         registry: &mut Registry,
     ) -> Result<Self, SyncError> {
-        let remote = service.create_workspace(name).await?;
+        let mut remote = service.create_workspace(name).await?;
         let server = service.client().base().to_owned();
         let credentials = service.credentials().clone();
         let replica = registry.connect(
@@ -243,7 +243,7 @@ impl WorkspaceSync {
             engine.root(),
         )?;
         let generation = service.client().restore_generation();
-        let (_, profile) = profile_of(service, &remote).await?;
+        let (_, profile) = profile_of(service, &mut remote).await?;
         Self::start(
             service, engine, remote, server, replica, generation, name, profile,
         )
@@ -265,8 +265,10 @@ impl WorkspaceSync {
                 "Choose an empty folder to download the workspace into.".into(),
             ));
         }
-        let remote = service.open_workspace(workspace).await?;
-        let (name, profile) = profile_of(service, &remote).await?;
+        // A new device takes the current epoch alone, and older ones only
+        // once something it reads names one (§18, step 1).
+        let mut remote = service.open_workspace_current(workspace).await?;
+        let (name, profile) = profile_of(service, &mut remote).await?;
         let server = service.client().base().to_owned();
         let credentials = service.credentials().clone();
         let replica = registry.connect(&server, credentials.account, workspace, engine.root())?;
@@ -346,6 +348,7 @@ impl WorkspaceSync {
             profile_recheck: false,
             ended: None,
             bootstrap: false,
+            bootstrap_progress: None,
         };
         // A device accepts no policy head or epoch below its mark, also
         // when it starts again without a journal (§15).
@@ -890,7 +893,19 @@ impl WorkspaceSync {
     /// which must extend what the journal accepted (§8, §9), then compares
     /// this device's chain with the server's head (§14).
     pub async fn connect(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
-        let remote = service.open_workspace(self.state.workspace).await?;
+        // A device still bootstrapping takes the current epoch alone and
+        // walks back only as far as something it reads needs (§18).
+        let remote = if self.state.bootstrap {
+            let mut remote = service.open_workspace_current(self.state.workspace).await?;
+            if let Some(accepted) = self.state.epochs.last() {
+                service
+                    .older_epochs(&mut remote, accepted.body.epoch)
+                    .await?;
+            }
+            remote
+        } else {
+            service.open_workspace(self.state.workspace).await?
+        };
         self.adopt(remote)?;
         self.compare_own_chain(service).await?;
         self.follow_profile(service).await?;
@@ -903,9 +918,9 @@ impl WorkspaceSync {
     /// admin device signs the profile again at its accepted head; the
     /// server keeps the first.
     async fn follow_profile(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
-        let Some(remote) = self.remote.as_ref() else {
+        if self.remote.is_none() {
             return Ok(());
-        };
+        }
         let list = service.client().workspaces().await?;
         let Some(profile) = list
             .workspaces
@@ -915,6 +930,10 @@ impl WorkspaceSync {
             .and_then(|w| w.profile)
             .map(|p| p.0)
         else {
+            return Ok(());
+        };
+        self.ensure_epoch(service, profile.body.epoch).await?;
+        let Some(remote) = self.remote.as_ref() else {
             return Ok(());
         };
         let accepted = self.state.profile;
@@ -1126,6 +1145,27 @@ impl WorkspaceSync {
         self.keys.extend(remote.keys.clone());
         self.remote = Some(remote);
         Ok(())
+    }
+
+    /// Makes sure the device holds epoch `epoch`'s record and key, or
+    /// knows that a replacement ended it, walking back through
+    /// `epochs/{epoch}` from the oldest record it holds when it doesn't
+    /// (§18, step 1).
+    pub(super) async fn ensure_epoch(
+        &mut self,
+        service: &mut SyncService,
+        epoch: u64,
+    ) -> Result<(), SyncError> {
+        let Some(remote) = self.remote.as_mut() else {
+            return Ok(());
+        };
+        if remote.epochs.get(epoch).is_some() || remote.epochs.ended_at(epoch).is_some() {
+            return Ok(());
+        }
+        service.older_epochs(remote, epoch).await?;
+        self.keys.extend(remote.keys.clone());
+        self.state.epochs = remote.epochs_oldest_first().into_iter().cloned().collect();
+        self.save()
     }
 
     /// Takes the policy and keys again after a push response, a pull or a
@@ -2783,12 +2823,17 @@ impl WorkspaceSync {
                 counter: record.counter,
             };
             if let Some(object) = self.state.objects.get_mut(&rid)
-                && object.states.get(&key).is_some_and(|s| s.digest == record.digest)
+                && object
+                    .states
+                    .get(&key)
+                    .is_some_and(|s| s.digest == record.digest)
             {
                 object.states.remove(&key);
             }
             self.state.unreadable.retain(|u| {
-                !(u.rid == rid && u.device == device && u.counter == record.counter
+                !(u.rid == rid
+                    && u.device == device
+                    && u.counter == record.counter
                     && u.seq == record.seq)
             });
             self.state
@@ -3618,10 +3663,7 @@ fn check_operation(
         .process_one(&ChainRecord::from_operation(op, seq), fetcher)
         .map_err(|e| {
             if e == ChainError::Forked {
-                fetcher.forked = Some((
-                    body.device,
-                    log.judge.latest_policy_entry().unwrap_or(0),
-                ));
+                fetcher.forked = Some((body.device, log.judge.latest_policy_entry().unwrap_or(0)));
             }
             SyncError::Check(e.client_code())
         })?;
@@ -3809,7 +3851,7 @@ fn stat(root: &Path, path: &str) -> Option<(u64, i64, Option<u64>)> {
 /// its revision and digest.
 async fn profile_of(
     service: &mut SyncService,
-    remote: &RemoteWorkspace,
+    remote: &mut RemoteWorkspace,
 ) -> Result<(String, Option<ProfileMark>), SyncError> {
     let list = service.client().workspaces().await?;
     let profile = list
@@ -3820,6 +3862,8 @@ async fn profile_of(
         .and_then(|w| w.profile)
         .map(|p| p.0)
         .ok_or_else(|| SyncError::Invalid("the workspace has no profile".into()))?;
+    service.older_epochs(remote, profile.body.epoch).await?;
+    let remote = &*remote;
     // A change took the profile's signer out of the workspace, as a
     // recovery does to the lost devices: an owner or admin device reads its
     // name and signs it again on its first round (§25).

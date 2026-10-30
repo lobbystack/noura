@@ -441,10 +441,12 @@ async fn a_new_device_bootstraps_from_the_latest_checkpoint() {
         "the new device starts its checkpoint chain at the bootstrap"
     );
     let requests = proxy.requests();
-    // The keys come from keys/current, never from the whole key stream
-    // (§18, step 1).
+    // The keys come from keys/current, never from the whole key stream,
+    // and no epoch record older than the current one is fetched, since
+    // nothing names one (§18, step 1).
     assert!(requests.iter().any(|r| r.path.contains("/keys/current?")));
     assert!(!requests.iter().any(|r| r.path.contains("/keys?")));
+    assert!(!requests.iter().any(|r| r.path.contains("/epochs/")));
     assert!(requests.iter().any(|r| r.path.contains("/live?")));
     assert!(requests.iter().any(|r| r.path.contains("buckets=all")));
     let pulled_from: Vec<u64> = requests
@@ -1890,7 +1892,10 @@ fn fork_through(
                             state.armed = false;
                         }
                         if mode == Fork::Swap
-                            && state.target.as_ref().is_some_and(|t| t.digest() == op.digest())
+                            && state
+                                .target
+                                .as_ref()
+                                .is_some_and(|t| t.digest() == op.digest())
                         {
                             entry.record =
                                 EntryRecord::Operation(state.sibling.clone().expect("forged"));
@@ -1949,10 +1954,7 @@ async fn fork_setup() -> ForkSetup {
     .await
     .expect("the download starts");
     sync_c.set_checkpoint_wait(Duration::ZERO);
-    sync_c
-        .round(&mut third.service, 0)
-        .await
-        .expect("a round");
+    sync_c.round(&mut third.service, 0).await.expect("a round");
     write_and_sync(&mut pair, "Shared").await;
     pair.b.write("Before.md", b"# Before\n");
     pair.sync_b
@@ -1963,10 +1965,7 @@ async fn fork_setup() -> ForkSetup {
         .round(&mut pair.service, 0)
         .await
         .expect("a round");
-    sync_c
-        .round(&mut third.service, 0)
-        .await
-        .expect("a round");
+    sync_c.round(&mut third.service, 0).await.expect("a round");
     assert!(
         pair.sync_a.latest_checkpoint().is_none(),
         "no checkpoint yet"
@@ -2119,7 +2118,12 @@ async fn a_reader_holding_a_fork_resumes_on_the_branch_the_covering_checkpoint_l
     // checkpoint the laptop then accepted covers it, so the verifier
     // forgot it again (§14).
     assert!(setup.pair.sync_a.unreadable().is_empty());
-    assert!(!setup.pair.sync_a.ignores_record(&desktop, &sibling.digest()));
+    assert!(
+        !setup
+            .pair
+            .sync_a
+            .ignores_record(&desktop, &sibling.digest())
+    );
     assert_eq!(
         setup.pair.sync_a.latest_checkpoint().map(|c| c.digest()),
         setup.sync_c.latest_checkpoint().map(|c| c.digest()),
@@ -2195,7 +2199,10 @@ async fn a_reader_that_applied_the_other_branch_reverts_it() {
         .await
         .expect("the laptop resumes");
     assert!(setup.pair.sync_a.forked_devices().is_empty());
-    assert_ne!(sibling.digest(), fork.lock().unwrap().target.as_ref().unwrap().digest());
+    assert_ne!(
+        sibling.digest(),
+        fork.lock().unwrap().target.as_ref().unwrap().digest()
+    );
     assert!(
         setup.pair.sync_a.unreadable().is_empty(),
         "the reverted sibling left the journal: {:?} sibling {:?} {}",
@@ -2207,5 +2214,205 @@ async fn a_reader_that_applied_the_other_branch_reverts_it() {
     assert_eq!(
         setup.pair.a.files().get("Fork.md").map(Vec::as_slice),
         Some(&b"# Fork, edited\n"[..])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bootstrap_installs_each_bucket_and_resumes_at_the_next() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use sync_protocol::codec::{Encode, List};
+    use sync_protocol::manifest::bucket_of;
+    use sync_protocol::messages::{LiveCursor, LiveResponse};
+
+    let Bootstrap {
+        a,
+        sync_a,
+        proxy,
+        desktop,
+        mut service,
+        mut b,
+        ..
+    } = bootstrap_setup().await;
+    // The first live page stops at the first operation of a later bucket
+    // than the first file's, so the buckets before it are complete, and
+    // the connection drops before the second page.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    proxy.forge(Box::new(move |_, path| {
+        (path.ends_with("/live") && counted.fetch_add(1, Ordering::SeqCst) == 1)
+            .then(|| (503, Vec::new()))
+    }));
+    proxy.tamper(Box::new(|path, body| {
+        if !path.ends_with("/live") {
+            return body;
+        }
+        let mut response = LiveResponse::from_bytes(&body).expect("a live page");
+        let ops: Vec<_> = response
+            .entries
+            .0
+            .iter()
+            .map(|e| match &e.record {
+                EntryRecord::Operation(op) => op.clone(),
+                _ => panic!("an operation"),
+            })
+            .collect();
+        let Some(file) = ops.iter().position(|op| !op.body.delete) else {
+            return body;
+        };
+        let bucket = bucket_of(&ops[file].body.rid);
+        let Some(cut) = ops.iter().position(|op| bucket_of(&op.body.rid) > bucket) else {
+            return body;
+        };
+        if response.next.is_none() {
+            let last = &ops[cut];
+            response.next = Some(LiveCursor {
+                rid: last.body.rid,
+                device: last.body.device,
+                counter: last.body.counter,
+            });
+            response.entries = List(response.entries.0[..=cut].to_vec());
+        }
+        response.to_bytes()
+    }));
+    let mut sync_b = app_core::sync::workspace::WorkspaceSync::download(
+        &mut service,
+        b.engine.clone(),
+        sync_a.workspace(),
+        &mut b.registry,
+    )
+    .await
+    .expect("the download starts");
+    sync_b
+        .round(&mut service, 0)
+        .await
+        .expect_err("the connection dropped");
+    // The complete buckets' files are there already.
+    let installed = b.files();
+    assert!(!installed.is_empty(), "the first bucket installed");
+    assert!(installed.len() < a.files().len());
+    for (path, bytes) in &installed {
+        assert_eq!(a.files().get(path), Some(bytes), "{path}");
+    }
+
+    // After a restart, the device asks for the page after the one it kept
+    // and installs the rest.
+    drop(sync_b);
+    proxy.honest();
+    let before = proxy.requests().len();
+    let mut sync_b = app_core::sync::workspace::WorkspaceSync::open(
+        b.engine.clone(),
+        desktop.credentials.clone(),
+        desktop.secrets(),
+        &b.registry,
+    )
+    .expect("the journal opens");
+    sync_b.round(&mut service, 0).await.expect("the download");
+    let live: Vec<String> = proxy.requests()[before..]
+        .iter()
+        .filter(|r| r.path.contains("/live?"))
+        .map(|r| r.path.clone())
+        .collect();
+    assert_eq!(live.len(), 1, "{live:?}");
+    assert!(live[0].contains("after="), "{live:?}");
+    assert_eq!(b.files(), a.files());
+    assert!(sync_b.checkpoint_failures().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_device_fetches_older_epochs_only_when_a_live_operation_names_one() {
+    use sync_support::{Folder, Proxy, approve};
+
+    let server = Server::start_with_interval(6).await;
+    let (mut laptop, a, mut sync_a) = laptop_with_folder(&server).await;
+    sync_a.round(&mut laptop.service, 0).await.expect("a round");
+    // A device joins and leaves, so the domain rotates to epoch 2 while
+    // First.md's live operation stays under epoch 1.
+    let third = approve(
+        &server,
+        &mut laptop,
+        std::slice::from_mut(sync_a.remote_mut().unwrap()),
+    )
+    .await;
+    laptop
+        .service
+        .remove_device(
+            third.id(),
+            &[],
+            std::slice::from_mut(sync_a.remote_mut().unwrap()),
+        )
+        .await
+        .expect("removed and recorded");
+    sync_a.round(&mut laptop.service, 0).await.expect("a round");
+    assert_eq!(sync_a.remote_mut().unwrap().epoch(), 2);
+    let first = checkpoint_until(&mut laptop.service, &a, &mut sync_a, "e", |_| true).await;
+    assert_eq!(first.body.epoch, 2);
+
+    async fn download(
+        base: &str,
+        desktop: &sync_support::Desktop,
+        name: &str,
+    ) -> (Proxy, app_core::sync::SyncService, Folder) {
+        let proxy = Proxy::start(base).await;
+        let service = desktop.connect_through(&proxy.base).await;
+        (proxy, service, Folder::new(name))
+    }
+    let one = approve(
+        &server,
+        &mut laptop,
+        std::slice::from_mut(sync_a.remote_mut().unwrap()),
+    )
+    .await;
+    let (proxy, mut service, mut b) = download(&server.base, &one, "One").await;
+    let mut sync_b = app_core::sync::workspace::WorkspaceSync::download(
+        &mut service,
+        b.engine.clone(),
+        sync_a.workspace(),
+        &mut b.registry,
+    )
+    .await
+    .expect("the download starts");
+    sync_b.round(&mut service, 0).await.expect("the download");
+    assert_eq!(b.files(), a.files());
+    let epochs: Vec<String> = proxy
+        .requests()
+        .iter()
+        .filter(|r| r.path.contains("/epochs/"))
+        .map(|r| r.path.clone())
+        .collect();
+    assert!(
+        !epochs.is_empty() && epochs.iter().all(|p| p.ends_with("/epochs/2")),
+        "First.md names epoch 1, walked back from 2: {epochs:?}"
+    );
+
+    // Once the profile and every live operation move to epoch 2, a new
+    // device fetches no older epoch record.
+    sync_a
+        .rename(&mut laptop.service, "Field notes, renamed")
+        .await
+        .expect("renamed");
+    a.write("First.md", b"# First, again\n");
+    let number = first.body.number;
+    checkpoint_until(&mut laptop.service, &a, &mut sync_a, "f", |n| n > number).await;
+    let two = approve(
+        &server,
+        &mut laptop,
+        std::slice::from_mut(sync_a.remote_mut().unwrap()),
+    )
+    .await;
+    let (proxy, mut service, mut c) = download(&server.base, &two, "Two").await;
+    let mut sync_c = app_core::sync::workspace::WorkspaceSync::download(
+        &mut service,
+        c.engine.clone(),
+        sync_a.workspace(),
+        &mut c.registry,
+    )
+    .await
+    .expect("the download starts");
+    sync_c.round(&mut service, 0).await.expect("the download");
+    assert_eq!(c.files(), a.files());
+    assert!(
+        !proxy.requests().iter().any(|r| r.path.contains("/epochs/")),
+        "nothing names epoch 1"
     );
 }
