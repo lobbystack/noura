@@ -23,9 +23,9 @@ use crate::{
     IndexStatus, IndexStore, MutationResult, ParseStatus, ParsedMarkdown, RenameChatInput, Result,
     SearchInput, SearchResult, UnmanagedFile, WORKSPACE_MANIFEST_PATH, WatchCoordinator,
     WorkspaceEntry, WorkspaceEntryKind, WorkspaceManifest, WorkspaceObject, WorkspacePhase,
-    WorkspaceState, index::CalendarEntry, markdown, new_object_id, now_rfc3339, parse_chat,
-    parse_chat_message, path::resolve_for_write, serialize_chat, serialize_chat_message,
-    valid_object_id, valid_object_type, validate_retention,
+    WorkspaceState, markdown, new_object_id, now_rfc3339, parse_chat, parse_chat_message,
+    path::resolve_for_write, serialize_chat, serialize_chat_message, valid_object_id,
+    valid_object_type, validate_retention,
 };
 
 struct CollaborationPresenceCacheEntry {

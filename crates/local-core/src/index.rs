@@ -3,9 +3,6 @@ use std::{collections::HashMap, path::Path};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-use workspace_format::calendar::{
-    CalendarError, CalendarItem, select_calendar_entries, validate_calendar_range,
-};
 
 use crate::{
     CoreError, ErrorCategory, ParseStatus, ParsedMarkdown, Result, UnmanagedFile, WorkspaceObject,
@@ -129,26 +126,29 @@ pub(crate) struct ObjectHead {
     pub revision: String,
 }
 
-/// Exact-match filters for object queries, applied in SQL.
+/// Exact-match filters for object queries, applied in SQL. The index
+/// knows no object type's fields: a filter names the property it reads.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[ts(export, optional_fields)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ObjectFilter {
     #[serde(rename = "type")]
     pub object_type: Option<String>,
-    pub project: Option<String>,
-    pub status: Option<String>,
-    pub priority: Option<String>,
     pub path_prefix: Option<String>,
+    /// Keep objects whose property holds this value.
+    pub property: Option<PropertyValue>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, TS, PartialEq, Eq)]
+/// A property and one value of it, as the frontmatter holds it: a string,
+/// a number, `true` or `false`, `null`, or a list or mapping that must
+/// match as a whole.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
-#[serde(rename_all = "kebab-case")]
-pub enum ObjectSummaryOrder {
-    #[default]
-    UpdatedDesc,
-    DueAsc,
+#[serde(rename_all = "camelCase")]
+pub struct PropertyValue {
+    pub name: String,
+    #[ts(type = "unknown")]
+    pub value: serde_json::Value,
 }
 
 /// A bounded, body-free object query for overview screens such as Home.
@@ -159,15 +159,19 @@ pub struct ObjectSummaryQuery {
     #[serde(rename = "type")]
     #[ts(optional)]
     pub object_type: Option<String>,
-    /// Leave out objects whose `status` property equals this value.
+    /// Leave out objects whose property holds this value. Objects without
+    /// the property stay.
     #[ts(optional)]
-    pub status_not: Option<String>,
-    /// Keep objects whose `due` date (its first ten characters) is on or
-    /// before this `YYYY-MM-DD` date.
+    pub property_not: Option<PropertyValue>,
+    /// Keep objects whose property holds a date, read from its first ten
+    /// characters, on or before this value, a `YYYY-MM-DD` date.
     #[ts(optional)]
-    pub due_on_or_before: Option<String>,
+    pub date_on_or_before: Option<PropertyValue>,
+    /// Order by this property's text, objects without it first, then by
+    /// the most recently updated. Without it, the most recently updated
+    /// come first.
     #[ts(optional)]
-    pub order: Option<ObjectSummaryOrder>,
+    pub order_by: Option<String>,
     /// At most this many results; defaults to 50 and never exceeds 500.
     #[ts(optional)]
     pub limit: Option<u32>,
@@ -217,23 +221,6 @@ pub struct SearchResult {
     pub title: String,
     pub snippet: String,
     pub score: f64,
-    pub revision: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
-#[serde(rename_all = "camelCase")]
-pub struct CalendarEntry {
-    pub source_id: String,
-    pub source_type: String,
-    pub title: String,
-    /// The date property this entry comes from; the calendar query only
-    /// reads `due`, `date`, and `start`.
-    #[ts(type = "\"due\" | \"date\" | \"start\"")]
-    pub property: String,
-    pub start: String,
-    pub end: Option<String>,
-    pub all_day: bool,
     pub revision: String,
 }
 
@@ -478,20 +465,19 @@ impl IndexStore {
                 "SELECT o.stable_id,o.object_type,o.title,o.body,f.relative_path,f.hash,o.created,o.updated,o.frontmatter_json \
                  FROM objects o JOIN files f ON f.id=o.file_id \
                  WHERE (?1 IS NULL OR o.object_type=?1) AND o.identity_status='unique' \
-                 AND (?2 IS NULL OR EXISTS(SELECT 1 FROM object_properties p WHERE p.file_id=o.file_id AND p.property_name='project' AND p.value_type='string' AND p.value_text=?2)) \
-                 AND (?3 IS NULL OR EXISTS(SELECT 1 FROM object_properties p WHERE p.file_id=o.file_id AND p.property_name='status' AND p.value_type='string' AND p.value_text=?3)) \
-                 AND (?4 IS NULL OR EXISTS(SELECT 1 FROM object_properties p WHERE p.file_id=o.file_id AND p.property_name='priority' AND p.value_type='string' AND p.value_text=?4)) \
+                 AND (?2 IS NULL OR EXISTS(SELECT 1 FROM object_properties p WHERE p.file_id=o.file_id AND p.property_name=?2 AND p.value_type=?3 AND p.value_text=?4)) \
                  AND (?5 IS NULL OR substr(f.relative_path,1,length(?5))=?5) \
                  ORDER BY o.updated DESC,o.title",
             )
             .map_err(|error| CoreError::index(error, "object_query"))?;
+        let (name, value_type, value_text) = property_match(filter.property.as_ref());
         let rows = statement
             .query_map(
                 params![
                     filter.object_type,
-                    filter.project,
-                    filter.status,
-                    filter.priority,
+                    name,
+                    value_type,
+                    value_text,
                     filter.path_prefix
                 ],
                 row_to_object,
@@ -503,21 +489,25 @@ impl IndexStore {
 
     /// Bounded object summaries without bodies, for overview screens.
     pub fn query_object_summaries(&self, query: &ObjectSummaryQuery) -> Result<Vec<ObjectSummary>> {
-        let order = match query.order.unwrap_or_default() {
-            ObjectSummaryOrder::UpdatedDesc => "o.updated DESC,o.title",
-            ObjectSummaryOrder::DueAsc => "due.value_text ASC,o.updated DESC,o.title",
+        let order = match query.order_by {
+            Some(_) => "ordered.value_text ASC,o.updated DESC,o.title",
+            None => "o.updated DESC,o.title",
         };
         let sql = format!(
             "SELECT o.stable_id,o.object_type,o.title,f.relative_path,f.hash,o.created,o.updated,o.frontmatter_json \
              FROM objects o JOIN files f ON f.id=o.file_id \
-             LEFT JOIN object_properties due ON due.file_id=o.file_id AND due.property_name='due' AND due.value_type='string' \
-             LEFT JOIN object_properties status ON status.file_id=o.file_id AND status.property_name='status' AND status.value_type='string' \
+             LEFT JOIN object_properties ordered ON ordered.file_id=o.file_id AND ordered.property_name=?8 AND ordered.value_type='string' \
              WHERE o.identity_status='unique' AND (?1 IS NULL OR o.object_type=?1) \
-             AND (?2 IS NULL OR status.value_text IS NULL OR status.value_text<>?2) \
-             AND (?3 IS NULL OR (due.value_text IS NOT NULL AND substr(due.value_text,1,10)<=?3)) \
-             ORDER BY {order} LIMIT ?4"
+             AND (?2 IS NULL OR NOT EXISTS(SELECT 1 FROM object_properties p WHERE p.file_id=o.file_id AND p.property_name=?2 AND p.value_type=?3 AND p.value_text=?4)) \
+             AND (?5 IS NULL OR EXISTS(SELECT 1 FROM object_properties p WHERE p.file_id=o.file_id AND p.property_name=?5 AND p.value_type='string' AND substr(p.value_text,1,10)<=?6)) \
+             ORDER BY {order} LIMIT ?7"
         );
         let limit = query.limit.unwrap_or(50).min(500);
+        let (excluded, excluded_type, excluded_text) = property_match(query.property_not.as_ref());
+        let (dated, date) = match &query.date_on_or_before {
+            Some(bound) => (Some(bound.name.as_str()), bound.value.as_str()),
+            None => (None, None),
+        };
         let mut statement = self
             .connection
             .prepare_cached(&sql)
@@ -526,26 +516,34 @@ impl IndexStore {
             .query_map(
                 params![
                     query.object_type,
-                    query.status_not,
-                    query.due_on_or_before,
-                    limit
+                    excluded,
+                    excluded_type,
+                    excluded_text,
+                    dated,
+                    date,
+                    limit,
+                    query.order_by
                 ],
-                |row| {
-                    let json: String = row.get(7)?;
-                    let properties: std::collections::BTreeMap<String, serde_json::Value> =
-                        serde_json::from_str(&json).unwrap_or_default();
-                    Ok(ObjectSummary {
-                        id: row.get(0)?,
-                        object_type: row.get(1)?,
-                        title: row.get(2)?,
-                        relative_path: row.get(3)?,
-                        revision: row.get(4)?,
-                        created: row.get(5)?,
-                        updated: row.get(6)?,
-                        properties,
-                    })
-                },
+                row_to_summary,
             )
+            .map_err(|error| CoreError::index(error, "object_summaries"))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| CoreError::index(error, "object_summaries"))
+    }
+
+    /// Every object of `object_type` whose stable ID no other file holds,
+    /// without its body, in the order of their paths.
+    pub fn object_summaries_of_type(&self, object_type: &str) -> Result<Vec<ObjectSummary>> {
+        let mut statement = self
+            .connection
+            .prepare_cached(
+                "SELECT o.stable_id,o.object_type,o.title,f.relative_path,f.hash,o.created,o.updated,o.frontmatter_json \
+                 FROM objects o JOIN files f ON f.id=o.file_id \
+                 WHERE o.object_type=?1 AND o.identity_status='unique' ORDER BY f.relative_path",
+            )
+            .map_err(|error| CoreError::index(error, "object_summaries"))?;
+        let rows = statement
+            .query_map([object_type], row_to_summary)
             .map_err(|error| CoreError::index(error, "object_summaries"))?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|error| CoreError::index(error, "object_summaries"))
@@ -723,30 +721,6 @@ impl IndexStore {
             .map_err(|error| CoreError::index(error, "recent_notes"))?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|error| CoreError::index(error, "recent_notes"))
-    }
-
-    pub fn calendar(&self, range_start: &str, range_end: &str) -> Result<Vec<CalendarEntry>> {
-        validate_calendar_range(range_start, range_end).map_err(calendar_error)?;
-        let mut statement = self.connection.prepare_cached("SELECT o.stable_id,o.object_type,o.title,p.property_name,p.value_text,e.value_text,f.hash FROM object_properties p JOIN objects o ON o.file_id=p.file_id JOIN files f ON f.id=p.file_id LEFT JOIN object_properties e ON e.file_id=p.file_id AND e.property_name='end' WHERE p.property_name IN ('due','date','start')").map_err(|error| CoreError::index(error,"calendar_query"))?;
-        let rows = statement
-            .query_map([], |row| {
-                let start: String = row.get(4)?;
-                Ok(CalendarEntry {
-                    source_id: row.get(0)?,
-                    source_type: row.get(1)?,
-                    title: row.get(2)?,
-                    property: row.get(3)?,
-                    all_day: start.len() == 10,
-                    start,
-                    end: row.get(5)?,
-                    revision: row.get(6)?,
-                })
-            })
-            .map_err(|error| CoreError::index(error, "calendar_query"))?;
-        let entries = rows
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|error| CoreError::index(error, "calendar_query"))?;
-        select_calendar_entries(entries, range_start, range_end).map_err(calendar_error)
     }
 
     /// Read one plugin-local state value. The value is derived cache state:
@@ -1063,11 +1037,16 @@ fn upsert_markdown_tx(
                     "INSERT INTO object_properties(file_id,property_name,value_text,value_type) VALUES(?1,?2,?3,?4)",
                     params![file_id, key, value_text, value_type],
                 )?;
-                if let Some(relation) = match key.as_str() {
-                    "project" => Some("project"),
-                    "chat_id" => Some("chat"),
-                    _ => None,
-                } && let Some(target) = value.as_str()
+                // A property that holds a stable ID links to that object,
+                // whatever the property's name and the object's type. A
+                // chat message's chat_id is the chat relation that chat
+                // reads look up.
+                if let Some(target) = value.as_str()
+                    && let Some(relation) = match key.as_str() {
+                        "chat_id" => Some("chat"),
+                        key if is_stable_id(target) => Some(key),
+                        _ => None,
+                    }
                 {
                     run(
                         "INSERT OR IGNORE INTO object_links(source_file_id,relation,target_stable_id) VALUES(?1,?2,?3)",
@@ -1162,42 +1141,6 @@ fn parse_plugin_state_value(json: &str, operation: &str) -> Result<serde_json::V
     })
 }
 
-impl CalendarItem for CalendarEntry {
-    fn start(&self) -> &str {
-        &self.start
-    }
-    fn end(&self) -> Option<&str> {
-        self.end.as_deref()
-    }
-    fn all_day(&self) -> bool {
-        self.all_day
-    }
-    fn title(&self) -> &str {
-        &self.title
-    }
-    fn source_id(&self) -> &str {
-        &self.source_id
-    }
-    fn property(&self) -> &str {
-        &self.property
-    }
-}
-
-fn calendar_error(error: CalendarError) -> CoreError {
-    match error {
-        CalendarError::InvalidDate => CoreError::validation(
-            "invalid_calendar_date",
-            "Calendar values must use YYYY-MM-DD or RFC 3339 with an explicit offset",
-            "calendar_query",
-        ),
-        CalendarError::InvalidRange => CoreError::validation(
-            "invalid_calendar_range",
-            "The calendar range end must be after its start",
-            "calendar_query",
-        ),
-    }
-}
-
 /// The file's name as search reads it: its title, without `.md`.
 fn filename(path: &str) -> &str {
     let name = Path::new(path)
@@ -1232,6 +1175,28 @@ fn value_text(value: &serde_json::Value) -> String {
         .map(str::to_owned)
         .unwrap_or_else(|| value.to_string())
 }
+/// The name, value type and value text a property filter compares, or
+/// three `NULL`s without a filter.
+fn property_match(
+    filter: Option<&PropertyValue>,
+) -> (Option<&str>, Option<&'static str>, Option<String>) {
+    match filter {
+        Some(filter) => {
+            let (kind, text) = scalar(&filter.value);
+            (Some(filter.name.as_str()), Some(kind), Some(text))
+        }
+        None => (None, None, None),
+    }
+}
+
+/// Whether `value` is the stable ID of an object of the type its prefix
+/// names.
+fn is_stable_id(value: &str) -> bool {
+    value
+        .split_once('_')
+        .is_some_and(|(object_type, _)| workspace_format::valid_object_id(value, object_type))
+}
+
 fn scalar(value: &serde_json::Value) -> (&'static str, String) {
     let kind = match value {
         serde_json::Value::Null => "null",
@@ -1257,6 +1222,22 @@ fn update_identity_status(
     }
     Ok(())
 }
+fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<ObjectSummary> {
+    let json: String = row.get(7)?;
+    let properties: std::collections::BTreeMap<String, serde_json::Value> =
+        serde_json::from_str(&json).unwrap_or_default();
+    Ok(ObjectSummary {
+        id: row.get(0)?,
+        object_type: row.get(1)?,
+        title: row.get(2)?,
+        relative_path: row.get(3)?,
+        revision: row.get(4)?,
+        created: row.get(5)?,
+        updated: row.get(6)?,
+        properties,
+    })
+}
+
 fn row_to_object(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceObject> {
     let json: String = row.get(8)?;
     let properties: HashMap<String, serde_json::Value> =
@@ -1334,17 +1315,20 @@ mod tests {
         index
             .upsert_markdown("task.md", &bytes, 1, &parse_markdown("task.md", &bytes))
             .unwrap();
+        let dated = ObjectFilter {
+            property: Some(PropertyValue {
+                name: "due".into(),
+                value: serde_json::json!("2026-09-04"),
+            }),
+            ..ObjectFilter::default()
+        };
+        assert_eq!(index.query_objects_filtered(&dated).unwrap().len(), 1);
         object.properties.clear();
         let bytes = serialize_object(&object).unwrap();
         index
             .upsert_markdown("task.md", &bytes, 2, &parse_markdown("task.md", &bytes))
             .unwrap();
-        assert!(
-            index
-                .calendar("2026-09-01", "2026-10-01")
-                .unwrap()
-                .is_empty()
-        );
+        assert!(index.query_objects_filtered(&dated).unwrap().is_empty());
     }
 
     #[test]
@@ -1501,88 +1485,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn calendar_compares_rfc3339_values_as_instants() {
-        let mut index = IndexStore::in_memory().unwrap();
-        let now = now_rfc3339();
-        let object = WorkspaceObject {
-            id: new_object_id("task"),
-            object_type: "task".into(),
-            title: "Offset task".into(),
-            body: String::new(),
-            relative_path: "offset.md".into(),
-            revision: String::new(),
-            created: Some(now.clone()),
-            updated: Some(now),
-            properties: BTreeMap::from([(
-                "due".into(),
-                serde_json::json!("2026-09-01T00:30:00+02:00"),
-            )]),
-        };
-        let bytes = serialize_object(&object).unwrap();
-        index
-            .upsert_markdown("offset.md", &bytes, 1, &parse_markdown("offset.md", &bytes))
-            .unwrap();
-        let entries = index
-            .calendar("2026-08-31T22:00:00Z", "2026-08-31T23:00:00Z")
-            .unwrap();
-        assert_eq!(entries.len(), 1);
-    }
-
-    #[test]
-    fn calendar_results_have_deterministic_tie_breakers() {
-        let mut index = IndexStore::in_memory().unwrap();
-        let now = now_rfc3339();
-        let first_id = new_object_id("task");
-        let second_id = new_object_id("task");
-        let beta_id = new_object_id("task");
-        for (id, title, property, path) in [
-            (&beta_id, "Beta", "due", "z/Beta.md"),
-            (&second_id, "Alpha", "start", "b/Alpha.md"),
-            (&first_id, "Alpha", "due", "a/Alpha.md"),
-        ] {
-            let object = WorkspaceObject {
-                id: id.clone(),
-                object_type: "task".into(),
-                title: title.into(),
-                body: String::new(),
-                relative_path: path.into(),
-                revision: String::new(),
-                created: Some(now.clone()),
-                updated: Some(now.clone()),
-                properties: BTreeMap::from([(
-                    property.into(),
-                    serde_json::json!("2026-09-04T12:00:00Z"),
-                )]),
-            };
-            let bytes = serialize_object(&object).unwrap();
-            index
-                .upsert_markdown(path, &bytes, 1, &parse_markdown(path, &bytes))
-                .unwrap();
-        }
-
-        let entries = index
-            .calendar("2026-09-04T00:00:00Z", "2026-09-05T00:00:00Z")
-            .unwrap();
-        let actual = entries
-            .iter()
-            .map(|entry| {
-                (
-                    entry.title.clone(),
-                    entry.source_id.clone(),
-                    entry.property.clone(),
-                )
-            })
-            .collect::<Vec<_>>();
-        let mut expected = vec![
-            ("Beta".into(), beta_id, "due".into()),
-            ("Alpha".into(), second_id, "start".into()),
-            ("Alpha".into(), first_id, "due".into()),
-        ];
-        expected.sort();
-        assert_eq!(actual, expected);
-    }
-
     fn put(index: &mut IndexStore, object: &WorkspaceObject) {
         let bytes = serialize_object(object).unwrap();
         index
@@ -1639,9 +1541,15 @@ mod tests {
         let due = index
             .query_object_summaries(&ObjectSummaryQuery {
                 object_type: Some("task".into()),
-                status_not: Some("done".into()),
-                due_on_or_before: Some("2026-09-29".into()),
-                order: Some(ObjectSummaryOrder::DueAsc),
+                property_not: Some(PropertyValue {
+                    name: "status".into(),
+                    value: serde_json::json!("done"),
+                }),
+                date_on_or_before: Some(PropertyValue {
+                    name: "due".into(),
+                    value: serde_json::json!("2026-09-29"),
+                }),
+                order_by: Some("due".into()),
                 limit: Some(10),
             })
             .unwrap();
@@ -1668,10 +1576,33 @@ mod tests {
         let json = serde_json::to_value(&recent[0]).unwrap();
         assert!(json.get("body").is_none());
         assert_eq!(json["type"], "task");
+        let by_due = index
+            .query_object_summaries(&ObjectSummaryQuery {
+                order_by: Some("due".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        // Without a due date first, then by the due date's text.
+        assert_eq!(
+            by_due
+                .iter()
+                .map(|value| value.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["undated.md", "done.md", "soon.md", "late.md"]
+        );
+        let every_task = index.object_summaries_of_type("task").unwrap();
+        assert_eq!(
+            every_task
+                .iter()
+                .map(|value| value.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["done.md", "late.md", "soon.md", "undated.md"]
+        );
+        assert!(index.object_summaries_of_type("note").unwrap().is_empty());
     }
 
     #[test]
-    fn filtered_queries_match_exact_string_properties() {
+    fn filtered_queries_match_exact_property_values() {
         let mut index = IndexStore::in_memory().unwrap();
         let project = new_object_id("project");
         put(
@@ -1690,10 +1621,35 @@ mod tests {
                 serde_json::json!({"status": "done"}),
             ),
         );
+        put(
+            &mut index,
+            &task(
+                "home/c.md",
+                "2026-09-03T00:00:00Z",
+                serde_json::json!({"estimate": 3, "flagged": true, "status": null}),
+            ),
+        );
+        let having = |name: &str, value: serde_json::Value| {
+            index
+                .query_objects_filtered(&ObjectFilter {
+                    property: Some(PropertyValue {
+                        name: name.into(),
+                        value,
+                    }),
+                    ..Default::default()
+                })
+                .unwrap()
+                .into_iter()
+                .map(|object| object.relative_path)
+                .collect::<Vec<_>>()
+        };
         let by_project = index
             .query_objects_filtered(&ObjectFilter {
                 object_type: Some("task".into()),
-                project: Some(project),
+                property: Some(PropertyValue {
+                    name: "project".into(),
+                    value: serde_json::json!(project),
+                }),
                 ..Default::default()
             })
             .unwrap();
@@ -1702,20 +1658,43 @@ mod tests {
         let by_prefix = index
             .query_objects_filtered(&ObjectFilter {
                 path_prefix: Some("home/".into()),
-                status: Some("done".into()),
+                property: Some(PropertyValue {
+                    name: "status".into(),
+                    value: serde_json::json!("done"),
+                }),
                 ..Default::default()
             })
             .unwrap();
         assert_eq!(by_prefix.len(), 1);
-        assert!(
-            index
-                .query_objects_filtered(&ObjectFilter {
-                    priority: Some("high".into()),
-                    ..Default::default()
-                })
-                .unwrap()
-                .is_empty()
+        assert!(having("priority", serde_json::json!("high")).is_empty());
+        // A number, a boolean and null match only as themselves.
+        assert_eq!(having("estimate", serde_json::json!(3)), ["home/c.md"]);
+        assert!(having("estimate", serde_json::json!("3")).is_empty());
+        assert_eq!(having("flagged", serde_json::json!(true)), ["home/c.md"]);
+        assert!(having("flagged", serde_json::json!("true")).is_empty());
+        assert_eq!(having("status", serde_json::Value::Null), ["home/c.md"]);
+    }
+
+    #[test]
+    fn a_property_holding_a_stable_id_links_to_that_object() {
+        let mut index = IndexStore::in_memory().unwrap();
+        let gone = new_object_id("recipe");
+        put(
+            &mut index,
+            &task(
+                "a.md",
+                "2026-09-01T00:00:00Z",
+                serde_json::json!({"inspired_by": gone, "label": "recipe_not-an-id"}),
+            ),
         );
+        let broken = index
+            .diagnostics()
+            .unwrap()
+            .into_iter()
+            .filter(|diagnostic| diagnostic.code == "broken_reference")
+            .map(|diagnostic| diagnostic.relative_path)
+            .collect::<Vec<_>>();
+        assert_eq!(broken, [Some("a.md".to_owned())]);
     }
 
     #[test]

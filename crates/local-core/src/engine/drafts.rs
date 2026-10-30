@@ -371,7 +371,6 @@ impl WorkspaceEngine {
         expected: Option<&str>,
         operation: &str,
     ) -> Result<MutationResult<WorkspaceObject>> {
-        normalize_domain_properties(&object.object_type, &mut object.properties)?;
         object.updated = Some(now_rfc3339());
         self.commit_object(object, expected, "object:updated", operation)
     }

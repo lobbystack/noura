@@ -55,7 +55,6 @@ impl WorkspaceEngine {
         properties.remove("type");
         properties.remove("created");
         properties.remove("updated");
-        normalize_domain_properties(&input.object_type, &mut properties)?;
         let id = new_object_id(&input.object_type);
         let relative_path = match input.relative_path {
             Some(relative_path) => relative_path,
@@ -88,7 +87,7 @@ impl WorkspaceEngine {
     /// its schema, which adds the defaults they lack, and its file takes
     /// the type's canonical order. A property that fails the schema stops
     /// the create with `invalid_property`, naming the property, and nothing
-    /// is written. Other types keep [`Self::create_object`]'s rules. The
+    /// is written. Other types keep their properties as given. The
     /// title names the file only when `input` gives no path: with one, the
     /// path's file name is the title, and `input.title` may be empty. The
     /// call returns once the file is durably on disk.
@@ -368,7 +367,7 @@ impl WorkspaceEngine {
             };
         }
         let expected_revision = patch.expected_revision.clone();
-        apply_content(&mut object, patch)?;
+        apply_content(&mut object, patch);
         let committed = self.commit_object(
             object,
             Some(&expected_revision),
@@ -424,7 +423,7 @@ impl WorkspaceEngine {
             }
         };
         let expected_revision = patch.expected_revision.clone();
-        apply_content(&mut object, patch)?;
+        apply_content(&mut object, patch);
         self.commit_object(
             object,
             Some(&expected_revision),
@@ -811,75 +810,11 @@ pub(super) fn file_stem(path: &str) -> String {
         .replace(['-', '_'], " ")
 }
 
-pub(super) fn normalize_domain_properties(
-    object_type: &str,
-    properties: &mut BTreeMap<String, serde_json::Value>,
-) -> Result<()> {
-    if object_type == "task" {
-        workspace_format::normalize_task_properties(properties).map_err(task_format_error)?;
-    } else if object_type == "project" {
-        workspace_format::normalize_project_properties(properties).map_err(task_format_error)?;
-    }
-    Ok(())
-}
-
-fn task_format_error(error: workspace_format::FormatError) -> CoreError {
-    match error {
-        workspace_format::FormatError::InvalidTaskStatus => CoreError::validation(
-            "invalid_field",
-            "Unsupported status value",
-            "object_validate",
-        ),
-        workspace_format::FormatError::InvalidTaskStatusType => CoreError::validation(
-            "invalid_field",
-            "status must be a string",
-            "object_validate",
-        ),
-        workspace_format::FormatError::InvalidTaskPriority => CoreError::validation(
-            "invalid_field",
-            "Unsupported priority value",
-            "object_validate",
-        ),
-        workspace_format::FormatError::InvalidTaskPriorityType => CoreError::validation(
-            "invalid_field",
-            "priority must be a string",
-            "object_validate",
-        ),
-        workspace_format::FormatError::InvalidTaskDue => CoreError::validation(
-            "invalid_date",
-            "due must use YYYY-MM-DD or RFC 3339 with an explicit offset",
-            "object_validate",
-        ),
-        workspace_format::FormatError::InvalidTaskProject => CoreError::validation(
-            "invalid_project_id",
-            "Task project references use a stable project ID",
-            "object_validate",
-        ),
-        workspace_format::FormatError::InvalidProjectStatus => CoreError::validation(
-            "invalid_field",
-            "Unsupported project status value",
-            "object_validate",
-        ),
-        workspace_format::FormatError::InvalidProjectStatusType => CoreError::validation(
-            "invalid_field",
-            "project status must be a string",
-            "object_validate",
-        ),
-        _ => CoreError::validation(
-            "invalid_field",
-            "Task metadata is invalid",
-            "object_validate",
-        ),
-    }
-}
-
 /// Put a patch's body and properties into `object`, leaving the properties
 /// Noura keeps for itself alone, and stamp `updated`.
-fn apply_content(object: &mut WorkspaceObject, patch: ObjectPatch) -> Result<()> {
+fn apply_content(object: &mut WorkspaceObject, patch: ObjectPatch) {
     apply_patch(object, patch);
-    normalize_domain_properties(&object.object_type, &mut object.properties)?;
     object.updated = Some(now_rfc3339());
-    Ok(())
 }
 
 /// Put a patch's body and properties into `object`, leaving the properties
@@ -901,14 +836,11 @@ fn apply_patch(object: &mut WorkspaceObject, patch: ObjectPatch) {
 }
 
 /// Check `object`'s properties against its type's schema in `schemas`,
-/// adding the defaults it lacks, or against the built-in task and project
-/// rules when the type has none. A failing property comes back as
+/// adding the defaults it lacks. A type without a schema keeps its
+/// properties as they are. A failing property comes back as
 /// `invalid_property`, naming it and the workspace format's code for what
 /// is wrong, and leaves `object` as it was.
 fn check_schema(object: &mut WorkspaceObject, schemas: &ObjectTypeRegistry) -> Result<()> {
-    if !schemas.contains(&object.object_type) {
-        return normalize_domain_properties(&object.object_type, &mut object.properties);
-    }
     schemas.normalize(object).map_err(|error| {
         let details = serde_json::to_value(&error).unwrap_or_default();
         let property = details["property"].as_str().unwrap_or_default().to_owned();
@@ -931,7 +863,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn task_mutations_use_portable_defaults_validation_and_canonical_bytes() {
+    fn a_task_keeps_its_properties_as_written_without_a_plugins_schema() {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
@@ -946,27 +878,31 @@ mod tests {
                 properties: BTreeMap::from([("custom".into(), serde_json::json!("kept"))]),
             })
             .unwrap();
-        assert_eq!(created.value.properties["status"], "todo");
-        assert_eq!(created.value.properties["priority"], "medium");
+        // The kernel adds no task defaults: the Tasks plugin's schema does.
+        assert_eq!(
+            created.value.properties,
+            BTreeMap::from([("custom".into(), serde_json::json!("kept"))])
+        );
 
+        // Nor does it check task values.
         let updated = engine
             .update_object(
                 &created.value.id,
                 ObjectPatch {
                     title: None,
                     body: None,
-                    properties: BTreeMap::from([("status".into(), serde_json::json!("done"))]),
+                    properties: BTreeMap::from([("status".into(), serde_json::json!("later"))]),
                     remove_properties: Vec::new(),
                     expected_revision: created.revision,
                 },
             )
             .unwrap();
-        assert_eq!(updated.value.properties["status"], "done");
+        assert_eq!(updated.value.properties["status"], "later");
         assert_eq!(updated.value.properties["custom"], "kept");
+        let written = std::fs::read_to_string(workspace.path().join("tasks/portable.md")).unwrap();
         assert!(
-            std::fs::read_to_string(workspace.path().join("tasks/portable.md"))
-                .unwrap()
-                .contains("status: done")
+            written.contains("custom: kept\nstatus: later\n"),
+            "{written}"
         );
 
         let removed = engine
@@ -981,17 +917,13 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(removed.value.properties["status"], "todo");
-        assert!(!removed.value.properties.contains_key("custom"));
-        assert!(
-            !std::fs::read_to_string(workspace.path().join("tasks/portable.md"))
-                .unwrap()
-                .contains("custom:")
-        );
+        assert!(removed.value.properties.is_empty());
+        let written = std::fs::read_to_string(workspace.path().join("tasks/portable.md")).unwrap();
+        assert!(!written.contains("custom:") && !written.contains("status:"));
     }
 
     #[test]
-    fn project_creation_keeps_native_defaults_for_omitted_optional_values() {
+    fn a_project_without_a_path_goes_in_the_folder_named_after_its_type() {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
@@ -1006,12 +938,8 @@ mod tests {
         let created = engine.create_object(input).unwrap();
 
         assert_eq!(created.value.body, "");
-        assert_eq!(created.value.properties["status"], "planned");
-        assert_eq!(created.value.properties.len(), 1);
-        assert_eq!(
-            created.value.relative_path,
-            "projects/Portable project/Portable project.md"
-        );
+        assert!(created.value.properties.is_empty());
+        assert_eq!(created.value.relative_path, "projects/Portable project.md");
         assert_eq!(created.value.title, "Portable project");
         assert!(workspace.path().join(created.value.relative_path).is_file());
     }
@@ -1103,23 +1031,21 @@ mod tests {
                 1
             );
         }
-        let before_calendar = engine.calendar("2026-09-01", "2026-09-05").unwrap();
-        assert_eq!(before_calendar.len(), 3);
-        assert!(
-            before_calendar
-                .iter()
-                .any(|entry| entry.source_id == project.value.id && entry.end.is_some())
-        );
-        assert!(
-            before_calendar
-                .iter()
-                .any(|entry| entry.source_id == task.value.id)
-        );
-        assert!(
-            before_calendar
-                .iter()
-                .any(|entry| entry.source_id == note.value.id)
-        );
+        let in_project = crate::ObjectFilter {
+            property: Some(crate::PropertyValue {
+                name: "project".into(),
+                value: serde_json::json!(project.value.id.clone()),
+            }),
+            ..crate::ObjectFilter::default()
+        };
+        let ids = |objects: Vec<WorkspaceObject>| {
+            objects
+                .into_iter()
+                .map(|object| object.id)
+                .collect::<Vec<_>>()
+        };
+        let before_in_project = ids(engine.query_objects_filtered(&in_project).unwrap());
+        assert_eq!(before_in_project, [task.value.id.as_str()]);
 
         let index_path = engine.index_path().to_owned();
         drop(engine);
@@ -1162,26 +1088,9 @@ mod tests {
                 1
             );
         }
-        let after_calendar = rebuilt.calendar("2026-09-01", "2026-09-05").unwrap();
         assert_eq!(
-            after_calendar
-                .iter()
-                .map(|entry| (
-                    entry.source_id.as_str(),
-                    entry.property.as_str(),
-                    entry.start.as_str(),
-                    entry.end.as_deref(),
-                ))
-                .collect::<Vec<_>>(),
-            before_calendar
-                .iter()
-                .map(|entry| (
-                    entry.source_id.as_str(),
-                    entry.property.as_str(),
-                    entry.start.as_str(),
-                    entry.end.as_deref(),
-                ))
-                .collect::<Vec<_>>()
+            ids(rebuilt.query_objects_filtered(&in_project).unwrap()),
+            before_in_project
         );
     }
 
