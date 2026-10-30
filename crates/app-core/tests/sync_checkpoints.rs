@@ -265,33 +265,14 @@ async fn a_root_mismatch_walks_the_tree_to_the_differing_objects() {
         .0;
     // A server that claims an object the log never carried, in a bucket
     // that is empty in truth.
-    let (index, rid) = (0u16..4096)
-        .find_map(|i| {
-            (buckets[usize::from(i)] == bucket_hash(i, &[])).then(|| {
-                (
-                    i,
-                    Id([
-                        (i >> 4) as u8,
-                        ((i & 15) << 4) as u8,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        9,
-                    ]),
-                )
-            })
-        })
+    let index = (0u16..4096)
+        .find(|i| buckets[usize::from(*i)] == bucket_hash(*i, &[]))
         .expect("an empty bucket");
+    let mut bytes = [0u8; 16];
+    bytes[0] = (index >> 4) as u8;
+    bytes[1] = ((index & 15) << 4) as u8;
+    bytes[15] = 9;
+    let rid = Id(bytes);
     let fake = Ref {
         device: pair.desktop.credentials.keys.device(),
         counter: 999,
@@ -299,7 +280,8 @@ async fn a_root_mismatch_walks_the_tree_to_the_differing_objects() {
         op_digest: Digest([7; 32]),
     };
     let mut fake_buckets = buckets.clone();
-    fake_buckets[usize::from(index)] = bucket_hash(index, &[leaf_hash(&rid, &[fake.clone()])]);
+    fake_buckets[usize::from(index)] =
+        bucket_hash(index, &[leaf_hash(&rid, std::slice::from_ref(&fake))]);
     let mut body = real.body.clone();
     body.manifest_root = root_of_buckets(&fake_buckets);
     body.live_objects += 1;
