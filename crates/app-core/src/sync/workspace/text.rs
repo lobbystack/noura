@@ -1165,6 +1165,14 @@ impl WorkspaceSync {
         Ok(())
     }
 
+    /// A state operation reached a text-mode note: the next settle looks
+    /// at its lineage again.
+    pub(super) fn note_text_change(&mut self, rid: Id) {
+        if self.in_text_mode(&rid) {
+            self.text.unsettled.insert(rid);
+        }
+    }
+
     /// Runs the sandbox on what the journal took in since the last call.
     pub(super) fn settle_text(&mut self) -> Result<(), SyncError> {
         for rid in std::mem::take(&mut self.text.unsettled) {
@@ -1706,6 +1714,34 @@ impl WorkspaceSync {
             .collect();
         for rid in notes {
             signed += usize::from(self.text_upkeep_note(rid, now)?);
+        }
+        Ok(signed)
+    }
+
+    /// The notes whose documents an editor holds.
+    pub(super) fn text_open_notes(&self) -> Vec<Id> {
+        self.text
+            .sessions
+            .iter()
+            .filter(|(_, session)| session.editing)
+            .map(|(rid, _)| *rid)
+            .collect()
+    }
+
+    /// The sync client's side of the note's open document.
+    pub(super) fn text_shared(&self, rid: &Id) -> Option<SharedNote> {
+        self.text.sessions.get(rid).map(|s| s.shared.clone())
+    }
+
+    /// One 500 ms tick while a note is open: sends the edits that wait.
+    pub async fn text_step(
+        &mut self,
+        service: &mut crate::sync::SyncService,
+    ) -> Result<usize, SyncError> {
+        let signed = self.text_tick(Instant::now())?;
+        if signed > 0 {
+            self.save()?;
+            self.push_everything(service).await?;
         }
         Ok(signed)
     }

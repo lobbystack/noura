@@ -25,6 +25,7 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::tungstenite::{Message, handshake::derive_accept_key};
 
+use super::workspace::text::TICK;
 use super::workspace::{PULL_WAIT_SECONDS, WorkspaceSync};
 use super::{SyncClient, SyncError, SyncService, network, random};
 
@@ -259,6 +260,7 @@ impl Live {
                     self.channel = Some(channel);
                     self.backoff.reset();
                     self.pull_due = Instant::now();
+                    sync.presence_connected()?;
                 }
                 Err(_) => self.retry_at = Instant::now() + self.backoff.next_wait(),
             }
@@ -286,10 +288,33 @@ impl Live {
                 applied: round.applied,
             });
         }
+        // While a note is open, its edits and cursors go out on the 500 ms
+        // tick (§22, §23).
+        let tick = sync.text_active().then_some(Instant::now() + TICK);
+        let ticking = async {
+            match tick {
+                Some(tick) => tokio::time::sleep_until(tick).await,
+                None => std::future::pending().await,
+            }
+        };
         let frame = tokio::select! {
             frame = channel.next() => Some(frame),
             () = wake.notified() => None,
             () = tokio::time::sleep_until(self.pull_due) => None,
+            () = ticking => {
+                sync.text_step(service).await?;
+                for frame in sync.presence_frames()? {
+                    if channel.send(&frame).await.is_err() {
+                        self.lost();
+                        return Ok(Step::default());
+                    }
+                }
+                return Ok(Step {
+                    connected: true,
+                    pulled: false,
+                    applied: 0,
+                });
+            }
         };
         match frame {
             Some(Ok(frame)) => {

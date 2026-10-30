@@ -21,6 +21,7 @@ mod bootstrap;
 mod capture;
 mod domains;
 mod moves;
+pub mod presence;
 pub mod rebuild;
 mod settle;
 pub mod state;
@@ -206,6 +207,8 @@ pub struct WorkspaceSync {
     rotation_due: BTreeMap<Id, std::time::Instant>,
     /// What the device holds in memory for text mode (§22).
     text: text::TextRuntime,
+    /// What the device holds of presence (§23).
+    presence: presence::PresenceRuntime,
 }
 
 /// What handling one realtime frame did (§23).
@@ -418,6 +421,7 @@ impl WorkspaceSync {
             rotation_wait: super::upkeep::KEY_HOLDER_WAIT.end,
             rotation_due: BTreeMap::new(),
             text: text::TextRuntime::default(),
+            presence: presence::PresenceRuntime::default(),
         };
         sync.want_entries();
         sync.save()?;
@@ -540,6 +544,7 @@ impl WorkspaceSync {
             rotation_wait: super::upkeep::KEY_HOLDER_WAIT.end,
             rotation_due: BTreeMap::new(),
             text: text::TextRuntime::default(),
+            presence: presence::PresenceRuntime::default(),
             state,
         };
         if let Some(next) = next.get(&sync.state.domain) {
@@ -2999,8 +3004,23 @@ impl WorkspaceSync {
                 service.follow_account(*account, *genesis).await?;
                 Ok(FrameOutcome::default())
             }
-            Frame::Error { code, .. } => {
+            Frame::Presence { record } => {
+                self.take_presence(record, std::time::Instant::now());
+                Ok(FrameOutcome::default())
+            }
+            Frame::PresenceGone { device, session } => {
+                self.presence_gone(*device, *session);
+                Ok(FrameOutcome::default())
+            }
+            Frame::Error {
+                rejected_type,
+                code,
+                ..
+            } => {
                 tracing::warn!(code = %code.as_str(), "the realtime channel refused a frame");
+                if *rejected_type == 2 {
+                    self.presence_refused(service, code.as_str()).await?;
+                }
                 Ok(FrameOutcome::default())
             }
             _ => Ok(FrameOutcome::default()),
@@ -3801,6 +3821,8 @@ impl WorkspaceSync {
         touched.sort_by_key(|rid| !markers.contains(rid));
         for rid in touched {
             self.settle(rid, &contents)?;
+            // A state operation may have ended the note's lineage.
+            self.note_text_change(rid);
         }
         self.settle_text()?;
         Ok(applied)
