@@ -90,8 +90,8 @@ pub(crate) struct PushedOp {
 pub(crate) enum Pushed {
     /// An operation.
     Op(PushedOp),
-    /// A policy change; this server takes `account_heads` so far, and
-    /// ticket 50 adds the other kinds.
+    /// A policy change; every kind but `accept_reset`, which ticket 60
+    /// adds.
     Change(usize, Signed<PolicyChange>),
     /// An epoch bundle: a rotation or a replacement (§9).
     Epoch(usize, EpochBundle),

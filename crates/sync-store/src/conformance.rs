@@ -30,12 +30,14 @@ use crate::{Backend, Error, LockPlan, Refusal, Session, Store, WriteTxn};
 mod blobs;
 mod checkpoints;
 mod devices;
+mod domains;
 mod invitations;
 mod keys;
 mod shares;
 pub use blobs::*;
 pub use checkpoints::*;
 pub use devices::*;
+pub use domains::*;
 pub use invitations::*;
 pub use keys::*;
 pub use shares::*;
@@ -102,6 +104,9 @@ macro_rules! conformance_tests {
             racing_checkpoints_keep_the_first,
             a_checkpoint_goes_alone_or_last_in_an_approval,
             history_floors_follow_section_9,
+            create_domain_commits_with_its_epoch_and_marker,
+            an_outside_member_receives_nothing_of_a_domain,
+            set_access_and_delete_domain_follow_the_policy,
             removals_make_checkpoints_due_and_leave_the_heads,
             replacements_make_checkpoints_due,
             checkpoint_routes_serve_the_chain_and_manifest,
