@@ -17,12 +17,14 @@ use sync_protocol::types::Id;
 use zeroize::Zeroizing;
 
 use super::folder::Folder;
+use super::share::Sharing;
 use super::{
     AccountAction, AccountBackend, AccountPhase, AccountScreen, AlertEntry, ApprovalView,
     DeviceEntry, KitReplacementView, KitView, RecoveryView, RemovalView, RequestEntry, SignOutView,
     SignedInView, fingerprint,
 };
 use crate::folder_sync::{FolderSyncAction, FolderSyncBackend, FolderSyncScreen};
+use crate::shares::{ShareAction, ShareBackend, ShareScreen};
 use crate::sync::approval::{Candidate, CandidateStep, OutstandingOffer, PendingDevice};
 use crate::sync::device::{DeviceSignIn, Joined, SignedIn, StoredDevice, join, server_address};
 use crate::sync::device_list::{AddedBy, DeviceAlert};
@@ -48,6 +50,7 @@ pub type OpenBrowser = Arc<dyn Fn(&str) -> std::io::Result<()> + Send + Sync>;
 struct Shared {
     screen: Mutex<AccountScreen>,
     folder: Mutex<FolderSyncScreen>,
+    share: Mutex<ShareScreen>,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// Ends a round's waiting pull when a message arrives.
     interrupt: tokio::sync::Notify,
@@ -57,10 +60,32 @@ struct Shared {
 enum Message {
     Account(AccountAction),
     Folder(FolderSyncAction),
+    Share(ShareAction),
     Attach(Option<Arc<local_core::WorkspaceEngine>>),
 }
 
 impl Shared {
+    fn show_share(&self, screen: ShareScreen) {
+        let mut shown = self.share.lock().unwrap_or_else(PoisonError::into_inner);
+        if *shown == screen {
+            return;
+        }
+        *shown = screen;
+        drop(shown);
+        self.wake();
+    }
+
+    fn wake(&self) {
+        let wake = self
+            .wake
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(wake) = wake {
+            wake();
+        }
+    }
+
     fn show_folder(&self, screen: FolderSyncScreen) {
         let mut shown = self.folder.lock().unwrap_or_else(PoisonError::into_inner);
         if *shown == screen {
@@ -112,6 +137,7 @@ impl LiveAccount {
                 ..AccountScreen::default()
             }),
             folder: Mutex::new(FolderSyncScreen::default()),
+            share: Mutex::new(ShareScreen::default()),
             wake: Mutex::new(None),
             interrupt: tokio::sync::Notify::new(),
         });
@@ -132,6 +158,7 @@ impl LiveAccount {
             last_refresh: None,
             upkeep: Upkeep::default(),
             folder: Folder::default(),
+            sharing: Sharing::default(),
         };
         let spawned = std::thread::Builder::new()
             .name("noura-sync-account".into())
@@ -210,6 +237,31 @@ impl FolderSyncBackend for LiveAccount {
     }
 }
 
+impl ShareBackend for LiveAccount {
+    fn screen(&self) -> ShareScreen {
+        self.shared
+            .share
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn act(&self, action: ShareAction) {
+        if !matches!(action, ShareAction::Copied | ShareAction::Close) {
+            self.shared
+                .share
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .busy = true;
+        }
+        self.send(Message::Share(action));
+    }
+
+    fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        AccountBackend::set_wake(self, wake);
+    }
+}
+
 /// What a browser sign-in is for.
 enum Purpose {
     /// Signing this computer in as a device of your account.
@@ -246,6 +298,8 @@ struct Driver {
     upkeep: Upkeep,
     /// The open workspace's sync.
     folder: Folder,
+    /// The share dialog.
+    sharing: Sharing,
 }
 
 /// What a failed action tells you.
@@ -414,6 +468,15 @@ impl Driver {
                     self.service.as_mut(),
                     &self.app_data,
                 )),
+                Ok(Message::Share(action)) => {
+                    runtime.block_on(self.sharing.act(
+                        action,
+                        self.service.as_mut(),
+                        &mut self.folder,
+                        &self.app_data,
+                    ));
+                    self.shared.show_share(self.sharing.screen.clone());
+                }
                 Ok(Message::Attach(engine)) => {
                     self.folder
                         .attach(engine, self.service.as_ref(), &self.store, &self.app_data)

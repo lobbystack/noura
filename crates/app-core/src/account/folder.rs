@@ -203,6 +203,11 @@ impl Folder {
         }
     }
 
+    /// The open workspace's sync, when it syncs.
+    pub(super) fn sync_mut(&mut self) -> Option<&mut WorkspaceSync> {
+        self.sync.as_mut()
+    }
+
     /// Whether the open workspace syncs and isn't paused, so a round's
     /// pull may wait for new records.
     pub(super) fn waits(&self) -> bool {
