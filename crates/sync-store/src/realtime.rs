@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 
 use sync_protocol::codec::Sorted;
 use sync_protocol::messages::{Frame, MAX_FRAME};
+use sync_protocol::padding::is_padded_ciphertext_length;
+use sync_protocol::records::{Presence, Signed};
 use sync_protocol::types::{Digest, Id};
 
 use crate::policy::{self, PolicyCache};
@@ -32,6 +34,59 @@ pub struct Watch {
     pub keys: u64,
     /// Each member account's current chain, as genesis and head seqno.
     pub accounts: BTreeMap<Id, (Digest, u64)>,
+}
+
+/// The server's checks on a presence record (§23).
+pub(crate) async fn check_presence(
+    txn: &mut impl ReadTxn,
+    cache: &PolicyCache,
+    session: Session,
+    workspace: Id,
+    record: &Signed<Presence>,
+) -> Result<()> {
+    let body = &record.body;
+    let Some((_, policy)) = policy::load(txn, cache, workspace).await? else {
+        return Err(refuse("not_found", "no such workspace"));
+    };
+    let snapshot = policy.head_snapshot();
+    let signer = snapshot.devices.get(&body.device);
+    let signed = signer.is_some_and(|device| record.verify(&device.card.signing_public).is_ok());
+    if !signed
+        || body.workspace != workspace
+        || body.device != session.device
+        || !snapshot.can_read(&body.device, &body.domain)
+    {
+        return Err(refuse(
+            "forbidden",
+            "the session's device can't send presence in that domain",
+        ));
+    }
+    if !is_padded_ciphertext_length(body.ciphertext.len() as u64) {
+        return Err(refuse(
+            "padding_invalid",
+            "the ciphertext isn't a padded length",
+        ));
+    }
+    let Some(domain) = txn.domain(workspace, body.domain).await? else {
+        return Err(refuse("not_found", "no such domain"));
+    };
+    if domain.epoch == 0 || body.epoch != domain.epoch {
+        return Err(refuse(
+            "epoch_stale",
+            "the epoch isn't the latest epoch entry's",
+        ));
+    }
+    let (head_revision, _) = policy.head();
+    if policy
+        .rotation_required(&body.domain, domain.epoch_policy_revision, head_revision)
+        .is_some()
+    {
+        return Err(refuse(
+            "rotation_pending",
+            "the domain waits for a rotation",
+        ));
+    }
+    Ok(())
 }
 
 /// Reads the workspace's state for `session` in one snapshot and returns

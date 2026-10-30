@@ -62,7 +62,7 @@ pub use invitations::{INVITATION_TTL, InvitationCreation, MAX_INVITATIONS};
 pub use shares::{MAX_SHARE_DAYS, MAX_SHARES, ShareCreation};
 use sync_protocol::types::{Digest, Id, SecretKey};
 
-pub use hub::EventHub;
+pub use hub::{EventHub, Relayed};
 pub use limiter::{Limit, Limiter, MemoryLimiter, Taken};
 pub use policy::PolicyCache;
 pub use realtime::Watch;
@@ -1459,6 +1459,14 @@ pub trait Backend: Send + Sync + 'static {
         let _ = (workspace, heads);
     }
 
+    /// Hands a presence frame to the other instances on the same database
+    /// (§23). It returns at once, and a frame that goes astray costs at
+    /// most one cursor update. A database that one instance serves needs
+    /// nothing.
+    fn relay_presence(&self, workspace: Id, relayed: &Relayed) {
+        let _ = (workspace, relayed);
+    }
+
     /// Whether write transactions run side by side, so the locks of §15
     /// decide which one waits. SQLite's one writer runs them one at a time.
     fn parallel_writes(&self) -> bool {
@@ -2035,6 +2043,33 @@ impl<B: Backend> Store<B> {
                 })
             }))
             .await
+    }
+
+    /// Checks a presence record from `session` (§23): its signer is the
+    /// session's device and active in `workspace`, reads the domain, and
+    /// wrote under the domain's current epoch with no rotation pending. The
+    /// server stores nothing of it.
+    pub async fn check_presence(
+        &self,
+        session: Session,
+        workspace: Id,
+        record: sync_protocol::records::Signed<sync_protocol::records::Presence>,
+    ) -> Result<()> {
+        let cache = self.policies.clone();
+        self.backend
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move {
+                    realtime::check_presence(txn, &cache, session, workspace, &record).await
+                })
+            }))
+            .await
+    }
+
+    /// Sends a checked presence frame to the connections on this instance
+    /// and to the other instances.
+    pub fn relay_presence(&self, workspace: Id, relayed: Relayed) {
+        self.backend.relay_presence(workspace, &relayed);
+        self.hub.relay(workspace, relayed);
     }
 
     /// The frames that tell a realtime connection of `session` what

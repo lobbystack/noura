@@ -5,11 +5,13 @@
 //! forwards those that fit one frame in a records frame, or else a notify
 //! with the new head, at most one per domain every 250 ms. It also tells
 //! the device that the policy, the key stream or a member's account chain
-//! moved, and the restore generation when it opens. It carries no writes:
-//! every client frame gets an error frame until presence arrives
-//! (ticket 55).
+//! moved, and the restore generation when it opens. The only frames a
+//! client sends are presence records and subscriptions: a checked record
+//! goes to the other connected devices that read its domain and subscribed
+//! to its channel, on any instance, and nothing stores it. When a
+//! connection ends, the same devices get `presence_gone` for its sessions.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,8 +23,10 @@ use axum::http::request::Parts;
 use axum::response::Response;
 use sync_protocol::codec::{Decode, Encode, Text};
 use sync_protocol::messages::{Frame, MAX_FRAME};
+use sync_protocol::records::{Presence, Signed};
 use sync_protocol::types::{Id, IdOrZero};
-use sync_store::{Backend, Session, Store, Watch};
+use sync_store::{Backend, Relayed, Session, Store, Watch};
+use tokio::sync::broadcast;
 use tokio::time::Instant;
 
 use crate::http::{ApiError, AppState, Segments, bearer, id, refused};
@@ -30,6 +34,11 @@ use crate::http::{ApiError, AppState, Segments, bearer, id, refused};
 /// The shortest time between two notify frames for one domain on one
 /// connection (§23).
 pub const NOTIFY_EVERY: Duration = Duration::from_millis(250);
+/// The length of the window presence records are counted in.
+const PRESENCE_WINDOW: Duration = Duration::from_secs(1);
+/// The most sessions of one connection the server remembers for
+/// `presence_gone`. A device draws one session per connection (§23).
+const MAX_SESSIONS: usize = 8;
 
 /// The bearer token and the device it names.
 pub(crate) struct Device {
@@ -64,8 +73,10 @@ pub(crate) async fn open<B: Backend>(
         upgrade.map_err(|_| refused("bad_request", "the realtime route takes a WebSocket"))?;
     // Subscribe before the first read, so no commit slips between them.
     let changes = store.hub().subscribe(workspace);
+    let relayed = store.hub().subscribe_presence(workspace);
     let watch = store.realtime_watch(device.session, workspace).await?;
     let limit = MAX_FRAME + 5;
+    let presence_per_second = store.limits().presence_per_second;
     Ok(upgrade
         .max_message_size(limit)
         .max_frame_size(limit)
@@ -76,8 +87,9 @@ pub(crate) async fn open<B: Backend>(
                 workspace,
                 watch,
                 notifies: Notifies::default(),
+                presence: PresenceState::new(presence_per_second),
             }
-            .run(socket, changes)
+            .run(socket, changes, relayed)
         }))
 }
 
@@ -143,19 +155,70 @@ impl Notifies {
     }
 }
 
+/// What a connection knows of presence: the channels it subscribed to, the
+/// channels each of its sessions wrote on, and its count this second.
+struct PresenceState {
+    subscribed: BTreeSet<Id>,
+    sessions: BTreeMap<Id, BTreeSet<(Id, Id)>>,
+    limit: u32,
+    window: Instant,
+    count: u32,
+}
+
+impl PresenceState {
+    fn new(limit: u32) -> Self {
+        Self {
+            subscribed: BTreeSet::new(),
+            sessions: BTreeMap::new(),
+            limit,
+            window: Instant::now(),
+            count: 0,
+        }
+    }
+
+    /// Counts a record, and returns whether it stays within the limit.
+    fn admit(&mut self, now: Instant) -> bool {
+        if now >= self.window + PRESENCE_WINDOW {
+            self.window = now;
+            self.count = 0;
+        }
+        self.count += 1;
+        self.count <= self.limit
+    }
+
+    /// Remembers that `session` wrote on `channel`, unless the connection
+    /// already holds as many sessions as it may.
+    fn note(&mut self, session: Id, domain: Id, channel: Id) -> bool {
+        if !self.sessions.contains_key(&session) && self.sessions.len() >= MAX_SESSIONS {
+            return false;
+        }
+        self.sessions
+            .entry(session)
+            .or_default()
+            .insert((domain, channel));
+        true
+    }
+}
+
 struct Connection<B: Backend> {
     store: Arc<Store<B>>,
     device: Device,
     workspace: Id,
     watch: Watch,
     notifies: Notifies,
+    presence: PresenceState,
 }
 
 /// Why a connection ends.
 struct Closed;
 
 impl<B: Backend> Connection<B> {
-    async fn run(mut self, mut socket: WebSocket, mut changes: tokio::sync::watch::Receiver<u64>) {
+    async fn run(
+        mut self,
+        mut socket: WebSocket,
+        mut changes: tokio::sync::watch::Receiver<u64>,
+        mut relayed: broadcast::Receiver<Relayed>,
+    ) {
         let mut generation = self.store.restore_generation();
         if send(
             &mut socket,
@@ -176,9 +239,14 @@ impl<B: Backend> Connection<B> {
                     Err(_) => Err(Closed),
                 },
                 () = sleep_until(next) => self.send_due(&mut socket).await,
+                relay = relayed.recv() => match relay {
+                    Ok(relay) => self.forward(&mut socket, relay).await,
+                    Err(broadcast::error::RecvError::Lagged(_)) => Ok(()),
+                    Err(broadcast::error::RecvError::Closed) => Err(Closed),
+                },
                 message = socket.recv() => match message {
                     Some(Ok(Message::Binary(bytes))) => {
-                        send(&mut socket, &refusal(&bytes)).await
+                        self.client_frame(&mut socket, &bytes).await
                     }
                     Some(Ok(Message::Text(_))) => send(&mut socket, &refusal(&[])).await,
                     Some(Ok(Message::Ping(_) | Message::Pong(_))) => Ok(()),
@@ -186,8 +254,92 @@ impl<B: Backend> Connection<B> {
                 },
             };
             if step.is_err() {
+                self.say_gone();
                 let _ = socket.send(Message::Close(None)).await;
                 return;
+            }
+        }
+    }
+
+    /// A frame the device sent: a subscribe replaces its channels, and a
+    /// presence record that passes its checks goes on to the others.
+    async fn client_frame(&mut self, socket: &mut WebSocket, bytes: &[u8]) -> Result<(), Closed> {
+        match Frame::from_bytes(bytes) {
+            Ok(Frame::Subscribe { channels }) => {
+                self.presence.subscribed = channels.0.into_iter().collect();
+                Ok(())
+            }
+            Ok(Frame::Presence { record }) => match self.accept_presence(record.clone()).await {
+                Ok(()) => Ok(()),
+                Err(code) => send(socket, &presence_refusal(&record, code)).await,
+            },
+            _ => send(socket, &refusal(bytes)).await,
+        }
+    }
+
+    async fn accept_presence(&mut self, record: Signed<Presence>) -> Result<(), String> {
+        if !self.presence.admit(Instant::now()) {
+            return Err("rate_limited".to_owned());
+        }
+        let body = &record.body;
+        let (domain, channel, device, session) =
+            (body.domain, body.channel, body.device, body.session);
+        self.store
+            .check_presence(self.device.session, self.workspace, record.clone())
+            .await
+            .map_err(|error| match error {
+                sync_store::Error::Refused(refusal) => refusal.code.to_owned(),
+                sync_store::Error::Internal(_) => "internal".to_owned(),
+            })?;
+        if !self.presence.note(session, domain, channel) {
+            return Err("rate_limited".to_owned());
+        }
+        self.store.relay_presence(
+            self.workspace,
+            Relayed {
+                domain,
+                channel,
+                device,
+                frame: Frame::Presence { record }.to_bytes(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Passes a relayed frame to the device when it reads the record's
+    /// domain and subscribed to its channel. A device doesn't hear itself.
+    async fn forward(&self, socket: &mut WebSocket, relayed: Relayed) -> Result<(), Closed> {
+        let wanted = relayed.device != self.device.session.device
+            && self.presence.subscribed.contains(&relayed.channel)
+            && self.watch.heads.contains_key(&relayed.domain);
+        if !wanted {
+            return Ok(());
+        }
+        socket
+            .send(Message::Binary(relayed.frame.into()))
+            .await
+            .map_err(|_| Closed)
+    }
+
+    /// Tells the others this connection's sessions ended.
+    fn say_gone(&self) {
+        let device = self.device.session.device;
+        for (session, channels) in &self.presence.sessions {
+            let frame = Frame::PresenceGone {
+                device,
+                session: *session,
+            }
+            .to_bytes();
+            for (domain, channel) in channels {
+                self.store.relay_presence(
+                    self.workspace,
+                    Relayed {
+                        domain: *domain,
+                        channel: *channel,
+                        device,
+                        frame: frame.clone(),
+                    },
+                );
             }
         }
     }
@@ -258,29 +410,32 @@ async fn send(socket: &mut WebSocket, frame: &Frame) -> Result<(), Closed> {
         .map_err(|_| Closed)
 }
 
-/// The error frame that answers a client frame. The channel takes no
-/// client frame yet: presence records and subscriptions arrive with
-/// ticket 55, and every other type, or bytes that aren't a frame, the
-/// server never takes.
+/// The error frame that refuses a presence record.
+fn presence_refusal(record: &Signed<Presence>, code: String) -> Frame {
+    Frame::Error {
+        rejected_type: 2,
+        domain: IdOrZero(record.body.domain.0),
+        session: IdOrZero(record.body.session.0),
+        sequence: record.body.sequence,
+        code: Text(code),
+        detail: None,
+    }
+}
+
+/// The error frame that answers a client frame the server never takes: any
+/// type but a presence record or a subscribe, a subscribe past the limit,
+/// or bytes that aren't a frame.
 fn refusal(bytes: &[u8]) -> Frame {
-    let zero = || IdOrZero([0; 16]);
-    let error =
-        |rejected_type: u8, domain: IdOrZero, session: IdOrZero, sequence: u64| Frame::Error {
-            rejected_type,
-            domain,
-            session,
-            sequence,
-            code: Text("bad_request".into()),
-            detail: None,
-        };
-    match Frame::from_bytes(bytes) {
-        Ok(Frame::Presence { record }) => error(
-            2,
-            IdOrZero(record.body.domain.0),
-            IdOrZero(record.body.session.0),
-            record.body.sequence,
-        ),
-        Ok(frame) => error(frame.code(), zero(), zero(), 0),
-        Err(_) => error(bytes.first().copied().unwrap_or(0), zero(), zero(), 0),
+    let rejected_type = match Frame::from_bytes(bytes) {
+        Ok(frame) => frame.code(),
+        Err(_) => bytes.first().copied().unwrap_or(0),
+    };
+    Frame::Error {
+        rejected_type,
+        domain: IdOrZero([0; 16]),
+        session: IdOrZero([0; 16]),
+        sequence: 0,
+        code: Text("bad_request".into()),
+        detail: None,
     }
 }

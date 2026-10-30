@@ -39,11 +39,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use std::time::Duration;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use sqlx::postgres::{PgConnectOptions, PgListener, PgPool, PgPoolOptions};
 use sqlx::{ConnectOptions, PgConnection};
 use sync_protocol::types::Id;
 use sync_store::{
-    Backend, BoxFut, Error, EventHub, Limiter, ReadJob, Result, WriteGroup, WriteJob,
+    Backend, BoxFut, Error, EventHub, Limiter, ReadJob, Relayed, Result, WriteGroup, WriteJob,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -71,6 +73,14 @@ const RETRY: Duration = Duration::from_secs(1);
 /// another domain meanwhile goes unannounced, which costs a waiting pull at
 /// most its wait.
 const MAX_PENDING: usize = 4_096;
+
+/// The most presence frames that wait for their `NOTIFY`; another one
+/// meanwhile is dropped, and the session's next record replaces it.
+const PRESENCE_BACKLOG: usize = 1_024;
+/// The most bytes PostgreSQL takes in a `NOTIFY` payload.
+pub const NOTIFY_LIMIT: usize = 7_999;
+/// Marks a presence notification, in place of a workspace ID.
+const PRESENCE_MARK: &str = "p";
 
 /// The options every connection of the store uses: the URL's, with no
 /// statement in the server's log (§29).
@@ -244,6 +254,10 @@ struct Inner {
     /// The listener's own connection.
     listen_pool: PgPool,
     announcer: Announcer,
+    /// Where presence frames wait for their `NOTIFY`.
+    relay: mpsc::Sender<(Id, Relayed)>,
+    /// The task that sends them.
+    relay_task: StdMutex<Option<JoinHandle<()>>>,
     /// Each domain's queue of pushes, while its worker runs.
     groups: StdMutex<HashMap<WriteGroup, mpsc::UnboundedSender<Box<dyn Queued>>>>,
     /// Identifies this instance's notifications, which it skips.
@@ -363,8 +377,11 @@ impl PgBackend {
         let instance = Id::random().map_err(Error::internal)?.to_hex();
         let pending = Arc::new(StdMutex::new(Heads::new()));
         let (wake, woken) = mpsc::channel(1);
+        let options = options.options([("synchronous_commit", "off")]);
+        let (relay, frames) = mpsc::channel(PRESENCE_BACKLOG);
+        let relay_task = tokio::spawn(relay_loop(options.clone(), frames, instance.clone()));
         let task = tokio::spawn(announce_loop(
-            options.options([("synchronous_commit", "off")]),
+            options,
             pending.clone(),
             woken,
             instance.clone(),
@@ -379,6 +396,8 @@ impl PgBackend {
                     wake,
                     task: StdMutex::new(Some(task)),
                 },
+                relay,
+                relay_task: StdMutex::new(Some(relay_task)),
                 groups: StdMutex::new(HashMap::new()),
                 instance,
                 policy_read_delay: StdMutex::new(None),
@@ -443,6 +462,59 @@ async fn received<R>(result: oneshot::Receiver<Result<R>>) -> Result<R> {
         .map_err(|_| Error::internal("the writer dropped a write"))?
 }
 
+/// Relays presence from one connection of its own, which, like the
+/// announcer's, commits without waiting for a flush. A failed notification
+/// only loses that frame.
+async fn relay_loop(
+    options: PgConnectOptions,
+    mut frames: mpsc::Receiver<(Id, Relayed)>,
+    instance: String,
+) {
+    let mut connection: Option<PgConnection> = None;
+    while let Some((workspace, relayed)) = frames.recv().await {
+        let payload = presence_payload(&instance, workspace, &relayed);
+        if payload.len() > NOTIFY_LIMIT {
+            continue;
+        }
+        let session = match connection.take() {
+            Some(session) => Some(session),
+            None => options.connect().await.ok(),
+        };
+        if let Some(mut session) = session {
+            let sent = sqlx::query("SELECT pg_notify($1, $2)")
+                .bind(CHANNEL)
+                .bind(&payload)
+                .execute(&mut session)
+                .await;
+            if sent.is_ok() {
+                connection = Some(session);
+            }
+        }
+    }
+}
+
+/// A presence notification: `instance.p.workspace.frame`, the frame in
+/// base64 (§23).
+fn presence_payload(instance: &str, workspace: Id, relayed: &Relayed) -> String {
+    format!(
+        "{instance}.{PRESENCE_MARK}.{}.{}",
+        workspace.to_hex(),
+        STANDARD.encode(relayed.to_bytes())
+    )
+}
+
+/// Reads [`presence_payload`], for a notification of another instance.
+fn notified_presence(payload: &str, own: &str) -> Option<(Id, Relayed)> {
+    let mut parts = payload.split('.');
+    let instance = parts.next()?;
+    if parts.next()? != PRESENCE_MARK || instance == own {
+        return None;
+    }
+    let workspace = Id::from_hex(parts.next()?)?;
+    let bytes = STANDARD.decode(parts.next()?).ok()?;
+    Some((workspace, Relayed::from_bytes(&bytes)?))
+}
+
 /// Parses `instance.workspace.domain.head`, or `instance.workspace` for a
 /// change that moved no domain's head.
 fn notified_workspace(payload: &str, own: &str) -> Option<Id> {
@@ -456,7 +528,10 @@ async fn listen_loop(mut listener: PgListener, hub: EventHub, own: String) {
     loop {
         match listener.recv().await {
             Ok(notification) => {
-                if let Some(workspace) = notified_workspace(notification.payload(), &own) {
+                let payload = notification.payload();
+                if let Some((workspace, relayed)) = notified_presence(payload, &own) {
+                    hub.relay(workspace, relayed);
+                } else if let Some(workspace) = notified_workspace(payload, &own) {
                     hub.notify(workspace);
                 }
             }
@@ -567,6 +642,12 @@ impl Backend for PgBackend {
         let _ = announcer.wake.try_send(());
     }
 
+    fn relay_presence(&self, workspace: Id, relayed: &Relayed) {
+        // A full queue drops the frame: presence is only ever the latest
+        // cursor.
+        let _ = self.inner.relay.try_send((workspace, relayed.clone()));
+    }
+
     fn parallel_writes(&self) -> bool {
         true
     }
@@ -603,6 +684,16 @@ impl Backend for PgBackend {
             if let Some(announcer) = announcer {
                 announcer.abort();
                 let _ = announcer.await;
+            }
+            let relay = self
+                .inner
+                .relay_task
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            if let Some(relay) = relay {
+                relay.abort();
+                let _ = relay.await;
             }
             self.inner.pool.close().await;
             self.inner.listen_pool.close().await;

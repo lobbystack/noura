@@ -10868,6 +10868,7 @@ dependencies = [
 name = "sync-store-postgres"
 version = "0.2.0"
 dependencies = [
+ "base64 0.22.1",
  "sqlx",
  "sync-protocol",
  "sync-store",
