@@ -734,8 +734,14 @@ async fn a_server_that_forwards_an_old_presence_record_moves_no_cursor() {
         }
     }));
     for at in [1, 4] {
-        pair.sync_b
-            .set_selections(PLAN, vec![SelectionRange { anchor: at, head: at }], true);
+        pair.sync_b.set_selections(
+            PLAN,
+            vec![SelectionRange {
+                anchor: at,
+                head: at,
+            }],
+            true,
+        );
         for frame in pair.sync_b.presence_frames().unwrap() {
             desktop.send(&frame).await.unwrap();
         }
@@ -810,10 +816,17 @@ async fn a_snapshot_writes_again_a_devices_records_under_a_skipped_epoch() {
         .expect("the desktop writes under epoch 2");
     // The laptop's envelope of epoch 2 fails, so it replaces the epoch.
     damage_envelopes(&pair.proxy, pair.laptop.id(), pair.desktop.id());
-    pair.sync_a.round(&mut pair.service, 0).await.expect("a round");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
     pair.proxy.honest();
     assert_eq!(pair.sync_a.remote_mut().unwrap().epoch(), 3);
-    assert_eq!(read(&pair.a, PLAN), "# Plan\n", "epoch 2 is unreadable here");
+    assert_eq!(
+        read(&pair.a, PLAN),
+        "# Plan\n",
+        "epoch 2 is unreadable here"
+    );
 
     // The desktop accepts the replacement and writes a snapshot that
     // covers its record, under the same lineage.

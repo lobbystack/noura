@@ -29,6 +29,8 @@ thiserror.workspace = true
 wasmtime.workspace = true
 
 [dev-dependencies]
+# The fixtures' first snapshots start from a note's parts.
+workspace-format = { version = "0.2.0", path = "../workspace-format" }
 # The sandbox itself with its test hooks, for the integration tests.
 collab-sandbox = { version = "0.2.0", path = ".", features = ["test-support"] }
 # The Yjs and yrs interop fixtures hold their updates in base64.

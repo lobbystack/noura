@@ -2257,6 +2257,7 @@ dependencies = [
  "sync-protocol",
  "thiserror 2.0.20",
  "wasmtime",
+ "workspace-format",
  "yrs",
 ]
 

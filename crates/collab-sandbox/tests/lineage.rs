@@ -5,18 +5,24 @@
 mod support;
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use collab_sandbox::{
-    ALLOWANCE_FUEL, DEFERRED_MEMORY_BYTES, Event, JournalRecord, LineageStatus, Note, Opened,
-    Place, REFILL_PERIOD, RemoteRecord,
+    DEFERRED_MEMORY_BYTES, Event, JournalRecord, LineageStatus, Note, Opened, Place, REFILL_PERIOD,
+    RemoteRecord,
 };
+use serde_json::Value;
 use support::{
-    Lib0, client, client_ids, insert, insert_after, note, sandbox, snapshot_payload, update_payload,
+    Lib0, cases, client, client_ids, hex, insert, insert_after, note, sandbox, snapshot_payload,
+    update_payload,
 };
+use sync_protocol::crypto::hash;
+use sync_protocol::ids::text_lineage_id;
 use sync_protocol::records::Cover;
-use sync_protocol::types::Id;
+use sync_protocol::types::{Digest, Id};
+use workspace_format::text_note::{NoteParts, compose_note, note_parts};
 
 const WRITER: u32 = 2;
 
@@ -365,6 +371,8 @@ fn a_device_that_integrates_as_records_arrive_matches_one_that_bootstraps() {
 fn deferred_records_stay_within_their_memory_and_come_back_from_the_journal() {
     let journal: Arc<Mutex<BTreeMap<u64, RemoteRecord>>> = Arc::default();
     let source = journal.clone();
+    let reloads = Arc::new(AtomicUsize::new(0));
+    let counter = reloads.clone();
     let mut note = Note::open_lineage(
         sandbox(),
         Opened {
@@ -375,7 +383,10 @@ fn deferred_records_stay_within_their_memory_and_come_back_from_the_journal() {
                 bytes: first("x"),
             }],
             balances: vec![(WRITER, -1)],
-            loader: Some(Box::new(move |id| source.lock().unwrap().get(&id).cloned())),
+            loader: Some(Box::new(move |id| {
+                counter.fetch_add(1, Ordering::Relaxed);
+                source.lock().unwrap().get(&id).cloned()
+            })),
         },
         client_ids(),
     )
@@ -409,12 +420,12 @@ fn deferred_records_stay_within_their_memory_and_come_back_from_the_journal() {
         later += REFILL_PERIOD + Duration::from_secs(1);
         note.wake(later);
     }
-    assert_eq!(note.len(), 1 + 100 * 200_000);
-    assert!(
-        note.balances(later)
-            .iter()
-            .any(|(w, b)| *w == WRITER && *b <= ALLOWANCE_FUEL)
-    );
+    assert_eq!(note.deferred_bytes(), 0);
+    assert!(reloads.load(Ordering::Relaxed) > 0, "the journal held some");
+    // The records past 8 MiB of text stop the lineage, as any record that
+    // jumps past it does.
+    assert_eq!(note.len(), 1 + 41 * 200_000);
+    assert!(note.is_stopped());
 }
 
 #[test]
@@ -443,4 +454,157 @@ fn reopening_a_note_keeps_each_writers_debt() {
     let yrs = insert_after(writer, 0, (0, 0), "z");
     let reported = events(&mut again, update(1, WRITER, 1, &yrs));
     assert_eq!(reported, [Event::Deferred { id: 1 }]);
+}
+
+fn record_of(value: &Value) -> RemoteRecord {
+    update(
+        value["id"].as_u64().unwrap(),
+        value["card_index"].as_u64().unwrap() as u32,
+        value["counter"].as_u64().unwrap(),
+        &hex(&value["yrs"]),
+    )
+}
+
+fn journal_of(base: Vec<u8>, records: &[Value]) -> Vec<JournalRecord> {
+    let mut journal = vec![JournalRecord {
+        id: 0,
+        snapshot: true,
+        place: Place::default(),
+        bytes: base,
+    }];
+    journal.extend(records.iter().map(|value| JournalRecord {
+        id: value["id"].as_u64().unwrap(),
+        snapshot: false,
+        place: place(
+            value["card_index"].as_u64().unwrap() as u32,
+            value["counter"].as_u64().unwrap(),
+        ),
+        bytes: hex(&value["yrs"]),
+    }));
+    journal
+}
+
+#[test]
+fn first_snapshots_follow_the_fixture() {
+    let found = cases("first_snapshot");
+    assert!(found.len() >= 11);
+    for case in found {
+        let name = &case["name"];
+        let file = case["file"].as_str().unwrap();
+        let parts = note_parts(case["path"].as_str().unwrap(), file.as_bytes());
+        let (properties, body) = match (parts, case["parts"].as_str().unwrap()) {
+            (NoteParts::Outside, "outside") => continue,
+            (NoteParts::Managed { properties, body }, "managed") => (properties, body),
+            (NoteParts::Unmanaged { body }, "unmanaged") => (Default::default(), body),
+            (other, wanted) => panic!("{name}: {other:?}, not {wanted}"),
+        };
+        assert_eq!(body, case["body"], "{name}");
+        assert_eq!(
+            serde_json::to_value(&properties).unwrap(),
+            case["properties"],
+            "{name}"
+        );
+        let document = first(&body);
+        assert_eq!(document, hex(&case["document"]), "{name}");
+        let rid: [u8; 16] = hex(&case["rid"]).try_into().unwrap();
+        let base: [u8; 32] = hex(&case["base_digest"]).try_into().unwrap();
+        assert_eq!(
+            text_lineage_id(&Id(rid), &Digest(base), &document)
+                .0
+                .to_vec(),
+            hex(&case["lineage"]),
+            "{name}"
+        );
+        let composed = compose_note(&properties, &body).unwrap();
+        assert_eq!(composed, case["composed"], "{name}");
+        assert_eq!(
+            hash(composed.as_bytes()).to_hex(),
+            case["revision"],
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn items_land_as_the_fixture_says() {
+    let found = cases("origin_order");
+    assert!(found.len() >= 6);
+    for case in found {
+        let name = &case["name"];
+        let mut note = note(vec![first(case["base_text"].as_str().unwrap())]);
+        for (index, before) in case["before"].as_array().into_iter().flatten().enumerate() {
+            let record = update(index as u64 + 1, 1, index as u64 + 1, &hex(before));
+            note.receive(record, Instant::now());
+        }
+        let card = case["card_index"].as_u64().unwrap() as u32;
+        let reported = events(&mut note, update(9, card, 9, &hex(&case["yrs"])));
+        let refused = reported.contains(&Event::Refused { id: 9 });
+        let expected = case["expect"] == "refused";
+        assert_eq!(refused, expected, "{name}: {reported:?}");
+        assert_eq!(merged(&reported), !expected, "{name}");
+        // A device that boots from the result shows the same text.
+        let state = note.state().unwrap();
+        let mut booted = support::note(vec![state]);
+        assert_eq!(booted.text().unwrap(), note.text().unwrap(), "{name}");
+    }
+}
+
+#[test]
+fn the_snapshot_check_follows_the_fixture() {
+    let found = cases("snapshot_check");
+    assert!(found.len() >= 6);
+    for case in found {
+        let name = &case["name"];
+        let base = first(case["base_text"].as_str().unwrap());
+        let records = case["records"].as_array().unwrap();
+        let mut holder = if case["restart"] == true {
+            reopened(journal_of(base, records))
+        } else {
+            let mut holder = note(vec![base]);
+            for record in records {
+                holder.receive(record_of(record), Instant::now());
+            }
+            holder
+        };
+        let covers: Vec<(u32, u64)> = case["covers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|cover| {
+                (
+                    cover[0].as_u64().unwrap() as u32,
+                    cover[1].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        let snapshot = snapshot(99, 3, 1, &covers, &hex(&case["snapshot"]));
+        let reported = events(&mut holder, snapshot);
+        let disagrees = reported.contains(&Event::Disagrees { id: 99, writer: 3 });
+        assert_eq!(
+            disagrees,
+            case["expect"] == "disagrees",
+            "{name}: {reported:?}"
+        );
+        assert_eq!(holder.text().unwrap(), case["text"], "{name}");
+    }
+}
+
+#[test]
+fn canonical_order_follows_the_fixture() {
+    let found = cases("canonical_order");
+    assert!(!found.is_empty());
+    for case in found {
+        let name = &case["name"];
+        let base = first(case["base_text"].as_str().unwrap());
+        let records = case["records"].as_array().unwrap();
+        let mut arrivals = note(vec![base.clone()]);
+        // Records arrive in any order across signers, and in chain order
+        // for each one.
+        for index in [1, 0, 2] {
+            arrivals.receive(record_of(&records[index]), Instant::now());
+        }
+        let mut booted = reopened(journal_of(base, records));
+        assert_eq!(booted.text().unwrap(), case["text"], "{name}");
+        assert_eq!(arrivals.text().unwrap(), case["text"], "{name}");
+    }
 }

@@ -2131,6 +2131,50 @@ mod tests {
     }
 
     #[test]
+    fn meta_merges_as_the_fixture_says() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/workspace-format/fixtures/sync-v2-collaboration.json"
+        );
+        let fixture: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let cases = fixture["cases"].as_array().unwrap();
+        let cases: Vec<_> = cases.iter().filter(|c| c["kind"] == "meta_merge").collect();
+        assert!(cases.len() >= 7);
+        for case in cases {
+            let records: Vec<TextRecord> = case["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| {
+                    let entries: Vec<(String, u64, Option<String>)> =
+                        serde_json::from_value(value["entries"].clone()).unwrap();
+                    let entries: Vec<(&str, u64, Option<&str>)> = entries
+                        .iter()
+                        .map(|(key, seq, value)| (key.as_str(), *seq, value.as_deref()))
+                        .collect();
+                    let digest = u8::from_str_radix(value["digest"].as_str().unwrap(), 16).unwrap();
+                    record(
+                        value["seq"].as_u64().unwrap(),
+                        value["snapshot"].as_bool().unwrap(),
+                        digest,
+                        &entries,
+                    )
+                })
+                .collect();
+            let merged = merged_meta(&records);
+            for (key, expected) in case["expect"].as_object().unwrap() {
+                assert_eq!(
+                    value(&merged, key).as_deref(),
+                    expected.as_str(),
+                    "{}",
+                    case["name"]
+                );
+            }
+        }
+    }
+
+    #[test]
     fn the_device_that_wrote_last_snapshots_a_resting_note() {
         let facts = SnapshotFacts {
             patches: 9,

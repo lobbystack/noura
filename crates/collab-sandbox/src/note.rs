@@ -352,6 +352,8 @@ pub struct Note {
     next_local: u64,
     /// The writers whose updates wait in yrs.
     pending_writers: BTreeSet<u32>,
+    /// Each record's writer, by its ID.
+    writers: HashMap<u64, u32>,
     /// Local changes not yet taken for a `text_update`, with the client ID
     /// each went in under.
     unsent: Vec<(u64, Vec<u8>)>,
@@ -427,6 +429,7 @@ impl Note {
             loader: opened.loader,
             next_local: journal.iter().map(|r| r.id + 1).max().unwrap_or(0),
             pending_writers: BTreeSet::new(),
+            writers: HashMap::new(),
             journal,
             unsent: Vec::new(),
             stop: None,
@@ -705,6 +708,7 @@ impl Note {
                             });
                         }
                     }
+                    self.writers.insert(entry.id, record.writer);
                     self.journal.push(entry);
                     self.len = op.target_len();
                     effects.changes.push(op);
@@ -754,7 +758,13 @@ impl Note {
         push(&mut input, &entry.bytes);
         let covers = |place: &Place| entry.snapshot && entry.place.covers(place);
         for held in &self.journal {
-            input.push(u8::from(covers(&held.place)));
+            // A record pending in yrs counts for its copies alone: a
+            // snapshot may cover a patch that merges nowhere (§22).
+            let pending = self
+                .writers
+                .get(&held.id)
+                .is_some_and(|writer| self.pending_writers.contains(writer));
+            input.push(u8::from(covers(&held.place) && !pending));
             push(&mut input, &held.bytes);
         }
         let waiting: Vec<u64> = self.deferred.iter().map(|w| w.id).collect();
