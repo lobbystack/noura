@@ -276,6 +276,128 @@ impl EpochChain {
         self.ended.get(&epoch).copied()
     }
 
+    /// The oldest accepted record.
+    pub fn oldest(&self) -> Option<&AcceptedEpoch> {
+        self.accepted.values().next()
+    }
+
+    /// The checks of §9 on one record that don't depend on the records
+    /// before it: domain, policy position, signer, recipients and key.
+    fn check_record(
+        &self,
+        record: &Signed<Epoch>,
+        key: &SecretKey,
+        policy: &PolicyChain,
+    ) -> Result<(), KeyError> {
+        let body = &record.body;
+        if body.workspace != self.workspace || body.domain != self.domain {
+            return Err(KeyError::Domain);
+        }
+        let snapshot = policy
+            .at(body.policy_revision)
+            .ok_or(KeyError::PolicyRevision)?;
+        if snapshot.digest != body.policy_head {
+            return Err(KeyError::PolicyHead);
+        }
+        let card = snapshot
+            .devices
+            .get(&body.rotating_device)
+            .ok_or(KeyError::Signer)?;
+        record
+            .verify(&card.card.signing_public)
+            .map_err(|_| KeyError::Signature)?;
+        if !snapshot.can_read(&body.rotating_device, &self.domain) {
+            return Err(KeyError::Signer);
+        }
+        if body.recipients_digest != recipients_digest(&snapshot.readers(&self.domain)) {
+            return Err(KeyError::Recipients);
+        }
+        if !key_matches(body, key) {
+            return Err(KeyError::KeyCheck);
+        }
+        Ok(())
+    }
+
+    /// Starts an empty chain at `record`, the domain's current epoch
+    /// record from `keys/current`, as a new device does (§18, step 1):
+    /// every check of [`EpochChain::accept`] except the link to the
+    /// records before it, which [`EpochChain::accept_older`] checks once an
+    /// operation names an older epoch. Epoch 1 gets the full check.
+    pub fn start_at(
+        &mut self,
+        record: &Signed<Epoch>,
+        key: &SecretKey,
+        policy: &PolicyChain,
+    ) -> Result<(), KeyError> {
+        if !self.accepted.is_empty() {
+            return Err(KeyError::Chain);
+        }
+        if record.body.epoch == 1 {
+            return self.accept(record, key, policy).map(|_| ());
+        }
+        if record.body.previous.is_zero() {
+            return Err(KeyError::Chain);
+        }
+        self.check_record(record, key, policy)?;
+        self.accepted.insert(
+            record.body.epoch,
+            AcceptedEpoch {
+                record: record.clone(),
+                digest: record.digest(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Accepts `record`, the one that the oldest accepted record's
+    /// `previous` names, under `key`, which the oldest record's lineage
+    /// opened (§9, §18). The epochs between the two, which a replacement
+    /// skipped, end at the newer record's policy revision.
+    pub fn accept_older(
+        &mut self,
+        record: &Signed<Epoch>,
+        key: &SecretKey,
+        policy: &PolicyChain,
+    ) -> Result<(), KeyError> {
+        let newer = self.oldest().ok_or(KeyError::Chain)?.record.body.clone();
+        let body = &record.body;
+        if newer.previous != record.digest() || body.epoch >= newer.epoch {
+            return Err(KeyError::Chain);
+        }
+        if newer.policy_revision < body.policy_revision {
+            return Err(KeyError::PolicyRevision);
+        }
+        self.check_record(record, key, policy)?;
+        if body.epoch == 1 {
+            if !body.previous.is_zero() {
+                return Err(KeyError::Chain);
+            }
+            if !body.lineage.0.is_empty() || !body.lineage_nonce.is_zero() {
+                return Err(KeyError::Lineage);
+            }
+            let snapshot = policy
+                .at(body.policy_revision)
+                .ok_or(KeyError::PolicyRevision)?;
+            let domain = snapshot.domains.get(&self.domain).ok_or(KeyError::Domain)?;
+            if domain.restricted && domain.creator != body.rotating_device {
+                return Err(KeyError::FirstEpochSigner);
+            }
+        } else if body.previous.is_zero() {
+            return Err(KeyError::Chain);
+        }
+        for epoch in body.epoch + 1..newer.epoch {
+            self.ended.insert(epoch, newer.policy_revision);
+        }
+        self.accepted.insert(
+            body.epoch,
+            AcceptedEpoch {
+                record: record.clone(),
+                digest: record.digest(),
+            },
+        );
+        Ok(())
+    }
+
     /// Accepts `record` when it passes every check of §9, given `key`, the
     /// verified key for its epoch from an envelope or a later key's lineage.
     pub fn accept(
@@ -406,6 +528,14 @@ pub fn judge_skipped_epoch_record(
 fn lost_read_access(policy: &PolicyChain, domain: &Id, device: &Id, through: u64) -> bool {
     let reads_at = |r: u64| policy.at(r).is_some_and(|s| s.can_read(device, domain));
     !reads_at(through) && (1..through).any(reads_at)
+}
+
+/// Whether an epoch entry makes a checkpoint due at its entry (§17): a
+/// replacement does, since its `previous` skips the latest epoch, which
+/// the domain's latest checkpoint may name. `latest` is the digest of the
+/// domain's latest epoch record before this one.
+pub fn makes_checkpoint_due(latest: &Digest, record: &Epoch) -> bool {
+    record.previous != *latest
 }
 
 /// The server's check of a replacement epoch (§9): `previous` names a

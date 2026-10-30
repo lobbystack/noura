@@ -1,14 +1,15 @@
 //! The device and key routes of §26 on [`SyncClient`]: the device
 //! authorization grant, enrollment, the enrolled cards, approval requests,
-//! offers and reveals, recovery proofs, `keys/current`, re-wrap requests
-//! and the workspace list.
+//! offers and reveals, recovery proofs, `keys/current`, re-wrap requests,
+//! the workspace list and the checkpoint routes.
 
 use sync_protocol::codec::{Encode, Nested, Text};
 use sync_protocol::messages::{
-    ApprovalRequest, ChallengeResponse, DeviceAuthorizeResponse, DeviceTokenRequest,
-    DeviceTokenResponse, DevicesResponse, EnrollRequest, Entry, EpochsResponse, HeadResponse,
-    KeysResponse, OfferRequest, OffersResponse, PendingResponse, RecoveryRequest, RevealBody,
-    RewrapBody, WorkspacesResponse,
+    ApprovalRequest, ChallengeResponse, CheckpointChainResponse, CheckpointResponse,
+    DeviceAuthorizeResponse, DeviceTokenRequest, DeviceTokenResponse, DevicesResponse,
+    EnrollRequest, Entry, EpochsResponse, HeadResponse, KeysResponse, LiveCursor, LiveResponse,
+    ManifestBucketsResponse, ManifestLeavesResponse, OfferRequest, OffersResponse, PendingResponse,
+    RecoveryRequest, RevealBody, RewrapBody, WorkspacesResponse,
 };
 use sync_protocol::records::{Enroll, Offer, RecoveryProof, Signed};
 use sync_protocol::types::{Digest, Id, Key};
@@ -258,5 +259,120 @@ impl SyncClient {
             Err(SyncError::Refused { code, .. }) if code == "not_found" => Ok(None),
             Err(error) => Err(error),
         }
+    }
+
+    fn domain_path(workspace: Id, domain: Id, rest: &str) -> String {
+        format!(
+            "/v2/workspaces/{}/domains/{}/{rest}",
+            workspace.to_base64url(),
+            domain.to_base64url()
+        )
+    }
+
+    /// `GET .../checkpoint`: the domain's latest checkpoint bundle with its
+    /// entry's sequence, or `None` while the domain holds none.
+    pub async fn checkpoint(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+    ) -> Result<Option<CheckpointResponse>, SyncError> {
+        let path = Self::domain_path(workspace, domain, "checkpoint");
+        match self.call(reqwest::Method::GET, &path, None).await {
+            Ok(response) => Ok(Some(response)),
+            Err(SyncError::Refused { code, .. }) if code == "not_found" => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// `GET .../checkpoints/{digest}`: a checkpoint's log entry, or `None`
+    /// when the server holds no such checkpoint.
+    pub async fn checkpoint_by_digest(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        digest: Digest,
+    ) -> Result<Option<Entry>, SyncError> {
+        let path = Self::domain_path(
+            workspace,
+            domain,
+            &format!("checkpoints/{}", digest.to_base64url()),
+        );
+        match self.call(reqwest::Method::GET, &path, None).await {
+            Ok(entry) => Ok(Some(entry)),
+            Err(SyncError::Refused { code, .. }) if code == "not_found" => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// `GET .../checkpoint-chain?from&to`: the descent walk from `from`
+    /// back to `to`, newest first.
+    pub async fn checkpoint_chain(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        from: Digest,
+        to: Digest,
+    ) -> Result<CheckpointChainResponse, SyncError> {
+        let path = Self::domain_path(
+            workspace,
+            domain,
+            &format!(
+                "checkpoint-chain?from={}&to={}",
+                from.to_base64url(),
+                to.to_base64url()
+            ),
+        );
+        self.call(reqwest::Method::GET, &path, None).await
+    }
+
+    /// `GET .../manifest?at&buckets=all`: the 4,096 bucket hashes at a
+    /// servable checkpoint.
+    pub async fn manifest_buckets(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        at: u64,
+    ) -> Result<ManifestBucketsResponse, SyncError> {
+        let path = Self::domain_path(workspace, domain, &format!("manifest?at={at}&buckets=all"));
+        self.call(reqwest::Method::GET, &path, None).await
+    }
+
+    /// `GET .../manifest?at&level=3&index&after`: one page of a bucket's
+    /// leaf refs.
+    pub async fn manifest_leaves(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        at: u64,
+        index: u16,
+        after: Option<&LiveCursor>,
+    ) -> Result<ManifestLeavesResponse, SyncError> {
+        let mut rest = format!("manifest?at={at}&level=3&index={index}");
+        if let Some(after) = after {
+            rest.push_str(&format!("&after={}", after.to_query()));
+        }
+        let path = Self::domain_path(workspace, domain, &rest);
+        self.call(reqwest::Method::GET, &path, None).await
+    }
+
+    /// `GET .../live?at&after`, or with `rid`: one page of the operations
+    /// live at a servable checkpoint.
+    pub async fn live(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        at: u64,
+        rid: Option<Id>,
+        after: Option<&LiveCursor>,
+    ) -> Result<LiveResponse, SyncError> {
+        let mut rest = format!("live?at={at}");
+        if let Some(rid) = rid {
+            rest.push_str(&format!("&rid={}", rid.to_base64url()));
+        }
+        if let Some(after) = after {
+            rest.push_str(&format!("&after={}", after.to_query()));
+        }
+        let path = Self::domain_path(workspace, domain, &rest);
+        self.call(reqwest::Method::GET, &path, None).await
     }
 }

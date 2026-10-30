@@ -115,6 +115,13 @@ pub struct Snapshot {
     pub devices: BTreeMap<Id, WorkspaceDevice>,
     /// Card indices assigned so far, for the workspace's life.
     pub card_indices: BTreeMap<Id, u32>,
+    /// The account and chain genesis of every card that ever became a
+    /// device of the workspace.
+    pub card_chains: BTreeMap<Id, (Id, Digest)>,
+    /// The cards that can't come back (§17): a change at or below this
+    /// revision recorded a head of the card's account at which a link had
+    /// removed it, or a head of its account on another chain.
+    pub gone: BTreeSet<Id>,
     /// Domains this change makes due for rotation.
     pub rotations: BTreeSet<Id>,
     /// Devices this change brings into each domain's readers.
@@ -403,6 +410,8 @@ impl PolicyChain {
             used_domains: BTreeSet::from([workspace_domain]),
             devices: BTreeMap::new(),
             card_indices: BTreeMap::new(),
+            card_chains: BTreeMap::new(),
+            gone: BTreeSet::new(),
             rotations: BTreeSet::new(),
             new_readers: BTreeMap::new(),
         };
@@ -706,6 +715,7 @@ impl PolicyChain {
             }
         }
 
+        record_gone(&mut next, &body.heads, chains);
         finish_snapshot(&mut next, prev, chains, revision)?;
         Ok(next)
     }
@@ -736,6 +746,18 @@ impl PolicyChain {
     pub fn change(&self, revision: u64) -> Option<&Signed<PolicyChange>> {
         let index = usize::try_from(revision.checked_sub(1)?).ok()?;
         self.changes.get(index)
+    }
+
+    /// Whether `device` may leave a checkpoint's heads whose previous
+    /// checkpoint has `policy_revision` `revision` (§17): its card can't
+    /// come back, because a change at or below `revision` recorded a head
+    /// of its account at which a link had removed the card, or a head on a
+    /// chain other than the card's, as an `accept_reset` or an
+    /// `add_member` after a reset does. The rule follows those recorded
+    /// heads, whatever the account's membership: a device whose account
+    /// `remove_member` removed, or that only lost access, stays.
+    pub fn card_gone(&self, device: &Id, revision: u64) -> bool {
+        self.at(revision).is_some_and(|s| s.gone.contains(device))
     }
 
     /// Whether some change in (`after`, `through`] makes `domain` due for
@@ -1026,6 +1048,27 @@ fn drop_grants(snapshot: &mut Snapshot, account: &Id) {
     }
 }
 
+/// Adds to `next.gone` each card the change's `heads` retire for good: a
+/// head of the card's account at which a link had removed it, or one on a
+/// chain other than the card's (§17).
+fn record_gone(next: &mut Snapshot, heads: &[AccountHead], chains: &AccountChains) {
+    for head in heads {
+        let chain = chains.chain_of(head);
+        for (device, (account, genesis)) in &next.card_chains {
+            if *account != head.account || next.gone.contains(device) {
+                continue;
+            }
+            let retired = *genesis != head.genesis
+                || chain
+                    .and_then(|c| c.card(device))
+                    .is_some_and(|s| s.removed_at.is_some_and(|r| r <= head.seqno));
+            if retired {
+                next.gone.insert(*device);
+            }
+        }
+    }
+}
+
 /// Recomputes the devices, card indices, reader limits, rotations and new
 /// readers after a change.
 fn finish_snapshot(
@@ -1049,6 +1092,9 @@ fn finish_snapshot(
             if !next.card_indices.contains_key(&device) {
                 new_cards.push((*account, state.added_at, device));
             }
+            next.card_chains
+                .entry(device)
+                .or_insert((*account, member.head.genesis));
             devices.insert(
                 device,
                 WorkspaceDevice {

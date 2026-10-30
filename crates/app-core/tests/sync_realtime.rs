@@ -311,10 +311,7 @@ fn forge_records(frame: Frame) -> Vec<Frame> {
                 let mut bytes = body.ciphertext.0.clone();
                 bytes[0] ^= 1;
                 body.ciphertext = Bytes(bytes);
-                *op = Signed {
-                    body,
-                    sig: op.sig,
-                };
+                *op = Signed { body, sig: op.sig };
             }
             entry
         })

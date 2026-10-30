@@ -92,6 +92,13 @@ CREATE TABLE domains (
     -- The highest retention floor the server published (§19); ticket 59
     -- raises it.
     retention_floor BIGINT NOT NULL DEFAULT 0,
+    -- The latest checkpoint's covered_seq, the due point the server
+    -- publishes, and the entries and weight since the latest checkpoint
+    -- entry (§17).
+    checkpoint_seq BIGINT NOT NULL DEFAULT 0,
+    checkpoint_due BIGINT NOT NULL DEFAULT 0,
+    entries_since_checkpoint BIGINT NOT NULL DEFAULT 0,
+    weight_since_checkpoint BIGINT NOT NULL DEFAULT 0,
     PRIMARY KEY (workspace, domain)
 );
 
@@ -105,6 +112,10 @@ CREATE TABLE entries (
     record BYTEA NOT NULL,
     PRIMARY KEY (workspace, domain, seq)
 );
+
+-- A checkpoint names the latest policy and epoch entries at or below its
+-- covered_seq (§17).
+CREATE INDEX entries_by_type ON entries (workspace, domain, record_type, seq);
 
 -- The cleartext fields of each operation that chains and live sets need
 -- (§13, §14). The record itself is the entry at the same sequence.
@@ -186,14 +197,24 @@ CREATE TABLE key_entries (
     PRIMARY KEY (workspace, key_seq)
 );
 
--- Checkpoint records, which operations name (§17). Ticket 58 fills it.
+-- Checkpoints (§17, §19): each record, kept while the domain exists,
+-- with its heads and, while it stays servable, its 4,096 bucket hashes.
 CREATE TABLE checkpoints (
     workspace BYTEA NOT NULL,
     domain BYTEA NOT NULL,
-    covered_seq BIGINT NOT NULL,
+    number BIGINT NOT NULL,
     digest BYTEA NOT NULL,
-    PRIMARY KEY (workspace, domain, covered_seq, digest)
+    seq BIGINT NOT NULL,
+    covered_seq BIGINT NOT NULL,
+    floor BIGINT NOT NULL,
+    record BYTEA NOT NULL,
+    heads BYTEA NOT NULL,
+    buckets BYTEA,
+    PRIMARY KEY (workspace, domain, number)
 );
+
+CREATE UNIQUE INDEX checkpoints_by_digest ON checkpoints (workspace, domain, digest);
+CREATE UNIQUE INDEX checkpoints_by_covered_seq ON checkpoints (workspace, domain, covered_seq);
 
 -- The limiter's counters (§26, Rate limits), which every instance shares:
 -- a caller's key, the limit's window length and when its current window

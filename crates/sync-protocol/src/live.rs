@@ -198,6 +198,28 @@ impl LiveSet {
         before != state.ops.len()
     }
 
+    /// Takes out the operation whose digest is `digest`, on whichever
+    /// `rid` holds it, as a client does when a settled fork reverts a
+    /// record (§14). Returns that `rid`.
+    pub fn remove_digest(&mut self, digest: &Digest) -> Option<Id> {
+        let rid = self
+            .rids
+            .iter()
+            .find(|(_, state)| state.ops.iter().any(|(op, _)| op.digest == *digest))
+            .map(|(rid, _)| *rid)?;
+        self.remove(&rid, digest);
+        // A `rid` left without operations is unknown again, so the next
+        // operation on it classes as its first (§13).
+        if self
+            .rids
+            .get(&rid)
+            .is_some_and(|s| s.ops.is_empty() && s.dropped.is_empty())
+        {
+            self.rids.remove(&rid);
+        }
+        Some(rid)
+    }
+
     /// The operations live on `rid`, with their classes, in log order.
     pub fn live(&self, rid: &Id) -> Vec<(&LiveOp, OpClass)> {
         self.live_at(rid, u64::MAX)

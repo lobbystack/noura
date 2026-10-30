@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT rid FROM rids\n             WHERE workspace = ?1 AND rid >= ?2 AND rid <= ?3 AND domain = ?4\n             ORDER BY rid LIMIT ?5",
+  "describe": {
+    "columns": [
+      {
+        "name": "rid",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "rids",
+            "name": "rid"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7aeb2967204886b7f79448bbcadc00495332e331267d12e2dd55da6e82f30044"
+}

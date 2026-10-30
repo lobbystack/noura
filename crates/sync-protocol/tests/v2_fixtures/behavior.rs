@@ -10,7 +10,9 @@ use sync_protocol::blob::{
     BlobError, blob_ciphertext_len, ciphertext_digest, decrypt_blob, encrypt_blob, header,
     nonce_prefix,
 };
-use sync_protocol::chain::{ChainFetcher, ChainRecord, ChainVerifier, Fetched};
+use sync_protocol::chain::{
+    ChainError, ChainFetcher, ChainRecord, ChainVerifier, Fetched, NoFetch,
+};
 use sync_protocol::codec::{Bytes, Decode, Encode};
 use sync_protocol::crypto::{derive_key, hash};
 use sync_protocol::ids::{
@@ -599,6 +601,14 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
                 .then(|| after_failed_envelopes(case["accepted_earlier_epoch"].as_bool().unwrap()));
             same(json!({"accepted": accepted, "then": then}), expect.clone())
         }
+        "epoch_entry_due" => {
+            let record = Signed::<Epoch>::from_bytes(&hex(&case["epoch"])).unwrap();
+            let latest = Digest::from_hex(case["latest"].as_str().unwrap()).unwrap();
+            same(
+                sync_protocol::keys::makes_checkpoint_due(&latest, &record.body),
+                expect.as_bool().unwrap(),
+            )
+        }
         "skipped_epoch_record" => {
             let verified = policy(case);
             let rotator = id_of(&case["rotator"]);
@@ -789,6 +799,121 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
                 }
             }
             same(json!(verdicts), expect.clone())
+        }
+
+        "fork_resolution" => {
+            let records = |v: &Value| -> Vec<ChainRecord> {
+                v.as_array().unwrap().iter().map(chain_record).collect()
+            };
+            let mut verifier = ChainVerifier::new();
+            for page in case["applied"].as_array().unwrap() {
+                verifier
+                    .process_page(&records(page), &mut NoFetch)
+                    .map_err(|e| format!("an applied page failed: {e:?}"))?;
+            }
+            // A checkpoint the reader accepted after the applied pages.
+            if let Some(covered) = case.get("accepted_covered_seq") {
+                verifier.forget_below(u64_of(covered));
+            }
+            let forked = records(&case["forked"]);
+            match verifier.clone().process_page(&forked, &mut NoFetch) {
+                Err((_, ChainError::Forked)) => {}
+                other => return Err(format!("the page should fork: {other:?}")),
+            }
+            let kept = chain_record(&case["kept"]);
+            let kept = Ref {
+                device: kept.device,
+                counter: kept.counter,
+                seq: kept.seq,
+                op_digest: kept.digest,
+            };
+            match verifier.resolve_fork(&kept, &records(&case["records"])) {
+                Err(e) => same(
+                    json!({"error": e.client_code().trim_start_matches("sync_chain_")}),
+                    expect.clone(),
+                ),
+                Ok(reverted) => match verifier.process_page(&forked, &mut NoFetch) {
+                    Ok(verdicts) => {
+                        let reverted: Vec<String> =
+                            reverted.iter().map(|r| r.digest.to_hex()).collect();
+                        let verdicts = serde_json::to_value(verdicts).unwrap();
+                        if expect.get("verdicts").is_some() {
+                            same(
+                                json!({"reverted": reverted, "verdicts": verdicts}),
+                                expect.clone(),
+                            )
+                        } else if reverted.is_empty() {
+                            same(verdicts, expect.clone())
+                        } else {
+                            Err(format!("settling reverted {reverted:?}"))
+                        }
+                    }
+                    Err((i, e)) => Err(format!("record {i} failed after settling: {e:?}")),
+                },
+            }
+        }
+
+        "checkpoint_walk" => {
+            use sync_protocol::manifest::{
+                ChainLink, CheckpointFetcher, CheckpointWalk, WalkEntry,
+            };
+            let link = |v: &Value| ChainLink {
+                number: u64_of(&v["number"]),
+                digest: Digest::from_hex(v["digest"].as_str().unwrap()).unwrap(),
+                previous: Digest::from_hex(v["previous"].as_str().unwrap()).unwrap(),
+            };
+            struct Served(Vec<ChainLink>);
+            impl CheckpointFetcher for Served {
+                fn checkpoint(&mut self, digest: &Digest) -> Option<ChainLink> {
+                    self.0.iter().find(|l| l.digest == *digest).copied()
+                }
+            }
+            let mut served = Served(
+                case["server"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(link)
+                    .collect(),
+            );
+            let reached: Vec<(u64, Digest)> = case["reached"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(link)
+                .map(|l| (l.number, l.digest))
+                .collect();
+            let entries: Vec<WalkEntry> = case["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| {
+                    if let Some(c) = e.get("checkpoint") {
+                        WalkEntry::Checkpoint(link(c))
+                    } else {
+                        let op = &e["operation"];
+                        WalkEntry::Operation {
+                            generation: u64_of(&op["generation"]),
+                            checkpoint_seq: u64_of(&op["checkpoint_seq"]),
+                            checkpoint: Digest::from_hex(op["checkpoint"].as_str().unwrap())
+                                .unwrap(),
+                        }
+                    }
+                })
+                .collect();
+            let mut walk =
+                CheckpointWalk::new(reached, u64_of(&case["floor"]), u64_of(&case["generation"]));
+            let ours = match walk.plan(&entries, &mut served) {
+                Ok(planned) => json!({"fetched": planned
+                    .iter()
+                    .map(|(before, walk)| json!({
+                        "before": before,
+                        "checkpoints": walk.iter().map(|l| l.digest.to_hex()).collect::<Vec<_>>(),
+                    }))
+                    .collect::<Vec<_>>()}),
+                Err((index, _)) => json!({"error": "gap", "index": index}),
+            };
+            same(ours, expect.clone())
         }
 
         // Live sets.
@@ -1027,6 +1152,13 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
                 expect.as_str().unwrap(),
             )
         }
+        // The server's checks need a store, so the store conformance suite
+        // runs these on each store.
+        "server_check" | "server_heads" => Ok(()),
+        "heads_may_leave" => same(
+            policy(case).card_gone(&id_of(&case["device"]), u64_of(&case["revision"])),
+            expect.as_bool().unwrap(),
+        ),
         "checkpoint_check" => {
             let mut chain = CheckpointChain::new();
             for c in case["accepted"].as_array().unwrap() {

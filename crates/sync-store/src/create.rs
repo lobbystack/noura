@@ -16,8 +16,11 @@ use sync_protocol::records::{Envelope, EpochBundle, PolicyChange, Profile, Role,
 use sync_protocol::types::{Digest, Id};
 
 use crate::policy::{self, PolicyCache};
-use crate::push::{ENTRY_EPOCH, ENTRY_POLICY, KEY_ENVELOPE, KEY_EPOCH, decode_records, failure};
-use crate::{EpochRow, LockPlan, Refusal, Result, Session, WorkspaceRow, WriteTxn, refuse};
+use crate::push::{ENTRY_EPOCH, KEY_ENVELOPE, KEY_EPOCH, decode_records, failure};
+use crate::{
+    CheckpointInterval, EpochRow, LockPlan, Refusal, Result, Session, WorkspaceRow, WriteTxn,
+    refuse,
+};
 
 /// The most workspaces an account owns (§27).
 pub const MAX_OWNED_WORKSPACES: u64 = 100;
@@ -132,6 +135,7 @@ pub(crate) fn check_signatures(
 pub(crate) async fn commit(
     txn: &mut impl WriteTxn,
     cache: &PolicyCache,
+    interval: CheckpointInterval,
     session: Session,
     creation: Creation,
     request_digest: Digest,
@@ -316,14 +320,25 @@ pub(crate) async fn commit(
         revision: 1,
         head: genesis_digest,
     };
-    let genesis_seq = txn
-        .append_entry(workspace, domain, ENTRY_POLICY, &entry.to_bytes())
-        .await?;
+    let genesis_seq = crate::checkpoints::append_policy_entry(
+        txn, interval, workspace, domain, &entry, None, &snapshot,
+    )
+    .await?;
     let epoch_bytes = record.to_bytes();
     let epoch_digest = record.digest();
     let epoch_seq = txn
         .append_entry(workspace, domain, ENTRY_EPOCH, &epoch_bytes)
         .await?;
+    crate::checkpoints::note_entry(
+        txn,
+        interval,
+        workspace,
+        domain,
+        epoch_seq,
+        epoch_bytes.len() as u64,
+        false,
+    )
+    .await?;
     txn.insert_epoch(
         workspace,
         domain,

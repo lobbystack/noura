@@ -99,6 +99,36 @@ pub struct State {
     /// after which it pulls and pushes nothing there (§15).
     #[serde(default)]
     pub ended: Option<Ended>,
+    /// Whether the device still loads the domain from its latest
+    /// checkpoint before it pulls, as a new device does (§18).
+    #[serde(default)]
+    pub bootstrap: bool,
+    /// How far that bootstrap got through the live pages (§18, step 5),
+    /// saved with the files of each bucket it installed.
+    #[serde(default)]
+    pub bootstrap_progress: Option<BootstrapProgress>,
+}
+
+/// A bootstrap's progress through the `live` pages of one checkpoint (§18,
+/// step 5). The buckets below `next_bucket` are installed: their hashes
+/// passed and their files are written, and the domain's live set holds
+/// their operations.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BootstrapProgress {
+    /// The checkpoint the pages belong to.
+    pub checkpoint: Digest,
+    /// The cursor after the last page.
+    pub after: Option<sync_protocol::messages::LiveCursor>,
+    /// The first bucket not installed yet.
+    pub next_bucket: u32,
+    /// The operations fetched for buckets not complete yet, with their
+    /// sequences.
+    pub pending: Vec<(Signed<Operation>, u64)>,
+    /// The leaves of the installed buckets.
+    pub live_objects: u64,
+    /// Each device's highest `policy_revision` and `generation` among the
+    /// installed operations.
+    pub last: BTreeMap<Id, (u64, u64)>,
 }
 
 /// The change that took this device's access to the domain (§15).
@@ -164,6 +194,15 @@ pub struct Log {
     /// replacement ended it, for judging records under it (§9).
     #[serde(default)]
     pub skipped_rotators: BTreeMap<u64, Id>,
+    /// The checkpoints the log carried, and what the next one's checks
+    /// need (§17).
+    #[serde(default)]
+    pub checkpoints: crate::sync::checkpoints::Checkpoints,
+    /// The devices whose chain forked, which hold the cursor until a
+    /// checkpoint settles the fork (§14), each with the revision of the
+    /// latest policy entry before its forked record.
+    #[serde(default)]
+    pub forked: BTreeMap<Id, u64>,
 }
 
 /// A log entry the device requires.

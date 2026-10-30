@@ -102,6 +102,25 @@ struct Stored {
     /// whose approval it took part in (§7, Device list).
     #[serde(default)]
     witnessed: Vec<Digest>,
+    /// The checkpoints that an approval offer or a recovery kit anchored
+    /// for each workspace's domains (§10, §12, §17).
+    #[serde(default)]
+    checkpoint_anchors: Vec<KeptCheckpointAnchor>,
+}
+
+/// A checkpoint anchor an approval offer or a recovery kit carried.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptCheckpointAnchor {
+    /// The workspace.
+    pub workspace: Id,
+    /// The domain.
+    pub domain: Id,
+    /// The checkpoint's `covered_seq`.
+    pub covered_seq: u64,
+    /// The checkpoint's digest.
+    pub checkpoint: Digest,
+    /// The restore generation the anchor was taken in.
+    pub generation: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,6 +179,7 @@ pub struct KeptHeads {
     anchors: BTreeMap<Id, (u64, Digest)>,
     trusted: BTreeMap<Id, u64>,
     witnessed: BTreeSet<Digest>,
+    checkpoint_anchors: BTreeMap<(Id, Id), KeptCheckpointAnchor>,
 }
 
 impl std::fmt::Debug for KeptHeads {
@@ -298,6 +318,11 @@ impl KeptHeads {
                 .into_iter()
                 .map(|t| (t.workspace, t.after))
                 .collect(),
+            checkpoint_anchors: stored
+                .checkpoint_anchors
+                .into_iter()
+                .map(|a| ((a.workspace, a.domain), a))
+                .collect(),
             witnessed: stored.witnessed.into_iter().collect(),
         };
         if let Some(floor) = stored_own_head(credentials, &device)? {
@@ -381,6 +406,7 @@ impl KeptHeads {
             anchors: BTreeMap::new(),
             trusted: BTreeMap::new(),
             witnessed: BTreeSet::new(),
+            checkpoint_anchors: BTreeMap::new(),
         };
         rebuilt.save()?;
         for account in forked {
@@ -417,6 +443,23 @@ impl KeptHeads {
     /// `workspace`: its revision and digest (§10, §12).
     pub fn anchor(&self, workspace: &Id) -> Option<(u64, Digest)> {
         self.anchors.get(workspace).copied()
+    }
+
+    /// The checkpoint that an approval offer or a recovery kit anchored for
+    /// `domain` of `workspace` (§10, §12).
+    pub fn checkpoint_anchor(&self, workspace: &Id, domain: &Id) -> Option<KeptCheckpointAnchor> {
+        self.checkpoint_anchors.get(&(*workspace, *domain)).copied()
+    }
+
+    /// Keeps a checkpoint anchor of an approval offer or a recovery kit; one
+    /// that names no checkpoint changes nothing.
+    pub fn set_checkpoint_anchor(&mut self, anchor: KeptCheckpointAnchor) -> Result<(), SyncError> {
+        if anchor.checkpoint.is_zero() {
+            return Ok(());
+        }
+        self.checkpoint_anchors
+            .insert((anchor.workspace, anchor.domain), anchor);
+        self.save()
     }
 
     /// Keeps the policy head that an approval offer or a recovery kit
@@ -806,6 +849,7 @@ impl KeptHeads {
                 })
                 .collect(),
             witnessed: self.witnessed.iter().copied().collect(),
+            checkpoint_anchors: self.checkpoint_anchors.values().copied().collect(),
         };
         let json =
             serde_json::to_vec_pretty(&stored).map_err(|e| SyncError::Invalid(e.to_string()))?;

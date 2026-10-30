@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT buckets FROM checkpoints WHERE workspace = $1 AND domain = $2 AND number = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "buckets",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "checkpoints",
+            "name": "buckets"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "ee7b048d5646b5badee88ef33022e43a15c8bcf389e1ab9f7f3496761aeecc98"
+}

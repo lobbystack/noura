@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT head_seq, epoch, epoch_digest, epoch_policy_revision, retention_floor\n             FROM domains WHERE workspace = $1 AND domain = $2",
+  "query": "SELECT head_seq, epoch, epoch_digest, epoch_policy_revision, retention_floor,\n                    checkpoint_seq, checkpoint_due, entries_since_checkpoint,\n                    weight_since_checkpoint\n             FROM domains WHERE workspace = $1 AND domain = $2",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,50 @@
             "name": "retention_floor"
           }
         }
+      },
+      {
+        "ordinal": 5,
+        "name": "checkpoint_seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "checkpoint_seq"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "checkpoint_due",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "checkpoint_due"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "entries_since_checkpoint",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "entries_since_checkpoint"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "weight_since_checkpoint",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "weight_since_checkpoint"
+          }
+        }
       }
     ],
     "parameters": {
@@ -70,8 +114,12 @@
       false,
       false,
       false,
+      false,
+      false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "d919d4efacbd24bc630bc30ef811b367b66c302766611356cbe2934ef6bd8e72"
+  "hash": "8041c335f0bbf296ced706e015de32859f530e58d3d42d7c241a4a038f7b18c8"
 }

@@ -49,12 +49,12 @@ pub(crate) async fn record(
     Ok(class)
 }
 
-/// Applies a checkpoint's rising floor: each delete whose sequence lies in
-/// (`previous_floor`, `floor`] and that is its `rid`'s only live operation
-/// at `covered_seq` leaves the live set for good. Returns the dropped
-/// deletes, sorted by `rid`, device and counter.
-pub(crate) async fn apply_floor(
-    txn: &mut impl WriteTxn,
+/// The deletes a checkpoint's rising floor drops: each delete whose
+/// sequence lies in (`previous_floor`, `floor`] and that is its `rid`'s
+/// only live operation at `covered_seq`, sorted by `rid`, device and
+/// counter.
+pub(crate) async fn floor_drops(
+    txn: &mut impl ReadTxn,
     workspace: Id,
     domain: Id,
     previous_floor: u64,
@@ -62,6 +62,9 @@ pub(crate) async fn apply_floor(
     covered_seq: u64,
 ) -> Result<Vec<DeleteRow>> {
     let mut dropped = Vec::new();
+    if floor <= previous_floor {
+        return Ok(dropped);
+    }
     for candidate in txn
         .deletes_between(workspace, domain, previous_floor, floor)
         .await?
@@ -76,6 +79,20 @@ pub(crate) async fn apply_floor(
         }
     }
     dropped.sort_by_key(|d| (d.rid, d.op.device, d.op.counter));
+    Ok(dropped)
+}
+
+/// Applies a checkpoint's rising floor (§17): the deletes of
+/// [`floor_drops`] leave the live set for good. Returns them.
+pub(crate) async fn apply_floor(
+    txn: &mut impl WriteTxn,
+    workspace: Id,
+    domain: Id,
+    previous_floor: u64,
+    floor: u64,
+    covered_seq: u64,
+) -> Result<Vec<DeleteRow>> {
+    let dropped = floor_drops(txn, workspace, domain, previous_floor, floor, covered_seq).await?;
     for delete in &dropped {
         txn.drop_delete(workspace, delete.rid, delete.op.device, delete.op.counter)
             .await?;

@@ -16,6 +16,7 @@
 pub mod account_heads;
 pub mod approval;
 mod blobs;
+pub mod checkpoints;
 pub mod device;
 pub mod device_list;
 pub mod heads;
@@ -421,6 +422,9 @@ pub struct RemoteWorkspace {
     /// The envelope of the latest epoch that this device accepted, kept
     /// still wrapped in its journal (§15).
     envelope: Option<Signed<Envelope>>,
+    /// The latest checkpoint of the workspace domain this device accepted,
+    /// as an approval offer anchors it, with its restore generation (§10).
+    checkpoint: Option<(sync_protocol::records::CheckpointAnchor, u64)>,
 }
 
 impl RemoteWorkspace {
@@ -473,6 +477,7 @@ impl RemoteWorkspace {
             live: LiveSet::new(),
             last: BTreeMap::new(),
             envelope,
+            checkpoint: None,
         })
     }
 }
@@ -932,7 +937,57 @@ impl SyncService {
             live: LiveSet::new(),
             last: BTreeMap::new(),
             envelope: own_envelope,
+            checkpoint: None,
         })
+    }
+
+    /// The latest checkpoint of `domain` that a sync of `workspace` on
+    /// this device accepted, as the credential store's mark keeps it, with
+    /// its restore generation.
+    fn marked_checkpoint(
+        &self,
+        workspace: Id,
+        domain: Id,
+    ) -> Result<Option<(sync_protocol::records::CheckpointAnchor, u64)>, SyncError> {
+        let mark = marks::Mark::read(&*self.secrets, &self.credentials.keys.device(), &workspace)?;
+        Ok(mark
+            .and_then(|mark| mark.domains.get(&domain).cloned())
+            .filter(|d| d.checkpoint_seq > 0)
+            .map(|d| {
+                (
+                    sync_protocol::records::CheckpointAnchor {
+                        domain,
+                        covered_seq: d.checkpoint_seq,
+                        checkpoint: d.checkpoint,
+                    },
+                    d.checkpoint_generation,
+                )
+            }))
+    }
+
+    /// The anchor an approval offer or a recovery kit gives `remote`'s
+    /// workspace domain (§10, §12): the latest checkpoint this device
+    /// accepted there, read again from the mark, since the workspace's sync
+    /// may have accepted a later one since `remote` opened. Before the
+    /// first, a `covered_seq` of 0 and 32 zero bytes in the current
+    /// generation.
+    pub(crate) fn checkpoint_anchor(
+        &self,
+        remote: &RemoteWorkspace,
+    ) -> Result<(sync_protocol::records::CheckpointAnchor, u64), SyncError> {
+        let marked = self.marked_checkpoint(remote.workspace, remote.domain)?;
+        let newest = [marked, remote.checkpoint.clone()]
+            .into_iter()
+            .flatten()
+            .max_by_key(|(anchor, generation)| (*generation, anchor.covered_seq));
+        Ok(newest.unwrap_or((
+            sync_protocol::records::CheckpointAnchor {
+                domain: remote.domain,
+                covered_seq: 0,
+                checkpoint: Digest::ZERO,
+            },
+            self.client.restore_generation(),
+        )))
     }
 
     /// Opens a remote workspace from the server: fetches its policy chain
@@ -947,17 +1002,37 @@ impl SyncService {
     /// checks the key, and derives the earlier epochs' keys through
     /// lineage (§9).
     pub async fn open_workspace(&mut self, workspace: Id) -> Result<RemoteWorkspace, SyncError> {
+        self.open_workspace_with(workspace, true).await
+    }
+
+    /// [`SyncService::open_workspace`] for a new device, which takes the
+    /// current epoch record from `keys/current` and fetches older ones
+    /// through `epochs/{epoch}` only once something it reads names one
+    /// ([`SyncService::older_epochs`], §18 step 1).
+    pub async fn open_workspace_current(
+        &mut self,
+        workspace: Id,
+    ) -> Result<RemoteWorkspace, SyncError> {
+        self.open_workspace_with(workspace, false).await
+    }
+
+    async fn open_workspace_with(
+        &mut self,
+        workspace: Id,
+        lineage: bool,
+    ) -> Result<RemoteWorkspace, SyncError> {
         let policy = self.verified_policy(workspace).await?;
         let domain = policy.head_snapshot().workspace_domain;
         let recipient = self.credentials.keys.clone();
         // Opening, the device holds no epoch of the domain yet (§9).
         let (epochs, keys, envelope) = self
-            .load_keys(workspace, domain, &policy, &recipient, false)
+            .load_keys_with(workspace, domain, &policy, &recipient, false, None, lineage)
             .await?;
         let key = epochs
             .latest()
             .and_then(|latest| keys.get(&latest.record.body.epoch).cloned())
             .ok_or(SyncError::Check("sync_key_mismatch"))?;
+        let checkpoint = self.marked_checkpoint(workspace, domain)?;
         Ok(RemoteWorkspace {
             workspace,
             domain,
@@ -972,6 +1047,7 @@ impl SyncService {
             live: LiveSet::new(),
             last: BTreeMap::new(),
             envelope,
+            checkpoint,
         })
     }
 
@@ -1110,6 +1186,32 @@ impl SyncService {
         accepted_earlier: bool,
         entry_revision: Option<u64>,
     ) -> Result<LoadedKeys, SyncError> {
+        self.load_keys_with(
+            workspace,
+            domain,
+            policy,
+            recipient,
+            accepted_earlier,
+            entry_revision,
+            true,
+        )
+        .await
+    }
+
+    /// [`SyncService::load_keys_at`]; with `lineage` false, the current
+    /// epoch record and its key alone, as a new device takes them before
+    /// anything names an older epoch (§18, step 1).
+    #[allow(clippy::too_many_arguments)]
+    async fn load_keys_with(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        policy: &PolicyChain,
+        recipient: &DeviceKeys,
+        accepted_earlier: bool,
+        entry_revision: Option<u64>,
+        lineage: bool,
+    ) -> Result<LoadedKeys, SyncError> {
         let card = recipient.card(self.credentials.account);
         let current = self
             .client
@@ -1165,6 +1267,14 @@ impl SyncService {
             }
             return Err(SyncError::Check("sync_key_mismatch"));
         };
+        if !lineage {
+            let mut epochs = EpochChain::new(workspace, domain);
+            epochs
+                .start_at(&record, &key, policy)
+                .map_err(|e| SyncError::Check(e.client_code()))?;
+            let keys = BTreeMap::from([(record.body.epoch, key)]);
+            return Ok((epochs, keys, Some(envelope)));
+        }
         let lineage: Vec<Signed<Epoch>> = self
             .client
             .epochs(workspace, domain, record.body.epoch)
@@ -1192,6 +1302,59 @@ impl SyncService {
             keys.insert(record.body.epoch, key.clone());
         }
         Ok((epochs, keys, Some(envelope)))
+    }
+
+    /// Walks the workspace domain's epoch records back from the oldest
+    /// that `remote` holds until it holds `epoch`, a replacement ended it,
+    /// or the chain starts (§18, step 1): `epochs/{epoch}` returns the
+    /// oldest held record and as many earlier ones as fit one response,
+    /// whose keys come from the held key through lineage. Each record is
+    /// accepted against the policy and against the one after it.
+    pub async fn older_epochs(
+        &mut self,
+        remote: &mut RemoteWorkspace,
+        epoch: u64,
+    ) -> Result<(), SyncError> {
+        loop {
+            if remote.epochs.get(epoch).is_some() || remote.epochs.ended_at(epoch).is_some() {
+                return Ok(());
+            }
+            let oldest = remote
+                .epochs
+                .oldest()
+                .ok_or(SyncError::Check("sync_key_mismatch"))?
+                .record
+                .clone();
+            if oldest.body.epoch < epoch || oldest.body.previous.is_zero() {
+                return Err(SyncError::Check("sync_key_mismatch"));
+            }
+            let key = remote
+                .keys
+                .get(&oldest.body.epoch)
+                .cloned()
+                .ok_or(SyncError::Check("sync_key_mismatch"))?;
+            let lineage: Vec<Signed<Epoch>> = self
+                .client
+                .epochs(remote.workspace, remote.domain, oldest.body.epoch)
+                .await?
+                .epochs
+                .0
+                .into_iter()
+                .map(|e| e.0)
+                .collect();
+            if lineage.first() != Some(&oldest) || lineage.len() < 2 {
+                return Err(SyncError::Check("sync_key_mismatch"));
+            }
+            let derived =
+                walk_lineage(&lineage, &key).map_err(|e| SyncError::Check(e.client_code()))?;
+            for (record, key) in lineage.iter().zip(derived.iter()).skip(1) {
+                remote
+                    .epochs
+                    .accept_older(record, key, &remote.policy)
+                    .map_err(|e| SyncError::Check(e.client_code()))?;
+                remote.keys.insert(record.body.epoch, key.clone());
+            }
+        }
     }
 
     /// Pushes a file at `path` as a new object: a padded, encrypted `file`

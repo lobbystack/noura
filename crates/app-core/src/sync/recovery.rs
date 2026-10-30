@@ -22,10 +22,10 @@ use sync_key_envelope::v2::{DeviceKeys, next_link, recovery_proof};
 use sync_protocol::codec::{Decode, Encode, Nested, Sorted, Text};
 use sync_protocol::crypto::random_nonce;
 use sync_protocol::records::{
-    AccountHead, Card, CheckpointAnchor, KIT_SECRET_LEN, KitPayload, KitWorkspace, LinkKind,
-    RecoveryKit, kit_secret_text, parse_kit_secret,
+    AccountHead, Card, KIT_SECRET_LEN, KitPayload, KitWorkspace, LinkKind, RecoveryKit,
+    kit_secret_text, parse_kit_secret,
 };
-use sync_protocol::types::{Digest, Id};
+use sync_protocol::types::Id;
 use zeroize::Zeroizing;
 
 use super::device::{SignedIn, StoredDevice, enroll_card};
@@ -243,19 +243,18 @@ impl SyncService {
                 .map(|c| c.digest())
                 .ok_or(SyncError::Check("sync_policy_rollback"))
                 .map_err(after)?;
+            // The latest accepted checkpoint of each domain the device
+            // syncs, with its restore generation; before the first, a
+            // covered_seq of 0 and 32 zero bytes (§12).
+            let (checkpoint, generation) = self.checkpoint_anchor(remote).map_err(after)?;
             anchors.push(KitWorkspace {
                 workspace: remote.workspace,
                 genesis,
                 revision,
                 head,
-                generation: self.client.restore_generation(),
-                // Until checkpoints exist, the anchor names none (§10).
-                anchors: Sorted::new(vec![CheckpointAnchor {
-                    domain: remote.domain,
-                    covered_seq: 0,
-                    checkpoint: Digest::ZERO,
-                }])
-                .map_err(|e| after(SyncError::Invalid(e.name().to_owned())))?,
+                generation,
+                anchors: Sorted::new(vec![checkpoint])
+                    .map_err(|e| after(SyncError::Invalid(e.name().to_owned())))?,
             });
         }
         let payload = KitPayload {
@@ -457,6 +456,17 @@ impl Recovery {
             service
                 .heads
                 .first_trusted(listed.workspace, listed.revision)?;
+            for anchor in listed.anchors.iter() {
+                service.heads.set_checkpoint_anchor(
+                    super::account_heads::KeptCheckpointAnchor {
+                        workspace: listed.workspace,
+                        domain: anchor.domain,
+                        covered_seq: anchor.covered_seq,
+                        checkpoint: anchor.checkpoint,
+                        generation: listed.generation,
+                    },
+                )?;
+            }
             let policy = service.verified_policy(listed.workspace).await?;
             if policy.change(1).map(|c| c.digest()) != Some(listed.genesis) {
                 return Err(SyncError::Check("sync_policy_forked"));

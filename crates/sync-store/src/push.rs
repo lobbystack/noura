@@ -15,7 +15,7 @@ use sync_protocol::messages::{
 use sync_protocol::padding::is_padded_ciphertext_length;
 use sync_protocol::policy::PolicyChain;
 use sync_protocol::records::{
-    Envelope, EpochBundle, Operation, PolicyChange, Profile, Role, Signed,
+    CheckpointBundle, Envelope, EpochBundle, Operation, PolicyChange, Profile, Role, Signed,
 };
 use sync_protocol::types::{Digest, Id};
 
@@ -23,7 +23,8 @@ pub(crate) use keys::KEY_REWRAP;
 
 use crate::policy::{self, PolicyCache};
 use crate::{
-    ChainHeadRow, Error, LockPlan, Refusal, Result, Session, WriteGroup, WriteTxn, refuse,
+    ChainHeadRow, CheckpointInterval, Error, LockPlan, Refusal, Result, Session, WriteGroup,
+    WriteTxn, refuse,
 };
 
 /// Log entry record types (§15).
@@ -98,6 +99,8 @@ pub(crate) enum Pushed {
     Envelope(usize, Signed<Envelope>),
     /// A new workspace profile from an owner or admin device (§25).
     Profile(usize, Signed<Profile>),
+    /// A checkpoint bundle (§17), alone in its push.
+    Checkpoint(usize, CheckpointBundle),
 }
 
 impl Pushed {
@@ -107,7 +110,8 @@ impl Pushed {
             Pushed::Change(index, _)
             | Pushed::Epoch(index, _)
             | Pushed::Envelope(index, _)
-            | Pushed::Profile(index, _) => *index,
+            | Pushed::Profile(index, _)
+            | Pushed::Checkpoint(index, _) => *index,
         }
     }
 }
@@ -118,6 +122,7 @@ impl Pushed {
 /// already refused a ciphertext above 270,352 bytes with `too_large`.
 pub(crate) fn decode(body: &[u8], workspace: Id, session: Session) -> Result<Vec<Pushed>> {
     let records = decode_records(body)?;
+    let records_len = records.len();
     let mut pushed = Vec::with_capacity(records.len());
     let mut digests = std::collections::BTreeSet::new();
     for (index, record) in records.into_iter().enumerate() {
@@ -138,12 +143,17 @@ pub(crate) fn decode(body: &[u8], workspace: Id, session: Session) -> Result<Vec
                 (envelope.body.workspace, envelope.body.wrapping_device)
             }
             RecordRef::Profile(profile) => (profile.body.workspace, profile.body.signer),
-            RecordRef::CheckpointBundle(_) => {
-                // Checkpoints arrive with ticket 58.
-                return Err(fail(
-                    "bad_request",
-                    "this server takes no checkpoint in a push so far",
-                ));
+            RecordRef::CheckpointBundle(bundle) => {
+                // A checkpoint goes in a push of its own until approvals
+                // and grants carry one (ticket 50).
+                if records_len > 1 {
+                    return Err(fail(
+                        "bad_request",
+                        "a checkpoint goes in a push of its own",
+                    ));
+                }
+                let body = &bundle.checkpoint.0.body;
+                (body.workspace, body.signer)
             }
         };
         if record_workspace != workspace {
@@ -184,7 +194,7 @@ pub(crate) fn decode(body: &[u8], workspace: Id, session: Session) -> Result<Vec
                 }
                 Pushed::Profile(index, profile)
             }
-            RecordRef::CheckpointBundle(_) => unreachable!("refused"),
+            RecordRef::CheckpointBundle(bundle) => Pushed::Checkpoint(index, bundle),
         });
     }
     Ok(pushed)
@@ -228,6 +238,7 @@ pub(crate) fn check_signatures(
             Pushed::Epoch(_, bundle) => bundle.epoch.0.verify(key).is_ok(),
             Pushed::Envelope(_, envelope) => envelope.verify(key).is_ok(),
             Pushed::Profile(_, profile) => profile.verify(key).is_ok(),
+            Pushed::Checkpoint(_, bundle) => bundle.checkpoint.0.verify(key).is_ok(),
         };
         if !valid {
             return Err(failure(
@@ -248,6 +259,7 @@ pub(crate) fn check_signatures(
 pub(crate) async fn commit(
     txn: &mut impl WriteTxn,
     cache: &PolicyCache,
+    interval: CheckpointInterval,
     generation: u64,
     session: Session,
     workspace: Id,
@@ -262,6 +274,7 @@ pub(crate) async fn commit(
         .filter_map(|p| match p {
             Pushed::Op(op) => Some(op.op.body.domain),
             Pushed::Change(..) | Pushed::Profile(..) => None,
+            Pushed::Checkpoint(_, bundle) => Some(bundle.checkpoint.0.body.domain),
             Pushed::Epoch(_, bundle) => Some(bundle.epoch.0.body.domain),
             Pushed::Envelope(_, envelope) => Some(envelope.body.domain),
         })
@@ -326,14 +339,17 @@ pub(crate) async fn commit(
             "the device isn't active in this workspace",
         ));
     }
-    let mut state = keys::PushState::new(policy);
+    let mut state = keys::PushState::new(policy, interval);
     let mut receipts = Vec::with_capacity(pushed.len());
     for record in &pushed {
         let index = record.index();
         let result = match record {
-            Pushed::Op(op) => apply(txn, state.policy(), generation, workspace, op)
+            Pushed::Op(op) => apply(txn, state.policy(), interval, generation, workspace, op)
                 .await
                 .map(|receipt| vec![receipt]),
+            Pushed::Checkpoint(..) => Err(Error::internal(
+                "a checkpoint commits through checkpoints::commit",
+            )),
             Pushed::Change(_, change) => {
                 keys::apply_change(txn, &mut state, session, workspace, index, change).await
             }
@@ -465,6 +481,7 @@ fn chain_conflict(domain: Id, head: Option<ChainHeadRow>) -> Error {
 async fn apply(
     txn: &mut impl WriteTxn,
     policy: &Arc<PolicyChain>,
+    interval: CheckpointInterval,
     generation: u64,
     workspace: Id,
     pushed: &PushedOp,
@@ -605,6 +622,16 @@ async fn apply(
     )
     .map_err(|e| refuse(e.server_code(), e.to_string()))?;
     crate::blobs::check_listed(txn, workspace, domain, &op.blobs).await?;
+    // Its weight (§19): the record's length plus each blob no earlier
+    // operation listed.
+    let mut weight = pushed.bytes.len() as u64;
+    for blob in op.blobs.iter() {
+        if !txn.blob_listed(workspace, *blob).await?
+            && let Some(row) = txn.blob(workspace, *blob).await?
+        {
+            weight = weight.saturating_add(row.length);
+        }
+    }
 
     // The write.
     let seq = txn
@@ -617,6 +644,7 @@ async fn apply(
     txn.insert_operation(workspace, domain, &live_op, class)
         .await?;
     crate::blobs::list(txn, workspace, domain, seq, &op.blobs).await?;
+    crate::checkpoints::note_entry(txn, interval, workspace, domain, seq, weight, false).await?;
     txn.set_chain_head(
         workspace,
         domain,

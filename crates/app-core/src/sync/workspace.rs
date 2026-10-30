@@ -15,6 +15,7 @@
 //! capture changes; the calls that reach the server take the device's
 //! [`SyncService`].
 
+mod bootstrap;
 mod capture;
 pub mod rebuild;
 mod settle;
@@ -26,7 +27,9 @@ use std::sync::Arc;
 
 use local_core::WorkspaceEngine;
 use sync_key_envelope::v2::unwrap;
-use sync_protocol::chain::{ChainFetcher, ChainRecord, ChainVerdict, ChainVerifier, Fetched};
+use sync_protocol::chain::{
+    ChainError, ChainFetcher, ChainRecord, ChainVerdict, ChainVerifier, Fetched,
+};
 use sync_protocol::codec::{Bytes, Decode, Encode, Sorted, Text};
 use sync_protocol::crypto::{hash, random_nonce};
 use sync_protocol::keys::{
@@ -34,8 +37,8 @@ use sync_protocol::keys::{
 };
 use sync_protocol::live::{LiveOp, LiveSet};
 use sync_protocol::messages::{
-    ChainConflictDetail, EntryRecord, Frame, FrameAction, MAX_BODY, Page, PageStatus, PullCursor,
-    PushFailureDetail, RecordRef, records_frame_action, records_frame_is_well_formed,
+    ChainConflictDetail, Entry, EntryRecord, Frame, FrameAction, MAX_BODY, Page, PageStatus,
+    PullCursor, PushFailureDetail, RecordRef, records_frame_action, records_frame_is_well_formed,
 };
 use sync_protocol::policy::PolicyChain;
 use sync_protocol::records::{
@@ -66,6 +69,10 @@ pub const RESEAL_LIMIT: u32 = 3;
 /// The longest random wait before a device writes again other devices'
 /// records under an epoch a replacement skipped (§9).
 pub const REWRITE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The longest random wait before a writer signs a checkpoint that fell
+/// due (§17).
+pub const CHECKPOINT_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 /// How far below 1 MiB a push stays, for its framing.
 const PUSH_MARGIN: usize = 4_096;
 
@@ -164,6 +171,9 @@ pub struct WorkspaceSync {
     /// The longest random wait before the device writes again other
     /// devices' records under a skipped epoch (§9).
     rewrite_wait: std::time::Duration,
+    /// The longest random wait before the device signs a checkpoint that
+    /// fell due (§17).
+    checkpoint_wait: std::time::Duration,
     /// The restore generation of the latest `restored` frame, which every
     /// other frame is judged against (§23).
     frame_generation: Option<u64>,
@@ -223,7 +233,7 @@ impl WorkspaceSync {
         name: &str,
         registry: &mut Registry,
     ) -> Result<Self, SyncError> {
-        let remote = service.create_workspace(name).await?;
+        let mut remote = service.create_workspace(name).await?;
         let server = service.client().base().to_owned();
         let credentials = service.credentials().clone();
         let replica = registry.connect(
@@ -233,7 +243,7 @@ impl WorkspaceSync {
             engine.root(),
         )?;
         let generation = service.client().restore_generation();
-        let (_, profile) = profile_of(service, &remote).await?;
+        let (_, profile) = profile_of(service, &mut remote).await?;
         Self::start(
             service, engine, remote, server, replica, generation, name, profile,
         )
@@ -255,15 +265,21 @@ impl WorkspaceSync {
                 "Choose an empty folder to download the workspace into.".into(),
             ));
         }
-        let remote = service.open_workspace(workspace).await?;
-        let (name, profile) = profile_of(service, &remote).await?;
+        // A new device takes the current epoch alone, and older ones only
+        // once something it reads names one (§18, step 1).
+        let mut remote = service.open_workspace_current(workspace).await?;
+        let (name, profile) = profile_of(service, &mut remote).await?;
         let server = service.client().base().to_owned();
         let credentials = service.credentials().clone();
         let replica = registry.connect(&server, credentials.account, workspace, engine.root())?;
         let generation = service.client().restore_generation();
-        Self::start(
+        let mut sync = Self::start(
             service, engine, remote, server, replica, generation, &name, profile,
-        )
+        )?;
+        // A new device loads the domain from its latest checkpoint (§18).
+        sync.state.bootstrap = true;
+        sync.save()?;
+        Ok(sync)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -308,6 +324,8 @@ impl WorkspaceSync {
                 wanted: Vec::new(),
                 epoch_entries: 0,
                 skipped_rotators: BTreeMap::new(),
+                checkpoints: Default::default(),
+                forked: BTreeMap::new(),
             },
             own: Own {
                 next,
@@ -329,6 +347,8 @@ impl WorkspaceSync {
             rewrite_due: 0,
             profile_recheck: false,
             ended: None,
+            bootstrap: false,
+            bootstrap_progress: None,
         };
         // A device accepts no policy head or epoch below its mark, also
         // when it starts again without a journal (§15).
@@ -357,6 +377,7 @@ impl WorkspaceSync {
             paused: false,
             matching: false,
             rewrite_wait: REWRITE_WAIT,
+            checkpoint_wait: CHECKPOINT_WAIT,
             cache: BTreeMap::new(),
             entry_hint: None,
             armed: BTreeSet::new(),
@@ -432,7 +453,18 @@ impl WorkspaceSync {
             state.epochs.last().map_or(0, |e| e.body.epoch),
         )]);
         let revision = state.policy.last().map_or(0, |c| c.body.revision);
-        if mark.above(revision, &epochs) {
+        let checkpoint_seq = state
+            .log
+            .checkpoints
+            .accepted
+            .as_ref()
+            .map_or(0, |a| a.record.body.covered_seq);
+        if mark.above(revision, &epochs)
+            || mark
+                .domains
+                .get(&state.domain)
+                .is_some_and(|d| d.checkpoint_seq > checkpoint_seq)
+        {
             return Err(SyncError::Check("sync_journal_rollback"));
         }
         let next = mark.start();
@@ -450,6 +482,7 @@ impl WorkspaceSync {
             paused: entry.paused,
             matching: false,
             rewrite_wait: REWRITE_WAIT,
+            checkpoint_wait: CHECKPOINT_WAIT,
             cache: BTreeMap::new(),
             entry_hint: None,
             armed: BTreeSet::new(),
@@ -731,6 +764,24 @@ impl WorkspaceSync {
 
     fn save(&mut self) -> Result<(), SyncError> {
         self.journal.write(STATE_FILE, &self.state)?;
+        // An approval offer anchors the latest accepted checkpoint (§10).
+        let accepted = self
+            .state
+            .log
+            .checkpoints
+            .accepted
+            .as_ref()
+            .map(|a| (a.record.body.covered_seq, a.record.digest()));
+        if let (Some(remote), Some((covered_seq, checkpoint))) = (self.remote.as_mut(), accepted) {
+            remote.checkpoint = Some((
+                sync_protocol::records::CheckpointAnchor {
+                    domain: self.state.domain,
+                    covered_seq,
+                    checkpoint,
+                },
+                self.state.generation,
+            ));
+        }
         // The mark follows the journal, never ahead of it (§15).
         let revision = self.state.policy.last().map_or(0, |c| c.body.revision);
         let head = self
@@ -744,9 +795,18 @@ impl WorkspaceSync {
             .epochs
             .last()
             .map_or((0, Digest::ZERO), |e| (e.body.epoch, e.digest()));
-        if revision != self.mark.policy_revision || epoch != domain.epoch {
+        let (checkpoint_seq, checkpoint) = accepted.unwrap_or((0, Digest::ZERO));
+        if revision != self.mark.policy_revision
+            || epoch != domain.epoch
+            || checkpoint_seq > domain.checkpoint_seq
+        {
             domain.epoch = epoch;
             domain.epoch_record = record;
+            if checkpoint_seq > domain.checkpoint_seq {
+                domain.checkpoint_seq = checkpoint_seq;
+                domain.checkpoint = checkpoint;
+                domain.checkpoint_generation = self.state.generation;
+            }
             self.mark.policy_revision = revision;
             self.mark.policy_head = head;
             self.mark.write(
@@ -812,6 +872,7 @@ impl WorkspaceSync {
             self.follow_profile(service).await?;
         }
         let (applied, waiting_for_key) = self.pull_until(service, wait_seconds, wake).await?;
+        self.sign_checkpoint(service).await?;
         // A replacement the pull brought ends epochs whose records this
         // device writes again at once (§9); merges go out next round.
         if !self.state.rewrite_epochs.is_empty() {
@@ -832,7 +893,19 @@ impl WorkspaceSync {
     /// which must extend what the journal accepted (§8, §9), then compares
     /// this device's chain with the server's head (§14).
     pub async fn connect(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
-        let remote = service.open_workspace(self.state.workspace).await?;
+        // A device still bootstrapping takes the current epoch alone and
+        // walks back only as far as something it reads needs (§18).
+        let remote = if self.state.bootstrap {
+            let mut remote = service.open_workspace_current(self.state.workspace).await?;
+            if let Some(accepted) = self.state.epochs.last() {
+                service
+                    .older_epochs(&mut remote, accepted.body.epoch)
+                    .await?;
+            }
+            remote
+        } else {
+            service.open_workspace(self.state.workspace).await?
+        };
         self.adopt(remote)?;
         self.compare_own_chain(service).await?;
         self.follow_profile(service).await?;
@@ -845,9 +918,9 @@ impl WorkspaceSync {
     /// admin device signs the profile again at its accepted head; the
     /// server keeps the first.
     async fn follow_profile(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
-        let Some(remote) = self.remote.as_ref() else {
+        if self.remote.is_none() {
             return Ok(());
-        };
+        }
         let list = service.client().workspaces().await?;
         let Some(profile) = list
             .workspaces
@@ -857,6 +930,10 @@ impl WorkspaceSync {
             .and_then(|w| w.profile)
             .map(|p| p.0)
         else {
+            return Ok(());
+        };
+        self.ensure_epoch(service, profile.body.epoch).await?;
+        let Some(remote) = self.remote.as_ref() else {
             return Ok(());
         };
         let accepted = self.state.profile;
@@ -1068,6 +1145,27 @@ impl WorkspaceSync {
         self.keys.extend(remote.keys.clone());
         self.remote = Some(remote);
         Ok(())
+    }
+
+    /// Makes sure the device holds epoch `epoch`'s record and key, or
+    /// knows that a replacement ended it, walking back through
+    /// `epochs/{epoch}` from the oldest record it holds when it doesn't
+    /// (§18, step 1).
+    pub(super) async fn ensure_epoch(
+        &mut self,
+        service: &mut SyncService,
+        epoch: u64,
+    ) -> Result<(), SyncError> {
+        let Some(remote) = self.remote.as_mut() else {
+            return Ok(());
+        };
+        if remote.epochs.get(epoch).is_some() || remote.epochs.ended_at(epoch).is_some() {
+            return Ok(());
+        }
+        service.older_epochs(remote, epoch).await?;
+        self.keys.extend(remote.keys.clone());
+        self.state.epochs = remote.epochs_oldest_first().into_iter().cloned().collect();
+        self.save()
     }
 
     /// Takes the policy and keys again after a push response, a pull or a
@@ -1623,6 +1721,8 @@ impl WorkspaceSync {
             .policy
             .last()
             .ok_or(SyncError::Check("sync_workspace_unverified"))?;
+        // The latest checkpoint this device reached (§13).
+        let (checkpoint_seq, checkpoint) = self.state.log.checkpoints.named();
         let mut op = Operation {
             workspace: self.state.workspace,
             domain: self.state.domain,
@@ -1634,8 +1734,8 @@ impl WorkspaceSync {
             policy_head: head.digest(),
             previous_attempt,
             generation: self.state.generation,
-            checkpoint_seq: 0,
-            checkpoint: Digest::ZERO,
+            checkpoint_seq,
+            checkpoint,
             rid,
             delete,
             supersedes: Sorted::new(covers).map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
@@ -2095,6 +2195,133 @@ impl WorkspaceSync {
         Ok(written)
     }
 
+    /// Sets the longest random wait before the device signs a checkpoint
+    /// that fell due; [`CHECKPOINT_WAIT`] by default.
+    pub fn set_checkpoint_wait(&mut self, wait: std::time::Duration) {
+        self.checkpoint_wait = wait;
+        let latest = unix_now() + wait.as_secs();
+        let checkpoints = &mut self.state.log.checkpoints;
+        if checkpoints.sign_at.is_some_and(|at| at > latest) {
+            checkpoints.sign_at = Some(latest);
+        }
+    }
+
+    /// The latest checkpoint this device accepted in the domain's log.
+    pub fn latest_checkpoint(&self) -> Option<&Signed<sync_protocol::records::Checkpoint>> {
+        self.state
+            .log
+            .checkpoints
+            .accepted
+            .as_ref()
+            .map(|a| &a.record)
+    }
+
+    /// The checkpoints in the log that failed a check, as reported (§17).
+    pub fn checkpoint_failures(&self) -> &[crate::sync::checkpoints::Failure] {
+        &self.state.log.checkpoints.failures
+    }
+
+    /// How many records the chain verifier keeps state for, which stays
+    /// within one checkpoint interval (§14).
+    pub fn verifier_retained(&self) -> usize {
+        self.state.log.verifier.retained()
+    }
+
+    /// The devices whose forked chain holds the cursor (§14).
+    pub fn forked_devices(&self) -> Vec<Id> {
+        self.state.log.forked.keys().copied().collect()
+    }
+
+    /// Whether the chain verifier ignores `digest`, a record of `device` on
+    /// the other branch of a settled fork (§14).
+    pub fn ignores_record(&self, device: &Id, digest: &Digest) -> bool {
+        self.state.log.verifier.ignores(device, digest)
+    }
+
+    /// Signs and pushes a checkpoint once the device has applied the log
+    /// past the due point the server published and its random wait passed
+    /// with none arriving (§17). A device that can't write the domain, or
+    /// that an unrecorded removal holds (§9), signs none. A checkpoint the
+    /// server answers with `checkpoint_stale` or `checkpoint_not_due` is
+    /// dropped, and the device waits for the next due point. Returns
+    /// whether one committed.
+    async fn sign_checkpoint(&mut self, service: &mut SyncService) -> Result<bool, SyncError> {
+        let device = self.credentials.keys.device();
+        let cursor = self.state.log.cursor;
+        let due = self.state.log.checkpoints.due;
+        let Some(remote) = self.remote.as_ref() else {
+            return Ok(false);
+        };
+        let writes = remote
+            .policy
+            .head_snapshot()
+            .can_write(&device, &self.state.domain);
+        let pending = self.state.log.judge.rotation_pending(&remote.policy);
+        if due == 0
+            || cursor < due
+            || !writes
+            || self.state.removal_hold
+            || self.stopped.is_some()
+            || self.state.ended.is_some()
+            || pending
+        {
+            self.state.log.checkpoints.sign_at = None;
+            return Ok(false);
+        }
+        let now = unix_now();
+        let sign_at = match self.state.log.checkpoints.sign_at {
+            Some(at) => at,
+            None => {
+                let at = now
+                    + super::heads::random_wait(&(std::time::Duration::ZERO..self.checkpoint_wait))
+                        .as_secs();
+                self.state.log.checkpoints.sign_at = Some(at);
+                self.save()?;
+                at
+            }
+        };
+        if now < sign_at {
+            return Ok(false);
+        }
+        let Some(remote) = self.remote.as_ref() else {
+            return Ok(false);
+        };
+        let Some(bundle) = self.state.log.checkpoints.sign(
+            self.state.workspace,
+            self.state.domain,
+            cursor,
+            self.state.log.retention_floor,
+            &self.state.log.live,
+            &remote.policy,
+            device,
+            self.credentials.keys.signing(),
+        ) else {
+            self.state.log.checkpoints.sign_at = None;
+            return Ok(false);
+        };
+        let pushed = service
+            .client()
+            .push(
+                self.state.workspace,
+                vec![RecordRef::CheckpointBundle(bundle)],
+            )
+            .await;
+        self.state.log.checkpoints.sign_at = None;
+        let committed = match pushed {
+            Ok(_) => true,
+            Err(SyncError::Refused { code, .. })
+                if code == "checkpoint_stale" || code == "checkpoint_not_due" =>
+            {
+                false
+            }
+            Err(error) => return Err(error),
+        };
+        // The next page names the next due point.
+        self.state.log.checkpoints.due = 0;
+        self.save()?;
+        Ok(committed)
+    }
+
     /// Sets the longest random wait before the device writes again other
     /// devices' records under a skipped epoch; [`REWRITE_WAIT`] by default.
     pub fn set_rewrite_wait(&mut self, wait: std::time::Duration) {
@@ -2201,6 +2428,11 @@ impl WorkspaceSync {
         wait_seconds: u32,
         wake: &tokio::sync::Notify,
     ) -> Result<(usize, bool), SyncError> {
+        if self.state.bootstrap {
+            self.bootstrap(service).await?;
+            self.state.bootstrap = false;
+            self.save()?;
+        }
         // An entry the device learned of before this request is owed by
         // the head of the page it answers; one it learns of while handling
         // the page, by the next page's (§8, §9).
@@ -2448,11 +2680,14 @@ impl WorkspaceSync {
                 Err(error) => return Err(error),
             }
         }
-        let checked = match self.judge_page(service, &page).await? {
+        self.settle_forks(service).await?;
+        let extra = self.fetch_hidden_checkpoints(service, &page).await?;
+        let mut checked = match self.judge_page(service, &page, &extra).await? {
             Some(checked) => checked,
             None => return Ok((0, true)),
         };
         let fetched = self.fetch_blobs(service, &checked).await?;
+        let walks = std::mem::take(&mut checked.walks);
         let applied = self.apply(checked, fetched);
         self.clear_downloads();
         let applied = applied?;
@@ -2462,12 +2697,299 @@ impl WorkspaceSync {
                 self.settle(rid, &BTreeMap::new())?;
             }
         }
+        for (digest, at, own) in walks {
+            let differing = self.walk_manifest(service, at, &own).await;
+            self.state.log.checkpoints.set_differing(&digest, differing);
+        }
         self.state.log.cursor = page.complete_through;
+        self.state.log.checkpoints.due = page.checkpoint_due;
         self.state.log.head = self.state.log.head.max(page.head);
         self.state.log.checkpoint_seq = self.state.log.checkpoint_seq.max(page.checkpoint_seq);
         self.state.log.retention_floor = self.state.log.retention_floor.max(page.retention_floor);
         self.save()?;
         Ok((applied, false))
+    }
+
+    /// Settles each fork the log holds (§14): once the accepted policy
+    /// ends the forked device's write access to the domain at a change r,
+    /// the device fetches checkpoints from the latest back through
+    /// `previous` to the first whose `policy_revision` is at or above r,
+    /// reads the log from its cursor through that checkpoint's
+    /// `covered_seq`, and keeps the branch whose head the checkpoint lists.
+    /// A fork it can't settle yet keeps holding the cursor.
+    async fn settle_forks(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
+        let (workspace, domain) = (self.state.workspace, self.state.domain);
+        for (device, at) in self.state.log.forked.clone() {
+            let Some(remote) = self.remote.as_ref() else {
+                return Ok(());
+            };
+            let policy = &remote.policy;
+            if policy.head_snapshot().can_write(&device, &domain) {
+                continue;
+            }
+            // The first change after the forked record's position that ends
+            // the device's write access (§14).
+            let head = policy.head().0;
+            let Some(ended) = (at.max(1) + 1..=head).find(|&r| {
+                policy
+                    .at(r - 1)
+                    .is_some_and(|s| s.can_write(&device, &domain))
+                    && policy.at(r).is_some_and(|s| !s.can_write(&device, &domain))
+            }) else {
+                continue;
+            };
+            let Some(latest) = service.client().checkpoint(workspace, domain).await? else {
+                continue;
+            };
+            let mut covering = latest.bundle;
+            if covering.checkpoint.0.body.policy_revision < ended {
+                continue;
+            }
+            loop {
+                let previous = covering.checkpoint.0.body.previous;
+                if previous.is_zero() {
+                    break;
+                }
+                let Some(entry) = service
+                    .client()
+                    .checkpoint_by_digest(workspace, domain, previous)
+                    .await?
+                else {
+                    return Err(SyncError::Check("sync_chain_gap"));
+                };
+                let EntryRecord::Checkpoint(before) = entry.record else {
+                    return Err(SyncError::Check("sync_chain_gap"));
+                };
+                if before.checkpoint.0.digest() != previous {
+                    return Err(SyncError::Check("sync_chain_gap"));
+                }
+                if before.checkpoint.0.body.policy_revision < ended {
+                    break;
+                }
+                covering = before;
+            }
+            let Some(kept) = covering.heads.iter().find(|h| h.device == device).cloned() else {
+                continue;
+            };
+            let covered = covering.checkpoint.0.body.covered_seq;
+            let mut records = Vec::new();
+            let mut after = self.state.log.cursor;
+            while after < covered {
+                let response = service
+                    .client()
+                    .pull(workspace, vec![PullCursor { domain, after }], 0)
+                    .await?;
+                let Some(page) = response.pages.0.into_iter().find(|p| p.domain == domain) else {
+                    return Err(SyncError::Check("sync_chain_gap"));
+                };
+                if page.complete_through <= after {
+                    break;
+                }
+                for entry in page.entries.iter().filter(|e| e.seq <= covered) {
+                    if let EntryRecord::Operation(op) = &entry.record
+                        && op.body.device == device
+                    {
+                        records.push(ChainRecord::from_operation(op, entry.seq));
+                    }
+                }
+                after = page.complete_through;
+            }
+            if let Ok(reverted) = self.state.log.verifier.resolve_fork(&kept, &records) {
+                self.revert(device, &reverted, &BTreeMap::new())?;
+                self.state.log.forked.remove(&device);
+                self.save()?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Takes out of the journal the records of `device` that a settled
+    /// fork reverted (§14): each leaves the live set of its object, its
+    /// state and the per-record refs the next checkpoint's heads come
+    /// from, and each touched object's file follows its live set again.
+    fn revert(
+        &mut self,
+        device: Id,
+        reverted: &[sync_protocol::chain::Reverted],
+        contents: &Bodies,
+    ) -> Result<(), SyncError> {
+        let mut touched = Vec::new();
+        for record in reverted {
+            let Some(rid) = self.state.log.live.remove_digest(&record.digest) else {
+                continue;
+            };
+            let key = OpKey {
+                device,
+                counter: record.counter,
+            };
+            if let Some(object) = self.state.objects.get_mut(&rid)
+                && object
+                    .states
+                    .get(&key)
+                    .is_some_and(|s| s.digest == record.digest)
+            {
+                object.states.remove(&key);
+            }
+            self.state.unreadable.retain(|u| {
+                !(u.rid == rid
+                    && u.device == device
+                    && u.counter == record.counter
+                    && u.seq == record.seq)
+            });
+            self.state
+                .log
+                .checkpoints
+                .since
+                .retain(|r| r.op_digest != record.digest);
+            if !touched.contains(&rid) {
+                touched.push(rid);
+            }
+        }
+        // The kept branch's records carry the device's policy revision and
+        // generation again.
+        if !reverted.is_empty() {
+            self.state.log.last.remove(&device);
+        }
+        for rid in touched {
+            self.settle(rid, contents)?;
+        }
+        Ok(())
+    }
+
+    /// Walks the server's manifest at `at` against the device's own to
+    /// find the objects whose leaves differ (§17): the bucket hashes first,
+    /// then the leaf refs of each bucket that differs. A server that can't
+    /// serve the manifest leaves the list empty.
+    async fn walk_manifest(
+        &mut self,
+        service: &mut SyncService,
+        at: u64,
+        own: &sync_protocol::manifest::Manifest,
+    ) -> Vec<Id> {
+        let (workspace, domain) = (self.state.workspace, self.state.domain);
+        let Ok(theirs) = service
+            .client()
+            .manifest_buckets(workspace, domain, at)
+            .await
+        else {
+            return Vec::new();
+        };
+        let mine = own.bucket_hashes();
+        let mut differing = BTreeSet::new();
+        for (index, (a, b)) in mine.iter().zip(theirs.buckets.iter()).enumerate() {
+            if a == b {
+                continue;
+            }
+            let index = index as u16;
+            let mut leaves: BTreeMap<Id, Vec<sync_protocol::records::Ref>> = BTreeMap::new();
+            let mut after = None;
+            loop {
+                let Ok(page) = service
+                    .client()
+                    .manifest_leaves(workspace, domain, at, index, after.as_ref())
+                    .await
+                else {
+                    break;
+                };
+                for leaf in page.leaves.iter() {
+                    leaves.entry(leaf.rid).or_default().push(leaf.op.clone());
+                }
+                match page.next {
+                    Some(next) => after = Some(next),
+                    None => break,
+                }
+            }
+            let ours: BTreeMap<Id, Vec<sync_protocol::records::Ref>> =
+                own.bucket_leaves(index).into_iter().collect();
+            for rid in ours.keys().chain(leaves.keys()) {
+                if ours.get(rid) != leaves.get(rid) {
+                    differing.insert(*rid);
+                }
+            }
+        }
+        differing.into_iter().collect()
+    }
+
+    /// Fetches by digest the checkpoints a page's entries show the log
+    /// left out (§17, Checkpoint chain): before a checkpoint entry whose
+    /// `previous` isn't the last checkpoint reached, and before a record
+    /// of the current generation that names a checkpoint the device hasn't
+    /// reached, at or above the retention floor. Each walk follows
+    /// `previous` back to the last checkpoint reached; one the server can't
+    /// serve, or a walk that passes it, reports `sync_chain_gap`. Returns
+    /// the fetched entries by the index of the entry they go before,
+    /// oldest first.
+    async fn fetch_hidden_checkpoints(
+        &mut self,
+        service: &mut SyncService,
+        page: &Page,
+    ) -> Result<BTreeMap<usize, Vec<Entry>>, SyncError> {
+        use sync_protocol::manifest::{ChainLink, CheckpointWalk, WalkEntry};
+
+        let checkpoints = &self.state.log.checkpoints;
+        // A writer that lags names a checkpoint below the floor or below
+        // the device's bootstrap point, which needs no check.
+        let floor = self
+            .state
+            .log
+            .retention_floor
+            .max(page.retention_floor)
+            .max(checkpoints.bootstrap_seq);
+        let reached: Vec<(u64, Digest)> = checkpoints
+            .reached
+            .iter()
+            .map(|(n, r)| (*n, r.digest))
+            .collect();
+        let entries: Vec<WalkEntry> = page
+            .entries
+            .iter()
+            .map(|entry| match &entry.record {
+                EntryRecord::Checkpoint(bundle) => {
+                    WalkEntry::Checkpoint(ChainLink::of(&bundle.checkpoint.0))
+                }
+                EntryRecord::Operation(op) => WalkEntry::Operation {
+                    generation: op.body.generation,
+                    checkpoint_seq: op.body.checkpoint_seq,
+                    checkpoint: op.body.checkpoint,
+                },
+                _ => WalkEntry::Other,
+            })
+            .collect();
+        // The walk runs on what the server served so far, fetching each
+        // checkpoint it misses and running again.
+        let mut cache: BTreeMap<Digest, Option<Entry>> = BTreeMap::new();
+        loop {
+            let mut fetcher = CachedCheckpoints {
+                cache: &cache,
+                workspace: self.state.workspace,
+                domain: self.state.domain,
+                misses: Vec::new(),
+            };
+            let planned =
+                CheckpointWalk::new(reached.iter().copied(), floor, self.state.generation)
+                    .plan(&entries, &mut fetcher);
+            let misses = std::mem::take(&mut fetcher.misses);
+            if misses.is_empty() {
+                let planned = planned.map_err(|_| SyncError::Check("sync_chain_gap"))?;
+                return Ok(planned
+                    .into_iter()
+                    .map(|(index, walk)| {
+                        let fetched = walk
+                            .iter()
+                            .filter_map(|link| cache.get(&link.digest).cloned().flatten())
+                            .collect();
+                        (index, fetched)
+                    })
+                    .collect());
+            }
+            for digest in misses {
+                let fetched = service
+                    .client()
+                    .checkpoint_by_digest(self.state.workspace, self.state.domain, digest)
+                    .await?;
+                cache.insert(digest, fetched);
+            }
+        }
     }
 
     /// Checks a page's shape and its positions against what the server
@@ -2503,15 +3025,25 @@ impl WorkspaceSync {
         &mut self,
         service: &mut SyncService,
         page: &Page,
+        extra: &BTreeMap<usize, Vec<Entry>>,
     ) -> Result<Option<Checked>, SyncError> {
         let mut cache: BTreeMap<(Id, u64), Fetched> = BTreeMap::new();
         for _ in 0..64 {
             let mut fetcher = Cached {
                 cache: &cache,
                 misses: Vec::new(),
+                forked: None,
             };
-            let outcome = self.judge_with(page, &mut fetcher);
+            let outcome = self.judge_with(page, extra, &mut fetcher);
             let misses = std::mem::take(&mut fetcher.misses);
+            if let (Err(SyncError::Check("sync_chain_forked")), Some((device, at))) =
+                (&outcome, fetcher.forked)
+                && misses.is_empty()
+                && !self.state.log.forked.contains_key(&device)
+            {
+                self.state.log.forked.insert(device, at);
+                self.save()?;
+            }
             match outcome {
                 Err(error) if !misses.is_empty() => {
                     let _ = error;
@@ -2550,6 +3082,7 @@ impl WorkspaceSync {
     fn judge_with(
         &self,
         page: &Page,
+        extra: &BTreeMap<usize, Vec<Entry>>,
         fetcher: &mut Cached<'_>,
     ) -> Result<Option<Checked>, SyncError> {
         let remote = self
@@ -2570,7 +3103,17 @@ impl WorkspaceSync {
             }
         }
         let mut records = Vec::new();
-        for entry in page.entries.iter() {
+        let mut walks = Vec::new();
+        // The checkpoints fetched by digest go in before the entry that
+        // named them, oldest first, as if the page had carried them (§17).
+        let entries = page.entries.iter().enumerate().flat_map(|(i, entry)| {
+            extra
+                .get(&i)
+                .into_iter()
+                .flatten()
+                .chain(std::iter::once(entry))
+        });
+        for entry in entries {
             match &entry.record {
                 EntryRecord::Policy(policy_entry) => {
                     log.wanted
@@ -2584,11 +3127,15 @@ impl WorkspaceSync {
                     log.judge
                         .policy_entry(policy_entry.revision, policy)
                         .map_err(|e| SyncError::Check(e.client_code()))?;
+                    log.checkpoints
+                        .note_policy_entry(entry.seq, policy_entry.revision);
                 }
                 EntryRecord::Epoch(epoch) => {
                     log.wanted
                         .retain(|w| !w.epoch || w.number != epoch.body.epoch);
                     log.epoch_entries = log.epoch_entries.max(epoch.body.epoch);
+                    log.checkpoints
+                        .note_epoch_entry(entry.seq, epoch.body.epoch, epoch.digest());
                     let accepted = remote
                         .epochs
                         .get(epoch.body.epoch)
@@ -2606,7 +3153,64 @@ impl WorkspaceSync {
                     };
                     log.judge.epoch_entry(&accepted.record.body);
                 }
-                EntryRecord::Checkpoint(_) => {}
+                EntryRecord::Checkpoint(bundle) => {
+                    let record = &bundle.checkpoint.0;
+                    // The checkpoint a client bootstrapped from, or one it
+                    // fetched by digest, reaches it again (§17).
+                    if log.checkpoints.has_reached(&record.digest()) {
+                        // The pull that follows a bootstrap reaches the
+                        // checkpoint's entry with every policy entry
+                        // before it judged, so the signer's write access
+                        // there gets its check by position again (§17).
+                        let bootstrapped = log
+                            .checkpoints
+                            .accepted
+                            .as_ref()
+                            .is_some_and(|a| a.record.digest() == record.digest())
+                            && log.checkpoints.bootstrap_seq == record.body.covered_seq;
+                        if bootstrapped {
+                            log.judge
+                                .check_writer(
+                                    &record.body.signer,
+                                    record.body.policy_revision,
+                                    policy,
+                                )
+                                .map_err(|e| SyncError::Check(e.client_code()))?;
+                        }
+                        continue;
+                    }
+                    let checked = if record.body.workspace != self.state.workspace
+                        || record.body.domain != self.state.domain
+                    {
+                        Err("sync_manifest_mismatch")
+                    } else {
+                        log.checkpoints
+                            .check(bundle, &log.live, &log.judge, policy, &remote.epochs)
+                    };
+                    match checked {
+                        Ok(()) => {
+                            log.checkpoints.accept(bundle, &mut log.live);
+                            // Below an accepted checkpoint the verifier
+                            // keeps only heads (§14).
+                            log.verifier.forget_below(record.body.covered_seq);
+                        }
+                        Err(code) => {
+                            tracing::warn!(
+                                code,
+                                number = record.body.number,
+                                "a checkpoint failed its checks"
+                            );
+                            log.checkpoints.fail(record, code);
+                            if code == "sync_manifest_mismatch" {
+                                let own = log.checkpoints.own_manifest(bundle, &log.live);
+                                if own.root() != record.body.manifest_root {
+                                    walks.push((record.digest(), record.body.covered_seq, own));
+                                }
+                            }
+                        }
+                    }
+                    log.checkpoints.reach(record, entry.seq);
+                }
                 EntryRecord::Operation(op) => {
                     match check_operation(
                         remote, &self.keys, &ended, &mut log, op, entry.seq, fetcher,
@@ -2633,14 +3237,18 @@ impl WorkspaceSync {
         {
             return Err(SyncError::Check("sync_chain_gap"));
         }
-        Ok(Some(Checked { log, records }))
+        Ok(Some(Checked {
+            log,
+            records,
+            walks,
+        }))
     }
 
     /// Applies a checked page: records each state in the journal, then
     /// brings each touched object's file in line with its live set.
     fn apply(&mut self, checked: Checked, fetched: Bodies) -> Result<usize, SyncError> {
         let own = self.credentials.keys.device();
-        let Checked { log, records } = checked;
+        let Checked { log, records, .. } = checked;
         self.state.log = log;
         let mut touched: Vec<Id> = Vec::new();
         let mut contents: Bodies = fetched;
@@ -2951,13 +3559,43 @@ struct CheckedRecord {
 struct Checked {
     log: Log,
     records: Vec<CheckedRecord>,
+    /// Checkpoints whose root differs from the device's own manifest at
+    /// their `covered_seq`, which the device then walks (§17).
+    walks: Vec<(Digest, u64, sync_protocol::manifest::Manifest)>,
 }
 
 /// Serves chain positions the device fetched, and notes the ones it
 /// hasn't, which the next pass fetches.
+/// The checkpoints a walk fetched so far, by digest, noting each one it
+/// misses.
+struct CachedCheckpoints<'a> {
+    cache: &'a BTreeMap<Digest, Option<Entry>>,
+    workspace: Id,
+    domain: Id,
+    misses: Vec<Digest>,
+}
+
+impl sync_protocol::manifest::CheckpointFetcher for CachedCheckpoints<'_> {
+    fn checkpoint(&mut self, digest: &Digest) -> Option<sync_protocol::manifest::ChainLink> {
+        let Some(fetched) = self.cache.get(digest) else {
+            self.misses.push(*digest);
+            return None;
+        };
+        let EntryRecord::Checkpoint(bundle) = &fetched.as_ref()?.record else {
+            return None;
+        };
+        let record = &bundle.checkpoint.0;
+        (record.body.workspace == self.workspace && record.body.domain == self.domain)
+            .then(|| sync_protocol::manifest::ChainLink::of(record))
+    }
+}
+
 struct Cached<'a> {
     cache: &'a BTreeMap<(Id, u64), Fetched>,
     misses: Vec<(Id, u64)>,
+    /// The device whose record reported `sync_chain_forked`, with the
+    /// revision of the latest policy entry before the record.
+    forked: Option<(Id, u64)>,
 }
 
 impl ChainFetcher for Cached<'_> {
@@ -3002,6 +3640,10 @@ fn check_operation(
         .ok_or(SyncError::Check("sync_writer_not_authorized"))?;
     op.verify(&device.card.signing_public)
         .map_err(|_| SyncError::Check("sync_writer_not_authorized"))?;
+    // The other branch of a settled fork: the client ignores it (§14).
+    if log.verifier.ignores(&body.device, &op.digest()) {
+        return Ok(Judged::Ignored);
+    }
     let change = policy
         .change(body.policy_revision)
         .ok_or(SyncError::Check("sync_writer_not_authorized"))?;
@@ -3019,7 +3661,12 @@ fn check_operation(
     let verdict = log
         .verifier
         .process_one(&ChainRecord::from_operation(op, seq), fetcher)
-        .map_err(|e| SyncError::Check(e.client_code()))?;
+        .map_err(|e| {
+            if e == ChainError::Forked {
+                fetcher.forked = Some((body.device, log.judge.latest_policy_entry().unwrap_or(0)));
+            }
+            SyncError::Check(e.client_code())
+        })?;
     // The key of its epoch, from an envelope or a later key's lineage, or
     // an epoch this device accepted before a replacement ended it.
     let epoch_record = remote
@@ -3048,6 +3695,9 @@ fn check_operation(
         },
     };
     let live = LiveOp::from_operation(op, seq);
+    if !matches!(verdict, ChainVerdict::Ignore) {
+        log.checkpoints.note_record(live.as_ref());
+    }
     let class = match verdict {
         ChainVerdict::Ignore => return Ok(Judged::Ignored),
         ChainVerdict::Replace { replaced } => {
@@ -3201,7 +3851,7 @@ fn stat(root: &Path, path: &str) -> Option<(u64, i64, Option<u64>)> {
 /// its revision and digest.
 async fn profile_of(
     service: &mut SyncService,
-    remote: &RemoteWorkspace,
+    remote: &mut RemoteWorkspace,
 ) -> Result<(String, Option<ProfileMark>), SyncError> {
     let list = service.client().workspaces().await?;
     let profile = list
@@ -3212,6 +3862,21 @@ async fn profile_of(
         .and_then(|w| w.profile)
         .map(|p| p.0)
         .ok_or_else(|| SyncError::Invalid("the workspace has no profile".into()))?;
+    service.older_epochs(remote, profile.body.epoch).await?;
+    let remote = &*remote;
+    // A change took the profile's signer out of the workspace, as a
+    // recovery does to the lost devices: an owner or admin device reads its
+    // name and signs it again on its first round (§25).
+    let snapshot = remote.policy.head_snapshot();
+    let device = service.credentials().keys.device();
+    let may_rename = snapshot
+        .account_of(&device)
+        .and_then(|account| snapshot.role(&account))
+        .is_some_and(|role| matches!(role, Role::Owner | Role::Admin));
+    if may_rename && !snapshot.is_device(&profile.body.signer) {
+        let name = check_profile_from(remote, &profile, None, false)?;
+        return Ok((name, None));
+    }
     let name = check_profile(remote, &profile, None)?;
     Ok((name, Some(mark_of(&profile))))
 }

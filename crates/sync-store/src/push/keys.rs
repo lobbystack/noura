@@ -21,9 +21,9 @@ use sync_protocol::policy::PolicyChain;
 use sync_protocol::records::{Envelope, EpochBundle, PolicyChange, PolicyKind, Profile, Signed};
 use sync_protocol::types::Id;
 
-use super::{ENTRY_EPOCH, ENTRY_POLICY, KEY_ENVELOPE, KEY_EPOCH};
+use super::{ENTRY_EPOCH, KEY_ENVELOPE, KEY_EPOCH};
 use crate::policy;
-use crate::{EpochRow, Error, Refusal, Result, Session, WriteTxn, refuse};
+use crate::{CheckpointInterval, EpochRow, Error, Refusal, Result, Session, WriteTxn, refuse};
 
 /// The key stream type of a re-wrap request (§26).
 pub(crate) const KEY_REWRAP: u8 = 5;
@@ -38,13 +38,15 @@ pub(crate) const MAX_REWRAP_ANSWERS: usize = 3;
 pub(crate) struct PushState {
     policy: Arc<PolicyChain>,
     owed: BTreeMap<(Id, u64, Id), usize>,
+    interval: CheckpointInterval,
 }
 
 impl PushState {
-    pub(crate) fn new(policy: Arc<PolicyChain>) -> Self {
+    pub(crate) fn new(policy: Arc<PolicyChain>, interval: CheckpointInterval) -> Self {
         Self {
             policy,
             owed: BTreeMap::new(),
+            interval,
         }
     }
 
@@ -135,13 +137,19 @@ pub(crate) async fn apply_change(
     let entry = PolicyEntry {
         revision,
         head: digest,
-    }
-    .to_bytes();
+    };
     let mut receipts = Vec::with_capacity(next.domains.len());
     for domain in next.domains.keys() {
-        let seq = txn
-            .append_entry(workspace, *domain, ENTRY_POLICY, &entry)
-            .await?;
+        let seq = crate::checkpoints::append_policy_entry(
+            txn,
+            state.interval,
+            workspace,
+            *domain,
+            &entry,
+            Some(prev),
+            &next,
+        )
+        .await?;
         receipts.push(Receipt {
             record_digest: digest,
             domain: *domain,
@@ -212,7 +220,8 @@ pub(crate) async fn apply_epoch(
             "an epoch record comes one above the domain's latest",
         ));
     }
-    if body.previous == row.epoch_digest {
+    let replacement = sync_protocol::keys::makes_checkpoint_due(&row.epoch_digest, body);
+    if !replacement {
         let due = policy.rotation_required(&domain, row.epoch_policy_revision, head_revision);
         if due.is_none_or(|r| body.policy_revision < r) {
             return Err(refuse(
@@ -264,6 +273,18 @@ pub(crate) async fn apply_epoch(
     let seq = txn
         .append_entry(workspace, domain, ENTRY_EPOCH, &bytes)
         .await?;
+    // A replacement makes a checkpoint due at its entry, since the latest
+    // checkpoint may name the epoch it skips (§17).
+    crate::checkpoints::note_entry(
+        txn,
+        state.interval,
+        workspace,
+        domain,
+        seq,
+        bytes.len() as u64,
+        replacement,
+    )
+    .await?;
     txn.insert_epoch(
         workspace,
         domain,

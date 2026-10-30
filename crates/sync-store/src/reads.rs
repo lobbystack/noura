@@ -127,7 +127,7 @@ pub(crate) fn reader(snapshot: &sync_protocol::policy::Snapshot, session: Sessio
 }
 
 /// Like [`authorize`], and the domain exists and the device reads it.
-async fn authorize_domain(
+pub(crate) async fn authorize_domain(
     txn: &mut impl ReadTxn,
     cache: &PolicyCache,
     session: Session,

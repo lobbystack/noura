@@ -28,10 +28,12 @@ use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 use crate::{Backend, Error, LockPlan, Refusal, Session, Store, WriteTxn};
 
 mod blobs;
+mod checkpoints;
 mod devices;
 mod keys;
 mod shares;
 pub use blobs::*;
+pub use checkpoints::*;
 pub use devices::*;
 pub use keys::*;
 pub use shares::*;
@@ -91,6 +93,15 @@ macro_rules! conformance_tests {
             blob_digest_mismatch_discards_the_upload,
             pushes_list_completed_blobs_of_their_domain,
             blob_downloads_follow_the_listing,
+            checkpoints_fall_due_by_volume,
+            checkpoints_fall_due_by_weight,
+            checkpoint_checks_match_the_fixture,
+            checkpoint_heads_follow_the_fixture,
+            racing_checkpoints_keep_the_first,
+            a_checkpoint_goes_in_a_push_of_its_own,
+            removals_make_checkpoints_due_and_leave_the_heads,
+            replacements_make_checkpoints_due,
+            checkpoint_routes_serve_the_chain_and_manifest,
             share_links_follow_section_24,
             share_links_outlive_their_creator_until_they_expire,
             share_limit_holds_a_thousand_links,
