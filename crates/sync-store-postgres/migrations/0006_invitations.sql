@@ -18,5 +18,13 @@ CREATE TABLE invitations (
 
 CREATE INDEX invitations_by_workspace ON invitations (workspace, expires_at);
 
+-- The IDs of invitations approved or revoked before their expiry, kept
+-- until that expiry, so a late retry of a creation can't open the link
+-- again (§26). Nothing else of the invitation stays.
+CREATE TABLE ended_invitations (
+    invitation BYTEA NOT NULL PRIMARY KEY,
+    expires_at BIGINT NOT NULL
+);
+
 -- The approval requests that name a workspace, for pending-devices (§26).
 CREATE INDEX approval_requests_by_workspace ON approval_requests (workspace, commit_digest);

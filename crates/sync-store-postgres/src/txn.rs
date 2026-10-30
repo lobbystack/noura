@@ -1615,6 +1615,18 @@ impl ReadTxn for PgTxn {
         .transpose()
     }
 
+    async fn invitation_ended(&mut self, invitation: Id) -> Result<bool> {
+        let invitation = &invitation.0[..];
+        let row = sqlx::query!(
+            "SELECT expires_at FROM ended_invitations WHERE invitation = $1",
+            invitation
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        Ok(row.is_some())
+    }
+
     async fn invitation_by_token(&mut self, token_hash: Digest) -> Result<Option<InvitationRow>> {
         let hash = &token_hash.0[..];
         let row = sqlx::query!(
@@ -3029,6 +3041,11 @@ impl WriteTxn for PgTxn {
             .await
             .map_err(db)?
             .rows_affected();
+        deleted += sqlx::query!("DELETE FROM ended_invitations WHERE expires_at <= $1", now)
+            .execute(self.c())
+            .await
+            .map_err(db)?
+            .rows_affected();
         Ok(deleted)
     }
 
@@ -3183,6 +3200,13 @@ impl WriteTxn for PgTxn {
 
     async fn delete_invitation(&mut self, invitation: Id) -> Result<()> {
         let invitation = &invitation.0[..];
+        sqlx::query!(
+            "INSERT INTO ended_invitations (invitation, expires_at) SELECT invitation, expires_at FROM invitations WHERE invitation = $1 ON CONFLICT DO NOTHING",
+            invitation
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
         sqlx::query!("DELETE FROM invitations WHERE invitation = $1", invitation)
             .execute(self.c())
             .await

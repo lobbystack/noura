@@ -169,9 +169,17 @@ pub(crate) async fn apply_change(
             txn.delete_member(workspace, *account).await?;
         }
     }
-    if let PolicyKind::AddMember { invitation, .. } = &change.body.kind {
-        // An approved invitation ends: its link no longer opens.
-        txn.delete_invitation(*invitation).await?;
+    match &change.body.kind {
+        PolicyKind::AddMember { invitation, .. } => {
+            // An approved invitation ends: its link no longer opens.
+            txn.delete_invitation(*invitation).await?;
+        }
+        PolicyKind::SetRole { .. }
+        | PolicyKind::RemoveMember { .. }
+        | PolicyKind::TransferOwner { .. } => {
+            crate::invitations::end_ungrantable(txn, workspace, &next).await?;
+        }
+        _ => {}
     }
     let entry = PolicyEntry {
         revision,

@@ -612,7 +612,7 @@ An owner or admin invites someone by link. The link carries an invitation secret
 {origin}/invite/{base64url(token)}#{base64url(secret)}
 ```
 
-The inviting device generates the invitation ID (16 bytes), the token (16 bytes) and the secret (32 bytes), and keeps the secret until the invitation ends. While the invitation is open, the server stores `BLAKE3(tag(noura.sync.invite.token) || token)`, the workspace, the role, the inviting account, the accepting account once known, the status, an expiry seven days out, and the context below. It deletes the row once the invitation is approved, revoked or expired. A workspace holds at most 100 open invitations.
+The inviting device generates the invitation ID (16 bytes), the token (16 bytes) and the secret (32 bytes), and keeps the secret until the invitation ends. While the invitation is open, the server stores `BLAKE3(tag(noura.sync.invite.token) || token)`, the workspace, the role, the inviting account, the accepting account once known, the status, an expiry seven days out, and the context below. It deletes the row once the invitation is approved, revoked or expired, or once a change leaves the inviting account unable to grant the invitation's role under [§8](#roles-and-authority), such as an admin demoted or removed. After an approval or a revocation it keeps only the invitation ID until the expiry the row had, and answers a retried creation under that ID with `invitation_invalid`, so a late retry can't open the link again. A workspace holds at most 100 open invitations.
 
 `invite_context`, encrypted with the subkey `derive_key("noura.sync.v2 invitation key", secret)`:
 
@@ -1380,7 +1380,7 @@ Clients accept a profile only when its signer is an owner or admin device in the
 
 Request and response bodies use the encoding in [§4](#4-encoding) with media type `application/vnd.noura.sync.v2`, except the tus requests in [§21](#21-attachments). Every route requires `Authorization: Bearer <session token>` except `GET /v2/limits`, `POST /v2/device/authorize`, `POST /v2/device/token`, `GET /invite/{token}`, `GET /v2/invitations/{token}`, `GET /s/{token}` and `GET /v2/shares/{token}`. Routes under `/v2/workspaces/{w}/` serve only active devices of w, as [§8](#policy-change-record) describes. Every response, errors included, carries the server's restore generation in the header `Noura-Restore-Generation` ([§14](#after-a-server-restore)). Errors return an HTTP status and the body `str code | str message | opt<u64> retry_after_seconds | opt<bytes> detail`. Messages never include database or operating system details, which stay in the server's local log.
 
-Every route that creates something under a client-chosen ID (a workspace, blob, invitation, share link or approval offer) returns the original result when a client retries it with identical bytes, and `id_conflict` when the bytes differ.
+Every route that creates something under a client-chosen ID (a workspace, blob, invitation, share link or approval offer) returns the original result when a client retries it with identical bytes, and `id_conflict` when the bytes differ. An invitation's retry returns its stored expiry for as long as the invitation is open ([§11](#11-invitations)).
 
 | Route | Purpose |
 |---|---|

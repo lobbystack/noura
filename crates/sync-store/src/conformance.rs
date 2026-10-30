@@ -112,6 +112,7 @@ macro_rules! conformance_tests {
             invited_requests_reach_pending_devices,
             workspace_requests_hold_a_hundred,
             membership_changes_follow_section_8,
+            invitations_end_with_their_inviters_authority,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {

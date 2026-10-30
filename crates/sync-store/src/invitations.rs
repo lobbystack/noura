@@ -136,9 +136,10 @@ impl<B: Backend> Store<B> {
     /// device active in the workspace, for an admin only from an owner,
     /// open for seven days. Its context must name the workspace, the
     /// invitation and the role, and hold a padded ciphertext. A retry with
-    /// identical bytes returns the original expiry; other bytes under the
-    /// same ID or token hash get `id_conflict`. A workspace holds at most
-    /// 100 open invitations (`invitation_limit`).
+    /// identical bytes returns the original expiry while the invitation is
+    /// open, and `invitation_invalid` once it was approved or revoked;
+    /// other bytes under the same ID or token hash get `id_conflict`. A
+    /// workspace holds at most 100 open invitations (`invitation_limit`).
     pub async fn create_invitation(
         &self,
         session: Session,
@@ -185,16 +186,14 @@ impl<B: Backend> Store<B> {
                         None => txn.invitation_by_token(creation.token_hash).await?,
                     };
                     if let Some(row) = held {
-                        // A retry within a day of the creation names the same
-                        // expiry; the store keeps no creation time to compare.
+                        // The server chose the expiry, so a retry with the
+                        // same bytes gets the stored one, however late.
                         let same = row.invitation == creation.invitation
                             && row.token_hash == creation.token_hash
                             && row.workspace == workspace
                             && row.role == creation.role
                             && row.inviter == session.account
-                            && row.invite_context == bytes
-                            && expires_at >= row.expires_at
-                            && expires_at - row.expires_at < 86_400;
+                            && row.invite_context == bytes;
                         if same {
                             return Ok(row.expires_at);
                         }
@@ -202,6 +201,11 @@ impl<B: Backend> Store<B> {
                             "id_conflict",
                             "another invitation has this ID or token hash",
                         ));
+                    }
+                    if txn.invitation_ended(creation.invitation).await? {
+                        // A late retry after an approval or a revocation
+                        // must not open the link again.
+                        return Err(invalid());
                     }
                     if txn.invitations(workspace, now).await?.len() >= MAX_INVITATIONS {
                         return Err(refuse(
@@ -370,7 +374,10 @@ impl<B: Backend> Store<B> {
                             account: row.candidate_head,
                             invitation: row.invitation,
                             invite_proof: row.invite_proof,
-                            workspace: row.workspace,
+                            // The row keeps an invited request's workspace
+                            // for this listing; the entry names only the
+                            // invitation, as the request did (§10).
+                            workspace: row.workspace.filter(|_| row.invitation.is_none()),
                         });
                     }
                     Ok(PendingResponse {
@@ -460,6 +467,33 @@ pub(crate) async fn check_add_member(
             "forbidden",
             "the new member's account posted no approval request that names the invitation",
         ));
+    }
+    Ok(())
+}
+
+/// Whether `inviter` may add a member with `role` (§8): the owner any role
+/// but owner, an admin editors and viewers.
+fn may_grant(inviter: Option<Role>, role: Role) -> bool {
+    match inviter {
+        Some(Role::Owner) => role != Role::Owner,
+        Some(Role::Admin) => matches!(role, Role::Editor | Role::Viewer),
+        _ => false,
+    }
+}
+
+/// Ends each open invitation of `workspace` whose inviting account can no
+/// longer grant its role under `next`, after a change demoted or removed
+/// it, so its link stops opening instead of leading to an `add_member` the
+/// policy would refuse (§11).
+pub(crate) async fn end_ungrantable(
+    txn: &mut impl WriteTxn,
+    workspace: Id,
+    next: &Snapshot,
+) -> Result<()> {
+    for row in txn.invitations(workspace, 0).await? {
+        if !may_grant(next.role(&row.inviter), row.role) {
+            txn.delete_invitation(row.invitation).await?;
+        }
     }
     Ok(())
 }

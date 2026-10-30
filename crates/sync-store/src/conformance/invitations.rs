@@ -295,6 +295,17 @@ pub async fn invitations_follow_section_11<B: Backend>(store: Store<B>) {
         InvitationStatus::Accepted
     );
 
+    // A retry days later still returns the expiry the server chose.
+    store.clock().advance(Duration::from_secs(2 * 86_400));
+    assert_eq!(
+        store
+            .create_invitation(owner, w, creation.clone())
+            .await
+            .ok(),
+        Some(expires_at),
+        "a late retry with identical bytes returns the original result"
+    );
+
     // Listing.
     assert_eq!(
         refusal(store.invitations(editor, w).await).code,
@@ -334,6 +345,15 @@ pub async fn invitations_follow_section_11<B: Backend>(store: Store<B>) {
         "invitation_invalid"
     );
     assert_eq!(
+        refusal(store.create_invitation(owner, w, creation.clone()).await).code,
+        "invitation_invalid",
+        "a late retry of a revoked invitation's creation doesn't open its link again"
+    );
+    assert_eq!(
+        refusal(store.invitation_context(invite.token).await).code,
+        "invitation_invalid"
+    );
+    assert_eq!(
         store
             .invitations(owner, w)
             .await
@@ -343,8 +363,8 @@ pub async fn invitations_follow_section_11<B: Backend>(store: Store<B>) {
         2
     );
 
-    // Expiry.
-    store.clock().advance(Duration::from_secs(7 * 86_400 + 1));
+    // Expiry, seven days after the creations.
+    store.clock().advance(Duration::from_secs(5 * 86_400 + 1));
     assert_eq!(
         refusal(store.invitation_context(other.token).await).code,
         "invitation_invalid"
@@ -454,7 +474,10 @@ pub async fn invited_requests_reach_pending_devices<B: Backend>(store: Store<B>)
     assert_eq!(listed.account, Some(invitee.head()));
     assert_eq!(listed.invitation, Some(invite.invitation));
     assert_eq!(listed.invite_proof, request.invite_proof);
-    assert_eq!(listed.workspace, Some(w));
+    assert_eq!(
+        listed.workspace, None,
+        "an invited entry names the invitation alone, as its request did"
+    );
     assert!(
         store
             .own_approval_requests(owner)
@@ -640,6 +663,28 @@ pub async fn membership_changes_follow_section_8<B: Backend>(store: Store<B>) {
         ("forbidden", 0),
         "another account accepted the invitation and requested"
     );
+    // A second invitation the invitee accepts and names in a request while
+    // still outside, so an add_member through it passes every invitation
+    // check once the first one commits.
+    let rejoin = Invite::new(Role::Editor);
+    store
+        .create_invitation(
+            world.devices[0].session,
+            world.workspace,
+            rejoin.creation(world.workspace),
+        )
+        .await
+        .expect("invited again");
+    store
+        .accept_invitation(invitee.session, rejoin.token)
+        .await
+        .expect("accepted");
+    let (rejoin_request, _) = invitee.request(&rejoin);
+    store
+        .post_approval_request(invitee.session, rejoin_request.to_bytes())
+        .await
+        .expect("the second request");
+
     let change = add(
         &world,
         invitee.account,
@@ -670,17 +715,30 @@ pub async fn membership_changes_follow_section_8<B: Backend>(store: Store<B>) {
     assert_eq!(listed.workspaces.len(), 1);
     assert_eq!(listed.workspaces[0].role, Role::Editor);
 
+    // The invitee's own open invitation and request leave only the policy
+    // rule to refuse an add_member for an account that's a member.
     let again = add(
         &world,
         invitee.account,
         invitee.head(),
         Role::Editor,
-        other_invite.invitation,
+        rejoin.invitation,
+    );
+    let refused = refusal(world.push_records(0, push(again)).await);
+    assert_eq!(refused.code, "forbidden", "an add_member for a member");
+    assert!(
+        refused.message.contains("invalid target"),
+        "the policy chain refuses it, not the invitation checks: {}",
+        refused.message
     );
     assert_eq!(
-        push_failure(world.push_records(0, push(again)).await),
-        ("forbidden", 0),
-        "an add_member for a member"
+        store
+            .invitation_context(rejoin.token)
+            .await
+            .expect("still open")
+            .status,
+        InvitationStatus::Accepted,
+        "the invitation the refused change names stays open"
     );
 
     let set_role = world.change(
@@ -718,5 +776,81 @@ pub async fn membership_changes_follow_section_8<B: Backend>(store: Store<B>) {
             .workspaces
             .is_empty(),
         "the removed account leaves the workspace list"
+    );
+}
+
+/// An open invitation ends once its inviting account can no longer grant
+/// its role: an admin demoted to editor, or removed, takes its invitations
+/// with it, and the owner's stay (§8, §11).
+pub async fn invitations_end_with_their_inviters_authority<B: Backend>(store: Store<B>) {
+    use sync_protocol::messages::RecordRef;
+
+    let mut world = World::new(store, 1).await;
+    let store = world.store.clone();
+    let w = world.workspace;
+    let owner = world.devices[0].session;
+    let admin = member(&mut world, Role::Admin).await;
+    let second = member(&mut world, Role::Admin).await;
+    let from_admin = Invite::new(Role::Viewer);
+    store
+        .create_invitation(admin.session, w, from_admin.creation(w))
+        .await
+        .expect("an admin invites");
+    let from_second = Invite::new(Role::Editor);
+    store
+        .create_invitation(second.session, w, from_second.creation(w))
+        .await
+        .expect("another admin invites");
+    let from_owner = Invite::new(Role::Admin);
+    store
+        .create_invitation(owner, w, from_owner.creation(w))
+        .await
+        .expect("the owner invites");
+
+    let demote = world.change(
+        0,
+        vec![head_of(&world.links)],
+        PolicyKind::SetRole {
+            account: admin.account,
+            role: Role::Editor,
+        },
+    );
+    let pushed = world
+        .push_records(0, vec![RecordRef::Policy(demote.clone())])
+        .await
+        .expect("the owner demotes an admin");
+    world.head = (pushed.policy_revision, demote.digest());
+    assert_eq!(
+        refusal(store.invitation_context(from_admin.token).await).code,
+        "invitation_invalid",
+        "a demoted admin's invitation ends"
+    );
+    assert!(store.invitation_context(from_second.token).await.is_ok());
+
+    let remove = world.change(
+        0,
+        vec![head_of(&world.links)],
+        PolicyKind::RemoveMember {
+            account: second.account,
+        },
+    );
+    world
+        .push_records(0, vec![RecordRef::Policy(remove)])
+        .await
+        .expect("the owner removes an admin");
+    assert_eq!(
+        refusal(store.invitation_context(from_second.token).await).code,
+        "invitation_invalid",
+        "a removed admin's invitation ends"
+    );
+    let listed = store.invitations(owner, w).await.expect("listed");
+    assert_eq!(
+        listed
+            .invitations
+            .iter()
+            .map(|i| i.invitation)
+            .collect::<Vec<_>>(),
+        vec![from_owner.invitation],
+        "the owner's invitation stays"
     );
 }

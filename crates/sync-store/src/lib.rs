@@ -955,6 +955,9 @@ pub trait ReadTxn: Send {
         &mut self,
         invitation: Id,
     ) -> impl Future<Output = Result<Option<InvitationRow>>> + Send;
+    /// Whether an invitation with this ID was approved or revoked before
+    /// the expiry it had.
+    fn invitation_ended(&mut self, invitation: Id) -> impl Future<Output = Result<bool>> + Send;
     /// The invitation whose token hashes to `token_hash`, expired or not.
     fn invitation_by_token(
         &mut self,
@@ -1366,7 +1369,8 @@ pub trait WriteTxn: ReadTxn {
         invitation: Id,
         account: Id,
     ) -> impl Future<Output = Result<()>> + Send;
-    /// Deletes an invitation.
+    /// Deletes an invitation, and remembers its ID until the expiry it had,
+    /// so a late retry of its creation can't open its link again.
     fn delete_invitation(&mut self, invitation: Id) -> impl Future<Output = Result<()>> + Send;
     /// Stores a new share link.
     fn insert_share(&mut self, row: &ShareRow) -> impl Future<Output = Result<()>> + Send;
