@@ -137,7 +137,7 @@ impl<B: Backend> FromRequestParts<AppState<B>> for ChainReader {
     }
 }
 
-fn bearer(parts: &Parts) -> Result<&str, ApiError> {
+pub(crate) fn bearer(parts: &Parts) -> Result<&str, ApiError> {
     parts
         .headers
         .get(AUTHORIZATION)
@@ -606,6 +606,10 @@ pub fn router<B: Backend>(state: AppState<B>) -> Router {
         .route("/v2/workspaces/{w}/domains/{d}/rewrap", post(rewrap::<B>))
         .route("/v2/workspaces/{w}/ops", post(push::<B>))
         .route("/v2/workspaces/{w}/pull", post(pull::<B>))
+        .route(
+            "/v2/workspaces/{w}/realtime",
+            get(crate::realtime::open::<B>),
+        )
         .route(
             "/v2/workspaces/{w}/domains/{d}/epochs/{epoch}",
             get(epochs::<B>),

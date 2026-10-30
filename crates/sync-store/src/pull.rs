@@ -14,9 +14,16 @@ use crate::{Error, RawEntry, ReadTxn, Result, Session, refuse};
 /// The fixed bytes of a page: its fields and its entry count.
 const PAGE_FIXED: usize = 16 + 1 + 8 * 8 + 4;
 /// An entry's bytes besides its record: sequence, type and length.
-const ENTRY_FIXED: usize = 8 + 1 + 4;
+pub(crate) const ENTRY_FIXED: usize = 8 + 1 + 4;
 /// Entries read per query.
-const CHUNK: u32 = 256;
+pub(crate) const CHUNK: u32 = 256;
+
+/// The sequence the next checkpoint's `covered_seq` must reach, which
+/// pages and realtime frames carry (§17): 0 while none is due, until the
+/// checkpoint ticket decides when one falls due.
+pub(crate) fn checkpoint_due() -> u64 {
+    0
+}
 
 /// Decodes a stored log entry.
 pub(crate) fn entry(raw: RawEntry) -> Result<Entry> {
@@ -80,7 +87,7 @@ pub(crate) async fn snapshot(
             checkpoint_seq: 0,
             restore_generation: generation,
             policy_revision: row.policy_revision,
-            checkpoint_due: 0,
+            checkpoint_due: checkpoint_due(),
             entries: Entries::default(),
         };
         if !active {

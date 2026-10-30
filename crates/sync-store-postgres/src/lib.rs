@@ -143,12 +143,14 @@ impl<R: Send + 'static> Queued for Request<R> {
     }
 }
 
-/// Heads that wait for the announcer, the highest per domain.
-type Heads = BTreeMap<(Id, Id), u64>;
+/// Heads that wait for the announcer, the highest per domain, with no
+/// domain for a change that moved no domain's head, such as an envelope or
+/// a re-wrap request.
+type Heads = BTreeMap<(Id, Option<Id>), u64>;
 
 /// Adds `heads` to `pending`, keeping the highest head of each domain and
 /// at most [`MAX_PENDING`] domains.
-fn merge(pending: &mut Heads, heads: impl IntoIterator<Item = ((Id, Id), u64)>) {
+fn merge(pending: &mut Heads, heads: impl IntoIterator<Item = ((Id, Option<Id>), u64)>) {
     for (domain, head) in heads {
         let full = pending.len() >= MAX_PENDING;
         match pending.entry(domain) {
@@ -194,12 +196,13 @@ async fn announce_loop(
             }
             let payloads: Vec<String> = heads
                 .iter()
-                .map(|((workspace, domain), head)| {
-                    format!(
+                .map(|((workspace, domain), head)| match domain {
+                    Some(domain) => format!(
                         "{instance}.{}.{}.{head}",
                         workspace.to_hex(),
                         domain.to_hex()
-                    )
+                    ),
+                    None => format!("{instance}.{}", workspace.to_hex()),
                 })
                 .collect();
             let mut session = match connection.take() {
@@ -440,7 +443,8 @@ async fn received<R>(result: oneshot::Receiver<Result<R>>) -> Result<R> {
         .map_err(|_| Error::internal("the writer dropped a write"))?
 }
 
-/// Parses `instance.workspace.domain.head`.
+/// Parses `instance.workspace.domain.head`, or `instance.workspace` for a
+/// change that moved no domain's head.
 fn notified_workspace(payload: &str, own: &str) -> Option<Id> {
     let mut parts = payload.split('.');
     let instance = parts.next()?;
@@ -543,14 +547,20 @@ impl Backend for PgBackend {
         // The push's response doesn't wait: the announcer sends the heads
         // after this push committed, from its own transaction.
         let announcer = &self.inner.announcer;
+        let heads: Vec<((Id, Option<Id>), u64)> = if heads.is_empty() {
+            vec![((workspace, None), 0)]
+        } else {
+            heads
+                .into_iter()
+                .map(|(domain, head)| ((workspace, Some(domain)), head))
+                .collect()
+        };
         merge(
             &mut announcer
                 .pending
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner),
-            heads
-                .into_iter()
-                .map(|(domain, head)| ((workspace, domain), head)),
+            heads,
         );
         // A full channel already holds a wake that the announcer hasn't
         // taken, and it reads `pending` after taking it.
