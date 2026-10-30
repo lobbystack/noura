@@ -22,6 +22,10 @@
 //! register. Each call waits for the prompt Noura draws, and runs in its
 //! plugin only once you allow that one call.
 //!
+//! The service also holds web search: the Brave Search key, your web
+//! consent per workspace, and the searches and page reads plugins ask
+//! for, in [`web`].
+//!
 //! [`App`]: crate::App
 
 #![allow(
@@ -31,6 +35,9 @@
 
 mod history;
 mod tools;
+mod web;
+
+pub use web::{WEB_POLICY_VERSION, WEB_SEARCH_PROVIDER_NAME, WebConsentPrompt, WebSearchRow};
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -351,6 +358,8 @@ pub(crate) struct Ai {
     settings_changed: std::sync::atomic::AtomicBool,
     /// When the open workspace's chats last expired.
     expired: Mutex<Option<Instant>>,
+    /// The web search key and consents.
+    web: web::Web,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -362,6 +371,7 @@ impl Ai {
     /// keys in `system`'s credential store and chats expiring by its
     /// clock.
     pub(crate) fn new(app_data: &Path, system: Arc<dyn System>) -> Arc<Self> {
+        let web = web::Web::new(app_data, system.credentials());
         let store = AiFoundation::open_with(
             app_data.join(PROVIDERS_FILE),
             app_data.join(CONSENTS_FILE),
@@ -394,6 +404,7 @@ impl Ai {
             version: AtomicU64::new(0),
             settings_changed: std::sync::atomic::AtomicBool::new(false),
             expired: Mutex::new(None),
+            web,
         })
     }
 
@@ -492,6 +503,8 @@ impl Ai {
         // The runs whose tool calls wait find themselves gone, and write a
         // denial for each call to the closing workspace's chat.
         self.answered.notify_all();
+        // The web prompt asked about the workspace that closed.
+        self.web.close_prompt();
         if let Ok(store) = self.store() {
             for operation in operations {
                 let _ = store.cancel_stream(&operation);
@@ -2153,6 +2166,22 @@ impl AiChats for Access {
     fn stop(&self, id: &str) -> Result<(), ServiceError> {
         self.own(id)?;
         self.ai.stop(id)
+    }
+
+    fn web_ready(&self) -> Result<bool, ServiceError> {
+        Ok(self.ai.web_ready())
+    }
+
+    fn web_search(
+        &self,
+        query: &str,
+        max_results: Option<u32>,
+    ) -> Result<Vec<plugin_host::AiWebResult>, AiFailure> {
+        self.ai.web_search(&self.plugin, query, max_results)
+    }
+
+    fn web_fetch(&self, url: &str) -> Result<plugin_host::AiWebPage, AiFailure> {
+        self.ai.web_fetch(&self.plugin, url)
     }
 }
 

@@ -28,6 +28,7 @@ mod tab_bar;
 pub mod theme;
 mod tree;
 mod updates;
+mod web_search;
 mod workspace;
 
 use std::{
@@ -77,6 +78,8 @@ pub struct NouraUi {
     /// content.
     consent: ai::ConsentView,
     tool_prompt: ai::ToolPromptView,
+    /// The prompt that asks before the AI may search the web.
+    web_consent: web_search::WebConsentView,
     tab_bar: tab_bar::TabBarView,
     palette: palette::PaletteView,
     /// The editors of the notes open in tabs.
@@ -110,6 +113,7 @@ impl NouraUi {
             shipped_plugins: plugins::ShippedView::default(),
             consent: ai::ConsentView::default(),
             tool_prompt: ai::ToolPromptView::default(),
+            web_consent: web_search::WebConsentView::default(),
             tab_bar: tab_bar::TabBarView::default(),
             palette: palette::PaletteView::default(),
             notes: note::NoteView::default(),
@@ -341,6 +345,11 @@ impl NouraUi {
         plugins::shipped_dialog(ui, &mut self.app, &mut self.shipped_plugins);
         ai::consent_prompt(ui, &mut self.app, &mut self.consent);
         ai::tool_prompt(ui, &mut self.app, &mut self.tool_prompt);
+        // One prompt at a time: a provider's question and a tool call go
+        // first.
+        if self.app.ai_consent_prompt().is_none() && self.app.ai_tool_prompt().is_none() {
+            web_search::consent_prompt(ui, &mut self.app, &mut self.web_consent);
+        }
         palette::show(ui, &mut self.app, &mut self.palette);
         note::unsaved_prompt(ui, &mut self.app);
         self.notes.commit_hidden_drafts(&mut self.app);

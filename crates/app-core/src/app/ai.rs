@@ -120,7 +120,7 @@ impl App {
         self.session.ai.set_client(client);
     }
 
-    fn ai_changed(&mut self) {
+    pub(super) fn ai_changed(&mut self) {
         self.ai_seen = self.session.ai.version();
         self.listeners.emit(Change::Ai);
     }

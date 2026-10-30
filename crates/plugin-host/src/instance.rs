@@ -41,7 +41,8 @@ pub use bindings::noura::plugin::ai::{
     Chat as AiChat, Failure as AiFailure, Message as AiMessage, MessageKind as AiMessageKind,
     MessageStatus as AiMessageStatus, Provider as AiProvider, Request as AiRequest,
     Retention as AiRetention, Run as AiRun, RunStatus as AiRunStatus, ToolCall as AiToolCall,
-    ToolDefinition as AiToolDefinition, ToolResult as AiToolResult,
+    ToolDefinition as AiToolDefinition, ToolResult as AiToolResult, WebPage as AiWebPage,
+    WebResult as AiWebResult,
 };
 pub use bindings::noura::plugin::navigation::Placement;
 pub(crate) use bindings::noura::plugin::types::Error as CallError;
@@ -539,6 +540,28 @@ impl ai::Host for HostState {
 
     fn stop(&mut self, id: String) -> Result<(), types::Error> {
         self.with_ai(|ai| ai.stop(&id))
+    }
+
+    fn web_ready(&mut self) -> Result<bool, types::Error> {
+        self.with_ai(|ai| ai.web_ready())
+    }
+
+    fn web_search(
+        &mut self,
+        query: String,
+        max_results: Option<u32>,
+    ) -> Result<Vec<ai::WebResult>, ai::WebError> {
+        // The request goes out from the app, through local-core's web
+        // access boundary: the plugin has no socket of its own.
+        let ai = self.ai().map_err(ai::WebError::Refused)?;
+        self.waiting(|_| ai.web_search(&query, max_results))
+            .map_err(ai::WebError::Failed)
+    }
+
+    fn web_fetch(&mut self, url: String) -> Result<ai::WebPage, ai::WebError> {
+        let ai = self.ai().map_err(ai::WebError::Refused)?;
+        self.waiting(|_| ai.web_fetch(&url))
+            .map_err(ai::WebError::Failed)
     }
 }
 

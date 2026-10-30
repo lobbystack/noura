@@ -6,11 +6,11 @@ use plugin_sdk::{
     Event, Node, Value, View,
     ai::{
         self, Chat, Message, MessageKind, MessageStatus, Provider, Request, Retention, Run,
-        RunStatus,
+        RunStatus, ToolDefinition,
     },
 };
 
-use crate::{State, reason};
+use crate::{State, reason, web};
 
 /// The title a chat has until its first message names it.
 const NEW_CHAT: &str = "New chat";
@@ -116,20 +116,48 @@ fn busy(run: &Run) -> bool {
     )
 }
 
-/// Hand each run's tool calls to Noura once the model asked for them.
-/// Noura asks you about each call in turn and runs the ones you allow,
-/// then the model answers again in the same run.
+/// The tools a message offers the model: those of the plugins on in the
+/// workspace, then web search and page reads while they work.
+fn offered_tools() -> Vec<ToolDefinition> {
+    let mut tools = ai::workspace_tools().unwrap_or_default();
+    tools.extend(web::tools());
+    tools
+}
+
+/// Settle each run's tool calls once the model asked for them. The plugin
+/// answers a turn of web calls itself, through the host AI interface.
+/// Noura gets any other turn: it asks you about each call in turn and
+/// runs the ones you allow. Then the model answers again in the same run.
 fn hand_over_tool_calls(state: &mut State) {
     let mut problem = None;
-    for id in state.runs.values() {
-        let Ok(run) = ai::read_run(id) else {
+    let ids: Vec<String> = state.runs.values().cloned().collect();
+    for id in ids {
+        let Ok(run) = ai::read_run(&id) else {
             continue;
         };
-        if run.status == RunStatus::Completed
-            && !run.tool_calls.is_empty()
-            && let Err(error) = ai::run_tools(id)
-        {
+        if run.status != RunStatus::Completed || run.tool_calls.is_empty() {
+            continue;
+        }
+        let web_only = run
+            .tool_calls
+            .iter()
+            .all(|call| matches!(call.name.as_str(), web::SEARCH | web::FETCH));
+        if !web_only {
+            if let Err(error) = ai::run_tools(&id) {
+                problem = Some(reason(&error));
+            }
+            continue;
+        }
+        let turn = std::iter::once(run.id.as_str())
+            .chain(run.tool_calls.iter().map(|call| call.id.as_str()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if state.failed_turns.contains(&turn) {
+            continue;
+        }
+        if let Err(error) = web::answer(&run, &offered_tools()) {
             problem = Some(reason(&error));
+            state.failed_turns.insert(turn);
         }
     }
     if problem.is_some() {
@@ -239,6 +267,9 @@ fn draw_message(view: &mut View, message: &Message, run: Option<&Run>, providers
                 view.text(panel, &format!("{}-status", message.id), note);
             }
         }
+        MessageKind::ToolCall | MessageKind::ToolResult if is_web_call(message) => {
+            draw_web_call(view, message);
+        }
         MessageKind::ToolCall => {
             let tool = message.tool_name.as_deref().unwrap_or("a tool");
             let panel = view.add_panel(View::ROOT, &message.id, Some("Tool call"));
@@ -283,6 +314,53 @@ fn draw_message(view: &mut View, message: &Message, run: Option<&Run>, providers
                  context.",
             );
             view.markdown(panel, &format!("{}-text", message.id), &message.content);
+        }
+    }
+}
+
+/// Whether a tool call or result message is a web search's or a page
+/// read's.
+fn is_web_call(message: &Message) -> bool {
+    matches!(
+        message.tool_name.as_deref(),
+        Some(web::SEARCH | web::FETCH)
+    )
+}
+
+/// A web search or page read the model asked for, and what came back:
+/// the query or the address, then the sources a search found.
+fn draw_web_call(view: &mut View, message: &Message) {
+    let shown = match message.kind {
+        MessageKind::ToolCall => web::shown_call(&message.content),
+        _ => web::shown_result(&message.content),
+    };
+    let Some(shown) = shown else {
+        return;
+    };
+    let id = format!("{}-web", message.id);
+    match shown {
+        web::Shown::Searched(query) => {
+            view.text(
+                View::ROOT,
+                &id,
+                &format!("Searched the web for \u{201c}{query}\u{201d}."),
+            );
+        }
+        web::Shown::Read(url) => {
+            view.text(View::ROOT, &id, &format!("Read {url}."));
+        }
+        web::Shown::Sources(sources) if sources.is_empty() => {
+            view.text(View::ROOT, &id, "The search found nothing.");
+        }
+        web::Shown::Sources(sources) => {
+            let list = view.list(View::ROOT, &id, "Sources");
+            for (index, (title, url)) in sources.iter().enumerate() {
+                view.item(list, &format!("{id}-{index}"), title, Some(url));
+            }
+        }
+        web::Shown::Page => {}
+        web::Shown::Failed(reason) => {
+            view.text(View::ROOT, &id, &format!("The web call failed: {reason}"));
         }
     }
 }
@@ -487,8 +565,7 @@ fn resume(state: &mut State) {
     let Some(provider) = chosen_provider(state, &providers, &messages) else {
         return;
     };
-    let tools = ai::workspace_tools().unwrap_or_default();
-    match ai::resume(&chat, &provider, &tools) {
+    match ai::resume(&chat, &provider, &offered_tools()) {
         Ok(run) => {
             state.runs.insert(chat, run.id);
             state.provider = Some(provider);
@@ -530,7 +607,7 @@ fn send(state: &mut State, message: String) {
         chat: chat.clone(),
         provider: provider.clone(),
         message: message.clone(),
-        tools: ai::workspace_tools().unwrap_or_default(),
+        tools: offered_tools(),
     };
     match ai::send(&request) {
         Ok(run) => {

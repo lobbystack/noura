@@ -20,11 +20,13 @@
 //!   call of the run with `content`, `ai:read-run:<id>`, `ai:stop:<id>`,
 //!   `ai:rename-chat:<id>:<revision>:<title>`,
 //!   `ai:set-retention:<id>:<revision>:<permanent or ephemeral>`,
-//!   `ai:workspace-tools`, `ai:run-tools:<run>` and
-//!   `ai:resume:<chat>:<provider>`, which offers the workspace's tools:
-//!   call the host AI interface, one line per provider, chat, message or
-//!   run. A press on a node whose ID is `ai:<call>` makes the call too, and
-//!   the `events` page shows each line as `<page> ai <line>`.
+//!   `ai:workspace-tools`, `ai:run-tools:<run>`,
+//!   `ai:resume:<chat>:<provider>`, which offers the workspace's tools,
+//!   `ai:web-ready`, `ai:web-search:<query>`, which asks for three
+//!   results, and `ai:web-fetch:<url>`: call the host AI interface, one
+//!   line per provider, chat, message, run, search result or page. A press
+//!   on a node whose ID is `ai:<call>` makes the call too, and the `events`
+//!   page shows each line as `<page> ai <line>`.
 //! - `clock`: the clock's reading, as `now <instant> <time zone>`.
 //! - `markdown`: a Markdown node with a heading, emphasis, a link, a
 //!   list and a remote image.
@@ -412,9 +414,39 @@ fn ai_call(call: &str) -> Vec<String> {
                 .and_then(|tools| ai::resume(chat, provider, &tools))
                 .map(|run| vec![run_line(&run)])
         }
+        "web-ready" => ai::web_ready().map(|ready| vec![format!("web-ready {ready}")]),
+        "web-search" => {
+            return web_lines(ai::web_search(rest, Some(3)).map(|results| {
+                results
+                    .iter()
+                    .map(|found| {
+                        format!("web-result {} {} {}", found.title, found.url, found.snippet)
+                    })
+                    .collect()
+            }));
+        }
+        "web-fetch" => {
+            return web_lines(ai::web_fetch(rest).map(|page| {
+                vec![format!(
+                    "web-page {} {} {} {}",
+                    page.url, page.content_type, page.truncated, page.text
+                )]
+            }));
+        }
         other => Ok(vec![format!("no ai call {other}")]),
     };
     lines.unwrap_or_else(|error| vec![describe(&error)])
+}
+
+/// The lines of a web call, or why it failed.
+fn web_lines(result: Result<Vec<String>, ai::WebError>) -> Vec<String> {
+    match result {
+        Ok(lines) => lines,
+        Err(ai::WebError::Refused(error)) => vec![describe(&error)],
+        Err(ai::WebError::Failed(failure)) => {
+            vec![format!("web-failed {} {}", failure.code, failure.message)]
+        }
+    }
 }
 
 fn chat_line(chat: &ai::Chat) -> String {

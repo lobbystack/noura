@@ -32,6 +32,8 @@ pub(crate) struct SettingsView {
     name: Option<String>,
     /// The AI providers section.
     ai: crate::ai::AiSettingsView,
+    /// The Web search section.
+    web: crate::web_search::WebSettingsView,
     /// The release address being typed in Plugins.
     release_address: String,
 }
@@ -162,6 +164,7 @@ fn content(
             crate::plugins::section(ui, app, picker, &mut view.release_address);
         }
         settings_section::AI => crate::ai::settings(ui, app, &mut view.ai),
+        settings_section::WEB_SEARCH => crate::web_search::settings(ui, app, &mut view.web),
         settings_section::ABOUT => about(ui, app),
         settings_section::UPDATES => crate::updates::update_settings(ui, app),
         settings_section::AI_TOOLS => ai_tools(ui, app),

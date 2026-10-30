@@ -5,7 +5,8 @@
 use std::fmt;
 
 use crate::{
-    AiChat, AiMessage, AiProvider, AiRequest, AiRetention, AiRun, AiToolDefinition, AiToolResult,
+    AiChat, AiFailure, AiMessage, AiProvider, AiRequest, AiRetention, AiRun, AiToolDefinition,
+    AiToolResult, AiWebPage, AiWebResult,
 };
 
 /// A workspace-relative path that crossed the plugin boundary: not empty,
@@ -336,4 +337,35 @@ pub trait AiChats: Send + Sync {
 
     /// Stop the run `id`.
     fn stop(&self, id: &str) -> Result<(), ServiceError>;
+
+    /// Whether the model may search the web and read pages in the open
+    /// workspace: you added a web search key and allowed web search for
+    /// the workspace. A service without web access says no.
+    fn web_ready(&self) -> Result<bool, ServiceError> {
+        Ok(false)
+    }
+
+    /// Search the web for `query`, for at most `max_results` results. The
+    /// failure holds a public code and message, never a key or what the
+    /// search provider answered.
+    fn web_search(
+        &self,
+        _query: &str,
+        _max_results: Option<u32>,
+    ) -> Result<Vec<AiWebResult>, AiFailure> {
+        Err(web_unavailable())
+    }
+
+    /// Read the page at `url` as text, as [`AiChats::web_search`] fails.
+    fn web_fetch(&self, _url: &str) -> Result<AiWebPage, AiFailure> {
+        Err(web_unavailable())
+    }
+}
+
+/// What a web call to a service without web access returns.
+fn web_unavailable() -> AiFailure {
+    AiFailure {
+        code: "web_access_unavailable".to_owned(),
+        message: "Noura can't search the web here.".to_owned(),
+    }
 }

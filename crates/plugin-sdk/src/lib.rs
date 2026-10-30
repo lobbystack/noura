@@ -109,7 +109,12 @@ pub mod navigation {
 /// Chats with the AI providers you set up in Settings, which Noura keeps
 /// as Markdown files in the workspace. Needs the `ai` capability. Noura
 /// asks you for consent before a request carries the workspace's content
-/// to a provider, and no call returns a provider's key.
+/// to a provider, and no call returns a provider's key. Once you add a
+/// Brave Search key and allow web search for the workspace, `web_search`
+/// and `web_fetch` search the web and read pages for the model, and
+/// `web_ready` says whether they work. Each one answers a call the model
+/// made: a run of the plugin's completed with a `web_search` call for
+/// that query, or a `web_fetch` call for that address.
 ///
 /// ```no_run
 /// use plugin_sdk::ai::{self, Request, RunStatus};
@@ -137,9 +142,9 @@ pub mod navigation {
 pub mod ai {
     pub use crate::noura::plugin::ai::{
         Chat, Failure, Message, MessageKind, MessageStatus, Provider, Request, Retention, Run,
-        RunStatus, ToolCall, ToolDefinition, ToolResult, answer_tools, chats, create_chat,
-        providers, read_chat, read_run, rename_chat, resume, run_tools, send, set_retention, stop,
-        workspace_tools,
+        RunStatus, ToolCall, ToolDefinition, ToolResult, WebError, WebPage, WebResult,
+        answer_tools, chats, create_chat, providers, read_chat, read_run, rename_chat, resume,
+        run_tools, send, set_retention, stop, web_fetch, web_ready, web_search, workspace_tools,
     };
 }
 
