@@ -520,9 +520,8 @@ pub(crate) async fn commit(
 }
 
 /// [`commit`] under locks the caller holds, against `policy`. A checkpoint
-/// of the workspace domain that follows an approval in its push
-/// (`approval`) needs no due point: it sets the new member's history floor
-/// (§9, §17).
+/// that follows an approval or a grant in its push (`floor_setting`) needs
+/// no due point: it sets the account's history floor (§9, §17).
 pub(crate) async fn commit_locked(
     txn: &mut impl WriteTxn,
     policy: &PolicyChain,
@@ -530,7 +529,7 @@ pub(crate) async fn commit_locked(
     workspace: Id,
     bundle: &CheckpointBundle,
     plan: Plan,
-    approval: bool,
+    floor_setting: bool,
 ) -> Result<Receipt> {
     let record = &bundle.checkpoint.0;
     let c = &record.body;
@@ -561,7 +560,6 @@ pub(crate) async fn commit_locked(
         .await?
         .ok_or_else(|| refuse("not_found", "no such domain"))?;
     check_rotation(policy, domain, row.epoch_policy_revision)?;
-    let floor_setting = approval && domain == policy.head_snapshot().workspace_domain;
     if !floor_setting && (row.checkpoint_due == 0 || c.covered_seq < row.checkpoint_due) {
         return Err(refuse(
             "checkpoint_not_due",

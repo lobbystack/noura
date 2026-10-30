@@ -147,11 +147,13 @@ pub(crate) fn decode(body: &[u8], workspace: Id, session: Session) -> Result<Vec
             RecordRef::Profile(profile) => (profile.body.workspace, profile.body.signer),
             RecordRef::CheckpointBundle(bundle) => {
                 // A checkpoint goes in a push of its own, or last in the
-                // push of an approval, whose fresh checkpoint sets the new
-                // member's history floor (§9, §10).
+                // push of an approval or a grant, whose fresh checkpoint
+                // sets the account's history floor (§9, §10).
                 let approval = pushed.iter().any(|p| {
-                    matches!(p, Pushed::Change(_, change)
-                        if matches!(change.body.kind, PolicyKind::AddMember { .. }))
+                    matches!(p, Pushed::Change(_, change) if matches!(
+                        change.body.kind,
+                        PolicyKind::AddMember { .. } | PolicyKind::SetAccess { .. }
+                    ))
                 });
                 if records_len > 1 && (index + 1 != records_len || !approval) {
                     return Err(fail(
@@ -359,12 +361,19 @@ pub(crate) async fn commit(
                 .await
                 .map(|receipt| vec![receipt]),
             Pushed::Checkpoint(_, bundle) => match plan.take() {
-                // The approval's fresh checkpoint, planned before this
-                // transaction opened (§17).
+                // The fresh checkpoint of an approval or a grant, planned
+                // before this transaction opened (§17).
                 Some(plan) => {
                     let policy = state.policy().clone();
+                    let floor_setting = state.sets_floor(&bundle.checkpoint.0.body.domain);
                     crate::checkpoints::commit_locked(
-                        txn, &policy, session, workspace, bundle, plan, true,
+                        txn,
+                        &policy,
+                        session,
+                        workspace,
+                        bundle,
+                        plan,
+                        floor_setting,
                     )
                     .await
                     .map(|receipt| vec![receipt])
@@ -395,7 +404,7 @@ pub(crate) async fn commit(
     if let Some((index, refusal)) = state.unmet() {
         return Err(failure(index, refusal));
     }
-    set_history_floors(txn, state.policy(), workspace, &pushed, &receipts).await?;
+    set_history_floors(txn, &state, workspace, &pushed, &receipts).await?;
     let policy_revision = state.policy().head().0.max(row.policy_revision);
     if changes {
         cache.put(state.policy().clone());
@@ -406,40 +415,37 @@ pub(crate) async fn commit(
     })
 }
 
-/// Sets each new member's history floor in the workspace domain (§9): the
-/// `covered_seq` of the fresh checkpoint the approval's push carries last,
-/// or, in a push without one, the sequence of the `add_member`'s own entry,
-/// so the member reads nothing written before it joined either way.
+/// Sets the history floor of each account a change of this push brought
+/// into a domain (§9): the `covered_seq` of the fresh checkpoint the push
+/// carries last, or, in a push without one, the sequence of the change's
+/// own entry there, so the account reads nothing written before it joined
+/// either way.
 async fn set_history_floors(
     txn: &mut impl WriteTxn,
-    policy: &PolicyChain,
+    state: &keys::PushState,
     workspace: Id,
     pushed: &[Pushed],
     receipts: &[sync_protocol::messages::Receipt],
 ) -> Result<()> {
-    let domain = policy.head_snapshot().workspace_domain;
     let checkpoint = pushed.iter().find_map(|p| match p {
-        Pushed::Checkpoint(_, bundle) if bundle.checkpoint.0.body.domain == domain => {
-            Some(bundle.checkpoint.0.body.covered_seq)
-        }
+        Pushed::Checkpoint(_, bundle) => Some((
+            bundle.checkpoint.0.body.domain,
+            bundle.checkpoint.0.body.covered_seq,
+        )),
         _ => None,
     });
-    for record in pushed {
-        let Pushed::Change(_, change) = record else {
-            continue;
-        };
-        let PolicyKind::AddMember { account, .. } = change.body.kind else {
-            continue;
-        };
-        let digest = change.digest();
-        let floor = checkpoint.or_else(|| {
-            receipts
-                .iter()
-                .find(|r| r.domain == domain && r.record_digest == digest)
-                .map(|r| r.seq)
-        });
+    for (domain, account, change) in state.floors() {
+        let floor = checkpoint
+            .filter(|(checkpointed, _)| checkpointed == domain)
+            .map(|(_, covered)| covered)
+            .or_else(|| {
+                receipts
+                    .iter()
+                    .find(|r| r.domain == *domain && r.record_digest == *change)
+                    .map(|r| r.seq)
+            });
         if let Some(floor) = floor {
-            txn.set_history_floor(workspace, account, domain, floor)
+            txn.set_history_floor(workspace, *account, *domain, floor)
                 .await?;
         }
     }

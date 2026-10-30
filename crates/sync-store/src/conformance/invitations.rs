@@ -83,11 +83,15 @@ pub struct Invitee {
 impl Invitee {
     /// A new account with one device.
     pub async fn new<B: Backend>(store: &Store<B>) -> Self {
-        let (account, keys, links) = account(1);
-        store
-            .enroll_card(keys[0].card(account))
-            .await
-            .expect("enrolled");
+        Self::with_cards(store, 1).await.0
+    }
+
+    /// A new account with `count` cards, and the keys of the others.
+    pub async fn with_cards<B: Backend>(store: &Store<B>, count: usize) -> (Self, Vec<DeviceKeys>) {
+        let (account, keys, links) = account(count);
+        for key in &keys {
+            store.enroll_card(key.card(account)).await.expect("enrolled");
+        }
         let session = Session::new(account, keys[0].device());
         store
             .create_session(random_token(), session)
@@ -97,12 +101,15 @@ impl Invitee {
             .append_account_links(links.clone())
             .await
             .expect("the chain");
-        Self {
-            account,
-            keys: keys[0].clone(),
-            links,
-            session,
-        }
+        (
+            Self {
+                account,
+                keys: keys[0].clone(),
+                links,
+                session,
+            },
+            keys[1..].to_vec(),
+        )
     }
 
     /// The account's head.
@@ -571,6 +578,17 @@ pub async fn workspace_requests_hold_a_hundred<B: Backend>(store: Store<B>) {
 /// The invitation, its acceptance and the invitee's approval request,
 /// ready for the approving device's `add_member`.
 pub(super) async fn requested<B: Backend>(world: &World<B>, role: Role) -> (Invite, Invitee) {
+    let (invite, (invitee, _)) = requested_with_cards(world, role, 1).await;
+    (invite, invitee)
+}
+
+/// [`requested`], for an account of `cards` cards, with the keys of the
+/// others.
+pub(super) async fn requested_with_cards<B: Backend>(
+    world: &World<B>,
+    role: Role,
+    cards: usize,
+) -> (Invite, (Invitee, Vec<DeviceKeys>)) {
     let owner = world.devices[0].session;
     let invite = Invite::new(role);
     world
@@ -578,7 +596,7 @@ pub(super) async fn requested<B: Backend>(world: &World<B>, role: Role) -> (Invi
         .create_invitation(owner, world.workspace, invite.creation(world.workspace))
         .await
         .expect("invited");
-    let invitee = Invitee::new(&world.store).await;
+    let (invitee, others) = Invitee::with_cards(&world.store, cards).await;
     world
         .store
         .accept_invitation(invitee.session, invite.token)
@@ -590,7 +608,7 @@ pub(super) async fn requested<B: Backend>(world: &World<B>, role: Role) -> (Invi
         .post_approval_request(invitee.session, request.to_bytes())
         .await
         .expect("the request");
-    (invite, invitee)
+    (invite, (invitee, others))
 }
 
 /// A pushed `add_member` needs an open invitation that the signer's

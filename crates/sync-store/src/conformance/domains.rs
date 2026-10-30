@@ -3,7 +3,7 @@
 //! member receives of the domain, `set_access` and `delete_domain`.
 
 use sync_key_envelope::v2::{EnvelopeHeader, wrap};
-use sync_protocol::codec::{Bytes, List, Nested, Sorted};
+use sync_protocol::codec::{Bytes, Encode, List, Nested, Sorted};
 use sync_protocol::keys::{EpochParams, build_epoch};
 use sync_protocol::messages::{
     KeyEntry, KeyRecord, PageStatus, PullCursor, PullRequest, RecordRef,
@@ -14,7 +14,7 @@ use sync_protocol::records::{
 };
 use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 
-use super::invitations::{Invitee, requested};
+use super::invitations::{Invitee, requested, requested_with_cards};
 use super::{World, head_of, manager, push_failure};
 use crate::{Backend, Store};
 
@@ -426,7 +426,7 @@ pub async fn set_access_and_delete_domain_follow_the_policy<B: Backend>(store: S
         .expect("the grant commits");
     world.head = (grant.body.revision, grant.digest());
     let page = pull_as(&world, member.session, creating.domain).await;
-    assert_eq!(page.status, PageStatus::Ok);
+    assert_eq!(page.status, PageStatus::BeforeHistoryFloor);
 
     // Taking the member off makes the domain due, so it takes no record.
     let removal = world.change(
@@ -466,5 +466,196 @@ pub async fn set_access_and_delete_domain_follow_the_policy<B: Backend>(store: S
                 .await
         ),
         ("not_found", 0)
+    );
+}
+
+/// The list that grants `member` read access beside the owner's manage.
+fn granted(owner: Id, member: Id) -> AccessList {
+    let mut list = vec![
+        Access {
+            account: owner,
+            level: Level::Manage,
+        },
+        Access {
+            account: member,
+            level: Level::Read,
+        },
+    ];
+    list.sort_by_key(|a| a.account);
+    Sorted::new(list).expect("sorted")
+}
+
+/// A grant sets the grantee's floor in the domain, at the change's own
+/// entry when its push carries no checkpoint: the grantee reads nothing
+/// earlier, while the domain's other readers read from the start, and a
+/// checkpoint takes no free pass from a change that grants nothing (§9).
+pub async fn a_grant_sets_the_grantees_history_floor<B: Backend>(store: Store<B>) {
+    let mut world = World::new(store, 1).await;
+    let member = add_member(&mut world).await;
+    let creating = Creating::new(&world, 0, manager(world.account));
+    world
+        .push_records(0, creating.records(&world, 0))
+        .await
+        .expect("the domain commits");
+    world.head = (creating.change.body.revision, creating.change.digest());
+    let grant = world.change(
+        0,
+        vec![head_of(&world.links)],
+        PolicyKind::SetAccess {
+            domain: creating.domain,
+            access: granted(world.account, member.account),
+        },
+    );
+    let envelope = wrap(
+        &EnvelopeHeader {
+            workspace: world.workspace,
+            domain: creating.domain,
+            epoch: 1,
+            wrapping_device: world.devices[0].id(),
+        },
+        &creating.key,
+        &member.keys.card(member.account),
+        &world.devices[0].keys,
+    )
+    .expect("wraps");
+    world
+        .push_records(
+            0,
+            vec![RecordRef::Policy(grant), RecordRef::Envelope(envelope)],
+        )
+        .await
+        .expect("the grant commits");
+
+    let page = pull_as(&world, member.session, creating.domain).await;
+    assert_eq!(page.status, PageStatus::BeforeHistoryFloor);
+    let page = pull_domain(&world, 0, creating.domain).await;
+    assert_eq!(page.status, PageStatus::Ok);
+    assert!(
+        page.entries.len() >= 3,
+        "the owner reads the marker the grantee can't"
+    );
+}
+
+/// The workspace's limits (§27): a 257th domain, a 513th active reader,
+/// and an access list over 1,024 entries. A 16,777,216th card index can't
+/// be reached here; `next_card_index` and `PolicyError::server_code` hold
+/// that rule in `sync-protocol`.
+pub async fn limits_follow_section_27<B: Backend>(store: Store<B>) {
+    let mut world = World::new(store, 1).await;
+    for _ in 0..255 {
+        let creating = Creating::new(&world, 0, manager(world.account));
+        world
+            .push_records(0, creating.records(&world, 0))
+            .await
+            .expect("a domain within the limit");
+        world.head = (creating.change.body.revision, creating.change.digest());
+    }
+    let creating = Creating::new(&world, 0, manager(world.account));
+    assert_eq!(
+        push_failure(world.push_records(0, creating.records(&world, 0)).await),
+        ("domain_limit", 0),
+        "a 257th domain"
+    );
+
+    // Two accounts of 256 cards beside the owner's one.
+    let (invite, full) = requested_with_cards(&world, Role::Editor, 256).await;
+    let add = world.change(
+        0,
+        vec![head_of(&world.links), full.0.head()],
+        PolicyKind::AddMember {
+            account: full.0.account,
+            role: Role::Editor,
+            invitation: invite.invitation,
+        },
+    );
+    let mut records = vec![RecordRef::Policy(add.clone())];
+    for keys in std::iter::once(&full.0.keys).chain(full.1.iter()) {
+        records.push(RecordRef::Envelope(world.envelope(
+            0,
+            &keys.card(full.0.account),
+            1,
+            &world.epoch_key,
+        )));
+    }
+    world
+        .push_records(0, records)
+        .await
+        .expect("512 readers fit");
+    world.head = (add.body.revision, add.digest());
+    let (invite, over) = requested_with_cards(&world, Role::Editor, 256).await;
+    let add = world.change(
+        0,
+        vec![head_of(&world.links), over.0.head()],
+        PolicyKind::AddMember {
+            account: over.0.account,
+            role: Role::Editor,
+            invitation: invite.invitation,
+        },
+    );
+    assert_eq!(
+        push_failure(world.push_records(0, vec![RecordRef::Policy(add)]).await),
+        ("recipient_limit", 0),
+        "a 513th reader of the workspace domain"
+    );
+
+    // 1,025 entries: the decoder refuses the list before any check.
+    let mut list: Vec<Access> = (0u16..1_024)
+        .map(|n| {
+            let mut id = [0; 16];
+            id[..2].copy_from_slice(&n.to_be_bytes());
+            Access {
+                account: Id(id),
+                level: Level::Read,
+            }
+        })
+        .collect();
+    list.sort_by_key(|a| a.account);
+    let change = world.change(
+        0,
+        vec![head_of(&world.links)],
+        PolicyKind::SetAccess {
+            domain: creating.domain,
+            access: Sorted::new(list.clone()).expect("1,024 entries fit"),
+        },
+    );
+    let entry = list[1_023].to_bytes();
+    let mut extra = entry.clone();
+    extra[..2].copy_from_slice(&[0xff, 0xff]);
+    let bytes = change.to_bytes();
+    let tail = bytes
+        .windows(entry.len())
+        .rposition(|window| window == entry)
+        .expect("the last entry")
+        + entry.len();
+    let mut long = bytes[..tail].to_vec();
+    long.extend_from_slice(&extra);
+    long.extend_from_slice(&bytes[tail..]);
+    let count = 1_024u32.to_be_bytes();
+    let at = long
+        .windows(4)
+        .position(|window| window == count)
+        .expect("the list's count");
+    long[at..at + 4].copy_from_slice(&1_025u32.to_be_bytes());
+    let record = RecordRef::Policy(change);
+    let mut body = sync_protocol::messages::PushRequest {
+        records: List(vec![record]),
+    }
+    .to_bytes();
+    let start = body
+        .windows(bytes.len())
+        .position(|window| window == bytes)
+        .expect("the record");
+    body.splice(start..start + bytes.len(), long.iter().copied());
+    let length = (long.len() as u32).to_be_bytes();
+    body[start - 4..start].copy_from_slice(&length);
+    let refused = world
+        .store
+        .push(world.devices[0].session, world.workspace, body)
+        .await
+        .expect_err("over the limit");
+    assert_eq!(
+        super::refusal(Err::<(), _>(refused)).code,
+        "too_large",
+        "1,025 access entries"
     );
 }

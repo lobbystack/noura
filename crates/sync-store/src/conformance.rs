@@ -107,6 +107,8 @@ macro_rules! conformance_tests {
             create_domain_commits_with_its_epoch_and_marker,
             an_outside_member_receives_nothing_of_a_domain,
             set_access_and_delete_domain_follow_the_policy,
+            a_grant_sets_the_grantees_history_floor,
+            limits_follow_section_27,
             removals_make_checkpoints_due_and_leave_the_heads,
             replacements_make_checkpoints_due,
             checkpoint_routes_serve_the_chain_and_manifest,

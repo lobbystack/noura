@@ -40,6 +40,9 @@ pub(crate) struct PushState {
     owed: BTreeMap<(Id, u64, Id), usize>,
     /// The domains this push created, which take epoch 1 in it.
     created: BTreeSet<Id>,
+    /// Each account a change brought into a domain, with the change's
+    /// digest, whose history floor the push sets (§9).
+    floors: Vec<(Id, Id, sync_protocol::types::Digest)>,
     interval: CheckpointInterval,
     /// The store clock's time, in Unix seconds.
     pub(crate) now: u64,
@@ -51,6 +54,7 @@ impl PushState {
             policy,
             owed: BTreeMap::new(),
             created: BTreeSet::new(),
+            floors: Vec::new(),
             interval,
             now,
         }
@@ -59,6 +63,16 @@ impl PushState {
     /// The policy after the changes so far.
     pub(crate) fn policy(&self) -> &Arc<PolicyChain> {
         &self.policy
+    }
+
+    /// What [`Self::floors`] names: domain, account and the change.
+    pub(crate) fn floors(&self) -> impl Iterator<Item = &(Id, Id, sync_protocol::types::Digest)> {
+        self.floors.iter()
+    }
+
+    /// Whether a change of this push sets a floor in `domain`.
+    pub(crate) fn sets_floor(&self, domain: &Id) -> bool {
+        self.floors.iter().any(|(d, _, _)| d == domain)
     }
 
     /// The first record whose envelopes the push doesn't carry.
@@ -193,9 +207,24 @@ pub(crate) async fn apply_change(
         }
     }
     match &change.body.kind {
-        PolicyKind::AddMember { invitation, .. } => {
+        PolicyKind::AddMember {
+            account,
+            invitation,
+            ..
+        } => {
             // An approved invitation ends: its link no longer opens.
             txn.delete_invitation(*invitation).await?;
+            state
+                .floors
+                .push((next.workspace_domain, *account, digest));
+        }
+        PolicyKind::SetAccess { domain, access } => {
+            let before = prev.domains.get(domain).map(|d| &d.access);
+            for entry in access.iter() {
+                if !before.is_some_and(|list| list.contains_key(&entry.account)) {
+                    state.floors.push((*domain, entry.account, digest));
+                }
+            }
         }
         PolicyKind::SetRole { .. }
         | PolicyKind::RemoveMember { .. }
