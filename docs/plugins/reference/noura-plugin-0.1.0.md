@@ -314,8 +314,7 @@ A new object.
   <p>Where to write the file, relative to the workspace, ending in `.md`.
   Without it the file goes in a folder named after the type, as
   `recipes/<title>.md` for `recipe`, with a number added when the
-  name is taken. A project gets a folder of its own there, as
-  `projects/<title>/<title>.md`.
+  name is taken. A plugin that wants another layout passes the path.
 
 - <a id="new_object.body"></a>`body`: `string`
   <p>The Markdown after the frontmatter.

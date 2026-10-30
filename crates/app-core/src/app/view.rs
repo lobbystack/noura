@@ -372,16 +372,23 @@ impl App {
         match listing {
             Ok((snapshot, counts)) => {
                 let tree = FileTree::from_entries(&snapshot.entries);
+                let problems = match &self.workspace {
+                    Some(workspace) => self
+                        .session
+                        .problems_with_schemas(workspace.engine(), &snapshot.problems),
+                    None => snapshot.problems.clone(),
+                };
                 self.listing_seen = self.session.publish_listing(
                     self.key,
                     self.opening,
                     &tree,
                     moved,
                     &snapshot,
+                    &problems,
                     counts,
                 );
                 self.show_tree(tree, moved.as_slice());
-                self.set_problems(snapshot.problems);
+                self.set_problems(problems);
                 self.set_recent(snapshot.recent);
                 self.reload_inbox_sections();
             }

@@ -1,4 +1,4 @@
-//! Index-backed queries: object lists, full-text search, and the calendar.
+//! Index-backed queries: object lists and full-text search.
 
 use super::*;
 
@@ -26,12 +26,15 @@ impl WorkspaceEngine {
         &self,
         query: &crate::ObjectSummaryQuery,
     ) -> Result<Vec<crate::ObjectSummary>> {
-        if let Some(date) = &query.due_on_or_before
-            && date.parse::<jiff::civil::Date>().is_err()
+        if let Some(bound) = &query.date_on_or_before
+            && !bound
+                .value
+                .as_str()
+                .is_some_and(workspace_format::is_civil_date)
         {
             return Err(CoreError::validation(
                 "invalid_date",
-                "dueOnOrBefore must be a YYYY-MM-DD date",
+                "dateOnOrBefore must hold a YYYY-MM-DD date",
                 "object_summaries",
             ));
         }
@@ -39,6 +42,16 @@ impl WorkspaceEngine {
             .lock()
             .map_err(|_| lock_error("object_summaries"))?
             .query_object_summaries(query)
+    }
+
+    /// Every object of `object_type` the index holds, without bodies, in
+    /// the order of their paths, for a check over a whole type such as a
+    /// plugin's schema. Files that share an ID are left out.
+    pub fn object_summaries_of_type(&self, object_type: &str) -> Result<Vec<crate::ObjectSummary>> {
+        self.index
+            .lock()
+            .map_err(|_| lock_error("object_summaries"))?
+            .object_summaries_of_type(object_type)
     }
 
     pub fn search(&self, input: &SearchInput) -> Result<Vec<SearchResult>> {
@@ -65,12 +78,5 @@ impl WorkspaceEngine {
             .lock()
             .map_err(|_| lock_error("recent_notes"))?
             .recent_notes(limit)
-    }
-
-    pub fn calendar(&self, start: &str, end: &str) -> Result<Vec<CalendarEntry>> {
-        self.index
-            .lock()
-            .map_err(|_| lock_error("calendar_query"))?
-            .calendar(start, end)
     }
 }

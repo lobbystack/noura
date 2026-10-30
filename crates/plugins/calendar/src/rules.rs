@@ -1,9 +1,10 @@
 //! Which dated entries a range holds, and their order. Dates use
 //! `YYYY-MM-DD` (all day) or RFC 3339 with an explicit offset (timed).
 //!
-//! These are the kernel's calendar rules, moved from `workspace-format`'s
-//! `calendar.rs` with its tests, so the plugin answers the shared
-//! `queries-v1` cases as the kernel's index does.
+//! These were the kernel's calendar rules, moved from `workspace-format`'s
+//! `calendar.rs` with its tests. The kernel no longer has a calendar
+//! query: the plugin's fixture, `fixtures/calendar-v1.json`, holds the
+//! answers the kernel's index gave.
 
 /// Invalid calendar range bounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -315,16 +316,14 @@ mod tests {
         );
     }
 
-    /// The shared fixture's calendar cases that name an error, which no
-    /// view of the plugin can ask for, fail here as the kernel fails them.
+    /// The fixture's calendar cases that name an error, which no view of
+    /// the plugin can ask for, fail here as the kernel failed them.
     #[test]
-    fn the_queries_v1_error_cases_fail_as_the_kernel_fails_them() {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../docs/workspace-format/fixtures/queries-v1.json"
-        ))
-        .unwrap();
+    fn the_fixtures_error_cases_fail_as_the_kernel_failed_them() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/calendar-v1.json")).unwrap();
         let mut checked = 0;
-        for case in fixture["calendarQueries"].as_array().unwrap() {
+        for case in fixture["queries"].as_array().unwrap() {
             let Some(code) = case.get("error").and_then(serde_json::Value::as_str) else {
                 continue;
             };

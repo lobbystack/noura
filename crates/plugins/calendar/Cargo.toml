@@ -17,3 +17,8 @@ crate-type = ["cdylib"]
 jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
 plugin-sdk = { version = "0.2.0", path = "../../plugin-sdk" }
 serde_json.workspace = true
+
+[dev-dependencies]
+# Reads the shared queries fixture's files as the host reads them, for the
+# calendar cases. Tests only: the plugin reaches files through the host.
+workspace-format = { version = "0.2.0", path = "../../workspace-format" }

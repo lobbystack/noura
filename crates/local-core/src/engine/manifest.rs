@@ -401,38 +401,6 @@ fn map_format_error(error: workspace_format::FormatError, operation: &str) -> Co
             "A timestamp must be an RFC 3339 instant",
             operation,
         ),
-        workspace_format::FormatError::InvalidTaskStatus => {
-            CoreError::validation("invalid_field", "Unsupported status value", operation)
-        }
-        workspace_format::FormatError::InvalidTaskStatusType => {
-            CoreError::validation("invalid_field", "status must be a string", operation)
-        }
-        workspace_format::FormatError::InvalidTaskPriority => {
-            CoreError::validation("invalid_field", "Unsupported priority value", operation)
-        }
-        workspace_format::FormatError::InvalidTaskPriorityType => {
-            CoreError::validation("invalid_field", "priority must be a string", operation)
-        }
-        workspace_format::FormatError::InvalidTaskDue => CoreError::validation(
-            "invalid_date",
-            "due must use YYYY-MM-DD or RFC 3339 with an explicit offset",
-            operation,
-        ),
-        workspace_format::FormatError::InvalidTaskProject => CoreError::validation(
-            "invalid_project_id",
-            "Task project references use a stable project ID",
-            operation,
-        ),
-        workspace_format::FormatError::InvalidProjectStatus => CoreError::validation(
-            "invalid_field",
-            "Unsupported project status value",
-            operation,
-        ),
-        workspace_format::FormatError::InvalidProjectStatusType => CoreError::validation(
-            "invalid_field",
-            "project status must be a string",
-            operation,
-        ),
     }
 }
 

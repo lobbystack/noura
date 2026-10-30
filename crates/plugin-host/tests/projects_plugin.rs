@@ -22,9 +22,8 @@ const MANIFEST: &str = include_str!("../../plugins/projects/plugin.toml");
 /// The Tasks plugin's manifest, as its crate ships it.
 const TASKS_MANIFEST: &str = include_str!("../../plugins/tasks/plugin.toml");
 
-/// The shared fixtures that hold today's project schema.
-const FIXTURES: &str =
-    include_str!("../../../docs/workspace-format/fixtures/object-envelope-v1.json");
+/// The Projects plugin's fixture, which holds today's project schema.
+const FIXTURE: &str = include_str!("../../plugins/projects/fixtures/project-v1.json");
 
 const PROJECT_ID: &str = "project_01jbcdefghjkmnpqrstvwxyz0a";
 const TASK_ID: &str = "task_01jbcdefghjkmnpqrstvwxyz0b";
@@ -83,11 +82,10 @@ fn the_manifest_declares_the_project_type_with_todays_statuses_and_names_tasks_a
 
     assert_eq!(registered, [("project".to_owned(), Ok(()))]);
     assert_eq!(types.owner("project").as_deref(), Some("projects"));
-    let fixtures: serde_json::Value = serde_json::from_str(FIXTURES).unwrap();
-    let expected: PropertySchema =
-        serde_json::from_value(fixtures["schemas"]["project"].clone()).unwrap();
+    let fixture: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
+    let expected: PropertySchema = serde_json::from_value(fixture["schema"].clone()).unwrap();
     assert_eq!(types.schemas().schema("project"), Some(&expected));
-    let status = &fixtures["schemas"]["project"]["properties"][0];
+    let status = &fixture["schema"]["properties"][0];
     assert_eq!(status["name"], "status");
     assert_eq!(
         status["kind"]["enum"],

@@ -139,7 +139,6 @@ pub(super) fn apply_metadata_patches(
             }
         }
     }
-    normalize_domain_properties(&object.object_type, &mut object.properties)?;
     let serialized = markdown::serialize_object(&object)?;
     if body(path, &serialized, object_id)? != object.body {
         return Err(invalid("collaboration_canonicalization_loss"));
