@@ -189,7 +189,24 @@ impl WorkspaceSync {
             compared?;
         }
         self.update_roots()?;
+        self.share_domain_keys();
         self.save()
+    }
+
+    /// Hands the workspace's verified state the keys of the domains the
+    /// device reads, so a change it signs there wraps for new cards (§8).
+    fn share_domain_keys(&mut self) {
+        let keys: Vec<(Id, u64, SecretKey)> = self
+            .parked
+            .iter()
+            .filter_map(|(domain, runtime)| {
+                let remote = runtime.remote.as_ref()?;
+                Some((*domain, remote.epoch(), remote.current_key()))
+            })
+            .collect();
+        if let Some(remote) = self.remote.as_mut() {
+            remote.set_restricted(keys);
+        }
     }
 
     /// Whether the device still waits for a marker of a domain it reads,
@@ -893,6 +910,44 @@ impl WorkspaceSync {
         })?;
         self.state.objects.get_mut(&rid).expect("signed").local = local;
         self.save()
+    }
+
+    /// A checkpoint of `domain` at this device's cursor, signed but not
+    /// pushed: with no checkpoint accepted there yet, a colluding writer's
+    /// checkpoint off the chain, for the tampering tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn sign_side_checkpoint(
+        &mut self,
+        domain: Id,
+    ) -> Option<sync_protocol::records::CheckpointBundle> {
+        let keys = self.credentials.keys.clone();
+        self.in_domain(Some(domain), |sync| {
+            let remote = sync.remote.as_ref()?;
+            sync.state.log.checkpoints.sign(
+                sync.state.workspace,
+                sync.state.domain,
+                sync.state.log.cursor,
+                sync.state.log.retention_floor,
+                &sync.state.log.live,
+                &remote.policy,
+                keys.device(),
+                keys.signing(),
+            )
+        })
+    }
+
+    /// The latest checkpoint of `domain` this device accepted.
+    pub fn domain_checkpoint(
+        &self,
+        domain: &Id,
+    ) -> Option<Signed<sync_protocol::records::Checkpoint>> {
+        let log = self.log_of(Some(*domain));
+        log.checkpoints.accepted.as_ref().map(|a| a.record.clone())
+    }
+
+    /// The checkpoints of `domain` that failed their checks here.
+    pub fn domain_checkpoint_failures(&self, domain: &Id) -> Vec<crate::sync::checkpoints::Failure> {
+        self.log_of(Some(*domain)).checkpoints.failures.clone()
     }
 
     /// The domain roots this device recorded.

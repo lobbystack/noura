@@ -2475,9 +2475,12 @@ impl WorkspaceSync {
     pub fn set_checkpoint_wait(&mut self, wait: std::time::Duration) {
         self.checkpoint_wait = wait;
         let latest = unix_now() + wait.as_secs();
-        let checkpoints = &mut self.state.log.checkpoints;
-        if checkpoints.sign_at.is_some_and(|at| at > latest) {
-            checkpoints.sign_at = Some(latest);
+        let frames = self.state.restricted.values_mut().map(|f| &mut f.log);
+        for log in std::iter::once(&mut self.state.log).chain(frames) {
+            let checkpoints = &mut log.checkpoints;
+            if checkpoints.sign_at.is_some_and(|at| at > latest) {
+                checkpoints.sign_at = Some(latest);
+            }
         }
     }
 

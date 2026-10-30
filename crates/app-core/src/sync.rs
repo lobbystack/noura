@@ -428,9 +428,26 @@ pub struct RemoteWorkspace {
     /// The latest checkpoint of the workspace domain this device accepted,
     /// as an approval offer anchors it, with its restore generation (§10).
     checkpoint: Option<(sync_protocol::records::CheckpointAnchor, u64)>,
+    /// The current epoch and key of each restricted domain the device
+    /// reads, so a change that brings a card in wraps for it there too
+    /// (§8).
+    restricted: BTreeMap<Id, (u64, SecretKey)>,
 }
 
 impl RemoteWorkspace {
+    /// The current epoch's key.
+    pub(crate) fn current_key(&self) -> SecretKey {
+        self.key.clone()
+    }
+
+    /// Replaces the restricted domains' current epochs and keys.
+    pub(crate) fn set_restricted(&mut self, keys: Vec<(Id, u64, SecretKey)>) {
+        self.restricted = keys
+            .into_iter()
+            .map(|(domain, epoch, key)| (domain, (epoch, key)))
+            .collect();
+    }
+
     /// The accepted policy head's revision.
     pub fn policy_revision(&self) -> u64 {
         self.policy.head().0
@@ -481,6 +498,7 @@ impl RemoteWorkspace {
             last: BTreeMap::new(),
             envelope,
             checkpoint: None,
+            restricted: BTreeMap::new(),
         })
     }
 }
@@ -941,6 +959,7 @@ impl SyncService {
             last: BTreeMap::new(),
             envelope: own_envelope,
             checkpoint: None,
+            restricted: BTreeMap::new(),
         })
     }
 
@@ -1051,6 +1070,7 @@ impl SyncService {
             last: BTreeMap::new(),
             envelope,
             checkpoint,
+            restricted: BTreeMap::new(),
         })
     }
 

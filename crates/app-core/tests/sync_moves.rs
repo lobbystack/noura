@@ -540,3 +540,111 @@ async fn deleting_a_domain_keeps_the_files_and_holds_them_for_review() {
     let refused = team.sync.delete_domain(&mut team.owner.service, domain).await;
     assert!(matches!(refused, Err(SyncError::Check(_))));
 }
+
+/// Moved from ticket 58: a device approved after a domain was restricted
+/// holds no anchor there. A colluding writer's checkpoint off the chain,
+/// which a server serves it, passes the signer and recency checks, and the
+/// device catches it when the real checkpoint arrives and doesn't name it
+/// (§30). The honest run of the same steps shows that nothing else stops
+/// the device.
+#[tokio::test]
+async fn a_checkpoint_off_the_chain_in_a_restricted_domain_is_caught() {
+    assert_eq!(
+        bootstrap_with_side_checkpoint(true).await,
+        Some("sync_chain_gap")
+    );
+}
+
+#[tokio::test]
+async fn a_new_device_bootstraps_a_restricted_domain_from_the_real_checkpoint() {
+    assert_eq!(bootstrap_with_side_checkpoint(false).await, None);
+}
+
+/// The steps of the off-the-chain case, with the side checkpoint served or
+/// not. Returns the check the device stops on, if any.
+async fn bootstrap_with_side_checkpoint(serve_it: bool) -> Option<&'static str> {
+    use sync_protocol::codec::Encode;
+    use sync_protocol::messages::CheckpointResponse;
+
+    let server = Server::start_with_interval(6).await;
+    let mut team = team(&server, None).await;
+    let domain = team.restrict(Level::Write).await;
+    team.sync.set_checkpoint_wait(Duration::from_secs(3_600));
+    team.grantee_sync
+        .set_checkpoint_wait(Duration::from_secs(3_600));
+    for i in 0..8 {
+        team.folder.write(&format!("Pay/n{i}.md"), b"note\n");
+    }
+    team.settle().await;
+
+    // The grantee, a writer, signs a checkpoint nobody pushes.
+    let side = team
+        .grantee_sync
+        .sign_side_checkpoint(domain)
+        .expect("something to checkpoint");
+
+    // The real checkpoint commits at the same point.
+    team.sync.set_checkpoint_wait(Duration::ZERO);
+    for _ in 0..3 {
+        team.sync.round(&mut team.owner.service, 0).await.expect("a round");
+    }
+    team.settle().await;
+    let real = team.sync.domain_checkpoint(&domain).expect("the real checkpoint");
+    assert_eq!(real.body.covered_seq, side.checkpoint.0.body.covered_seq);
+    assert_ne!(real.digest(), side.checkpoint.0.digest());
+    let seq = team
+        .owner
+        .service
+        .client()
+        .checkpoint_by_digest(team.sync.workspace(), domain, real.digest())
+        .await
+        .expect("served")
+        .expect("the entry")
+        .seq;
+
+    // The owner's new device, which holds no anchor in the domain.
+    let new = sync_support::approve(
+        &server,
+        &mut team.owner,
+        std::slice::from_mut(team.sync.remote_mut().expect("connected")),
+    )
+    .await;
+    let proxy = Proxy::start(&server.base).await;
+    let mut service = new.connect_through(&proxy.base).await;
+    let mut folder = Folder::new("Downloaded");
+    let mut sync = WorkspaceSync::download(
+        &mut service,
+        folder.engine.clone(),
+        team.sync.workspace(),
+        &mut folder.registry,
+    )
+    .await
+    .expect("the download starts");
+    let encoded = domain.to_base64url();
+    if serve_it {
+        proxy.tamper(Box::new(move |path, body| {
+            if path.ends_with("/checkpoint") && path.contains(&encoded) {
+                return CheckpointResponse {
+                    seq,
+                    bundle: side.clone(),
+                }
+                .to_bytes();
+            }
+            body
+        }));
+    }
+    let mut stopped = None;
+    for _ in 0..4 {
+        match sync.round(&mut service, 0).await {
+            Ok(_) => {}
+            Err(SyncError::Check(code)) => stopped = Some(code),
+            Err(error) => panic!("{error:?}"),
+        }
+    }
+    assert_eq!(sync.domain_roots().len(), 1);
+    assert!(
+        folder.files().contains_key("Pay/n0.md"),
+        "the device installed the checkpoint's files"
+    );
+    stopped
+}
