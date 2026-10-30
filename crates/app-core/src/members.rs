@@ -18,11 +18,13 @@ use std::sync::{Arc, Mutex, PoisonError};
 pub use sync_protocol::messages::InvitationStatus;
 use sync_protocol::policy::{PolicyChain, Snapshot};
 pub use sync_protocol::records::{Level, Role};
-pub use sync_protocol::types::Id;
+pub use sync_protocol::types::{Digest, Id};
 
+use crate::account::fingerprint;
 use crate::folder_sync::local_time;
 pub use crate::shares::LinkText;
 use crate::sync::invitations::WorkspaceInvitation;
+use crate::sync::joining::InvitedRequest;
 use crate::sync::workspace::WorkspaceSync;
 
 /// What the section says on a computer without a sync account.
@@ -78,6 +80,30 @@ pub struct InvitationEntry {
     pub sent_here: bool,
     /// Set when the account that accepted it was a member before: once
     /// approved, it can read what members wrote while it was away (§9).
+    pub returning: Option<String>,
+}
+
+/// An invited device that waits for this computer's approval (§10).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemberRequest {
+    /// The request's commitment, which the action names.
+    pub commit: Digest,
+    /// What the row says.
+    pub label: String,
+    /// The device's fingerprint.
+    pub fingerprint: String,
+    /// Set when the account was a member before (§9).
+    pub returning: Option<String>,
+}
+
+/// An approval in progress on this computer (§10).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemberApproval {
+    /// The new device's fingerprint.
+    pub fingerprint: String,
+    /// The approval code once the new device revealed its nonce.
+    pub code: Option<String>,
+    /// Set when the account was a member before (§9).
     pub returning: Option<String>,
 }
 
@@ -151,6 +177,10 @@ pub struct MembersScreen {
     pub members: Vec<MemberEntry>,
     /// The open invitations, which owners and admins see.
     pub invitations: Vec<InvitationEntry>,
+    /// The invited devices that wait for this computer's approval.
+    pub requests: Vec<MemberRequest>,
+    /// The approval in progress on this computer.
+    pub approval: Option<MemberApproval>,
     /// The roles you may invite people with.
     pub invite_roles: Vec<Role>,
     /// Whether you may leave the workspace; the owner transfers ownership
@@ -299,6 +329,23 @@ impl MembersScreen {
             may_restrict: manages,
             ..Self::default()
         }
+    }
+
+    /// Adds the invited devices that wait for this computer: `requests`
+    /// holds only those whose proof checked out (§11).
+    pub fn with_requests(mut self, snapshot: &Snapshot, requests: &[InvitedRequest]) -> Self {
+        self.requests = requests
+            .iter()
+            .map(|request| MemberRequest {
+                commit: request.commit,
+                label: format!("{} invitation, accepted", role_name(request.role)),
+                fingerprint: fingerprint(&request.fingerprint),
+                returning: snapshot.former.contains_key(&request.card.account).then(|| {
+                    "This account was a member before. Once you approve it, it can read what members wrote while it was away.".to_owned()
+                }),
+            })
+            .collect();
+        self
     }
 
     /// Adds the restricted folders, and what waits for you on this device.
@@ -457,6 +504,12 @@ pub enum MembersAction {
     TransferOwner(Id),
     /// Leave the workspace.
     Leave,
+    /// Offer to approve the invited device with this commitment.
+    Approve(Digest),
+    /// The approval codes match: add the member.
+    ConfirmApproval,
+    /// End the approval in progress.
+    CancelApproval,
     /// Restrict a folder to you, for now.
     Restrict(String),
     /// Give an account access to a restricted folder.
@@ -511,6 +564,9 @@ impl std::fmt::Debug for MembersAction {
             MembersAction::Remove(id) => f.debug_tuple("Remove").field(id).finish(),
             MembersAction::TransferOwner(id) => f.debug_tuple("TransferOwner").field(id).finish(),
             MembersAction::Leave => f.write_str("Leave"),
+            MembersAction::Approve(commit) => f.debug_tuple("Approve").field(commit).finish(),
+            MembersAction::ConfirmApproval => f.write_str("ConfirmApproval"),
+            MembersAction::CancelApproval => f.write_str("CancelApproval"),
             MembersAction::Restrict(_) => f.write_str("Restrict"),
             MembersAction::Grant { domain, level, .. } => f
                 .debug_struct("Grant")

@@ -12,8 +12,8 @@ use std::collections::BTreeSet;
 
 use app_core::account::{
     AccountAction, AccountBackend, AccountPhase, AccountScreen, AlertEntry, ApprovalView,
-    DeviceEntry, Id, KitReplacementView, KitView, RecoveryView, RequestEntry, SignOutView,
-    SignedInView,
+    DeviceEntry, Id, InvitationStage, InvitationView, KitReplacementView, KitView, RecoveryView,
+    RequestEntry, SignOutView, SignedInView,
 };
 use app_core::sync::recovery::KIT_WARNING;
 use app_core::{App, settings_section};
@@ -529,4 +529,134 @@ fn replacing_a_kit_lists_the_devices_it_recovered_with_keep_choices() {
         ]
     );
     assert!(harness.unnamed_widgets().is_empty());
+}
+
+fn invitation(stage: InvitationStage) -> Option<InvitationView> {
+    Some(InvitationView {
+        workspace: "Field notes".into(),
+        inviter: "Ana".into(),
+        role: "editor".into(),
+        stage,
+    })
+}
+
+const LINK: &str = "https://sync.example.com/invite/AAAA#BBBB";
+
+/// The invitee's path through the section: paste the link, read who
+/// invited you, sign in and accept, compare the code, choose a folder.
+#[test]
+fn an_invitee_pastes_a_link_accepts_and_compares_the_code() {
+    let app_data = tempfile::tempdir().unwrap();
+    let account = Arc::new(FakeAccount::default());
+    let picker = FakePicker::default();
+    let folder = tempfile::tempdir().unwrap();
+    picker.answer(Some(folder.path()));
+    let mut harness = harness_with(app_data.path(), account.clone(), picker);
+
+    harness.get_by_label("Invitation link").focus();
+    harness.run();
+    harness.get_by_label("Invitation link").type_text(LINK);
+    harness.run();
+    harness
+        .get_by_role_and_label(Role::Button, "Open link")
+        .click();
+    harness.run();
+    assert_eq!(
+        account.taken().last(),
+        Some(&AccountAction::OpenInvitation(LINK.into()))
+    );
+
+    // A wrong secret or a tampered context says one generic thing.
+    account.show(AccountScreen {
+        problem: Some(app_core::sync::invitations::INVITATION_UNUSABLE.into()),
+        ..AccountScreen::default()
+    });
+    harness.run();
+    harness.get_by_role_and_label(
+        Role::Alert,
+        "This invitation link doesn't work. Ask the person who invited you for a new one.",
+    );
+
+    account.show(AccountScreen {
+        invitation: invitation(InvitationStage::Opened),
+        ..AccountScreen::default()
+    });
+    harness.run();
+    harness.get_by_label("Ana invited you to Field notes as an editor.");
+    harness
+        .get_by_role_and_label(Role::Button, "Sign in and accept")
+        .click();
+    harness.run();
+    assert_eq!(account.taken(), vec![AccountAction::AcceptInvitation]);
+
+    account.show(AccountScreen {
+        invitation: invitation(InvitationStage::Opened),
+        ..signed_in(SignedInView::default())
+    });
+    harness.run();
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, "Sign in and accept")
+            .is_none()
+    );
+    harness.get_by_role_and_label(Role::Button, "Accept");
+
+    account.show(AccountScreen {
+        invitation: invitation(InvitationStage::Waiting {
+            fingerprint: LAPTOP.into(),
+            code: None,
+            confirmed: false,
+        }),
+        ..signed_in(SignedInView::default())
+    });
+    harness.run();
+    harness.get_by_label("Waiting for Ana to approve this computer.");
+    harness.get_by_label(LAPTOP);
+
+    account.show(AccountScreen {
+        invitation: invitation(InvitationStage::Waiting {
+            fingerprint: LAPTOP.into(),
+            code: Some("1234 5678".into()),
+            confirmed: false,
+        }),
+        ..signed_in(SignedInView::default())
+    });
+    harness.run();
+    harness.get_by_label("Compare this code with Ana on a call or another channel you trust:");
+    harness.get_by_label("1234 5678");
+    harness
+        .get_by_role_and_label(Role::Button, "Codes match")
+        .click();
+    harness.run();
+    assert_eq!(account.taken(), vec![AccountAction::ConfirmInvitationCode]);
+
+    account.show(AccountScreen {
+        invitation: invitation(InvitationStage::Joined { downloading: false }),
+        ..signed_in(SignedInView::default())
+    });
+    harness.run();
+    harness
+        .get_by_role_and_label(Role::Button, "Choose a folder")
+        .click();
+    harness.run();
+    assert_eq!(
+        account.taken(),
+        vec![AccountAction::DownloadInvited(folder.path().to_owned())]
+    );
+    for _ in 0..200 {
+        harness.step();
+        if folder.path().join(".noura").exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let names: Vec<_> = std::fs::read_dir(folder.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(
+        names,
+        vec![".noura"],
+        "the folder stays empty for the download"
+    );
 }

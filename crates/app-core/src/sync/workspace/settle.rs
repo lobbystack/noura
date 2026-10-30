@@ -564,9 +564,9 @@ impl WorkspaceSync {
         // An object of a restricted domain outranks a workspace-domain
         // object that only waits for its move into that root (§9).
         let restricted = self.state.objects[rid].domain.is_some();
-        let yields = colliding
-            .iter()
-            .any(|(other, _, current)| digest > *current && !(restricted && self.awaits_move(other)));
+        let yields = colliding.iter().any(|(other, _, current)| {
+            digest > *current && !(restricted && self.awaits_move(other))
+        });
         if yields {
             return (self.free_for(rid, path), Vec::new());
         }

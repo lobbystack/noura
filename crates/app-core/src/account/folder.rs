@@ -229,6 +229,34 @@ impl Folder {
         }
     }
 
+    /// Whether the windows show the workspace in `folder`.
+    pub(super) fn shows(&self, folder: &Path) -> bool {
+        let canonical = |path: &Path| std::fs::canonicalize(path).ok();
+        self.engine.as_ref().is_some_and(|engine| {
+            canonical(engine.root()).is_some() && canonical(engine.root()) == canonical(folder)
+        })
+    }
+
+    /// Downloads the remote workspace `workspace` into the open folder
+    /// (§15, §18).
+    pub(super) async fn download(
+        &mut self,
+        service: &mut SyncService,
+        workspace: sync_protocol::types::Id,
+        app_data: &Path,
+    ) -> Result<(), SyncError> {
+        let engine = self
+            .engine
+            .clone()
+            .ok_or_else(|| SyncError::Invalid("Choose a folder first.".into()))?;
+        let mut registry = Registry::open(app_data)?;
+        let sync = WorkspaceSync::download(service, engine, workspace, &mut registry).await?;
+        self.sync = Some(sync);
+        self.last_error = None;
+        self.not_connected = false;
+        Ok(())
+    }
+
     /// The open workspace's sync, when it syncs.
     pub(super) fn sync_mut(&mut self) -> Option<&mut WorkspaceSync> {
         self.sync.as_mut()

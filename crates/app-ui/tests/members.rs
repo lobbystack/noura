@@ -10,9 +10,9 @@ mod support;
 use std::sync::{Arc, Mutex};
 
 use app_core::members::{
-    FolderCandidate, FolderEntry, FolderGrant, HeldEntry, Id, InvitationEntry, InvitationStatus,
-    Level, LinkText, MemberEntry, MembersAction, MembersBackend, MembersScreen, MoveEntry,
-    NEEDS_ACCOUNT, Role,
+    Digest, FolderCandidate, FolderEntry, FolderGrant, HeldEntry, Id, InvitationEntry,
+    InvitationStatus, Level, LinkText, MemberApproval, MemberEntry, MemberRequest, MembersAction,
+    MembersBackend, MembersScreen, MoveEntry, NEEDS_ACCOUNT, Role,
 };
 use app_core::{App, settings_section};
 use app_ui::NouraUi;
@@ -502,4 +502,74 @@ fn a_grant_reaches_the_backend() {
             level: Level::Write
         }]
     );
+}
+
+const RETURNING: &str = "This account was a member before. Once you approve it, it can read what members wrote while it was away.";
+const FINGERPRINT: &str = "0a1b 2c3d 4e5f 6071";
+
+/// The inviting computer lists the invited device, warns about a member
+/// coming back, and adds it only after the codes match.
+#[test]
+fn the_inviting_computer_approves_a_new_member_after_the_code() {
+    let app_data = tempfile::tempdir().unwrap();
+    let members = Arc::new(FakeMembers::default());
+    members.show(MembersScreen {
+        requests: vec![MemberRequest {
+            commit: Digest::ZERO,
+            label: "Editor invitation, accepted".into(),
+            fingerprint: FINGERPRINT.into(),
+            returning: Some(RETURNING.into()),
+        }],
+        ..admin_screen()
+    });
+    let mut harness = harness(app_data.path(), members.clone());
+    members.taken();
+
+    let row = harness.get_by_role_and_label(accesskit::Role::Group, "Editor invitation, accepted");
+    row.get_by_label(FINGERPRINT);
+    row.get_by_role_and_label(accesskit::Role::Alert, RETURNING);
+    row.get_by_role_and_label(accesskit::Role::Button, "Approve")
+        .click();
+    harness.run();
+    assert_eq!(members.taken(), vec![MembersAction::Approve(Digest::ZERO)]);
+
+    members.show(MembersScreen {
+        approval: Some(MemberApproval {
+            fingerprint: FINGERPRINT.into(),
+            code: None,
+            returning: Some(RETURNING.into()),
+        }),
+        ..admin_screen()
+    });
+    harness.run();
+    harness.get_by_label("Waiting for their computer to show its code.");
+    assert!(
+        harness
+            .query_by_role_and_label(accesskit::Role::Button, "Codes match")
+            .is_none(),
+        "nothing to confirm before the code"
+    );
+
+    members.show(MembersScreen {
+        approval: Some(MemberApproval {
+            fingerprint: FINGERPRINT.into(),
+            code: Some("1234 5678".into()),
+            returning: Some(RETURNING.into()),
+        }),
+        ..admin_screen()
+    });
+    harness.run();
+    let approval = harness.get_by_role_and_label(accesskit::Role::Group, "Approving a new member");
+    approval.get_by_label("1234 5678");
+    approval.get_by_role_and_label(accesskit::Role::Alert, RETURNING);
+    approval
+        .get_by_role_and_label(accesskit::Role::Button, "Codes match")
+        .click();
+    harness.run();
+    assert_eq!(members.taken(), vec![MembersAction::ConfirmApproval]);
+    harness
+        .get_by_role_and_label(accesskit::Role::Button, "Cancel")
+        .click();
+    harness.run();
+    assert_eq!(members.taken(), vec![MembersAction::CancelApproval]);
 }

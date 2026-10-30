@@ -8,9 +8,9 @@ mod sync_support;
 
 use std::time::Duration;
 
-use app_core::sync::{SyncError, SyncService};
 use app_core::sync::invitations::InvitationBook;
 use app_core::sync::workspace::{SkipWhy, WorkspaceSync};
+use app_core::sync::{SyncError, SyncService};
 use sync_protocol::codec::Decode;
 use sync_protocol::matching::MARKER;
 use sync_protocol::messages::{PushRequest, RecordRef};
@@ -174,6 +174,17 @@ async fn a_file_moved_into_a_restricted_folder_writes_both_records_in_one_push()
     let granted = team.grantee_sync.rid_at("Pay/Plan.md").expect("mapped");
     assert_eq!(granted, moved);
     assert_eq!(team.grantee_sync.status().conflicts, 0);
+
+    // The warning outlasts a restart until you dismiss it.
+    drop(team.sync);
+    let reopened = WorkspaceSync::open(
+        team.folder.engine.clone(),
+        team.owner.credentials.clone(),
+        team.owner.secrets(),
+        &team.folder.registry,
+    )
+    .expect("the journal opens");
+    assert_eq!(reopened.moved_in().len(), 1);
 }
 
 #[tokio::test]
@@ -1150,7 +1161,8 @@ async fn an_outsiders_later_file_stays_out_of_the_root_on_a_bootstrapped_device(
             .await
             .expect("a round");
     }
-    team.outsider_folder.write("Pay/Same.md", b"stale outside\n");
+    team.outsider_folder
+        .write("Pay/Same.md", b"stale outside\n");
     team.outsider_sync.capture().expect("captured");
     team.outsider_sync
         .push(&mut team.outsider.service)

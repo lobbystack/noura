@@ -268,6 +268,7 @@ fn draw(
             });
         }
     }
+    approvals(ui, screen, actions, idle);
     restricted(ui, screen, view, actions, idle);
     if screen.may_leave {
         ui.add_space(8.0);
@@ -284,6 +285,64 @@ fn draw(
             "To leave this workspace, make another member the owner first.",
         );
     }
+}
+
+/// The invited devices that wait for this computer, and the approval in
+/// progress with the code both people compare (§10).
+fn approvals(ui: &mut Ui, screen: &MembersScreen, actions: &mut Vec<MembersAction>, idle: bool) {
+    if screen.requests.is_empty() && screen.approval.is_none() {
+        return;
+    }
+    ui.add_space(8.0);
+    ui.label(RichText::new("New members").strong());
+    let Some(approval) = &screen.approval else {
+        muted(
+            ui,
+            "Approve a device only after you check with the person you invited.",
+        );
+        for request in &screen.requests {
+            group(ui, &request.label, |ui| {
+                ui.label(&request.label);
+                fingerprint_line(ui, &request.fingerprint);
+                if let Some(warning) = &request.returning {
+                    alert(ui, warning);
+                }
+                if ui.add_enabled(idle, Button::new("Approve")).clicked() {
+                    actions.push(MembersAction::Approve(request.commit));
+                }
+            });
+        }
+        return;
+    };
+    group(ui, "Approving a new member", |ui| {
+        ui.label("Approving the device with this fingerprint:");
+        fingerprint_line(ui, &approval.fingerprint);
+        if let Some(warning) = &approval.returning {
+            alert(ui, warning);
+        }
+        match &approval.code {
+            None => {
+                muted(ui, "Waiting for their computer to show its code.");
+            }
+            Some(code) => {
+                ui.label("Compare this code with theirs on a call or another channel you trust:");
+                ui.add(
+                    egui::Label::new(RichText::new(code).size(24.0).monospace().strong())
+                        .selectable(true),
+                );
+                if ui.add_enabled(idle, Button::new("Codes match")).clicked() {
+                    actions.push(MembersAction::ConfirmApproval);
+                }
+            }
+        }
+        if ui.add_enabled(idle, Button::new("Cancel")).clicked() {
+            actions.push(MembersAction::CancelApproval);
+        }
+    });
+}
+
+fn fingerprint_line(ui: &mut Ui, fingerprint: &str) {
+    ui.add(egui::Label::new(RichText::new(fingerprint).monospace()).selectable(true));
 }
 
 fn restricted(

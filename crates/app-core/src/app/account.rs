@@ -1,5 +1,6 @@
 //! The sync account screens every window shares.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::App;
@@ -17,6 +18,13 @@ impl App {
     /// Carries out what you did on the account screens.
     pub fn account_action(&self, action: AccountAction) {
         self.session.account().act(action);
+    }
+
+    /// Makes `folder` a new workspace named `name` and downloads the
+    /// workspace you joined into it, once the windows show it (§11).
+    pub fn download_invited(&mut self, name: &str, folder: PathBuf) {
+        self.create_workspace(name, folder.clone());
+        self.account_action(AccountAction::DownloadInvited(folder));
     }
 
     /// Runs the account screens with `backend`, such as the desktop's

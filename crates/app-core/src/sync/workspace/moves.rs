@@ -145,9 +145,8 @@ impl WorkspaceSync {
     /// because it bootstrapped past it.
     #[doc(hidden)]
     pub fn bootstrapped_past(&self, domain: &Id) -> bool {
-        self.created_revision(domain).is_some_and(|revision| {
-            !self.log_of(None).domain_entries.contains_key(&revision)
-        })
+        self.created_revision(domain)
+            .is_some_and(|revision| !self.log_of(None).domain_entries.contains_key(&revision))
     }
 
     /// Whether `rid` waits for its move into the root that now holds it,

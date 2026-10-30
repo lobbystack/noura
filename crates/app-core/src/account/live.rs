@@ -21,15 +21,17 @@ use super::members::Membership;
 use super::share::Sharing;
 use super::{
     AccountAction, AccountBackend, AccountPhase, AccountScreen, AlertEntry, ApprovalView,
-    DeviceEntry, KitReplacementView, KitView, RecoveryView, RemovalView, RequestEntry, SignOutView,
-    SignedInView, fingerprint,
+    DeviceEntry, InvitationStage, InvitationView, KitReplacementView, KitView, RecoveryView,
+    RemovalView, RequestEntry, SignOutView, SignedInView, fingerprint,
 };
 use crate::folder_sync::{FolderSyncAction, FolderSyncBackend, FolderSyncScreen};
-use crate::members::{MembersAction, MembersBackend, MembersScreen};
+use crate::members::{MembersAction, MembersBackend, MembersScreen, role_name};
 use crate::shares::{ShareAction, ShareBackend, ShareScreen};
 use crate::sync::approval::{Candidate, CandidateStep, OutstandingOffer, PendingDevice};
 use crate::sync::device::{DeviceSignIn, Joined, SignedIn, StoredDevice, join, server_address};
 use crate::sync::device_list::{AddedBy, DeviceAlert};
+use crate::sync::invitations::{InvitationLink, OpenedInvitation, open_signed_out};
+use crate::sync::joining::InvitedCandidate;
 use crate::sync::recovery::{Recovery, RecoveryReview, open_kit};
 use crate::sync::upkeep::Upkeep;
 use crate::sync::{DeviceCredentials, KeptHeads, RemoteWorkspace, Secrets, SyncError, SyncService};
@@ -175,6 +177,9 @@ impl LiveAccount {
             folder: Folder::default(),
             sharing: Sharing::default(),
             membership: Membership::default(),
+            invited: None,
+            joined: None,
+            download_into: None,
         };
         let spawned = std::thread::Builder::new()
             .name("noura-sync-account".into())
@@ -322,6 +327,16 @@ struct Waiting {
     heads: KeptHeads,
 }
 
+/// An invitation you opened (§11). The link's secret stays in memory and
+/// leaves with this; after a restart you paste the link again.
+struct Invited {
+    link: InvitationLink,
+    opened: OpenedInvitation,
+    /// You accepted, and the device waits for its account to do it.
+    accepting: bool,
+    candidate: Option<InvitedCandidate>,
+}
+
 struct Driver {
     shared: Arc<Shared>,
     app_data: PathBuf,
@@ -343,6 +358,12 @@ struct Driver {
     sharing: Sharing,
     /// The Members section.
     membership: Membership,
+    /// The invitation you opened.
+    invited: Option<Invited>,
+    /// The workspace you joined, which waits for a folder.
+    joined: Option<Id>,
+    /// The folder that workspace downloads into, once the windows show it.
+    download_into: Option<PathBuf>,
 }
 
 /// What a failed action tells you.
@@ -535,12 +556,21 @@ impl Driver {
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     runtime.block_on(self.tick());
+                    runtime.block_on(self.membership.tick(
+                        self.service.as_mut(),
+                        &mut self.folder,
+                        &self.app_data,
+                    ));
+                    self.shared.show_members(self.membership.screen.clone());
                     // The pull waits only while nothing else here polls.
                     let long = self.folder.waits()
                         && self.sign_in.is_none()
                         && self.candidate.is_none()
                         && self.offer.is_none()
-                        && self.recovery.is_none();
+                        && self.recovery.is_none()
+                        && self.invited.is_none()
+                        && self.download_into.is_none()
+                        && !self.membership.waits();
                     runtime.block_on(self.folder.round(
                         self.service.as_mut(),
                         &self.store,
@@ -820,6 +850,9 @@ impl Driver {
             AccountAction::CancelSignIn => {
                 self.sign_in = None;
                 self.candidate = None;
+                if let Some(invited) = self.invited.as_mut() {
+                    invited.accepting = false;
+                }
                 self.shared
                     .update(|screen| screen.phase = AccountPhase::SignedOut);
             }
@@ -1064,6 +1097,55 @@ impl Driver {
                 });
                 self.refresh().await?;
             }
+            AccountAction::OpenInvitation(text) => {
+                let text = Zeroizing::new(text);
+                self.shared.update(|screen| screen.busy = true);
+                let opened = self.open_invitation(&text).await;
+                self.shared.update(|screen| screen.busy = false);
+                opened?;
+            }
+            AccountAction::AcceptInvitation => {
+                let invited = self
+                    .invited
+                    .as_mut()
+                    .ok_or_else(|| SyncError::Invalid("Open the invitation first.".into()))?;
+                invited.accepting = true;
+                if self.service.is_some() {
+                    self.accept_invited().await?;
+                } else if self.sign_in.is_none()
+                    && self.candidate.is_none()
+                    && self.recovery.is_none()
+                {
+                    self.remember();
+                    self.shared.update(|screen| screen.busy = true);
+                    self.start_sign_in(Purpose::Join).await?;
+                }
+            }
+            AccountAction::ConfirmInvitationCode => {
+                if let Some(candidate) = self.invited.as_mut().and_then(|i| i.candidate.as_mut()) {
+                    candidate.confirm();
+                    self.invitation_stage(|stage| {
+                        if let InvitationStage::Waiting { confirmed, .. } = stage {
+                            *confirmed = true;
+                        }
+                    });
+                }
+            }
+            AccountAction::CancelInvitation => {
+                self.invited = None;
+                self.joined = None;
+                self.download_into = None;
+                self.shared.update(|screen| screen.invitation = None);
+            }
+            AccountAction::DownloadInvited(folder) => {
+                if self.joined.is_none() {
+                    return Err(SyncError::Invalid("You haven't joined a workspace.".into()));
+                }
+                self.download_into = Some(folder);
+                self.invitation_stage(|stage| {
+                    *stage = InvitationStage::Joined { downloading: true };
+                });
+            }
             AccountAction::SignOut => {
                 let service = self.service.as_mut().ok_or_else(not_signed_in)?;
                 let last_device = service.is_last_device().await?;
@@ -1158,6 +1240,8 @@ impl Driver {
                 self.connect(credentials).await?;
             }
         }
+        self.poll_invited().await?;
+        self.poll_download().await?;
         if let (Some(offer), Some(service)) = (self.offer.as_mut(), self.service.as_mut()) {
             match service.approval_code(offer).await {
                 Ok(Some(code)) => self.signed_in(|view| {
@@ -1186,6 +1270,181 @@ impl Driver {
             self.keep_up().await;
         }
         Ok(())
+    }
+
+    fn invitation_stage(&self, change: impl FnOnce(&mut InvitationStage)) {
+        self.shared.update(|screen| {
+            if let Some(view) = &mut screen.invitation {
+                change(&mut view.stage);
+            }
+        });
+    }
+
+    /// Opens the link you pasted and shows what its context says (§11). A
+    /// computer with no account takes the link's server as its own.
+    async fn open_invitation(&mut self, text: &str) -> Result<(), SyncError> {
+        let link = InvitationLink::parse(text)?;
+        let opened = match self.service.as_mut() {
+            Some(service) => service.open_invitation(&link).await?,
+            None => {
+                let server =
+                    server_address(&link.origin).map_err(|e| SyncError::Invalid(e.into()))?;
+                let opened = open_signed_out(&server, &link).await?;
+                self.server = server.clone();
+                self.shared.update(|screen| {
+                    screen.server = server;
+                    screen.server_problem = None;
+                });
+                opened
+            }
+        };
+        let view = InvitationView {
+            workspace: opened.workspace_name.clone(),
+            inviter: opened.inviter_name.clone(),
+            role: role_name(opened.role).to_lowercase(),
+            stage: InvitationStage::Opened,
+        };
+        self.invited = Some(Invited {
+            link,
+            opened,
+            accepting: false,
+            candidate: None,
+        });
+        self.shared.update(|screen| screen.invitation = Some(view));
+        Ok(())
+    }
+
+    /// Accepts the invitation, which grants nothing, and posts this
+    /// device's approval request (§10, §11).
+    async fn accept_invited(&mut self) -> Result<(), SyncError> {
+        let (Some(invited), Some(service)) = (self.invited.as_mut(), self.service.as_mut()) else {
+            return Ok(());
+        };
+        invited.accepting = false;
+        service.accept_invitation(&invited.link).await?;
+        let candidate = service
+            .request_invited_approval(&invited.link, &invited.opened)
+            .await?;
+        invited.candidate = Some(candidate);
+        let shown = fingerprint(&service.credentials().card().fingerprint());
+        self.invitation_stage(|stage| {
+            *stage = InvitationStage::Waiting {
+                fingerprint: shown,
+                code: None,
+                confirmed: false,
+            };
+        });
+        Ok(())
+    }
+
+    /// Follows the invited device's approval: accepts once a sign-in ends,
+    /// shows the code once an offer arrives, and joins once the inviting
+    /// device committed what you confirmed.
+    async fn poll_invited(&mut self) -> Result<(), SyncError> {
+        if self.service.is_some() && self.invited.as_ref().is_some_and(|i| i.accepting) {
+            self.accept_invited().await?;
+        }
+        let (Some(invited), Some(service)) = (self.invited.as_mut(), self.service.as_mut()) else {
+            return Ok(());
+        };
+        let Some(candidate) = invited.candidate.as_mut() else {
+            return Ok(());
+        };
+        let joined = async {
+            let step = service.poll_invited(candidate).await?;
+            Ok::<_, SyncError>((step, service.join_invited(candidate).await?))
+        }
+        .await;
+        let workspace = candidate.workspace();
+        match joined {
+            Ok((step, joined)) => {
+                if let CandidateStep::Code(code) = step {
+                    self.invitation_stage(|stage| {
+                        if let InvitationStage::Waiting { code: shown, .. } = stage {
+                            *shown = Some(code);
+                        }
+                    });
+                }
+                if joined {
+                    self.invited = None;
+                    self.join_workspace(workspace).await?;
+                }
+                Ok(())
+            }
+            // A server it can't reach leaves the request for the next poll.
+            Err(error @ SyncError::Network(_)) => Err(error),
+            Err(error) => {
+                self.invited = None;
+                self.shared.update(|screen| screen.invitation = None);
+                Err(match error {
+                    SyncError::Check("sync_approval_mismatch") => SyncError::Invalid(
+                        "The approval didn't match your invitation, so Noura stopped it. Ask for a new link.".into(),
+                    ),
+                    other => other,
+                })
+            }
+        }
+    }
+
+    /// Opens the workspace you joined and records your account's head
+    /// there, so your other devices trust it (§10 step 6). A failed push
+    /// goes to the key upkeep.
+    async fn join_workspace(&mut self, workspace: Id) -> Result<(), SyncError> {
+        self.open_workspaces().await?;
+        if let (Some(service), Some(remote)) = (
+            self.service.as_mut(),
+            self.workspaces
+                .iter_mut()
+                .find(|r| r.workspace == workspace),
+        ) {
+            let own = match service.pending_heads(remote).await {
+                Ok(heads) => heads.into_iter().find(|head| head.own),
+                Err(error) => {
+                    tracing::warn!(kind = ?error.code(), "this account's head waits for the upkeep");
+                    None
+                }
+            };
+            if let Some(own) = own
+                && let Err(error) = service.push_pending_head(remote, &own).await
+            {
+                tracing::warn!(kind = ?error.code(), "this account's head waits for the upkeep");
+            }
+        }
+        self.joined = Some(workspace);
+        self.invitation_stage(|stage| *stage = InvitationStage::Joined { downloading: false });
+        Ok(())
+    }
+
+    /// Starts the download once the windows show the folder you chose.
+    async fn poll_download(&mut self) -> Result<(), SyncError> {
+        let (Some(folder), Some(workspace), Some(service)) = (
+            self.download_into.as_ref(),
+            self.joined,
+            self.service.as_mut(),
+        ) else {
+            return Ok(());
+        };
+        if !self.folder.shows(folder) {
+            return Ok(());
+        }
+        self.download_into = None;
+        match self
+            .folder
+            .download(service, workspace, &self.app_data)
+            .await
+        {
+            Ok(()) => {
+                self.joined = None;
+                self.shared.update(|screen| screen.invitation = None);
+                Ok(())
+            }
+            Err(error) => {
+                self.invitation_stage(|stage| {
+                    *stage = InvitationStage::Joined { downloading: false };
+                });
+                Err(error)
+            }
+        }
     }
 
     /// The key upkeep that waits its turn (§8, §9): later heads of member
