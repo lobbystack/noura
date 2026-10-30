@@ -3,6 +3,8 @@
 
 mod sync_support;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use app_core::sync::SyncService;
@@ -13,9 +15,11 @@ use app_core::sync::workspace::text::{Entered, IDLE, IDLE_ANY_WRITER, Judgement,
 use app_core::text_bridge::TextBridge;
 use collab_sandbox::{LineageStatus, SandboxDocument};
 use editor_core::text_mode::{CollabDocument, Utf16Splice};
-use sync_protocol::messages::Frame;
+use sync_protocol::codec::{Bytes, Decode, Encode, ExactBytes, Text};
+use sync_protocol::messages::{ErrorBody, Frame, KeyRecord, KeysResponse, PushFailureDetail};
+use sync_protocol::types::Id;
 use sync_store::Backend;
-use sync_support::{Pair, Server, pair, pair_on};
+use sync_support::{Pair, Server, approve, pair, pair_on};
 
 const PLAN: &str = "Plan.md";
 
@@ -690,4 +694,154 @@ async fn a_changed_journal_file_is_refused_and_a_restart_rebuilds_the_note() {
     assert!(pair.sync_b.text_file(&rid).is_err());
     std::fs::write(&journal, bytes).unwrap();
     assert!(pair.sync_b.text_file(&rid).unwrap().is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_that_forwards_an_old_presence_record_moves_no_cursor() {
+    let mut pair = pair().await;
+    let (_a, _b) = open_both(&mut pair).await;
+    // The laptop's frames pass the proxy; the desktop sends the records.
+    let mut laptop = Channel::open(pair.service.client(), pair.sync_a.workspace())
+        .await
+        .expect("the channel opens");
+    let mut desktop = Channel::open(pair.desktop.service.client(), pair.sync_b.workspace())
+        .await
+        .expect("the channel opens");
+    pair.sync_a.presence_connected().unwrap();
+    pair.sync_b.presence_connected().unwrap();
+    for frame in pair.sync_a.presence_frames().unwrap() {
+        laptop.send(&frame).await.unwrap();
+    }
+    for frame in pair.sync_b.presence_frames().unwrap() {
+        desktop.send(&frame).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    // The relay keeps the first record and sends it again after each later
+    // one.
+    let kept: Arc<Mutex<Option<Frame>>> = Arc::default();
+    let held = kept.clone();
+    pair.proxy.tamper_frames(Box::new(move |frame| {
+        if !matches!(frame, Frame::Presence { .. }) {
+            return vec![frame];
+        }
+        let mut kept = held.lock().unwrap();
+        match kept.clone() {
+            Some(old) => vec![frame, old],
+            None => {
+                *kept = Some(frame.clone());
+                vec![frame]
+            }
+        }
+    }));
+    for at in [1, 4] {
+        pair.sync_b
+            .set_selections(PLAN, vec![SelectionRange { anchor: at, head: at }], true);
+        for frame in pair.sync_b.presence_frames().unwrap() {
+            desktop.send(&frame).await.unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(600)).await;
+    }
+    drain(&mut laptop, &mut pair.sync_a, &mut pair.service).await;
+    let cursors = pair.sync_a.cursors(PLAN, Instant::now());
+    assert_eq!(cursors.len(), 1, "{cursors:?}");
+    assert_eq!(cursors[0].selections[0].head, 4, "the old record lost");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_snapshot_takes_the_place_of_a_patch_the_server_refused() {
+    let mut pair = pair().await;
+    let (mut a, _b) = open_both(&mut pair).await;
+    let rid = pair.sync_a.rid_at(PLAN).unwrap();
+    type_at(&mut a, 6, " refused");
+    pair.sync_a.capture().expect("a capture");
+    // The server refuses the next push of the patch once.
+    let detail = PushFailureDetail {
+        record_index: 0,
+        code: Text("snapshot_required".into()),
+        record_detail: None,
+    };
+    let answered = Arc::new(AtomicBool::new(false));
+    let once = answered.clone();
+    let bytes = ErrorBody {
+        code: Text("snapshot_required".into()),
+        message: Text("too many patches".into()),
+        retry_after_seconds: None,
+        detail: Some(Bytes(detail.to_bytes())),
+    }
+    .to_bytes();
+    pair.proxy.forge(Box::new(move |method, path| {
+        (method == "POST" && path.ends_with("/ops") && !once.swap(true, Ordering::Relaxed))
+            .then(|| (409, bytes.clone()))
+    }));
+    both_rounds(&mut pair).await;
+    assert!(answered.load(Ordering::Relaxed));
+    assert_eq!(read(&pair.b, PLAN), "# Plan refused\n");
+    let file = pair.sync_b.text_file(&rid).unwrap().unwrap();
+    assert!(file.records.iter().any(|record| record.snapshot));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_snapshot_writes_again_a_devices_records_under_a_skipped_epoch() {
+    let mut pair = pair().await;
+    let (_a, mut b) = open_both(&mut pair).await;
+    let rid = pair.sync_b.rid_at(PLAN).unwrap();
+    // The desktop rotates to epoch 2 and writes under it.
+    let third = approve(
+        &pair.server,
+        &mut pair.laptop,
+        std::slice::from_mut(pair.sync_a.remote_mut().unwrap()),
+    )
+    .await;
+    both_rounds(&mut pair).await;
+    pair.laptop
+        .service
+        .remove_device(third.id(), &[], &mut [])
+        .await
+        .expect("removed");
+    pair.desktop
+        .service
+        .record_heads(pair.sync_b.remote_mut().unwrap(), &[])
+        .await
+        .expect("the desktop rotates");
+    type_at(&mut b, 6, " under two");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("the desktop writes under epoch 2");
+    // The laptop's envelope of epoch 2 fails, so it replaces the epoch.
+    damage_envelopes(&pair.proxy, pair.laptop.id(), pair.desktop.id());
+    pair.sync_a.round(&mut pair.service, 0).await.expect("a round");
+    pair.proxy.honest();
+    assert_eq!(pair.sync_a.remote_mut().unwrap().epoch(), 3);
+    assert_eq!(read(&pair.a, PLAN), "# Plan\n", "epoch 2 is unreadable here");
+
+    // The desktop accepts the replacement and writes a snapshot that
+    // covers its record, under the same lineage.
+    both_rounds(&mut pair).await;
+    assert_eq!(read(&pair.a, PLAN), "# Plan under two\n");
+    let lineage = pair.sync_b.text_file(&rid).unwrap().unwrap().lineage;
+    let file = pair.sync_a.text_file(&rid).unwrap().unwrap();
+    assert_eq!(file.lineage, lineage);
+    assert!(pair.sync_a.conflicts().is_empty());
+}
+
+/// Damages, on their way to `reader`, the envelopes that `wrapper` signed.
+fn damage_envelopes(proxy: &sync_support::Proxy, reader: Id, wrapper: Id) {
+    proxy.tamper(Box::new(move |path, body| {
+        if !(path.ends_with("/keys/current") || path.ends_with("/keys")) {
+            return body;
+        }
+        let mut keys = KeysResponse::from_bytes(&body).unwrap();
+        for entry in keys.entries.0.iter_mut() {
+            if let KeyRecord::Envelope(envelope) = &mut entry.record
+                && envelope.body.recipient == reader
+                && envelope.body.wrapping_device == wrapper
+            {
+                let mut bytes = envelope.body.ciphertext.as_slice().to_vec();
+                bytes[0] ^= 1;
+                envelope.body.ciphertext = ExactBytes::new(bytes).unwrap();
+            }
+        }
+        keys.to_bytes()
+    }));
 }

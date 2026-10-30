@@ -2039,11 +2039,12 @@ impl WorkspaceSync {
                 .find(|e| e.body.epoch == old.body.epoch)
                 .map(|e| e.digest())
                 .ok_or(SyncError::Check("sync_key_mismatch"))?;
-            // This device writes only state operations until text mode
-            // arrives (ticket 55).
+            // A record that covers nothing may be a new object's state or
+            // a text update, and only its payload tells which.
             let payload = old
                 .body
                 .open_payload(key, &epoch_record, OpClass::State)
+                .or_else(|_| old.body.open_payload(key, &epoch_record, OpClass::Patch))
                 .map_err(|_| SyncError::Check("sync_record_unreadable"))?;
             if i == index && !forced {
                 self.state.outbox[i].reseals += 1;

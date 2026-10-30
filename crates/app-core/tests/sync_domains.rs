@@ -311,6 +311,68 @@ async fn outside_member_receives_nothing<B: Backend>(server: Server<B>) {
     }
 }
 
+/// The note in the restricted folder opens on the grantee's and owner's
+/// desktops, and presence reaches only the grantee, whatever channels the
+/// outside member subscribes to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_member_outside_a_restricted_domain_receives_no_presence_for_it() {
+    let server = Server::start().await;
+    let mut team = team(&server).await;
+    const NOTE: &str = "Pay/Salaries.md";
+    for _ in 0..3 {
+        settle(&mut team.grantee_sync, &mut team.grantee).await;
+        settle(&mut team.sync, &mut team.owner).await;
+    }
+    let (_, ours) = team.sync.open_text(NOTE).expect("the note opens");
+    settle(&mut team.sync, &mut team.owner).await;
+    settle(&mut team.grantee_sync, &mut team.grantee).await;
+    let (_, theirs) = team.grantee_sync.open_text(NOTE).expect("the note opens");
+    assert!(ours.is_some() && theirs.is_some());
+    team.grantee_sync.presence_connected().unwrap();
+    team.sync.presence_connected().unwrap();
+
+    let mut owner = Channel::open(team.owner.service.client(), team.sync.workspace())
+        .await
+        .unwrap();
+    let mut grantee = Channel::open(team.grantee.service.client(), team.sync.workspace())
+        .await
+        .unwrap();
+    let mut outsider = Channel::open(team.outsider.service.client(), team.sync.workspace())
+        .await
+        .unwrap();
+    let subscribe = team.sync.presence_frames().unwrap();
+    for frame in &subscribe {
+        owner.send(frame).await.unwrap();
+    }
+    for frame in team.grantee_sync.presence_frames().unwrap() {
+        grantee.send(&frame).await.unwrap();
+    }
+    // The outside member names the same channel.
+    outsider.send(&subscribe[0]).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    team.sync.set_selections(
+        NOTE,
+        vec![app_core::sync::workspace::presence::SelectionRange { anchor: 1, head: 1 }],
+        true,
+    );
+    let frames = team.sync.presence_frames().unwrap();
+    let record = frames.last().expect("a record");
+    owner.send(record).await.unwrap();
+    let wait = std::time::Duration::from_millis(600);
+    let mut reached = false;
+    while let Ok(Ok(frame)) = tokio::time::timeout(wait, grantee.next()).await {
+        reached |= matches!(frame, sync_protocol::messages::Frame::Presence { .. });
+    }
+    assert!(reached, "the grantee hears it");
+    while let Ok(Ok(frame)) = tokio::time::timeout(wait, outsider.next()).await {
+        assert!(
+            !matches!(frame, sync_protocol::messages::Frame::Presence { .. }),
+            "the outside member heard it"
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_device_that_downloads_applies_the_marker_first_and_holds_new_files() {
     let server = Server::start_with_interval(4).await;
