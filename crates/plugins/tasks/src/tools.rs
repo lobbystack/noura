@@ -1,10 +1,11 @@
-//! The tools Tasks offers AI assistants through MCP: `list`, `create` and
-//! `update`. Each takes the JSON input of the command with its name, which
-//! [`crate::commands`] documents, and answers as the command does. Noura
-//! checks each call's arguments against the tool's schema before the
-//! plugin sees them, and a write the workspace format refuses, such as a
-//! due date that isn't a date, changes nothing and answers with the
-//! command's refusal.
+//! The tools Tasks offers AI assistants, through MCP and in Noura's chats:
+//! `list`, `create`, `update` and `complete`. Each takes the JSON input of
+//! the command with its name, which [`crate::commands`] documents, and
+//! answers as the command does. Noura checks each call's arguments against
+//! the tool's schema before the plugin sees them, and a write the workspace
+//! format refuses, such as a due date that isn't a date, or one that
+//! carries a revision the task's file no longer holds, changes nothing and
+//! answers with the command's refusal.
 
 use plugin_sdk::Tool;
 
@@ -45,7 +46,8 @@ pub(crate) fn tools() -> Vec<Tool> {
         Tool {
             name: "create".into(),
             description: "Create a task with a title, and optionally a body and task fields. \
-                          Its file goes in the tasks folder, named after the title."
+                          Its file goes in the tasks folder, named after the title. Answers \
+                          with the task's stable ID and revision."
                 .into(),
             input_schema: format!(
                 r#"{{
@@ -80,13 +82,29 @@ pub(crate) fn tools() -> Vec<Tool> {
 }}"#
             ),
         },
+        Tool {
+            name: "complete".into(),
+            description: "Mark a task done, by its stable ID. Pass the revision you read: a \
+                          task that changed since stays as it is."
+                .into(),
+            input_schema: r#"{
+  "type": "object",
+  "properties": {
+    "id": {"type": "string"},
+    "expected_revision": {"type": "string"}
+  },
+  "required": ["id", "expected_revision"],
+  "additionalProperties": false
+}"#
+            .into(),
+        },
     ]
 }
 
 /// Run the tool `name` with `arguments`, which matched its schema.
 pub(crate) fn call(name: &str, arguments: &str) -> Result<String, String> {
     match name {
-        "list" | "create" | "update" => commands::run(name, arguments),
+        "list" | "create" | "update" | "complete" => commands::run(name, arguments),
         _ => Err(format!("Tasks has no tool {name}.")),
     }
 }

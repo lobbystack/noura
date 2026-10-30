@@ -1,10 +1,14 @@
 //! The AI plugin. It registers the `chat` and `chat-message` object types
 //! with today's v1 fields and adds the AI page: the chats in the sidebar,
 //! the open chat's messages with each answer drawn as Markdown while it
-//! streams in, Stop, and a box to write the next message to the provider
-//! you pick. Noura keeps the providers, their keys and your consent, and
-//! writes the chat files; the plugin reaches them only through the host
-//! AI interface. Once you allow web search, the model may also search the
+//! streams in, Stop, Resume after a crash or a quit, a menu to rename the
+//! chat or have it removed after 30 days, and a box to write the next
+//! message to the provider you pick. Each message offers the model the
+//! tools of the plugins on in the workspace, and the plugin hands the
+//! calls the model asks for to Noura, which asks you about each one.
+//! Noura keeps the providers, their keys and your consent, and writes the
+//! chat files; the plugin reaches them only through the host AI
+//! interface. Once you allow web search, the model may also search the
 //! web and read pages, which Noura does for the plugin.
 //!
 //! Build it with `crates/plugin-sdk/build-plugins.sh`, then install the
@@ -48,6 +52,9 @@ struct State {
     unsent: BTreeMap<String, String>,
     /// Why the last thing you did failed.
     notice: Option<String>,
+    /// The chat whose sidebar item shows as a field you rename it in, and
+    /// the revision of its `chat.md` when you chose Rename.
+    renaming: Option<(String, String)>,
     /// The turns of the model's whose tool calls the plugin couldn't
     /// answer, by run ID and call IDs, so a failed answer doesn't search
     /// the web again each time the page draws. An answer that goes in
@@ -64,6 +71,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     draft: String::new(),
     unsent: BTreeMap::new(),
     notice: None,
+    renaming: None,
     failed_turns: BTreeSet::new(),
 });
 

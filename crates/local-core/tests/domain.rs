@@ -4,7 +4,7 @@ use local_core::{
     AppendChatContextSummaryInput, AppendChatToolResultInput, AppendChatUserMessageInput,
     BeginChatAssistantInput, BeginChatToolCallInput, ChangeChatRetentionInput, ChatMessageStatus,
     ChatRetention, ConflictResolution, CreateChatInput, CreateObjectInput,
-    FinishChatAssistantInput, FinishChatToolCallInput, ManagedConflictResolution,
+    FinishChatAssistantInput, FinishChatToolCallInput, IndexStatus, ManagedConflictResolution,
     ManagedConflictResolveInput, ManagedDraftInput, ManagedDraftResult, ManifestUpdateInput,
     MarkdownLinkTarget, ObjectPatch, ParseStatus, ParsedMarkdown, RawConflictResolveInput,
     RawRestoreInput, RawSaveInput, RawSaveResult, RenameChatInput, SearchInput,
@@ -236,6 +236,37 @@ fn chat_mutation_intents_recover_each_write_failure_across_restart_and_rebuild()
             .unwrap_err();
         assert_eq!(stale.code, "revision_conflict");
     }
+}
+
+#[test]
+fn a_chat_change_a_failed_write_cut_off_shows_on_the_read_that_completes_it() {
+    let (_workspace, _app_data, engine) = engine();
+    let created = engine
+        .create_chat(CreateChatInput {
+            title: "Complete in session".into(),
+            retention: None,
+            retention_days: None,
+        })
+        .unwrap();
+    engine.fail_chat_mutation_write_for_testing("chat", 1);
+    let error = engine
+        .append_chat_user_message(AppendChatUserMessageInput {
+            chat_id: created.value.id.clone(),
+            run_id: "run_session".into(),
+            content: "written before the chat file failed".into(),
+            expected_chat_revision: created.revision,
+        })
+        .unwrap_err();
+    assert_eq!(error.code, "chat_mutation_write_failed");
+
+    // The same engine, with no walk in between: the read finishes the
+    // change and lists the message the index never recorded.
+    let read = engine.read_chat(&created.value.id).unwrap();
+    assert_eq!(read.messages.len(), 1);
+    assert_eq!(
+        read.messages[0].content,
+        "written before the chat file failed"
+    );
 }
 
 #[test]
@@ -696,6 +727,106 @@ fn chat_recovery_interrupts_tool_calls_without_matching_durable_results() {
             .unwrap()
             .status,
         ChatMessageStatus::Interrupted
+    );
+}
+
+#[test]
+fn chat_recovery_interrupts_a_tool_call_whose_result_another_run_wrote() {
+    let (_workspace, _app_data, engine) = engine();
+    let chat = engine
+        .create_chat(CreateChatInput {
+            title: "Another run's result".into(),
+            retention: None,
+            retention_days: None,
+        })
+        .unwrap();
+    let tool_call = engine
+        .begin_chat_tool_call(BeginChatToolCallInput {
+            chat_id: chat.value.id.clone(),
+            run_id: "run_recovery".into(),
+            tool_call_id: "call_pending".into(),
+            tool_name: "workspace.search".into(),
+            content: r#"{"query":"status"}"#.into(),
+            expected_chat_revision: chat.revision,
+        })
+        .unwrap();
+    let after_call = engine.read_chat(&chat.value.id).unwrap();
+    // The same call ID and tool name, from another run.
+    engine
+        .append_chat_tool_result(AppendChatToolResultInput {
+            chat_id: chat.value.id.clone(),
+            run_id: "run_other".into(),
+            tool_call_id: "call_pending".into(),
+            tool_name: "workspace.search".into(),
+            content: r#"{"matches":1}"#.into(),
+            expected_chat_revision: after_call.chat.revision,
+        })
+        .unwrap();
+
+    let recovered = engine.recover_interrupted_chat(&chat.value.id).unwrap();
+    assert_eq!(
+        recovered
+            .messages
+            .iter()
+            .find(|message| message.id == tool_call.value.id)
+            .unwrap()
+            .status,
+        ChatMessageStatus::Interrupted
+    );
+}
+
+#[test]
+fn a_chat_message_the_index_missed_shows_on_the_next_read_once_the_index_takes_writes() {
+    let (workspace, _app_data, engine) = engine();
+    let chat = engine
+        .create_chat(CreateChatInput {
+            title: "Index refuses".into(),
+            retention: None,
+            retention_days: None,
+        })
+        .unwrap();
+    let index = rusqlite::Connection::open(engine.index_path()).unwrap();
+    index
+        .execute_batch(
+            "CREATE TRIGGER refuse_insert BEFORE INSERT ON files \
+               BEGIN SELECT RAISE(ABORT, 'the index refuses writes'); END;
+             CREATE TRIGGER refuse_update BEFORE UPDATE ON files \
+               BEGIN SELECT RAISE(ABORT, 'the index refuses writes'); END;",
+        )
+        .unwrap();
+
+    // The message reaches its file though the index can't record it.
+    let appended = engine
+        .append_chat_user_message(AppendChatUserMessageInput {
+            chat_id: chat.value.id.clone(),
+            run_id: "run_refused".into(),
+            content: "Written past the index".into(),
+            expected_chat_revision: chat.revision,
+        })
+        .unwrap();
+    assert!(matches!(appended.index_status, IndexStatus::RepairPending));
+    assert!(
+        std::fs::read_to_string(workspace.path().join(&appended.value.relative_path))
+            .unwrap()
+            .contains("Written past the index")
+    );
+    // The index is stale now, so a read walks the workspace, and fails
+    // while the index still refuses what the walk found.
+    assert_eq!(
+        engine.read_chat(&chat.value.id).unwrap_err().code,
+        "index_error"
+    );
+
+    index
+        .execute_batch("DROP TRIGGER refuse_insert; DROP TRIGGER refuse_update;")
+        .unwrap();
+    let read = engine.read_chat(&chat.value.id).unwrap();
+    assert_eq!(read.chat.revision, appended.chat_revision.unwrap());
+    assert!(
+        read.messages
+            .iter()
+            .any(|message| message.id == appended.value.id
+                && message.content == "Written past the index")
     );
 }
 

@@ -167,7 +167,12 @@ fn the_tasks_tools_list_create_and_update_tasks_and_refuse_a_note() {
     let agent = agent(&fixture);
     assert_eq!(
         names(&agent.plugin_tools()),
-        ["tasks.create", "tasks.list", "tasks.update"]
+        [
+            "tasks.complete",
+            "tasks.create",
+            "tasks.list",
+            "tasks.update"
+        ]
     );
 
     let created = answer(

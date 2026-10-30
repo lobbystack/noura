@@ -357,6 +357,37 @@ describe.each(HOSTS)('a plugin that declares ai, on %s', (_name, start) => {
 		});
 	});
 
+	test('a chat whose first message hasn’t gone out can’t be renamed, kept or resumed', async (context) => {
+		if (!host) return context.skip();
+		const unwritten = {
+			error: {
+				tag: 'failed',
+				val: "This chat isn't saved until its first message goes out, so it can't change yet.",
+			},
+		};
+		expect(await probe(host, 'ai-rename-new-chat')).toEqual(unwritten);
+		expect(await probe(host, 'ai-keep-new-chat')).toEqual(unwritten);
+		expect(await probe(host, 'ai-resume-new-chat')).toEqual({
+			error: {
+				tag: 'failed',
+				val: 'This chat has no message of yours to answer again.',
+			},
+		});
+		expect(await probe(host, 'ai-rename-missing')).toEqual({
+			error: { tag: 'not-found', val: 'chat_01j9qv6m0000000000000000cc' },
+		});
+		expect(await probe(host, 'ai-run-tools-missing')).toEqual({
+			error: { tag: 'not-found', val: 'run_missing' },
+		});
+	});
+
+	test('offers the model the tools of the plugins on in the workspace', async (context) => {
+		if (!host) return context.skip();
+		expect(await probe(host, 'ai-workspace-tools')).toEqual({
+			ok: ['probe__probe'],
+		});
+	});
+
 	test('searches and reads nothing on the web before you add a Brave Search key', async (context) => {
 		if (!host) return context.skip();
 		expect(await probe(host, 'ai-web-ready')).toEqual({ ok: false });
