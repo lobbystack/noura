@@ -574,7 +574,10 @@ async fn a_browser_with_no_account_opens_a_share_link() {
 
     let site = site().await;
     let logs = site._dir.path().join("logs");
-    let logging = sync_server::logs::init(&logs).is_ok();
+    // No other test in this binary installs a subscriber, so the log check
+    // below always runs: a failed install fails the test instead of
+    // skipping it.
+    sync_server::logs::init(&logs).expect("the server's log is the global subscriber");
     let world = World::on(site.store.clone(), 1).await;
     let owner = world.devices[0].session;
     let link = Link::new();
@@ -731,21 +734,19 @@ async fn a_browser_with_no_account_opens_a_share_link() {
     assert!(gone.contains("This link doesn't open"), "{gone}");
 
     // The fragment never reached the server's log.
-    if logging {
-        let mut logged = String::new();
-        for file in std::fs::read_dir(&logs).unwrap() {
-            logged.push_str(&std::fs::read_to_string(file.unwrap().path()).unwrap());
-        }
-        assert!(logged.contains("/s/{token}"), "the log records the route");
-        let other_fragment = &wrong[wrong.find('#').unwrap() + 1..];
-        for secret in [
-            fragment.as_str(),
-            other_fragment,
-            token.as_str(),
-            &to_hex(link.key.expose()),
-        ] {
-            assert!(!logged.contains(secret), "the log holds {secret}");
-        }
+    let mut logged = String::new();
+    for file in std::fs::read_dir(&logs).unwrap() {
+        logged.push_str(&std::fs::read_to_string(file.unwrap().path()).unwrap());
+    }
+    assert!(logged.contains("/s/{token}"), "the log records the route");
+    let other_fragment = &wrong[wrong.find('#').unwrap() + 1..];
+    for secret in [
+        fragment.as_str(),
+        other_fragment,
+        token.as_str(),
+        &to_hex(link.key.expose()),
+    ] {
+        assert!(!logged.contains(secret), "the log holds {secret}");
     }
 
     browser.close().await.unwrap();

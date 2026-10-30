@@ -14,7 +14,7 @@ use crate::shares::{
     DEFAULT_SHARE_DAYS, LinkText, NEEDS_ACCOUNT, NoteLinkEntry, ShareAction, ShareScreen,
     WorkspaceLinkEntry,
 };
-use crate::sync::shares::{NewShare, ShareBook, snapshot_of};
+use crate::sync::shares::{NewShare, ShareBook, latest_expiry, snapshot_of};
 use crate::sync::{SyncError, SyncService};
 
 /// The note the dialog shares.
@@ -145,6 +145,10 @@ impl Sharing {
         }
         self.screen.unavailable = None;
         let mut book = ShareBook::open(app_data, device)?;
+        // A creation or update whose answer was lost goes out again with
+        // the same bytes. One the server still can't take stays pending,
+        // and the listing below says why.
+        let _ = service.settle_shares(&mut book, workspace).await;
         match action {
             ShareAction::Create => {
                 let (title, markdown) = snapshot_of(&note.name, &note.text);
@@ -188,7 +192,7 @@ impl Sharing {
                     .find(|l| l.token_hash == token_hash)
                     .map(|l| l.expires_at)
                     .or_else(|| book.link(&token_hash).map(|l| l.expires_at))
-                    .unwrap_or_default();
+                    .unwrap_or_else(latest_expiry);
                 service
                     .revoke_share(&mut book, workspace, token_hash, expires_at)
                     .await?;

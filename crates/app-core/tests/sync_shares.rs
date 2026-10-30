@@ -416,3 +416,133 @@ async fn share_links_work_end_to_end_on_sqlite() {
 async fn share_links_work_end_to_end_on_postgres() {
     end_to_end(Server::start_postgres().await).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lost_answer_never_strands_a_link() {
+    use sync_protocol::codec::Text;
+    use sync_protocol::messages::ErrorBody;
+
+    let mut pair = pair().await;
+    pair.a.write("Plan.md", NOTE.as_bytes());
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    let workspace = pair.sync_a.workspace();
+    let rid = pair.sync_a.rid_at("Plan.md").unwrap();
+    let (title, markdown) = snapshot_of("Plan", NOTE);
+    let new_share = || NewShare {
+        workspace,
+        domain: pair.sync_a.domain(),
+        note: rid,
+        title: &title,
+        markdown: markdown.as_bytes(),
+        days: DEFAULT_SHARE_DAYS,
+    };
+    let mut book = ShareBook::open(pair.laptop.state.path(), pair.laptop.id()).unwrap();
+
+    // A refused creation leaves nothing behind: no link in the book and no
+    // secrets in the credential store.
+    pair.proxy.forge(Box::new(|method, path| {
+        (method == "POST" && path.ends_with("/shares")).then(|| {
+            let body = ErrorBody {
+                code: Text("share_limit".into()),
+                message: Text("full".into()),
+                retry_after_seconds: None,
+                detail: None,
+            };
+            (403, body.to_bytes())
+        })
+    }));
+    let refused = pair.service.create_share(&mut book, new_share()).await;
+    assert!(
+        matches!(&refused, Err(SyncError::Refused { code, .. }) if code == "share_limit"),
+        "{refused:?}"
+    );
+    pair.proxy.honest();
+    assert!(book.note_links(workspace, rid).is_empty());
+
+    // Both answers to a creation are lost after the server commits it. The
+    // link stays pending with its secrets, and the next settle confirms it
+    // with the same bytes instead of leaving a live link the device can't
+    // reach.
+    pair.proxy.lose(Box::new(|method, path| {
+        method == "POST" && path.ends_with("/shares")
+    }));
+    let lost = pair.service.create_share(&mut book, new_share()).await;
+    assert!(matches!(lost, Err(SyncError::Network(_))), "{lost:?}");
+    pair.proxy.honest();
+    let pending = book.note_links(workspace, rid);
+    assert_eq!(pending.len(), 1, "the device keeps the unconfirmed link");
+    assert_eq!(pending[0].revision, 0);
+    assert!(pending[0].pending.is_some());
+    let token_hash = pending[0].token_hash;
+    let mut book = ShareBook::open(pair.laptop.state.path(), pair.laptop.id()).unwrap();
+    pair.service
+        .settle_shares(&mut book, workspace)
+        .await
+        .expect("settled");
+    let link = book.link(&token_hash).cloned().unwrap();
+    assert_eq!(link.revision, 1);
+    assert!(link.pending.is_none());
+    let url = pair.service.share_url(&book, &token_hash).unwrap();
+    assert_eq!(view(&url).await.expect("the link opens").0, 1);
+    let snapshot = pair
+        .sync_a
+        .remote_mut()
+        .unwrap()
+        .policy()
+        .head_snapshot()
+        .clone();
+    let listed = pair
+        .service
+        .workspace_shares(workspace, &snapshot)
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 1, "one link, not a duplicate");
+    assert_eq!(listed[0].expires_at, link.expires_at);
+
+    // An update's answer is lost after the server commits it, and the
+    // device restarts before it hears back. The next update still goes
+    // through, under the same link.
+    pair.proxy.lose(Box::new(|method, _| method == "PUT"));
+    let lost = pair
+        .service
+        .update_share(&mut book, token_hash, "Plan", b"Peppers too.")
+        .await;
+    assert!(matches!(lost, Err(SyncError::Network(_))), "{lost:?}");
+    pair.proxy.honest();
+    assert_eq!(view(&url).await.unwrap().0, 2, "the server took the update");
+    let mut book = ShareBook::open(pair.laptop.state.path(), pair.laptop.id()).unwrap();
+    assert_eq!(book.link(&token_hash).unwrap().revision, 1);
+    pair.service
+        .update_share(&mut book, token_hash, "Plan", b"And basil.")
+        .await
+        .expect("the next update goes through");
+    let (revision, payload) = view(&url).await.unwrap();
+    assert_eq!(revision, 3);
+    assert_eq!(payload.markdown.0, b"And basil.");
+    assert_eq!(book.link(&token_hash).unwrap().revision, 3);
+    let puts = pair
+        .proxy
+        .requests()
+        .into_iter()
+        .filter(|r| r.method == "PUT")
+        .collect::<Vec<_>>();
+    assert_eq!(puts.len(), 3);
+    assert_eq!(
+        puts[0].body, puts[1].body,
+        "the lost update went again as is"
+    );
+
+    // Revoking with an expiry the device doesn't know keeps the token hash
+    // as long as any link can live.
+    let now = pair.server.store.clock().now();
+    pair.service
+        .revoke_share(&mut book, workspace, token_hash, 0)
+        .await
+        .expect("revoked");
+    let kept = book.revoked();
+    assert_eq!(kept.len(), 1);
+    assert!(kept[0].expires_at >= now + 29 * 86_400, "{kept:?}");
+}
