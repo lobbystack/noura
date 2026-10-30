@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE blobs SET live_listings = live_listings + ?3\n             WHERE workspace = ?1 AND blob = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "cda0400f785befebe1fcc7c2355a91a1a706a09dbe9308e883b749630d7b504f"
+}

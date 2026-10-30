@@ -284,6 +284,24 @@ async fn add_member<B: Backend>(world: &mut World<B>) -> Invitee {
     invitee
 }
 
+/// Adds a member with one device to the world's devices, and returns its
+/// index.
+pub(super) async fn member_device<B: Backend>(world: &mut World<B>) -> usize {
+    let invitee = add_member(world).await;
+    let token = [world.devices.len() as u8 + 1; 32];
+    world
+        .store
+        .create_session(token, invitee.session)
+        .await
+        .expect("a session");
+    world.devices.push(crate::conformance::Device {
+        keys: invitee.keys,
+        session: invitee.session,
+        token,
+    });
+    world.devices.len() - 1
+}
+
 fn of_domain(entry: &KeyEntry, domain: &Id) -> bool {
     match &entry.record {
         KeyRecord::Epoch(epoch) => epoch.body.domain == *domain,

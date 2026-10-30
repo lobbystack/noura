@@ -17,7 +17,7 @@ use std::sync::Arc;
 use sync_protocol::codec::Encode;
 use sync_protocol::keys::{check_replacement, recipients_digest};
 use sync_protocol::messages::{PolicyEntry, Receipt};
-use sync_protocol::policy::PolicyChain;
+use sync_protocol::policy::{PolicyChain, Snapshot};
 use sync_protocol::records::{Envelope, EpochBundle, PolicyChange, PolicyKind, Profile, Signed};
 use sync_protocol::types::Id;
 
@@ -44,18 +44,25 @@ pub(crate) struct PushState {
     /// digest, whose history floor the push sets (§9).
     floors: Vec<(Id, Id, sync_protocol::types::Digest)>,
     interval: CheckpointInterval,
+    quota: Option<u64>,
     /// The store clock's time, in Unix seconds.
     pub(crate) now: u64,
 }
 
 impl PushState {
-    pub(crate) fn new(policy: Arc<PolicyChain>, interval: CheckpointInterval, now: u64) -> Self {
+    pub(crate) fn new(
+        policy: Arc<PolicyChain>,
+        interval: CheckpointInterval,
+        quota: Option<u64>,
+        now: u64,
+    ) -> Self {
         Self {
             policy,
             owed: BTreeMap::new(),
             created: BTreeSet::new(),
             floors: Vec::new(),
             interval,
+            quota,
             now,
         }
     }
@@ -130,12 +137,21 @@ pub(crate) async fn apply_change(
     let next = current
         .check(change, &chains)
         .map_err(|e| refuse(e.server_code(), e.to_string()))?;
+    let raises = adds_someone(change, prev, &next);
     if let PolicyKind::AddMember {
         account,
         role,
         invitation,
     } = &change.body.kind
     {
+        if !prev.members.contains_key(account)
+            && txn.memberships(*account).await?.len() >= crate::create::MAX_MEMBERSHIPS
+        {
+            return Err(refuse(
+                "workspace_limit",
+                "the account already belongs to 1,000 workspaces",
+            ));
+        }
         let signer = prev
             .account_of(&change.body.signer)
             .ok_or_else(|| refuse("forbidden", "the signer isn't a member device"))?;
@@ -190,6 +206,16 @@ pub(crate) async fn apply_change(
     let digest = change.digest();
     policy::store_change(txn, workspace, change).await?;
     txn.set_policy_head(workspace, revision, digest).await?;
+    // Policy changes count toward usage for the workspace's whole life
+    // (§20), on the workspace domain's head row, which this push holds.
+    let length = i64::try_from(change.to_bytes().len()).unwrap_or(i64::MAX);
+    txn.add_usage(workspace, next.workspace_domain, length, 0)
+        .await?;
+    crate::retention::check_quota(txn, workspace, state.quota, if raises { length } else { 0 })
+        .await?;
+    if let PolicyKind::DeleteDomain { domain } = &change.body.kind {
+        txn.mark_domain_deleted(workspace, *domain).await?;
+    }
     for (account, member) in &next.members {
         txn.upsert_member(workspace, *account, member.role.code())
             .await?;
@@ -348,6 +374,7 @@ pub(crate) async fn apply_epoch(
                 "a replacement names a revision below the latest change that requires a rotation",
             ));
         }
+        check_skippable(txn, &policy, workspace, domain, &row, named.epoch, rotator).await?;
         let users = skipped_users(txn, workspace, domain, named.epoch, row.epoch).await?;
         check_replacement(&policy, body, named.epoch, row.epoch, &users).map_err(|_| {
             refuse(
@@ -402,6 +429,24 @@ pub(crate) async fn apply_epoch(
     txn.append_key_entry(workspace, KEY_EPOCH, domain, body.epoch, None, &bytes)
         .await?;
     txn.drop_old_epochs(workspace, domain, body.epoch).await?;
+    // Bundles count toward usage for the workspace's whole life, except
+    // those of the epochs a replacement skips (§20).
+    let mut usage = bundle.to_bytes().len() as i64;
+    if replacement {
+        let named = txn
+            .epoch_by_digest(workspace, domain, body.previous)
+            .await?
+            .map_or(row.epoch, |named| named.epoch);
+        for skipped in (named + 1)..=row.epoch {
+            let length = txn
+                .epoch_bundle_length(workspace, domain, skipped)
+                .await?
+                .unwrap_or(0);
+            usage -= i64::try_from(length).unwrap_or(i64::MAX);
+        }
+    }
+    txn.add_usage(workspace, domain, usage, bytes.len() as i64)
+        .await?;
     state
         .owed
         .retain(|(owed_domain, _, _), _| *owed_domain != domain);
@@ -494,11 +539,92 @@ async fn apply_first_epoch(
     .await?;
     txn.append_key_entry(workspace, KEY_EPOCH, domain, 1, None, &bytes)
         .await?;
+    txn.add_usage(
+        workspace,
+        domain,
+        bundle.to_bytes().len() as i64,
+        bytes.len() as i64,
+    )
+    .await?;
     Ok(vec![Receipt {
         record_digest: digest,
         domain,
         seq,
     }])
+}
+
+/// Whether a change adds someone (§20): the kinds a workspace over its
+/// quota refuses. An `account_heads` change for its signer's own account
+/// always passes, so a lost device can be replaced.
+fn adds_someone(change: &Signed<PolicyChange>, prev: &Snapshot, next: &Snapshot) -> bool {
+    match &change.body.kind {
+        PolicyKind::AddMember { .. }
+        | PolicyKind::AcceptReset { .. }
+        | PolicyKind::CreateDomain { .. } => true,
+        PolicyKind::SetAccess { domain, access } => {
+            let before = prev.domains.get(domain).map(|d| &d.access);
+            access.iter().any(|entry| {
+                before
+                    .and_then(|list| list.get(&entry.account))
+                    .is_none_or(|level| level.code() < entry.level.code())
+            })
+        }
+        PolicyKind::AccountHeads => {
+            let signer = prev.account_of(&change.body.signer);
+            let own = change.body.heads.iter().all(|h| Some(h.account) == signer);
+            let added = next.devices.keys().any(|d| !prev.devices.contains_key(d));
+            let removed = prev.devices.keys().any(|d| !next.devices.contains_key(d));
+            !own && added && !removed
+        }
+        _ => false,
+    }
+}
+
+/// The storage rule for a replacement (§9, §30): honest rotations bound
+/// replacements, so it can't skip an epoch that was itself a replacement or
+/// that a device of the replacer's own account rotated, and it can't skip
+/// an epoch the floor passed, whose users pruning may have removed.
+async fn check_skippable(
+    txn: &mut impl WriteTxn,
+    policy: &PolicyChain,
+    workspace: Id,
+    domain: Id,
+    row: &crate::DomainRow,
+    named: u64,
+    rotator: Id,
+) -> Result<()> {
+    use sync_protocol::codec::Decode;
+    use sync_protocol::records::Epoch;
+    let snapshot = policy.head_snapshot();
+    let replacer = snapshot.account_of(&rotator);
+    let conflict = |message: &str| refuse("epoch_conflict", message);
+    let mut previous = txn
+        .epoch(workspace, domain, named)
+        .await?
+        .map(|e| e.digest)
+        .ok_or_else(|| Error::internal("a named epoch has no row"))?;
+    for epoch in (named + 1)..=row.epoch {
+        let Some(skipped) = txn.epoch(workspace, domain, epoch).await? else {
+            continue;
+        };
+        let record = Signed::<Epoch>::from_bytes(&skipped.record).map_err(Error::internal)?;
+        if record.body.previous != previous {
+            return Err(conflict("a replacement can't skip another replacement"));
+        }
+        if skipped.seq <= row.retention_floor {
+            return Err(conflict("the retention floor passed that epoch"));
+        }
+        // A device a link removed has left the account: the remover may
+        // replace what it signed at an older revision (§30).
+        let rotated_by = snapshot.account_of(&record.body.rotating_device);
+        if rotated_by.is_some() && rotated_by == replacer {
+            return Err(conflict(
+                "a replacement can't skip an epoch its own account rotated",
+            ));
+        }
+        previous = skipped.digest;
+    }
+    Ok(())
 }
 
 /// For each epoch in (`named`, `latest`], its rotator and the devices that

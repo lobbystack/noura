@@ -24,6 +24,8 @@ use crate::{
 
 /// The most workspaces an account owns (§27).
 pub const MAX_OWNED_WORKSPACES: u64 = 100;
+/// The most workspaces an account belongs to (§27).
+pub const MAX_MEMBERSHIPS: usize = 1_000;
 
 /// A decoded creation request.
 pub(crate) struct Creation {
@@ -180,6 +182,12 @@ pub(crate) async fn commit(
         return Err(refuse(
             "workspace_limit",
             "the account already owns 100 workspaces",
+        ));
+    }
+    if txn.memberships(session.account).await?.len() >= MAX_MEMBERSHIPS {
+        return Err(refuse(
+            "workspace_limit",
+            "the account already belongs to 1,000 workspaces",
         ));
     }
 
@@ -355,6 +363,9 @@ pub(crate) async fn commit(
     .await?;
     txn.append_key_entry(workspace, KEY_EPOCH, domain, 1, None, &epoch_bytes)
         .await?;
+    let usage = genesis.to_bytes().len() + epoch.to_bytes().len();
+    txn.add_usage(workspace, domain, usage as i64, epoch_bytes.len() as i64)
+        .await?;
     for envelope in &envelopes {
         txn.append_key_entry(
             workspace,
@@ -392,6 +403,8 @@ pub(crate) async fn commit(
             creation_response: response.clone(),
             policy_revision: 1,
             policy_head: genesis_digest,
+            quota_pressure: false,
+            quota_crossings: 0,
         },
     )
     .await?;

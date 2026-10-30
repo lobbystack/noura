@@ -291,11 +291,13 @@ impl<B: Backend> Store<B> {
     /// every 10 seconds.
     pub async fn delete_expired(&self) -> Result<u64> {
         let now = self.clock().now();
-        self.backend()
+        let deleted = self
+            .backend()
             .write(Box::new(move |txn: &mut B::Write| {
                 Box::pin(async move { txn.delete_expired(now).await })
             }))
-            .await
+            .await?;
+        Ok(deleted + self.delete_expired_shares(now).await?)
     }
 
     fn secret_for_ids(&self) -> Result<sync_protocol::types::SecretKey> {

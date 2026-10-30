@@ -21,9 +21,10 @@ use sync_protocol::types::{Digest, Id};
 use crate::policy::{self, PolicyCache};
 use crate::push::{ENTRY_EPOCH, ENTRY_POLICY};
 use crate::reads::{authorize_domain, reader};
+use crate::retention::BUCKET_HASH_WEIGHT;
 use crate::{
-    CheckpointInterval, CheckpointRow, DeleteRow, Error, LockPlan, ReadTxn, Refusal, Result,
-    Session, WriteTxn, refuse,
+    CheckpointInterval, CheckpointProgress, CheckpointRow, DeleteRow, Error, LockPlan, ReadTxn,
+    Refusal, Result, Session, WriteTxn, refuse,
 };
 
 /// The log entry record type of a checkpoint bundle (§15).
@@ -51,16 +52,32 @@ pub(crate) async fn note_entry(
         .await?
         .ok_or_else(|| Error::internal("a log entry's domain has no head row"))?;
     let entries = row.entries_since_checkpoint + 1;
+    let log_weight = row.log_weight.saturating_add(weight);
     let weight = row.weight_since_checkpoint.saturating_add(weight);
     let mut due = row.checkpoint_due;
     if due == 0 && (entries >= interval.entries || weight >= interval.weight) {
         due = seq;
     }
+    // A quota crossing makes a checkpoint due once, at the next entry of a
+    // domain with entries after its latest one (§17, §20).
+    if row.crossing_seen < row.quota_crossings && row.entries_since_checkpoint > 0 {
+        due = due.max(seq);
+    }
     if due_now {
         due = due.max(seq);
     }
-    txn.set_checkpoint_progress(workspace, domain, entries, weight, due)
-        .await
+    txn.set_checkpoint_progress(
+        workspace,
+        domain,
+        &CheckpointProgress {
+            entries,
+            weight,
+            due,
+            log_weight,
+            crossing_seen: row.quota_crossings,
+        },
+    )
+    .await
 }
 
 /// Whether a policy change from `prev` to `next` ends the write access, in
@@ -110,6 +127,8 @@ pub(crate) async fn append_policy_entry(
         due_now,
     )
     .await?;
+    txn.add_usage(workspace, domain, 0, bytes.len() as i64)
+        .await?;
     Ok(seq)
 }
 
@@ -580,6 +599,12 @@ pub(crate) async fn commit_locked(
     let seq = txn
         .append_entry(workspace, domain, ENTRY_CHECKPOINT, &bytes)
         .await?;
+    // A checkpoint's entry weighs its bundle and the bucket hashes it keeps
+    // while it stays servable, so retention bounds both (§19).
+    let log_weight = row
+        .log_weight
+        .saturating_add(bytes.len() as u64)
+        .saturating_add(BUCKET_HASH_WEIGHT);
     let buckets: Vec<u8> = plan.buckets.iter().flat_map(|d| d.0).collect();
     txn.insert_checkpoint(
         workspace,
@@ -592,6 +617,7 @@ pub(crate) async fn commit_locked(
             floor: c.floor,
             record: record.to_bytes(),
             heads: bundle.heads.to_bytes(),
+            log_weight,
         },
         &buckets,
     )
@@ -599,9 +625,24 @@ pub(crate) async fn commit_locked(
     for delete in &plan.dropped {
         txn.drop_delete(workspace, delete.rid, delete.op.device, delete.op.counter)
             .await?;
+        crate::retention::note_dropped(txn, workspace, domain, delete.op.seq).await?;
     }
-    txn.set_checkpoint_progress(workspace, domain, 0, 0, 0)
-        .await?;
+    txn.set_checkpoint_progress(
+        workspace,
+        domain,
+        &CheckpointProgress {
+            entries: 0,
+            weight: 0,
+            due: 0,
+            log_weight,
+            crossing_seen: row.quota_crossings,
+        },
+    )
+    .await?;
+    // A rising `floor` field frees lone deletes the floor already passed.
+    if !plan.dropped.is_empty() {
+        txn.set_pruned_floor(workspace, domain, 0).await?;
+    }
     Ok(receipt(seq))
 }
 

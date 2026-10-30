@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM entries WHERE workspace = ?1 AND domain = ?2 AND seq = ?3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "6bc74faf806b105c45f2f0a744e41202fe04602ba880a4332263ec79a226d3eb"
+}

@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT seq AS \"seq!\", digest AS \"digest!\" FROM operations\n             WHERE workspace = $1 AND domain = $2 AND device = $3 AND counter < $4\n             ORDER BY counter DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "seq!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "seq"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "digest!",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "digest"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "2dc10e9d06c43448472ccc369ab360456acbe2839daa1904cbe1cbce01c0463d"
+}

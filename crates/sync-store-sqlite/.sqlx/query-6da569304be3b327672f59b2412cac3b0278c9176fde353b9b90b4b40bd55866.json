@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM rids WHERE workspace = ?1 AND rid = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "6da569304be3b327672f59b2412cac3b0278c9176fde353b9b90b4b40bd55866"
+}

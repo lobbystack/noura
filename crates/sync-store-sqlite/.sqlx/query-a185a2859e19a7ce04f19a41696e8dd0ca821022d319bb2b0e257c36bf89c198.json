@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT covered_seq FROM checkpoints\n             WHERE workspace = ?1 AND domain = ?2 AND covered_seq > ?3\n             ORDER BY covered_seq LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "covered_seq",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "checkpoints",
+            "name": "covered_seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a185a2859e19a7ce04f19a41696e8dd0ca821022d319bb2b0e257c36bf89c198"
+}

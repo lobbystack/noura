@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM rids WHERE workspace = ?1 AND rid IN (\n               SELECT rid FROM rids WHERE workspace = ?1 AND domain = ?2 LIMIT ?3\n             )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "1d13f908e5d92da8c567971d26f432c8fad633141dadf1a559a7f661af7446e5"
+}

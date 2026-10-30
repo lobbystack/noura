@@ -133,7 +133,7 @@ impl<B: Backend> World<B> {
         (self.devices.len() - 1, head)
     }
 
-    fn bundle(&self, epoch: &Signed<Epoch>, recipients: &BTreeSet<Id>) -> RecordRef {
+    pub(super) fn bundle(&self, epoch: &Signed<Epoch>, recipients: &BTreeSet<Id>) -> RecordRef {
         RecordRef::EpochBundle(EpochBundle {
             epoch: Nested(epoch.clone()),
             recipients: Sorted::new(recipients.iter().copied().collect()).expect("sorted"),
@@ -455,19 +455,24 @@ pub async fn replacements_skip_only_their_rotators_epochs<B: Backend>(store: Sto
         "a device that still reads the domain used the skipped epoch"
     );
 
-    // Only the skipped epoch's rotator used it in another workspace.
-    let world = World::on(world.store.clone(), 2).await;
+    // Only the skipped epoch's rotator, of another account, used it in
+    // another workspace.
+    let mut world = World::on(world.store.clone(), 2).await;
+    let rotator = super::domains::member_device(&mut world).await;
     let first = world.first_epoch().await;
     let readers: BTreeSet<Id> = world.devices.iter().map(Device::id).collect();
     let cards: Vec<Card> = world
         .devices
         .iter()
-        .map(|d| d.keys.card(world.account))
+        .map(|d| d.keys.card(d.session.account))
         .collect();
-    let second = world.epoch_after(1, 2, &first, &world.epoch_key, &bad, &readers);
+    let second = world.epoch_after(rotator, 2, &first, &world.epoch_key, &bad, &readers);
     world.inject_epoch(second.clone(), readers.clone()).await;
-    let written = world.op(1, |op| op.epoch = 2);
-    world.push(1, &[written]).await.expect("the rotator wrote");
+    let written = world.op(rotator, |op| op.epoch = 2);
+    world
+        .push(rotator, &[written])
+        .await
+        .expect("the rotator wrote");
     let replacement = world.epoch_after(0, 3, &first, &world.epoch_key, &key, &readers);
     let mut records = vec![world.bundle(&replacement, &readers)];
     for card in &cards {

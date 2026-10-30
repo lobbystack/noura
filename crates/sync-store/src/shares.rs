@@ -140,6 +140,7 @@ impl<B: Backend> Store<B> {
             return Err(refuse("bad_request", "a new link's snapshot_revision is 1"));
         }
         let now = self.clock().now();
+        let quota = self.retention.quota_bytes;
         let cache = self.policies.clone();
         // The workspace domain never changes, so it may come from the
         // policy before the locks.
@@ -173,6 +174,7 @@ impl<B: Backend> Store<B> {
                         return Err(refuse("not_found", "no such domain"));
                     }
                     let bytes = creation.share.to_bytes();
+                    let length = bytes.len() as i64;
                     let expires_at = now + u64::from(creation.expires_in_days) * DAY;
                     if let Some(row) = txn.share(creation.token_hash).await? {
                         // A retry within a day of the creation names the same
@@ -206,6 +208,9 @@ impl<B: Backend> Store<B> {
                         share: bytes,
                     })
                     .await?;
+                    txn.add_usage(workspace, creation.domain, length, 0).await?;
+                    crate::retention::check_quota(txn, workspace, quota, length).await?;
+                    crate::retention::note_pressure(txn, workspace, quota).await?;
                     Ok(expires_at)
                 })
             }))
@@ -253,6 +258,7 @@ impl<B: Backend> Store<B> {
         let now = self.clock().now();
         let domain = self.share_domain(workspace, token_hash, now).await?;
         let cache = self.policies.clone();
+        let quota = self.retention.quota_bytes;
         self.backend
             .write(Box::new(move |txn: &mut B::Write| {
                 Box::pin(async move {
@@ -273,7 +279,12 @@ impl<B: Backend> Store<B> {
                         }
                         return Err(refuse("bad_request", "an update raises snapshot_revision"));
                     }
-                    txn.set_share(token_hash, &share.to_bytes()).await
+                    let bytes = share.to_bytes();
+                    let raised = bytes.len() as i64 - row.share.len() as i64;
+                    txn.set_share(token_hash, &bytes).await?;
+                    txn.add_usage(workspace, domain, raised, 0).await?;
+                    crate::retention::check_quota(txn, workspace, quota, raised).await?;
+                    crate::retention::note_pressure(txn, workspace, quota).await
                 })
             }))
             .await
@@ -304,7 +315,9 @@ impl<B: Backend> Store<B> {
                     manager(txn, &cache, session, workspace).await?;
                     match txn.share(token_hash).await? {
                         Some(row) if row.workspace == workspace => {
-                            txn.delete_share(token_hash).await
+                            txn.delete_share(token_hash).await?;
+                            txn.add_usage(workspace, row.domain, -(row.share.len() as i64), 0)
+                                .await
                         }
                         _ => Ok(()),
                     }

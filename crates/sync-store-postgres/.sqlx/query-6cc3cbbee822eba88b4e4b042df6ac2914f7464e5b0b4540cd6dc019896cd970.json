@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT d.workspace, d.domain, d.deleted FROM domains d\n             WHERE d.deleted = TRUE OR d.pruned_floor < d.retention_floor\n                OR EXISTS (\n                  SELECT 1 FROM checkpoints c\n                  WHERE c.workspace = d.workspace AND c.domain = d.domain\n                    AND c.covered_seq > d.retention_floor AND c.log_weight <= d.log_weight - $1\n                )\n             LIMIT $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "workspace",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "workspace"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "domain",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "domain"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "deleted",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "deleted"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6cc3cbbee822eba88b4e4b042df6ac2914f7464e5b0b4540cd6dc019896cd970"
+}

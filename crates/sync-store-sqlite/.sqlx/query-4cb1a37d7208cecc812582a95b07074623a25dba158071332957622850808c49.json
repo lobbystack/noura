@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE domains\n             SET usage_bytes = MAX(usage_bytes + ?3, 0), history_bytes = MAX(history_bytes + ?4, 0)\n             WHERE workspace = ?1 AND domain = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "4cb1a37d7208cecc812582a95b07074623a25dba158071332957622850808c49"
+}

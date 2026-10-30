@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT token_hash, workspace, domain FROM shares WHERE expires_at <= ?1 LIMIT ?2",
+  "describe": {
+    "columns": [
+      {
+        "name": "token_hash",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "token_hash"
+          }
+        }
+      },
+      {
+        "name": "workspace",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "workspace"
+          }
+        }
+      },
+      {
+        "name": "domain",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "domain"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "68c40178bc96c699b2ecac5a0798f024bc2de2b62365f1d3b367ca6173557332"
+}

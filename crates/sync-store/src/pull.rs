@@ -109,6 +109,14 @@ pub(crate) async fn snapshot(
             pages.push(empty(PageStatus::BeforeHistoryFloor));
             continue;
         }
+        if cursor.after < domain.retention_floor {
+            pages.push(Page {
+                retention_floor: domain.retention_floor,
+                checkpoint_seq: domain.checkpoint_seq,
+                ..empty(PageStatus::Compacted)
+            });
+            continue;
+        }
         let mut entries = Vec::new();
         let mut complete_through = cursor.after;
         let mut truncated = false;

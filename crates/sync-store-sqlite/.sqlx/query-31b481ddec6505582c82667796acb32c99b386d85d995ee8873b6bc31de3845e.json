@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM shares WHERE token_hash IN (\n               SELECT token_hash FROM shares WHERE workspace = ?1 AND domain = ?2 LIMIT ?3\n             )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "31b481ddec6505582c82667796acb32c99b386d85d995ee8873b6bc31de3845e"
+}

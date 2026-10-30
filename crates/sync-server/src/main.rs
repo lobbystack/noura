@@ -25,6 +25,10 @@
 //! - `NOURA_SMTP_URL`, or `NOURA_RESEND_API_KEY` with an optional
 //!   `NOURA_RESEND_ENDPOINT`: how the server sends mail.
 //! - `NOURA_ACCOUNT_WEB_DIR`: the account-web build the pages load.
+//! - `NOURA_RETAINED_BYTES`: the weight each domain's log keeps behind a
+//!   checkpoint, 1 GiB by default.
+//! - `NOURA_WORKSPACE_QUOTA_BYTES`: each workspace's storage quota, unlimited
+//!   by default.
 //! - `NOURA_S3_BUCKET`, with an optional `NOURA_S3_ENDPOINT` for an
 //!   S3-compatible service: keep blob segments in that bucket instead of the
 //!   data directory's `blobs` directory. The standard `AWS_*` variables give
@@ -158,9 +162,30 @@ fn serve(arguments: Arguments) -> Result<(), String> {
     config.mail = mail;
     config.account_web = env("NOURA_ACCOUNT_WEB_DIR").map(PathBuf::from);
     config.blob_store = blob_store();
+    config.retention = retention()?;
     runtime()
         .block_on(sync_server::serve(config))
         .map_err(|e| e.to_string())
+}
+
+/// `NOURA_RETAINED_BYTES` and `NOURA_WORKSPACE_QUOTA_BYTES`, each a number
+/// of bytes.
+fn retention() -> Result<sync_store::Retention, String> {
+    let bytes = |name: &str| {
+        env(name)
+            .map(|value| {
+                value
+                    .parse::<u64>()
+                    .map_err(|_| format!("{name} isn't a number of bytes"))
+            })
+            .transpose()
+    };
+    let mut retention = sync_store::Retention::default();
+    if let Some(retained) = bytes("NOURA_RETAINED_BYTES")? {
+        retention.retained_bytes = retained;
+    }
+    retention.quota_bytes = bytes("NOURA_WORKSPACE_QUOTA_BYTES")?;
+    Ok(retention)
 }
 
 /// The blob store `NOURA_S3_BUCKET` and `NOURA_S3_ENDPOINT` name, or the

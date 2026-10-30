@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT length(record) AS \"length!: i64\" FROM entries\n             WHERE workspace = ?1 AND domain = ?2 AND seq = ?3",
+  "describe": {
+    "columns": [
+      {
+        "name": "length!: i64",
+        "ordinal": 0,
+        "type_info": "Null",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "630003e39368957c4728a861f576b13dcba737ada8824e608ff6b41d46eecc4f"
+}

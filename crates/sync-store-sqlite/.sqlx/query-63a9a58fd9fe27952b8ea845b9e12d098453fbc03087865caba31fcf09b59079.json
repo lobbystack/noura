@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT workspace, blob, domain FROM blobs\n             WHERE marked = 1 OR delete_after <= ?1\n             ORDER BY marked DESC LIMIT ?2",
+  "describe": {
+    "columns": [
+      {
+        "name": "workspace",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "workspace"
+          }
+        }
+      },
+      {
+        "name": "blob",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "blob"
+          }
+        }
+      },
+      {
+        "name": "domain",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "domain"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "63a9a58fd9fe27952b8ea845b9e12d098453fbc03087865caba31fcf09b59079"
+}

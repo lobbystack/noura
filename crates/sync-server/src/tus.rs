@@ -22,9 +22,6 @@ use crate::http::{ApiError, AppState, Auth, Segments, id, refused};
 pub const TUS_VERSION: &str = "1.0.0";
 /// The tus extensions it offers.
 pub const TUS_EXTENSIONS: &str = "creation,termination,expiration";
-/// How long an incomplete upload lasts after its creation (§19).
-const EXPIRES_AFTER: u64 = 24 * 60 * 60;
-
 const SEGMENT: u64 = SEGMENT_LEN as u64;
 
 /// The headers every tus response carries.
@@ -117,12 +114,6 @@ fn location(workspace: &Id, blob: &Id) -> String {
     )
 }
 
-fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
 /// An HTTP date, as `Upload-Expires` needs.
 fn http_date(seconds: u64) -> String {
     let timestamp = jiff::Timestamp::from_second(i64::try_from(seconds).unwrap_or(i64::MAX))
@@ -168,7 +159,8 @@ async fn create<B: Backend>(
             );
             headers.insert("Upload-Offset", HeaderValue::from(row.offset));
             if !row.complete
-                && let Ok(expires) = HeaderValue::from_str(&http_date(now() + EXPIRES_AFTER))
+                && let Some(at) = row.delete_after
+                && let Ok(expires) = HeaderValue::from_str(&http_date(at))
             {
                 headers.insert("Upload-Expires", expires);
             }
@@ -208,7 +200,6 @@ async fn delete_segments(
     for (index, hash) in segments.iter().enumerate() {
         let key = segment_key(workspace, blob, index as u64, hash);
         if let Err(error) = blobs.delete(&key).await {
-            // The collector of ticket 59 removes what's left.
             tracing::warn!("can't delete a discarded segment: {error}");
         }
     }
@@ -256,16 +247,24 @@ async fn patch<B: Backend>(
             let index = offset / SEGMENT;
             // The segment reaches durable storage before the store records
             // the new offset.
+            let key = segment_key(&workspace, &blob, index, &hash);
             state
                 .blobs
-                .put(&segment_key(&workspace, &blob, index, &hash), bytes)
+                .put(&key, bytes)
                 .await
                 .map_err(|e| ApiError(sync_store::Error::internal(e)))?;
-            match state
+            let recorded = state
                 .store
                 .record_segment(session, workspace, blob, offset, len, hash)
-                .await?
+                .await;
+            // A segment the store didn't record, such as one that lost a
+            // race with the collector, names no row (§19).
+            if recorded.is_err()
+                && let Err(error) = state.blobs.delete(&key).await
             {
+                tracing::warn!("can't delete an unrecorded segment: {error}");
+            }
+            match recorded? {
                 Recorded::Stored(row) => {
                     let mut response = StatusCode::NO_CONTENT.into_response();
                     response

@@ -7,10 +7,11 @@ use sync_protocol::messages::DeviceRemovedDetail;
 use sync_protocol::records::{AccountHead, OpClass, Ref, Role};
 use sync_protocol::types::{Digest, Id, Key};
 use sync_store::{
-    ApprovalRequestRow, BlobRow, CeremonyKind, CeremonyRow, ChainHeadRow, CheckpointRow, DeleteRow,
-    DeviceGrantRow, DomainRow, EpochRow, Error, InvitationRow, KeyRow, LinkRow, LockPlan, OfferRow,
-    PasskeyRow, PendingPasskeyRow, RawEntry, ReadTxn, RemovedBy, Result, RewrapRow, Session,
-    SessionRow, ShareRow, WorkspaceRow, WriteTxn,
+    ApprovalRequestRow, BlobRow, BlobToCollect, CeremonyKind, CeremonyRow, ChainHeadRow,
+    CheckpointProgress, CheckpointRow, DeleteRow, DeviceGrantRow, DomainHistory, DomainRow,
+    EpochRow, Error, InvitationRow, KeyRow, LinkRow, LockPlan, OfferRow, PasskeyRow, PendingDomain,
+    PendingPasskeyRow, PruneScan, PrunedEntry, RawEntry, ReadTxn, RemovedBy, Result, RewrapRow,
+    Session, SessionRow, ShareRow, WorkspaceRow, WriteTxn,
 };
 
 /// A read transaction from the pool, or the writer's connection inside its
@@ -273,6 +274,7 @@ fn checkpoint_row(
     floor: i64,
     record: Vec<u8>,
     heads: Vec<u8>,
+    log_weight: i64,
 ) -> Result<CheckpointRow> {
     Ok(CheckpointRow {
         number: uint(number)?,
@@ -282,10 +284,377 @@ fn checkpoint_row(
         floor: uint(floor)?,
         record,
         heads,
+        log_weight: uint(log_weight)?,
     })
 }
 
 impl ReadTxn for SqliteTxn {
+    async fn workspace_usage(&mut self, workspace: Id) -> Result<(u64, u64)> {
+        let workspace = &workspace.0[..];
+        let row = sqlx::query!(
+            r#"SELECT CAST(COALESCE(SUM(usage_bytes), 0) AS BIGINT) AS "usage!: i64",
+                      CAST(COALESCE(SUM(history_bytes), 0) AS BIGINT) AS "history!: i64"
+             FROM domains WHERE workspace = ?1 AND deleted = 0"#,
+            workspace
+        )
+        .fetch_one(self.c())
+        .await
+        .map_err(db)?;
+        Ok((uint(row.usage)?, uint(row.history)?))
+    }
+
+    async fn domain_histories(&mut self, workspace: Id) -> Result<Vec<DomainHistory>> {
+        let workspace = &workspace.0[..];
+        let rows = sqlx::query!(
+            "SELECT domain, history_bytes, retention_floor, checkpoint_seq FROM domains
+             WHERE workspace = ?1 AND deleted = 0
+             ORDER BY history_bytes DESC, domain",
+            workspace
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(DomainHistory {
+                    domain: id(r.domain)?,
+                    history_bytes: uint(r.history_bytes)?,
+                    retention_floor: uint(r.retention_floor)?,
+                    checkpoint_seq: uint(r.checkpoint_seq)?,
+                })
+            })
+            .collect()
+    }
+
+    async fn pending_domains(
+        &mut self,
+        retained_bytes: u64,
+        limit: u32,
+    ) -> Result<Vec<PendingDomain>> {
+        let retained = at_most(retained_bytes);
+        let limit = i64::from(limit);
+        let rows = sqlx::query!(
+            r#"SELECT d.workspace, d.domain, d.deleted FROM domains d
+             WHERE d.deleted = 1 OR d.pruned_floor < d.retention_floor
+                OR EXISTS (
+                  SELECT 1 FROM checkpoints c
+                  WHERE c.workspace = d.workspace AND c.domain = d.domain
+                    AND c.covered_seq > d.retention_floor AND c.log_weight <= d.log_weight - ?1
+                )
+             LIMIT ?2"#,
+            retained,
+            limit
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(PendingDomain {
+                    workspace: id(r.workspace)?,
+                    domain: id(r.domain)?,
+                    deleted: r.deleted != 0,
+                })
+            })
+            .collect()
+    }
+
+    async fn pressured_workspaces(&mut self, limit: u32) -> Result<Vec<Id>> {
+        let limit = i64::from(limit);
+        let rows = sqlx::query!(
+            "SELECT workspace FROM workspaces WHERE quota_pressure = 1 LIMIT ?1",
+            limit
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter().map(|r| id(r.workspace)).collect()
+    }
+
+    async fn checkpoint_at_weight(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        log_weight: u64,
+    ) -> Result<Option<u64>> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let log_weight = at_most(log_weight);
+        let covered = sqlx::query_scalar!(
+            "SELECT covered_seq FROM checkpoints
+             WHERE workspace = ?1 AND domain = ?2 AND log_weight <= ?3
+             ORDER BY covered_seq DESC LIMIT 1",
+            workspace,
+            domain,
+            log_weight
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        covered.map(uint).transpose()
+    }
+
+    async fn checkpoint_above(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        covered_seq: u64,
+    ) -> Result<Option<u64>> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let covered_seq = at_most(covered_seq);
+        let covered = sqlx::query_scalar!(
+            "SELECT covered_seq FROM checkpoints
+             WHERE workspace = ?1 AND domain = ?2 AND covered_seq > ?3
+             ORDER BY covered_seq LIMIT 1",
+            workspace,
+            domain,
+            covered_seq
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        covered.map(uint).transpose()
+    }
+
+    async fn servable_floor(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        covered_seq: u64,
+    ) -> Result<Option<u64>> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let covered_seq = at_most(covered_seq);
+        let floor = sqlx::query_scalar!(
+            "SELECT floor FROM checkpoints
+             WHERE workspace = ?1 AND domain = ?2 AND covered_seq >= ?3
+             ORDER BY covered_seq LIMIT 1",
+            workspace,
+            domain,
+            covered_seq
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        floor.map(uint).transpose()
+    }
+
+    async fn prunable_entries(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        scan: &PruneScan,
+        limit: u32,
+    ) -> Result<Vec<PrunedEntry>> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let after = at_most(scan.after);
+        let floor = at_most(scan.floor);
+        let delete_floor = at_most(scan.delete_floor);
+        let keep_epoch = at_most(scan.keep_epoch);
+        let keep_policy = at_most(scan.keep_policy);
+        let limit = i64::from(limit);
+        let rows = sqlx::query!(
+            r#"SELECT e.seq AS "seq!", e.record_type AS "record_type!",
+                      length(e.record) AS "length!: i64", o.rid AS "rid?"
+             FROM entries e
+             LEFT JOIN operations o
+               ON o.workspace = e.workspace AND o.domain = e.domain AND o.seq = e.seq
+             WHERE e.workspace = ?1 AND e.domain = ?2 AND e.seq > ?3 AND e.seq <= ?4
+               AND (
+                 (e.record_type = 5 AND e.seq < ?4)
+                 OR (e.record_type = 8 AND e.seq < ?6)
+                 OR (e.record_type = 9 AND e.seq < ?7)
+                 OR (e.record_type = 1 AND (
+                   (o.dropped = 1 AND e.seq <= ?5)
+                   OR EXISTS (
+                     SELECT 1 FROM covers c
+                     WHERE c.workspace = o.workspace AND c.rid = o.rid AND c.device = o.device
+                       AND c.counter >= o.counter AND c.by_seq <= ?4
+                   )
+                 ))
+               )
+             ORDER BY e.seq LIMIT ?8"#,
+            workspace,
+            domain,
+            after,
+            floor,
+            delete_floor,
+            keep_epoch,
+            keep_policy,
+            limit
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(PrunedEntry {
+                    seq: uint(r.seq)?,
+                    record_type: byte(r.record_type)?,
+                    length: uint(r.length)?,
+                    rid: r.rid.map(id).transpose()?,
+                })
+            })
+            .collect()
+    }
+
+    async fn listed_blobs(&mut self, workspace: Id, domain: Id, seq: u64) -> Result<Vec<Id>> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let seq = int(seq)?;
+        let rows = sqlx::query_scalar!(
+            "SELECT blob FROM blob_listings WHERE workspace = ?1 AND domain = ?2 AND seq = ?3",
+            workspace,
+            domain,
+            seq
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter().map(id).collect()
+    }
+
+    async fn entry_length(&mut self, workspace: Id, domain: Id, seq: u64) -> Result<Option<u64>> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let seq = int(seq)?;
+        let row = sqlx::query!(
+            r#"SELECT length(record) AS "length!: i64" FROM entries
+             WHERE workspace = ?1 AND domain = ?2 AND seq = ?3"#,
+            workspace,
+            domain,
+            seq
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| uint(r.length)).transpose()
+    }
+
+    async fn epoch_bundle_length(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        epoch: u64,
+    ) -> Result<Option<u64>> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let epoch = int(epoch)?;
+        let row = sqlx::query!(
+            r#"SELECT length(bundle) AS "length!: i64" FROM epochs
+             WHERE workspace = ?1 AND domain = ?2 AND epoch = ?3"#,
+            workspace,
+            domain,
+            epoch
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| uint(r.length)).transpose()
+    }
+
+    async fn rid_in_use(&mut self, workspace: Id, rid: Id) -> Result<bool> {
+        let workspace = &workspace.0[..];
+        let rid = &rid.0[..];
+        let row = sqlx::query!(
+            r#"SELECT EXISTS (
+                 SELECT 1 FROM operations WHERE workspace = ?1 AND rid = ?2
+             ) AS "exists!: bool""#,
+            workspace,
+            rid
+        )
+        .fetch_one(self.c())
+        .await
+        .map_err(db)?;
+        Ok(row.exists)
+    }
+
+    async fn collectable_blobs(&mut self, now: u64, limit: u32) -> Result<Vec<BlobToCollect>> {
+        let now = at_most(now);
+        let limit = i64::from(limit);
+        let rows = sqlx::query!(
+            "SELECT workspace, blob, domain FROM blobs
+             WHERE marked = 1 OR delete_after <= ?1
+             ORDER BY marked DESC LIMIT ?2",
+            now,
+            limit
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(BlobToCollect {
+                    workspace: id(r.workspace)?,
+                    domain: id(r.domain)?,
+                    blob: id(r.blob)?,
+                })
+            })
+            .collect()
+    }
+
+    async fn domain_has_blobs(&mut self, workspace: Id, domain: Id) -> Result<bool> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let row = sqlx::query!(
+            r#"SELECT EXISTS (
+                 SELECT 1 FROM blobs WHERE workspace = ?1 AND domain = ?2
+             ) AS "exists!: bool""#,
+            workspace,
+            domain
+        )
+        .fetch_one(self.c())
+        .await
+        .map_err(db)?;
+        Ok(row.exists)
+    }
+
+    async fn expired_shares(&mut self, now: u64, limit: u32) -> Result<Vec<(Digest, Id, Id)>> {
+        let now = at_most(now);
+        let limit = i64::from(limit);
+        let rows = sqlx::query!(
+            "SELECT token_hash, workspace, domain FROM shares WHERE expires_at <= ?1 LIMIT ?2",
+            now,
+            limit
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|r| Ok((digest(r.token_hash)?, id(r.workspace)?, id(r.domain)?)))
+            .collect()
+    }
+
+    async fn position_below(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        device: Id,
+        counter: u64,
+    ) -> Result<Option<(u64, Digest)>> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let device = &device.0[..];
+        let counter = counter_bytes(counter);
+        let counter = &counter[..];
+        let row = sqlx::query!(
+            r#"SELECT seq AS "seq!", digest AS "digest!" FROM operations
+             WHERE workspace = ?1 AND domain = ?2 AND device = ?3 AND counter < ?4
+             ORDER BY counter DESC LIMIT 1"#,
+            workspace,
+            domain,
+            device,
+            counter
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| Ok((uint(r.seq)?, digest(r.digest)?)))
+            .transpose()
+    }
+
     async fn restore_generation(&mut self) -> Result<u64> {
         let row = sqlx::query!("SELECT restore_generation FROM server WHERE id = 1")
             .fetch_one(self.c())
@@ -651,7 +1020,8 @@ impl ReadTxn for SqliteTxn {
     async fn workspace(&mut self, workspace: Id) -> Result<Option<WorkspaceRow>> {
         let workspace = &workspace.0[..];
         let row = sqlx::query!(
-            "SELECT owner, creation_digest, creation_response, policy_revision, policy_head
+            "SELECT owner, creation_digest, creation_response, policy_revision, policy_head,
+                    quota_pressure, quota_crossings
              FROM workspaces WHERE workspace = ?1",
             workspace
         )
@@ -665,6 +1035,8 @@ impl ReadTxn for SqliteTxn {
                 creation_response: r.creation_response,
                 policy_revision: uint(r.policy_revision)?,
                 policy_head: digest(r.policy_head)?,
+                quota_pressure: r.quota_pressure != 0,
+                quota_crossings: uint(r.quota_crossings)?,
             })
         })
         .transpose()
@@ -743,10 +1115,13 @@ impl ReadTxn for SqliteTxn {
         let workspace = &workspace.0[..];
         let domain = &domain.0[..];
         let row = sqlx::query!(
-            "SELECT head_seq, epoch, epoch_digest, epoch_policy_revision, retention_floor,
-                    checkpoint_seq, checkpoint_due, entries_since_checkpoint,
-                    weight_since_checkpoint
-             FROM domains WHERE workspace = ?1 AND domain = ?2",
+            r#"SELECT d.head_seq, d.epoch, d.epoch_digest, d.epoch_policy_revision,
+                    d.retention_floor, d.checkpoint_seq, d.checkpoint_due,
+                    d.entries_since_checkpoint, d.weight_since_checkpoint, d.deleted,
+                    d.log_weight, d.usage_bytes, d.history_bytes, d.pruned_floor,
+                    d.crossing_seen, w.quota_crossings AS "quota_crossings?"
+             FROM domains d LEFT JOIN workspaces w ON w.workspace = d.workspace
+             WHERE d.workspace = ?1 AND d.domain = ?2"#,
             workspace,
             domain
         )
@@ -764,6 +1139,13 @@ impl ReadTxn for SqliteTxn {
                 checkpoint_due: uint(r.checkpoint_due)?,
                 entries_since_checkpoint: uint(r.entries_since_checkpoint)?,
                 weight_since_checkpoint: uint(r.weight_since_checkpoint)?,
+                deleted: r.deleted != 0,
+                log_weight: uint(r.log_weight)?,
+                usage_bytes: uint(r.usage_bytes)?,
+                history_bytes: uint(r.history_bytes)?,
+                pruned_floor: uint(r.pruned_floor)?,
+                crossing_seen: uint(r.crossing_seen)?,
+                quota_crossings: r.quota_crossings.map_or(Ok(0), uint)?,
             })
         })
         .transpose()
@@ -1090,7 +1472,8 @@ impl ReadTxn for SqliteTxn {
         let workspace = &workspace.0[..];
         let domain = &domain.0[..];
         let row = sqlx::query!(
-            "SELECT number, digest, seq, covered_seq, floor, record, heads FROM checkpoints
+            "SELECT number, digest, seq, covered_seq, floor, record, heads, log_weight
+             FROM checkpoints
              WHERE workspace = ?1 AND domain = ?2 ORDER BY number DESC LIMIT 1",
             workspace,
             domain
@@ -1107,6 +1490,7 @@ impl ReadTxn for SqliteTxn {
                 r.floor,
                 r.record,
                 r.heads,
+                r.log_weight,
             )
         })
         .transpose()
@@ -1122,7 +1506,8 @@ impl ReadTxn for SqliteTxn {
         let domain = &domain.0[..];
         let number = at_most(number);
         let row = sqlx::query!(
-            "SELECT number, digest, seq, covered_seq, floor, record, heads FROM checkpoints
+            "SELECT number, digest, seq, covered_seq, floor, record, heads, log_weight
+             FROM checkpoints
              WHERE workspace = ?1 AND domain = ?2 AND number = ?3",
             workspace,
             domain,
@@ -1140,6 +1525,7 @@ impl ReadTxn for SqliteTxn {
                 r.floor,
                 r.record,
                 r.heads,
+                r.log_weight,
             )
         })
         .transpose()
@@ -1155,7 +1541,8 @@ impl ReadTxn for SqliteTxn {
         let domain = &domain.0[..];
         let checkpoint = &checkpoint.0[..];
         let row = sqlx::query!(
-            "SELECT number, digest, seq, covered_seq, floor, record, heads FROM checkpoints
+            "SELECT number, digest, seq, covered_seq, floor, record, heads, log_weight
+             FROM checkpoints
              WHERE workspace = ?1 AND domain = ?2 AND digest = ?3",
             workspace,
             domain,
@@ -1173,6 +1560,7 @@ impl ReadTxn for SqliteTxn {
                 r.floor,
                 r.record,
                 r.heads,
+                r.log_weight,
             )
         })
         .transpose()
@@ -1188,7 +1576,8 @@ impl ReadTxn for SqliteTxn {
         let domain = &domain.0[..];
         let covered_seq = at_most(covered_seq);
         let row = sqlx::query!(
-            "SELECT number, digest, seq, covered_seq, floor, record, heads FROM checkpoints
+            "SELECT number, digest, seq, covered_seq, floor, record, heads, log_weight
+             FROM checkpoints
              WHERE workspace = ?1 AND domain = ?2 AND covered_seq = ?3",
             workspace,
             domain,
@@ -1206,6 +1595,7 @@ impl ReadTxn for SqliteTxn {
                 r.floor,
                 r.record,
                 r.heads,
+                r.log_weight,
             )
         })
         .transpose()
@@ -1544,7 +1934,9 @@ impl ReadTxn for SqliteTxn {
         let workspace = &workspace.0[..];
         let blob_id = &blob.0[..];
         let row = sqlx::query!(
-            "SELECT domain, device, length, digest, upload_offset, complete FROM blobs WHERE workspace = ?1 AND blob = ?2",
+            "SELECT domain, device, length, digest, upload_offset, complete, delete_after, marked,
+                    live_listings
+             FROM blobs WHERE workspace = ?1 AND blob = ?2",
             workspace,
             blob_id
         )
@@ -1560,6 +1952,9 @@ impl ReadTxn for SqliteTxn {
                 digest: digest(r.digest)?,
                 offset: uint(r.upload_offset)?,
                 complete: r.complete != 0,
+                delete_after: r.delete_after.map(uint).transpose()?,
+                marked: r.marked != 0,
+                live_listings: uint(r.live_listings)?,
             })
         })
         .transpose()
@@ -1788,6 +2183,470 @@ fn ceremony_kind(code: i64) -> Result<CeremonyKind> {
 }
 
 impl WriteTxn for SqliteTxn {
+    async fn add_usage(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        usage: i64,
+        history: i64,
+    ) -> Result<()> {
+        if usage == 0 && history == 0 {
+            return Ok(());
+        }
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        sqlx::query!(
+            "UPDATE domains
+             SET usage_bytes = MAX(usage_bytes + ?3, 0), history_bytes = MAX(history_bytes + ?4, 0)
+             WHERE workspace = ?1 AND domain = ?2",
+            workspace,
+            domain,
+            usage,
+            history
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn set_retention_floor(&mut self, workspace: Id, domain: Id, floor: u64) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let floor = int(floor)?;
+        sqlx::query!(
+            "UPDATE domains SET retention_floor = ?3 WHERE workspace = ?1 AND domain = ?2",
+            workspace,
+            domain,
+            floor
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn set_pruned_floor(&mut self, workspace: Id, domain: Id, floor: u64) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let floor = int(floor)?;
+        sqlx::query!(
+            "UPDATE domains SET pruned_floor = ?3 WHERE workspace = ?1 AND domain = ?2",
+            workspace,
+            domain,
+            floor
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn mark_domain_deleted(&mut self, workspace: Id, domain: Id) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        sqlx::query!(
+            "UPDATE domains SET deleted = 1 WHERE workspace = ?1 AND domain = ?2",
+            workspace,
+            domain
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn delete_log_entry(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        seq: u64,
+        record_type: u8,
+    ) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let seq = int(seq)?;
+        if record_type == 1 {
+            sqlx::query!(
+                "DELETE FROM covers WHERE workspace = ?1 AND domain = ?2 AND by_seq = ?3",
+                workspace,
+                domain,
+                seq
+            )
+            .execute(self.c())
+            .await
+            .map_err(db)?;
+            sqlx::query!(
+                "DELETE FROM operations WHERE workspace = ?1 AND domain = ?2 AND seq = ?3",
+                workspace,
+                domain,
+                seq
+            )
+            .execute(self.c())
+            .await
+            .map_err(db)?;
+        }
+        sqlx::query!(
+            "DELETE FROM entries WHERE workspace = ?1 AND domain = ?2 AND seq = ?3",
+            workspace,
+            domain,
+            seq
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn delete_rid(&mut self, workspace: Id, rid: Id) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let rid = &rid.0[..];
+        sqlx::query!(
+            "DELETE FROM rids WHERE workspace = ?1 AND rid = ?2",
+            workspace,
+            rid
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn delete_blob_listing(
+        &mut self,
+        workspace: Id,
+        blob: Id,
+        domain: Id,
+        seq: u64,
+    ) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let blob = &blob.0[..];
+        let domain = &domain.0[..];
+        let seq = int(seq)?;
+        sqlx::query!(
+            "DELETE FROM blob_listings
+             WHERE workspace = ?1 AND blob = ?2 AND domain = ?3 AND seq = ?4",
+            workspace,
+            blob,
+            domain,
+            seq
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn set_blob_delete_after(
+        &mut self,
+        workspace: Id,
+        blob: Id,
+        delete_after: Option<u64>,
+    ) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let blob = &blob.0[..];
+        let delete_after = delete_after.map(at_most);
+        sqlx::query!(
+            "UPDATE blobs SET delete_after = ?3 WHERE workspace = ?1 AND blob = ?2",
+            workspace,
+            blob,
+            delete_after
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn add_blob_live(&mut self, workspace: Id, blob: Id, delta: i64) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let blob = &blob.0[..];
+        sqlx::query!(
+            "UPDATE blobs SET live_listings = live_listings + ?3
+             WHERE workspace = ?1 AND blob = ?2",
+            workspace,
+            blob,
+            delta
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn mark_blob(&mut self, workspace: Id, blob: Id) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let blob = &blob.0[..];
+        sqlx::query!(
+            "UPDATE blobs SET marked = 1 WHERE workspace = ?1 AND blob = ?2",
+            workspace,
+            blob
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn clear_checkpoint_data(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        floor: u64,
+        empty_heads: &[u8],
+        limit: u32,
+    ) -> Result<u64> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let floor = at_most(floor);
+        let limit = i64::from(limit);
+        let cleared = sqlx::query!(
+            "UPDATE checkpoints SET buckets = NULL, heads = ?4
+             WHERE workspace = ?1 AND domain = ?2 AND number IN (
+               SELECT number FROM checkpoints
+               WHERE workspace = ?1 AND domain = ?2 AND covered_seq < ?3
+                 AND buckets IS NOT NULL
+               ORDER BY number LIMIT ?5
+             )",
+            workspace,
+            domain,
+            floor,
+            empty_heads,
+            limit
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(cleared.rows_affected())
+    }
+
+    async fn set_quota_pressure(&mut self, workspace: Id, above: bool) -> Result<bool> {
+        let workspace = &workspace.0[..];
+        let done = if above {
+            sqlx::query!(
+                "UPDATE workspaces
+                 SET quota_pressure = 1, quota_crossings = quota_crossings + 1
+                 WHERE workspace = ?1 AND quota_pressure = 0",
+                workspace
+            )
+            .execute(self.c())
+            .await
+        } else {
+            sqlx::query!(
+                "UPDATE workspaces SET quota_pressure = 0
+                 WHERE workspace = ?1 AND quota_pressure = 1",
+                workspace
+            )
+            .execute(self.c())
+            .await
+        }
+        .map_err(db)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn reclaim_rows(&mut self, workspace: Id, domain: Id, limit: u32) -> Result<u64> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let limit = i64::from(limit);
+        let mut deleted = 0;
+        deleted += sqlx::query!(
+            "DELETE FROM entries WHERE workspace = ?1 AND domain = ?2 AND seq IN (
+               SELECT seq FROM entries WHERE workspace = ?1 AND domain = ?2 ORDER BY seq LIMIT ?3
+             )",
+            workspace,
+            domain,
+            limit
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?
+        .rows_affected();
+        deleted += sqlx::query!(
+            "DELETE FROM operations WHERE workspace = ?1 AND domain = ?2 AND seq IN (
+               SELECT seq FROM operations WHERE workspace = ?1 AND domain = ?2
+               ORDER BY seq LIMIT ?3
+             )",
+            workspace,
+            domain,
+            limit
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?
+        .rows_affected();
+        deleted += sqlx::query!(
+            "DELETE FROM covers WHERE workspace = ?1 AND domain = ?2 AND by_seq IN (
+               SELECT by_seq FROM covers WHERE workspace = ?1 AND domain = ?2
+               ORDER BY by_seq LIMIT ?3
+             )",
+            workspace,
+            domain,
+            limit
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?
+        .rows_affected();
+        deleted += sqlx::query!(
+            "DELETE FROM rids WHERE workspace = ?1 AND rid IN (
+               SELECT rid FROM rids WHERE workspace = ?1 AND domain = ?2 LIMIT ?3
+             )",
+            workspace,
+            domain,
+            limit
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?
+        .rows_affected();
+        deleted += sqlx::query!(
+            "DELETE FROM checkpoints WHERE workspace = ?1 AND domain = ?2 AND number IN (
+               SELECT number FROM checkpoints WHERE workspace = ?1 AND domain = ?2
+               ORDER BY number LIMIT ?3
+             )",
+            workspace,
+            domain,
+            limit
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?
+        .rows_affected();
+        deleted += sqlx::query!(
+            "DELETE FROM epochs WHERE workspace = ?1 AND domain = ?2 AND epoch IN (
+               SELECT epoch FROM epochs WHERE workspace = ?1 AND domain = ?2
+               ORDER BY epoch LIMIT ?3
+             )",
+            workspace,
+            domain,
+            limit
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?
+        .rows_affected();
+        deleted += sqlx::query!(
+            "DELETE FROM key_entries WHERE workspace = ?1 AND key_seq IN (
+               SELECT key_seq FROM key_entries WHERE workspace = ?1 AND domain = ?2 LIMIT ?3
+             )",
+            workspace,
+            domain,
+            limit
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?
+        .rows_affected();
+        deleted += sqlx::query!(
+            "DELETE FROM blob_listings WHERE workspace = ?1 AND domain = ?2 AND seq IN (
+               SELECT seq FROM blob_listings WHERE workspace = ?1 AND domain = ?2
+               ORDER BY seq LIMIT ?3
+             )",
+            workspace,
+            domain,
+            limit
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?
+        .rows_affected();
+        deleted += sqlx::query!(
+            "DELETE FROM shares WHERE token_hash IN (
+               SELECT token_hash FROM shares WHERE workspace = ?1 AND domain = ?2 LIMIT ?3
+             )",
+            workspace,
+            domain,
+            limit
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?
+        .rows_affected();
+        // A deleted domain's small tables hold one row per device or
+        // account of its readers, at most a few thousand.
+        deleted += sqlx::query!(
+            "DELETE FROM chain_heads WHERE workspace = ?1 AND domain = ?2",
+            workspace,
+            domain
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?
+        .rows_affected();
+        deleted += sqlx::query!(
+            "DELETE FROM history_floors WHERE workspace = ?1 AND domain = ?2",
+            workspace,
+            domain
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?
+        .rows_affected();
+        deleted += sqlx::query!(
+            "DELETE FROM rewrap_answers WHERE workspace = ?1 AND domain = ?2",
+            workspace,
+            domain
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?
+        .rows_affected();
+        deleted += sqlx::query!(
+            "DELETE FROM rewrap_requests WHERE workspace = ?1 AND domain = ?2",
+            workspace,
+            domain
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?
+        .rows_affected();
+        Ok(deleted)
+    }
+
+    async fn expire_domain_blobs(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        now: u64,
+        limit: u32,
+    ) -> Result<u64> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let now = at_most(now);
+        let limit = i64::from(limit);
+        let changed = sqlx::query!(
+            "UPDATE blobs SET delete_after = ?3
+             WHERE workspace = ?1 AND blob IN (
+               SELECT blob FROM blobs
+               WHERE workspace = ?1 AND domain = ?2 AND marked = 0
+                 AND (delete_after IS NULL OR delete_after > ?3)
+               LIMIT ?4
+             )",
+            workspace,
+            domain,
+            now,
+            limit
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(changed.rows_affected())
+    }
+
+    async fn delete_domain_row(&mut self, workspace: Id, domain: Id) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        sqlx::query!(
+            "DELETE FROM domains WHERE workspace = ?1 AND domain = ?2",
+            workspace,
+            domain
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
     async fn lock(&mut self, _plan: &LockPlan) -> Result<()> {
         // The one writer holds the database for the whole transaction, which
         // stands in for every lock of §15.
@@ -2063,10 +2922,12 @@ impl WriteTxn for SqliteTxn {
         let floor = int(row.floor)?;
         let record = &row.record[..];
         let heads = &row.heads[..];
+        let log_weight = at_most(row.log_weight);
         sqlx::query!(
             "INSERT INTO checkpoints
-               (workspace, domain, number, digest, seq, covered_seq, floor, record, heads, buckets)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+               (workspace, domain, number, digest, seq, covered_seq, floor, record, heads, buckets,
+                log_weight)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             workspace,
             domain,
             number,
@@ -2076,7 +2937,8 @@ impl WriteTxn for SqliteTxn {
             floor,
             record,
             heads,
-            buckets
+            buckets,
+            log_weight
         )
         .execute(self.c())
         .await
@@ -2097,24 +2959,27 @@ impl WriteTxn for SqliteTxn {
         &mut self,
         workspace: Id,
         domain: Id,
-        entries: u64,
-        weight: u64,
-        due: u64,
+        progress: &CheckpointProgress,
     ) -> Result<()> {
         let workspace = &workspace.0[..];
         let domain = &domain.0[..];
-        let entries = at_most(entries);
-        let weight = at_most(weight);
-        let due = int(due)?;
+        let entries = at_most(progress.entries);
+        let weight = at_most(progress.weight);
+        let due = int(progress.due)?;
+        let log_weight = at_most(progress.log_weight);
+        let crossing_seen = at_most(progress.crossing_seen);
         sqlx::query!(
             "UPDATE domains
-             SET entries_since_checkpoint = ?3, weight_since_checkpoint = ?4, checkpoint_due = ?5
+             SET entries_since_checkpoint = ?3, weight_since_checkpoint = ?4, checkpoint_due = ?5,
+                 log_weight = ?6, crossing_seen = ?7
              WHERE workspace = ?1 AND domain = ?2",
             workspace,
             domain,
             entries,
             weight,
-            due
+            due,
+            log_weight,
+            crossing_seen
         )
         .execute(self.c())
         .await
@@ -2990,11 +3855,6 @@ impl WriteTxn for SqliteTxn {
             .await
             .map_err(db)?
             .rows_affected();
-        deleted += sqlx::query!("DELETE FROM shares WHERE expires_at <= ?1", now)
-            .execute(self.c())
-            .await
-            .map_err(db)?
-            .rows_affected();
         deleted += sqlx::query!("DELETE FROM invitations WHERE expires_at <= ?1", now)
             .execute(self.c())
             .await
@@ -3017,8 +3877,9 @@ impl WriteTxn for SqliteTxn {
         let digest = &row.digest.0[..];
         let offset = int(row.offset)?;
         let complete = i64::from(row.complete);
+        let delete_after = row.delete_after.map(at_most);
         sqlx::query!(
-            "INSERT INTO blobs (workspace, blob, domain, device, length, digest, upload_offset, complete) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO blobs (workspace, blob, domain, device, length, digest, upload_offset, complete, delete_after) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             workspace,
             blob,
             domain,
@@ -3026,7 +3887,8 @@ impl WriteTxn for SqliteTxn {
             length,
             digest,
             offset,
-            complete
+            complete,
+            delete_after
         )
         .execute(self.c())
         .await
