@@ -6,11 +6,11 @@ use std::collections::BTreeSet;
 
 use serde_json::{Value, json};
 use sync_key_envelope::v2::{EnvelopeHeader, wrap_with_rng};
-use sync_protocol::codec::Encode;
+use sync_protocol::codec::{Encode, Sorted};
 use sync_protocol::crypto::{context, derive_key};
 use sync_protocol::keys::{key_check, recipients_digest};
 use sync_protocol::policy::PolicyChain;
-use sync_protocol::records::{Envelope, Epoch, PolicyKind, Role, Signed};
+use sync_protocol::records::{Envelope, Epoch, LinkKind, PolicyKind, Role, Signed};
 use sync_protocol::types::{Id, SecretKey, to_hex};
 
 use super::common::{Actor, Fixture, Shape, secret};
@@ -398,6 +398,69 @@ pub fn fixture() -> Fixture {
             "expect": expect,
         }));
     }
+    // Review of 0eef7d5: a change makes a domain due exactly when a device
+    // that could read it can't any more, so removing an account with no
+    // active card left makes nothing due, and a client that thought so
+    // would report honest writers' records stale.
+    let leaver_card = Actor::new("leaver", "leaver laptop");
+    f.actor(&leaver_card);
+    let mut leaver = Chain::genesis(&leaver_card);
+    let mut empty = Policy::new(w.policy.workspace);
+    empty.push(
+        &w.alice_laptop,
+        vec![w.alice.head()],
+        PolicyKind::Genesis {
+            workspace_domain: w.ws_domain,
+        },
+    );
+    empty.push(
+        &w.alice_laptop,
+        vec![w.alice.head(), leaver.head()],
+        PolicyKind::AddMember {
+            account: leaver_card.account,
+            role: Role::Editor,
+            invitation: Id([9; 16]),
+        },
+    );
+    leaver.push(
+        &leaver_card,
+        LinkKind::Remove {
+            device: leaver_card.device(),
+            keep: Sorted::default(),
+        },
+    );
+    empty.push(
+        &w.alice_laptop,
+        vec![w.alice.head(), leaver.head()],
+        PolicyKind::AccountHeads,
+    );
+    empty.push(
+        &w.alice_laptop,
+        vec![w.alice.head()],
+        PolicyKind::RemoveMember {
+            account: leaver_card.account,
+        },
+    );
+    f.case(json!({
+        "kind": "rotation_pending",
+        "name": "remove_member_of_an_account_with_no_active_card_makes_nothing_due",
+        "account_chains": chains_json(&[&w.alice, &leaver]),
+        "changes": hexes(&empty.changes),
+        "domain": w.ws_domain.to_hex(),
+        "latest_epoch_policy_revision": 3,
+        "accepted_head": 4,
+        "expect": null,
+    }));
+    f.case(json!({
+        "kind": "rotation_pending",
+        "name": "the_head_that_took_its_last_card_out_makes_the_domain_due",
+        "account_chains": chains_json(&[&w.alice, &leaver]),
+        "changes": hexes(&empty.changes),
+        "domain": w.ws_domain.to_hex(),
+        "latest_epoch_policy_revision": 2,
+        "accepted_head": 4,
+        "expect": 3,
+    }));
     f.case(json!({
         "kind": "envelope_unwrap",
         "name": "bob_unwraps_epoch_2",
