@@ -2717,11 +2717,9 @@ impl WorkspaceSync {
         service: &mut SyncService,
         page: &Page,
     ) -> Result<BTreeMap<usize, Vec<Entry>>, SyncError> {
+        use sync_protocol::manifest::{ChainLink, CheckpointWalk, WalkEntry};
+
         let checkpoints = &self.state.log.checkpoints;
-        let mut last = checkpoints
-            .last_reached()
-            .map_or((0, Digest::ZERO), |(n, r)| (n, r.digest));
-        let mut known: BTreeSet<Digest> = checkpoints.reached.values().map(|r| r.digest).collect();
         // A writer that lags names a checkpoint below the floor or below
         // the device's bootstrap point, which needs no check.
         let floor = self
@@ -2730,71 +2728,61 @@ impl WorkspaceSync {
             .retention_floor
             .max(page.retention_floor)
             .max(checkpoints.bootstrap_seq);
-        let mut extra = BTreeMap::new();
-        for (index, entry) in page.entries.iter().enumerate() {
-            let (named, then) = match &entry.record {
+        let reached: Vec<(u64, Digest)> = checkpoints
+            .reached
+            .iter()
+            .map(|(n, r)| (*n, r.digest))
+            .collect();
+        let entries: Vec<WalkEntry> = page
+            .entries
+            .iter()
+            .map(|entry| match &entry.record {
                 EntryRecord::Checkpoint(bundle) => {
-                    let record = &bundle.checkpoint.0;
-                    let digest = record.digest();
-                    if known.contains(&digest) {
-                        continue;
-                    }
-                    let previous = record.body.previous;
-                    let next = (record.body.number, digest);
-                    // A `previous` the device reached, but not the last, is
-                    // a fork that the checks report; nothing to fetch.
-                    if previous == last.1 || known.contains(&previous) {
-                        known.insert(digest);
-                        last = last.max(next);
-                        continue;
-                    }
-                    (previous, Some(next))
+                    WalkEntry::Checkpoint(ChainLink::of(&bundle.checkpoint.0))
                 }
-                EntryRecord::Operation(op)
-                    if op.body.generation == self.state.generation
-                        && !op.body.checkpoint.is_zero()
-                        && op.body.checkpoint_seq >= floor
-                        && !known.contains(&op.body.checkpoint) =>
-                {
-                    (op.body.checkpoint, None)
-                }
-                _ => continue,
+                EntryRecord::Operation(op) => WalkEntry::Operation {
+                    generation: op.body.generation,
+                    checkpoint_seq: op.body.checkpoint_seq,
+                    checkpoint: op.body.checkpoint,
+                },
+                _ => WalkEntry::Other,
+            })
+            .collect();
+        // The walk runs on what the server served so far, fetching each
+        // checkpoint it misses and running again.
+        let mut cache: BTreeMap<Digest, Option<Entry>> = BTreeMap::new();
+        loop {
+            let mut fetcher = CachedCheckpoints {
+                cache: &cache,
+                workspace: self.state.workspace,
+                domain: self.state.domain,
+                misses: Vec::new(),
             };
-            let mut walk = Vec::new();
-            let mut wanted = named;
-            while wanted != last.1 {
+            let planned =
+                CheckpointWalk::new(reached.iter().copied(), floor, self.state.generation)
+                    .plan(&entries, &mut fetcher);
+            let misses = std::mem::take(&mut fetcher.misses);
+            if misses.is_empty() {
+                let planned = planned.map_err(|_| SyncError::Check("sync_chain_gap"))?;
+                return Ok(planned
+                    .into_iter()
+                    .map(|(index, walk)| {
+                        let fetched = walk
+                            .iter()
+                            .filter_map(|link| cache.get(&link.digest).cloned().flatten())
+                            .collect();
+                        (index, fetched)
+                    })
+                    .collect());
+            }
+            for digest in misses {
                 let fetched = service
                     .client()
-                    .checkpoint_by_digest(self.state.workspace, self.state.domain, wanted)
-                    .await?
-                    .ok_or(SyncError::Check("sync_chain_gap"))?;
-                let EntryRecord::Checkpoint(bundle) = &fetched.record else {
-                    return Err(SyncError::Check("sync_chain_gap"));
-                };
-                let record = &bundle.checkpoint.0;
-                if record.digest() != wanted || record.body.number <= last.0 {
-                    return Err(SyncError::Check("sync_chain_gap"));
-                }
-                wanted = record.body.previous;
-                walk.push(fetched);
-            }
-            walk.reverse();
-            for fetched in &walk {
-                if let EntryRecord::Checkpoint(bundle) = &fetched.record {
-                    let record = &bundle.checkpoint.0;
-                    known.insert(record.digest());
-                    last = (record.body.number, record.digest());
-                }
-            }
-            if let Some(next) = then {
-                known.insert(next.1);
-                last = next;
-            }
-            if !walk.is_empty() {
-                extra.insert(index, walk);
+                    .checkpoint_by_digest(self.state.workspace, self.state.domain, digest)
+                    .await?;
+                cache.insert(digest, fetched);
             }
         }
-        Ok(extra)
     }
 
     /// Checks a page's shape and its positions against what the server
@@ -3357,6 +3345,30 @@ struct Checked {
 
 /// Serves chain positions the device fetched, and notes the ones it
 /// hasn't, which the next pass fetches.
+/// The checkpoints a walk fetched so far, by digest, noting each one it
+/// misses.
+struct CachedCheckpoints<'a> {
+    cache: &'a BTreeMap<Digest, Option<Entry>>,
+    workspace: Id,
+    domain: Id,
+    misses: Vec<Digest>,
+}
+
+impl sync_protocol::manifest::CheckpointFetcher for CachedCheckpoints<'_> {
+    fn checkpoint(&mut self, digest: &Digest) -> Option<sync_protocol::manifest::ChainLink> {
+        let Some(fetched) = self.cache.get(digest) else {
+            self.misses.push(*digest);
+            return None;
+        };
+        let EntryRecord::Checkpoint(bundle) = &fetched.as_ref()?.record else {
+            return None;
+        };
+        let record = &bundle.checkpoint.0;
+        (record.body.workspace == self.workspace && record.body.domain == self.domain)
+            .then(|| sync_protocol::manifest::ChainLink::of(record))
+    }
+}
+
 struct Cached<'a> {
     cache: &'a BTreeMap<(Id, u64), Fetched>,
     misses: Vec<(Id, u64)>,
@@ -3617,6 +3629,19 @@ async fn profile_of(
         .and_then(|w| w.profile)
         .map(|p| p.0)
         .ok_or_else(|| SyncError::Invalid("the workspace has no profile".into()))?;
+    // A change took the profile's signer out of the workspace, as a
+    // recovery does to the lost devices: an owner or admin device reads its
+    // name and signs it again on its first round (§25).
+    let snapshot = remote.policy.head_snapshot();
+    let device = service.credentials().keys.device();
+    let may_rename = snapshot
+        .account_of(&device)
+        .and_then(|account| snapshot.role(&account))
+        .is_some_and(|role| matches!(role, Role::Owner | Role::Admin));
+    if may_rename && !snapshot.is_device(&profile.body.signer) {
+        let name = check_profile_from(remote, &profile, None, false)?;
+        return Ok((name, None));
+    }
     let name = check_profile(remote, &profile, None)?;
     Ok((name, Some(mark_of(&profile))))
 }

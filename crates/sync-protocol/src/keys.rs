@@ -408,6 +408,14 @@ fn lost_read_access(policy: &PolicyChain, domain: &Id, device: &Id, through: u64
     !reads_at(through) && (1..through).any(reads_at)
 }
 
+/// Whether an epoch entry makes a checkpoint due at its entry (§17): a
+/// replacement does, since its `previous` skips the latest epoch, which
+/// the domain's latest checkpoint may name. `latest` is the digest of the
+/// domain's latest epoch record before this one.
+pub fn makes_checkpoint_due(latest: &Digest, record: &Epoch) -> bool {
+    record.previous != *latest
+}
+
 /// The server's check of a replacement epoch (§9): `previous` names a
 /// record below the latest, so it skips at least one epoch, and every
 /// record that names a skipped epoch was signed by that epoch's rotator or

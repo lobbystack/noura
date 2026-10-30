@@ -399,3 +399,166 @@ pub fn check_checkpoint(
     }
     Ok(())
 }
+
+/// A checkpoint's place in its domain's chain, as a walk back through
+/// `previous` reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChainLink {
+    /// Its `number`.
+    pub number: u64,
+    /// Its digest.
+    pub digest: Digest,
+    /// Its `previous`.
+    pub previous: Digest,
+}
+
+impl ChainLink {
+    /// The link of a checkpoint record.
+    pub fn of(record: &Signed<Checkpoint>) -> Self {
+        Self {
+            number: record.body.number,
+            digest: record.digest(),
+            previous: record.body.previous,
+        }
+    }
+}
+
+/// What a pull page's entry tells a walk for hidden checkpoints (§17,
+/// Checkpoint chain).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WalkEntry {
+    /// A checkpoint entry.
+    Checkpoint(ChainLink),
+    /// An operation, which names the latest checkpoint its writer reached,
+    /// with the restore generation it was written in.
+    Operation {
+        /// Its `generation`.
+        generation: u64,
+        /// Its `checkpoint_seq`.
+        checkpoint_seq: u64,
+        /// Its `checkpoint`.
+        checkpoint: Digest,
+    },
+    /// Any other entry.
+    Other,
+}
+
+/// Fetches a checkpoint by digest (`GET .../checkpoints/{digest}`).
+pub trait CheckpointFetcher {
+    /// The checkpoint with `digest`, or `None` when the server can't serve
+    /// it or serves another one.
+    fn checkpoint(&mut self, digest: &Digest) -> Option<ChainLink>;
+}
+
+/// Why a walk for hidden checkpoints stopped: `sync_chain_gap`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("sync_chain_gap")]
+pub struct WalkGap;
+
+/// The checkpoints a client reached in a domain, from which it finds the
+/// ones the log left out (§17, Checkpoint chain).
+#[derive(Clone, Debug)]
+pub struct CheckpointWalk {
+    last: (u64, Digest),
+    known: std::collections::BTreeSet<Digest>,
+    floor: u64,
+    generation: u64,
+}
+
+impl CheckpointWalk {
+    /// A walk from the checkpoints the client reached, as (number, digest).
+    /// An operation naming a checkpoint below `floor` (the retention
+    /// floor, or the checkpoint the device bootstrapped from) or written in
+    /// another restore generation than `generation` needs no fetch.
+    pub fn new(
+        reached: impl IntoIterator<Item = (u64, Digest)>,
+        floor: u64,
+        generation: u64,
+    ) -> Self {
+        let mut last = (0, Digest::ZERO);
+        let mut known = std::collections::BTreeSet::new();
+        for (number, digest) in reached {
+            last = last.max((number, digest));
+            known.insert(digest);
+        }
+        Self {
+            last,
+            known,
+            floor,
+            generation,
+        }
+    }
+
+    /// The checkpoints the log left out before each of `entries`, by the
+    /// index of the entry they go before, oldest first: before a
+    /// checkpoint entry whose `previous` the client hasn't reached, and
+    /// before an operation that names a checkpoint it hasn't reached. Each
+    /// walk follows `previous` back to the last checkpoint reached; one the
+    /// server can't serve, or a walk that passes it, reports the index of
+    /// the entry with [`WalkGap`].
+    pub fn plan(
+        &mut self,
+        entries: &[WalkEntry],
+        fetcher: &mut impl CheckpointFetcher,
+    ) -> Result<BTreeMap<usize, Vec<ChainLink>>, (usize, WalkGap)> {
+        let mut extra = BTreeMap::new();
+        for (index, entry) in entries.iter().enumerate() {
+            let (named, then) = match *entry {
+                WalkEntry::Checkpoint(link) => {
+                    if self.known.contains(&link.digest) {
+                        continue;
+                    }
+                    // A `previous` the client reached, but not the last, is
+                    // a fork that the checks report; nothing to fetch.
+                    if link.previous == self.last.1 || self.known.contains(&link.previous) {
+                        self.known.insert(link.digest);
+                        self.last = self.last.max((link.number, link.digest));
+                        continue;
+                    }
+                    (link.previous, Some(link))
+                }
+                WalkEntry::Operation {
+                    generation,
+                    checkpoint_seq,
+                    checkpoint,
+                } if generation == self.generation
+                    && !checkpoint.is_zero()
+                    && checkpoint_seq >= self.floor
+                    && !self.known.contains(&checkpoint) =>
+                {
+                    (checkpoint, None)
+                }
+                _ => continue,
+            };
+            let mut walk = Vec::new();
+            let mut wanted = named;
+            // Each `previous` names the number one below, so a walk ends.
+            let mut above = then.map(|l| l.number);
+            while wanted != self.last.1 {
+                let link = fetcher.checkpoint(&wanted).ok_or((index, WalkGap))?;
+                if link.digest != wanted
+                    || link.number <= self.last.0
+                    || above.is_some_and(|n| link.number + 1 != n)
+                {
+                    return Err((index, WalkGap));
+                }
+                above = Some(link.number);
+                wanted = link.previous;
+                walk.push(link);
+            }
+            walk.reverse();
+            for link in &walk {
+                self.known.insert(link.digest);
+                self.last = (link.number, link.digest);
+            }
+            if let Some(link) = then {
+                self.known.insert(link.digest);
+                self.last = (link.number, link.digest);
+            }
+            if !walk.is_empty() {
+                extra.insert(index, walk);
+            }
+        }
+        Ok(extra)
+    }
+}

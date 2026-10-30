@@ -220,7 +220,7 @@ pub(crate) async fn apply_epoch(
             "an epoch record comes one above the domain's latest",
         ));
     }
-    let replacement = body.previous != row.epoch_digest;
+    let replacement = sync_protocol::keys::makes_checkpoint_due(&row.epoch_digest, body);
     if !replacement {
         let due = policy.rotation_required(&domain, row.epoch_policy_revision, head_revision);
         if due.is_none_or(|r| body.policy_revision < r) {

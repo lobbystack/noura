@@ -242,6 +242,43 @@ pub fn fixture() -> Fixture {
             step_epoch(&e4, &ws_key4, json!({"replacement": [3, 3]})),
         ],
     }));
+    // A replacement makes a checkpoint due at its entry, since the domain's
+    // latest checkpoint may name the epoch it skips; a rotation that
+    // follows the latest epoch doesn't (§17). `latest` is the digest of
+    // the domain's latest epoch record before the entry.
+    let skipped = epoch_record(
+        &w.verified,
+        w.workspace,
+        w.ws_domain,
+        3,
+        Some(&w.ws_epoch2),
+        3,
+        &w.bob_laptop,
+        &secret("workspace epoch 3, skipped"),
+        Some(&w.ws_key2),
+    );
+    for (name, latest, record, expect) in [
+        (
+            "a_rotation_makes_no_checkpoint_due",
+            &w.ws_epoch1,
+            &w.ws_epoch2,
+            false,
+        ),
+        ("a_replacement_makes_a_checkpoint_due", &skipped, &e4, true),
+    ] {
+        assert_eq!(
+            sync_protocol::keys::makes_checkpoint_due(&latest.digest(), &record.body),
+            expect,
+            "{name}"
+        );
+        f.case(json!({
+            "kind": "epoch_entry_due",
+            "name": name,
+            "latest": latest.digest().to_hex(),
+            "epoch": to_hex(&record.to_bytes()),
+            "expect": expect,
+        }));
+    }
 
     // A removal at revision 4, for envelopes, skipped epochs and positions.
     let mut policy = w.policy.clone();

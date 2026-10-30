@@ -1107,9 +1107,412 @@
 			"server": [],
 			"server_pruned": true,
 			"start_heads": []
+		},
+		{
+			"entries": [
+				{
+					"operation": {
+						"checkpoint": "7a57c8a80fcece9a75fdd5d7aa6583458ec4af9fa31480fc5786344fdd65cfb3",
+						"checkpoint_seq": 10,
+						"generation": 1,
+						"seq": 16
+					}
+				},
+				{
+					"checkpoint": {
+						"digest": "7d606161b8148396c0886780b6bd337e8a9981caa735304f20d1c346861ab4f1",
+						"number": 2,
+						"previous": "7a57c8a80fcece9a75fdd5d7aa6583458ec4af9fa31480fc5786344fdd65cfb3"
+					},
+					"covered_seq": 20,
+					"seq": 25
+				}
+			],
+			"expect": {
+				"fetched": []
+			},
+			"floor": 0,
+			"generation": 1,
+			"kind": "checkpoint_walk",
+			"name": "the_next_checkpoint_entry",
+			"reached": [
+				{
+					"digest": "7a57c8a80fcece9a75fdd5d7aa6583458ec4af9fa31480fc5786344fdd65cfb3",
+					"number": 1,
+					"previous": "0000000000000000000000000000000000000000000000000000000000000000"
+				}
+			],
+			"server": []
+		},
+		{
+			"entries": [
+				{
+					"operation": {
+						"checkpoint": "7a57c8a80fcece9a75fdd5d7aa6583458ec4af9fa31480fc5786344fdd65cfb3",
+						"checkpoint_seq": 10,
+						"generation": 1,
+						"seq": 21
+					}
+				},
+				{
+					"operation": {
+						"checkpoint": "7a57c8a80fcece9a75fdd5d7aa6583458ec4af9fa31480fc5786344fdd65cfb3",
+						"checkpoint_seq": 10,
+						"generation": 1,
+						"seq": 22
+					}
+				},
+				{
+					"checkpoint": {
+						"digest": "7d606161b8148396c0886780b6bd337e8a9981caa735304f20d1c346861ab4f1",
+						"number": 2,
+						"previous": "7a57c8a80fcece9a75fdd5d7aa6583458ec4af9fa31480fc5786344fdd65cfb3"
+					},
+					"covered_seq": 20,
+					"seq": 25
+				},
+				{
+					"operation": {
+						"checkpoint": "7d606161b8148396c0886780b6bd337e8a9981caa735304f20d1c346861ab4f1",
+						"checkpoint_seq": 20,
+						"generation": 1,
+						"seq": 26
+					}
+				}
+			],
+			"expect": {
+				"fetched": []
+			},
+			"floor": 0,
+			"generation": 1,
+			"kind": "checkpoint_walk",
+			"name": "a_checkpoint_that_arrives_after_the_client_passed_its_covered_seq",
+			"reached": [
+				{
+					"digest": "7a57c8a80fcece9a75fdd5d7aa6583458ec4af9fa31480fc5786344fdd65cfb3",
+					"number": 1,
+					"previous": "0000000000000000000000000000000000000000000000000000000000000000"
+				}
+			],
+			"server": []
+		},
+		{
+			"entries": [
+				{
+					"operation": {
+						"checkpoint": "7a57c8a80fcece9a75fdd5d7aa6583458ec4af9fa31480fc5786344fdd65cfb3",
+						"checkpoint_seq": 10,
+						"generation": 1,
+						"seq": 21
+					}
+				},
+				{
+					"operation": {
+						"checkpoint": "7d606161b8148396c0886780b6bd337e8a9981caa735304f20d1c346861ab4f1",
+						"checkpoint_seq": 20,
+						"generation": 1,
+						"seq": 26
+					}
+				}
+			],
+			"expect": {
+				"fetched": [
+					{
+						"before": 1,
+						"checkpoints": [
+							"7d606161b8148396c0886780b6bd337e8a9981caa735304f20d1c346861ab4f1"
+						]
+					}
+				]
+			},
+			"floor": 0,
+			"generation": 1,
+			"kind": "checkpoint_walk",
+			"name": "a_checkpoint_entry_left_out_while_records_still_cross",
+			"reached": [
+				{
+					"digest": "7a57c8a80fcece9a75fdd5d7aa6583458ec4af9fa31480fc5786344fdd65cfb3",
+					"number": 1,
+					"previous": "0000000000000000000000000000000000000000000000000000000000000000"
+				}
+			],
+			"server": [
+				{
+					"digest": "7d606161b8148396c0886780b6bd337e8a9981caa735304f20d1c346861ab4f1",
+					"number": 2,
+					"previous": "7a57c8a80fcece9a75fdd5d7aa6583458ec4af9fa31480fc5786344fdd65cfb3"
+				}
+			]
+		},
+		{
+			"entries": [
+				{
+					"operation": {
+						"checkpoint": "5009bfa31884519fb9d3e9fdf4a64b7feecb11ebb9d052467ed249cce6aff95b",
+						"checkpoint_seq": 30,
+						"generation": 1,
+						"seq": 36
+					}
+				},
+				{
+					"checkpoint": {
+						"digest": "72241cc8b0cd2c3f801c8d122eb4e10b926c3cf187dfe9a326676e694f923c50",
+						"number": 4,
+						"previous": "5009bfa31884519fb9d3e9fdf4a64b7feecb11ebb9d052467ed249cce6aff95b"
+					},
+					"covered_seq": 40,
+					"seq": 45
+				}
+			],
+			"expect": {
+				"fetched": [
+					{
+						"before": 0,
+						"checkpoints": [
+							"7d606161b8148396c0886780b6bd337e8a9981caa735304f20d1c346861ab4f1",
+							"5009bfa31884519fb9d3e9fdf4a64b7feecb11ebb9d052467ed249cce6aff95b"
+						]
+					}
+				]
+			},
+			"floor": 0,
+			"generation": 1,
+			"kind": "checkpoint_walk",
+			"name": "two_checkpoints_left_out_walked_back_through_previous",
+			"reached": [
+				{
+					"digest": "7a57c8a80fcece9a75fdd5d7aa6583458ec4af9fa31480fc5786344fdd65cfb3",
+					"number": 1,
+					"previous": "0000000000000000000000000000000000000000000000000000000000000000"
+				}
+			],
+			"server": [
+				{
+					"digest": "7d606161b8148396c0886780b6bd337e8a9981caa735304f20d1c346861ab4f1",
+					"number": 2,
+					"previous": "7a57c8a80fcece9a75fdd5d7aa6583458ec4af9fa31480fc5786344fdd65cfb3"
+				},
+				{
+					"digest": "5009bfa31884519fb9d3e9fdf4a64b7feecb11ebb9d052467ed249cce6aff95b",
+					"number": 3,
+					"previous": "7d606161b8148396c0886780b6bd337e8a9981caa735304f20d1c346861ab4f1"
+				}
+			]
+		},
+		{
+			"entries": [
+				{
+					"checkpoint": {
+						"digest": "5009bfa31884519fb9d3e9fdf4a64b7feecb11ebb9d052467ed249cce6aff95b",
+						"number": 3,
+						"previous": "7d606161b8148396c0886780b6bd337e8a9981caa735304f20d1c346861ab4f1"
+					},
+					"covered_seq": 30,
+					"seq": 35
+				}
+			],
+			"expect": {
+				"fetched": [
+					{
+						"before": 0,
+						"checkpoints": [
+							"7d606161b8148396c0886780b6bd337e8a9981caa735304f20d1c346861ab4f1"
+						]
+					}
+				]
+			},
+			"floor": 0,
+			"generation": 1,
+			"kind": "checkpoint_walk",
+			"name": "a_checkpoint_entry_whose_previous_the_log_left_out",
+			"reached": [
+				{
+					"digest": "7a57c8a80fcece9a75fdd5d7aa6583458ec4af9fa31480fc5786344fdd65cfb3",
+					"number": 1,
+					"previous": "0000000000000000000000000000000000000000000000000000000000000000"
+				}
+			],
+			"server": [
+				{
+					"digest": "7d606161b8148396c0886780b6bd337e8a9981caa735304f20d1c346861ab4f1",
+					"number": 2,
+					"previous": "7a57c8a80fcece9a75fdd5d7aa6583458ec4af9fa31480fc5786344fdd65cfb3"
+				}
+			]
+		},
+		{
+			"entries": [
+				{
+					"operation": {
+						"checkpoint": "7d606161b8148396c0886780b6bd337e8a9981caa735304f20d1c346861ab4f1",
+						"checkpoint_seq": 20,
+						"generation": 1,
+						"seq": 26
+					}
+				}
+			],
+			"expect": {
+				"error": "gap",
+				"index": 0
+			},
+			"floor": 0,
+			"generation": 1,
+			"kind": "checkpoint_walk",
+			"name": "a_left_out_checkpoint_the_server_cant_serve",
+			"reached": [
+				{
+					"digest": "7a57c8a80fcece9a75fdd5d7aa6583458ec4af9fa31480fc5786344fdd65cfb3",
+					"number": 1,
+					"previous": "0000000000000000000000000000000000000000000000000000000000000000"
+				}
+			],
+			"server": []
+		},
+		{
+			"entries": [
+				{
+					"operation": {
+						"checkpoint": "5009bfa31884519fb9d3e9fdf4a64b7feecb11ebb9d052467ed249cce6aff95b",
+						"checkpoint_seq": 30,
+						"generation": 1,
+						"seq": 36
+					}
+				}
+			],
+			"expect": {
+				"error": "gap",
+				"index": 0
+			},
+			"floor": 0,
+			"generation": 1,
+			"kind": "checkpoint_walk",
+			"name": "a_walk_that_misses_a_link",
+			"reached": [
+				{
+					"digest": "7a57c8a80fcece9a75fdd5d7aa6583458ec4af9fa31480fc5786344fdd65cfb3",
+					"number": 1,
+					"previous": "0000000000000000000000000000000000000000000000000000000000000000"
+				}
+			],
+			"server": [
+				{
+					"digest": "5009bfa31884519fb9d3e9fdf4a64b7feecb11ebb9d052467ed249cce6aff95b",
+					"number": 3,
+					"previous": "7d606161b8148396c0886780b6bd337e8a9981caa735304f20d1c346861ab4f1"
+				}
+			]
+		},
+		{
+			"entries": [
+				{
+					"checkpoint": {
+						"digest": "69ae710c81ae35a887a742821aec2ee7688af2853e832e39a757b4c829fabd5a",
+						"number": 5,
+						"previous": "72241cc8b0cd2c3f801c8d122eb4e10b926c3cf187dfe9a326676e694f923c50"
+					},
+					"covered_seq": 50,
+					"seq": 55
+				}
+			],
+			"expect": {
+				"error": "gap",
+				"index": 0
+			},
+			"floor": 0,
+			"generation": 1,
+			"kind": "checkpoint_walk",
+			"name": "a_walk_that_loops_back_above_the_last_reached",
+			"reached": [
+				{
+					"digest": "7a57c8a80fcece9a75fdd5d7aa6583458ec4af9fa31480fc5786344fdd65cfb3",
+					"number": 1,
+					"previous": "0000000000000000000000000000000000000000000000000000000000000000"
+				}
+			],
+			"server": [
+				{
+					"digest": "72241cc8b0cd2c3f801c8d122eb4e10b926c3cf187dfe9a326676e694f923c50",
+					"number": 4,
+					"previous": "5009bfa31884519fb9d3e9fdf4a64b7feecb11ebb9d052467ed249cce6aff95b"
+				},
+				{
+					"digest": "5009bfa31884519fb9d3e9fdf4a64b7feecb11ebb9d052467ed249cce6aff95b",
+					"number": 3,
+					"previous": "72241cc8b0cd2c3f801c8d122eb4e10b926c3cf187dfe9a326676e694f923c50"
+				}
+			]
+		},
+		{
+			"entries": [
+				{
+					"operation": {
+						"checkpoint": "7d606161b8148396c0886780b6bd337e8a9981caa735304f20d1c346861ab4f1",
+						"checkpoint_seq": 20,
+						"generation": 1,
+						"seq": 36
+					}
+				}
+			],
+			"expect": {
+				"fetched": []
+			},
+			"floor": 25,
+			"generation": 1,
+			"kind": "checkpoint_walk",
+			"name": "a_record_naming_a_checkpoint_below_the_floor",
+			"reached": [
+				{
+					"digest": "5009bfa31884519fb9d3e9fdf4a64b7feecb11ebb9d052467ed249cce6aff95b",
+					"number": 3,
+					"previous": "7d606161b8148396c0886780b6bd337e8a9981caa735304f20d1c346861ab4f1"
+				}
+			],
+			"server": []
+		},
+		{
+			"entries": [
+				{
+					"operation": {
+						"checkpoint": "7d606161b8148396c0886780b6bd337e8a9981caa735304f20d1c346861ab4f1",
+						"checkpoint_seq": 20,
+						"generation": 0,
+						"seq": 3
+					}
+				}
+			],
+			"expect": {
+				"fetched": []
+			},
+			"floor": 0,
+			"generation": 1,
+			"kind": "checkpoint_walk",
+			"name": "a_record_of_an_earlier_generation",
+			"reached": [],
+			"server": []
+		},
+		{
+			"entries": [
+				{
+					"operation": {
+						"checkpoint": "0000000000000000000000000000000000000000000000000000000000000000",
+						"checkpoint_seq": 0,
+						"generation": 1,
+						"seq": 3
+					}
+				}
+			],
+			"expect": {
+				"fetched": []
+			},
+			"floor": 0,
+			"generation": 1,
+			"kind": "checkpoint_walk",
+			"name": "a_record_before_the_first_checkpoint",
+			"reached": [],
+			"server": []
 		}
 	],
-	"description": "Device chains (sync-v2.md §14): schedules of served records and what the chain verifier reports for each. `server` lists what `GET .../chain/{device}/{counter}` serves (the record at that counter or the device's next one above it), `start_heads` the heads a bootstrap checkpoint gave, and `expect` either the verdict of each record of each page or the error and the page and index where it occurs.",
+	"description": "Device chains (sync-v2.md §14): schedules of served records and what the chain verifier reports for each. `server` lists what `GET .../chain/{device}/{counter}` serves (the record at that counter or the device's next one above it), `start_heads` the heads a bootstrap checkpoint gave, and `expect` either the verdict of each record of each page or the error and the page and index where it occurs. A `checkpoint_walk` case (§17, Checkpoint chain) gives the checkpoints a client `reached`, its `floor` and restore `generation`, the checkpoints `GET .../checkpoints/{digest}` serves, and a page's `entries`, and `expect` lists the checkpoints the client fetches before each entry, oldest first, or the index of the entry where the walk reports `sync_chain_gap`.",
 	"fixture_keys_are_public_test_values": true,
 	"keys": {},
 	"records": []

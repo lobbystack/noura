@@ -599,6 +599,14 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
                 .then(|| after_failed_envelopes(case["accepted_earlier_epoch"].as_bool().unwrap()));
             same(json!({"accepted": accepted, "then": then}), expect.clone())
         }
+        "epoch_entry_due" => {
+            let record = Signed::<Epoch>::from_bytes(&hex(&case["epoch"])).unwrap();
+            let latest = Digest::from_hex(case["latest"].as_str().unwrap()).unwrap();
+            same(
+                sync_protocol::keys::makes_checkpoint_due(&latest, &record.body),
+                expect.as_bool().unwrap(),
+            )
+        }
         "skipped_epoch_record" => {
             let verified = policy(case);
             let rotator = id_of(&case["rotator"]);
@@ -789,6 +797,69 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
                 }
             }
             same(json!(verdicts), expect.clone())
+        }
+
+        "checkpoint_walk" => {
+            use sync_protocol::manifest::{
+                ChainLink, CheckpointFetcher, CheckpointWalk, WalkEntry,
+            };
+            let link = |v: &Value| ChainLink {
+                number: u64_of(&v["number"]),
+                digest: Digest::from_hex(v["digest"].as_str().unwrap()).unwrap(),
+                previous: Digest::from_hex(v["previous"].as_str().unwrap()).unwrap(),
+            };
+            struct Served(Vec<ChainLink>);
+            impl CheckpointFetcher for Served {
+                fn checkpoint(&mut self, digest: &Digest) -> Option<ChainLink> {
+                    self.0.iter().find(|l| l.digest == *digest).copied()
+                }
+            }
+            let mut served = Served(
+                case["server"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(link)
+                    .collect(),
+            );
+            let reached: Vec<(u64, Digest)> = case["reached"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(link)
+                .map(|l| (l.number, l.digest))
+                .collect();
+            let entries: Vec<WalkEntry> = case["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| {
+                    if let Some(c) = e.get("checkpoint") {
+                        WalkEntry::Checkpoint(link(c))
+                    } else {
+                        let op = &e["operation"];
+                        WalkEntry::Operation {
+                            generation: u64_of(&op["generation"]),
+                            checkpoint_seq: u64_of(&op["checkpoint_seq"]),
+                            checkpoint: Digest::from_hex(op["checkpoint"].as_str().unwrap())
+                                .unwrap(),
+                        }
+                    }
+                })
+                .collect();
+            let mut walk =
+                CheckpointWalk::new(reached, u64_of(&case["floor"]), u64_of(&case["generation"]));
+            let ours = match walk.plan(&entries, &mut served) {
+                Ok(planned) => json!({"fetched": planned
+                    .iter()
+                    .map(|(before, walk)| json!({
+                        "before": before,
+                        "checkpoints": walk.iter().map(|l| l.digest.to_hex()).collect::<Vec<_>>(),
+                    }))
+                    .collect::<Vec<_>>()}),
+                Err((index, _)) => json!({"error": "gap", "index": index}),
+            };
+            same(ours, expect.clone())
         }
 
         // Live sets.

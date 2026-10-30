@@ -3,6 +3,7 @@
 use serde_json::{Value, json};
 use sync_protocol::chain::ChainRecord;
 use sync_protocol::crypto::hash_parts;
+use sync_protocol::manifest::ChainLink;
 use sync_protocol::types::{Digest, Id};
 
 use super::common::{Fixture, id};
@@ -86,7 +87,7 @@ fn schedule(
 pub fn fixture() -> Fixture {
     let mut f = Fixture::new(
         "sync-v2-chain.json",
-        "Device chains (sync-v2.md §14): schedules of served records and what the chain verifier reports for each. `server` lists what `GET .../chain/{device}/{counter}` serves (the record at that counter or the device's next one above it), `start_heads` the heads a bootstrap checkpoint gave, and `expect` either the verdict of each record of each page or the error and the page and index where it occurs.",
+        "Device chains (sync-v2.md §14): schedules of served records and what the chain verifier reports for each. `server` lists what `GET .../chain/{device}/{counter}` serves (the record at that counter or the device's next one above it), `start_heads` the heads a bootstrap checkpoint gave, and `expect` either the verdict of each record of each page or the error and the page and index where it occurs. A `checkpoint_walk` case (§17, Checkpoint chain) gives the checkpoints a client `reached`, its `floor` and restore `generation`, the checkpoints `GET .../checkpoints/{digest}` serves, and a page's `entries`, and `expect` lists the checkpoints the client fetches before each entry, oldest first, or the index of the entry where the walk reports `sync_chain_gap`.",
     );
     let accept = json!({"verdict": "accept"});
     let ignore = json!({"verdict": "ignore"});
@@ -343,5 +344,169 @@ pub fn fixture() -> Fixture {
         "pages": [[rec(&a), rec(&c)]],
         "expect": {"error": "pruned", "page": 0, "index": 1},
     }));
+    checkpoint_walks(&mut f);
     f
+}
+
+fn link(r: &ChainLink) -> Value {
+    json!({"number": r.number, "digest": r.digest.to_hex(), "previous": r.previous.to_hex()})
+}
+
+/// A checkpoint entry at `seq` that covers the log through `covered_seq`.
+fn entry(r: &ChainLink, seq: u64, covered_seq: u64) -> Value {
+    json!({"checkpoint": link(r), "seq": seq, "covered_seq": covered_seq})
+}
+
+/// An operation at `seq` that names the checkpoint `named` covering
+/// `checkpoint_seq`, written in restore generation `generation`.
+fn names(named: Option<&ChainLink>, checkpoint_seq: u64, generation: u64, seq: u64) -> Value {
+    json!({"operation": {
+        "seq": seq,
+        "generation": generation,
+        "checkpoint_seq": checkpoint_seq,
+        "checkpoint": named.map_or(Digest::ZERO, |n| n.digest).to_hex(),
+    }})
+}
+
+fn fetched(before: usize, walk: &[&ChainLink]) -> Value {
+    json!({"before": before, "checkpoints": walk.iter().map(|l| l.digest.to_hex()).collect::<Vec<_>>()})
+}
+
+/// Schedules for the walk that fetches the checkpoints a client's log left
+/// out (§17, Checkpoint chain).
+fn checkpoint_walks(f: &mut Fixture) {
+    // Checkpoints 1 to 5 of one domain, checkpoint n covering the log
+    // through 10n and committing at 10n + 5.
+    let mut chain: Vec<ChainLink> = Vec::new();
+    for number in 1..=5u64 {
+        let previous = chain.last().map_or(Digest::ZERO, |c| c.digest);
+        chain.push(ChainLink {
+            number,
+            digest: hash_parts(&[b"checkpoint fixture", &number.to_be_bytes()]),
+            previous,
+        });
+    }
+    let c = |n: usize| &chain[n - 1];
+    let walk = |name: &str,
+                reached: &[&ChainLink],
+                floor: u64,
+                server: &[&ChainLink],
+                entries: Vec<Value>,
+                expect: Value| {
+        json!({
+            "kind": "checkpoint_walk",
+            "name": name,
+            "reached": reached.iter().map(|l| link(l)).collect::<Vec<_>>(),
+            "floor": floor,
+            "generation": 1,
+            "server": server.iter().map(|l| link(l)).collect::<Vec<_>>(),
+            "entries": entries,
+            "expect": expect,
+        })
+    };
+    let none = json!({"fetched": []});
+    f.case(walk(
+        "the_next_checkpoint_entry",
+        &[c(1)],
+        0,
+        &[],
+        vec![names(Some(c(1)), 10, 1, 16), entry(c(2), 25, 20)],
+        none.clone(),
+    ));
+    // The client applied records past `covered_seq` before the entry
+    // arrived; it still reaches the checkpoint without a fetch, and checks
+    // it against its live set at `covered_seq`.
+    f.case(walk(
+        "a_checkpoint_that_arrives_after_the_client_passed_its_covered_seq",
+        &[c(1)],
+        0,
+        &[],
+        vec![
+            names(Some(c(1)), 10, 1, 21),
+            names(Some(c(1)), 10, 1, 22),
+            entry(c(2), 25, 20),
+            names(Some(c(2)), 20, 1, 26),
+        ],
+        none.clone(),
+    ));
+    // The server left checkpoint 2's entry out of this client's log, while
+    // another writer's records, which name it, still cross.
+    f.case(walk(
+        "a_checkpoint_entry_left_out_while_records_still_cross",
+        &[c(1)],
+        0,
+        &[c(2)],
+        vec![names(Some(c(1)), 10, 1, 21), names(Some(c(2)), 20, 1, 26)],
+        json!({"fetched": [fetched(1, &[c(2)])]}),
+    ));
+    f.case(walk(
+        "two_checkpoints_left_out_walked_back_through_previous",
+        &[c(1)],
+        0,
+        &[c(2), c(3)],
+        vec![names(Some(c(3)), 30, 1, 36), entry(c(4), 45, 40)],
+        json!({"fetched": [fetched(0, &[c(2), c(3)])]}),
+    ));
+    f.case(walk(
+        "a_checkpoint_entry_whose_previous_the_log_left_out",
+        &[c(1)],
+        0,
+        &[c(2)],
+        vec![entry(c(3), 35, 30)],
+        json!({"fetched": [fetched(0, &[c(2)])]}),
+    ));
+    f.case(walk(
+        "a_left_out_checkpoint_the_server_cant_serve",
+        &[c(1)],
+        0,
+        &[],
+        vec![names(Some(c(2)), 20, 1, 26)],
+        json!({"error": "gap", "index": 0}),
+    ));
+    f.case(walk(
+        "a_walk_that_misses_a_link",
+        &[c(1)],
+        0,
+        &[c(3)],
+        vec![names(Some(c(3)), 30, 1, 36)],
+        json!({"error": "gap", "index": 0}),
+    ));
+    // A served record whose `previous` names a checkpoint the walk passed.
+    let forged = ChainLink {
+        number: 3,
+        digest: c(3).digest,
+        previous: c(4).digest,
+    };
+    f.case(walk(
+        "a_walk_that_loops_back_above_the_last_reached",
+        &[c(1)],
+        0,
+        &[c(4), &forged],
+        vec![entry(c(5), 55, 50)],
+        json!({"error": "gap", "index": 0}),
+    ));
+    f.case(walk(
+        "a_record_naming_a_checkpoint_below_the_floor",
+        &[c(3)],
+        25,
+        &[],
+        vec![names(Some(c(2)), 20, 1, 36)],
+        none.clone(),
+    ));
+    f.case(walk(
+        "a_record_of_an_earlier_generation",
+        &[],
+        0,
+        &[],
+        vec![names(Some(c(2)), 20, 0, 3)],
+        none.clone(),
+    ));
+    f.case(walk(
+        "a_record_before_the_first_checkpoint",
+        &[],
+        0,
+        &[],
+        vec![names(None, 0, 1, 3)],
+        none,
+    ));
 }

@@ -237,8 +237,11 @@ pub fn fixture() -> Fixture {
 /// replaces the field, a number adds to it), drops the last head when
 /// `drop_head` holds, and pushes it. With `after_one_checkpoint`, an
 /// honest checkpoint commits first and the writers write on to the next
-/// due point. A `covered_seq` of `due - 1`, `head + 1` or
-/// `previous entry - 1` names a sequence by those points.
+/// due point. With `after_replacement`, a bad epoch 2 commits, then a
+/// replacement epoch 3 that skips it, which makes a checkpoint due at its
+/// entry (§17); the edit `skipped_epoch` names epoch 2 and its record. A
+/// `covered_seq` of `due - 1`, `head + 1` or `previous entry - 1` names a
+/// sequence by those points.
 fn server_checks(f: &mut Fixture) {
     let digest = |b: u8| Digest([b; 32]).to_hex();
     let case = |name: &str, edit: Value, expect: &str| {
@@ -251,6 +254,7 @@ fn server_checks(f: &mut Fixture) {
             "edit": edit,
             "drop_head": false,
             "after_one_checkpoint": false,
+            "after_replacement": false,
             "expect": expect,
         })
     };
@@ -370,6 +374,31 @@ fn server_checks(f: &mut Fixture) {
             json!(covered),
         )
     };
+    let replaced = |name: &str, covered: &str, edit: Value, expect: &str| {
+        with(
+            with(case(name, edit, expect), "after_replacement", json!(true)),
+            "covered_seq",
+            json!(covered),
+        )
+    };
+    f.case(replaced(
+        "a_checkpoint_at_a_replacements_entry",
+        "due",
+        json!({}),
+        "ok",
+    ));
+    f.case(replaced(
+        "a_checkpoint_short_of_a_replacements_entry",
+        "due - 1",
+        json!({"skipped_epoch": true}),
+        "checkpoint_not_due",
+    ));
+    f.case(replaced(
+        "a_checkpoint_after_a_replacement_naming_the_skipped_epoch",
+        "due",
+        json!({"skipped_epoch": true}),
+        "manifest_mismatch",
+    ));
     f.case(after("the_second_checkpoint", "due", json!({}), "ok"));
     f.case(after(
         "a_covered_seq_below_the_previous_checkpoints_entry",

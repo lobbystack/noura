@@ -1608,3 +1608,216 @@ async fn a_new_device_bootstraps_right_after_a_replacement() {
     assert_eq!(d.files(), pair.b.files());
     assert!(sync_d.checkpoint_failures().is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn offers_and_kits_over_workspaces_opened_before_a_checkpoint_anchor_the_latest() {
+    use sync_support::approve;
+
+    let server = Server::start_with_interval(3).await;
+    let (mut laptop, a, mut sync_a) = laptop_with_folder(&server).await;
+    let workspace = sync_a.workspace();
+    // The app opens its workspaces once, when it connects (account/live.rs),
+    // and makes later offers and kits over them.
+    let mut opened = laptop
+        .service
+        .open_workspace(workspace)
+        .await
+        .expect("opened");
+    let accepted = checkpoint_until(&mut laptop.service, &a, &mut sync_a, "a", |n| n >= 2).await;
+
+    let outside = tempfile::tempdir().unwrap();
+    let path = outside.path().join("Noura recovery kit");
+    let export = laptop
+        .service
+        .export_kit(&path, &[], std::slice::from_mut(&mut opened))
+        .await
+        .expect("exported");
+    let kit =
+        app_core::sync::recovery::open_kit(&path, export.secret.as_ref()).expect("the kit opens");
+    let anchor = kit.workspaces[0].anchors.iter().next().expect("an anchor");
+    assert_eq!(
+        (anchor.covered_seq, anchor.checkpoint),
+        (accepted.body.covered_seq, accepted.digest()),
+        "the kit anchors the checkpoint accepted after the workspace opened"
+    );
+
+    let desktop = approve(&server, &mut laptop, std::slice::from_mut(&mut opened)).await;
+    let kept = desktop
+        .service
+        .kept_heads()
+        .checkpoint_anchor(&workspace, &sync_a.domain())
+        .expect("an anchor");
+    assert_eq!(
+        (kept.covered_seq, kept.checkpoint),
+        (accepted.body.covered_seq, accepted.digest()),
+        "the offer anchors it too"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_recovery_bootstraps_from_its_kits_anchor_and_signs_the_next_checkpoint() {
+    a_recovery_bootstraps_from_its_kits_anchor(Server::start_with_interval(3).await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_recovery_bootstraps_from_its_kits_anchor_and_signs_the_next_checkpoint_on_postgres() {
+    a_recovery_bootstraps_from_its_kits_anchor(Server::start_postgres_with_interval(3).await).await;
+}
+
+/// After losing the laptop, its only device, the account recovers with a
+/// kit. The recovery removes the laptop, which signed every checkpoint,
+/// so Recency refuses the latest, and no other writer is left to sign the
+/// next. The recovered device bootstraps from the kit's anchor, which
+/// Recency skips, pulls on through the later checkpoints as log entries,
+/// and signs the checkpoint the removal made due.
+async fn a_recovery_bootstraps_from_its_kits_anchor<B: Backend>(server: Server<B>) {
+    use app_core::sync::recovery::{Recovery, open_kit};
+    use std::sync::Arc;
+    use sync_support::{Folder, MemorySecrets};
+
+    let (mut laptop, a, mut sync_a) = laptop_with_folder(&server).await;
+    let workspace = sync_a.workspace();
+    let anchored = checkpoint_until(&mut laptop.service, &a, &mut sync_a, "a", |n| n >= 2).await;
+    let mut opened = laptop
+        .service
+        .open_workspace(workspace)
+        .await
+        .expect("opened");
+    let outside = tempfile::tempdir().unwrap();
+    let path = outside.path().join("Noura recovery kit");
+    let export = laptop
+        .service
+        .export_kit(&path, &[], std::slice::from_mut(&mut opened))
+        .await
+        .expect("exported");
+    // The laptop writes on and signs later checkpoints before it's lost.
+    let start = anchored.body.number;
+    let latest = checkpoint_until(&mut laptop.service, &a, &mut sync_a, "b", |n| {
+        n >= start + 3
+    })
+    .await;
+    a.write("Last.md", b"# Last\n");
+    sync_a.round(&mut laptop.service, 0).await.expect("a round");
+
+    let kit = open_kit(&path, export.secret.as_ref()).expect("the kit opens");
+    let signed_in = server
+        .sign_in(laptop.credentials.account, &server.base)
+        .await;
+    let secrets = Arc::new(MemorySecrets::default());
+    let state = tempfile::tempdir().unwrap();
+    let recovery = Recovery::begin(&signed_in, kit, secrets.clone(), state.path())
+        .await
+        .expect("the kit's identity proves");
+    let (mut service, _workspaces, _) = recovery.finish(&[], &*secrets).await.expect("recovered");
+
+    let mut b = Folder::new("Recovered");
+    let mut sync_b = app_core::sync::workspace::WorkspaceSync::download(
+        &mut service,
+        b.engine.clone(),
+        workspace,
+        &mut b.registry,
+    )
+    .await
+    .expect("the download starts");
+    sync_b.set_checkpoint_wait(Duration::ZERO);
+    sync_b
+        .round(&mut service, 0)
+        .await
+        .expect("the recovered device downloads");
+    assert_eq!(b.files(), a.files());
+    assert!(sync_b.checkpoint_failures().is_empty());
+    assert_eq!(
+        sync_b.latest_checkpoint().map(|c| c.digest()),
+        Some(latest.digest()),
+        "the later checkpoints pass as log entries"
+    );
+
+    // The removal made a checkpoint due, and the recovered device, the only
+    // writer left, signs it.
+    let me = service.credentials().keys.device();
+    let next = checkpoint_until(&mut service, &b, &mut sync_b, "c", |n| {
+        n > latest.body.number
+    })
+    .await;
+    assert_eq!(next.body.signer, me);
+    assert!(sync_b.checkpoint_failures().is_empty());
+}
+
+/// The fixture's kit and offer, read through the client's code: the kit
+/// opens with its secret and anchors each domain with the checkpoint and
+/// its restore generation, and the offer anchors the workspace domain the
+/// same way (§10, §12, `sync-v2-recovery.json`, `sync-v2-approval.json`).
+#[test]
+fn the_fixture_kit_and_offer_carry_checkpoint_anchors_with_their_generation() {
+    use sync_protocol::records::{Offer, Signed};
+    use sync_protocol::types::{Digest, Id};
+
+    let fixture = |name: &str| -> serde_json::Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/workspace-format/fixtures")
+            .join(name);
+        serde_json::from_slice(&std::fs::read(path).expect("the fixture")).expect("JSON")
+    };
+    let hex = |v: &serde_json::Value| sync_protocol::types::from_hex(v.as_str().unwrap()).unwrap();
+    let record = |doc: &serde_json::Value, name: &str| -> serde_json::Value {
+        doc["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["name"] == name)
+            .expect("the record")
+            .clone()
+    };
+
+    let recovery = fixture("sync-v2-recovery.json");
+    let case = recovery["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "open_with_the_secret")
+        .expect("the case")
+        .clone();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Noura recovery kit");
+    std::fs::write(&path, hex(&case["kit"])).unwrap();
+    let kit = app_core::sync::recovery::open_kit(&path, case["secret_text"].as_str().unwrap())
+        .expect("the kit opens");
+    let want = &record(&recovery, "kit_payload")["value"]["workspaces"][0];
+    let listed = &kit.workspaces[0];
+    assert_eq!(listed.generation, want["generation"].as_u64().unwrap());
+    let anchor = listed.anchors.iter().next().expect("an anchor");
+    let wanted = &want["anchors"][0];
+    assert_eq!(anchor.covered_seq, wanted["covered_seq"].as_u64().unwrap());
+    assert_eq!(
+        anchor.checkpoint,
+        Digest::from_hex(wanted["checkpoint"].as_str().unwrap()).unwrap()
+    );
+    assert_eq!(
+        anchor.domain,
+        Id::from_hex(wanted["domain"].as_str().unwrap()).unwrap()
+    );
+
+    let approval = fixture("sync-v2-approval.json");
+    let offer = record(&approval, "offer");
+    let decoded = Signed::<Offer>::from_bytes(&hex(&offer["hex"])).expect("the offer decodes");
+    let want = &offer["value"]["body"]["anchors"][0];
+    let anchor = &decoded.body.anchors[0];
+    assert_eq!(anchor.generation, want["generation"].as_u64().unwrap());
+    assert_eq!(
+        anchor.checkpoint.checkpoint,
+        Digest::from_hex(want["checkpoint"]["checkpoint"].as_str().unwrap()).unwrap()
+    );
+    assert_eq!(
+        anchor.checkpoint.covered_seq,
+        want["checkpoint"]["covered_seq"].as_u64().unwrap()
+    );
+    // 1,000 workspaces' anchors stay near 120 KB, within one request.
+    let size = approval["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "offer_for_1000_workspaces")
+        .expect("the case");
+    let length = size["length"].as_u64().unwrap();
+    assert!((115_000..130_000).contains(&length), "{length}");
+}

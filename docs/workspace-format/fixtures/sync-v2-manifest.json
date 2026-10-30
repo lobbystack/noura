@@ -1879,6 +1879,7 @@
 		},
 		{
 			"after_one_checkpoint": false,
+			"after_replacement": false,
 			"covered_seq": "due",
 			"drop_head": false,
 			"edit": {},
@@ -1890,6 +1891,7 @@
 		},
 		{
 			"after_one_checkpoint": false,
+			"after_replacement": false,
 			"covered_seq": "due",
 			"drop_head": false,
 			"edit": {
@@ -1903,6 +1905,7 @@
 		},
 		{
 			"after_one_checkpoint": false,
+			"after_replacement": false,
 			"covered_seq": "due",
 			"drop_head": false,
 			"edit": {
@@ -1916,6 +1919,7 @@
 		},
 		{
 			"after_one_checkpoint": false,
+			"after_replacement": false,
 			"covered_seq": "due",
 			"drop_head": true,
 			"edit": {},
@@ -1927,6 +1931,7 @@
 		},
 		{
 			"after_one_checkpoint": false,
+			"after_replacement": false,
 			"covered_seq": "due",
 			"drop_head": false,
 			"edit": {
@@ -1940,6 +1945,7 @@
 		},
 		{
 			"after_one_checkpoint": false,
+			"after_replacement": false,
 			"covered_seq": "due",
 			"drop_head": false,
 			"edit": {
@@ -1953,6 +1959,7 @@
 		},
 		{
 			"after_one_checkpoint": false,
+			"after_replacement": false,
 			"covered_seq": "due",
 			"drop_head": false,
 			"edit": {
@@ -1966,6 +1973,7 @@
 		},
 		{
 			"after_one_checkpoint": false,
+			"after_replacement": false,
 			"covered_seq": "due",
 			"drop_head": false,
 			"edit": {
@@ -1979,6 +1987,7 @@
 		},
 		{
 			"after_one_checkpoint": false,
+			"after_replacement": false,
 			"covered_seq": "due",
 			"drop_head": false,
 			"edit": {
@@ -1992,6 +2001,7 @@
 		},
 		{
 			"after_one_checkpoint": false,
+			"after_replacement": false,
 			"covered_seq": "due",
 			"drop_head": false,
 			"edit": {
@@ -2005,6 +2015,7 @@
 		},
 		{
 			"after_one_checkpoint": false,
+			"after_replacement": false,
 			"covered_seq": "due",
 			"drop_head": false,
 			"edit": {
@@ -2018,6 +2029,7 @@
 		},
 		{
 			"after_one_checkpoint": false,
+			"after_replacement": false,
 			"covered_seq": "due",
 			"drop_head": false,
 			"edit": {
@@ -2031,6 +2043,7 @@
 		},
 		{
 			"after_one_checkpoint": false,
+			"after_replacement": false,
 			"covered_seq": "due",
 			"drop_head": false,
 			"edit": {
@@ -2044,6 +2057,7 @@
 		},
 		{
 			"after_one_checkpoint": false,
+			"after_replacement": false,
 			"covered_seq": "head + 1",
 			"drop_head": false,
 			"edit": {},
@@ -2055,6 +2069,7 @@
 		},
 		{
 			"after_one_checkpoint": false,
+			"after_replacement": false,
 			"covered_seq": "due - 1",
 			"drop_head": false,
 			"edit": {},
@@ -2066,6 +2081,7 @@
 		},
 		{
 			"after_one_checkpoint": false,
+			"after_replacement": false,
 			"covered_seq": "due",
 			"drop_head": false,
 			"edit": {},
@@ -2077,6 +2093,7 @@
 		},
 		{
 			"after_one_checkpoint": false,
+			"after_replacement": false,
 			"covered_seq": "due",
 			"drop_head": false,
 			"edit": {},
@@ -2087,7 +2104,48 @@
 			"signer": "other writer"
 		},
 		{
+			"after_one_checkpoint": false,
+			"after_replacement": true,
+			"covered_seq": "due",
+			"drop_head": false,
+			"edit": {},
+			"expect": "ok",
+			"kind": "server_check",
+			"name": "a_checkpoint_at_a_replacements_entry",
+			"pushed_by": "writer",
+			"signer": "writer"
+		},
+		{
+			"after_one_checkpoint": false,
+			"after_replacement": true,
+			"covered_seq": "due - 1",
+			"drop_head": false,
+			"edit": {
+				"skipped_epoch": true
+			},
+			"expect": "checkpoint_not_due",
+			"kind": "server_check",
+			"name": "a_checkpoint_short_of_a_replacements_entry",
+			"pushed_by": "writer",
+			"signer": "writer"
+		},
+		{
+			"after_one_checkpoint": false,
+			"after_replacement": true,
+			"covered_seq": "due",
+			"drop_head": false,
+			"edit": {
+				"skipped_epoch": true
+			},
+			"expect": "manifest_mismatch",
+			"kind": "server_check",
+			"name": "a_checkpoint_after_a_replacement_naming_the_skipped_epoch",
+			"pushed_by": "writer",
+			"signer": "writer"
+		},
+		{
 			"after_one_checkpoint": true,
+			"after_replacement": false,
 			"covered_seq": "due",
 			"drop_head": false,
 			"edit": {},
@@ -2099,6 +2157,7 @@
 		},
 		{
 			"after_one_checkpoint": true,
+			"after_replacement": false,
 			"covered_seq": "previous entry - 1",
 			"drop_head": false,
 			"edit": {},

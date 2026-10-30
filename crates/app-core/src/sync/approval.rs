@@ -18,8 +18,8 @@ use sync_protocol::account::AccountChain;
 use sync_protocol::codec::{Nested, Sorted};
 use sync_protocol::messages::ApprovalRequest;
 use sync_protocol::records::{
-    AccountHead, Anchor, Card, CheckpointAnchor, LinkKind, Offer, Signed, approval_code,
-    approval_code_text, approval_commit, check_offer,
+    AccountHead, Anchor, Card, LinkKind, Offer, Signed, approval_code, approval_code_text,
+    approval_commit, check_offer,
 };
 use sync_protocol::types::{Digest, Id, Key};
 
@@ -288,15 +288,7 @@ impl SyncService {
             // The approver's latest accepted checkpoint of the workspace
             // domain, with its restore generation; before the first, a
             // covered_seq of 0 and 32 zero bytes (§10).
-            let generation = self.client.restore_generation();
-            let (checkpoint, generation) = remote.checkpoint.clone().unwrap_or((
-                CheckpointAnchor {
-                    domain: remote.domain,
-                    covered_seq: 0,
-                    checkpoint: Digest::ZERO,
-                },
-                generation,
-            ));
+            let (checkpoint, generation) = self.checkpoint_anchor(remote)?;
             anchors.push(Anchor {
                 workspace: remote.workspace,
                 revision,

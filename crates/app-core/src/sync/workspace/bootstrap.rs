@@ -26,6 +26,7 @@ use sync_protocol::types::{Digest, Id};
 
 use super::state::Log;
 use super::{Checked, CheckedRecord, SyncError, SyncService, WorkspaceSync};
+use crate::sync::account_heads::KeptCheckpointAnchor;
 
 /// The journal file that keeps a bootstrap's progress through the live
 /// pages.
@@ -70,10 +71,38 @@ impl WorkspaceSync {
         if self.remote.is_none() {
             self.connect(service).await?;
         }
-        let bundle = latest.bundle;
-        let entry_seq = latest.seq;
-        self.check_bootstrap_checkpoint(service, &bundle, entry_seq)
-            .await?;
+        let (bundle, entry_seq) = if self
+            .check_bootstrap_checkpoint(service, &latest.bundle, latest.seq)
+            .await?
+        {
+            (latest.bundle, latest.seq)
+        } else {
+            // Recency refused the latest checkpoint, as after a recovery that
+            // removed its signer while no other writer is left to sign the
+            // next one. The device bootstraps from its anchor instead, which
+            // Recency skips, and pulls on from there, checking every later
+            // entry as a log entry (§18).
+            let anchor = self
+                .kept_anchor(service)
+                .filter(|a| a.checkpoint != latest.bundle.checkpoint.0.digest())
+                .ok_or(fail("sync_manifest_rollback"))?;
+            let entry = service
+                .client()
+                .checkpoint_by_digest(workspace, domain, anchor.checkpoint)
+                .await?
+                .ok_or(fail("sync_manifest_rollback"))?;
+            let EntryRecord::Checkpoint(bundle) = entry.record else {
+                return Err(fail("sync_manifest_rollback"));
+            };
+            if bundle.checkpoint.0.digest() != anchor.checkpoint
+                || !self
+                    .check_bootstrap_checkpoint(service, &bundle, entry.seq)
+                    .await?
+            {
+                return Err(fail("sync_manifest_rollback"));
+            }
+            (bundle, entry.seq)
+        };
         let c = bundle.checkpoint.0.body.clone();
 
         // The bucket hashes, against the root.
@@ -253,16 +282,30 @@ impl WorkspaceSync {
         Ok(true)
     }
 
+    /// The checkpoint anchor the device's approval or kit gave this domain
+    /// in the current restore generation. An offer or kit made before the
+    /// domain's first checkpoint carries a covered_seq of 0 and 32 zero
+    /// bytes: no anchor.
+    fn kept_anchor(&self, service: &SyncService) -> Option<KeptCheckpointAnchor> {
+        service
+            .kept_heads()
+            .checkpoint_anchor(&self.state.workspace, &self.state.domain)
+            .filter(|a| a.generation == self.state.generation)
+            .filter(|a| !a.checkpoint.is_zero())
+    }
+
     /// The checks of §17 on a checkpoint a device bootstraps from: the
     /// heads digest, `policy_head`, the epoch record, no rollback below
     /// what the device holds, descent from its anchor, the signer by
-    /// position and the recency of its policy.
+    /// position and the recency of its policy. Returns `false` when only
+    /// Recency fails. The anchor itself skips Recency: the device that
+    /// wrote the offer or kit accepted it (§17).
     async fn check_bootstrap_checkpoint(
         &mut self,
         service: &mut SyncService,
         bundle: &CheckpointBundle,
         entry_seq: u64,
-    ) -> Result<(), SyncError> {
+    ) -> Result<bool, SyncError> {
         let (workspace, domain) = (self.state.workspace, self.state.domain);
         let record = &bundle.checkpoint.0;
         let c = &record.body;
@@ -298,13 +341,10 @@ impl WorkspaceSync {
         // accepted checkpoint, or else the checkpoint its approval or kit
         // anchored in this restore generation. A restore that lost that
         // anchor leaves the other checks (ticket 60).
-        let kept = service
-            .kept_heads()
-            .checkpoint_anchor(&workspace, &domain)
-            .filter(|a| a.generation == self.state.generation)
-            // An offer or kit made before the domain's first checkpoint
-            // carries a covered_seq of 0 and 32 zero bytes: no anchor.
-            .filter(|a| !a.checkpoint.is_zero());
+        let kept = self.kept_anchor(service);
+        let is_anchor = kept
+            .as_ref()
+            .is_some_and(|k| k.checkpoint == record.digest());
         let anchor = match (&accepted, kept) {
             (Some(a), _) => Some((a.record.body.covered_seq, a.record.digest())),
             (None, Some(k)) => Some((k.covered_seq, k.checkpoint)),
@@ -381,6 +421,9 @@ impl WorkspaceSync {
         }
         // Recency: no change above its `policy_revision` takes its signer
         // or a device in its heads out of the workspace.
+        if is_anchor {
+            return Ok(true);
+        }
         let devices: BTreeSet<Id> = std::iter::once(c.signer)
             .chain(bundle.heads.iter().map(|h| h.device))
             .collect();
@@ -393,9 +436,9 @@ impl WorkspaceSync {
             let removed = ((c.policy_revision + 1)..=head)
                 .any(|r| policy.at(r).is_some_and(|s| !s.is_device(&device)));
             if removed {
-                return Err(fail("sync_manifest_rollback"));
+                return Ok(false);
             }
         }
-        Ok(())
+        Ok(true)
     }
 }

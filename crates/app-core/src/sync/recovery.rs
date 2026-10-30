@@ -22,10 +22,10 @@ use sync_key_envelope::v2::{DeviceKeys, next_link, recovery_proof};
 use sync_protocol::codec::{Decode, Encode, Nested, Sorted, Text};
 use sync_protocol::crypto::random_nonce;
 use sync_protocol::records::{
-    AccountHead, Card, CheckpointAnchor, KIT_SECRET_LEN, KitPayload, KitWorkspace, LinkKind,
-    RecoveryKit, kit_secret_text, parse_kit_secret,
+    AccountHead, Card, KIT_SECRET_LEN, KitPayload, KitWorkspace, LinkKind, RecoveryKit,
+    kit_secret_text, parse_kit_secret,
 };
-use sync_protocol::types::{Digest, Id};
+use sync_protocol::types::Id;
 use zeroize::Zeroizing;
 
 use super::device::{SignedIn, StoredDevice, enroll_card};
@@ -246,14 +246,7 @@ impl SyncService {
             // The latest accepted checkpoint of each domain the device
             // syncs, with its restore generation; before the first, a
             // covered_seq of 0 and 32 zero bytes (§12).
-            let (checkpoint, generation) = remote.checkpoint.clone().unwrap_or((
-                CheckpointAnchor {
-                    domain: remote.domain,
-                    covered_seq: 0,
-                    checkpoint: Digest::ZERO,
-                },
-                self.client.restore_generation(),
-            ));
+            let (checkpoint, generation) = self.checkpoint_anchor(remote).map_err(after)?;
             anchors.push(KitWorkspace {
                 workspace: remote.workspace,
                 genesis,

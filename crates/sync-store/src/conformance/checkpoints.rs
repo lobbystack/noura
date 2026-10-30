@@ -335,6 +335,39 @@ pub async fn checkpoint_checks_match_the_fixture<B: Backend>(store: Store<B>) {
                 due = world.pull(0, 0).await.checkpoint_due;
             }
         }
+        // A bad epoch 2, then a replacement epoch 3 that skips it, which
+        // makes a checkpoint due at its entry.
+        let mut skipped: Option<Signed<Epoch>> = None;
+        if case["after_replacement"].as_bool().expect("a flag") {
+            let first = track.epoch.clone().expect("epoch 1");
+            let readers: BTreeSet<Id> = world.devices.iter().map(|d| d.id()).collect();
+            let bad = SecretKey::random().expect("random");
+            let second = world.epoch_after(1, 2, &first, &world.epoch_key, &bad, &readers);
+            world.inject_epoch(second.clone(), readers.clone()).await;
+            let key = SecretKey::random().expect("random");
+            let replacement = world.epoch_after(0, 3, &first, &world.epoch_key, &key, &readers);
+            let mut records = vec![RecordRef::EpochBundle(EpochBundle {
+                epoch: Nested(replacement.clone()),
+                recipients: Sorted::new(readers.iter().copied().collect()).expect("sorted"),
+            })];
+            for device in &world.devices {
+                records.push(RecordRef::Envelope(world.envelope(
+                    0,
+                    &device.keys.card(device.session.account),
+                    3,
+                    &key,
+                )));
+            }
+            let receipt = world
+                .push_records(0, records)
+                .await
+                .expect("the replacement commits");
+            head = receipt.receipts[0].seq;
+            due = world.pull(0, 0).await.checkpoint_due;
+            assert_eq!(due, head, "{label}: due at the replacement's entry");
+            track.epoch = Some(replacement);
+            skipped = Some(second);
+        }
         let covered = match case["covered_seq"].as_str().expect("a point") {
             "due" => due,
             "due - 1" => due - 1,
@@ -369,6 +402,11 @@ pub async fn checkpoint_checks_match_the_fixture<B: Backend>(store: Store<B>) {
                         "policy_revision" => c.policy_revision += add(),
                         "epoch" => c.epoch += add(),
                         "floor" => c.floor += add(),
+                        "skipped_epoch" => {
+                            let skipped = skipped.as_ref().expect("a skipped epoch");
+                            c.epoch = skipped.body.epoch;
+                            c.epoch_record = skipped.digest();
+                        }
                         other => panic!("unknown field {other}"),
                     }
                 }
@@ -399,7 +437,7 @@ pub async fn checkpoint_checks_match_the_fixture<B: Backend>(store: Store<B>) {
             );
         }
     }
-    assert!(ran >= 19, "the fixture's server checks ran");
+    assert!(ran >= 22, "the fixture's server checks ran");
 }
 
 /// Adds an account with one device as a viewer of the workspace, signed in

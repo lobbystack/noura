@@ -941,6 +941,55 @@ impl SyncService {
         })
     }
 
+    /// The latest checkpoint of `domain` that a sync of `workspace` on
+    /// this device accepted, as the credential store's mark keeps it, with
+    /// its restore generation.
+    fn marked_checkpoint(
+        &self,
+        workspace: Id,
+        domain: Id,
+    ) -> Result<Option<(sync_protocol::records::CheckpointAnchor, u64)>, SyncError> {
+        let mark = marks::Mark::read(&*self.secrets, &self.credentials.keys.device(), &workspace)?;
+        Ok(mark
+            .and_then(|mark| mark.domains.get(&domain).cloned())
+            .filter(|d| d.checkpoint_seq > 0)
+            .map(|d| {
+                (
+                    sync_protocol::records::CheckpointAnchor {
+                        domain,
+                        covered_seq: d.checkpoint_seq,
+                        checkpoint: d.checkpoint,
+                    },
+                    d.checkpoint_generation,
+                )
+            }))
+    }
+
+    /// The anchor an approval offer or a recovery kit gives `remote`'s
+    /// workspace domain (§10, §12): the latest checkpoint this device
+    /// accepted there, read again from the mark, since the workspace's sync
+    /// may have accepted a later one since `remote` opened. Before the
+    /// first, a `covered_seq` of 0 and 32 zero bytes in the current
+    /// generation.
+    pub(crate) fn checkpoint_anchor(
+        &self,
+        remote: &RemoteWorkspace,
+    ) -> Result<(sync_protocol::records::CheckpointAnchor, u64), SyncError> {
+        let marked = self.marked_checkpoint(remote.workspace, remote.domain)?;
+        let newest = [marked, remote.checkpoint.clone()]
+            .into_iter()
+            .flatten()
+            .max_by_key(|(anchor, generation)| (*generation, anchor.covered_seq));
+        Ok(newest.unwrap_or((
+            sync_protocol::records::CheckpointAnchor {
+                domain: remote.domain,
+                covered_seq: 0,
+                checkpoint: Digest::ZERO,
+            },
+            self.client.restore_generation(),
+        )))
+    }
+
     /// Opens a remote workspace from the server: fetches its policy chain
     /// and every account chain the policy records, judges each chain the
     /// device keeps a head of against that head, or, when the policy no
@@ -964,22 +1013,7 @@ impl SyncService {
             .latest()
             .and_then(|latest| keys.get(&latest.record.body.epoch).cloned())
             .ok_or(SyncError::Check("sync_key_mismatch"))?;
-        // The latest checkpoint of the workspace domain that a sync of this
-        // workspace accepted, as the credential store's mark keeps it, which
-        // an approval offer and a recovery kit anchor (§10, §12).
-        let checkpoint = marks::Mark::read(&*self.secrets, &recipient.device(), &workspace)?
-            .and_then(|mark| mark.domains.get(&domain).cloned())
-            .filter(|d| d.checkpoint_seq > 0)
-            .map(|d| {
-                (
-                    sync_protocol::records::CheckpointAnchor {
-                        domain,
-                        covered_seq: d.checkpoint_seq,
-                        checkpoint: d.checkpoint,
-                    },
-                    d.checkpoint_generation,
-                )
-            });
+        let checkpoint = self.marked_checkpoint(workspace, domain)?;
         Ok(RemoteWorkspace {
             workspace,
             domain,
