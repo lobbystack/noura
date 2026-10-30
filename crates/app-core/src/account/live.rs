@@ -17,6 +17,7 @@ use sync_protocol::types::Id;
 use zeroize::Zeroizing;
 
 use super::folder::Folder;
+use super::members::Membership;
 use super::share::Sharing;
 use super::{
     AccountAction, AccountBackend, AccountPhase, AccountScreen, AlertEntry, ApprovalView,
@@ -24,6 +25,7 @@ use super::{
     SignedInView, fingerprint,
 };
 use crate::folder_sync::{FolderSyncAction, FolderSyncBackend, FolderSyncScreen};
+use crate::members::{MembersAction, MembersBackend, MembersScreen};
 use crate::shares::{ShareAction, ShareBackend, ShareScreen};
 use crate::sync::approval::{Candidate, CandidateStep, OutstandingOffer, PendingDevice};
 use crate::sync::device::{DeviceSignIn, Joined, SignedIn, StoredDevice, join, server_address};
@@ -51,6 +53,7 @@ struct Shared {
     screen: Mutex<AccountScreen>,
     folder: Mutex<FolderSyncScreen>,
     share: Mutex<ShareScreen>,
+    members: Mutex<MembersScreen>,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// Ends a round's waiting pull when a message arrives.
     interrupt: tokio::sync::Notify,
@@ -61,10 +64,21 @@ enum Message {
     Account(AccountAction),
     Folder(FolderSyncAction),
     Share(ShareAction),
+    Members(MembersAction),
     Attach(Option<Arc<local_core::WorkspaceEngine>>),
 }
 
 impl Shared {
+    fn show_members(&self, screen: MembersScreen) {
+        let mut shown = self.members.lock().unwrap_or_else(PoisonError::into_inner);
+        if *shown == screen {
+            return;
+        }
+        *shown = screen;
+        drop(shown);
+        self.wake();
+    }
+
     fn show_share(&self, screen: ShareScreen) {
         let mut shown = self.share.lock().unwrap_or_else(PoisonError::into_inner);
         if *shown == screen {
@@ -138,6 +152,7 @@ impl LiveAccount {
             }),
             folder: Mutex::new(FolderSyncScreen::default()),
             share: Mutex::new(ShareScreen::default()),
+            members: Mutex::new(MembersScreen::default()),
             wake: Mutex::new(None),
             interrupt: tokio::sync::Notify::new(),
         });
@@ -159,6 +174,7 @@ impl LiveAccount {
             upkeep: Upkeep::default(),
             folder: Folder::default(),
             sharing: Sharing::default(),
+            membership: Membership::default(),
         };
         let spawned = std::thread::Builder::new()
             .name("noura-sync-account".into())
@@ -262,6 +278,31 @@ impl ShareBackend for LiveAccount {
     }
 }
 
+impl MembersBackend for LiveAccount {
+    fn screen(&self) -> MembersScreen {
+        self.shared
+            .members
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn act(&self, action: MembersAction) {
+        if !matches!(action, MembersAction::Copied) {
+            self.shared
+                .members
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .busy = true;
+        }
+        self.send(Message::Members(action));
+    }
+
+    fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        AccountBackend::set_wake(self, wake);
+    }
+}
+
 /// What a browser sign-in is for.
 enum Purpose {
     /// Signing this computer in as a device of your account.
@@ -300,6 +341,8 @@ struct Driver {
     folder: Folder,
     /// The share dialog.
     sharing: Sharing,
+    /// The Members section.
+    membership: Membership,
 }
 
 /// What a failed action tells you.
@@ -476,6 +519,15 @@ impl Driver {
                         &self.app_data,
                     ));
                     self.shared.show_share(self.sharing.screen.clone());
+                }
+                Ok(Message::Members(action)) => {
+                    runtime.block_on(self.membership.act(
+                        action,
+                        self.service.as_mut(),
+                        &mut self.folder,
+                        &self.app_data,
+                    ));
+                    self.shared.show_members(self.membership.screen.clone());
                 }
                 Ok(Message::Attach(engine)) => {
                     self.folder

@@ -493,3 +493,185 @@ async fn a_member_invited_again_keeps_its_card_indices() {
         .expect("a round");
     assert_eq!(ana.folder.files()["Ben.md"], b"Second visit.\n");
 }
+
+/// The Members section built from the verified policy and the server's
+/// list (§8, §11): each open invitation with its role and status, a row
+/// that leaves once the invitation is approved, revoked or expired, the
+/// rights each role holds, and the warning for an account that was a
+/// member before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_members_screen_follows_the_policy_and_the_server() {
+    use app_core::members::{InvitationStatus, MembersScreen};
+    use app_core::sync::invitations::InvitationLink;
+
+    let server = Server::start().await;
+    let mut ana = owner(&server).await;
+    let workspace = ana.sync.workspace();
+    let own = account(&ana.desktop);
+    let screen = |ana: &mut Owner, invitations: &[_]| {
+        let snapshot = ana.remote().policy().head_snapshot().clone();
+        MembersScreen::of(&snapshot, own, invitations)
+    };
+    let invite = |role| NewInvitation {
+        workspace,
+        role,
+        workspace_name: "Field notes",
+        inviter_name: "Ana",
+    };
+
+    // Two invitations: Ben accepts one, the other waits.
+    let mut ben = first_desktop(&server, "ben@example.com").await;
+    let first = ana
+        .desktop
+        .service
+        .create_invitation(&mut ana.book, invite(Role::Editor))
+        .await
+        .expect("invited");
+    let second = ana
+        .desktop
+        .service
+        .create_invitation(&mut ana.book, invite(Role::Viewer))
+        .await
+        .expect("invited");
+    let link = InvitationLink::parse(&first.url).unwrap();
+    ben.service
+        .accept_invitation(&link)
+        .await
+        .expect("accepted");
+    let listed = ana
+        .desktop
+        .service
+        .workspace_invitations(&mut ana.book, workspace)
+        .await
+        .unwrap();
+    let shown = screen(&mut ana, &listed);
+    assert_eq!(shown.invitations.len(), 2);
+    let row = |id| {
+        shown
+            .invitations
+            .iter()
+            .find(|i| i.invitation == id)
+            .unwrap()
+            .clone()
+    };
+    let accepted = row(first.invitation.invitation);
+    assert_eq!(
+        (accepted.role, accepted.status),
+        (Role::Editor, InvitationStatus::Accepted)
+    );
+    assert!(
+        accepted
+            .label
+            .starts_with("Editor invitation, accepted, waiting for approval")
+    );
+    let pending = row(second.invitation.invitation);
+    assert_eq!(pending.status, InvitationStatus::Pending);
+    assert!(
+        pending
+            .label
+            .starts_with("Viewer invitation, waiting for them to accept")
+    );
+    assert!(pending.sent_here && pending.returning.is_none());
+    assert_eq!(
+        shown.invite_roles,
+        vec![Role::Admin, Role::Editor, Role::Viewer]
+    );
+    assert!(!shown.may_leave, "the owner transfers ownership first");
+
+    // Revoking takes the row away and the link stops working.
+    ana.desktop
+        .service
+        .revoke_invitation(&mut ana.book, workspace, first.invitation.invitation)
+        .await
+        .expect("revoked");
+    assert!(ben.service.open_invitation(&link).await.is_err());
+    let listed = ana
+        .desktop
+        .service
+        .workspace_invitations(&mut ana.book, workspace)
+        .await
+        .unwrap();
+    assert_eq!(screen(&mut ana, &listed).invitations.len(), 1);
+
+    // Expiry takes the other one away.
+    server
+        .store
+        .clock()
+        .advance(std::time::Duration::from_secs(7 * 86_400 + 1));
+    let listed = ana
+        .desktop
+        .service
+        .workspace_invitations(&mut ana.book, workspace)
+        .await
+        .unwrap();
+    assert!(screen(&mut ana, &listed).invitations.is_empty(), "expired");
+
+    // An approval takes its row away too, and Ben shows as an editor that
+    // the owner may change and remove.
+    let (_ben_sync, _folder) = ana.invite(&mut ben, Role::Editor).await;
+    let listed = ana
+        .desktop
+        .service
+        .workspace_invitations(&mut ana.book, workspace)
+        .await
+        .unwrap();
+    let shown = screen(&mut ana, &listed);
+    assert!(shown.invitations.is_empty(), "approved");
+    assert_eq!(shown.members[0].label, "You, owner, 1 device");
+    let entry = shown
+        .members
+        .iter()
+        .find(|m| m.account == account(&ben))
+        .unwrap();
+    assert_eq!(entry.roles, vec![Role::Admin, Role::Viewer]);
+    assert!(entry.removable && entry.transferable);
+
+    // Removed and invited again, Ben's accepted invitation carries the
+    // warning that he'll read what was written while he was away.
+    ana.change(MemberChange::Remove(account(&ben)))
+        .await
+        .expect("removed");
+    let again = ana
+        .desktop
+        .service
+        .create_invitation(&mut ana.book, invite(Role::Viewer))
+        .await
+        .expect("invited again");
+    let link = InvitationLink::parse(&again.url).unwrap();
+    ben.service
+        .accept_invitation(&link)
+        .await
+        .expect("accepted");
+    let listed = ana
+        .desktop
+        .service
+        .workspace_invitations(&mut ana.book, workspace)
+        .await
+        .unwrap();
+    let shown = screen(&mut ana, &listed);
+    assert!(
+        shown.invitations[0]
+            .returning
+            .as_deref()
+            .is_some_and(|w| w.contains("read what was written while it was away"))
+    );
+
+    // An editor sees no invitations and changes no one.
+    let mut cleo = first_desktop(&server, "cleo@example.com").await;
+    let (mut cleo_sync, _folder) = ana.invite(&mut cleo, Role::Editor).await;
+    let snapshot = cleo_sync
+        .remote_mut()
+        .unwrap()
+        .policy()
+        .head_snapshot()
+        .clone();
+    let shown = MembersScreen::of(&snapshot, account(&cleo), &listed);
+    assert!(shown.invitations.is_empty() && shown.invite_roles.is_empty());
+    assert!(
+        shown
+            .members
+            .iter()
+            .all(|m| m.roles.is_empty() && !m.removable)
+    );
+    assert!(shown.may_leave);
+}

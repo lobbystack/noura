@@ -217,6 +217,7 @@ fn run_app() -> eframe::Result {
                 ));
                 app.set_account_backend(account.clone());
                 app.set_share_backend(account.clone());
+                app.set_members_backend(account.clone());
                 app.set_folder_sync_backend(account);
                 if let Some(list) = licenses::bundled_licenses() {
                     app.set_third_party_licenses(list);

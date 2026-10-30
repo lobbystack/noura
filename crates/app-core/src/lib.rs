@@ -37,6 +37,7 @@ mod layout;
 mod links;
 mod login;
 mod mcp_setup;
+pub mod members;
 mod menus;
 mod notes;
 mod objects;
