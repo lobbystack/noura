@@ -168,9 +168,9 @@ impl ObjectTypeRegistry {
     /// Serializes an object through the envelope in canonical order: `id` and
     /// `type`, the properties its type declares in declared order, the other
     /// properties sorted by key, then `created` and `updated`. An object
-    /// whose type has no registered schema gets `serialize_object`'s
-    /// built-in order. It writes the properties as they are, without
-    /// checking them or adding defaults.
+    /// whose type has no registered schema gets `serialize_object`'s order,
+    /// with every property sorted by key. It writes the properties as they
+    /// are, without checking them or adding defaults.
     pub fn serialize(&self, object: &WorkspaceObject) -> Result<Vec<u8>, FormatError> {
         let Some(declared) = self.declared(&object.object_type) else {
             return serialize_object(object);

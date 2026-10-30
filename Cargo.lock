@@ -1812,6 +1812,7 @@ dependencies = [
  "jiff",
  "plugin-sdk",
  "serde_json",
+ "workspace-format",
 ]
 
 [[package]]
@@ -8487,6 +8488,7 @@ dependencies = [
  "plugin-sdk",
  "proptest",
  "serde_json",
+ "workspace-format",
 ]
 
 [[package]]
@@ -10970,6 +10972,7 @@ dependencies = [
  "jiff",
  "plugin-sdk",
  "serde_json",
+ "workspace-format",
 ]
 
 [[package]]

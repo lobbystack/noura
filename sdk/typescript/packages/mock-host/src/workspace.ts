@@ -277,9 +277,7 @@ function readable(object: MockObject): ReadObject {
 
 /** Where a new object titled `name` goes without a path, as Noura names it. */
 function defaultPath(objectType: string, name: string): string {
-	return objectType === 'project'
-		? `projects/${name}/${name}.md`
-		: `${objectType}s/${name}.md`;
+	return `${objectType}s/${name}.md`;
 }
 
 export class MockWorkspace {

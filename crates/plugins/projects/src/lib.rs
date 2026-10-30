@@ -17,6 +17,7 @@
 
 mod commands;
 mod dates;
+mod names;
 mod order;
 mod panel;
 mod project;

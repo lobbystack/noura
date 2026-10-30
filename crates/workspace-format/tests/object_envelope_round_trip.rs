@@ -249,7 +249,7 @@ proptest! {
         let types = registry(&case);
         let written = types.serialize(&case.object).unwrap();
         if !case.registered {
-            // Without a schema the registry writes the built-in order.
+            // Without a schema the registry writes serialize_object's order.
             prop_assert_eq!(&written, &serialize_object(&case.object).unwrap());
         }
         let parsed = reparse(&written);
