@@ -338,12 +338,12 @@ async fn a_received_delete_of_a_marker_keeps_the_root_and_holds_its_files() {
     assert_eq!(team.sync.rid_at("Pay/New.md"), None);
 
     // Restoring the marker from synced state ends the hold.
-    let line = marker_content(&team.domain);
     team.sync
-        .sign_state_at(marker, &format!("Pay/{MARKER}"), line.as_bytes())
-        .expect("signed");
+        .restore_domain_marker(team.domain)
+        .expect("restored");
     settle(&mut team.sync, &mut team.owner).await;
     assert_eq!(team.sync.status().held_roots, 0);
+    assert_eq!(team.sync.refused_objects(), []);
     settle(&mut team.sync, &mut team.owner).await;
     let new = team.sync.rid_at("Pay/New.md").expect("captured");
     assert_eq!(team.sync.object_domain(&new), Some(team.domain));
@@ -437,12 +437,13 @@ async fn a_folder_rebuilt_without_its_journal_matches_a_restricted_domain() {
     let server = Server::start().await;
     let mut team = team(&server).await;
     settle(&mut team.grantee_sync, &mut team.grantee).await;
-    let mut registry = std::mem::replace(
-        &mut team.grantee_folder.registry,
-        app_core::sync::registry::Registry::open(tempfile::tempdir().unwrap().keep()).unwrap(),
-    );
+    drop(team.grantee_sync);
     let engine = team.grantee_folder.engine.clone();
-    let rebuilt = WorkspaceSync::rebuild(&mut team.grantee.service, engine, &mut registry)
+    let rebuilt = WorkspaceSync::rebuild(
+        &mut team.grantee.service,
+        engine,
+        &mut team.grantee_folder.registry,
+    )
         .await
         .expect("rebuilt");
     assert_eq!(rebuilt.domain_roots().len(), 1);

@@ -163,13 +163,15 @@ impl Mark {
     }
 
     /// Whether the journal's state lies below this mark: an older policy
-    /// head, or an older epoch of a domain (§15).
+    /// head, or an older epoch of a domain in `epochs` (§15). A domain the
+    /// journal doesn't hold yet, as in a folder that starts fresh, loads its
+    /// epochs when the device reaches it.
     pub fn above(&self, policy_revision: u64, epochs: &BTreeMap<Id, u64>) -> bool {
         policy_revision < self.policy_revision
             || self
                 .domains
                 .iter()
-                .any(|(domain, mark)| epochs.get(domain).copied().unwrap_or(0) < mark.epoch)
+                .any(|(domain, mark)| epochs.get(domain).is_some_and(|epoch| *epoch < mark.epoch))
     }
 }
 
@@ -211,5 +213,6 @@ mod tests {
         assert!(mark.above(4, &BTreeMap::from([(domain, 1)])));
         assert!(!mark.above(4, &BTreeMap::from([(domain, 2)])));
         assert!(!mark.above(5, &BTreeMap::from([(domain, 3)])));
+        assert!(!mark.above(4, &BTreeMap::new()));
     }
 }

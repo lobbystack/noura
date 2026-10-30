@@ -457,10 +457,13 @@ impl WorkspaceSync {
             return Err(SyncError::Check("sync_folder_not_connected"));
         }
         let mut mark = Mark::read(&*secrets, &device, &state.workspace)?.unwrap_or_default();
-        let epochs: BTreeMap<Id, u64> = BTreeMap::from([(
+        let mut epochs: BTreeMap<Id, u64> = BTreeMap::from([(
             state.domain,
             state.epochs.last().map_or(0, |e| e.body.epoch),
         )]);
+        for (domain, frame) in &state.restricted {
+            epochs.insert(*domain, frame.epochs.last().map_or(0, |e| e.body.epoch));
+        }
         let revision = state.policy.last().map_or(0, |c| c.body.revision);
         let checkpoint_seq = state
             .log

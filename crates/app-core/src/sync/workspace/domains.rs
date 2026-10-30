@@ -292,7 +292,16 @@ impl WorkspaceSync {
                 live: self.marker_states(*domain, rid),
             })
             .collect();
-        let valid = valid_roots(&views);
+        let mut valid = valid_roots(&views);
+        // A root stays recorded after its marker stopped being valid, and
+        // it still wins over a later marker inside it.
+        let earlier = |root: &RecordedRoot, kept: &RecordedRoot| {
+            let revision = |domain: &Id| created.get(domain).map_or(u64::MAX, |(_, at)| *at);
+            kept.domain != root.domain
+                && revision(&kept.domain) < revision(&root.domain)
+                && beneath(&root.folder, &kept.folder)
+        };
+        valid.retain(|root| !self.state.roots.iter().any(|kept| earlier(root, kept)));
         let mut roots = self.state.roots.clone();
         for root in &valid {
             match roots.iter().position(|r| r.domain == root.domain) {
@@ -640,7 +649,7 @@ impl WorkspaceSync {
     }
 
     /// Writes `root`'s marker from what sync knows and records its file.
-    fn restore_marker(&mut self, root: &RecordedRoot) -> Result<(), SyncError> {
+    pub(super) fn restore_marker(&mut self, root: &RecordedRoot) -> Result<(), SyncError> {
         let path = format!("{}/{MARKER}", root.folder);
         let bytes = marker_content(&root.domain).into_bytes();
         let expected = match self.engine.hash_synced(&path).map_err(core)? {
@@ -696,20 +705,19 @@ impl WorkspaceSync {
 
     /// Looks after each recorded root's marker file (§9): one that moved
     /// with its folder is signed at its new path, so the domain moves with
-    /// it; one you deleted is written again, since only `delete_domain`
-    /// retires a marker; one an outside edit changed is rewritten; an iCloud
-    /// placeholder counts as present. Returns how many records it signed.
+    /// it, unless that takes in another domain's files or the root is held,
+    /// which wait for review; one you deleted is written again, since only
+    /// `delete_domain` retires a marker; one an outside edit changed is
+    /// rewritten; an iCloud placeholder counts as present. Returns how many
+    /// records it signed.
     pub(super) fn check_markers(&mut self) -> Result<usize, SyncError> {
         let mut signed = 0;
         for root in self.state.roots.clone() {
-            if self
+            let held = self
                 .state
                 .held_roots
                 .iter()
-                .any(|h| h.domain == Some(root.domain))
-            {
-                continue;
-            }
+                .any(|h| h.domain == Some(root.domain));
             let folder = self.engine.root().join(&root.folder);
             let names: Vec<String> = std::fs::read_dir(&folder)
                 .map(|entries| {
@@ -721,10 +729,19 @@ impl WorkspaceSync {
                 .unwrap_or_default();
             if !marker_present(names.iter().map(String::as_str)) {
                 match self.moved_marker(&root) {
-                    Some(moved) => {
-                        self.sign_marker_move(&root, &moved)?;
-                        signed += 1;
+                    Some(moved) if !held => {
+                        let target = RecordedRoot {
+                            folder: moved.clone(),
+                            ..root.clone()
+                        };
+                        if self.move_changes_domain(&target) {
+                            self.hold(root.folder.clone(), root.domain);
+                        } else {
+                            self.sign_marker_move(&root, &moved)?;
+                            signed += 1;
+                        }
                     }
+                    Some(_) => {}
                     None => self.restore_marker(&root)?,
                 }
                 continue;
@@ -740,8 +757,41 @@ impl WorkspaceSync {
         Ok(signed)
     }
 
+    /// Restores `domain`'s marker from synced state (§9): writes its file
+    /// at the recorded root and signs a state that covers every live
+    /// operation of the marker, which makes it valid again and ends the
+    /// hold on the files beneath it.
+    pub fn restore_domain_marker(&mut self, domain: Id) -> Result<(), SyncError> {
+        let root = self
+            .state
+            .roots
+            .iter()
+            .find(|root| root.domain == domain)
+            .cloned()
+            .ok_or_else(|| SyncError::Invalid("no such restricted folder".into()))?;
+        self.restore_marker(&root)?;
+        if let Some(object) = self.state.objects.get_mut(&root.rid) {
+            object.cover_all = true;
+        }
+        self.state.refused.retain(|rid| *rid != root.rid);
+        self.sign_marker_at(&root, &root.folder)?;
+        if let Some(object) = self.state.objects.get_mut(&root.rid) {
+            object.cover_all = false;
+        }
+        self.update_roots()?;
+        self.save()
+    }
+
     /// Signs the marker's state at its new folder and moves the root.
     fn sign_marker_move(&mut self, root: &RecordedRoot, folder: &str) -> Result<(), SyncError> {
+        self.sign_marker_at(root, folder)?;
+        if let Some(kept) = self.state.roots.iter_mut().find(|r| r.rid == root.rid) {
+            kept.folder = folder.to_owned();
+        }
+        Ok(())
+    }
+
+    fn sign_marker_at(&mut self, root: &RecordedRoot, folder: &str) -> Result<(), SyncError> {
         let path = format!("{folder}/{MARKER}");
         let bytes = marker_content(&root.domain).into_bytes();
         let revision = hash(&bytes);
@@ -762,11 +812,7 @@ impl WorkspaceSync {
         self.in_domain(Some(root.domain), |sync| {
             let covers = sync.edit_covers(&rid);
             sync.sign_file(rid, &found, covers)
-        })?;
-        if let Some(kept) = self.state.roots.iter_mut().find(|r| r.rid == rid) {
-            kept.folder = folder.to_owned();
-        }
-        Ok(())
+        })
     }
 
     /// Signs a state of `rid` at `path` into its domain's outbox, covering
@@ -786,12 +832,14 @@ impl WorkspaceSync {
             bytes: Some(bytes.to_vec()),
         };
         let domain = self.object_domain(&rid);
-        let local = self.state.objects.get(&rid).and_then(|o| o.local.clone());
+        let kept = self.state.objects.get(&rid).cloned();
         self.in_domain(domain, |sync| {
             let covers = sync.edit_covers(&rid);
             sync.sign_file(rid, &found, covers)
         })?;
-        self.state.objects.get_mut(&rid).expect("signed").local = local;
+        let object = self.state.objects.get_mut(&rid).expect("signed");
+        object.local = kept.as_ref().and_then(|o| o.local.clone());
+        object.base = kept.and_then(|o| o.base);
         self.save()
     }
 

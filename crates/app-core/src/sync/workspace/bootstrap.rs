@@ -308,6 +308,7 @@ impl WorkspaceSync {
             .client()
             .live(self.state.workspace, domain, at, Some(rid), None)
             .await?;
+        let mut states = Vec::new();
         for entry in page.entries.0 {
             let EntryRecord::Operation(op) = entry.record else {
                 return Err(fail("sync_manifest_mismatch"));
@@ -337,13 +338,15 @@ impl WorkspaceSync {
                 _ => None,
             };
             let content = payload.and_then(|p| super::carried(&p, &mut BTreeMap::new()));
+            let key = OpKey {
+                device: op.body.device,
+                counter: op.body.counter,
+            };
+            states.push(key);
             let object = self.state.objects.entry(rid).or_default();
             object.domain = Some(active);
             object.states.insert(
-                OpKey {
-                    device: op.body.device,
-                    counter: op.body.counter,
-                },
+                key,
                 StateInfo {
                     digest: op.digest(),
                     seq: Some(entry.seq),
@@ -353,7 +356,19 @@ impl WorkspaceSync {
                 },
             );
         }
-        self.update_roots()
+        self.update_roots()?;
+        // A valid marker's file goes first, and its bucket then finds it
+        // in place.
+        if let ([key], Some(root)) = (
+            states.as_slice(),
+            self.state.roots.iter().find(|r| r.rid == rid).cloned(),
+        ) {
+            self.restore_marker(&root)?;
+            if let Some(object) = self.state.objects.get_mut(&rid) {
+                object.base = Some(*key);
+            }
+        }
+        Ok(())
     }
 
     /// Installs the buckets in `range` from `ops`, every live operation in

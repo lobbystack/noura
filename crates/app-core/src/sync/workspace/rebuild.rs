@@ -79,7 +79,7 @@ pub(crate) fn local_markers(root: &Path) -> Vec<String> {
             };
             if kind.is_dir() && !(relative.is_empty() && (name == ".noura" || name == ".git")) {
                 stack.push((entry.path(), path));
-            } else if kind.is_file() && name == MARKER {
+            } else if kind.is_file() && workspace_format::is_domain_marker(&name) {
                 found.push(relative.clone());
             }
         }
@@ -160,6 +160,8 @@ impl WorkspaceSync {
             })
             .collect();
         sync.compare_own_chain(service).await?;
+        // The client bootstraps again and matches its files (§15).
+        sync.state.bootstrap = true;
         sync.matching = true;
         let caught_up = async {
             for _ in 0..10_000 {
