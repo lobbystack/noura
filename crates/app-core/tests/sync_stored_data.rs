@@ -17,7 +17,9 @@ const NAME: &str = "Stored data check";
 const OBJECT_ID: &str = "note_01k0000000000000000000000s";
 const PATH: &str = "Journal/Distinct name.md";
 const BODY: &str = "Seventeen quiet herons crossed the estuary at dawn.";
-const SIZES: [usize; 2] = [1_337, 4_093];
+const SIZES: [usize; 3] = [1_337, 4_093, 300_001];
+/// The attachment, above the inline limit, which syncs as a blob (§21).
+const ATTACHMENT: &str = "Data/Scan.pdf";
 
 /// The tables whose rows only live minutes, until a sign-in or approval
 /// step uses or drops them, and so may carry an expiry (§29).
@@ -56,11 +58,37 @@ fn note() -> Vec<u8> {
     bytes
 }
 
+/// The attachment's bytes: the note's body again and again, so its
+/// plaintext would show in any blob row or segment that held it.
+fn attachment() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    while bytes.len() < SIZES[2] {
+        bytes.extend_from_slice(BODY.as_bytes());
+    }
+    bytes.truncate(SIZES[2]);
+    bytes
+}
+
+/// Checks that the blob store holds only ciphertext.
+fn check_segments<B: Backend>(server: &Server<B>) {
+    let segments = server.blob_files();
+    assert!(!segments.is_empty(), "the attachment went up as a blob");
+    for file in segments {
+        let bytes = std::fs::read(&file).expect("a segment");
+        assert!(
+            !bytes.windows(BODY.len()).any(|w| w == BODY.as_bytes()),
+            "{} holds plaintext",
+            file.display()
+        );
+    }
+}
+
 async fn full_sync<B: Backend>(server: &Server<B>) {
     let mut laptop = first_desktop(server, "ana@example.com").await;
     let mut a = Folder::new(NAME);
     a.write(PATH, &note());
     a.write("Data/blob.bin", &vec![7u8; SIZES[1]]);
+    a.write(ATTACHMENT, &attachment());
     let mut sync_a =
         WorkspaceSync::turn_on(&mut laptop.service, a.engine.clone(), NAME, &mut a.registry)
             .await
@@ -233,7 +261,14 @@ async fn the_sqlite_store_keeps_no_type_id_plaintext_size_or_time() {
             });
         }
     }
+    assert!(
+        columns
+            .iter()
+            .any(|c| c.table == "blobs" && !c.values.is_empty()),
+        "the check read the blob rows"
+    );
     check(&columns);
+    check_segments(&server);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -269,5 +304,12 @@ async fn the_postgres_store_keeps_no_type_id_plaintext_size_or_time() {
         })
         .collect();
     assert!(columns.iter().any(|c| c.table == "operations"));
+    assert!(
+        columns
+            .iter()
+            .any(|c| c.table == "blobs" && !c.values.is_empty()),
+        "the check read the blob rows"
+    );
     check(&columns);
+    check_segments(&server);
 }

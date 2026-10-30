@@ -401,6 +401,7 @@ dependencies = [
  "app-core",
  "atomic-write-file",
  "axum",
+ "base64 0.22.1",
  "directories",
  "futures",
  "hayro",

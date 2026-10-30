@@ -114,9 +114,16 @@ impl<B: Backend> Server<B> {
         postgres: Option<TestDatabase>,
     ) -> Self {
         let store = Arc::new(store);
-        let address = sync_server::spawn(store.clone(), "127.0.0.1:0")
-            .await
-            .expect("serving");
+        let blobs = sync_server::blobs::DiskStore::open(&dir.path().join("blobs"))
+            .expect("the blob store opens");
+        let address = sync_server::spawn_with_blobs(
+            store.clone(),
+            "127.0.0.1:0",
+            sync_server::Accounts::local,
+            Arc::new(blobs),
+        )
+        .await
+        .expect("serving");
         Self {
             base: format!("http://localhost:{}", address.port()),
             store,
@@ -125,8 +132,22 @@ impl<B: Backend> Server<B> {
         }
     }
 
-    /// The files that hold what the server stored.
+    /// The blob segments the server stored.
+    pub fn blob_files(&self) -> Vec<PathBuf> {
+        files(&self.dir.path().join("blobs"))
+            .into_iter()
+            .filter(|f| !f.to_string_lossy().contains(".partial"))
+            .collect()
+    }
+
+    /// The files that hold what the server stored, blob segments included.
     pub async fn stored_files(&self) -> Vec<PathBuf> {
+        let mut stored = self.database_files().await;
+        stored.extend(self.blob_files());
+        stored
+    }
+
+    async fn database_files(&self) -> Vec<PathBuf> {
         match &self.postgres {
             None => {
                 let data = self.dir.path().join("data");

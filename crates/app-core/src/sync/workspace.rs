@@ -599,6 +599,7 @@ impl WorkspaceSync {
             delete: true,
             object_id: String::new(),
             kept: None,
+            blob: None,
         };
         self.sign(rid, false, covers, &payload, carried)?;
         self.save()
@@ -1203,11 +1204,7 @@ impl WorkspaceSync {
                     }
                 }
                 Change::Create(found) => {
-                    if !capture::fits_inline(
-                        &found.file.relative_path,
-                        &found.object_id,
-                        found.file.size,
-                    ) {
+                    if found.file.size > sync_protocol::blob::MAX_BLOB_FILE {
                         skipped.push(Skipped {
                             path: found.file.relative_path.clone(),
                             why: SkipWhy::TooLarge,
@@ -1226,11 +1223,7 @@ impl WorkspaceSync {
                     signed += 1;
                 }
                 Change::Update { rid, found } => {
-                    if !capture::fits_inline(
-                        &found.file.relative_path,
-                        &found.object_id,
-                        found.file.size,
-                    ) {
+                    if found.file.size > sync_protocol::blob::MAX_BLOB_FILE {
                         skipped.push(Skipped {
                             path: found.file.relative_path.clone(),
                             why: SkipWhy::TooLarge,
@@ -1349,6 +1342,22 @@ impl WorkspaceSync {
         };
         let path = SyncPath::new(found.file.relative_path.clone())
             .map_err(|e| SyncError::Invalid(format!("path: {}", e.name())))?;
+        let (content, blob, upload) = if capture::fits_inline(
+            &found.file.relative_path,
+            &found.object_id,
+            bytes.len() as u64,
+        ) {
+            (
+                Content::Inline {
+                    bytes: Bytes(bytes),
+                },
+                None,
+                None,
+            )
+        } else {
+            let (blob, upload) = self.blob_for(rid, found.revision, &bytes)?;
+            (Content::Blob(blob.clone()), Some(blob), upload)
+        };
         let payload = Payload {
             rid,
             kind: PayloadKind::File {
@@ -1356,9 +1365,7 @@ impl WorkspaceSync {
                     .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
                 path,
                 revision: found.revision,
-                content: Content::Inline {
-                    bytes: Bytes(bytes),
-                },
+                content,
                 origin: None,
             },
         };
@@ -1368,13 +1375,75 @@ impl WorkspaceSync {
             delete: false,
             object_id: found.object_id.clone(),
             kept: None,
+            blob,
         };
         let key = self.sign(rid, false, covers, &payload, carried)?;
+        if let Some(outgoing) = self.state.outbox.last_mut() {
+            outgoing.upload = upload;
+        }
         let object = self.state.objects.get_mut(&rid).expect("signed for it");
         object.local = Some(found.local());
         object.object_id = found.object_id.clone();
         object.base = Some(key);
         object.cover_all = false;
+        Ok(())
+    }
+
+    /// The blob for `bytes`, whose hash is `revision` (§21). A state of the
+    /// object that already carries those bytes in a blob lends its
+    /// `blob_ref`, so a move inside the domain uploads nothing. Otherwise
+    /// the bytes go into a new blob under a fresh key, whose ciphertext the
+    /// journal keeps until the upload completes; the second value is that
+    /// pending upload.
+    fn blob_for(
+        &self,
+        rid: Id,
+        revision: Digest,
+        bytes: &[u8],
+    ) -> Result<
+        (
+            sync_protocol::records::BlobRef,
+            Option<sync_protocol::records::BlobRef>,
+        ),
+        SyncError,
+    > {
+        if let Some(object) = self.state.objects.get(&rid)
+            && let Some(blob) = object
+                .states
+                .values()
+                .filter_map(|state| state.content.as_ref())
+                .find(|content| content.revision == revision && content.blob.is_some())
+                .and_then(|content| content.blob.clone())
+        {
+            return Ok((blob, None));
+        }
+        let blob = random(Id::random())?;
+        let key = random(SecretKey::random())?;
+        let (ciphertext, blob_ref) = sync_protocol::blob::encrypt_blob(bytes, blob, key)
+            .map_err(|e| SyncError::Invalid(e.to_string()))?;
+        self.journal
+            .keep(&state::upload_path(&blob), &ciphertext)
+            .map_err(|e| SyncError::Invalid(e.to_string()))?;
+        Ok((blob_ref.clone(), Some(blob_ref)))
+    }
+
+    /// Uploads each blob the outbox's records list that hasn't reached the
+    /// server yet, and drops its ciphertext from the journal once the
+    /// upload completes (§21).
+    async fn upload_blobs(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
+        for index in 0..self.state.outbox.len() {
+            let Some(blob) = self.state.outbox[index].upload.clone() else {
+                continue;
+            };
+            let path = self.journal.dir().join(state::upload_path(&blob.blob));
+            service
+                .client()
+                .upload_blob(self.state.workspace, self.state.domain, &blob, &path)
+                .await?;
+            self.state.outbox[index].upload = None;
+            self.save()?;
+            self.journal.forget(&state::upload_path(&blob.blob));
+        }
         Ok(())
     }
 
@@ -1397,6 +1466,7 @@ impl WorkspaceSync {
             delete: true,
             object_id: object.object_id.clone(),
             kept: None,
+            blob: None,
         };
         let key = self.sign(rid, true, covers, &payload, carried)?;
         let object = self.state.objects.get_mut(&rid).expect("signed for it");
@@ -1453,6 +1523,7 @@ impl WorkspaceSync {
             record: signed,
             reseals: 0,
             rewrite: false,
+            upload: None,
         });
         Ok(key)
     }
@@ -1500,7 +1571,8 @@ impl WorkspaceSync {
             rid,
             delete,
             supersedes: Sorted::new(covers).map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
-            blobs: Sorted::default(),
+            blobs: Sorted::new(listed_blobs(payload))
+                .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
             nonce: Nonce::ZERO,
             ciphertext: Bytes(Vec::new()),
         };
@@ -1637,6 +1709,7 @@ impl WorkspaceSync {
             self.reseal_from(index, true)?;
             self.save()?;
         }
+        self.upload_blobs(service).await?;
         while !self.state.outbox.is_empty() {
             // At the re-seal cap the device signs nothing more there, but
             // retries the last attempt's bytes (§14).
@@ -2179,7 +2252,8 @@ impl WorkspaceSync {
             Some(checked) => checked,
             None => return Ok((0, true)),
         };
-        let applied = self.apply(checked)?;
+        let fetched = self.fetch_blobs(service, &checked).await?;
+        let applied = self.apply(checked, fetched)?;
         // Objects a file in their way held back before get another try.
         if !self.matching {
             for rid in self.unsettled() {
@@ -2362,12 +2436,16 @@ impl WorkspaceSync {
 
     /// Applies a checked page: records each state in the journal, then
     /// brings each touched object's file in line with its live set.
-    fn apply(&mut self, checked: Checked) -> Result<usize, SyncError> {
+    fn apply(
+        &mut self,
+        checked: Checked,
+        fetched: BTreeMap<Digest, Vec<u8>>,
+    ) -> Result<usize, SyncError> {
         let own = self.credentials.keys.device();
         let Checked { log, records } = checked;
         self.state.log = log;
         let mut touched: Vec<Id> = Vec::new();
-        let mut contents: BTreeMap<Digest, Vec<u8>> = BTreeMap::new();
+        let mut contents: BTreeMap<Digest, Vec<u8>> = fetched;
         let mut applied = 0;
         for record in records {
             let op = &record.op;
@@ -2430,6 +2508,48 @@ impl WorkspaceSync {
             self.settle(rid, &contents)?;
         }
         Ok(applied)
+    }
+
+    /// Downloads the blobs a checked page's records carry, before the page
+    /// applies, unless this device already holds a file at the payload's
+    /// revision (§18, §21). A blob that fails its digest, its length or its
+    /// revision fails the pull before any file changes, and the cursor
+    /// stays where it was.
+    async fn fetch_blobs(
+        &mut self,
+        service: &mut SyncService,
+        checked: &Checked,
+    ) -> Result<BTreeMap<Digest, Vec<u8>>, SyncError> {
+        let own = self.credentials.keys.device();
+        let mut fetched = BTreeMap::new();
+        for record in &checked.records {
+            let Some(Payload {
+                kind:
+                    PayloadKind::File {
+                        revision,
+                        content: Content::Blob(blob),
+                        ..
+                    },
+                ..
+            }) = &record.payload
+            else {
+                continue;
+            };
+            let held = self
+                .state
+                .objects
+                .values()
+                .any(|o| o.local.as_ref().is_some_and(|l| l.revision == *revision));
+            if record.op.body.device == own || held || fetched.contains_key(revision) {
+                continue;
+            }
+            let bytes = service
+                .client()
+                .download_blob(self.state.workspace, blob, Some(revision))
+                .await?;
+            fetched.insert(*revision, bytes);
+        }
+        Ok(fetched)
     }
 
     /// Lists the objects in conflict (§16).
@@ -2667,6 +2787,17 @@ fn check_operation(
     })))
 }
 
+/// The blobs a payload references, which its operation lists (§21).
+fn listed_blobs(payload: &Payload) -> Vec<Id> {
+    match &payload.kind {
+        PayloadKind::File {
+            content: Content::Blob(blob),
+            ..
+        } => vec![blob.blob],
+        _ => Vec::new(),
+    }
+}
+
 /// What a payload carries, keeping a file's bytes in `contents` by the
 /// revision they hash to.
 fn carried(payload: &Payload, contents: &mut BTreeMap<Digest, Vec<u8>>) -> Option<Carried> {
@@ -2688,6 +2819,7 @@ fn carried(payload: &Payload, contents: &mut BTreeMap<Digest, Vec<u8>>) -> Optio
                 delete: false,
                 object_id: object_id.0.clone(),
                 kept: None,
+                blob: None,
             })
         }
         PayloadKind::Delete {
@@ -2700,8 +2832,23 @@ fn carried(payload: &Payload, contents: &mut BTreeMap<Digest, Vec<u8>>) -> Optio
             delete: true,
             object_id: object_id.0.clone(),
             kept: None,
+            blob: None,
         }),
-        // Attachments (ticket 49) and text mode (ticket 55) come later.
+        PayloadKind::File {
+            object_id,
+            path,
+            revision,
+            content: Content::Blob(blob),
+            ..
+        } => Some(Carried {
+            path: path.as_str().to_owned(),
+            revision: *revision,
+            delete: false,
+            object_id: object_id.0.clone(),
+            kept: None,
+            blob: Some(blob.clone()),
+        }),
+        // Text mode (ticket 55) comes later.
         _ => None,
     }
 }
