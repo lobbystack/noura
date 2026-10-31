@@ -192,9 +192,21 @@ async fn a_device_still_catching_up_writes_no_snapshot() {
     let later = Instant::now() + IDLE_ANY_WRITER + Duration::from_secs(1);
     assert_eq!(pair.sync_a.text_tick(later).expect("a tick"), 0);
 
+    // At the head, the rule runs: the snapshot takes the updates along.
     pair.proxy.honest();
     both_rounds(&mut pair).await;
-    assert_eq!(pair.sync_a.text_tick(later).expect("a tick"), 1);
+    let rid = pair.sync_a.text_rid(PLAN).expect("the note");
+    let (workspace, domain) = (pair.sync_a.workspace(), pair.sync_a.domain());
+    let head = sync_scale_support::domain_row(&pair.server.store, workspace, domain)
+        .await
+        .head_seq;
+    let live = pair
+        .server
+        .store
+        .live_at(workspace, rid, head)
+        .await
+        .expect("the live set");
+    assert_eq!(live.len(), 1, "{live:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
