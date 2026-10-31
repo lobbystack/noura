@@ -1199,7 +1199,7 @@ pub async fn pair_on<B: Backend>(server: Server<B>) -> Pair<B> {
 }
 
 /// A [`Pair`] on `server` whose desktop belongs to another account, a
-/// member the laptop's account invited as an editor.
+/// member the laptop's account invited as an admin.
 pub async fn pair_of_accounts_on<B: Backend>(server: Server<B>) -> Pair<B> {
     let proxy = Proxy::start(&server.base).await;
     let mut laptop = first_desktop(&server, "ana@example.com").await;
@@ -1224,7 +1224,7 @@ pub async fn pair_of_accounts_on<B: Backend>(server: Server<B>) -> Pair<B> {
         &mut sync_a,
         &mut book,
         &mut desktop,
-        sync_protocol::records::Role::Editor,
+        sync_protocol::records::Role::Admin,
     )
     .await;
     sync_b
