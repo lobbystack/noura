@@ -121,6 +121,63 @@ impl Server<SqliteBackend> {
     }
 }
 
+impl Server<SqliteBackend> {
+    /// Copies the running database with `backup`, into the server's
+    /// temporary directory.
+    pub async fn backup(&self, name: &str) -> PathBuf {
+        let copy = self.dir.path().join(name);
+        sync_server::restore::backup(&self.dir.path().join("data"), &copy)
+            .await
+            .expect("the backup");
+        copy
+    }
+
+    /// Serves `copy` from a new data directory after `restore`, or, with
+    /// `recorded` false, as a database put back by hand, which keeps its
+    /// generation. Blobs stay in the one store. Returns the new base URL.
+    pub async fn put_back(&self, copy: &Path, recorded: bool) -> String {
+        let data = self.dir.path().join(format!(
+            "restored-{}",
+            Id::random().expect("random").to_hex()
+        ));
+        std::fs::create_dir_all(&data).expect("a directory");
+        std::os::unix::fs::symlink(self.dir.path().join("blobs"), data.join("blobs"))
+            .expect("the shared blob store");
+        if recorded {
+            sync_server::restore::restore(&data, copy, None, &sync_server::BlobStoreConfig::Disk)
+                .await
+                .expect("the restore");
+        } else {
+            std::fs::copy(copy, data.join(DATABASE)).expect("a file copy");
+            std::fs::copy(
+                sync_server::restore::secret_beside(copy),
+                data.join("server-secret"),
+            )
+            .expect("the secret");
+            sync_store_sqlite::clear_stamp(&data.join(DATABASE))
+                .await
+                .expect("a file copy carries no stamp");
+        }
+        let store = sync_server::open_store(&sync_server::Config::new(
+            data.clone(),
+            "127.0.0.1:0".parse().expect("an address"),
+        ))
+        .await
+        .expect("the store opens");
+        let blobs =
+            sync_server::blobs::DiskStore::open(&data.join("blobs")).expect("the blob store");
+        let address = sync_server::spawn_with_blobs(
+            Arc::new(store),
+            "127.0.0.1:0",
+            sync_server::Accounts::local,
+            Arc::new(blobs),
+        )
+        .await
+        .expect("serving");
+        format!("http://localhost:{}", address.port())
+    }
+}
+
 impl Server<PgBackend> {
     /// The server on a fresh database in the test binary's throwaway
     /// cluster under the target directory.
@@ -839,6 +896,11 @@ impl Proxy {
     }
 
     /// Forwards every later request and response unchanged.
+    /// Sends every later request to `upstream`.
+    pub fn retarget(&self, upstream: &str) {
+        *self.upstream.lock().unwrap() = upstream.to_owned();
+    }
+
     pub fn honest(&self) {
         *self.frames.lock().unwrap() = None;
         *self.tamper.lock().unwrap() = None;

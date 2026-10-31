@@ -23,6 +23,7 @@ mod domains;
 mod moves;
 pub mod presence;
 pub mod rebuild;
+pub mod restore;
 mod settle;
 pub mod state;
 pub mod text;
@@ -235,6 +236,10 @@ pub struct WorkspaceSync {
     text: text::TextRuntime,
     /// What the device holds of presence (§23).
     presence: presence::PresenceRuntime,
+    /// The longest wait before the device writes lost objects again (§14).
+    restore_wait: std::time::Duration,
+    /// The objects a rewind writes again, which matching leaves alone.
+    lagging: BTreeSet<Id>,
 }
 
 /// What handling one realtime frame did (§23).
@@ -406,6 +411,7 @@ impl WorkspaceSync {
             bootstrap: false,
             bootstrap_progress: None,
             waiting_for_space: BTreeSet::new(),
+            restore: Default::default(),
         };
         // A device accepts no policy head or epoch below its mark, also
         // when it starts again without a journal (§15).
@@ -439,6 +445,8 @@ impl WorkspaceSync {
             entry_hint: None,
             armed: BTreeSet::new(),
             frame_generation: None,
+            restore_wait: restore::REWRITE_WAIT,
+            lagging: BTreeSet::new(),
             active: None,
             parked: BTreeMap::new(),
             rematch: false,
@@ -564,6 +572,8 @@ impl WorkspaceSync {
             entry_hint: None,
             armed: BTreeSet::new(),
             frame_generation: None,
+            restore_wait: restore::REWRITE_WAIT,
+            lagging: BTreeSet::new(),
             active: None,
             parked: BTreeMap::new(),
             rematch: false,
@@ -1054,6 +1064,38 @@ impl WorkspaceSync {
         if self.state.ended.is_some() {
             return Ok(Round::default());
         }
+        // A stopped workspace keeps its files and does nothing (§14).
+        let gate = self.restore_gate(service).await;
+        match gate {
+            Ok(true) => {}
+            Ok(false) => return Ok(Round::default()),
+            Err(error) => {
+                self.note_failure(error.clone_check())?;
+                return Err(error);
+            }
+        }
+        match self.running_round(service, wait_seconds, wake).await {
+            // The round met a new generation: the next one compares.
+            Err(SyncError::Check("sync_restore_generation")) => {
+                match self.restore_gate(service).await {
+                    Ok(_) => Ok(Round::default()),
+                    Err(error) => Err(error),
+                }
+            }
+            Err(error) => {
+                self.note_failure(error.clone_check())?;
+                Err(error)
+            }
+            round => round,
+        }
+    }
+
+    async fn running_round(
+        &mut self,
+        service: &mut SyncService,
+        wait_seconds: u32,
+        wake: &tokio::sync::Notify,
+    ) -> Result<Round, SyncError> {
         if self.paused {
             let captured = self.capture()?;
             return Ok(Round {
@@ -1074,7 +1116,12 @@ impl WorkspaceSync {
             self.capture()?;
             return Err(error);
         }
-        let mut captured = self.capture()?;
+        // The device reconciles a domain before it writes there again.
+        let mut captured = if self.rewrites_pending() {
+            self.write_again_due()?
+        } else {
+            self.capture()?
+        };
         let mut pushed = self.push_everything(service).await?;
         if self.state.profile_recheck && unix_now() >= self.state.rewrite_due {
             self.state.profile_recheck = false;
@@ -2288,6 +2335,9 @@ impl WorkspaceSync {
     /// The same bytes go out on every retry. Returns how many records the
     /// server acknowledged.
     pub async fn push(&mut self, service: &mut SyncService) -> Result<usize, SyncError> {
+        if service.client().restore_generation() > self.state.generation {
+            return Err(SyncError::Check("sync_restore_generation"));
+        }
         let mut acknowledged = 0;
         let mut attempts = 0;
         if self.state.removal_hold {
@@ -3656,11 +3706,10 @@ impl WorkspaceSync {
         if page.restore_generation < self.state.generation {
             return Err(SyncError::Check("sync_server_rollback"));
         }
+        // A restore: the device applies nothing from this page, and the
+        // round's gate compares (§14).
         if page.restore_generation > self.state.generation {
-            // A restore: the comparison of §14 arrives with ticket 60, so
-            // the device stops writing until then.
-            self.stopped = Some("sync_restore_lost");
-            return Err(SyncError::Check("sync_restore_lost"));
+            return Err(SyncError::Check("sync_restore_generation"));
         }
         let floored = matches!(page.status, PageStatus::Ok | PageStatus::Compacted);
         if (page.status == PageStatus::Ok
@@ -3789,6 +3838,18 @@ impl WorkspaceSync {
                         .map_err(|e| SyncError::Check(e.client_code()))?;
                     log.checkpoints
                         .note_policy_entry(entry.seq, policy_entry.revision);
+                    if let (Some(before), Some(after)) = (
+                        policy.at(policy_entry.revision - 1),
+                        policy.at(policy_entry.revision),
+                    ) {
+                        log.note_write_access(
+                            &self.state.domain,
+                            policy_entry.revision,
+                            entry.seq,
+                            before,
+                            after,
+                        );
+                    }
                     if matches!(change.body.kind, PolicyKind::CreateDomain { .. }) {
                         log.domain_entries.insert(policy_entry.revision, entry.seq);
                     }

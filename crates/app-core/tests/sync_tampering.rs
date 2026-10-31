@@ -275,7 +275,21 @@ async fn an_older_state_and_withheld_own_records_are_caught() {
         Some("sync_server_rollback")
     );
     assert_eq!(pair.a.files(), before);
+    // The rollback holds the device until the generation changes (§14).
     pair.proxy.honest();
+    let held = pair.sync_a.round(&mut pair.service, 0).await;
+    assert_eq!(
+        held.err()
+            .and_then(|e| e.code().map(str::to_owned))
+            .as_deref(),
+        Some("sync_server_rollback")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn withheld_own_records_are_caught() {
+    let mut pair = pair().await;
+    three_from_the_desktop(&mut pair).await;
     pair.sync_a.round(&mut pair.service, 0).await.unwrap();
 
     // The laptop's own record, which the server acknowledged, left out of
@@ -385,8 +399,15 @@ async fn an_older_or_forked_policy_and_a_missing_policy_entry_are_caught() {
             .as_deref(),
         Some("sync_policy_rollback")
     );
+    // The rollback holds the device until the generation changes (§14).
     pair.proxy.honest();
-    pair.sync_a.round(&mut pair.service, 0).await.unwrap();
+    let held = pair.sync_a.round(&mut pair.service, 0).await;
+    assert_eq!(
+        held.err()
+            .and_then(|e| e.code().map(str::to_owned))
+            .as_deref(),
+        Some("sync_policy_rollback")
+    );
     assert_eq!(pair.sync_a.policy_revision(), accepted);
 }
 

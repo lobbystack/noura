@@ -255,7 +255,22 @@ impl WorkspaceSync {
                 bytes: None,
             });
         }
-        let rids: Vec<Id> = self.state.objects.keys().copied().collect();
+        // A rewind writes the objects that lag again from these files.
+        let lagging: Vec<String> = self
+            .state
+            .restore
+            .rewrites
+            .values()
+            .filter_map(|r| r.object.local.as_ref().map(|l| l.path.clone()))
+            .collect();
+        locals.retain(|l| !lagging.contains(&l.file.relative_path));
+        let rids: Vec<Id> = self
+            .state
+            .objects
+            .keys()
+            .filter(|rid| !self.lagging.contains(rid))
+            .copied()
+            .collect();
         let objects: Vec<LiveObject> = rids
             .iter()
             .map(|rid| LiveObject {

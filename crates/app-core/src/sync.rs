@@ -110,6 +110,14 @@ pub enum SyncError {
 }
 
 impl SyncError {
+    /// This error's check code as a new error, or a copy of what it says.
+    pub(crate) fn clone_check(&self) -> Self {
+        match self {
+            Self::Check(code) => Self::Check(code),
+            other => Self::Invalid(other.to_string()),
+        }
+    }
+
     /// The server's error code, for a refusal.
     pub fn code(&self) -> Option<&str> {
         match self {

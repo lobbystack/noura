@@ -246,3 +246,13 @@ pub async fn live_instances(path: &Path, now: u64) -> Result<usize, sqlx::Error>
     connection.close().await?;
     Ok(usize::try_from(count).unwrap_or(usize::MAX))
 }
+
+/// Clears `backup`'s stamp without raising the generation, which leaves a
+/// plain file copy of the database, as an operator's snapshot would be.
+pub async fn clear_stamp(path: &Path) -> Result<(), sqlx::Error> {
+    let mut connection = connect(path, false).await?;
+    sqlx::query!("UPDATE server SET backup_stamp = 0 WHERE id = 1")
+        .execute(&mut connection)
+        .await?;
+    connection.close().await
+}

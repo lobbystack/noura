@@ -135,6 +135,9 @@ pub struct State {
     /// saved with the files of each bucket it installed.
     #[serde(default)]
     pub bootstrap_progress: Option<BootstrapProgress>,
+    /// What the device keeps of a server restore (§14).
+    #[serde(default)]
+    pub restore: super::restore::Restore,
     /// The objects whose changes the server last refused with
     /// `quota_exceeded`, which wait on this device for space (§20).
     #[serde(default)]
@@ -325,6 +328,10 @@ pub struct Log {
     /// revision: a workspace-domain object below it awaits its move (§9).
     #[serde(default)]
     pub domain_entries: BTreeMap<u64, u64>,
+    /// The final head of each device a change took write access from
+    /// (§14), which no rewind or generation change alters.
+    #[serde(default)]
+    pub final_heads: Vec<super::restore::FinalHead>,
 }
 
 impl Log {
@@ -345,6 +352,43 @@ impl Log {
             checkpoints: Default::default(),
             forked: BTreeMap::new(),
             domain_entries: BTreeMap::new(),
+            final_heads: Vec::new(),
+        }
+    }
+
+    /// Notes each device whose write access to `domain` the change at
+    /// `revision`, whose entry sits at `seq`, ended: its chain head there
+    /// now is its final head (§14). A later change that gives the access
+    /// back closes the head's window, and a generation change alters
+    /// neither.
+    pub fn note_write_access(
+        &mut self,
+        domain: &Id,
+        revision: u64,
+        seq: u64,
+        prev: &sync_protocol::policy::Snapshot,
+        next: &sync_protocol::policy::Snapshot,
+    ) {
+        for kept in self.final_heads.iter_mut() {
+            if kept.until.is_none()
+                && kept.revision < revision
+                && next.can_write(&kept.device, domain)
+            {
+                kept.until = Some(seq);
+            }
+        }
+        for device in prev.devices.keys() {
+            if prev.can_write(device, domain) && !next.can_write(device, domain) {
+                let head = self.verifier.head(device);
+                self.final_heads.push(super::restore::FinalHead {
+                    device: *device,
+                    revision,
+                    entry: seq,
+                    counter: head.counter,
+                    digest: head.digest,
+                    until: None,
+                });
+            }
         }
     }
 }
