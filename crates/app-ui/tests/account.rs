@@ -677,17 +677,16 @@ fn a_retired_device_shows_the_new_fingerprint_and_signs_in_again() {
     harness.run();
     assert!(
         harness
-            .query_by_label("Your account's devices were reset")
+            .query_all_by_label("Your account's devices were reset")
+            .next()
             .is_some()
     );
-    harness.get_by_label("Sign in as a new device").click();
+    harness.get_by_label(ACCOUNT);
+    harness
+        .get_by_role_and_label(Role::Button, "Sign in as a new device")
+        .click_accesskit();
     harness.run();
-    assert!(
-        account
-            .taken()
-            .iter()
-            .any(|action| matches!(action, AccountAction::SignIn))
-    );
+    assert_eq!(account.taken(), vec![AccountAction::SignIn]);
 }
 
 /// Reset devices: the code field, then the new fingerprint with each

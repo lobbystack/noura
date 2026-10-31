@@ -519,3 +519,16 @@ pub async fn an_accepted_reset_leaves_the_ordinary_closing_rule<B: Backend>(stor
         .await
         .expect("an owner device closes it");
 }
+
+/// The `accept_reset` of `sync-v2-policy.json`, which any client verifies,
+/// gets `forbidden` from the server without the account's approval request
+/// for this workspace (§8, §10).
+pub async fn an_accept_reset_without_a_request_is_forbidden<B: Backend>(store: Store<B>) {
+    let (workspace, change, session) =
+        super::invitations::forged_policy_case(&store, "accept_reset_by_the_owner").await;
+    let body = sync_protocol::messages::PushRequest {
+        records: sync_protocol::codec::List(vec![RecordRef::Policy(change)]),
+    };
+    let refused = store.push(session, workspace, body.to_bytes()).await;
+    assert_eq!(refusal(refused).code, "forbidden");
+}

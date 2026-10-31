@@ -106,7 +106,7 @@ pub fn access(
     .unwrap()
 }
 
-fn chains(people: &[&Chain]) -> Value {
+pub fn chains(people: &[&Chain]) -> Value {
     json!(
         people
             .iter()
@@ -119,7 +119,7 @@ fn chains(people: &[&Chain]) -> Value {
     )
 }
 
-fn changes(policy: &Policy) -> Vec<String> {
+pub fn changes(policy: &Policy) -> Vec<String> {
     policy
         .changes
         .iter()
@@ -391,6 +391,72 @@ pub fn fixture() -> Fixture {
         "changes": changes(&by_reset_account),
         "expect": {"error": "unauthorized", "revision": 4},
     }));
+
+    // An admin accepts as an owner does, and only a new chain can be
+    // accepted. An account invited again after a reset comes back on its
+    // new chain.
+    let mut by_admin = reset.clone();
+    add_member(&mut by_admin, &alice, &carol, Role::Admin);
+    by_admin.push(
+        carol.first(),
+        vec![carol.head(), bob_reset.head()],
+        PolicyKind::AcceptReset {
+            account: bob.account(),
+        },
+    );
+    accepted(
+        &mut f,
+        "accept_reset_by_an_admin",
+        &reset_refs,
+        &by_admin,
+        json!({
+            "devices": {"5": ids(&[alice.first(), carol.first(), bob_reset.first()])},
+            "access": {restricted().to_hex(): [alice.account().to_hex()]},
+            "roles": {bob.account().to_hex(): "editor"},
+        }),
+    );
+    let mut same_chain = reset.clone();
+    same_chain.push(
+        alice.first(),
+        vec![alice.head(), bob.head()],
+        PolicyKind::AcceptReset {
+            account: bob.account(),
+        },
+    );
+    f.case(json!({
+        "kind": "policy_chain",
+        "name": "accept_reset_on_the_chain_the_workspace_records",
+        "account_chains": chains(&reset_refs),
+        "changes": changes(&same_chain),
+        "expect": {"error": "head_behind", "revision": 4},
+    }));
+    let mut invited_back = reset.clone();
+    invited_back.push(
+        alice.first(),
+        vec![alice.head()],
+        PolicyKind::RemoveMember {
+            account: bob.account(),
+        },
+    );
+    invited_back.push(
+        alice.first(),
+        vec![alice.head(), bob_reset.head()],
+        PolicyKind::AddMember {
+            account: bob.account(),
+            role: Role::Editor,
+            invitation: id("policy invitation after a reset"),
+        },
+    );
+    accepted(
+        &mut f,
+        "invited_again_after_a_reset_on_the_new_chain",
+        &reset_refs,
+        &invited_back,
+        json!({
+            "devices": {"5": ids(&[alice.first(), bob_reset.first()])},
+            "access": {restricted().to_hex(): [alice.account().to_hex()]},
+        }),
+    );
 
     // Links.
     let mut base = genesis(&alice);

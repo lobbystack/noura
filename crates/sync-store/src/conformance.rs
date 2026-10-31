@@ -146,6 +146,7 @@ macro_rules! conformance_tests {
             accept_reset_commits_an_approval,
             closing_a_workspace_answers_not_found,
             a_reset_owner_closes_a_workspace_nobody_else_can_accept,
+            an_accept_reset_without_a_request_is_forbidden,
             a_reset_owner_with_another_admin_can_not_close,
             an_accepted_reset_leaves_the_ordinary_closing_rule,
             an_account_belongs_to_at_most_a_thousand_workspaces,

@@ -17,8 +17,8 @@ use app_core::sync::{KeptHeads, SyncService};
 use sync_protocol::types::{from_base64url, to_base64url, to_hex};
 use sync_store::{Backend as _, WriteTxn as _};
 use sync_support::{
-    Desktop, MemorySecrets, Pair, Proxy, Server, first_desktop, new_desktop, new_desktop_in,
-    pair_of_accounts_on, reset_devices,
+    Desktop, MemorySecrets, Pair, Proxy, Server, first_desktop, new_desktop, pair_of_accounts_on,
+    reset_devices,
 };
 
 fn wait_for(

@@ -906,6 +906,38 @@ pub async fn forged_policy_case<B: Backend>(
                     .expect("a link")
             })
             .collect();
+        // A second chain of an account follows a reset.
+        let account = links[0].body.account;
+        let reset = store
+            .backend()
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move { crate::ReadTxn::current_genesis(txn, account).await })
+            }))
+            .await
+            .expect("read")
+            .is_some();
+        if reset {
+            let genesis = links[0].digest();
+            store
+                .backend()
+                .write(Box::new(move |txn: &mut B::Write| {
+                    Box::pin(async move {
+                        for (index, link) in links.iter().enumerate() {
+                            let row = crate::LinkRow {
+                                genesis,
+                                seqno: index as u64 + 1,
+                                link: link.to_bytes(),
+                            };
+                            txn.insert_account_link(account, &row, link.digest())
+                                .await?;
+                        }
+                        txn.set_current_genesis(account, genesis).await
+                    })
+                }))
+                .await
+                .expect("the fixture's new chain");
+            continue;
+        }
         store
             .append_account_links(links)
             .await
