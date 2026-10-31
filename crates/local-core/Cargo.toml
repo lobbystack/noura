@@ -77,5 +77,6 @@ libc.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The data protection keychain (`kSecUseDataProtectionKeychain`) holds the v2
-# device secrets; it needs the macOS 10.15 API.
+# device secrets, with the login keychain as the fallback for a build without
+# a keychain access group; it needs the macOS 10.15 API.
 security-framework = { version = "=3.7.0", features = ["OSX_10_15"] }

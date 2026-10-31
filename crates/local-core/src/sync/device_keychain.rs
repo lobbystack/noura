@@ -7,8 +7,15 @@
 //! while the Mac is unlocked and only on this device
 //! (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`), with synchronization
 //! off, so neither iCloud Keychain nor a migration or backup restore to
-//! another Mac carries it. The data protection keychain needs the app's
-//! keychain access group, which the signed app bundle carries. On Windows
+//! another Mac carries it. That keychain needs a keychain access group,
+//! which only a build with a provisioning profile holds. Any other build
+//! gets `errSecMissingEntitlement` and keeps the item in the login keychain
+//! instead, with the access list that trusts the app that made it. A login
+//! keychain item has no ThisDeviceOnly class, so a migration or a backup
+//! restore can carry it to another Mac. The data protection keychain stays
+//! the first choice, so a build that gains the entitlement moves there
+//! without code changes: each write lands there and removes the login item.
+//! On Windows
 //! the items are Credential Manager entries with local-machine persistence,
 //! which DPAPI encrypts for this user and no roaming profile carries. On
 //! Linux they are Secret Service items, and a
@@ -36,6 +43,79 @@ fn unavailable() -> crate::CoreError {
     )
 }
 
+/// One keychain, whose failures are the `OSStatus` it answered.
+#[cfg(any(target_os = "macos", test))]
+trait Keychain {
+    fn read(&self, reference: &str) -> std::result::Result<Option<Vec<u8>>, i32>;
+    fn write(&self, reference: &str, value: &[u8]) -> std::result::Result<(), i32>;
+    /// Succeeds when the item is gone, whether or not it was there.
+    fn delete(&self, reference: &str) -> std::result::Result<(), i32>;
+}
+
+/// The data protection keychain first, and the login keychain when this
+/// build lacks the entitlement it needs. Any other failure stays a failure:
+/// the login keychain never stands in for a locked or refusing store.
+#[cfg(any(target_os = "macos", test))]
+struct Fallback<P, L> {
+    protected: P,
+    login: L,
+    /// Whether the diagnostic went to the log.
+    noted: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl<P: Keychain, L: Keychain> Fallback<P, L> {
+    /// `errSecMissingEntitlement`.
+    const MISSING_ENTITLEMENT: i32 = -34018;
+
+    fn note_fallback(&self) {
+        if !self.noted.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!(
+                "this build has no keychain access group, so sync keys stay in the login keychain"
+            );
+        }
+    }
+
+    fn read(&self, reference: &str) -> Result<Option<Vec<u8>>> {
+        match self.protected.read(reference) {
+            Ok(Some(bytes)) => return Ok(Some(bytes)),
+            Ok(None) => {}
+            Err(Self::MISSING_ENTITLEMENT) => self.note_fallback(),
+            Err(_) => return Err(unavailable()),
+        }
+        self.login.read(reference).map_err(|_| unavailable())
+    }
+
+    fn write(&self, reference: &str, value: &[u8]) -> Result<()> {
+        match self.protected.write(reference, value) {
+            Ok(()) => {
+                // The new value is durable, so an old login item only
+                // lingers. The next write tries to remove it again.
+                if self.login.delete(reference).is_err() {
+                    tracing::warn!("an earlier login keychain item stayed");
+                }
+                Ok(())
+            }
+            Err(Self::MISSING_ENTITLEMENT) => {
+                self.note_fallback();
+                self.login
+                    .write(reference, value)
+                    .map_err(|_| unavailable())
+            }
+            Err(_) => Err(unavailable()),
+        }
+    }
+
+    fn delete(&self, reference: &str) -> Result<()> {
+        let protected = self.protected.delete(reference);
+        let login = self.login.delete(reference);
+        match (protected, login) {
+            (Ok(()) | Err(Self::MISSING_ENTITLEMENT), Ok(())) => Ok(()),
+            _ => Err(unavailable()),
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod platform {
     use security_framework::access_control::{ProtectionMode, SecAccessControl};
@@ -44,45 +124,99 @@ mod platform {
     };
     use security_framework::passwords_options::PasswordOptions;
 
-    use super::{DEVICE_SERVICE, unavailable};
+    use super::{DEVICE_SERVICE, Fallback, Keychain};
     use crate::Result;
 
     /// `errSecItemNotFound`.
     const NOT_FOUND: i32 = -25300;
 
-    /// A data protection keychain item that never leaves this Mac.
-    fn options(reference: &str) -> PasswordOptions {
+    /// The data protection keychain: an item that never leaves this Mac.
+    struct Protected;
+
+    /// The login keychain: an item whose access list trusts this app.
+    struct Login;
+
+    fn protected_options(reference: &str) -> PasswordOptions {
         let mut options = PasswordOptions::new_generic_password(DEVICE_SERVICE, reference);
         options.use_protected_keychain();
         options.set_access_synchronized(Some(false));
         options
     }
 
-    pub fn read(reference: &str) -> Result<Option<Vec<u8>>> {
-        match generic_password(options(reference)) {
+    fn read_item(options: PasswordOptions) -> std::result::Result<Option<Vec<u8>>, i32> {
+        match generic_password(options) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(error) if error.code() == NOT_FOUND => Ok(None),
-            Err(_) => Err(unavailable()),
+            Err(error) => Err(error.code()),
         }
+    }
+
+    fn delete_item(options: PasswordOptions) -> std::result::Result<(), i32> {
+        match delete_generic_password_options(options) {
+            Ok(()) => Ok(()),
+            Err(error) if error.code() == NOT_FOUND => Ok(()),
+            Err(error) => Err(error.code()),
+        }
+    }
+
+    impl Keychain for Protected {
+        fn read(&self, reference: &str) -> std::result::Result<Option<Vec<u8>>, i32> {
+            read_item(protected_options(reference))
+        }
+
+        fn write(&self, reference: &str, value: &[u8]) -> std::result::Result<(), i32> {
+            let mut options = protected_options(reference);
+            let access = SecAccessControl::create_with_protection(
+                Some(ProtectionMode::AccessibleWhenUnlockedThisDeviceOnly),
+                0,
+            )
+            .map_err(|error| error.code())?;
+            options.set_access_control(access);
+            set_generic_password_options(value, options).map_err(|error| error.code())
+        }
+
+        fn delete(&self, reference: &str) -> std::result::Result<(), i32> {
+            delete_item(protected_options(reference))
+        }
+    }
+
+    impl Keychain for Login {
+        fn read(&self, reference: &str) -> std::result::Result<Option<Vec<u8>>, i32> {
+            read_item(PasswordOptions::new_generic_password(
+                DEVICE_SERVICE,
+                reference,
+            ))
+        }
+
+        fn write(&self, reference: &str, value: &[u8]) -> std::result::Result<(), i32> {
+            let options = PasswordOptions::new_generic_password(DEVICE_SERVICE, reference);
+            set_generic_password_options(value, options).map_err(|error| error.code())
+        }
+
+        fn delete(&self, reference: &str) -> std::result::Result<(), i32> {
+            delete_item(PasswordOptions::new_generic_password(
+                DEVICE_SERVICE,
+                reference,
+            ))
+        }
+    }
+
+    static KEYCHAINS: Fallback<Protected, Login> = Fallback {
+        protected: Protected,
+        login: Login,
+        noted: std::sync::atomic::AtomicBool::new(false),
+    };
+
+    pub fn read(reference: &str) -> Result<Option<Vec<u8>>> {
+        KEYCHAINS.read(reference)
     }
 
     pub fn write(reference: &str, value: &[u8]) -> Result<()> {
-        let mut options = options(reference);
-        let access = SecAccessControl::create_with_protection(
-            Some(ProtectionMode::AccessibleWhenUnlockedThisDeviceOnly),
-            0,
-        )
-        .map_err(|_| unavailable())?;
-        options.set_access_control(access);
-        set_generic_password_options(value, options).map_err(|_| unavailable())
+        KEYCHAINS.write(reference, value)
     }
 
     pub fn delete(reference: &str) -> Result<()> {
-        match delete_generic_password_options(options(reference)) {
-            Ok(()) => Ok(()),
-            Err(error) if error.code() == NOT_FOUND => Ok(()),
-            Err(_) => Err(unavailable()),
-        }
+        KEYCHAINS.delete(reference)
     }
 }
 
@@ -159,5 +293,132 @@ impl SyncCredentials for DeviceKeychain {
 
     fn delete(&self, reference: &str) -> Result<()> {
         platform::delete(reference)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::*;
+
+    /// A keychain in memory that answers `refusal` to everything, if set.
+    #[derive(Default)]
+    struct Memory {
+        items: Mutex<HashMap<String, Vec<u8>>>,
+        refusal: Option<i32>,
+    }
+
+    impl Memory {
+        fn refusing(status: i32) -> Self {
+            Self {
+                refusal: Some(status),
+                ..Self::default()
+            }
+        }
+
+        fn holds(&self, reference: &str) -> bool {
+            self.items.lock().unwrap().contains_key(reference)
+        }
+    }
+
+    impl Keychain for Memory {
+        fn read(&self, reference: &str) -> std::result::Result<Option<Vec<u8>>, i32> {
+            self.refusal.map_or(Ok(()), Err)?;
+            Ok(self.items.lock().unwrap().get(reference).cloned())
+        }
+
+        fn write(&self, reference: &str, value: &[u8]) -> std::result::Result<(), i32> {
+            self.refusal.map_or(Ok(()), Err)?;
+            let mut items = self.items.lock().unwrap();
+            items.insert(reference.to_owned(), value.to_owned());
+            Ok(())
+        }
+
+        fn delete(&self, reference: &str) -> std::result::Result<(), i32> {
+            self.refusal.map_or(Ok(()), Err)?;
+            self.items.lock().unwrap().remove(reference);
+            Ok(())
+        }
+    }
+
+    fn keychains(protected: Memory, login: Memory) -> Fallback<Memory, Memory> {
+        Fallback {
+            protected,
+            login,
+            noted: AtomicBool::new(false),
+        }
+    }
+
+    const MISSING_ENTITLEMENT: i32 = -34018;
+
+    #[test]
+    fn a_build_without_the_entitlement_keeps_items_in_the_login_keychain() {
+        let store = keychains(Memory::refusing(MISSING_ENTITLEMENT), Memory::default());
+        store.write("seed", b"secret").unwrap();
+        assert!(store.login.holds("seed"));
+        assert!(
+            store.noted.load(Ordering::Relaxed),
+            "the diagnostic went out"
+        );
+        assert_eq!(store.read("seed").unwrap().unwrap(), b"secret");
+        assert!(store.read("other").unwrap().is_none());
+        store.delete("seed").unwrap();
+        assert!(!store.login.holds("seed"));
+        assert!(store.read("seed").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_build_with_the_entitlement_uses_the_data_protection_keychain_alone() {
+        let store = keychains(Memory::default(), Memory::default());
+        store.write("seed", b"secret").unwrap();
+        assert!(store.protected.holds("seed"));
+        assert!(!store.login.holds("seed"));
+        assert!(!store.noted.load(Ordering::Relaxed), "nothing fell back");
+        assert_eq!(store.read("seed").unwrap().unwrap(), b"secret");
+    }
+
+    /// A signed build that gains the entitlement still finds what an
+    /// earlier build stored, and its next write moves the item.
+    #[test]
+    fn a_new_entitlement_finds_login_items_and_moves_them_on_write() {
+        let store = keychains(Memory::default(), Memory::default());
+        store.login.write("seed", b"old").unwrap();
+        assert_eq!(store.read("seed").unwrap().unwrap(), b"old");
+        store.write("seed", b"new").unwrap();
+        assert!(!store.login.holds("seed"));
+        assert_eq!(store.read("seed").unwrap().unwrap(), b"new");
+    }
+
+    #[test]
+    fn any_other_failure_stays_unavailable_and_reaches_no_login_item() {
+        const LOCKED: i32 = -25308;
+        let store = keychains(Memory::refusing(LOCKED), Memory::default());
+        store.login.write("seed", b"secret").unwrap();
+        for error in [
+            store.read("seed").unwrap_err(),
+            store.write("seed", b"new").unwrap_err(),
+        ] {
+            assert_eq!(error.code, "sync_credentials_unavailable");
+        }
+        assert_eq!(store.login.read("seed").unwrap().unwrap(), b"secret");
+        assert!(!store.noted.load(Ordering::Relaxed));
+    }
+
+    /// The real keychains with a throwaway value. It writes to your login
+    /// keychain, so it runs only when you ask for it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "writes a throwaway item to the real keychain"]
+    fn the_real_store_holds_an_item_in_this_build() {
+        let reference = "noura-device-keychain-test";
+        let store = DeviceKeychain;
+        store.write(reference, "throwaway").unwrap();
+        let read = store.read(reference).map(|value| value.to_string());
+        store.delete(reference).unwrap();
+        assert_eq!(read.unwrap(), "throwaway");
+        assert!(store.read_optional(reference).unwrap().is_none());
     }
 }
