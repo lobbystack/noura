@@ -1202,7 +1202,6 @@ impl WorkspaceSync {
             self.follow_profile(service).await?;
         }
         let (applied, waiting_for_key) = self.pull_until(service, wait_seconds, wake).await?;
-        self.text_pulled();
         captured += self.settle_rewrite_race()?;
         self.settle_moved_away()?;
         self.rotate_domains(service, false).await?;
@@ -3118,6 +3117,17 @@ impl WorkspaceSync {
     }
 
     async fn pull_until(
+        &mut self,
+        service: &mut SyncService,
+        wait_seconds: u32,
+        wake: &tokio::sync::Notify,
+    ) -> Result<(usize, bool), SyncError> {
+        let pulled = self.pull_pages(service, wait_seconds, wake).await?;
+        self.text_pulled();
+        Ok(pulled)
+    }
+
+    async fn pull_pages(
         &mut self,
         service: &mut SyncService,
         wait_seconds: u32,

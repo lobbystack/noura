@@ -499,7 +499,7 @@ pub struct TextRuntime {
     unsettled: BTreeSet<Id>,
     /// Notes the server required a snapshot of.
     required: BTreeSet<Id>,
-    /// When this device last finished a pull.
+    /// When a pull last took this device to the log's head in every domain.
     pulled: Option<Instant>,
     /// How old that pull may be for a snapshot rule to run, when a test
     /// sets it.
@@ -2039,9 +2039,15 @@ impl WorkspaceSync {
         Ok(signed + usize::from(waiting))
     }
 
-    /// Notes that this device finished a pull.
+    /// Notes how far the pull that just ended took this device.
     pub(super) fn text_pulled(&mut self) {
-        self.text.pulled = Some(Instant::now());
+        let caught_up = self.state.log.cursor >= self.state.log.head
+            && self
+                .state
+                .restricted
+                .values()
+                .all(|frame| frame.log.cursor >= frame.log.head);
+        self.text.pulled = caught_up.then(Instant::now);
     }
 
     /// Sets how old the last pull may be for a snapshot rule to run.
@@ -2325,8 +2331,8 @@ impl WorkspaceSync {
             return Ok(false);
         }
         let required = self.text.required.contains(&rid);
-        // A device back from away pulls first, or it would repeat what the
-        // others did meanwhile (§22).
+        // A device back from away catches up first, or it would repeat what
+        // the others did meanwhile (§22).
         let within = self.text.pulled_within.unwrap_or(PULLED_WITHIN);
         let current = self.text.pulled.is_some_and(|at| at.elapsed() < within);
         if !required && !current {

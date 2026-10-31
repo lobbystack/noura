@@ -16,8 +16,10 @@ use app_core::sync::workspace::text::{Entered, IDLE, IDLE_ANY_WRITER, Judgement,
 use app_core::text_bridge::TextBridge;
 use collab_sandbox::{LineageStatus, SandboxDocument};
 use editor_core::text_mode::{CollabDocument, Utf16Splice};
-use sync_protocol::codec::{Bytes, Decode, Encode, ExactBytes, Text};
-use sync_protocol::messages::{ErrorBody, Frame, KeyRecord, KeysResponse, PushFailureDetail};
+use sync_protocol::codec::{Bytes, Decode, Encode, ExactBytes, Sorted, Text};
+use sync_protocol::messages::{
+    ErrorBody, Frame, KeyRecord, KeysResponse, PullResponse, PushFailureDetail,
+};
 use sync_protocol::types::{Id, IdOrZero};
 use sync_store::Backend;
 use sync_support::{Pair, Server, approve, pair, pair_of_accounts_on, pair_on};
@@ -143,6 +145,56 @@ async fn a_device_back_from_away_repeats_no_snapshot() {
         .filter(|(_, class)| *class == sync_protocol::records::OpClass::State)
         .count();
     assert_eq!(states, 1, "{live:?}");
+}
+
+/// A device partway through a long catch-up can't tell whether someone took
+/// the note over, so it waits for the log's head (§22). The soak found this.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_still_catching_up_writes_no_snapshot() {
+    let mut pair = pair().await;
+    let (mut a, _b) = open_both(&mut pair).await;
+    for _ in 0..12 {
+        type_at(&mut a, 0, "x");
+        pair.sync_a.text_tick(Instant::now()).expect("a tick");
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("a round");
+    }
+    drop(a);
+    pair.sync_a.close_text(PLAN).expect("closed");
+    pair.b.write("One.md", b"# One\n");
+    pair.b.write("Two.md", b"# Two\n");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("a round");
+
+    // Each pull brings one entry of the two.
+    pair.proxy.tamper(Box::new(|path, body| {
+        if !path.ends_with("/pull") {
+            return body;
+        }
+        let mut response = PullResponse::from_bytes(&body).expect("a pull response");
+        for page in response.pages.0.iter_mut() {
+            let entries = page.entries.to_vec();
+            if entries.len() > 1 {
+                page.complete_through = entries[0].seq;
+                page.entries = Sorted::new(vec![entries[0].clone()]).expect("one entry");
+            }
+        }
+        response.to_bytes()
+    }));
+    pair.sync_a
+        .pull(&mut pair.service, 0)
+        .await
+        .expect("a partial pull");
+    let later = Instant::now() + IDLE_ANY_WRITER + Duration::from_secs(1);
+    assert_eq!(pair.sync_a.text_tick(later).expect("a tick"), 0);
+
+    pair.proxy.honest();
+    both_rounds(&mut pair).await;
+    assert_eq!(pair.sync_a.text_tick(later).expect("a tick"), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
