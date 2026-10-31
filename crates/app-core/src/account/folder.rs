@@ -473,6 +473,7 @@ impl Folder {
         let Some(sync) = self.sync.as_mut() else {
             return;
         };
+        sync.follow_changes();
         text.serve(sync);
         let result = if sync.paused() {
             sync.capture().map(|_| ())

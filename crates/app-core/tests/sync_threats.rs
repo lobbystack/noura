@@ -105,8 +105,8 @@ struct Source {
 }
 
 fn read_source(path: &Path) -> Source {
-    let text = std::fs::read_to_string(path)
-        .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    let text =
+        std::fs::read_to_string(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
     let mut functions = BTreeMap::new();
     let mut tests = BTreeSet::new();
     let mut attribute = false;

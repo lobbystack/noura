@@ -20,6 +20,7 @@ mod approve;
 mod bootstrap;
 mod capture;
 mod domains;
+mod finding;
 mod moves;
 pub mod presence;
 pub mod rebuild;
@@ -56,6 +57,7 @@ use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 
 use capture::{Change, Found};
 pub use capture::{SkipWhy, Skipped};
+use finding::Finding;
 pub use moves::{HeldFile, MOVE_WAIT, MoveReview};
 use settle::{Bodies, Body};
 pub use state::Ended;
@@ -239,6 +241,8 @@ pub struct WorkspaceSync {
     confirmed_moves: BTreeSet<Id>,
     /// What the running capture leaves out.
     skipped_now: Vec<Skipped>,
+    /// How this device finds local changes.
+    finding: Finding,
     /// How long a manager's device leaves another's moves (§9).
     move_wait: std::time::Duration,
     /// The longest random wait before the device rotates a restricted
@@ -484,6 +488,7 @@ impl WorkspaceSync {
             usage_checked: None,
             confirmed_moves: BTreeSet::new(),
             skipped_now: Vec::new(),
+            finding: Finding::default(),
             move_wait: MOVE_WAIT,
             rotation_wait: super::upkeep::KEY_HOLDER_WAIT.end,
             rotation_due: BTreeMap::new(),
@@ -616,6 +621,7 @@ impl WorkspaceSync {
             usage_checked: None,
             confirmed_moves: BTreeSet::new(),
             skipped_now: Vec::new(),
+            finding: Finding::default(),
             move_wait: MOVE_WAIT,
             rotation_wait: super::upkeep::KEY_HOLDER_WAIT.end,
             rotation_due: BTreeMap::new(),
@@ -1685,7 +1691,7 @@ impl WorkspaceSync {
         let rewritten = self.rewrite_skipped()?;
         let ticked = self.text_tick(std::time::Instant::now())?;
         let moved_markers = self.check_markers()?;
-        let listing = self.engine.synced_listing().map_err(core)?;
+        let (listing, targeted) = self.local_listing()?;
         let held: BTreeSet<Id> = self.state.held.keys().copied().collect();
         let engine = self.engine.clone();
         let roots = self.state.held_roots.clone();
@@ -1835,6 +1841,13 @@ impl WorkspaceSync {
         signed += self.finish_moves()?;
         skipped.append(&mut self.skipped_now);
         skipped.sort();
+        // A listing from the journal holds only known files, so what the
+        // last walk left out still stands.
+        if targeted {
+            skipped.extend(self.skipped.iter().cloned());
+            skipped.sort();
+            skipped.dedup();
+        }
         self.skipped = skipped;
         // A change that still waits for space went back into an outbox; one
         // you undid or deleted waits for nothing.

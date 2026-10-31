@@ -776,6 +776,15 @@ impl WorkspaceSync {
         {
             return Err(fail("sync_manifest_rollback"));
         }
+        // A device that was away may not know the change the checkpoint
+        // names yet.
+        let behind = self
+            .remote
+            .as_ref()
+            .is_some_and(|remote| remote.policy.head().0 < c.policy_revision);
+        if behind {
+            self.refresh(service).await?;
+        }
         // The checkpoint's epoch record, walked back to when it is older
         // than the current one (§18, step 1).
         self.ensure_epoch(service, c.epoch).await?;

@@ -123,7 +123,7 @@ impl Server<SqliteBackend> {
         .await
     }
 
-    async fn start_with(
+    pub async fn start_with(
         interval: sync_store::CheckpointInterval,
         retention: sync_store::Retention,
     ) -> Self {
@@ -344,7 +344,7 @@ impl Server<PgBackend> {
         .await
     }
 
-    async fn start_postgres_with(
+    pub async fn start_postgres_with(
         interval: sync_store::CheckpointInterval,
         retention: sync_store::Retention,
     ) -> Self {
@@ -794,6 +794,61 @@ pub struct Proxy {
     frames: Arc<Mutex<Option<FrameTamper>>>,
     pings: Arc<AtomicUsize>,
     closing: tokio::sync::watch::Sender<u64>,
+    traffic: Arc<Traffic>,
+}
+
+/// What a proxy counted of the bodies it passed. It keeps no bodies itself,
+/// so a long run can measure without holding them.
+#[derive(Default)]
+pub struct Traffic {
+    /// Keeps the proxy from recording each body, for a long run.
+    pub quiet: std::sync::atomic::AtomicBool,
+    /// The longest request body.
+    pub largest_request: AtomicUsize,
+    /// The longest response body.
+    pub largest_response: AtomicUsize,
+    /// Request bodies the proxy couldn't take whole.
+    pub oversized: AtomicUsize,
+    /// How many requests each route family took, with their bytes each way.
+    pub routes: Mutex<std::collections::BTreeMap<String, RouteTraffic>>,
+}
+
+/// One route family's requests.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RouteTraffic {
+    pub requests: u64,
+    pub sent: u64,
+    pub received: u64,
+}
+
+impl Traffic {
+    fn note(&self, method: &str, path: &str, sent: usize, received: usize) {
+        self.largest_request.fetch_max(sent, Ordering::SeqCst);
+        self.largest_response.fetch_max(received, Ordering::SeqCst);
+        let name = path
+            .split('?')
+            .next()
+            .unwrap_or(path)
+            .rsplit('/')
+            .next()
+            .unwrap_or(path);
+        // A blob's or an upload's last segment is an ID.
+        let name = if path.contains("/blobs/") || path.contains("/uploads/") {
+            "blob"
+        } else {
+            name
+        };
+        let mut routes = self.routes.lock().unwrap();
+        let route = routes.entry(format!("{method} {name}")).or_default();
+        route.requests += 1;
+        route.sent += sent as u64;
+        route.received += received as u64;
+    }
+
+    /// The counts so far by route.
+    pub fn routes(&self) -> std::collections::BTreeMap<String, RouteTraffic> {
+        self.routes.lock().unwrap().clone()
+    }
 }
 
 /// The response bodies and frames a proxy passed on, each with the path it
@@ -925,6 +980,8 @@ impl Proxy {
         let (closing, _) = tokio::sync::watch::channel(0u64);
         let received: Received = Arc::new(Mutex::new(Vec::new()));
         let recording = received.clone();
+        let traffic = Arc::new(Traffic::default());
+        let counting = traffic.clone();
         let bridged = (frames.clone(), pings.clone(), closing.clone());
         let http = reqwest::Client::new();
         let app = axum::Router::new().fallback(move |request: axum::extract::Request| {
@@ -938,25 +995,33 @@ impl Proxy {
             let captured = captured.clone();
             let (frames, pings, closing) = bridged.clone();
             let recording = recording.clone();
+            let counting = counting.clone();
             async move {
                 let (mut parts, body) = request.into_parts();
-                let body = axum::body::to_bytes(body, 2 << 20)
-                    .await
-                    .unwrap_or_default();
-                captured.lock().unwrap().push(Captured {
-                    method: parts.method.to_string(),
-                    path: parts
-                        .uri
-                        .path_and_query()
-                        .map_or("/", |p| p.as_str())
-                        .to_owned(),
-                    headers: parts
-                        .headers
-                        .iter()
-                        .map(|(n, v)| (n.to_string(), v.as_bytes().to_vec()))
-                        .collect(),
-                    body: body.to_vec(),
-                });
+                let body = match axum::body::to_bytes(body, 2 << 20).await {
+                    Ok(body) => body,
+                    Err(_) => {
+                        counting.oversized.fetch_add(1, Ordering::SeqCst);
+                        Default::default()
+                    }
+                };
+                let quiet = counting.quiet.load(Ordering::SeqCst);
+                if !quiet {
+                    captured.lock().unwrap().push(Captured {
+                        method: parts.method.to_string(),
+                        path: parts
+                            .uri
+                            .path_and_query()
+                            .map_or("/", |p| p.as_str())
+                            .to_owned(),
+                        headers: parts
+                            .headers
+                            .iter()
+                            .map(|(n, v)| (n.to_string(), v.as_bytes().to_vec()))
+                            .collect(),
+                        body: body.to_vec(),
+                    });
+                }
                 let answer = forged
                     .lock()
                     .unwrap()
@@ -1057,10 +1122,18 @@ impl Proxy {
                 {
                     bytes = tamper(parts.uri.path(), bytes);
                 }
-                recording
-                    .lock()
-                    .unwrap()
-                    .push((parts.uri.path().to_owned(), bytes.clone()));
+                counting.note(
+                    parts.method.as_str(),
+                    parts.uri.path(),
+                    body.len(),
+                    bytes.len(),
+                );
+                if !quiet {
+                    recording
+                        .lock()
+                        .unwrap()
+                        .push((parts.uri.path().to_owned(), bytes.clone()));
+                }
                 let mut reply = axum::response::Response::builder().status(status.as_u16());
                 for (name, value) in &headers {
                     if name != "content-length" && name != "transfer-encoding" {
@@ -1088,7 +1161,19 @@ impl Proxy {
             frames,
             pings,
             closing,
+            traffic,
         }
+    }
+
+    /// What the proxy counted of the traffic it passed.
+    pub fn traffic(&self) -> &Traffic {
+        &self.traffic
+    }
+
+    /// Forgets the requests and responses recorded so far.
+    pub fn forget_recorded(&self) {
+        self.requests.lock().unwrap().clear();
+        self.received.lock().unwrap().clear();
     }
 
     /// Every response body and realtime frame the proxy passed on so far,
