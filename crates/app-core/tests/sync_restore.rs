@@ -1009,6 +1009,32 @@ async fn a_device_uploads_a_lost_blob_again_under_its_id() {
     link.revoked_again(&mut pair).await;
 }
 
+/// A file that changed since its capture isn't the blob's bytes: the device
+/// never encrypts it under the blob's key (§21).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_changed_file_is_never_sealed_under_a_lost_blobs_key() {
+    let mut pair = pair().await;
+    let bytes: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+    pair.a.write("photo.png", &bytes);
+    rounds(&mut pair).await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    for file in &pair.server.blob_files() {
+        std::fs::remove_file(file).expect("lost");
+    }
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+
+    pair.a
+        .write("photo.png", b"another picture, not captured yet");
+    let uploaded = pair
+        .sync_a
+        .upload_missing_for_testing(&mut pair.service)
+        .await
+        .expect("the listing");
+    assert_eq!(uploaded, 0);
+    assert_eq!(pair.sync_a.sealed_again(), 0);
+}
+
 /// Every request of the comparison fails once in turn, and the device still
 /// ends up compared and rewound, never on its old cursor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

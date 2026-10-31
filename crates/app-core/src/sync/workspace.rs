@@ -2093,6 +2093,51 @@ impl WorkspaceSync {
         Ok(())
     }
 
+    /// Encrypts the file at `path` again into `blob_ref`'s pending upload,
+    /// only when it still holds `revision`, since a blob key never seals
+    /// other bytes (§21). Returns whether the upload holds the blob's
+    /// ciphertext now.
+    pub(super) fn seal_again(
+        &self,
+        path: &str,
+        revision: &Digest,
+        blob_ref: &sync_protocol::records::BlobRef,
+    ) -> Result<bool, SyncError> {
+        let unreadable =
+            |e: std::io::Error| SyncError::Invalid(format!("can't read the file: {e}"));
+        let Some(mut file) = self.engine.open_synced(path).map_err(core)? else {
+            return Ok(false);
+        };
+        let mut hasher = blake3::Hasher::new();
+        hasher.update_reader(&mut file).map_err(unreadable)?;
+        if Digest(*hasher.finalize().as_bytes()) != *revision {
+            return Ok(false);
+        }
+        std::io::Seek::rewind(&mut file).map_err(unreadable)?;
+        let len = file.metadata().map_err(unreadable)?.len();
+        #[cfg(feature = "test-hooks")]
+        self.sealed_again
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let upload = state::upload_path(&blob_ref.blob);
+        let key = blob_ref.blob_key.clone();
+        let rebuilt = self.journal.keep_with(&upload, |out| {
+            sync_protocol::blob::encrypt_blob_to(
+                std::io::BufReader::with_capacity(1 << 16, file),
+                len,
+                blob_ref.blob,
+                key,
+                out,
+            )
+            .map_err(|e| SyncError::Invalid(e.to_string()))
+        });
+        let same = matches!(&rebuilt, Ok((rebuilt, _))
+            if rebuilt.ciphertext_digest == blob_ref.ciphertext_digest);
+        if !same {
+            self.journal.forget(&upload);
+        }
+        Ok(same)
+    }
+
     /// The blob for `found`'s bytes (§21). A state of the object that
     /// already carries those bytes in a blob lends its `blob_ref`, so a move
     /// inside the domain uploads nothing. Otherwise the bytes go into a new
@@ -2113,34 +2158,10 @@ impl WorkspaceSync {
         SyncError,
     > {
         let revision = found.revision;
-        if let Some(blob_ref) = &self.lent_blob {
-            let file = self
-                .engine
-                .open_synced(&found.file.relative_path)
-                .map_err(core)?
-                .ok_or_else(|| SyncError::Invalid("the file went away".into()))?;
-            let len = file
-                .metadata()
-                .map_err(|e| SyncError::Invalid(format!("can't read the file: {e}")))?
-                .len();
-            let upload = state::upload_path(&blob_ref.blob);
-            let key = blob_ref.blob_key.clone();
-            let rebuilt = self.journal.keep_with(&upload, |out| {
-                sync_protocol::blob::encrypt_blob_to(
-                    std::io::BufReader::with_capacity(1 << 16, file),
-                    len,
-                    blob_ref.blob,
-                    key,
-                    out,
-                )
-                .map_err(|e| SyncError::Invalid(e.to_string()))
-            });
-            if matches!(&rebuilt, Ok((rebuilt, _))
-                if rebuilt.ciphertext_digest == blob_ref.ciphertext_digest)
-            {
-                return Ok((blob_ref.clone(), Some(blob_ref.clone())));
-            }
-            self.journal.forget(&upload);
+        if let Some(blob_ref) = &self.lent_blob
+            && self.seal_again(&found.file.relative_path, &revision, blob_ref)?
+        {
+            return Ok((blob_ref.clone(), Some(blob_ref.clone())));
         }
         if let Some(object) = self.state.objects.get(&rid)
             && let Some(blob) = object

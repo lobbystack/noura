@@ -1679,13 +1679,14 @@ impl WorkspaceSync {
                     (blob_ref.blob == blob && content.revision == local.revision).then(|| {
                         (
                             local.path.clone(),
+                            content.revision,
                             blob_ref.clone(),
                             object.domain.unwrap_or(self.state.domain),
                         )
                     })
                 })
             });
-            let Some((path, blob_ref, domain)) = found else {
+            let Some((path, revision, blob_ref, domain)) = found else {
                 // No file holds a text record's yrs bytes: a writer that
                 // holds the note's document writes a snapshot that covers
                 // the operation instead (§14, §21).
@@ -1705,27 +1706,8 @@ impl WorkspaceSync {
             if missing_blob(writer(&domain, self), true, false, false) != MissingBlob::Upload {
                 continue;
             }
-            let Some(file) = self.engine.open_synced(&path).map_err(super::core)? else {
-                continue;
-            };
-            let len = file
-                .metadata()
-                .map_err(|e| SyncError::Invalid(format!("can't read the file: {e}")))?
-                .len();
+            let same = self.seal_again(&path, &revision, &blob_ref)?;
             let upload = super::state::upload_path(&blob);
-            let key = blob_ref.blob_key.clone();
-            let encrypted = self.journal.keep_with(&upload, |out| {
-                sync_protocol::blob::encrypt_blob_to(
-                    std::io::BufReader::with_capacity(1 << 16, file),
-                    len,
-                    blob,
-                    key,
-                    out,
-                )
-                .map_err(|e| SyncError::Invalid(e.to_string()))
-            });
-            let same = matches!(&encrypted, Ok((rebuilt, _))
-                if rebuilt.ciphertext_digest == blob_ref.ciphertext_digest);
             if same {
                 let path = self.journal.dir().join(&upload);
                 match service
