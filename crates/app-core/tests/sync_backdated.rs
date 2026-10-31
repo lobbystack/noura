@@ -290,3 +290,72 @@ async fn a_backdated_epoch_after_a_removal_is_replaced() {
         b"# Plan, after the replacement\n"
     );
 }
+
+/// A writer that never learned of a removal keeps signing under the old
+/// epoch, and the server places its record after the rotation (§30): the
+/// device that accepted the removal reports the stale epoch and changes no
+/// file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_record_under_an_old_epoch_after_a_rotation_is_caught() {
+    let mut pair = pair().await;
+    let (third, revision, head) = third_device(&mut pair).await;
+    pair.laptop
+        .service
+        .remove_device(
+            third.id(),
+            &[],
+            std::slice::from_mut(pair.sync_b.remote_mut().unwrap()),
+        )
+        .await
+        .expect("removed");
+    let (workspace, domain) = (
+        pair.sync_b.workspace(),
+        pair.sync_b.remote_mut().unwrap().domain,
+    );
+    let op = Signed::sign(
+        Operation {
+            workspace,
+            domain,
+            device: pair.desktop.id(),
+            counter: 1,
+            previous: Digest::ZERO,
+            epoch: 1,
+            policy_revision: revision,
+            policy_head: head,
+            previous_attempt: Digest::ZERO,
+            generation: pair.server.store.restore_generation(),
+            checkpoint_seq: 0,
+            checkpoint: Digest::ZERO,
+            rid: Id::random().unwrap(),
+            delete: false,
+            supersedes: Sorted::default(),
+            blobs: Sorted::default(),
+            nonce: Nonce::ZERO,
+            ciphertext: Bytes(vec![0; 272]),
+        },
+        pair.desktop.credentials.keys.signing(),
+    );
+    let bytes = op.to_bytes();
+    pair.server
+        .store
+        .backend()
+        .write(Box::new(move |txn: &mut sync_store_sqlite::SqliteTxn| {
+            Box::pin(async move {
+                use sync_store::WriteTxn as _;
+                txn.append_entry(workspace, domain, 1, &bytes).await?;
+                Ok(())
+            })
+        }))
+        .await
+        .unwrap();
+    let before = pair.a.files();
+    let result = pair.sync_a.round(&mut pair.service, 0).await;
+    assert_eq!(
+        result
+            .err()
+            .and_then(|e| e.code().map(str::to_owned))
+            .as_deref(),
+        Some("sync_epoch_stale")
+    );
+    assert_eq!(pair.a.files(), before);
+}
