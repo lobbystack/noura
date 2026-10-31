@@ -190,6 +190,10 @@ pub async fn backup_into(database: &Path, target: &Path) -> Result<(), sqlx::Err
     sqlx::query!("UPDATE server SET backup_stamp = 1 WHERE id = 1")
         .execute(&mut copy)
         .await?;
+    // The serving instance's lease means nothing in a copy.
+    sqlx::query("DELETE FROM instances")
+        .execute(&mut copy)
+        .await?;
     sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
         .execute(&mut copy)
         .await?;
@@ -219,9 +223,27 @@ pub async fn raise_generation(path: &Path, floor: u64) -> Result<u64, sqlx::Erro
     )
     .fetch_one(&mut connection)
     .await?;
+    // The caller checked that no lease is live: what remains came with a
+    // copy, and a crashed instance's lease ended.
+    sqlx::query("DELETE FROM instances")
+        .execute(&mut connection)
+        .await?;
     connection.close().await?;
     u64::try_from(row.restore_generation)
         .map_err(|_| sqlx::Error::Protocol("the stored restore generation is negative".into()))
+}
+
+/// Folds a stopped server's write-ahead log into its database file, so the
+/// file alone holds every commit. A missing database has nothing to fold.
+pub async fn fold_log(path: &Path) -> Result<(), sqlx::Error> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut connection = connect(path, false).await?;
+    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        .execute(&mut connection)
+        .await?;
+    connection.close().await
 }
 
 /// How many instances hold a lease past `now`. A missing database or one

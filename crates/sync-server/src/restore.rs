@@ -6,8 +6,10 @@
 //! Both list the blob store before they raise the generation, while the
 //! instance leases show that nothing serves the database, so the pass never
 //! takes an object that a server started afterwards stored. `serve` may
-//! start as soon as the command prints that the generation rose: the pass
-//! changes each blob's row under the collector's locks.
+//! start as soon as the command reports the new generation through its
+//! `raised` callback, before the pass ends: the pass changes each blob's row
+//! under the collector's locks, and looks at the store again before it
+//! calls a blob lost.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -105,11 +107,19 @@ pub async fn backup(data: &Path, to: &Path) -> Result<PathBuf, CommandError> {
     }
     let secret = read_secret(&data.join(SECRET_FILE))?
         .ok_or_else(|| fail("the data directory holds no server secret"))?;
-    sync_store_sqlite::backup_into(&database_path(data), to)
-        .await
-        .map_err(|e| fail(format!("the copy failed: {e}")))?;
+    // The copy keeps a temporary name until it is stamped, so a failure
+    // never leaves a file that looks like a finished backup.
+    let mut partial = to.as_os_str().to_owned();
+    partial.push(".partial");
+    let partial = PathBuf::from(partial);
+    let _ = fs::remove_file(&partial);
+    if let Err(error) = sync_store_sqlite::backup_into(&database_path(data), &partial).await {
+        let _ = fs::remove_file(&partial);
+        return Err(fail(format!("the copy failed: {error}")));
+    }
     let path = secret_beside(to);
     data::write_secret_at(&path, &secret)?;
+    fs::rename(&partial, to).map_err(|e| fail(format!("can't name the copy: {e}")))?;
     sync_parent(to)?;
     Ok(path)
 }
@@ -164,6 +174,7 @@ pub async fn restore(
     from: &Path,
     secret: Option<&Path>,
     blob_store: &BlobStoreConfig,
+    raised: impl FnOnce(u64),
 ) -> Result<Restored, CommandError> {
     let beside = secret_beside(from);
     let secret_path = secret.unwrap_or(&beside);
@@ -205,9 +216,10 @@ pub async fn restore(
         .await
         .map_err(|e| fail(format!("can't list the blob store: {e}")))?;
 
-    // The copy takes its new generation before it replaces the database, so
-    // a crash leaves the old database or a finished one. Rerunning the
-    // command repeats the job.
+    // The copy takes its new generation before it replaces the database,
+    // and the old database folds its write-ahead log first, so a crash
+    // leaves the whole old database or a finished one. Rerunning the command
+    // repeats the job.
     let incoming = database.with_extension("restoring");
     let _ = fs::remove_file(&incoming);
     fs::copy(from, &incoming).map_err(|e| fail(format!("can't copy the backup: {e}")))?;
@@ -218,6 +230,9 @@ pub async fn restore(
     fs::File::open(&incoming)
         .and_then(|file| file.sync_all())
         .map_err(|e| fail(format!("can't flush the copy: {e}")))?;
+    sync_store_sqlite::fold_log(&database)
+        .await
+        .map_err(|e| fail(format!("can't fold the old write-ahead log: {e}")))?;
     for suffix in ["-wal", "-shm"] {
         let mut name = database.as_os_str().to_owned();
         name.push(suffix);
@@ -233,6 +248,7 @@ pub async fn restore(
     if held.is_none() {
         data::write_secret_at(&data.join(SECRET_FILE), &secret)?;
     }
+    raised(generation);
 
     let backend = SqliteBackend::open(&database)
         .await
@@ -253,6 +269,7 @@ pub async fn restore(
 pub async fn mark_restored(
     data: &Path,
     blob_store: &BlobStoreConfig,
+    raised: impl FnOnce(u64),
 ) -> Result<Restored, CommandError> {
     let database = database_path(data);
     let state = sync_store_sqlite::inspect(&database)
@@ -281,6 +298,7 @@ pub async fn mark_restored(
     let generation = sync_store_sqlite::raise_generation(&database, unix_now())
         .await
         .map_err(|e| fail(format!("can't raise the restore generation: {e}")))?;
+    raised(generation);
     let backend = SqliteBackend::open(&database)
         .await
         .map_err(|e| fail(format!("can't open the database: {e}")))?;
@@ -301,6 +319,7 @@ pub async fn mark_restored_postgres(
     postgres: &Postgres,
     data: &Path,
     blob_store: &BlobStoreConfig,
+    raised: impl FnOnce(u64),
 ) -> Result<Restored, CommandError> {
     let secret = postgres
         .secret
@@ -329,6 +348,7 @@ pub async fn mark_restored_postgres(
     let generation = sync_store_postgres::raise_generation(&postgres.url, unix_now())
         .await
         .map_err(|e| fail(format!("can't raise the restore generation: {e}")))?;
+    raised(generation);
     let backend = PgBackend::open(&postgres.url)
         .await
         .map_err(|e| fail(format!("can't open the database: {e}")))?;
@@ -403,13 +423,15 @@ pub async fn check_blobs<B: Backend>(
         if key.starts_with(&quarantine_prefix) {
             continue;
         }
-        let known = match parse_key(key) {
-            Some((workspace, blob, index, hash)) => store
-                .knows_segment(workspace, blob, index, hash)
-                .await
-                .map_err(store_error)?,
-            None => false,
+        // A stray file isn't a segment: the pass leaves it where it is.
+        let Some((workspace, blob, index, hash)) = parse_key(key) else {
+            tracing::warn!(key = %key, "the blob store holds an object that isn't a segment");
+            continue;
         };
+        let known = store
+            .knows_segment(workspace, blob, index, hash)
+            .await
+            .map_err(store_error)?;
         if !known {
             move_object(blobs, key, &quarantine_key(now, key)).await?;
             check.quarantined += 1;
@@ -454,15 +476,22 @@ pub async fn check_blobs<B: Backend>(
                 .stored_segments(workspace, row.blob)
                 .await
                 .map_err(store_error)?;
-            let whole = segments.iter().enumerate().all(|(index, hash)| {
-                held.contains(&segment_key(&workspace, &row.blob, index as u64, hash))
-            });
+            let mut whole = true;
+            for (index, hash) in segments.iter().enumerate() {
+                let key = segment_key(&workspace, &row.blob, index as u64, hash);
+                // A server started during the pass may have stored it since
+                // the listing.
+                if !held.contains(&key) && blobs.size(&key).await.is_err() {
+                    whole = false;
+                    break;
+                }
+            }
             if !whole {
                 let listed = store
-                    .lose_blob(workspace, row.domain, row.blob)
+                    .lose_blob(workspace, row.domain, row.blob, segments)
                     .await
                     .map_err(store_error)?;
-                if listed {
+                if listed == Some(true) {
                     check.missing += 1;
                 }
             } else if row.complete

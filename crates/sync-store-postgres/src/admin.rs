@@ -179,6 +179,10 @@ pub async fn raise_generation(url: &str, floor: u64) -> Result<u64, sqlx::Error>
     )
     .fetch_one(&mut connection)
     .await?;
+    // The caller checked that no lease is live.
+    sqlx::query("DELETE FROM instances")
+        .execute(&mut connection)
+        .await?;
     connection.close().await?;
     u64::try_from(row.restore_generation)
         .map_err(|_| sqlx::Error::Protocol("the stored restore generation is negative".into()))

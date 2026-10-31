@@ -118,18 +118,30 @@ impl<B: Backend> Store<B> {
 
     /// Under the collector's locks, returns a blob whose store objects are
     /// gone to an upload at offset 0. A listed blob waits there for a
-    /// device to upload it again; any other gets 24 hours. Returns whether
-    /// the blob is listed.
-    pub async fn lose_blob(&self, workspace: Id, domain: Id, blob: Id) -> Result<bool> {
+    /// device to upload it again; any other gets 24 hours. `seen` holds the
+    /// segments the caller found incomplete: a blob whose segments changed
+    /// since then is left alone, because a running server took an upload,
+    /// and the call returns `None`. Otherwise it returns whether the blob
+    /// is listed.
+    pub async fn lose_blob(
+        &self,
+        workspace: Id,
+        domain: Id,
+        blob: Id,
+        seen: Vec<Digest>,
+    ) -> Result<Option<bool>> {
         let until = self.clock().now() + UPLOAD_TTL;
         self.backend
             .write(Box::new(move |txn: &mut B::Write| {
                 Box::pin(async move {
                     txn.lock(&plan(workspace, domain, blob)).await?;
+                    if txn.blob_segments(workspace, blob).await? != seen {
+                        return Ok(None);
+                    }
                     let listed = txn.blob_listed(workspace, blob).await?;
                     let delete_after = (!listed).then_some(until);
                     txn.reset_blob(workspace, blob, delete_after).await?;
-                    Ok(listed)
+                    Ok(Some(listed))
                 })
             }))
             .await
@@ -149,13 +161,22 @@ impl<B: Backend> Store<B> {
                     let (_, policy) = policy::load(txn, &cache, workspace)
                         .await?
                         .ok_or_else(|| refuse("not_found", "no such workspace"))?;
-                    if reader(policy.head_snapshot(), session).is_none() {
+                    let snapshot = policy.head_snapshot();
+                    if reader(snapshot, session).is_none() {
                         return Err(refuse(
                             "forbidden",
                             "the device isn't active in this workspace",
                         ));
                     }
-                    let blobs = txn.missing_blobs(workspace).await?;
+                    // A blob of a domain the device can't read stays out of
+                    // its answer.
+                    let mut blobs = Vec::new();
+                    for blob in txn.missing_blobs(workspace).await? {
+                        let row = txn.blob(workspace, blob).await?;
+                        if row.is_some_and(|row| snapshot.can_read(&session.device, &row.domain)) {
+                            blobs.push(blob);
+                        }
+                    }
                     Ok(MissingBlobsResponse { blobs: List(blobs) })
                 })
             }))

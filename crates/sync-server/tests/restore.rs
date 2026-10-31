@@ -13,7 +13,7 @@ use support::{BIN, Client, Server, push_body, run, seed};
 use sync_protocol::messages::{MissingBlobsResponse, PushResponse};
 use sync_protocol::types::{Digest, Id, to_base64url};
 use sync_server::blobs::{DiskStore, SegmentStore, segment_key};
-use sync_server::restore::{QUARANTINE, collect_quarantine, secret_beside, unix_now};
+use sync_server::restore::{QUARANTINE, check_blobs, collect_quarantine, secret_beside, unix_now};
 
 fn stderr(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
@@ -595,9 +595,10 @@ async fn a_missing_blob_shows_in_the_route_and_any_writer_can_upload_it() {
         .execute(&mut connection)
         .await
         .expect("no lease");
-    sqlx::query("UPDATE blobs SET workspace = ?1 WHERE blob = ?2")
+    sqlx::query("UPDATE blobs SET workspace = ?1, domain = ?3 WHERE blob = ?2")
         .bind(&created.workspace.0[..])
         .bind(&lost.blob.0[..])
+        .bind(&created.domain.0[..])
         .execute(&mut connection)
         .await
         .expect("moved");
@@ -607,9 +608,10 @@ async fn a_missing_blob_shows_in_the_route_and_any_writer_can_upload_it() {
         .execute(&mut connection)
         .await
         .expect("moved");
-    sqlx::query("UPDATE blob_listings SET workspace = ?1 WHERE blob = ?2")
+    sqlx::query("UPDATE blob_listings SET workspace = ?1, domain = ?3 WHERE blob = ?2")
         .bind(&created.workspace.0[..])
         .bind(&lost.blob.0[..])
+        .bind(&created.domain.0[..])
         .execute(&mut connection)
         .await
         .expect("moved");
@@ -624,4 +626,191 @@ async fn a_missing_blob_shows_in_the_route_and_any_writer_can_upload_it() {
     );
     let missing: MissingBlobsResponse = client.get(&route).await.decode();
     assert_eq!(missing.blobs.0, vec![lost.blob]);
+}
+
+type Fut<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
+/// A store whose listing misses what a running server stored after it.
+struct Stale(DiskStore);
+
+impl SegmentStore for Stale {
+    fn put(&self, key: &str, bytes: Bytes) -> Fut<'_, std::io::Result<()>> {
+        self.0.put(key, bytes)
+    }
+    fn get(&self, key: &str, range: std::ops::Range<u64>) -> Fut<'_, std::io::Result<Bytes>> {
+        self.0.get(key, range)
+    }
+    fn size(&self, key: &str) -> Fut<'_, std::io::Result<u64>> {
+        self.0.size(key)
+    }
+    fn delete(&self, key: &str) -> Fut<'_, std::io::Result<()>> {
+        self.0.delete(key)
+    }
+    fn list(&self) -> Fut<'_, std::io::Result<Vec<String>>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    fn list_under(&self, prefix: &str) -> Fut<'_, std::io::Result<Vec<String>>> {
+        self.0.list_under(prefix)
+    }
+}
+
+/// A server started during the pass stores a blob the pass's listing
+/// doesn't hold: the pass looks at the store again, and a blob whose
+/// segments changed since it read them stays as it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pass_leaves_a_blob_a_running_server_took() {
+    let (_root, data) = fresh();
+    let path = db_file(&data);
+    let blobs = disk(&data);
+    let taken = Row::new(5);
+    taken.store(&blobs).await;
+    taken.insert(&path, true).await;
+    let lost = Row::new(6);
+    lost.insert(&path, true).await;
+
+    let backend = sync_store_sqlite::SqliteBackend::open(&path)
+        .await
+        .expect("the database");
+    let store = sync_store::Store::open(backend).await.expect("the store");
+    let check = check_blobs(&store, &Stale(disk(&data)), Vec::new())
+        .await
+        .expect("the pass");
+    assert_eq!(check.missing, 1, "only the blob without its object");
+    assert_eq!(blob_state(&data, taken.blob).await.0, 4096);
+    assert_eq!(blob_state(&data, lost.blob).await.0, 0);
+
+    let changed = store
+        .lose_blob(workspace_id(), Id([9; 16]), taken.blob, Vec::new())
+        .await
+        .expect("the step");
+    assert_eq!(
+        changed, None,
+        "the segments moved since the caller read them"
+    );
+    assert_eq!(blob_state(&data, taken.blob).await.0, 4096);
+    store.backend().close().await;
+}
+
+/// `serve` starts as soon as the command says the generation rose, while
+/// the pass still works through a large store, which it finishes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serve_may_start_while_the_pass_runs_over_a_large_store() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let (_root, data) = fresh();
+    let mut connection = database(&db_file(&data)).await;
+    let domain = &[9u8; 16][..];
+    let hash = sync_protocol::crypto::hash(b"gone");
+    let count: u16 = 4_000;
+    let mut transaction = sqlx::Connection::begin(&mut connection)
+        .await
+        .expect("a transaction");
+    for number in 0..count {
+        let mut blob = [0u8; 16];
+        blob[..2].copy_from_slice(&number.to_be_bytes());
+        for statement in [
+            "INSERT INTO blobs (workspace, blob, domain, device, length, digest, upload_offset,
+                                complete, delete_after, marked, live_listings)
+             VALUES (?1, ?2, ?3, ?3, 4096, ?4, 4096, 1, NULL, 0, 0)",
+            "INSERT INTO blob_segments (workspace, blob, idx, hash) VALUES (?1, ?2, 0, ?4)",
+            "INSERT INTO blob_listings (workspace, blob, domain, seq) VALUES (?1, ?2, ?3, 1)",
+        ] {
+            sqlx::query(statement)
+                .bind(&workspace_id().0[..])
+                .bind(&blob[..])
+                .bind(domain)
+                .bind(&hash.0[..])
+                .execute(&mut *transaction)
+                .await
+                .expect("a row");
+        }
+    }
+    transaction.commit().await.expect("committed");
+    connection.close().await.expect("closed");
+
+    let mut marking = Command::new(BIN)
+        .arg("mark-restored")
+        .arg("--data")
+        .arg(&data)
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("runs");
+    let mut lines = BufReader::new(marking.stderr.take().expect("stderr")).lines();
+    let first = lines.next().expect("a line").expect("a line");
+    assert!(first.contains("serve may start"), "{first}");
+    assert_ne!(
+        marking.try_wait().expect("polled").map(|s| s.success()),
+        Some(false)
+    );
+
+    let server = Server::start(&data);
+    let client = Client::new(server.base(), None);
+    assert!(client.get("/v2/limits").await.generation().is_some());
+
+    let last = lines.last().expect("a line").expect("a line");
+    assert!(last.contains("4000 blob(s) wait"), "{last}");
+    assert!(marking.wait().expect("ends").success());
+    drop(server);
+
+    let mut connection = database(&db_file(&data)).await;
+    let (reset,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM blobs WHERE upload_offset = 0 AND complete = 0")
+            .fetch_one(&mut connection)
+            .await
+            .expect("counted");
+    connection.close().await.expect("closed");
+    assert_eq!(reset, i64::from(count));
+}
+
+/// A backup taken beside a running server carries no lease into the copy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_backup_of_a_serving_database_restores_at_once() {
+    let (root, data) = fresh();
+    let server = Server::start(&data);
+    let copy = root.path().join("copy.sqlite3");
+    let output = command(&["backup", "--to", text(&copy)], &data);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!root.path().join("copy.sqlite3.partial").exists());
+    drop(server);
+    let elsewhere = root.path().join("elsewhere");
+    let output = command(&["restore", "--from", text(&copy)], &elsewhere);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let output = command(&["mark-restored"], &elsewhere);
+    assert!(output.status.success(), "{}", stderr(&output));
+}
+
+/// A stray file in the blob store doesn't stop the pass after the
+/// generation rose.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stray_file_in_the_blob_store_stays_where_it_is() {
+    let (_root, data) = fresh();
+    let blobs = disk(&data);
+    Row::new(7).store(&blobs).await;
+    let stray = data.join("blobs").join("notes.txt");
+    std::fs::write(&stray, b"not a segment").expect("written");
+    let output = command(&["mark-restored"], &data);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stray.exists());
+}
+
+#[test]
+fn restore_takes_no_database_url() {
+    let root = tempfile::tempdir().expect("temporary directory");
+    let output = command(
+        &[
+            "restore",
+            "--from",
+            "copy.sqlite3",
+            "--database-url",
+            "postgres://localhost/none",
+        ],
+        &root.path().join("data"),
+    );
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("mark-restored"),
+        "{}",
+        stderr(&output)
+    );
 }

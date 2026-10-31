@@ -252,6 +252,17 @@ pub async fn closing_a_workspace_answers_not_found<B: Backend>(store: Store<B>) 
         "an admin can't close it"
     );
     let owner = world.devices[0].session;
+    let link = super::shares::Link::new();
+    world
+        .store
+        .create_share(
+            owner,
+            world.workspace,
+            link.creation(world.domain, 30, "# Plan\n"),
+        )
+        .await
+        .expect("a link");
+    assert!(world.store.read_share(link.token).await.is_ok());
     world
         .store
         .close_workspace(owner, world.workspace)
@@ -272,6 +283,24 @@ pub async fn closing_a_workspace_answers_not_found<B: Backend>(store: Store<B>) 
                 .await
         )
         .code,
+        "not_found"
+    );
+    assert_eq!(
+        refusal(world.store.read_share(link.token).await).code,
+        "not_found",
+        "the link stops with its workspace"
+    );
+    let blob = Id::random().expect("random");
+    assert_eq!(
+        refusal(world.store.blob_download(owner, world.workspace, blob).await).code,
+        "not_found"
+    );
+    assert_eq!(
+        refusal(world.store.missing_blobs(owner, world.workspace).await).code,
+        "not_found"
+    );
+    assert_eq!(
+        refusal(world.store.realtime_watch(owner, world.workspace).await).code,
         "not_found"
     );
     let listed = world

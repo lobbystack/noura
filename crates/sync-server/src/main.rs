@@ -246,16 +246,30 @@ fn backup(arguments: Arguments) -> Result<(), String> {
     Ok(())
 }
 
+fn raised(generation: u64) {
+    eprintln!(
+        "sync-server: restore generation {generation}; serve may start now, while the blob store \
+         check runs"
+    );
+}
+
 fn report(restored: sync_server::restore::Restored) {
     let blobs = restored.blobs;
     eprintln!(
-        "sync-server: restore generation {}; quarantined {} object(s), returned {}, gave {} \
-         blob(s) a fresh 24 hours, and {} blob(s) wait for devices to upload them again",
-        restored.generation, blobs.quarantined, blobs.returned, blobs.refreshed, blobs.missing
+        "sync-server: the blob store check finished; quarantined {} object(s), returned {}, gave \
+         {} blob(s) a fresh 24 hours, and {} blob(s) wait for devices to upload them again",
+        blobs.quarantined, blobs.returned, blobs.refreshed, blobs.missing
     );
 }
 
 fn restore(arguments: Arguments) -> Result<(), String> {
+    if arguments.database_url.is_some() {
+        return Err(
+            "restore takes a SQLite backup; after restoring PostgreSQL with its own tools, run \
+             mark-restored"
+                .to_owned(),
+        );
+    }
     let from = arguments
         .from
         .ok_or_else(|| format!("restore needs --from FILE\n{USAGE}"))?;
@@ -265,6 +279,7 @@ fn restore(arguments: Arguments) -> Result<(), String> {
             &from,
             arguments.secret.as_deref(),
             &blob_store(),
+            raised,
         ))
         .map_err(|e| e.to_string())?;
     report(restored);
@@ -277,12 +292,15 @@ fn mark_restored(arguments: Arguments) -> Result<(), String> {
     let restored = runtime()
         .block_on(async {
             match &database {
-                None => sync_server::restore::mark_restored(&arguments.data_dir, &store).await,
+                None => {
+                    sync_server::restore::mark_restored(&arguments.data_dir, &store, raised).await
+                }
                 Some(database) => {
                     sync_server::restore::mark_restored_postgres(
                         database,
                         &arguments.data_dir,
                         &store,
+                        raised,
                     )
                     .await
                 }
