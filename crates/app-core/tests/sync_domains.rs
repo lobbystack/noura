@@ -435,6 +435,7 @@ async fn a_received_delete_of_a_marker_keeps_the_root_and_holds_its_files() {
     assert_eq!(team.sync.rid_at("Pay/New.md"), None);
 
     // Restoring the marker from synced state ends the hold.
+    assert_eq!(team.sync.restorable_domain("Pay"), Some(team.domain));
     team.sync
         .restore_domain_marker(team.domain)
         .expect("restored");

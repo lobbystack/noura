@@ -286,6 +286,13 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
                         if ui.button(format!("Sync the files in {folder}")).clicked() {
                             actions.push(FolderSyncAction::ConfirmFolder(root.folder.clone()));
                         }
+                        if let Some(domain) = root.restore
+                            && ui
+                                .button(format!("Restore the .noura-domain file in {folder}"))
+                                .clicked()
+                        {
+                            actions.push(FolderSyncAction::RestoreMarker(domain));
+                        }
                     }
                 });
             }

@@ -206,6 +206,7 @@ impl Folder {
                     .held_roots()
                     .into_iter()
                     .map(|(folder, files, people)| HeldRootEntry {
+                        restore: sync.restorable_domain(&folder),
                         folder,
                         files,
                         people,
@@ -636,6 +637,11 @@ impl Folder {
             FolderSyncAction::ConfirmFolder(folder) => {
                 if let Some(sync) = self.sync.as_mut() {
                     sync.confirm_held_root(&folder)?;
+                }
+            }
+            FolderSyncAction::RestoreMarker(domain) => {
+                if let Some(sync) = self.sync.as_mut() {
+                    sync.restore_domain_marker(domain)?;
                 }
             }
             FolderSyncAction::RestoreArchived(index) | FolderSyncAction::DiscardArchived(index) => {

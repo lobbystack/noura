@@ -883,6 +883,23 @@ impl WorkspaceSync {
         self.save()
     }
 
+    /// The domain whose marker can end the hold on `folder`: this device
+    /// recorded its root and may sign the marker's state (§9).
+    pub fn restorable_domain(&self, folder: &str) -> Option<Id> {
+        let held = self
+            .state
+            .held_roots
+            .iter()
+            .find(|root| root.folder == folder)?;
+        let domain = held.domain?;
+        let device = self.credentials.keys.device();
+        let writes = self
+            .remote
+            .as_ref()
+            .is_some_and(|r| r.policy.head_snapshot().can_write(&device, &domain));
+        (writes && self.state.roots.iter().any(|root| root.domain == domain)).then_some(domain)
+    }
+
     /// Signs the marker's state at its new folder and moves the root.
     fn sign_marker_move(&mut self, root: &RecordedRoot, folder: &str) -> Result<(), SyncError> {
         self.sign_marker_at(root, folder)?;

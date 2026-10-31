@@ -77,6 +77,9 @@ pub struct HeldRootEntry {
     pub files: Vec<String>,
     /// How many people would see them in the workspace.
     pub people: usize,
+    /// The domain whose `.noura-domain` file this computer can write again
+    /// to end the wait.
+    pub restore: Option<Id>,
 }
 
 /// A version an earlier journal kept for review (§15).
@@ -387,6 +390,8 @@ pub enum FolderSyncAction {
     },
     /// Let the files beneath a held folder upload to the workspace.
     ConfirmFolder(String),
+    /// Write a domain's `.noura-domain` file again from synced state.
+    RestoreMarker(Id),
     /// Save an earlier journal's version as a new file.
     RestoreArchived(usize),
     /// Throw an earlier journal's version away.

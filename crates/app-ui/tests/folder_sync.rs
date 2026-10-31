@@ -182,6 +182,7 @@ fn versions_held_after_a_lost_journal_wait_for_a_choice() {
             folder: "Private".into(),
             files: vec!["Private/Secret.md".into()],
             people: 3,
+            restore: None,
         }],
         archived: vec![ArchivedEntry {
             index: 0,
@@ -479,4 +480,29 @@ fn a_folder_whose_account_the_server_lost_offers_a_new_workspace() {
         .click();
     harness.run();
     assert_eq!(fake.taken(), vec![FolderSyncAction::SetUpAgain]);
+}
+
+#[test]
+fn a_held_folder_offers_its_marker_back_when_this_computer_can_write_it() {
+    let app_data = tempfile::tempdir().unwrap();
+    let sync = Arc::new(FakeSync::default());
+    sync.show(FolderSyncScreen {
+        phase: FolderSyncPhase::On,
+        held_roots: vec![HeldRootEntry {
+            folder: "Pay".into(),
+            files: vec!["Pay/Rates.md".into()],
+            people: 3,
+            restore: Some(Id([4; 16])),
+        }],
+        ..FolderSyncScreen::default()
+    });
+    let mut harness = harness(app_data.path(), sync.clone());
+    harness
+        .get_by_role_and_label(Role::Button, "Restore the .noura-domain file in Pay")
+        .click();
+    harness.run();
+    assert_eq!(
+        sync.taken(),
+        vec![FolderSyncAction::RestoreMarker(Id([4; 16]))]
+    );
 }
