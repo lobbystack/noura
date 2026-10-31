@@ -1542,7 +1542,6 @@ impl WorkspaceSync {
         let mut archived = Vec::new();
         if let Some((journal, state)) = &old {
             archived = Self::archive(journal, Some(state), &state.replica)?;
-            archived.extend(state.archived.clone());
         }
         let old = old.map(|(_, state)| state);
         service.kept_heads_mut().forget_workspace(entry.workspace)?;
@@ -1596,8 +1595,7 @@ impl WorkspaceSync {
         let name = self.state.name.clone();
         let mut remote = service.create_workspace(&name).await?;
         let (_, profile) = super::profile_of(service, &mut remote).await?;
-        let mut archived = Self::archive(&self.journal, Some(&self.state), &self.state.replica)?;
-        archived.extend(self.state.archived.clone());
+        let archived = Self::archive(&self.journal, Some(&self.state), &self.state.replica)?;
         service.kept_heads_mut().forget_workspace(workspace)?;
         registry.remove(&self.state.server, &self.state.account, &workspace)?;
         let server = service.client().base().to_owned();

@@ -90,6 +90,23 @@ pub(crate) fn local_markers(root: &Path) -> Vec<String> {
 
 pub(crate) use sync_protocol::matching::beneath;
 
+/// What the archives beside `journal` list and still hold. Resolving a
+/// version removes its file, which ends its entry.
+fn archived_on_disk(journal: &Journal) -> Vec<Archived> {
+    let Some(journals) = journal.dir().parent() else {
+        return Vec::new();
+    };
+    std::fs::read_dir(journals.join(journal::ARCHIVE))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| std::fs::read(entry.path().join(ARCHIVE_INDEX)).ok())
+        .filter_map(|bytes| serde_json::from_slice::<Vec<Archived>>(&bytes).ok())
+        .flatten()
+        .filter(|item| journals.join(&item.file).exists())
+        .collect()
+}
+
 /// The server, account and remote workspace that `device`'s journal in
 /// the folder at `root` names, as a copied folder's journal does.
 pub fn journal_workspace(
@@ -185,21 +202,22 @@ impl WorkspaceSync {
         entry: SyncedFolder,
         workspace: Id,
     ) -> Result<Self, SyncError> {
+        // What can fail on the network runs before the journal moves aside.
+        let mut remote = service.open_workspace(workspace).await?;
+        let (name, profile) = profile_of(service, &mut remote).await?;
+        let generation = service.client().restore_generation();
         let device = service.credentials().keys.device();
         let secrets = service.secrets();
         let journal = Journal::open(engine.root(), &device, &*secrets)?;
         let old: Option<State> = journal.read(STATE_FILE).ok().flatten();
         let old_replica = old.as_ref().map_or(entry.replica, |s| s.replica);
-        let mut archived = Self::archive(&journal, old.as_ref(), &old_replica)?;
+        let archived = Self::archive(&journal, old.as_ref(), &old_replica)?;
         drop(journal);
         let server = service.client().base().to_owned();
         let replica = registry.connect(&server, entry.account, workspace, engine.root())?;
         if entry.paused {
             registry.update(&server, &entry.account, &workspace, |e| e.paused = true)?;
         }
-        let mut remote = service.open_workspace(workspace).await?;
-        let (name, profile) = profile_of(service, &mut remote).await?;
-        let generation = service.client().restore_generation();
         let mut sync = Self::start(
             service, engine, remote, server, replica, generation, &name, profile,
         )?;
@@ -207,7 +225,6 @@ impl WorkspaceSync {
         sync.hold_local_markers();
         if let Some(old) = old {
             sync.hold_old_roots(&old);
-            archived.extend(old.archived);
         }
         sync.state.archived = archived;
         sync.compare_own_chain(service).await?;
@@ -277,7 +294,10 @@ impl WorkspaceSync {
         }
     }
 
-    /// Moves an old journal's review store aside and lists what it kept.
+    /// Moves an old journal's review store aside and lists what it kept,
+    /// with what earlier journals kept that you haven't resolved. The
+    /// list reaches disk with the move, so a failure that follows can't
+    /// lose it: the journal's state goes with the move.
     pub(super) fn archive(
         journal: &Journal,
         old: Option<&State>,
@@ -302,6 +322,12 @@ impl WorkspaceSync {
                     }
                 }
                 let _ = rid;
+            }
+            kept.extend(old.archived.iter().cloned());
+        }
+        for listed in archived_on_disk(journal) {
+            if !kept.iter().any(|item| item.file == listed.file) {
+                kept.push(listed);
             }
         }
         let folder = journal.archive(replica)?;

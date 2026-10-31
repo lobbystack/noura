@@ -463,3 +463,59 @@ async fn a_change_that_arrives_leaves_a_held_version_in_place() {
         assert_eq!(a.files()["Plan.md"], ending);
     }
 }
+
+/// A failed rebuild keeps the review list: the network work that can fail
+/// first runs before the journal moves aside, and a failure after that
+/// reads the list back from the archive (§15).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rebuild_that_fails_keeps_the_review_list() {
+    let Pair {
+        server: _server,
+        proxy,
+        laptop,
+        mut service,
+        mut a,
+        mut sync_a,
+        mut desktop,
+        b,
+        mut sync_b,
+    } = pair().await;
+    // A conflict that waits on the laptop.
+    a.write("Plan.md", b"# Plan, the laptop's\n");
+    b.write("Plan.md", b"# Plan, the desktop's\n");
+    sync_b
+        .round(&mut desktop.service, 0)
+        .await
+        .expect("a round");
+    sync_a.round(&mut service, 0).await.expect("a round");
+    assert_eq!(sync_a.status().conflicts, 1);
+    drop(sync_a);
+
+    // The server can't be read: the journal stays where it was.
+    proxy.lose(Box::new(|_, path| path.contains("/policy")));
+    WorkspaceSync::rebuild(&mut service, a.engine.clone(), &mut a.registry)
+        .await
+        .expect_err("the policy didn't arrive");
+    assert!(journal_file(&a, laptop.id()).exists(), "nothing moved");
+
+    // The pull fails after the journal moved aside.
+    proxy.honest();
+    proxy.lose(Box::new(|_, path| path.contains("/pull")));
+    WorkspaceSync::rebuild(&mut service, a.engine.clone(), &mut a.registry)
+        .await
+        .expect_err("the pull didn't arrive");
+
+    proxy.honest();
+    let mut sync_a = WorkspaceSync::rebuild(&mut service, a.engine.clone(), &mut a.registry)
+        .await
+        .expect("the folder syncs again");
+    assert_eq!(sync_a.archived().len(), 1, "the review stays listed");
+    sync_a.resolve_archived(0, false).expect("discarded");
+    drop(sync_a);
+
+    // A version you resolved stays resolved through another rebuild.
+    let sync_a = WorkspaceSync::rebuild(&mut service, a.engine.clone(), &mut a.registry)
+        .await
+        .expect("the folder syncs again");
+    assert!(sync_a.archived().is_empty());
+}
