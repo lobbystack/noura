@@ -5,11 +5,14 @@
 //! and uploads as soon as they're read, and the responses of reads after the
 //! handler. A read checks only that its least cost fits, so reads in flight
 //! together can overdraw a budget by their responses.
-//! Records on the realtime channel pass through none of this.
+//! Records on the realtime channel pass through none of this, but the gate
+//! holds what limits the channels themselves: how many one device opens and
+//! how long a silent one stays.
 //!
 //! Counters go through the store's [`Limiter`], so in PostgreSQL mode every
 //! instance counts against one allowance.
 
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -174,12 +177,55 @@ impl Meter {
     }
 }
 
+/// What holds one realtime channel open (§23).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChannelLimits {
+    /// How many channels one device holds to one workspace on an instance.
+    /// A client holds one, and one more while it reconnects.
+    pub per_device: usize,
+    /// How long a channel stays open while its client sends nothing, not
+    /// even a ping.
+    pub idle: Duration,
+}
+
+impl Default for ChannelLimits {
+    fn default() -> Self {
+        Self {
+            per_device: 8,
+            idle: Duration::from_secs(60),
+        }
+    }
+}
+
+/// The channels open on this instance, by device and workspace.
+type OpenChannels = Arc<Mutex<HashMap<(Id, Id), usize>>>;
+
+/// One open channel's place in the count, given back when it drops.
+pub(crate) struct ChannelSlot {
+    open: OpenChannels,
+    key: (Id, Id),
+}
+
+impl Drop for ChannelSlot {
+    fn drop(&mut self) {
+        let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = open.get_mut(&self.key) {
+            *count -= 1;
+            if *count == 0 {
+                open.remove(&self.key);
+            }
+        }
+    }
+}
+
 /// The server's rate limits and where it reads the client IP.
 #[derive(Clone, Debug)]
 pub struct RateGate {
     /// `None` counts nothing, for tests.
     limits: Option<RateLimits>,
     trusted_header: Option<HeaderName>,
+    channels: ChannelLimits,
+    open: OpenChannels,
 }
 
 fn over(what: &str, retry_after: Duration) -> Error {
@@ -215,6 +261,8 @@ impl RateGate {
         Self {
             limits: Some(limits),
             trusted_header,
+            channels: ChannelLimits::default(),
+            open: OpenChannels::default(),
         }
     }
 
@@ -223,7 +271,53 @@ impl RateGate {
         Self {
             limits: None,
             trusted_header: None,
+            channels: ChannelLimits::default(),
+            open: OpenChannels::default(),
         }
+    }
+
+    /// This gate with other limits on realtime channels.
+    pub fn with_channels(mut self, channels: ChannelLimits) -> Self {
+        self.channels = channels;
+        self
+    }
+
+    /// How long a silent realtime channel stays open.
+    pub(crate) fn channel_idle(&self) -> Duration {
+        self.channels.idle
+    }
+
+    /// Takes a place for a device's channel to a workspace, or `rate_limited`
+    /// when it holds as many as it may.
+    pub(crate) fn open_channel(&self, device: Id, workspace: Id) -> Result<ChannelSlot, Error> {
+        let key = (device, workspace);
+        let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
+        let count = open.entry(key).or_default();
+        if *count >= self.channels.per_device {
+            return Err(over(
+                "too many realtime channels for this device",
+                self.channels.idle,
+            ));
+        }
+        *count += 1;
+        Ok(ChannelSlot {
+            open: self.open.clone(),
+            key,
+        })
+    }
+
+    /// Counts one presence record of `device` against `per_second`, across
+    /// its channels and, in PostgreSQL mode, across instances.
+    pub(crate) async fn take_presence(
+        limiter: &dyn Limiter,
+        device: Id,
+        per_second: u32,
+    ) -> Result<(), Error> {
+        let limit = Limit {
+            allowance: u64::from(per_second),
+            window: Duration::from_secs(1),
+        };
+        take(limiter, &key("presence", &device.0), 1, limit).await
     }
 
     /// The client's IP: the last address in the trusted header when one is

@@ -65,7 +65,7 @@ pub use invitations::{INVITATION_TTL, InvitationCreation, MAX_INVITATIONS};
 pub use shares::{MAX_SHARE_DAYS, MAX_SHARES, ShareCreation};
 use sync_protocol::types::{Digest, Id, SecretKey};
 
-pub use hub::{EventHub, Relayed};
+pub use hub::{EventHub, Relayed, Subscription};
 pub use limiter::{Limit, Limiter, MemoryLimiter, Taken};
 pub use policy::PolicyCache;
 pub use realtime::Watch;

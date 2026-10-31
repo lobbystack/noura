@@ -1300,7 +1300,7 @@ After a push commits, and never before, the server tells every connected device 
 
 A client applies a records frame only when its cursor for that domain is at or above `previous_seq` and below the first entry's sequence, so no entry lies between its cursor and the frame. It verifies the entries exactly like pulled ones: the checks in [§13](#client-checks-on-an-operation), the chain verifier in [§14](#14-device-chains), and the positional rules in [§8](#policy-entries) and [§9](#rotation). It advances its cursor to the last entry's sequence only after every resulting file change reaches disk, as for a page ([§15](#pull)). When its cursor lies below `previous_seq`, a gap, it pulls instead; when its cursor already covers the frame's last entry, it ignores the frame; when its cursor lies at or past the first entry but before the last, it pulls too. A frame that fails a check counts like a page that fails: the client applies nothing from it, keeps its cursor and pulls.
 
-A client judges every frame against the generation of the latest `restored` frame and the `retention_floor` of its last pull, as it would a page carrying them. Notifications and records frames only feed the same verification as pulls, so a relay that forges or drops them can delay sync but can't change what the client accepts. The app sends a WebSocket ping every 20 seconds and reconnects with jittered backoff between 1 and 30 seconds. While the channel is up, the app still makes one workspace pull ([§15](#pull)) a minute; while it's down, the app long-polls that pull.
+A client judges every frame against the generation of the latest `restored` frame and the `retention_floor` of its last pull, as it would a page carrying them. Notifications and records frames only feed the same verification as pulls, so a relay that forges or drops them can delay sync but can't change what the client accepts. The app sends a WebSocket ping every 20 seconds and reconnects with jittered backoff between 1 and 30 seconds. The server closes a channel that sends it nothing for 60 seconds, pings included, so a half-open connection costs it nothing for long. A device holds at most 8 channels to one workspace on an instance, and another attempt gets `rate_limited` before the upgrade. The presence limit counts the device across all its channels and, in PostgreSQL mode, across instances. While the channel is up, the app still makes one workspace pull ([§15](#pull)) a minute; while it's down, the app long-polls that pull.
 
 ### Presence record
 
@@ -1574,6 +1574,7 @@ At these defaults, the join in [§28](#28-worked-example-100000-objects) downloa
 | Epoch recipients, and active readers of a domain | 512 |
 | Presence | 2 a second per device, 2-minute clock window, 30-second expiry, 4 KiB padded plaintext, relative positions of 192 bytes, 256 channels per subscribe |
 | Realtime frame | 65,536 bytes |
+| Realtime channels | 8 per device and workspace on an instance; a channel closes after 60 silent seconds |
 | Text updates | one per note every 500 ms |
 | Invitations | 7 days, 100 open per workspace |
 | Share links | 1 to 30 days, 1,000 active per workspace |

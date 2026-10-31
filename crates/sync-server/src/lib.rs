@@ -34,7 +34,7 @@ pub use accounts::{Accounts, Allowlist, MailTransport, PublicOrigin};
 pub use data::{CommandError, Migrated, check_ready, migrate};
 pub use http::AppState;
 pub use postgres::Postgres;
-pub use rate::{RateGate, RateLimits};
+pub use rate::{ChannelLimits, RateGate, RateLimits};
 
 /// How `serve` sends mail.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

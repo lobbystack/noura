@@ -21,6 +21,7 @@ use sync_protocol::messages::{
 };
 use sync_protocol::records::{LinkKind, Operation, Presence, Signed};
 use sync_protocol::types::{Digest, Id, Nonce};
+use sync_server::{ChannelLimits, RateGate};
 use sync_store::conformance::head_of;
 use sync_store::{Backend, Store};
 use sync_store_postgres::PgBackend;
@@ -103,11 +104,21 @@ struct World<B: Backend> {
 
 impl<B: Backend> World<B> {
     async fn new(store: Store<B>) -> Self {
+        Self::with_gate(store, RateGate::unlimited()).await
+    }
+
+    async fn with_gate(store: Store<B>, gate: RateGate) -> Self {
         let store = Arc::new(store);
         let account = seed_store(&store, 2).await;
-        let address = sync_server::spawn(store.clone(), "127.0.0.1:0")
-            .await
-            .expect("serving");
+        let address = sync_server::spawn_limited(
+            store.clone(),
+            "127.0.0.1:0",
+            sync_server::Accounts::local,
+            Arc::new(sync_server::blobs::Objects::memory()),
+            gate,
+        )
+        .await
+        .expect("serving");
         let base = format!("http://localhost:{}", address.port());
         let created = account.creation();
         let world = Self {
@@ -601,6 +612,155 @@ async fn the_server_refuses_presence_it_may_not_carry() {
         .await;
     let third = presence(&world, 0, session, 7, note, |_| {});
     assert_eq!(refused_with(&mut channel, &third).await, "rate_limited");
+}
+
+/// A request naming a workspace that nobody can see leaves nothing in the
+/// event hub, and an open channel leaves nothing once it closes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_event_hub_holds_only_workspaces_someone_waits_on() {
+    let (store, _dir) = sqlite().await;
+    let world = World::new(store).await;
+    let hub = world.store.hub().clone();
+    for _ in 0..16 {
+        let unknown = Id::random().expect("random");
+        assert_eq!(
+            open(&world.base, unknown, Some(&world.account.token(0)))
+                .await
+                .err(),
+            Some(404)
+        );
+        let pull = PullRequest {
+            cursors: List(Vec::new()),
+            wait_seconds: 0,
+        };
+        let reply = world
+            .client(0)
+            .post(
+                &format!("/v2/workspaces/{}/pull", unknown.to_base64url()),
+                pull.to_bytes(),
+            )
+            .await;
+        assert_eq!(reply.status.as_u16(), 404);
+    }
+    assert_eq!(hub.entries(), (0, 0));
+
+    let channel = world.channel(0).await;
+    assert_eq!(hub.entries(), (1, 1));
+    drop(channel);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while hub.entries() != (0, 0) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(hub.entries(), (0, 0));
+}
+
+/// A server on a store with `channels` as its channel limits.
+async fn with_channels<B: Backend>(store: Store<B>, channels: ChannelLimits) -> World<B> {
+    World::with_gate(store, RateGate::unlimited().with_channels(channels)).await
+}
+
+/// The presence limit counts the device, however many channels it opens.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_presence_limit_counts_a_device_across_its_channels() {
+    let (store, _dir) = sqlite().await;
+    let world = World::new(store).await;
+    let mut one = world.channel(0).await;
+    let mut two = world.channel(0).await;
+    let (session, note) = (Id([0x61; 16]), Id([0x62; 16]));
+    let frame = |sequence| presence(&world, 0, session, sequence, note, |_| {});
+    let mut sequence = 0;
+    for _ in 0..5 {
+        // Two records each, in the first half of a second, so the four
+        // share one of the limiter's windows.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a time");
+        tokio::time::sleep(Duration::from_millis(u64::from(
+            1_050 - now.subsec_millis(),
+        )))
+        .await;
+        for channel in [&mut one, &mut two] {
+            for _ in 0..2 {
+                sequence += 1;
+                channel.send(&frame(sequence)).await;
+            }
+        }
+        let refused = two.next(Duration::from_millis(300)).await;
+        if let Some(Frame::Error { code, .. }) = refused {
+            assert_eq!(code.as_str(), "rate_limited");
+            return;
+        }
+    }
+    panic!("a device got twice its presence limit");
+}
+
+/// A device holds a bounded number of channels to one workspace, and a
+/// closed channel gives its place back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_holds_a_bounded_number_of_channels() {
+    let (store, _dir) = sqlite().await;
+    let channels = ChannelLimits {
+        per_device: 2,
+        ..ChannelLimits::default()
+    };
+    let world = with_channels(store, channels).await;
+    let first = world.channel(0).await;
+    let _second = world.channel(0).await;
+    let token = world.account.token(0);
+    let refused = open(&world.base, world.created.workspace, Some(&token)).await;
+    assert_eq!(refused.err(), Some(429));
+    let _other_device = world.channel(1).await;
+    drop(first);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match open(&world.base, world.created.workspace, Some(&token)).await {
+            Ok(_) => break,
+            Err(429) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(status) => panic!("the place stays taken: {status}"),
+        }
+    }
+}
+
+/// A channel whose client stays silent closes, and a ping keeps one open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_silent_channel_closes_and_a_ping_keeps_one_open() {
+    let (store, _dir) = sqlite().await;
+    let channels = ChannelLimits {
+        idle: Duration::from_millis(400),
+        ..ChannelLimits::default()
+    };
+    let world = with_channels(store, channels).await;
+    let mut silent = world.channel(0).await;
+    let mut pinging = world.channel(1).await;
+    for _ in 0..6 {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        pinging
+            .0
+            .send(Message::Ping(Vec::new().into()))
+            .await
+            .expect("the channel stays open");
+        // Reading lets the client answer and notice a close.
+        let _ = tokio::time::timeout(Duration::from_millis(10), pinging.0.next()).await;
+    }
+    let ended = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match silent.0.next().await {
+                None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "the silent channel closed");
+    let frame = pinging.next(Duration::from_millis(50)).await;
+    assert_eq!(frame, None, "the pinging channel stays quiet and open");
+    pinging
+        .0
+        .send(Message::Ping(Vec::new().into()))
+        .await
+        .expect("still open");
 }
 
 /// What a client that follows the channel holds of a domain's log: it
