@@ -4139,6 +4139,9 @@ impl WorkspaceSync {
             };
             if let Some(payload) = record.payload.as_ref().filter(|p| is_text(p)) {
                 let blob = text_blob(payload, &mut contents);
+                if blob.is_none() && lists_text_blob(payload) && !self.text_holds(&op.body.rid, &key) {
+                    continue;
+                }
                 self.take_text(&record, blob)?;
                 let own = op.body.device == own;
                 applied += usize::from(!own);
@@ -4286,10 +4289,23 @@ impl WorkspaceSync {
                     counter: record.op.body.counter,
                 };
                 if record.op.body.device != own && !self.text_holds(&record.op.body.rid, &key) {
-                    let path = service
+                    let path = match service
                         .client()
                         .download_blob(self.state.workspace, blob, None, &downloads)
-                        .await?;
+                        .await
+                    {
+                        Ok(path) => path,
+                        // A rewind passes a text record whose blob the
+                        // restore lost: the note's document stays, and a
+                        // writer's snapshot covers the record (§21).
+                        Err(SyncError::Refused { code, .. })
+                            if code == "blob_incomplete"
+                                && self.state.restore.journal.is_some() =>
+                        {
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    };
                     fetched.insert(blob.ciphertext_digest, Body::File(path));
                 }
                 continue;
@@ -4766,6 +4782,20 @@ fn is_text(payload: &Payload) -> bool {
 
 /// The file of the blob a text record's payload names, from the page's
 /// downloads.
+/// Whether a text record's bytes travel in a blob.
+fn lists_text_blob(payload: &Payload) -> bool {
+    matches!(
+        &payload.kind,
+        PayloadKind::TextSnapshot {
+            content: Content::Blob(_),
+            ..
+        } | PayloadKind::TextUpdate {
+            content: Content::Blob(_),
+            ..
+        }
+    )
+}
+
 fn text_blob(payload: &Payload, contents: &mut Bodies) -> Option<Vec<u8>> {
     let blob = match &payload.kind {
         PayloadKind::TextSnapshot {

@@ -323,6 +323,38 @@ async fn a_kit_that_cant_be_saved_leaves_the_old_kit_or_asks_again() {
 
 /// A device that `kit`'s recovery identity recovers on a new computer, as
 /// a recovery's step 4 appends it, while the account's other devices stay.
+/// A kit whose account head a restore lost: the device compares it like
+/// any state it accepted, and the app offers Reset devices.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kit_whose_head_a_restore_lost_says_so() {
+    let mut pair = sync_support::pair().await;
+    let account = pair.laptop.credentials.account;
+    let copy = pair.server.backup("before.sqlite3").await;
+    let outside = tempfile::tempdir().unwrap();
+    let path = outside.path().join("kit");
+    let export = pair
+        .service
+        .export_kit(
+            &path,
+            &[],
+            std::slice::from_mut(pair.sync_a.remote_mut().expect("connected")),
+        )
+        .await
+        .expect("exported");
+    let kit = open_kit(&path, &export.secret).expect("it opens");
+
+    // The restore lost the links the kit added, under a new generation.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let restored = pair.server.put_back(&copy, true).await;
+    pair.proxy.retarget(&restored.base);
+    let signed_in = restored.sign_in(account, &pair.proxy.base).await;
+    let state = tempfile::tempdir().unwrap();
+    let secrets: app_core::sync::Secrets = Arc::new(MemorySecrets::default());
+    let refused = Recovery::begin(&signed_in, kit, secrets, state.path()).await;
+    let error = refused.err().expect("refused");
+    assert_eq!(error.code(), Some("sync_restore_lost"), "{error:?}");
+}
+
 async fn recovered_by<B: Backend>(server: &Server<B>, kit: &KitPayload) -> Id {
     let account = kit.account;
     let signed_in = server.sign_in(account, &server.base).await;

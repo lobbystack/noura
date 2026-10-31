@@ -7,13 +7,12 @@
 mod sync_support;
 
 use app_core::sync::workspace::restore::Lost;
-use sync_store_sqlite::SqliteBackend;
-use sync_support::{MemorySecrets, Pair, Server, approve, pair, pair_of_accounts_on};
+use sync_support::{MemorySecrets, Pair, Server, approve, pair, pair_of_accounts_on, pair_on};
 
 const NO_WAIT: std::time::Duration = std::time::Duration::ZERO;
 
 /// Both devices through the proxy, which now reaches `base`.
-async fn reconnect(pair: &mut Pair<SqliteBackend>, base: &str) {
+async fn reconnect<B: sync_store::Backend>(pair: &mut Pair<B>, base: &str) {
     pair.proxy.retarget(base);
     pair.service = pair.laptop.connect_through(&pair.proxy.base).await;
     pair.desktop.service = pair.desktop.connect_through(&pair.proxy.base).await;
@@ -29,7 +28,7 @@ fn edit_backup(copy: &std::path::Path, sql: &str) {
     assert!(changed > 0, "{sql}");
 }
 
-async fn rounds(pair: &mut Pair<SqliteBackend>) {
+async fn rounds<B: sync_store::Backend>(pair: &mut Pair<B>) {
     for _ in 0..3 {
         pair.sync_a
             .round(&mut pair.service, 0)
@@ -43,7 +42,7 @@ async fn rounds(pair: &mut Pair<SqliteBackend>) {
 }
 
 /// A desktop that wrote behind the backup: the laptop writes, both apply.
-async fn write_after_backup(pair: &mut Pair<SqliteBackend>) {
+async fn write_after_backup<B: sync_store::Backend>(pair: &mut Pair<B>) {
     pair.a.write("Lost.md", b"# Lost\n");
     rounds(pair).await;
     assert_eq!(pair.a.files(), pair.b.files());
@@ -1225,4 +1224,141 @@ async fn a_generation_change_keeps_the_revocation_due_past_a_dismissal() {
     assert!(pair.sync_a.revoke_due());
     pair.sync_a.revoked_again().expect("recorded");
     assert!(!pair.sync_a.revoke_due());
+}
+
+/// A failover to an asynchronous standby that lacks the latest commits:
+/// nothing marks it, so devices catch the sequences it hands out again and
+/// hold; `mark-restored` on the new primary makes them compare and write the
+/// lost content again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failover_to_an_asynchronous_standby_is_a_rollback_until_it_is_marked() {
+    let mut pair = pair_on(Server::start_postgres_alone().await).await;
+    pair.a.write("Kept.md", b"# Kept\n");
+    rounds(&mut pair).await;
+    let standby = pair.server.standby();
+    let again = pair.server.standby();
+    write_after_backup(&mut pair).await;
+    let files = pair.a.files();
+
+    let promoted = pair.server.fail_over(&standby, false).await;
+    reconnect(&mut pair, &promoted.base).await;
+    pair.a.write("Held.md", b"# Held\n");
+    let round = pair.sync_a.round(&mut pair.service, 0).await;
+    assert_eq!(
+        round
+            .err()
+            .and_then(|e| e.code().map(str::to_owned))
+            .as_deref(),
+        Some("sync_server_rollback")
+    );
+    assert_eq!(pair.b.files(), files, "no file changed");
+
+    let marked = pair.server.fail_over(&again, true).await;
+    reconnect(&mut pair, &marked.base).await;
+    rounds(&mut pair).await;
+    assert_eq!(pair.sync_a.rollback(), None);
+    assert_eq!(pair.sync_a.restore_lost(), None);
+    assert_eq!(pair.a.files(), pair.b.files());
+    assert!(pair.a.files().contains_key("Lost.md"));
+    assert!(pair.a.files().contains_key("Held.md"));
+}
+
+/// §32's restore runs on PostgreSQL: only content lost, then a second
+/// restore from an older copy, which ends like one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_restores_on_postgres_end_like_one() {
+    let mut pair = pair_on(Server::start_postgres_alone().await).await;
+    let older = pair.server.standby();
+    pair.a.write("Middle.md", b"# Middle\n");
+    rounds(&mut pair).await;
+    let newer = pair.server.standby();
+    write_after_backup(&mut pair).await;
+    let files = pair.a.files();
+
+    let first = pair.server.fail_over(&newer, true).await;
+    reconnect(&mut pair, &first.base).await;
+    rounds(&mut pair).await;
+    assert_eq!(pair.a.files(), files);
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let second = pair.server.fail_over(&older, true).await;
+    reconnect(&mut pair, &second.base).await;
+    rounds(&mut pair).await;
+    assert_eq!(pair.sync_a.restore_lost(), None);
+    assert_eq!(pair.a.files(), files);
+    assert_eq!(pair.b.files(), files);
+}
+
+/// A lost link of your own chain stops the workspace on PostgreSQL too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_account_link_stops_the_workspace_on_postgres() {
+    let mut pair = pair_on(Server::start_postgres_alone().await).await;
+    let standby = pair.server.standby();
+    let mut third = approve(
+        &pair.server,
+        &mut pair.laptop,
+        std::slice::from_mut(pair.sync_a.remote_mut().expect("connected")),
+    )
+    .await;
+    let _ = third.service.client();
+    rounds(&mut pair).await;
+    let files = pair.a.files();
+    let restored = pair.server.fail_over(&standby, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a stopped round");
+    assert_eq!(pair.sync_a.restore_lost(), Some(&Lost::OwnAccount));
+    assert_eq!(pair.a.files(), files);
+}
+
+/// A snapshot blob a restore lost: no file holds it, so a writer that holds
+/// the document writes a snapshot that covers the operation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_text_blob_is_covered_by_a_new_snapshot() {
+    use editor_core::text_mode::{CollabDocument, Utf16Splice};
+
+    const PLAN: &str = "Plan.md";
+    let mut pair = pair().await;
+    pair.a.write(PLAN, b"# Plan\n");
+    rounds(&mut pair).await;
+    let (_, document) = pair.sync_a.open_text(PLAN).expect("the note opens");
+    let mut document = document.expect("the document");
+    rounds(&mut pair).await;
+    let long = "A long paragraph that fills a blob. ".repeat(50_000);
+    document.edit(
+        vec![Utf16Splice {
+            start: 7,
+            removed: 0,
+            inserted: long,
+        }],
+        true,
+    );
+    rounds(&mut pair).await;
+    let rid = pair.sync_a.rid_at(PLAN).expect("the note");
+    pair.sync_a
+        .write_snapshot_for_testing(rid)
+        .expect("a snapshot");
+    rounds(&mut pair).await;
+    pair.sync_a.close_text(PLAN).expect("closed");
+    rounds(&mut pair).await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    let lost = pair.server.blob_files();
+    assert!(!lost.is_empty(), "the snapshot travels in a blob");
+    for file in &lost {
+        std::fs::remove_file(file).expect("lost");
+    }
+
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    rounds(&mut pair).await;
+    assert_eq!(pair.sync_a.restore_lost(), None);
+    assert!(
+        !pair.server.blob_files().is_empty(),
+        "a new snapshot's blob stands in for the lost one"
+    );
+    assert_eq!(pair.a.files(), pair.b.files());
+    let written = pair.server.blob_files().len();
+    rounds(&mut pair).await;
+    assert_eq!(pair.server.blob_files().len(), written, "one snapshot per loss");
 }

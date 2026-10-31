@@ -253,6 +253,69 @@ impl Server<PgBackend> {
     }
 }
 
+impl Server<PgBackend> {
+    /// The server on a PostgreSQL cluster of its own, which
+    /// [`Self::fail_over`] can copy.
+    pub async fn start_postgres_alone() -> Self {
+        let cluster = Arc::new(Cluster::start(Path::new(env!("CARGO_TARGET_TMPDIR")), &[]));
+        let database = cluster.database().await;
+        let postgres = sync_server::Postgres {
+            url: database.url.clone(),
+            secret: Some(sync_protocol::types::SecretKey::random().expect("random")),
+        };
+        sync_server::postgres::migrate(&postgres)
+            .await
+            .expect("migrated");
+        let store = sync_server::postgres::open_store(&postgres)
+            .await
+            .expect("the store opens");
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let mut server = Self::serve(store, dir, Some(database)).await;
+        server.instance = Some(postgres);
+        server
+    }
+
+    /// A copy of the database as an asynchronous standby holds it now.
+    pub fn standby(&self) -> PathBuf {
+        self.postgres
+            .as_ref()
+            .expect("a PostgreSQL server")
+            .cluster
+            .base_backup()
+    }
+
+    /// Serves the copy `standby` after a failover, on the same secret and
+    /// blobs. With `recorded`, the operator ran `mark-restored` first.
+    pub async fn fail_over(&self, standby: &Path, recorded: bool) -> Self {
+        let database = self.postgres.as_ref().expect("a PostgreSQL server");
+        let cluster = Arc::new(database.cluster.promoted(standby));
+        let database = database.on(cluster);
+        let config = sync_server::Postgres {
+            url: database.url.clone(),
+            secret: self.instance.as_ref().expect("a config").secret.clone(),
+        };
+        let dir = tempfile::tempdir().expect("temporary directory");
+        std::os::unix::fs::symlink(self.dir.path().join("blobs"), dir.path().join("blobs"))
+            .expect("the shared blob store");
+        if recorded {
+            sync_server::restore::mark_restored_postgres(
+                &config,
+                dir.path(),
+                &sync_server::BlobStoreConfig::Disk,
+                |_| {},
+            )
+            .await
+            .expect("marked");
+        }
+        let store = sync_server::postgres::open_store(&config)
+            .await
+            .expect("the store opens");
+        let mut server = Self::serve(store, dir, Some(database)).await;
+        server.instance = Some(config);
+        server
+    }
+}
+
 impl<B: Backend> Server<B> {
     async fn serve(
         store: Store<B>,

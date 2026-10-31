@@ -130,6 +130,9 @@ pub struct Restore {
     /// viewer device can't write again, for you to review.
     #[serde(default)]
     pub to_review: Vec<String>,
+    /// Text blobs a snapshot of this device already stands in for.
+    #[serde(default)]
+    pub covered: BTreeSet<Id>,
     /// This device's rewrites that named no cover, which another device's
     /// rewrite may have raced, with the keys they took.
     #[serde(default)]
@@ -1411,10 +1414,14 @@ impl WorkspaceSync {
                 // No file holds a text record's yrs bytes: a writer that
                 // holds the note's document writes a snapshot that covers
                 // the operation instead (§14, §21).
-                if snapshots && let Some(rid) = self.text_note_of_blob(&blob)? {
+                if snapshots
+                    && !self.state.restore.covered.contains(&blob)
+                    && let Some(rid) = self.text_note_of_blob(&blob)?
+                {
                     let domain = self.state.objects[&rid].domain.unwrap_or(self.state.domain);
                     if writer(&domain, self) {
                         self.write_snapshot(rid, false)?;
+                        self.state.restore.covered.insert(blob);
                         self.save()?;
                     }
                 }
