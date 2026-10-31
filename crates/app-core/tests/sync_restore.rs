@@ -169,14 +169,14 @@ async fn a_member_resets_and_the_owner_accepts_the_reset() {
     let copy = pair.server.backup("before.sqlite3").await;
     let workspace = pair.sync_a.workspace();
     let account = pair.desktop.credentials.account;
-    // A new device of the member: a link the backup lacks, which the
-    // workspace records and both accounts accept.
-    let _third = approve(
-        &pair.server,
-        &mut pair.desktop,
-        std::slice::from_mut(pair.sync_b.remote_mut().expect("connected")),
-    )
-    .await;
+    // A new device of the member: a link the backup lacks, which the owner
+    // follows. No workspace records it, so no policy change goes.
+    let _third = approve(&pair.server, &mut pair.desktop, &mut []).await;
+    let genesis = pair.desktop.credentials.reference_head.genesis;
+    pair.service
+        .follow_account(account, genesis)
+        .await
+        .expect("the owner keeps the new head");
     rounds(&mut pair).await;
 
     let restored = pair.server.put_back(&copy, true).await;
@@ -190,13 +190,9 @@ async fn a_member_resets_and_the_owner_accepts_the_reset() {
         .await
         .expect("desktop");
     assert_eq!(pair.sync_b.restore_lost(), Some(&Lost::OwnAccount));
-    assert!(
-        matches!(
-            pair.sync_a.restore_lost(),
-            Some(Lost::Policy | Lost::MemberAccount(_))
-        ),
-        "{:?}",
-        pair.sync_a.restore_lost()
+    assert_eq!(
+        pair.sync_a.restore_lost(),
+        Some(&Lost::MemberAccount(account))
     );
 
     // The member signs in on a new card and resets.
@@ -289,9 +285,9 @@ async fn a_member_resets_and_the_owner_accepts_the_reset() {
 async fn set_up_sync_again_closes_the_old_workspace() {
     let mut pair = pair().await;
     let old = pair.sync_a.workspace();
-    let sync = pair.sync_a;
     let files = pair.a.files();
-    let mut fresh = sync
+    let mut fresh = pair
+        .sync_a
         .set_up_again(&mut pair.service, &mut pair.a.registry)
         .await
         .expect("set up again");
@@ -375,4 +371,367 @@ async fn a_device_uploads_a_lost_blob_again_under_its_id() {
     );
     assert!(stored.iter().all(|file| file.exists()));
     assert_eq!(pair.a.files(), pair.b.files());
+}
+
+/// Every request of the comparison fails once in turn, and the device still
+/// ends up compared and rewound, never on its old cursor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_comparison_cut_short_runs_again_at_every_step() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let mut pair = pair().await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    write_after_backup(&mut pair).await;
+    let files = pair.a.files();
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+
+    let mut failed_at = 0;
+    loop {
+        failed_at += 1;
+        assert!(failed_at < 60, "the comparison never ended");
+        let seen = Arc::new(AtomicUsize::new(0));
+        let target = failed_at;
+        pair.proxy.forge(Box::new(move |_, _| {
+            (seen.fetch_add(1, Ordering::SeqCst) + 1 == target).then(|| (503, Vec::new()))
+        }));
+        let round = pair.sync_a.round(&mut pair.service, 0).await;
+        pair.proxy.honest();
+        if round.is_ok() && pair.sync_a.status().rollback.is_none() {
+            break;
+        }
+    }
+    assert!(failed_at > 2, "the comparison made requests to fail");
+    assert_eq!(pair.sync_a.restore_lost(), None);
+    rounds(&mut pair).await;
+    assert_eq!(pair.a.files(), files);
+    let written = [pair.sync_a.written_again(), pair.sync_b.written_again()].concat();
+    assert!(written.iter().any(|path| path == "Lost.md"));
+}
+
+/// A generation that rises during a rewind compares again and ends like one
+/// restore, from the journal the first rewind kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_restores_in_a_row_end_like_one() {
+    let mut pair = pair().await;
+    let older = pair.server.backup("older.sqlite3").await;
+    pair.a.write("Middle.md", b"# Middle\n");
+    rounds(&mut pair).await;
+    let newer = pair.server.backup("newer.sqlite3").await;
+    write_after_backup(&mut pair).await;
+    let files = pair.a.files();
+
+    // The first restore, with the pull of its rewind cut off.
+    let first = pair.server.put_back(&newer, true).await;
+    reconnect(&mut pair, &first.base).await;
+    pair.proxy.forge(Box::new(|_, path| {
+        path.ends_with("/pull").then(|| (503, Vec::new()))
+    }));
+    assert!(pair.sync_a.round(&mut pair.service, 0).await.is_err());
+    pair.proxy.honest();
+    assert!(pair.sync_a.status().restored.is_some());
+
+    // The second, from an older backup, reaches the device mid-rewind. The
+    // generation takes the clock's seconds.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let second = pair.server.put_back(&older, true).await;
+    reconnect(&mut pair, &second.base).await;
+    rounds(&mut pair).await;
+    assert_eq!(pair.sync_a.restore_lost(), None);
+    assert_eq!(pair.a.files(), files);
+    assert_eq!(pair.b.files(), files);
+    let written = [pair.sync_a.written_again(), pair.sync_b.written_again()].concat();
+    for lost in ["Lost.md", "Middle.md"] {
+        assert!(
+            written.iter().any(|path| path == lost),
+            "{lost}: {written:?}"
+        );
+    }
+}
+
+/// A stopped device applies nothing a frame carries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_frame_changes_no_file_on_a_stopped_workspace() {
+    use sync_protocol::messages::Frame;
+
+    let mut pair = pair().await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    let mut third = approve(
+        &pair.server,
+        &mut pair.laptop,
+        std::slice::from_mut(pair.sync_a.remote_mut().expect("connected")),
+    )
+    .await;
+    let _ = third.service.client();
+    rounds(&mut pair).await;
+    let before = pair.a.files();
+
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a stopped round");
+    assert_eq!(pair.sync_a.restore_lost(), Some(&Lost::OwnAccount));
+
+    // The server moves on, and tells the stopped device.
+    let domain = pair.sync_a.domain();
+    let cursor = pair.sync_a.cursor();
+    let outcome = pair
+        .sync_a
+        .on_frame(
+            &mut pair.service,
+            &Frame::Notify {
+                domain,
+                head: cursor + 10,
+                checkpoint_due: 0,
+            },
+        )
+        .await
+        .expect("handled");
+    assert_eq!(outcome.applied, 0);
+    assert!(!outcome.pulled, "a stopped device doesn't pull");
+    assert_eq!(pair.a.files(), before);
+    let (applied, _) = pair
+        .sync_a
+        .pull(&mut pair.service, 0)
+        .await
+        .expect("a pull");
+    assert_eq!(applied, 0);
+    assert_eq!(pair.sync_a.cursor(), cursor);
+    assert_eq!(
+        pair.sync_a
+            .rename(&mut pair.service, "Elsewhere")
+            .await
+            .err()
+            .and_then(|e| e.code().map(str::to_owned))
+            .as_deref(),
+        Some("sync_restore_lost"),
+        "a stopped device writes nothing"
+    );
+}
+
+/// A records frame that arrives between the generation change and the
+/// rewind leaves the cursor and the files alone: the device compares first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_records_frame_before_the_rewind_applies_nothing() {
+    use sync_protocol::messages::Frame;
+
+    let mut pair = pair().await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    write_after_backup(&mut pair).await;
+    let files = pair.a.files();
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    let generation = pair.service.client().restore_generation();
+
+    // The frame says the generation rose, while a later record's frame
+    // comes in behind it, as the channel would deliver them.
+    let domain = pair.sync_a.domain();
+    let cursor = pair.sync_a.cursor();
+    pair.sync_a
+        .on_frame(
+            &mut pair.service,
+            &Frame::Records {
+                domain,
+                previous_seq: cursor,
+                checkpoint_due: 0,
+                entries: sync_protocol::codec::Sorted::new(Vec::new()).expect("sorted"),
+            },
+        )
+        .await
+        .expect("handled");
+    assert_eq!(pair.a.files(), files);
+    pair.sync_a
+        .on_frame(
+            &mut pair.service,
+            &Frame::Restored {
+                restore_generation: generation,
+            },
+        )
+        .await
+        .expect("the frame starts the comparison");
+    assert_eq!(pair.a.files(), files, "no file changed");
+    assert_eq!(pair.sync_a.restore_lost(), None);
+    assert!(pair.sync_a.restore_alert().is_some());
+}
+
+/// A rollback holds the device until the generation changes, and the held
+/// device finds that out by itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_held_device_learns_of_the_new_generation() {
+    let mut pair = pair().await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    write_after_backup(&mut pair).await;
+
+    let put_back = pair.server.put_back(&copy, false).await;
+    reconnect(&mut pair, &put_back.base).await;
+    assert!(pair.sync_a.round(&mut pair.service, 0).await.is_err());
+    assert!(pair.sync_a.rollback().is_some());
+
+    // The same service, on the same connection details: only the proxy
+    // moves to the marked server.
+    let marked = pair.server.put_back(&copy, true).await;
+    pair.proxy.retarget(&marked.base);
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("the device compares");
+    assert_eq!(pair.sync_a.rollback(), None);
+    assert!(pair.sync_a.restore_alert().is_some());
+}
+
+/// A forged `accept_reset` the server only claims erases no evidence: the
+/// policy chain doesn't verify, so the workspace stays stopped and keeps
+/// its heads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_forged_accept_reset_leaves_the_stop_in_place() {
+    use sync_protocol::codec::{Decode, Encode, List, Nested};
+    use sync_protocol::messages::PolicyResponse;
+    use sync_protocol::records::{PolicyChange, PolicyKind, Signed};
+
+    let mut pair = pair_of_accounts_on(Server::start().await).await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    let account = pair.desktop.credentials.account;
+    let _third = approve(&pair.server, &mut pair.desktop, &mut []).await;
+    let genesis = pair.desktop.credentials.reference_head.genesis;
+    pair.service
+        .follow_account(account, genesis)
+        .await
+        .expect("kept");
+    rounds(&mut pair).await;
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    assert_eq!(
+        pair.sync_a.restore_lost(),
+        Some(&Lost::MemberAccount(account))
+    );
+    let head = pair.sync_a.policy_revision();
+
+    // The server appends a change it made up, signed by nobody it can name.
+    let forger =
+        sync_protocol::crypto::SigningKey::from_seed(&sync_protocol::types::SecretKey([9; 32]));
+    pair.proxy.tamper(Box::new(move |path, body| {
+        if !path.contains("/policy") {
+            return body;
+        }
+        let mut response = PolicyResponse::from_bytes(&body).expect("a policy response");
+        let last: Option<Signed<PolicyChange>> = response.changes.0.last().map(|c| c.0.clone());
+        let Some(last) = last else {
+            return body;
+        };
+        let mut change = last.body.clone();
+        change.revision = head + 1;
+        change.previous = last.digest();
+        change.kind = PolicyKind::AcceptReset { account };
+        let forged = Signed::sign(change, &forger);
+        let mut changes = response.changes.0.clone();
+        changes.push(Nested(forged));
+        response.changes = List(changes);
+        response.head_revision = head + 1;
+        response.to_bytes()
+    }));
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a stopped round");
+    pair.proxy.honest();
+    assert_eq!(
+        pair.sync_a.restore_lost(),
+        Some(&Lost::MemberAccount(account)),
+        "the forged change ended nothing"
+    );
+    assert!(
+        !pair.service.kept_heads().kept_of(&account).is_empty(),
+        "the head stays kept"
+    );
+}
+
+/// A viewer device writes nothing: a blob the restore lost waits for a
+/// writer, and the viewer's rewind doesn't stop on it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_viewer_rewinds_without_writing_a_lost_blob() {
+    use app_core::sync::invitations::InvitationBook;
+    use sync_protocol::records::Role;
+
+    let mut pair = pair_of_accounts_on(Server::start().await).await;
+    let bytes: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+    pair.a.write("photo.png", &bytes);
+    rounds(&mut pair).await;
+
+    let dir = tempfile::tempdir().expect("a folder");
+    let mut book = InvitationBook::open(dir.path(), pair.laptop.id()).expect("a book");
+    let mut viewer = sync_support::first_desktop(&pair.server, "vera@example.com").await;
+    let (mut sync_v, folder) = sync_support::invite_and_join(
+        &mut pair.laptop,
+        &mut pair.sync_a,
+        &mut book,
+        &mut viewer,
+        Role::Viewer,
+    )
+    .await;
+    sync_v.round(&mut viewer.service, 0).await.expect("joined");
+    assert_eq!(folder.files().get("photo.png"), Some(&bytes));
+
+    let copy = pair.server.backup("before.sqlite3").await;
+    for file in pair.server.blob_files() {
+        std::fs::remove_file(file).expect("lost");
+    }
+    let restored = pair.server.put_back(&copy, true).await;
+    let mut viewer_service = viewer.connect_through(&restored.base).await;
+    sync_v.set_restore_wait(NO_WAIT);
+    let round = sync_v.round(&mut viewer_service, 0).await;
+    assert!(round.is_ok(), "{round:?}");
+    assert_eq!(sync_v.restore_lost(), None);
+    assert_eq!(folder.files().get("photo.png"), Some(&bytes));
+    assert!(
+        pair.server.blob_files().is_empty(),
+        "the viewer uploaded nothing"
+    );
+}
+
+/// Set up sync again from a member's device gets a clear refusal, and the
+/// section doesn't offer it there; a failed start keeps the old sync.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn set_up_sync_again_stays_with_the_owner_and_survives_a_failure() {
+    let mut pair = pair_of_accounts_on(Server::start().await).await;
+    let refused = pair
+        .sync_b
+        .set_up_again(&mut pair.desktop.service, &mut pair.b.registry)
+        .await;
+    assert!(refused.is_err(), "a member can't");
+    assert!(!pair.sync_b.status().owner);
+    let notice = app_core::folder_sync::restore_notice(&app_core::sync::workspace::Status {
+        restore_lost: Some(Lost::Policy),
+        ..pair.sync_b.status()
+    })
+    .expect("a notice");
+    assert!(!notice.set_up_again);
+
+    // The close goes through, then creating the new workspace fails.
+    pair.proxy.forge(Box::new(|method, path| {
+        (method == "POST" && path.ends_with("/v2/workspaces")).then(|| (503, Vec::new()))
+    }));
+    let old = pair.sync_a.workspace();
+    assert!(
+        pair.sync_a
+            .set_up_again(&mut pair.service, &mut pair.a.registry)
+            .await
+            .is_err()
+    );
+    pair.proxy.honest();
+    assert_eq!(pair.sync_a.restore_lost(), Some(&Lost::Closed));
+    let notice = app_core::folder_sync::restore_notice(&pair.sync_a.status()).expect("a notice");
+    assert!(notice.set_up_again, "the owner tries again");
+    let fresh = pair
+        .sync_a
+        .set_up_again(&mut pair.service, &mut pair.a.registry)
+        .await
+        .expect("set up");
+    assert_ne!(fresh.workspace(), old);
 }

@@ -292,7 +292,13 @@ pub async fn closing_a_workspace_answers_not_found<B: Backend>(store: Store<B>) 
     );
     let blob = Id::random().expect("random");
     assert_eq!(
-        refusal(world.store.blob_download(owner, world.workspace, blob).await).code,
+        refusal(
+            world
+                .store
+                .blob_download(owner, world.workspace, blob)
+                .await
+        )
+        .code,
         "not_found"
     );
     assert_eq!(

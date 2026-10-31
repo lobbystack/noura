@@ -125,7 +125,7 @@ impl WorkspaceSync {
         let journal = Journal::open(engine.root(), &device, &*secrets)?;
         let old: Option<State> = journal.read(STATE_FILE).ok().flatten();
         let old_replica = old.as_ref().map_or(entry.replica, |s| s.replica);
-        let mut archived = Self::archive(journal, old.as_ref(), &old_replica)?;
+        let mut archived = Self::archive(&journal, old.as_ref(), &old_replica)?;
         let server = service.client().base().to_owned();
         let replica = registry.connect(&server, entry.account, entry.workspace, engine.root())?;
         if entry.paused {
@@ -188,7 +188,7 @@ impl WorkspaceSync {
 
     /// Moves an old journal's review store aside and lists what it kept.
     pub(super) fn archive(
-        journal: Journal,
+        journal: &Journal,
         old: Option<&State>,
         replica: &Id,
     ) -> Result<Vec<Archived>, SyncError> {

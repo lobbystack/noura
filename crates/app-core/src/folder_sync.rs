@@ -222,7 +222,7 @@ pub fn restore_notice(status: &Status) -> Option<RestoreNotice> {
             Lost::Policy | Lost::Epoch | Lost::Envelope | Lost::Checkpoints | Lost::FinalHead(_) => (
                 "The server's operator restored a backup that lacks part of this workspace's history. Sync stopped here. An owner can set the workspace up again.".to_owned(),
                 false,
-                true,
+                status.owner,
             ),
             Lost::Server => (
                 "This server lost your account. Sync stopped here. You can turn sync on for this folder as a new workspace.".to_owned(),
@@ -232,7 +232,7 @@ pub fn restore_notice(status: &Status) -> Option<RestoreNotice> {
             Lost::Closed => (
                 "The owner closed this workspace. Your files stay on this computer.".to_owned(),
                 false,
-                false,
+                status.owner,
             ),
         };
         return Some(RestoreNotice {

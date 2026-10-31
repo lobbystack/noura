@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use sync_protocol::crypto::hash;
 use sync_protocol::messages::EntryRecord;
+use sync_protocol::records::{CheckpointBundle, Envelope, Epoch, Signed};
 use sync_protocol::types::{Digest, Id};
 
 use super::state::{BootstrapProgress, Content, Log, Object, OpKey};
@@ -24,6 +25,10 @@ use crate::sync::account_heads::KeptCheckpointAnchor;
 
 /// The longest a device waits before it writes a lost object again (§14).
 pub const REWRITE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How often a device that isn't in a restore's alert asks which blobs the
+/// server misses: the server's check may mark one after the alert ended.
+pub const MISSING_EVERY: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// What the server lost, which names the way back.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,8 +46,9 @@ pub enum Lost {
     Envelope,
     /// Every checkpoint this device reached in the domain.
     Checkpoints,
-    /// Records or heads that disagree with a final head the device kept.
-    FinalHead(Id),
+    /// Records or heads that disagree with a final head the device kept,
+    /// of this device when the check names one.
+    FinalHead(Option<Id>),
     /// The account chain under this device's account ID, so a new server
     /// took over without the old secret.
     Server,
@@ -80,6 +86,10 @@ pub struct Rewrite {
     pub object: Object,
     /// The state to write again.
     pub content: Content,
+    /// The live states the journal held, so a second restore during the
+    /// wait starts from the same place.
+    #[serde(default)]
+    pub live: Vec<OpKey>,
 }
 
 /// What the journal keeps of a restore.
@@ -92,6 +102,18 @@ pub struct Restore {
     /// A rollback the device caught in one generation, which holds it
     /// until the generation changes.
     pub rollback: Option<String>,
+    /// A generation change whose comparison hasn't ended in a stop or a
+    /// saved journal. It stays set through a failed request or a crash, so
+    /// no later round runs on the old cursor and verifier.
+    #[serde(default)]
+    pub pending: bool,
+    /// Whether the policy this device last accepted names its account as
+    /// the workspace's owner, which holds through a stop.
+    #[serde(default)]
+    pub owner: bool,
+    /// A generation change still owes the share links another revocation.
+    #[serde(default)]
+    pub revoke: bool,
     /// While the device rewinds, each object as the journal held it, with
     /// its live states at that moment.
     pub journal: Option<BTreeMap<Id, (Object, Vec<OpKey>)>>,
@@ -104,6 +126,14 @@ pub struct Restore {
 /// A rollback code that holds the device until the generation changes.
 fn holds(code: &str) -> bool {
     matches!(code, "sync_server_rollback" | "sync_policy_rollback")
+}
+
+/// The fixed code of a kept rollback.
+fn rollback_code(code: &str) -> &'static str {
+    match code {
+        "sync_policy_rollback" => "sync_policy_rollback",
+        _ => "sync_server_rollback",
+    }
 }
 
 /// A random number of seconds below `limit`.
@@ -163,6 +193,18 @@ impl WorkspaceSync {
         self.save()
     }
 
+    /// Takes what the generation change owes: whether the app revokes the
+    /// device's share links again. The caller gives it back on a failure.
+    pub fn revoke_due(&self) -> bool {
+        self.state.restore.revoke
+    }
+
+    /// Records that the share links went out again.
+    pub fn revoked_again(&mut self) -> Result<(), SyncError> {
+        self.state.restore.revoke = false;
+        self.save()
+    }
+
     /// The paths the device wrote again since the restore.
     pub fn written_again(&self) -> &[String] {
         &self.state.restore.written_again
@@ -173,10 +215,37 @@ impl WorkspaceSync {
         self.restore_wait = wait;
     }
 
+    /// Whether the device applies and writes nothing here: from a
+    /// generation change until the rewind ends, and while a stop or a
+    /// rollback holds it (§14).
+    pub(super) fn halted(&self) -> bool {
+        let restore = &self.state.restore;
+        restore.pending
+            || restore.lost.is_some()
+            || restore.rollback.is_some()
+            || restore.journal.is_some()
+    }
+
+    /// Refuses a write the app asked for while the device is
+    /// [`halted`](Self::halted).
+    pub(super) fn refuse_halted(&self) -> Result<(), SyncError> {
+        let restore = &self.state.restore;
+        if restore.lost.is_some() {
+            return Err(SyncError::Check("sync_restore_lost"));
+        }
+        if let Some(code) = restore.rollback.as_deref() {
+            return Err(SyncError::Check(rollback_code(code)));
+        }
+        if self.halted() {
+            return Err(SyncError::Check("sync_restore_generation"));
+        }
+        Ok(())
+    }
+
     /// Keeps a rollback that holds the device, and returns the error.
     pub(super) fn note_failure(&mut self, error: SyncError) -> Result<(), SyncError> {
         if error.code() == Some("sync_restore_lost") {
-            return self.stop_lost(Lost::FinalHead(self.credentials.keys.device()));
+            return self.stop_lost(Lost::FinalHead(None));
         }
         if let Some(code) = error.code()
             && holds(code)
@@ -187,13 +256,21 @@ impl WorkspaceSync {
         Err(error)
     }
 
-    /// Runs before anything else in a round. Returns whether the device
-    /// may go on. A generation above the last one starts the comparison; a
-    /// lower one reports `sync_server_rollback`.
+    /// Runs before anything else in a round, and whenever a frame or a
+    /// write meets a new generation. Returns whether the device may go on.
+    /// A generation above the last one starts the comparison; a lower one
+    /// reports `sync_server_rollback`. The comparison stays pending until
+    /// it ends in a stop or a saved journal, so a failed request or a crash
+    /// repeats it, and a generation that rises during a rewind compares
+    /// again.
     pub(super) async fn restore_gate(
         &mut self,
         service: &mut SyncService,
     ) -> Result<bool, SyncError> {
+        // A held device sends nothing else, so it asks for the generation.
+        if self.state.restore.rollback.is_some() {
+            service.client().ask_generation().await?;
+        }
         let seen = service.client().restore_generation();
         if seen < self.state.generation {
             return Err(SyncError::Check("sync_server_rollback"));
@@ -202,34 +279,35 @@ impl WorkspaceSync {
             self.state.restore.alerted = Some(seen);
             self.state.restore.rollback = None;
             self.state.generation = seen;
-            if self.state.restore.lost.is_none() && self.state.restore.journal.is_none() {
-                self.save()?;
-                self.compare(service).await?;
-            } else {
-                self.save()?;
-            }
+            self.state.restore.pending = self.state.restore.lost.is_none();
+            // Whatever state the workspace is in (§14).
+            self.state.restore.revoke = true;
+            self.save()?;
         }
-        if let Some(Lost::MemberAccount(account)) = self.state.restore.lost.clone() {
+        if let Some(Lost::MemberAccount(account)) = self.state.restore.lost {
             self.resume_after_reset(service, account).await?;
         }
         if self.state.restore.lost.is_some() {
             return Ok(false);
         }
         if let Some(code) = self.state.restore.rollback.clone() {
-            let code = match code.as_str() {
-                "sync_policy_rollback" => "sync_policy_rollback",
-                _ => "sync_server_rollback",
-            };
-            return Err(SyncError::Check(code));
+            return Err(SyncError::Check(rollback_code(&code)));
+        }
+        if self.state.restore.pending {
+            self.compare(service).await?;
+            if self.state.restore.lost.is_some() {
+                return Ok(false);
+            }
         }
         if self.state.restore.journal.is_some() {
             self.finish_rewind(service).await?;
         }
-        Ok(true)
+        Ok(self.state.restore.lost.is_none())
     }
 
     fn stop_lost(&mut self, lost: Lost) -> Result<(), SyncError> {
         self.state.restore.lost = Some(lost);
+        self.state.restore.pending = false;
         self.state.restore.journal = None;
         self.state.restore.rewrites.clear();
         self.remote = None;
@@ -242,9 +320,6 @@ impl WorkspaceSync {
         if let Some(lost) = self.lost_state(service).await? {
             return self.stop_lost(lost);
         }
-        // A restore may lose a rename: a profile below the lost revision
-        // reads as new again (§25).
-        self.state.profile = None;
         self.rewind(service).await
     }
 
@@ -271,31 +346,63 @@ impl WorkspaceSync {
 
     /// A workspace stopped only for `account`'s chain resumes, with the
     /// reconciliation, once the device verifies there an `accept_reset`
-    /// that names the account's new chain (§14). The retired chain then no
-    /// longer counts here.
+    /// that names the account's new chain (§14). The server's word starts
+    /// the check and nothing more: the device verifies the policy chain,
+    /// which must extend what it accepted, looks only at changes above its
+    /// accepted head, and requires that the workspace now names that
+    /// chain. Only then does the retired chain stop counting here.
     async fn resume_after_reset(
         &mut self,
         service: &mut SyncService,
         account: Id,
     ) -> Result<(), SyncError> {
-        let changes = service.client().policy(self.state.workspace, 0).await?;
-        let accepted = changes.changes.0.iter().find_map(|change| {
-            let body = &change.0.body;
-            matches!(body.kind, sync_protocol::records::PolicyKind::AcceptReset { account: named }
-                if named == account)
-            .then(|| body.heads.iter().find(|h| h.account == account))
-            .flatten()
-            .map(|head| head.genesis)
-        });
-        let Some(genesis) = accepted else {
+        let workspace = self.state.workspace;
+        let accepted = self.state.policy.last().map_or(0, |c| c.body.revision);
+        let above = service.client().policy(workspace, accepted).await?;
+        let names = |kind: &sync_protocol::records::PolicyKind| {
+            matches!(kind, sync_protocol::records::PolicyKind::AcceptReset { account: named }
+                if *named == account)
+        };
+        if !above.changes.0.iter().any(|c| names(&c.0.body.kind)) {
+            return Ok(());
+        }
+        service.kept_heads_mut().excuse_short(account);
+        let remote = match service.open_workspace(workspace).await {
+            Ok(remote) => remote,
+            // A forged or broken change leaves the stop as it is.
+            Err(SyncError::Check(code)) => {
+                tracing::warn!(code, "an accept_reset didn't verify");
+                return Ok(());
+            }
+            Err(SyncError::KeyMissing) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        if let Some(kept) = self.state.policy.last()
+            && remote.policy.change(kept.body.revision).map(|c| c.digest()) != Some(kept.digest())
+        {
+            return Ok(());
+        }
+        let head = remote.policy.head().0;
+        let named = (accepted + 1..=head)
+            .filter_map(|revision| remote.policy.change(revision))
+            .filter(|change| names(&change.body.kind))
+            .find_map(|change| change.body.heads.iter().find(|h| h.account == account))
+            .map(|named| named.genesis);
+        let current = remote
+            .policy
+            .head_snapshot()
+            .members
+            .get(&account)
+            .map(|member| member.head.genesis);
+        let (Some(genesis), true) = (named, named == current) else {
             return Ok(());
         };
         service
             .kept_heads_mut()
-            .drop_retired(&account, &genesis, self.state.workspace)?;
+            .drop_retired(&account, &genesis, workspace)?;
         self.state.restore.lost = None;
-        self.save()?;
-        self.compare(service).await
+        self.state.restore.pending = true;
+        self.save()
     }
 
     /// The verified workspace for an owner or admin device that answers
@@ -324,19 +431,9 @@ impl WorkspaceSync {
         if !self.keeps_heads(service, self.state.account).await? {
             return Ok(Some(Lost::OwnAccount));
         }
+        // The accepted policy head comes first: a workspace that lost a
+        // change is the owner's to set up again, whatever else went.
         let accepted = self.state.policy.last().cloned();
-        let members: BTreeSet<Id> = accepted
-            .iter()
-            .flat_map(|change| change.body.heads.iter().map(|h| h.account))
-            .chain(self.member_accounts())
-            .filter(|account| *account != self.state.account)
-            .collect();
-        for account in members {
-            if !self.keeps_heads(service, account).await? {
-                return Ok(Some(Lost::MemberAccount(account)));
-            }
-        }
-        // The accepted policy head.
         if let Some(accepted) = &accepted {
             let revision = accepted.body.revision;
             let response = match service.client().policy(workspace, revision - 1).await {
@@ -351,34 +448,126 @@ impl WorkspaceSync {
                 return Ok(Some(Lost::Policy));
             }
         }
-        // The latest accepted epoch record, and its envelope while that
-        // epoch stays the server's current one.
+        let members: BTreeSet<Id> = accepted
+            .iter()
+            .flat_map(|change| change.body.heads.iter().map(|h| h.account))
+            .chain(self.member_accounts())
+            .filter(|account| *account != self.state.account)
+            .collect();
+        for account in members {
+            if !self.keeps_heads(service, account).await? {
+                return Ok(Some(Lost::MemberAccount(account)));
+            }
+        }
+        // The latest accepted epoch record of each domain it reads, and its
+        // envelope while that epoch stays the server's current one.
         let remote = match service.open_workspace(workspace).await {
             Ok(remote) => remote,
             Err(SyncError::KeyMissing) => return Ok(Some(Lost::Envelope)),
             Err(SyncError::Check("sync_key_mismatch")) => return Ok(Some(Lost::Epoch)),
             Err(error) => return Err(error),
         };
-        if let Some(epoch) = self.state.epochs.last() {
-            let number = epoch.body.epoch;
-            let kept = remote
-                .epochs
-                .get(number)
-                .is_some_and(|e| e.digest == epoch.digest())
-                || remote.epochs.ended_at(number).is_some();
-            if !kept {
-                return Ok(Some(Lost::Epoch));
-            }
-            let current = remote.epochs.latest().map(|e| e.record.body.epoch);
-            if current == Some(number)
-                && let Some(envelope) = &self.state.envelope
-                && envelope.body.epoch == number
-                && remote.envelope.as_ref().map(|e| e.digest()) != Some(envelope.digest())
+        if let Some(lost) = self
+            .lost_epoch(
+                service,
+                self.state.domain,
+                &remote.epochs,
+                remote.envelope.as_ref(),
+                self.state.epochs.last(),
+                self.state.envelope.as_ref(),
+            )
+            .await?
+        {
+            return Ok(Some(lost));
+        }
+        let snapshot = remote.policy.head_snapshot();
+        let device = self.credentials.keys.device();
+        let recipient = self.credentials.keys.clone();
+        let frames: Vec<(Id, Option<Signed<Epoch>>, Option<Signed<Envelope>>)> = self
+            .state
+            .restricted
+            .iter()
+            .filter(|(domain, _)| snapshot.can_read(&device, domain))
+            .map(|(domain, frame)| {
+                (
+                    *domain,
+                    frame.epochs.last().cloned(),
+                    frame.envelope.clone(),
+                )
+            })
+            .collect();
+        for (domain, epoch, envelope) in frames {
+            let loaded = service
+                .load_keys(workspace, domain, &remote.policy, &recipient, true)
+                .await;
+            let (epochs, _, served) = match loaded {
+                Ok(loaded) => loaded,
+                Err(SyncError::KeyMissing) => return Ok(Some(Lost::Envelope)),
+                Err(SyncError::Check("sync_key_mismatch")) => return Ok(Some(Lost::Epoch)),
+                Err(error) => return Err(error),
+            };
+            if let Some(lost) = self
+                .lost_epoch(
+                    service,
+                    domain,
+                    &epochs,
+                    served.as_ref(),
+                    epoch.as_ref(),
+                    envelope.as_ref(),
+                )
+                .await?
             {
-                return Ok(Some(Lost::Envelope));
+                return Ok(Some(lost));
             }
         }
         self.remote = Some(remote);
+        Ok(None)
+    }
+
+    /// Compares one domain's latest accepted epoch record and envelope with
+    /// the server's. An epoch a replacement ended counts as held only when
+    /// the record the server still serves under that number is the same, or
+    /// it serves none.
+    async fn lost_epoch(
+        &self,
+        service: &mut SyncService,
+        domain: Id,
+        served: &sync_protocol::keys::EpochChain,
+        served_envelope: Option<&Signed<Envelope>>,
+        accepted: Option<&Signed<Epoch>>,
+        envelope: Option<&Signed<Envelope>>,
+    ) -> Result<Option<Lost>, SyncError> {
+        let Some(accepted) = accepted else {
+            return Ok(None);
+        };
+        let number = accepted.body.epoch;
+        match served.get(number) {
+            Some(held) if held.digest == accepted.digest() => {}
+            Some(_) => return Ok(Some(Lost::Epoch)),
+            None => {
+                if served.ended_at(number).is_none() {
+                    return Ok(Some(Lost::Epoch));
+                }
+                let answer = service
+                    .client()
+                    .epochs(self.state.workspace, domain, number)
+                    .await;
+                if let Ok(answer) = answer
+                    && let Some(held) = answer.epochs.0.iter().find(|e| e.body.epoch == number)
+                    && held.digest() != accepted.digest()
+                {
+                    return Ok(Some(Lost::Epoch));
+                }
+            }
+        }
+        let current = served.latest().map(|e| e.record.body.epoch);
+        if current == Some(number)
+            && let Some(envelope) = envelope
+            && envelope.body.epoch == number
+            && served_envelope.map(Signed::digest) != Some(envelope.digest())
+        {
+            return Ok(Some(Lost::Envelope));
+        }
         Ok(None)
     }
 
@@ -397,12 +586,15 @@ impl WorkspaceSync {
             .unwrap_or_default()
     }
 
-    /// Step 1: takes the server's positions again from the newest
-    /// checkpoint the device reached that the server still serves.
-    async fn rewind(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
+    /// The rewind's start in the domain the device works in: the newest
+    /// checkpoint it reached that the server still serves. `Ok(None)` stops
+    /// the workspace; the inner `None` starts from sequence 0, for a device
+    /// that reached none. Final heads pass before anything is rebuilt.
+    async fn rewind_start(
+        &mut self,
+        service: &mut SyncService,
+    ) -> Result<Option<Option<CheckpointBundle>>, SyncError> {
         let (workspace, domain) = (self.state.workspace, self.state.domain);
-        // Before the pull below, which needs those blobs.
-        self.upload_missing(service).await?;
         let reached: Vec<_> = self
             .state
             .log
@@ -426,7 +618,8 @@ impl WorkspaceSync {
             }
         }
         if start.is_none() && !reached.is_empty() {
-            return self.stop_lost(Lost::Checkpoints);
+            self.stop_lost(Lost::Checkpoints)?;
+            return Ok(None);
         }
         let start_heads: BTreeMap<Id, (u64, Digest)> = start
             .as_ref()
@@ -437,60 +630,73 @@ impl WorkspaceSync {
                     .collect()
             })
             .unwrap_or_default();
-        let covered = start
-            .as_ref()
-            .map_or(0, |b| b.checkpoint.0.body.covered_seq);
-        // The final heads, before anything the server serves applies.
+        let (covered, previous) = start.as_ref().map_or((0, 0), |b| {
+            let digest = b.checkpoint.0.body.previous;
+            let revision = reached
+                .iter()
+                .find(|r| r.digest == digest)
+                .map_or(0, |r| r.policy_revision);
+            (b.checkpoint.0.body.covered_seq, revision)
+        });
         let finals = self.state.log.final_heads.clone();
         for kept in &finals {
+            let may_leave = self
+                .remote
+                .as_ref()
+                .is_some_and(|remote| remote.policy.card_gone(&kept.device, previous));
             if !self
-                .check_final_head(service, kept, covered, &start_heads)
+                .check_final_head(service, kept, covered, &start_heads, may_leave)
                 .await?
             {
-                return self.stop_lost(Lost::FinalHead(kept.device));
+                self.stop_lost(Lost::FinalHead(Some(kept.device)))?;
+                return Ok(None);
             }
         }
+        Ok(Some(start))
+    }
 
-        // The journal keeps the objects as they stand, for step 2.
-        let journal: BTreeMap<Id, (Object, Vec<OpKey>)> = self
-            .state
-            .objects
-            .keys()
-            .copied()
-            .collect::<Vec<_>>()
-            .into_iter()
-            .map(|rid| {
-                (
-                    rid,
-                    (self.state.objects[&rid].clone(), self.live_states(&rid)),
-                )
-            })
-            .collect();
-        self.state.restore.journal = Some(journal);
+    /// Resets the domain the device works in to `start`: its chain heads,
+    /// verifier and live set become the server's, except the final heads.
+    /// The checkpoints it reached up to `start` stay, so a restore during
+    /// the rewind finds them. The domain's log and its counters above every
+    /// one it signed stay in `own.next`.
+    fn reset_domain(
+        &mut self,
+        service: &mut SyncService,
+        start: Option<&CheckpointBundle>,
+    ) -> Result<(), SyncError> {
+        let (workspace, domain) = (self.state.workspace, self.state.domain);
+        let covered = start.map_or(0, |b| b.checkpoint.0.body.covered_seq);
+        let finals = std::mem::take(&mut self.state.log.final_heads);
+        let reached = std::mem::take(&mut self.state.log.checkpoints.reached);
         let mut log = Log::new(domain);
         log.final_heads = finals;
+        if start.is_some() {
+            log.checkpoints.reached = reached
+                .into_iter()
+                .filter(|(_, r)| r.covered_seq <= covered)
+                .collect();
+        }
         self.state.log = log;
-        self.state.objects.clear();
         self.state.outbox.clear();
-        self.state.unreadable.clear();
         self.state.own.head = None;
         self.state.own.acked = None;
-        self.state.restricted.clear();
-        self.parked.clear();
         self.state.bootstrap_progress = None;
         self.state.bootstrap = start.is_some();
-        if let Some(bundle) = &start {
+        if let Some(bundle) = start {
             let digest = bundle.checkpoint.0.digest();
             let generation = self.state.generation;
-            service
-                .kept_heads_mut()
-                .set_checkpoint_anchor(KeptCheckpointAnchor {
-                    workspace,
-                    domain,
-                    covered_seq: covered,
-                    checkpoint: digest,
-                    generation,
-                })?;
+            if self.active.is_none() {
+                service
+                    .kept_heads_mut()
+                    .set_checkpoint_anchor(KeptCheckpointAnchor {
+                        workspace,
+                        domain,
+                        covered_seq: covered,
+                        checkpoint: digest,
+                        generation,
+                    })?;
+            }
             self.state.bootstrap_progress = Some(BootstrapProgress {
                 checkpoint: digest,
                 after: None,
@@ -501,6 +707,84 @@ impl WorkspaceSync {
             });
         }
         self.want_entries();
+        Ok(())
+    }
+
+    /// Step 1 in every domain the device reads: takes the server's
+    /// positions again from the newest checkpoint it reached that the
+    /// server still serves, in one step, once every domain's start passed
+    /// its checks. A second restore during a rewind starts over from the
+    /// journal the first one kept.
+    async fn rewind(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
+        let domain = self.state.domain;
+        let mut starts = vec![(None, None)];
+        let Some(start) = self.rewind_start(service).await? else {
+            return Ok(());
+        };
+        starts[0].1 = start;
+        let frames: Vec<Id> = self.state.restricted.keys().copied().collect();
+        for restricted in frames {
+            self.swap_domain(restricted);
+            let found = self.rewind_start(service).await;
+            self.swap_domain(restricted);
+            match found? {
+                Some(start) => starts.push((Some(restricted), start)),
+                None => return Ok(()),
+            }
+        }
+        // Before the pull, which needs those blobs, and after the checks
+        // that can stop the workspace: a stopped one uploads nothing.
+        if self.state.restore.journal.is_none() {
+            self.upload_missing(service).await?;
+        }
+
+        // The journal keeps the objects as they stand, for step 2. What a
+        // first rewind kept stays, and so does what still waited to go out.
+        let mut journal = match self.state.restore.journal.take() {
+            Some(journal) => journal,
+            None => self
+                .state
+                .objects
+                .keys()
+                .copied()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|rid| {
+                    (
+                        rid,
+                        (self.state.objects[&rid].clone(), self.live_states(&rid)),
+                    )
+                })
+                .collect(),
+        };
+        for (rid, rewrite) in std::mem::take(&mut self.state.restore.rewrites) {
+            journal.insert(rid, (rewrite.object, rewrite.live));
+        }
+        self.state.restore.journal = Some(journal);
+        self.state.objects.clear();
+        self.state.unreadable.clear();
+        for (restricted, start) in &starts {
+            match restricted {
+                None => self.reset_domain(service, start.as_ref())?,
+                Some(restricted) => {
+                    self.swap_domain(*restricted);
+                    let reset = self.reset_domain(service, start.as_ref());
+                    self.swap_domain(*restricted);
+                    reset?;
+                }
+            }
+        }
+        debug_assert_eq!(self.state.domain, domain);
+        // A restore may lose a rename: a profile below the lost revision
+        // reads as new again (§25).
+        self.state.profile = None;
+        let domains: Vec<Id> = self.parked.keys().copied().collect();
+        for domain in domains {
+            if let Some(runtime) = self.parked.get_mut(&domain) {
+                *runtime = Default::default();
+            }
+        }
+        self.state.restore.pending = false;
         self.save()?;
         self.finish_rewind(service).await
     }
@@ -515,6 +799,7 @@ impl WorkspaceSync {
         kept: &FinalHead,
         covered: u64,
         heads: &BTreeMap<Id, (u64, Digest)>,
+        may_leave: bool,
     ) -> Result<bool, SyncError> {
         if kept.until.is_some_and(|until| until <= covered) {
             return Ok(true);
@@ -523,7 +808,7 @@ impl WorkspaceSync {
         if kept.entry <= covered {
             return Ok(match listed {
                 Some((counter, digest)) => counter == kept.counter && digest == kept.digest,
-                None => true,
+                None => kept.counter == 0 || may_leave,
             });
         }
         let (mut counter, mut previous) = listed.unwrap_or((0, Digest::ZERO));
@@ -580,7 +865,7 @@ impl WorkspaceSync {
             if matches!(error, SyncError::Check(code)
                 if code.starts_with("sync_chain") || code == "sync_restore_lost")
             {
-                return self.stop_lost(Lost::FinalHead(self.credentials.keys.device()));
+                return self.stop_lost(Lost::FinalHead(None));
             }
             return Err(error);
         }
@@ -654,6 +939,7 @@ impl WorkspaceSync {
                         due: now + wait,
                         object: object.clone(),
                         content,
+                        live: live.clone(),
                     },
                 );
             }
@@ -767,24 +1053,52 @@ impl WorkspaceSync {
     /// workspace, with a new ID, genesis and keys. An owner device can do
     /// this whether or not it found the loss itself. You invite the members
     /// again.
+    ///
+    /// This workspace stays as it is until the new one exists: a failure
+    /// leaves it stopped as closed, with its journal, and you try again.
     pub async fn set_up_again(
-        self,
+        &mut self,
         service: &mut SyncService,
         registry: &mut crate::sync::registry::Registry,
     ) -> Result<Self, SyncError> {
-        match service.client().close_workspace(self.state.workspace).await {
+        if !self.may_set_up_again() {
+            return Err(SyncError::Invalid(
+                "Only the workspace's owner can set it up again.".into(),
+            ));
+        }
+        let workspace = self.state.workspace;
+        match service.client().close_workspace(workspace).await {
             Ok(()) => {}
             Err(SyncError::Refused { code, .. }) if code == "not_found" => {}
             Err(error) => return Err(error),
         }
+        self.stop_lost(Lost::Closed)?;
         let name = self.state.name.clone();
-        let engine = self.engine.clone();
-        let Self { journal, state, .. } = self;
-        let mut archived = Self::archive(journal, Some(&state), &state.replica)?;
-        archived.extend(state.archived.clone());
-        service.kept_heads_mut().forget_workspace(state.workspace)?;
-        registry.remove(&state.server, &state.account, &state.workspace)?;
-        let mut fresh = Self::turn_on(service, engine, &name, registry).await?;
+        let mut remote = service.create_workspace(&name).await?;
+        let (_, profile) = super::profile_of(service, &mut remote).await?;
+        let mut archived = Self::archive(&self.journal, Some(&self.state), &self.state.replica)?;
+        archived.extend(self.state.archived.clone());
+        service.kept_heads_mut().forget_workspace(workspace)?;
+        registry.remove(&self.state.server, &self.state.account, &workspace)?;
+        let server = service.client().base().to_owned();
+        let replica = registry.connect(
+            &server,
+            service.credentials().account,
+            remote.workspace,
+            self.engine.root(),
+        )?;
+        let generation = service.client().restore_generation();
+        self.journal.release();
+        let mut fresh = Self::start(
+            service,
+            self.engine.clone(),
+            remote,
+            server,
+            replica,
+            generation,
+            &name,
+            profile,
+        )?;
         fresh.state.archived = archived;
         fresh.save()?;
         Ok(fresh)
@@ -805,30 +1119,10 @@ impl WorkspaceSync {
         }
     }
 
-    /// Whether the app may offer Set up sync again here: this device's
-    /// account owns the workspace.
+    /// Whether the app may offer Set up sync again here: the policy this
+    /// device last accepted names its account as the owner.
     pub fn may_set_up_again(&self) -> bool {
-        self.state
-            .policy
-            .iter()
-            .rev()
-            .find_map(|change| {
-                change
-                    .body
-                    .heads
-                    .iter()
-                    .any(|h| h.account == self.state.account)
-                    .then_some(())
-            })
-            .is_some()
-            && self.remote.as_ref().is_none_or(|remote| {
-                remote
-                    .policy
-                    .head_snapshot()
-                    .members
-                    .get(&self.state.account)
-                    .is_some_and(|m| m.role == sync_protocol::records::Role::Owner)
-            })
+        self.state.restore.owner
     }
 
     /// Keeps a final head for each change the device bootstrapped past
@@ -892,6 +1186,13 @@ impl WorkspaceSync {
         service: &mut SyncService,
     ) -> Result<usize, SyncError> {
         let workspace = self.state.workspace;
+        let device = self.credentials.keys.device();
+        // A viewer device writes nothing, blobs included (§14).
+        let writer = |domain: &Id, sync: &Self| {
+            sync.remote
+                .as_ref()
+                .is_none_or(|r| r.policy.head_snapshot().can_write(&device, domain))
+        };
         let missing = service.client().missing_blobs(workspace).await?.blobs.0;
         let mut uploaded = 0;
         for blob in missing {
@@ -900,13 +1201,21 @@ impl WorkspaceSync {
                 object.states.values().find_map(|state| {
                     let content = state.content.as_ref()?;
                     let blob_ref = content.blob.as_ref()?;
-                    (blob_ref.blob == blob && content.revision == local.revision)
-                        .then(|| (local.path.clone(), blob_ref.clone()))
+                    (blob_ref.blob == blob && content.revision == local.revision).then(|| {
+                        (
+                            local.path.clone(),
+                            blob_ref.clone(),
+                            object.domain.unwrap_or(self.state.domain),
+                        )
+                    })
                 })
             });
-            let Some((path, blob_ref)) = found else {
+            let Some((path, blob_ref, domain)) = found else {
                 continue;
             };
+            if !writer(&domain, self) {
+                continue;
+            }
             let Some(file) = self.engine.open_synced(&path).map_err(super::core)? else {
                 continue;
             };
@@ -930,11 +1239,22 @@ impl WorkspaceSync {
                 if rebuilt.ciphertext_digest == blob_ref.ciphertext_digest);
             if same {
                 let path = self.journal.dir().join(&upload);
-                service
+                match service
                     .client()
-                    .upload_blob(workspace, self.state.domain, &blob_ref, &path)
-                    .await?;
-                uploaded += 1;
+                    .upload_blob(workspace, domain, &blob_ref, &path)
+                    .await
+                {
+                    Ok(()) => uploaded += 1,
+                    // Another device took the upload, or the server refuses
+                    // this one: a later check asks again.
+                    Err(SyncError::Refused { code, .. }) => {
+                        tracing::warn!(code = %code, "a lost blob's upload was refused");
+                    }
+                    Err(error) => {
+                        self.journal.forget(&upload);
+                        return Err(error);
+                    }
+                }
             }
             self.journal.forget(&upload);
         }

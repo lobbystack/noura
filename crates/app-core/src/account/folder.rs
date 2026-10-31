@@ -85,9 +85,6 @@ fn text_review_lines(sync: &WorkspaceSync) -> Vec<String> {
 /// The open workspace and its sync.
 #[derive(Default)]
 pub(super) struct Folder {
-    /// The restore generation whose share links this device revoked again
-    /// (§14).
-    revoked_for: Option<u64>,
     engine: Option<Arc<WorkspaceEngine>>,
     sync: Option<WorkspaceSync>,
     last_error: Option<String>,
@@ -427,15 +424,19 @@ impl Folder {
                 self.last_error = Some(folder_message(&error));
             }
         }
-        let restored = self.sync.as_ref().and_then(|sync| sync.restore_alert());
-        if restored.is_some() && restored != self.revoked_for {
+        if self.sync.as_ref().is_some_and(|sync| sync.revoke_due()) {
             let device = service.credentials().keys.device();
             let revoked = match crate::sync::shares::ShareBook::open(app_data, device) {
                 Ok(book) => service.revoke_shares_again(&book).await,
                 Err(error) => Err(error),
             };
             match revoked {
-                Ok(()) => self.revoked_for = restored,
+                Ok(()) => {
+                    let saved = self.sync.as_mut().map(|sync| sync.revoked_again());
+                    if let Some(Err(error)) = saved {
+                        tracing::warn!(kind = ?error.code(), "keeping the revocation failed");
+                    }
+                }
                 Err(error) => tracing::warn!(kind = ?error.code(), "revoking links again failed"),
             }
         }
@@ -572,12 +573,13 @@ impl Folder {
             // the emailed code.
             FolderSyncAction::ResetDevices => {}
             FolderSyncAction::SetUpAgain => {
-                let (Some(sync), Some(service)) = (self.sync.take(), service) else {
+                let (Some(sync), Some(service)) = (self.sync.as_mut(), service) else {
                     return Err(SyncError::Invalid(
                         "Sign in to a sync account to set this workspace up again.".into(),
                     ));
                 };
-                self.sync = Some(sync.set_up_again(service, &mut registry).await?);
+                let fresh = sync.set_up_again(service, &mut registry).await?;
+                self.sync = Some(fresh);
             }
             FolderSyncAction::Connect => {
                 let (Some(engine), Some(service)) = (self.engine.clone(), service) else {

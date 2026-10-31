@@ -413,14 +413,17 @@ impl Log {
         &self,
         covered: u64,
         heads: &[sync_protocol::records::Ref],
+        may_leave: impl Fn(&Id) -> bool,
     ) -> Result<(), super::SyncError> {
         for kept in &self.final_heads {
             if kept.entry > covered || kept.until.is_some_and(|until| until <= covered) {
                 continue;
             }
-            if let Some(head) = heads.iter().find(|h| h.device == kept.device)
-                && (head.counter, head.op_digest) != (kept.counter, kept.digest)
-            {
+            let agrees = match heads.iter().find(|h| h.device == kept.device) {
+                Some(head) => (head.counter, head.op_digest) == (kept.counter, kept.digest),
+                None => kept.counter == 0 || may_leave(&kept.device),
+            };
+            if !agrees {
                 return Err(super::SyncError::Check("sync_restore_lost"));
             }
         }
@@ -651,17 +654,30 @@ mod final_head_tests {
     fn a_checkpoint_past_the_entry_lists_exactly_the_final_head() {
         let mut log = Log::new(Id([2; 16]));
         log.final_heads.push(kept(None));
-        assert!(log.check_final_heads(12, &[head(3, 7)]).is_ok());
-        assert!(log.check_final_heads(12, &[]).is_ok(), "a head may leave");
+        let stays = |_: &Id| false;
+        assert!(log.check_final_heads(12, &[head(3, 7)], stays).is_ok());
+        assert!(
+            log.check_final_heads(12, &[], |_| true).is_ok(),
+            "a head leaves under §17's rule"
+        );
+        let dropped = log.check_final_heads(12, &[], stays);
         assert_eq!(
-            log.check_final_heads(12, &[head(4, 8)])
+            dropped
+                .err()
+                .and_then(|e| e.code().map(str::to_owned))
+                .as_deref(),
+            Some("sync_restore_lost"),
+            "a demoted device stays listed"
+        );
+        assert_eq!(
+            log.check_final_heads(12, &[head(4, 8)], stays)
                 .err()
                 .and_then(|e| e.code().map(str::to_owned))
                 .as_deref(),
             Some("sync_restore_lost")
         );
         assert!(
-            log.check_final_heads(9, &[head(4, 8)]).is_ok(),
+            log.check_final_heads(9, &[head(4, 8)], stays).is_ok(),
             "a checkpoint below the entry doesn't cover it"
         );
     }
@@ -670,6 +686,17 @@ mod final_head_tests {
     fn a_change_that_gives_access_back_ends_the_window() {
         let mut log = Log::new(Id([2; 16]));
         log.final_heads.push(kept(Some(11)));
-        assert!(log.check_final_heads(12, &[head(4, 8)]).is_ok());
+        assert!(log.check_final_heads(12, &[head(4, 8)], |_| false).is_ok());
+    }
+
+    #[test]
+    fn a_zero_final_head_needs_no_listed_head() {
+        let mut log = Log::new(Id([2; 16]));
+        log.final_heads.push(FinalHead {
+            counter: 0,
+            digest: Digest::ZERO,
+            ..kept(None)
+        });
+        assert!(log.check_final_heads(12, &[], |_| false).is_ok());
     }
 }

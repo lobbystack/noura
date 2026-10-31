@@ -28,6 +28,7 @@ impl WorkspaceSync {
         domain: Id,
         access: &[Access],
     ) -> Result<u64, SyncError> {
+        self.refuse_halted()?;
         if self.remote.is_none() {
             self.connect(service).await?;
         }
@@ -72,6 +73,7 @@ impl WorkspaceSync {
         domain: Id,
         to: Id,
     ) -> Result<u64, SyncError> {
+        self.refuse_halted()?;
         let own = service.credentials.account;
         let mut list = self
             .remote
@@ -101,6 +103,7 @@ impl WorkspaceSync {
         service: &mut SyncService,
         domain: Id,
     ) -> Result<u64, SyncError> {
+        self.refuse_halted()?;
         if self.remote.is_none() {
             self.connect(service).await?;
         }

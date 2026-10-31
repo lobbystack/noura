@@ -103,8 +103,12 @@ impl WorkspaceSync {
         let pushed = self
             .push_add_member(service, &mut remote, candidate, None)
             .await;
-        self.state.policy = policy_changes(&remote.policy);
-        self.remote = Some(remote);
+        // A stopped device accepts the change only by verifying it from the
+        // server, which is what ends the stop (§14).
+        if !self.halted() {
+            self.state.policy = policy_changes(&remote.policy);
+            self.remote = Some(remote);
+        }
         let revision = pushed?;
         self.save()?;
         Ok(revision)

@@ -292,11 +292,17 @@ impl Journal {
         }
     }
 
+    /// Lets go of the journal's lock, for a folder that starts a new
+    /// journal while this one's holder stays alive.
+    pub fn release(&self) {
+        let _ = self._lock.unlock();
+    }
+
     /// Moves this journal's review store aside to
     /// `.noura/sync/archive/<replica>/`, and removes the rest of the
     /// journal, as connecting a folder again does (§15). Returns the
     /// archive's folder.
-    pub fn archive(self, replica: &Id) -> Result<PathBuf, JournalError> {
+    pub fn archive(&self, replica: &Id) -> Result<PathBuf, JournalError> {
         let journals = self
             .dir
             .parent()

@@ -192,6 +192,14 @@ impl SyncClient {
         self.generation
     }
 
+    /// Asks for the server's restore generation, for a device that sends
+    /// nothing else while a rollback holds it.
+    pub async fn ask_generation(&mut self) -> Result<u64, SyncError> {
+        let limits: LimitsResponse = self.call(reqwest::Method::GET, "/v2/limits", None).await?;
+        self.generation = limits.restore_generation;
+        Ok(limits.restore_generation)
+    }
+
     async fn call<T: Decode>(
         &mut self,
         method: reqwest::Method,

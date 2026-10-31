@@ -144,9 +144,15 @@ impl Server<SqliteBackend> {
         std::os::unix::fs::symlink(self.dir.path().join("blobs"), dir.path().join("blobs"))
             .expect("the shared blob store");
         if recorded {
-            sync_server::restore::restore(&data, copy, None, &sync_server::BlobStoreConfig::Disk)
-                .await
-                .expect("the restore");
+            sync_server::restore::restore(
+                &data,
+                copy,
+                None,
+                &sync_server::BlobStoreConfig::Disk,
+                |_| {},
+            )
+            .await
+            .expect("the restore");
         } else {
             std::fs::copy(copy, data.join(DATABASE)).expect("a file copy");
             std::fs::copy(
