@@ -68,6 +68,8 @@ fn with_restore_cases(mut fixture: common::Fixture) -> common::Fixture {
         "sync-v2-live.json" => "live",
         "sync-v2-chain.json" => "chain",
         "sync-v2-profile.json" => "profile",
+        "sync-v2-manifest.json" => "manifest",
+        "sync-v2-collaboration.json" => "collaboration",
         _ => return fixture,
     };
     fixture.set("restore_cases", cases[key].clone());

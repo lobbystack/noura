@@ -1324,7 +1324,10 @@ pub fn run(kind: &str, case: &Value) -> Outcome {
         // The collaboration sandbox's cases need its guest module, so
         // crates/collab-sandbox runs them.
         "verdict" | "client_round_trip" | "surrogate" | "allowance" | "trap" | "pending"
-        | "verdict_limit" | "verdict_trap" => Ok(()),
+        | "verdict_limit" | "verdict_trap" | "first_snapshot" | "origin_order"
+        | "snapshot_check" | "canonical_order" => Ok(()),
+        // `app-core` merges meta entries.
+        "meta_merge" => Ok(()),
         other => Err(format!("unknown case kind {other}")),
     }
 }

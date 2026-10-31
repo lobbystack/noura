@@ -340,6 +340,28 @@ fn journal_less(f: &mut Fixture) {
         "locals": [file("Pay/Sheet.csv", "sheet v1", ""), file("Pay/Memo.md", "memo edited offline", ""), file("Pay/Draft.md", "draft", "")],
         "expect": [verdict("adopt", Some("match pay sheet")), verdict("held", Some("match pay memo")), verdict("new", None)],
     }));
+    f.case(json!({
+        "kind": "journal_less_match",
+        "name": "a_member_connects_its_folder_to_a_workspace_set_up_again",
+        // The new workspace holds new `rid`s. A file the owner's folder
+        // also held adopts; a member's edit that never reached the old
+        // workspace differs and waits for review; a file the owner lacks
+        // uploads as new.
+        "objects": [
+            object("set up again plan", "", &[state("Plan.md", "plan v1")]),
+            object("set up again doc", "", &[state("Doc.md", "doc v1")]),
+        ],
+        "locals": [
+            file("Plan.md", "plan v1", ""),
+            file("Doc.md", "doc edited offline", ""),
+            file("Mine.md", "only here", ""),
+        ],
+        "expect": [
+            verdict("adopt", Some("set up again plan")),
+            verdict("held", Some("set up again doc")),
+            verdict("new", None),
+        ],
+    }));
     let gone = id("match device that is gone");
     let mine = id("match this device");
     f.case(json!({

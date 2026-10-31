@@ -96,7 +96,11 @@ async fn a_rewound_writer_signs_the_checkpoint_a_surviving_removal_made_due() {
         std::slice::from_mut(pair.sync_a.remote_mut().expect("connected")),
     )
     .await;
-    let mut remote = third.service.open_workspace(workspace).await.expect("opens");
+    let mut remote = third
+        .service
+        .open_workspace(workspace)
+        .await
+        .expect("opens");
     third
         .service
         .push_file(&mut remote, "Third.md", b"# Third\n")
@@ -106,7 +110,11 @@ async fn a_rewound_writer_signs_the_checkpoint_a_surviving_removal_made_due() {
         pair.a.write(&format!("First {i}.md"), b"# First\n");
         rounds(&mut pair).await;
     }
-    let first = pair.sync_a.latest_checkpoint().expect("a checkpoint").digest();
+    let first = pair
+        .sync_a
+        .latest_checkpoint()
+        .expect("a checkpoint")
+        .digest();
     assert_eq!(
         pair.sync_b.latest_checkpoint().map(|c| c.digest()),
         Some(first)
@@ -135,7 +143,10 @@ async fn a_rewound_writer_signs_the_checkpoint_a_surviving_removal_made_due() {
     pair.sync_b.set_checkpoint_wait(NO_WAIT);
     rounds(&mut pair).await;
     let signed = pair.sync_a.latest_checkpoint().expect("signed").clone();
-    assert!(signed.digest() != first, "a checkpoint followed the removal");
+    assert!(
+        signed.digest() != first,
+        "a checkpoint followed the removal"
+    );
     let head_of_third = |heads: &[sync_protocol::records::Ref]| {
         heads
             .iter()
@@ -159,7 +170,11 @@ async fn a_rewound_writer_signs_the_checkpoint_a_surviving_removal_made_due() {
         rounds(&mut pair).await;
     }
 
-    let again = pair.sync_a.latest_checkpoint().expect("signed again").clone();
+    let again = pair
+        .sync_a
+        .latest_checkpoint()
+        .expect("signed again")
+        .clone();
     assert_eq!(again.body.number, signed.body.number);
     assert!(again.digest() != signed.digest());
     assert_eq!(

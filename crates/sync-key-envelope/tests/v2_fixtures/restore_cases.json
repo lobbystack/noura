@@ -208,6 +208,109 @@
       "regained": false
     }
   ],
+  "collaboration": [
+    {
+      "behind": true,
+      "delete": false,
+      "expect": true,
+      "kind": "writes_again",
+      "name": "the_server_lacks_the_note",
+      "on_server": false,
+      "text_behind": false
+    },
+    {
+      "behind": false,
+      "delete": false,
+      "expect": true,
+      "kind": "writes_again",
+      "name": "the_document_holds_writes_the_restore_lost",
+      "on_server": true,
+      "text_behind": true
+    },
+    {
+      "behind": false,
+      "delete": false,
+      "expect": false,
+      "kind": "writes_again",
+      "name": "the_server_holds_everything_the_journal_held",
+      "on_server": true,
+      "text_behind": false
+    },
+    {
+      "behind": true,
+      "delete": true,
+      "expect": false,
+      "kind": "writes_again",
+      "name": "a_delete_of_a_rid_the_server_lacks_is_done",
+      "on_server": false,
+      "text_behind": false
+    },
+    {
+      "expect": [
+        "a5"
+      ],
+      "heads": {
+        "a": 3,
+        "b": 1
+      },
+      "kind": "lost_writes",
+      "name": "a_write_above_its_devices_head_is_lost",
+      "records": [
+        "a2",
+        "a5",
+        "b1"
+      ]
+    },
+    {
+      "expect": [
+        "c1",
+        "c2"
+      ],
+      "heads": {},
+      "kind": "lost_writes",
+      "name": "a_device_with_no_head_lost_every_write",
+      "records": [
+        "c1",
+        "c2"
+      ]
+    },
+    {
+      "covered": false,
+      "expect": "upload",
+      "in_a_document": false,
+      "in_a_file": true,
+      "kind": "missing_blob",
+      "name": "a_file_holds_the_bytes",
+      "writer": true
+    },
+    {
+      "covered": false,
+      "expect": "snapshot",
+      "in_a_document": true,
+      "in_a_file": false,
+      "kind": "missing_blob",
+      "name": "only_the_document_holds_a_text_blob",
+      "writer": true
+    },
+    {
+      "covered": true,
+      "expect": "leave",
+      "in_a_document": true,
+      "in_a_file": false,
+      "kind": "missing_blob",
+      "name": "a_snapshot_already_stands_in_for_the_blob",
+      "writer": true
+    },
+    {
+      "covered": false,
+      "expect": "leave",
+      "in_a_document": true,
+      "in_a_file": true,
+      "kind": "missing_blob",
+      "name": "a_viewer_writes_nothing",
+      "writer": false
+    }
+  ],
   "live": [
     {
       "expect": true,
@@ -439,6 +542,131 @@
       "states": [
         "c1"
       ]
+    }
+  ],
+  "manifest": [
+    {
+      "expect": 3,
+      "kind": "rewind_start",
+      "name": "the_newest_reached_checkpoint_survived",
+      "reached": [
+        3,
+        2,
+        1
+      ],
+      "served": [
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "expect": 2,
+      "kind": "rewind_start",
+      "name": "the_restore_lost_the_newest_reached_checkpoint",
+      "reached": [
+        3,
+        2,
+        1
+      ],
+      "served": [
+        1,
+        2
+      ]
+    },
+    {
+      "expect": 0,
+      "kind": "rewind_start",
+      "name": "a_device_that_reached_none_pulls_from_the_start",
+      "reached": [],
+      "served": [
+        1
+      ]
+    },
+    {
+      "expect": "sync_restore_lost",
+      "kind": "rewind_start",
+      "name": "the_server_serves_none_the_device_reached",
+      "reached": [
+        3,
+        2
+      ],
+      "served": [
+        1
+      ]
+    },
+    {
+      "expect": [
+        1,
+        2
+      ],
+      "kind": "reached_after_rewind",
+      "name": "checkpoints_above_the_start_leave_so_the_next_takes_a_lost_number",
+      "reached": [
+        [
+          1,
+          10
+        ],
+        [
+          2,
+          20
+        ],
+        [
+          3,
+          30
+        ]
+      ],
+      "start_covered": 20
+    },
+    {
+      "cursor": 14,
+      "due": 14,
+      "expect": true,
+      "held": false,
+      "kind": "sign_due",
+      "name": "a_rewound_writer_signs_what_a_surviving_removal_made_due",
+      "writes": true
+    },
+    {
+      "cursor": 13,
+      "due": 14,
+      "expect": false,
+      "held": false,
+      "kind": "sign_due",
+      "name": "a_rewound_writer_behind_the_due_point_pulls_first",
+      "writes": true
+    },
+    {
+      "cursor": 14,
+      "due": 14,
+      "expect": false,
+      "held": false,
+      "kind": "sign_due",
+      "name": "a_rewound_viewer_signs_nothing",
+      "writes": false
+    },
+    {
+      "cursor": 14,
+      "due": 14,
+      "expect": false,
+      "held": true,
+      "kind": "sign_due",
+      "name": "an_unrecorded_removal_holds_a_rewound_writer",
+      "writes": true
+    },
+    {
+      "expect": 13,
+      "kind": "rewound_counter",
+      "name": "the_next_record_goes_above_every_counter_signed",
+      "next": 13,
+      "server_head": 7
+    },
+    {
+      "expect": 8,
+      "kind": "rewound_counter",
+      "name": "the_next_record_goes_above_the_servers_head",
+      "next": 5,
+      "server_head": 7
     }
   ],
   "profile": [

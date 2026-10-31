@@ -1659,7 +1659,7 @@ impl WorkspaceSync {
         if self.state.own.head.is_none_or(|(c, _)| c < acked.0) {
             self.state.own.head = Some((acked.0, acked.1));
         }
-        self.state.own.next = self.state.own.next.max(acked.0 + 1);
+        self.state.own.next = restore::rewound_next(self.state.own.next, acked.0);
         if !self.state.outbox.is_empty() {
             self.reseal_from(0, true)?;
         }
@@ -2935,10 +2935,7 @@ impl WorkspaceSync {
             .head_snapshot()
             .can_write(&device, &self.state.domain);
         let pending = self.state.log.judge.rotation_pending(&remote.policy);
-        if due == 0
-            || cursor < due
-            || !writes
-            || self.state.removal_hold
+        if !crate::sync::checkpoints::may_sign(due, cursor, writes, self.state.removal_hold)
             || self.stopped.is_some()
             || self.state.ended.is_some()
             || pending

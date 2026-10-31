@@ -683,6 +683,50 @@
 		},
 		{
 			"expect": {
+				"p:kept": "update",
+				"p:lost": "rewritten"
+			},
+			"kind": "meta_merge",
+			"name": "a_rewritten_snapshot_keeps_a_kept_writes_place_and_writes_a_lost_one_again",
+			"records": [
+				{
+					"digest": "01",
+					"entries": [
+						[
+							"p:kept",
+							0,
+							"update"
+						],
+						[
+							"p:lost",
+							0,
+							"update"
+						]
+					],
+					"seq": 6,
+					"snapshot": false
+				},
+				{
+					"digest": "02",
+					"entries": [
+						[
+							"p:kept",
+							4,
+							"rewritten"
+						],
+						[
+							"p:lost",
+							0,
+							"rewritten"
+						]
+					],
+					"seq": 9,
+					"snapshot": true
+				}
+			]
+		},
+		{
+			"expect": {
 				"p:a": "snapshot"
 			},
 			"kind": "meta_merge",
@@ -2151,6 +2195,109 @@
 	"fixture_keys_are_public_test_values": true,
 	"keys": {},
 	"records": [],
+	"restore_cases": [
+		{
+			"behind": true,
+			"delete": false,
+			"expect": true,
+			"kind": "writes_again",
+			"name": "the_server_lacks_the_note",
+			"on_server": false,
+			"text_behind": false
+		},
+		{
+			"behind": false,
+			"delete": false,
+			"expect": true,
+			"kind": "writes_again",
+			"name": "the_document_holds_writes_the_restore_lost",
+			"on_server": true,
+			"text_behind": true
+		},
+		{
+			"behind": false,
+			"delete": false,
+			"expect": false,
+			"kind": "writes_again",
+			"name": "the_server_holds_everything_the_journal_held",
+			"on_server": true,
+			"text_behind": false
+		},
+		{
+			"behind": true,
+			"delete": true,
+			"expect": false,
+			"kind": "writes_again",
+			"name": "a_delete_of_a_rid_the_server_lacks_is_done",
+			"on_server": false,
+			"text_behind": false
+		},
+		{
+			"expect": [
+				"a5"
+			],
+			"heads": {
+				"a": 3,
+				"b": 1
+			},
+			"kind": "lost_writes",
+			"name": "a_write_above_its_devices_head_is_lost",
+			"records": [
+				"a2",
+				"a5",
+				"b1"
+			]
+		},
+		{
+			"expect": [
+				"c1",
+				"c2"
+			],
+			"heads": {},
+			"kind": "lost_writes",
+			"name": "a_device_with_no_head_lost_every_write",
+			"records": [
+				"c1",
+				"c2"
+			]
+		},
+		{
+			"covered": false,
+			"expect": "upload",
+			"in_a_document": false,
+			"in_a_file": true,
+			"kind": "missing_blob",
+			"name": "a_file_holds_the_bytes",
+			"writer": true
+		},
+		{
+			"covered": false,
+			"expect": "snapshot",
+			"in_a_document": true,
+			"in_a_file": false,
+			"kind": "missing_blob",
+			"name": "only_the_document_holds_a_text_blob",
+			"writer": true
+		},
+		{
+			"covered": true,
+			"expect": "leave",
+			"in_a_document": true,
+			"in_a_file": false,
+			"kind": "missing_blob",
+			"name": "a_snapshot_already_stands_in_for_the_blob",
+			"writer": true
+		},
+		{
+			"covered": false,
+			"expect": "leave",
+			"in_a_document": true,
+			"in_a_file": true,
+			"kind": "missing_blob",
+			"name": "a_viewer_writes_nothing",
+			"writer": false
+		}
+	],
 	"sandbox": {
 		"integration": {
 			"allowance_fuel": 2000000000,

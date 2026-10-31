@@ -367,6 +367,28 @@ fn journal_less(f: &mut Fixture, domain: sync_protocol::types::Id) {
             {"folder": "Team/Pay", "domain": other.to_hex()},
         ],
     }));
+    f.case(json!({
+        "kind": "held_roots",
+        "name": "set_up_sync_again_holds_every_folder_under_an_old_marker",
+        // The new workspace starts with no restricted domains, so no marker
+        // of the old one applies.
+        "locals": [
+            {"folder": "Pay", "domain": domain.to_hex()},
+            {"folder": "Pay/Deep", "domain": other.to_hex()},
+        ],
+        "applied": [],
+        "expect": [
+            {"folder": "Pay", "domain": domain.to_hex()},
+            {"folder": "Pay/Deep", "domain": other.to_hex()},
+        ],
+    }));
+    f.case(json!({
+        "kind": "hold_ends",
+        "name": "a_new_workspaces_domain_at_the_folder_doesnt_end_an_old_domains_hold",
+        "held": {"folder": "Pay", "domain": domain.to_hex()},
+        "roots": [{"folder": "Pay", "domain": other.to_hex()}],
+        "expect": false,
+    }));
     for (name, roots, expect) in [
         (
             "another_domains_valid_marker_never_ends_a_hold",

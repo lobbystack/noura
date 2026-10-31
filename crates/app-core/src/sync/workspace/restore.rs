@@ -252,6 +252,83 @@ pub fn lost_rewrite_race(live: &[OpKey], states: &[OpKey], own: &OpKey) -> bool 
     live.contains(own) && !states.contains(own)
 }
 
+/// Where a rewind starts in a domain (§14, step 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RewindStart<T> {
+    /// The newest checkpoint the device reached that the server serves.
+    From(T),
+    /// The device reached none, so it pulls from sequence 0.
+    Zero,
+    /// The server serves none of those it reached: `sync_restore_lost`.
+    Lost,
+}
+
+/// Picks the rewind's start among the checkpoints the device reached,
+/// newest first.
+pub fn rewind_choice<T>(reached: &[T], served: impl Fn(&T) -> bool) -> RewindStart<&T> {
+    if reached.is_empty() {
+        return RewindStart::Zero;
+    }
+    reached
+        .iter()
+        .find(|checkpoint| served(checkpoint))
+        .map_or(RewindStart::Lost, RewindStart::From)
+}
+
+/// The next counter a rewound device signs: above every counter it signed
+/// and above the server's head for its chain (§14, step 4).
+pub fn rewound_next(next: u64, server_head: u64) -> u64 {
+    next.max(server_head + 1)
+}
+
+/// Whether a device writes an object again after the rewind: its server
+/// state lies behind the journal, or a text-mode note's document holds
+/// writes the restore lost. A delete of a `rid` the server lacks is done.
+pub fn writes_again(behind: bool, text_behind: bool, delete: bool, on_server: bool) -> bool {
+    (behind || text_behind) && !(delete && !on_server)
+}
+
+/// The writes of a text-mode note's journal that the server's chains no
+/// longer reach, which a snapshot names 0 for (§14, §22).
+pub fn lost_writes(records: &[OpKey], head_counter: impl Fn(&Id) -> u64) -> Vec<OpKey> {
+    records
+        .iter()
+        .filter(|key| head_counter(&key.device) < key.counter)
+        .copied()
+        .collect()
+}
+
+/// What a device does about a blob the server lacks (§14, §21).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MissingBlob {
+    /// A file holds the bytes: it uploads them again.
+    Upload,
+    /// Only a note's document holds them: a `text_snapshot` covers the
+    /// operation that lists the blob.
+    Snapshot,
+    /// This device can do nothing about it.
+    Leave,
+}
+
+/// Decides for one missing blob: a viewer writes nothing, and a snapshot
+/// that already stands in for the blob isn't written twice.
+pub fn missing_blob(
+    writer: bool,
+    in_a_file: bool,
+    in_a_document: bool,
+    covered: bool,
+) -> MissingBlob {
+    if !writer {
+        MissingBlob::Leave
+    } else if in_a_file {
+        MissingBlob::Upload
+    } else if in_a_document && !covered {
+        MissingBlob::Snapshot
+    } else {
+        MissingBlob::Leave
+    }
+}
+
 /// Whether a bootstrap keeps a final head for a change it passed (§14).
 pub fn bootstrap_keeps_final(listed: bool, regained: bool) -> bool {
     listed && !regained
@@ -724,7 +801,7 @@ impl WorkspaceSync {
             .rev()
             .cloned()
             .collect();
-        let mut start = None;
+        let mut found = None;
         for checkpoint in &reached {
             if let Some(entry) = service
                 .client()
@@ -733,14 +810,16 @@ impl WorkspaceSync {
                 && let EntryRecord::Checkpoint(bundle) = entry.record
                 && bundle.checkpoint.0.digest() == checkpoint.digest
             {
-                start = Some(bundle);
+                found = Some(bundle);
                 break;
             }
         }
-        if start.is_none() && !reached.is_empty() {
+        let served = found.as_ref().map(|b| b.checkpoint.0.digest());
+        if rewind_choice(&reached, |c| Some(c.digest) == served) == RewindStart::Lost {
             self.stop_lost(Lost::Checkpoints)?;
             return Ok(None);
         }
+        let start = found;
         let start_heads: BTreeMap<Id, (u64, Digest)> = start
             .as_ref()
             .map(|b| {
@@ -793,10 +872,8 @@ impl WorkspaceSync {
         let mut log = Log::new(domain);
         log.final_heads = finals;
         if start.is_some() {
-            log.checkpoints.reached = reached
-                .into_iter()
-                .filter(|(_, r)| r.covered_seq <= covered)
-                .collect();
+            log.checkpoints.reached = reached;
+            log.checkpoints.forget_above(covered);
         }
         self.state.log = log;
         self.state.outbox.clear();
@@ -1048,9 +1125,8 @@ impl WorkspaceSync {
             };
             let behind = lags(live, |key| object.states.contains_key(key), &server_live);
             let text_behind = object.text.is_some() && !self.lost_text_records(rid)?.is_empty();
-            if (!behind && !text_behind)
-                || (content.delete && !self.state.objects.contains_key(rid))
-            {
+            let on_server = self.state.objects.contains_key(rid);
+            if !writes_again(behind, text_behind, content.delete, on_server) {
                 continue;
             }
             lag.insert(*rid);
@@ -1181,12 +1257,10 @@ impl WorkspaceSync {
             return Ok(Vec::new());
         };
         let log = self.log_of(self.state.objects.get(rid).and_then(|o| o.domain));
-        Ok(file
-            .records
-            .iter()
-            .filter(|record| log.verifier.head(&record.key.device).counter < record.key.counter)
-            .map(|record| record.key)
-            .collect())
+        let records: Vec<OpKey> = file.records.iter().map(|record| record.key).collect();
+        Ok(lost_writes(&records, |device| {
+            log.verifier.head(device).counter
+        }))
     }
 
     /// Whether a rewrite's wait ended.
@@ -1577,12 +1651,12 @@ impl WorkspaceSync {
                 // No file holds a text record's yrs bytes: a writer that
                 // holds the note's document writes a snapshot that covers
                 // the operation instead (§14, §21).
-                if snapshots
-                    && !self.state.restore.covered.contains(&blob)
-                    && let Some(rid) = self.text_note_of_blob(&blob)?
-                {
+                if snapshots && let Some(rid) = self.text_note_of_blob(&blob)? {
                     let domain = self.state.objects[&rid].domain.unwrap_or(self.state.domain);
-                    if writer(&domain, self) {
+                    let covered = self.state.restore.covered.contains(&blob);
+                    if missing_blob(writer(&domain, self), false, true, covered)
+                        == MissingBlob::Snapshot
+                    {
                         self.write_snapshot(rid, false)?;
                         self.state.restore.covered.insert(blob);
                         self.save()?;
@@ -1590,7 +1664,7 @@ impl WorkspaceSync {
                 }
                 continue;
             };
-            if !writer(&domain, self) {
+            if missing_blob(writer(&domain, self), true, false, false) != MissingBlob::Upload {
                 continue;
             }
             let Some(file) = self.engine.open_synced(&path).map_err(super::core)? else {
@@ -1650,6 +1724,10 @@ mod fixture_tests {
         include_str!("../../../../../docs/workspace-format/fixtures/sync-v2-chain.json");
     const PROFILE: &str =
         include_str!("../../../../../docs/workspace-format/fixtures/sync-v2-profile.json");
+    const MANIFEST: &str =
+        include_str!("../../../../../docs/workspace-format/fixtures/sync-v2-manifest.json");
+    const COLLABORATION: &str =
+        include_str!("../../../../../docs/workspace-format/fixtures/sync-v2-collaboration.json");
 
     fn cases(text: &str) -> Vec<Value> {
         let file: Value = serde_json::from_str(text).expect("the fixture reads");
@@ -1815,6 +1893,123 @@ mod fixture_tests {
                     case["expect"].as_bool().expect("a verdict"),
                     "{name}"
                 ),
+                other => panic!("{other}"),
+            }
+        }
+    }
+
+    fn flag(value: &Value) -> bool {
+        value.as_bool().expect("a flag")
+    }
+
+    fn numbers(value: &Value) -> Vec<u64> {
+        value
+            .as_array()
+            .expect("a list")
+            .iter()
+            .map(number)
+            .collect()
+    }
+
+    /// Rewinding a domain and what a rewound writer signs next (§14, §17).
+    #[test]
+    fn the_manifest_restore_cases_hold() {
+        use crate::sync::checkpoints::{Checkpoints, Reached, may_sign};
+
+        for case in cases(MANIFEST) {
+            let name = case["name"].as_str().expect("a name");
+            let expect = &case["expect"];
+            match case["kind"].as_str().expect("a kind") {
+                "rewind_start" => {
+                    let reached = numbers(&case["reached"]);
+                    let served = numbers(&case["served"]);
+                    let chosen = match rewind_choice(&reached, |n| served.contains(n)) {
+                        RewindStart::From(number) => serde_json::json!(number),
+                        RewindStart::Zero => serde_json::json!(0),
+                        RewindStart::Lost => serde_json::json!("sync_restore_lost"),
+                    };
+                    assert_eq!(&chosen, expect, "{name}");
+                }
+                "reached_after_rewind" => {
+                    let mut checkpoints = Checkpoints::default();
+                    for pair in case["reached"].as_array().expect("a list") {
+                        checkpoints.reached.insert(
+                            number(&pair[0]),
+                            Reached {
+                                digest: Digest::ZERO,
+                                covered_seq: number(&pair[1]),
+                                policy_revision: 0,
+                                seq: number(&pair[1]),
+                            },
+                        );
+                    }
+                    checkpoints.forget_above(number(&case["start_covered"]));
+                    let kept: Vec<u64> = checkpoints.reached.keys().copied().collect();
+                    assert_eq!(kept, numbers(expect), "{name}");
+                }
+                "sign_due" => assert_eq!(
+                    may_sign(
+                        number(&case["due"]),
+                        number(&case["cursor"]),
+                        flag(&case["writes"]),
+                        flag(&case["held"])
+                    ),
+                    flag(expect),
+                    "{name}"
+                ),
+                "rewound_counter" => assert_eq!(
+                    rewound_next(number(&case["next"]), number(&case["server_head"])),
+                    number(expect),
+                    "{name}"
+                ),
+                other => panic!("{other}"),
+            }
+        }
+    }
+
+    /// Writing a text-mode note and its blobs again (§14, §21, §22).
+    #[test]
+    fn the_collaboration_restore_cases_hold() {
+        for case in cases(COLLABORATION) {
+            let name = case["name"].as_str().expect("a name");
+            let expect = &case["expect"];
+            match case["kind"].as_str().expect("a kind") {
+                "writes_again" => assert_eq!(
+                    writes_again(
+                        flag(&case["behind"]),
+                        flag(&case["text_behind"]),
+                        flag(&case["delete"]),
+                        flag(&case["on_server"])
+                    ),
+                    flag(expect),
+                    "{name}"
+                ),
+                "lost_writes" => {
+                    let heads = case["heads"].as_object().expect("heads");
+                    let head = |device: &Id| {
+                        let letter = char::from(device.0[0]).to_string();
+                        heads.get(&letter).map_or(0, number)
+                    };
+                    assert_eq!(
+                        lost_writes(&keys(&case["records"]), head),
+                        keys(expect),
+                        "{name}"
+                    );
+                }
+                "missing_blob" => {
+                    let action = missing_blob(
+                        flag(&case["writer"]),
+                        flag(&case["in_a_file"]),
+                        flag(&case["in_a_document"]),
+                        flag(&case["covered"]),
+                    );
+                    let expected = match expect.as_str().expect("an action") {
+                        "upload" => MissingBlob::Upload,
+                        "snapshot" => MissingBlob::Snapshot,
+                        _ => MissingBlob::Leave,
+                    };
+                    assert_eq!(action, expected, "{name}");
+                }
                 other => panic!("{other}"),
             }
         }

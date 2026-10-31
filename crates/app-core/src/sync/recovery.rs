@@ -341,9 +341,20 @@ pub struct Recovery {
     stored: StoredDevice,
 }
 
+/// What a recovery reports for the kit's account head (§12, §14): `None`
+/// when the server holds it. Under a new restore generation the server lost
+/// it and the way back is Reset devices; otherwise the chain forked.
+pub fn kit_account_head(held: bool, restored: bool) -> Option<&'static str> {
+    match (held, restored) {
+        (true, _) => None,
+        (false, true) => Some("sync_restore_lost"),
+        (false, false) => Some("sync_account_forked"),
+    }
+}
+
 /// Whether reading a workspace the kit lists shows that a restore lost the
-/// head the kit names there.
-fn lost_kit_head(error: &SyncError) -> bool {
+/// head the kit names there, so that workspace stops (§14).
+pub fn lost_kit_head(error: &SyncError) -> bool {
     match error {
         SyncError::Check(code) => matches!(*code, "sync_policy_rollback" | "sync_policy_forked"),
         SyncError::Refused { code, .. } => code == "forbidden" || code == "not_found",
@@ -453,12 +464,8 @@ impl Recovery {
             Err(error) => return Err(error),
         };
         let confirmed = chain.head_seqno();
-        if !chain.contains(&kit.account_head) {
-            return Err(SyncError::Check(if restored {
-                "sync_restore_lost"
-            } else {
-                "sync_account_forked"
-            }));
+        if let Some(code) = kit_account_head(chain.contains(&kit.account_head), restored) {
+            return Err(SyncError::Check(code));
         }
         if !chain.is_active_at(&identity.device(), confirmed) {
             return Err(SyncError::KitRevoked);

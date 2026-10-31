@@ -60,7 +60,7 @@
     "body": "Body\n",
     "composed": "---\nid: note_01j9z3y7q8r2s4t6v8w0x2y4z6\ntype: note\n---\nBody\n",
     "document": "01010000040107636f6e74656e7405426f64790a00",
-    "file": "﻿---\nid: note_01j9z3y7q8r2s4t6v8w0x2y4z6\ntype: note\n---\nBody\n",
+    "file": "\ufeff---\nid: note_01j9z3y7q8r2s4t6v8w0x2y4z6\ntype: note\n---\nBody\n",
     "kind": "first_snapshot",
     "lineage": "a7c05251e2b1ce4fb11483cc967aff18",
     "name": "first_managed_byte_order_mark",
@@ -75,10 +75,10 @@
   },
   {
     "base_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-    "body": "﻿# Plan\r\nText\r\n",
-    "composed": "﻿# Plan\r\nText\r\n",
+    "body": "\ufeff# Plan\r\nText\r\n",
+    "composed": "\ufeff# Plan\r\nText\r\n",
     "document": "01010000040107636f6e74656e7411efbbbf2320506c616e0d0a546578740d0a00",
-    "file": "﻿# Plan\r\nText\r\n",
+    "file": "\ufeff# Plan\r\nText\r\n",
     "kind": "first_snapshot",
     "lineage": "8dc6f08b2a92d4030219b0cea9c948f9",
     "name": "first_unmanaged_byte_order_mark_crlf",
@@ -147,7 +147,7 @@
     "path": "Plan.md"
   },
   {
-    "base_text": "fuzz 😀 base\n",
+    "base_text": "fuzz \ud83d\ude00 base\n",
     "card_index": 1,
     "expect": "refused",
     "kind": "origin_order",
@@ -350,7 +350,7 @@
     ],
     "restart": false,
     "snapshot": "020181808080020084000006efbfbdefbfbd010000040107636f6e74656e74016100",
-    "text": "a��"
+    "text": "a\ufffd\ufffd"
   },
   {
     "base_text": "a",
@@ -383,7 +383,7 @@
     ],
     "restart": false,
     "snapshot": "03018180808004008481808080020001710281808080020084000003efbfbd8481808080020003efbfbd010000040107636f6e74656e74016100",
-    "text": "a��q"
+    "text": "a\ufffd\ufffdq"
   },
   {
     "base_text": "hello",
@@ -602,6 +602,50 @@
           ]
         ],
         "seq": 5,
+        "snapshot": true
+      }
+    ]
+  },
+  {
+    "expect": {
+      "p:kept": "update",
+      "p:lost": "rewritten"
+    },
+    "kind": "meta_merge",
+    "name": "a_rewritten_snapshot_keeps_a_kept_writes_place_and_writes_a_lost_one_again",
+    "records": [
+      {
+        "digest": "01",
+        "entries": [
+          [
+            "p:kept",
+            0,
+            "update"
+          ],
+          [
+            "p:lost",
+            0,
+            "update"
+          ]
+        ],
+        "seq": 6,
+        "snapshot": false
+      },
+      {
+        "digest": "02",
+        "entries": [
+          [
+            "p:kept",
+            4,
+            "rewritten"
+          ],
+          [
+            "p:lost",
+            0,
+            "rewritten"
+          ]
+        ],
+        "seq": 9,
         "snapshot": true
       }
     ]

@@ -1392,6 +1392,64 @@
 		},
 		{
 			"expect": [
+				{
+					"rid": "61f57ac7198805764cb8adda5375f179",
+					"verdict": "adopt"
+				},
+				{
+					"rid": "671851bdfcb60f858b9f344fca4a9062",
+					"verdict": "held"
+				},
+				{
+					"verdict": "new"
+				}
+			],
+			"kind": "journal_less_match",
+			"locals": [
+				{
+					"object_id": "",
+					"path": "Plan.md",
+					"revision": "234a113ef9c98c5020e188c08e0ba78d96ee74f24964a53964a28bcfbb97eeeb"
+				},
+				{
+					"object_id": "",
+					"path": "Doc.md",
+					"revision": "32b720f7d9e05527e42acd56898456e4ed50aa9bbb36441551d1608189e4a561"
+				},
+				{
+					"object_id": "",
+					"path": "Mine.md",
+					"revision": "a17099602602b828721dfdfd69eb62bf854ce61b226720e6fa41122608b08ff8"
+				}
+			],
+			"name": "a_member_connects_its_folder_to_a_workspace_set_up_again",
+			"objects": [
+				{
+					"object_id": "",
+					"rid": "61f57ac7198805764cb8adda5375f179",
+					"states": [
+						{
+							"delete": false,
+							"path": "Plan.md",
+							"revision": "234a113ef9c98c5020e188c08e0ba78d96ee74f24964a53964a28bcfbb97eeeb"
+						}
+					]
+				},
+				{
+					"object_id": "",
+					"rid": "671851bdfcb60f858b9f344fca4a9062",
+					"states": [
+						{
+							"delete": false,
+							"path": "Doc.md",
+							"revision": "a77d0578deb9a5e2222e9128a2158dd87c6ca69fe661f8761ebb2d0b76858251"
+						}
+					]
+				}
+			]
+		},
+		{
+			"expect": [
 				[
 					"459ce0ea0989b08ff5edcd4a6e3dbe28",
 					"e908bbc7d13353dfc08845ea5d98b615",
