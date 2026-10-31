@@ -33,6 +33,9 @@ pub enum FolderSyncPhase {
     /// The folder is a copy of a synced folder, or its journal names
     /// another replica: it syncs once you connect it (§15).
     NotConnected,
+    /// The server lost the account this folder synced under, and the
+    /// restore notice offers the way back (§14).
+    AccountLost,
 }
 
 /// One version of a conflicted file.
@@ -144,6 +147,9 @@ pub struct FolderSyncScreen {
     pub deleted_away: Vec<String>,
     /// What a server restore did here, when it needs your attention.
     pub restore: Option<RestoreNotice>,
+    /// Whether this device's account owns the workspace, so you can set
+    /// it up again even when this device found nothing lost (§14).
+    pub can_set_up_again: bool,
     /// What went wrong last, for you to read.
     pub last_error: Option<String>,
     /// When the last round finished without an error, as local time.
@@ -180,6 +186,7 @@ impl FolderSyncScreen {
             waiting_for_space: status.waiting_for_space,
             deleted_away: Vec::new(),
             restore: restore_notice(status),
+            can_set_up_again: status.owner,
             last_error: None,
             last_success: status.last_success.map(local_time),
             busy: false,
@@ -204,45 +211,8 @@ pub struct RestoreNotice {
 
 /// The banner for a restore, a rollback or a stop (§14), if any.
 pub fn restore_notice(status: &Status) -> Option<RestoreNotice> {
-    use crate::sync::workspace::restore::Lost;
     if let Some(lost) = &status.restore_lost {
-        let short = |id: &Id| id.to_hex().chars().take(8).collect::<String>();
-        let (line, reset_devices, set_up_again) = match lost {
-            Lost::OwnAccount => (
-                "The server's operator restored a backup that lacks your latest devices. Sync stopped here. Reset your devices to go on.".to_owned(),
-                true,
-                false,
-            ),
-            Lost::MemberAccount(account) => (
-                format!(
-                    "The server's operator restored a backup that lacks devices of account {}. Sync stopped here until that person resets their devices and an owner or admin accepts the reset.",
-                    short(account)
-                ),
-                false,
-                false,
-            ),
-            Lost::Policy | Lost::Epoch | Lost::Envelope | Lost::Checkpoints | Lost::FinalHead(_) => (
-                "The server's operator restored a backup that lacks part of this workspace's history. Sync stopped here. An owner can set the workspace up again.".to_owned(),
-                false,
-                status.owner,
-            ),
-            Lost::Server => (
-                "This server lost your account. Sync stopped here. You can turn sync on for this folder as a new workspace.".to_owned(),
-                false,
-                true,
-            ),
-            Lost::Closed => (
-                "The owner closed this workspace. Your files stay on this computer.".to_owned(),
-                false,
-                status.owner,
-            ),
-        };
-        return Some(RestoreNotice {
-            line,
-            reset_devices,
-            set_up_again,
-            ..RestoreNotice::default()
-        });
+        return Some(lost_notice(lost, status.owner));
     }
     if status.rollback.is_some() {
         return Some(RestoreNotice {
@@ -258,13 +228,59 @@ pub fn restore_notice(status: &Status) -> Option<RestoreNotice> {
             ..RestoreNotice::default()
         });
     }
-    status.restored.map(|_| RestoreNotice {
+    // Rewrites signed after you dismissed the alert bring the notice back.
+    let shows = status.restored.is_some()
+        || !status.written_again.is_empty()
+        || !status.to_review.is_empty();
+    shows.then(|| RestoreNotice {
         line: "The server reports a restore from a backup. Noura checked what it holds and kept syncing."
             .to_owned(),
         written_again: status.written_again.clone(),
         to_review: status.to_review.clone(),
         ..RestoreNotice::default()
     })
+}
+
+/// The banner for what a restore lost, with the way back it offers.
+pub fn lost_notice(lost: &crate::sync::workspace::restore::Lost, owner: bool) -> RestoreNotice {
+    use crate::sync::workspace::restore::Lost;
+    let short = |id: &Id| id.to_hex().chars().take(8).collect::<String>();
+    let (line, reset_devices, set_up_again) = match lost {
+        Lost::OwnAccount => (
+            "The server's operator restored a backup that lacks your latest devices. Sync stopped here. Reset your devices to go on.".to_owned(),
+            true,
+            false,
+        ),
+        Lost::MemberAccount(account) => (
+            format!(
+                "The server's operator restored a backup that lacks devices of account {}. Sync stopped here until that person resets their devices and an owner or admin accepts the reset.",
+                short(account)
+            ),
+            false,
+            false,
+        ),
+        Lost::Policy | Lost::Epoch | Lost::Envelope | Lost::Checkpoints | Lost::FinalHead(_) => (
+            "The server's operator restored a backup that lacks part of this workspace's history. Sync stopped here. An owner can set the workspace up again.".to_owned(),
+            false,
+            owner,
+        ),
+        Lost::Server => (
+            "This server lost your account. Sync stopped here. You can turn sync on for this folder as a new workspace.".to_owned(),
+            false,
+            true,
+        ),
+        Lost::Closed => (
+            "The owner closed this workspace. Your files stay on this computer.".to_owned(),
+            false,
+            owner,
+        ),
+    };
+    RestoreNotice {
+        line,
+        reset_devices,
+        set_up_again,
+        ..RestoreNotice::default()
+    }
 }
 
 /// A number of bytes for people to read.
@@ -435,6 +451,17 @@ impl FolderSyncBackend for NoFolderSync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rewrites_after_a_dismissed_alert_bring_the_notice_back() {
+        let status = Status {
+            written_again: vec!["Late.md".into()],
+            ..Status::default()
+        };
+        let notice = restore_notice(&status).expect("a notice");
+        assert_eq!(notice.written_again, ["Late.md"]);
+        assert_eq!(restore_notice(&Status::default()), None);
+    }
 
     #[test]
     fn skipped_files_read_as_one_line_each() {

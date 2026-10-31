@@ -465,6 +465,15 @@ impl KeptHeads {
             .collect()
     }
 
+    /// Every other account whose chain this device keeps.
+    pub fn other_accounts(&self) -> BTreeSet<Id> {
+        self.heads
+            .keys()
+            .map(|(account, _)| *account)
+            .filter(|account| *account != self.own)
+            .collect()
+    }
+
     /// The device's own account.
     pub fn own_account(&self) -> Id {
         self.own

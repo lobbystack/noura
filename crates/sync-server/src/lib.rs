@@ -292,9 +292,9 @@ async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), Co
     let pruning = logs::spawn_pruning(log_dir, logs::PRUNE_PERIOD);
     let counters = spawn_counter_pruning(store.backend().limiter());
     let expiry = accounts::spawn_expiry(store.clone());
-    tracing::info!("serving");
-    eprintln!("sync-server listening on {bound}");
     let blobs = config.blob_store.open(&config.data_dir)?;
+    // The lease comes before the readiness line and before any connection:
+    // `restore` and `mark-restored` must see every instance that can serve.
     let instance = sync_protocol::types::Id::random()
         .map_err(|e| CommandError(format!("no randomness: {e}")))?;
     store
@@ -302,6 +302,8 @@ async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), Co
         .await
         .map_err(|e| CommandError(format!("can't take a lease: {e}")))?;
     let lease = restore::spawn_lease(store.clone(), instance);
+    tracing::info!("serving");
+    eprintln!("sync-server listening on {bound}");
     let maintenance = maintenance::spawn(store.clone(), blobs.clone());
     let state = AppState {
         store: store.clone(),

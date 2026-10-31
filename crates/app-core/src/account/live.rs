@@ -196,6 +196,7 @@ impl LiveAccount {
             retired: None,
             reset_waits: Vec::new(),
             reset_requests: Vec::new(),
+            changed_chains: Vec::new(),
             accepting: None,
         };
         let spawned = std::thread::Builder::new()
@@ -403,6 +404,9 @@ struct Driver {
     reset_waits: Vec<InvitedCandidate>,
     /// Members' reset requests in the attached workspace.
     reset_requests: Vec<crate::sync::joining::InvitedRequest>,
+    /// Accounts whose current chain isn't one this device keeps, each with
+    /// the new fingerprint (§7).
+    changed_chains: Vec<(Id, sync_protocol::types::Digest)>,
     /// The offer of the acceptance in progress.
     accepting: Option<OutstandingOffer>,
     /// The workspace you joined, which waits for a folder.
@@ -824,6 +828,7 @@ impl Driver {
             Some(workspace) => service.reset_requests(workspace).await.unwrap_or_default(),
             None => Vec::new(),
         };
+        self.changed_chains = service.changed_chains().await;
         let two_chains = service.kept_heads().two_current_chains();
         let this = service.credentials().keys.device();
         let fingerprints: std::collections::BTreeMap<Id, String> = list
@@ -870,6 +875,16 @@ impl Driver {
                 ),
                 end_sessions: None,
             })
+            .chain(self.changed_chains.iter().map(|(account, genesis)| {
+                AlertEntry {
+                    text: format!(
+                        "The devices of account {} changed. Its new fingerprint is {}. An owner or admin accepts the reset after comparing an approval code with that person.",
+                        short_id(account),
+                        fingerprint(genesis)
+                    ),
+                    end_sessions: None,
+                }
+            }))
             .chain(two_chains.iter().map(|account| AlertEntry {
                 text: format!(
                     "Your workspaces name two different device lists for account {}. Ask that person whether they reset their devices.",
@@ -1886,9 +1901,15 @@ impl Driver {
             .map(|stored| stored.keys().map(|keys| keys.device()))
             .transpose()?;
         match join(&signed_in, &*self.store).await? {
-            Joined::First(credentials) | Joined::Again(credentials) => {
+            // A first device starts a new chain, so a sync of the account
+            // this computer held before ends here (§14).
+            Joined::First(credentials) => {
+                self.service = None;
+                self.workspaces.clear();
+                self.folder.after_reset(&[], &self.app_data);
                 self.connect(credentials).await
             }
+            Joined::Again(credentials) => self.connect(credentials).await,
             Joined::NeedsApproval { keys, client } => {
                 let device = keys.device();
                 // The card this computer held can't enroll any more.

@@ -1042,6 +1042,15 @@ fn reset_devices_starts_a_new_chain_from_the_emailed_code() {
 /// over the device, its kept heads and its folder's journal. The owner's
 /// sync and service end here.
 fn owner_app(pair: Pair<sync_store_sqlite::SqliteBackend>) -> (LiveAccount, OwnerApp) {
+    let base = pair.server.base.clone();
+    owner_app_at(pair, &base)
+}
+
+/// [`owner_app`], with the app talking to `base`.
+fn owner_app_at(
+    pair: Pair<sync_store_sqlite::SqliteBackend>,
+    base: &str,
+) -> (LiveAccount, OwnerApp) {
     let Pair {
         server,
         proxy,
@@ -1070,10 +1079,15 @@ fn owner_app(pair: Pair<sync_store_sqlite::SqliteBackend>) -> (LiveAccount, Owne
         a.app_data
             .path()
             .join(app_core::account::live::ACCOUNT_FILE),
-        serde_json::json!({"server": server.base}).to_string(),
+        serde_json::json!({"server": base}).to_string(),
     )
     .unwrap();
     let secrets = laptop.secrets.clone();
+    let mut stored = StoredDevice::load(&*secrets, &server.base)
+        .unwrap()
+        .expect("the laptop's device");
+    stored.server = base.to_owned();
+    stored.save(&*secrets).unwrap();
     let account = LiveAccount::start(a.app_data.path().to_owned(), secrets, Arc::new(|_| Ok(())));
     app_core::folder_sync::FolderSyncBackend::attach(&account, Some(a.engine.clone()));
     wait_for(
@@ -1085,7 +1099,7 @@ fn owner_app(pair: Pair<sync_store_sqlite::SqliteBackend>) -> (LiveAccount, Owne
         account,
         OwnerApp {
             server,
-            _proxy: proxy,
+            proxy,
             laptop,
             a,
             desktop,
@@ -1098,13 +1112,135 @@ fn owner_app(pair: Pair<sync_store_sqlite::SqliteBackend>) -> (LiveAccount, Owne
 
 struct OwnerApp {
     server: Server,
-    _proxy: Proxy,
+    proxy: Proxy,
     laptop: Desktop,
     a: sync_support::Folder,
     desktop: Desktop,
     b: sync_support::Folder,
     sync_b: app_core::sync::workspace::WorkspaceSync,
     workspace: sync_protocol::types::Id,
+}
+
+/// A member resets and nobody asked this device to accept it yet: the
+/// account screens show the changed devices with the new fingerprint.
+#[test]
+fn the_account_backend_shows_a_members_reset_without_a_request() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let pair = runtime.block_on(async { pair_of_accounts_on(Server::start().await).await });
+    let member = pair.desktop.credentials.account;
+    let (account, app) = owner_app(pair);
+    let (_new, done) = runtime.block_on(reset_devices(
+        &app.server,
+        member,
+        Arc::new(MemorySecrets::default()),
+    ));
+    let shown = done.fingerprint.to_hex();
+    let grouped: Vec<String> = shown
+        .as_bytes()
+        .chunks(4)
+        .map(|c| String::from_utf8_lossy(c).into_owned())
+        .collect();
+    let needle = grouped.join(" ");
+    // The device list comes up between pulls, and a message ends a pull's
+    // wait.
+    let started = Instant::now();
+    loop {
+        let screen = AccountBackend::screen(&account);
+        let shows = matches!(&screen.phase, AccountPhase::SignedIn(view) if view
+            .alerts
+            .iter()
+            .any(|a| a.text.contains("changed") && a.text.contains(&needle)));
+        if shows {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(45),
+            "the alert never showed: {screen:?}"
+        );
+        app_core::folder_sync::FolderSyncBackend::act(
+            &account,
+            app_core::folder_sync::FolderSyncAction::DismissRestore,
+        );
+        std::thread::sleep(Duration::from_secs(3));
+    }
+    drop(account);
+    drop(app);
+    drop(runtime);
+}
+
+/// The whole path of a lost secret in the app: the server at the same
+/// address is a fresh one, sync stops at `unauthorized`, signing in gives
+/// a new account and new keys, the section says the server lost the account,
+/// and Set up sync again turns the folder on as a new workspace (§14).
+#[test]
+fn the_app_turns_a_folder_on_after_the_server_lost_its_secret() {
+    use app_core::folder_sync::{FolderSyncAction, FolderSyncBackend, FolderSyncPhase};
+    use app_core::sync::device::StoredDevice;
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let pair = runtime.block_on(async { pair_of_accounts_on(Server::start().await).await });
+    let base = pair.proxy.base.clone();
+    let old_account = pair.laptop.credentials.account;
+    let (account, app) = owner_app_at(pair, &base);
+    let files = app.a.files();
+    let fresh = runtime.block_on(Server::fresh_behind(&app.proxy));
+    let new_account = runtime.block_on(fresh.person("ana@example.com"));
+    assert_ne!(new_account, old_account);
+
+    AccountBackend::act(&account, AccountAction::SignIn);
+    let screen = wait_for(&account, "the sign-in code", |s| {
+        matches!(s.phase, AccountPhase::SigningIn { .. })
+    });
+    let AccountPhase::SigningIn { user_code } = screen.phase else {
+        unreachable!()
+    };
+    assert!(
+        runtime
+            .block_on(
+                fresh
+                    .store
+                    .decide_device_grant(new_account, &user_code, true)
+            )
+            .unwrap()
+    );
+    let started = Instant::now();
+    let screen = loop {
+        let screen = FolderSyncBackend::screen(&account);
+        if screen.phase == FolderSyncPhase::AccountLost {
+            break screen;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the stop never showed: {screen:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let notice = screen.restore.expect("a notice");
+    assert!(notice.set_up_again);
+    assert!(notice.line.contains("lost your account"), "{}", notice.line);
+    let stored = StoredDevice::load(&*app.laptop.secrets, &base)
+        .unwrap()
+        .expect("the new device");
+    assert_eq!(stored.account, new_account);
+
+    FolderSyncBackend::act(&account, FolderSyncAction::SetUpAgain);
+    let started = Instant::now();
+    loop {
+        let screen = FolderSyncBackend::screen(&account);
+        if screen.phase == FolderSyncPhase::On && screen.pending == 0 && !screen.busy {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the folder never synced: {screen:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(app.a.files(), files);
+    drop(account);
+    drop(app);
+    drop(fresh);
+    drop(runtime);
 }
 
 /// The live path of an `accept_reset` (§7, §10): a member's reset request

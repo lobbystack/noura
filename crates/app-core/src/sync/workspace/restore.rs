@@ -334,6 +334,22 @@ pub fn bootstrap_keeps_final(listed: bool, regained: bool) -> bool {
     listed && !regained
 }
 
+/// The device this computer held on the account `entry` names, when the
+/// server lost that account with its secret and you signed in again under
+/// a new ID (§14). The folder can't sync until it turns on as a new
+/// workspace under the new account.
+pub fn lost_with_its_server(
+    entry: &crate::sync::registry::SyncedFolder,
+    credentials: &crate::sync::DeviceCredentials,
+    secrets: &dyn local_core::sync::SyncCredentials,
+) -> Result<Option<Id>, SyncError> {
+    if entry.account == credentials.account {
+        return Ok(None);
+    }
+    let stored = crate::sync::device::StoredDevice::load(secrets, &entry.server)?;
+    Ok(stored.and_then(|stored| stored.lost_device(&entry.account)))
+}
+
 impl WorkspaceSync {
     /// What stopped this workspace after a restore.
     pub fn restore_lost(&self) -> Option<&Lost> {
@@ -745,12 +761,21 @@ impl WorkspaceSync {
                 if served.ended_at(number).is_none() {
                     return Ok(Some(Lost::Epoch));
                 }
-                let answer = service
+                // A failed request leaves the comparison pending; only an
+                // answer that the server holds no such record passes.
+                let answer = match service
                     .client()
                     .epochs(self.state.workspace, domain, number)
-                    .await;
-                if let Ok(answer) = answer
-                    && let Some(held) = answer.epochs.0.iter().find(|e| e.body.epoch == number)
+                    .await
+                {
+                    Ok(answer) => Some(answer),
+                    Err(SyncError::Refused { code, .. }) if code == "not_found" => None,
+                    Err(error) => return Err(error),
+                };
+                if let Some(held) = answer
+                    .iter()
+                    .flat_map(|answer| answer.epochs.0.iter())
+                    .find(|e| e.body.epoch == number)
                     && held.digest() != accepted.digest()
                 {
                     return Ok(Some(Lost::Epoch));
@@ -1096,20 +1121,30 @@ impl WorkspaceSync {
         journal: &BTreeMap<Id, (Object, Vec<OpKey>)>,
     ) -> Result<(), SyncError> {
         let device = self.credentials.keys.device();
-        let writers: BTreeSet<Id> = self
+        // Each object's own domain ranks its writers: a restricted domain's
+        // access list decides there, whatever the workspace role (§8).
+        let writers_of: BTreeMap<Id, BTreeSet<Id>> = self
             .remote
             .as_ref()
             .map(|remote| {
                 let snapshot = remote.policy.head_snapshot();
-                snapshot
-                    .devices
-                    .keys()
-                    .filter(|d| snapshot.can_write(d, &self.state.domain))
-                    .copied()
+                journal
+                    .values()
+                    .map(|(object, _)| object.domain.unwrap_or(self.state.domain))
+                    .collect::<BTreeSet<Id>>()
+                    .into_iter()
+                    .map(|domain| {
+                        let writers = snapshot
+                            .devices
+                            .keys()
+                            .filter(|d| snapshot.can_write(d, &domain))
+                            .copied()
+                            .collect();
+                        (domain, writers)
+                    })
                     .collect()
             })
             .unwrap_or_default();
-        let can_write = writers.contains(&device);
         let limit = self.restore_wait.as_secs();
         let now = unix_millis();
         let mut lag = BTreeSet::new();
@@ -1135,8 +1170,10 @@ impl WorkspaceSync {
             for branch in contents.iter().skip(1).filter(|c| !c.delete) {
                 self.keep_branch_for_review(branch)?;
             }
-            if can_write {
-                let wait = wait_for(rank(rid, &device, &writers), writers.len(), limit);
+            let domain = object.domain.unwrap_or(self.state.domain);
+            let writers = writers_of.get(&domain);
+            if let Some(writers) = writers.filter(|w| w.contains(&device)) {
+                let wait = wait_for(rank(rid, &device, writers), writers.len(), limit);
                 self.state.restore.rewrites.insert(
                     *rid,
                     Rewrite {
@@ -1147,8 +1184,8 @@ impl WorkspaceSync {
                     },
                 );
             } else if !content.delete {
-                // A viewer device writes nothing: its newer file stays, and
-                // you decide what becomes of it.
+                // A device that can't write this domain writes nothing: its
+                // newer file stays, and you decide what becomes of it.
                 self.state.restore.to_review.push(content.path);
             }
         }

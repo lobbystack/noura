@@ -74,6 +74,40 @@ async fn desktop_rotates(pair: &mut Pair<sync_store_sqlite::SqliteBackend>) {
     assert_eq!(pair.sync_b.remote_mut().unwrap().epoch(), 2);
 }
 
+/// After a restore, a device whose latest epoch a replacement ended asks
+/// for that epoch's record. A failed request keeps the comparison pending,
+/// so the check runs again instead of passing (§14).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_comparison_that_cant_read_a_replaced_epoch_stays_pending() {
+    let mut pair = of_accounts().await;
+    desktop_rotates(&mut pair).await;
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("the desktop takes epoch 2");
+    damage_envelopes(&pair.proxy, pair.laptop.id(), pair.desktop.id());
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("the laptop signs a replacement");
+    pair.proxy.honest();
+    let copy = pair.server.backup("before.sqlite3").await;
+    let restored = pair.server.put_back(&copy, true).await;
+    sync_support::reconnect(&mut pair, &restored.base).await;
+
+    pair.proxy.forge(Box::new(|_, path| {
+        path.ends_with("/epochs/2").then(|| (503, Vec::new()))
+    }));
+    let cut_short = pair.sync_b.round(&mut pair.desktop.service, 0).await;
+    assert!(cut_short.is_err(), "{cut_short:?}");
+    pair.proxy.honest();
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("the comparison runs again");
+    assert_eq!(pair.sync_b.restore_lost(), None);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_envelope_is_replaced_and_the_rotator_writes_again() {
     let mut pair = of_accounts().await;

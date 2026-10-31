@@ -1054,7 +1054,15 @@ async fn a_merged_path_outside_the_root_goes_to_review_until_you_keep_the_note()
 /// new workspace's live state.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn members_connect_their_folders_to_a_workspace_set_up_again() {
-    let server = Server::start().await;
+    members_connect_their_folders(Server::start().await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn members_connect_their_folders_on_postgres() {
+    members_connect_their_folders(Server::start_postgres().await).await;
+}
+
+async fn members_connect_their_folders<B: Backend>(server: Server<B>) {
     let mut team = team(&server).await;
     settle(&mut team.grantee_sync, &mut team.grantee).await;
     settle(&mut team.outsider_sync, &mut team.outsider).await;

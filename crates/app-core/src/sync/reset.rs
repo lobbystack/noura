@@ -60,11 +60,15 @@ pub async fn reset(
         .map_err(|e| SyncError::Check(e.client_code()))?;
     let head = chain.head();
     let server = client.base().to_owned();
-    let retired = match StoredDevice::load(store, &server)? {
-        Some(old) if old.account == account => Some(keep_retired(store, &server, &old)?),
+    let old = StoredDevice::load(store, &server)?;
+    let retired = match &old {
+        Some(old) if old.account == account => Some(keep_retired(store, &server, old)?),
         _ => None,
     };
     let mut stored = StoredDevice::new(&server, account, keys, token);
+    if let Some(old) = &old {
+        stored.keep_lost_accounts(old);
+    }
     stored.reference_head = Some(head.clone());
     stored.save(store)?;
     let credentials = stored

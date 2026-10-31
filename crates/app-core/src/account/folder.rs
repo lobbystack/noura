@@ -101,6 +101,9 @@ pub(super) struct Folder {
     /// The folder's journal holds another replica ID: it waits for you to
     /// connect it.
     not_connected: bool,
+    /// The server lost the account this folder synced under, with the
+    /// device this computer held there (§14).
+    account_lost: Option<sync_protocol::types::Id>,
     /// The workspace's realtime channel and its pull schedule.
     live: Live,
 }
@@ -236,6 +239,14 @@ impl Folder {
                     .collect();
                 screen
             }
+            None if signed_in && self.account_lost.is_some() => FolderSyncScreen {
+                phase: FolderSyncPhase::AccountLost,
+                restore: Some(crate::folder_sync::lost_notice(
+                    &crate::sync::workspace::restore::Lost::Server,
+                    false,
+                )),
+                ..FolderSyncScreen::default()
+            },
             None if signed_in && self.not_connected => FolderSyncScreen {
                 phase: FolderSyncPhase::NotConnected,
                 ..FolderSyncScreen::default()
@@ -264,6 +275,7 @@ impl Folder {
         self.last_error = None;
         self.rebuild = false;
         self.not_connected = false;
+        self.account_lost = None;
         self.engine = engine;
         self.open(service, store, app_data);
     }
@@ -299,6 +311,15 @@ impl Folder {
             &registry,
         ) {
             Ok(sync) => self.sync = Some(sync),
+            Err(SyncError::Check("sync_restore_lost")) => {
+                self.account_lost = crate::sync::workspace::restore::lost_with_its_server(
+                    entry,
+                    service.credentials(),
+                    &**store,
+                )
+                .ok()
+                .flatten();
+            }
             Err(SyncError::Check("sync_journal_lost" | "sync_journal_rollback")) => {
                 self.rebuild = true;
             }
@@ -354,6 +375,7 @@ impl Folder {
         self.sync = None;
         self.live = Live::default();
         self.rebuild = false;
+        self.account_lost = None;
         self.reset_held = self
             .workspace_of_folder(app_data)
             .is_some_and(|w| waits.contains(&w));
@@ -385,6 +407,7 @@ impl Folder {
         self.sync = Some(sync);
         self.reset_held = false;
         self.not_connected = false;
+        self.account_lost = None;
         self.last_error = None;
         Ok(())
     }
@@ -638,6 +661,15 @@ impl Folder {
             // The account screens take it from here: a new sign-in, then
             // the emailed code.
             FolderSyncAction::ResetDevices => self.reset_wanted = true,
+            FolderSyncAction::SetUpAgain if self.account_lost.is_some() => {
+                let Some(service) = service else {
+                    return Err(SyncError::Invalid(
+                        "Sign in to a sync account to set this workspace up again.".into(),
+                    ));
+                };
+                self.set_up_after_reset(service, self.account_lost, app_data)
+                    .await?;
+            }
             FolderSyncAction::SetUpAgain => {
                 let (Some(sync), Some(service)) = (self.sync.as_mut(), service) else {
                     return Err(SyncError::Invalid(

@@ -7,9 +7,11 @@
 mod sync_support;
 
 use app_core::sync::workspace::restore::Lost;
+use sync_protocol::records::{Access, Level, Role};
 use sync_support::{
-    Desktop, LinkToRevoke, MemorySecrets, Pair, Server, approve, approve_new, new_desktop_in, pair,
-    pair_of_accounts_on, pair_on, reconnect, reset_devices, rounds,
+    Desktop, LinkToRevoke, MemorySecrets, Pair, Restores, Server, approve, approve_new,
+    new_desktop_in, pair, pair_of_accounts_on, pair_of_accounts_with, pair_on, reconnect,
+    reset_devices, rounds,
 };
 
 const NO_WAIT: std::time::Duration = std::time::Duration::ZERO;
@@ -64,8 +66,20 @@ async fn a_restore_that_lost_only_content_writes_it_again() {
 /// writer signs it, at the removed device's final head (§14, §17).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_rewound_writer_signs_the_checkpoint_a_surviving_removal_made_due() {
+    rewound_writer_signs(Server::start_with_interval(6).await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rewound_writer_signs_the_due_checkpoint_on_postgres() {
+    rewound_writer_signs(Server::start_postgres_alone_with_interval(6).await).await;
+}
+
+async fn rewound_writer_signs<B: sync_store::Backend>(server: Server<B>)
+where
+    Server<B>: Restores,
+{
     let never = std::time::Duration::from_secs(1 << 40);
-    let mut pair = pair_on(Server::start_with_interval(6).await).await;
+    let mut pair = pair_on(server).await;
     pair.sync_a.set_checkpoint_wait(NO_WAIT);
     pair.sync_b.set_checkpoint_wait(NO_WAIT);
     let (workspace, domain) = (pair.sync_a.workspace(), pair.sync_a.domain());
@@ -117,7 +131,7 @@ async fn a_rewound_writer_signs_the_checkpoint_a_surviving_removal_made_due() {
         .expect("recorded");
     rounds(&mut pair).await;
     assert!(!pair.sync_a.removal_hold() && !pair.sync_b.removal_hold());
-    let copy = pair.server.backup("before.sqlite3").await;
+    let copy = pair.server.snapshot("before.sqlite3").await;
 
     // The checkpoint after the removal, then content, both lost.
     pair.sync_a.set_checkpoint_wait(NO_WAIT);
@@ -143,7 +157,7 @@ async fn a_rewound_writer_signs_the_checkpoint_a_surviving_removal_made_due() {
         .expect("the server holds it");
     write_after_backup(&mut pair).await;
 
-    let restored = pair.server.put_back(&copy, true).await;
+    let restored = pair.server.restored(&copy, None).await;
     reconnect(&mut pair, &restored.base).await;
     pair.sync_a.set_checkpoint_wait(NO_WAIT);
     pair.sync_b.set_checkpoint_wait(NO_WAIT);
@@ -747,6 +761,12 @@ async fn a_member_resets_and_the_owner_accepts_the_reset() {
     let (mut member, done) = reset_devices(&restored, account, secrets).await;
     assert_ne!(done.fingerprint, sync_protocol::types::Digest::ZERO);
 
+    // Before any request, the owner's device shows the new fingerprint.
+    assert_eq!(
+        pair.service.changed_chains().await,
+        vec![(account, done.fingerprint)]
+    );
+
     // Its device asks the workspace to accept it.
     let (candidate, revision) = accept_the_reset(&mut pair, &mut member, workspace).await;
     assert!(revision > 1);
@@ -761,6 +781,10 @@ async fn a_member_resets_and_the_owner_accepts_the_reset() {
         .await
         .expect("laptop");
     assert_eq!(pair.sync_a.restore_lost(), None);
+    assert!(
+        pair.service.changed_chains().await.is_empty(),
+        "the alert ends with the acceptance"
+    );
 
     // The accepted account keeps its history floor.
     assert_eq!(floors(&restored, account), floors_before);
@@ -802,56 +826,81 @@ fn floors(server: &Server, account: sync_protocol::types::Id) -> Vec<(Vec<u8>, i
         .collect()
 }
 
-/// A server that lost its secret: signing up again gives a new account ID,
-/// and this computer starts over with new keys and turns its folder on as a
-/// new workspace.
+/// A server that lost its secret: the old client meets a fresh server at
+/// the same address and gets `unauthorized`. Signing up again gives a new
+/// account ID, so this computer reports `sync_restore_lost` for the folder,
+/// makes new keys and turns the folder on as a new workspace (§14).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_lost_secret_starts_over_under_a_new_account() {
     use app_core::sync::device::{Joined, StoredDevice, join};
     use app_core::sync::workspace::WorkspaceSync;
 
-    let sync_support::Pair {
-        laptop, a, sync_a, ..
-    } = pair().await;
-    let mut a = a;
-    drop(sync_a);
-    let files = a.files();
-    let fresh = Server::start().await;
-    let account = fresh.person("ana@example.com").await;
-    assert_ne!(
-        account, laptop.credentials.account,
-        "a new secret, a new ID"
-    );
-
-    // What this computer kept of the old account.
-    let secrets = std::sync::Arc::new(MemorySecrets::default());
+    let mut pair = pair().await;
+    let old_account = pair.laptop.credentials.account;
+    let old_device = pair.laptop.id();
+    let base = pair.proxy.base.clone();
+    let secrets = pair.laptop.secrets.clone();
     let mut stored = StoredDevice::new(
-        &fresh.base,
-        laptop.credentials.account,
-        &laptop.credentials.keys,
-        "ended",
+        &base,
+        old_account,
+        &pair.laptop.credentials.keys,
+        "a session the new server never issued",
     );
-    stored.reference_head = Some(laptop.credentials.reference_head.clone());
+    stored.reference_head = Some(pair.laptop.credentials.reference_head.clone());
     stored.save(&*secrets).expect("kept");
 
-    let signed_in = fresh.sign_in(account, &fresh.base).await;
+    let fresh = Server::fresh_behind(&pair.proxy).await;
+    pair.a.write("Offline.md", b"# Offline\n");
+    let files = pair.a.files();
+    let round = pair.sync_a.round(&mut pair.service, 0).await;
+    assert!(
+        matches!(&round, Err(app_core::sync::SyncError::Refused { code, .. }) if code == "unauthorized"),
+        "{round:?}"
+    );
+    assert_eq!(pair.a.files(), files, "no file changed");
+    drop(pair.sync_a);
+
+    let account = fresh.person("ana@example.com").await;
+    assert_ne!(account, old_account, "a new secret, a new ID");
+    let signed_in = fresh.sign_in(account, &base).await;
     let Joined::First(credentials) = join(&signed_in, &*secrets).await.expect("joined") else {
         panic!("a new chain");
     };
-    assert_ne!(credentials.keys.device(), laptop.id(), "new device keys");
+    assert_ne!(credentials.keys.device(), old_device, "new device keys");
+    let lost = StoredDevice::load(&*secrets, &base)
+        .expect("readable")
+        .expect("stored")
+        .lost_device(&old_account);
+    assert_eq!(lost, Some(old_device));
+
+    let opened = WorkspaceSync::open(
+        pair.a.engine.clone(),
+        credentials.clone(),
+        secrets.clone(),
+        &pair.a.registry,
+    );
+    assert_eq!(
+        opened.err().and_then(|e| e.code().map(str::to_owned)),
+        Some("sync_restore_lost".to_owned())
+    );
+
     let state = tempfile::tempdir().expect("a folder");
-    let mut desktop =
-        sync_support::Desktop::connect(&fresh.base, credentials, secrets, state).await;
-    let mut sync = WorkspaceSync::turn_on(
+    let mut desktop = Desktop::connect(&base, credentials, secrets, state).await;
+    let mut sync = WorkspaceSync::set_up_after_reset(
         &mut desktop.service,
-        a.engine.clone(),
-        "Field notes",
-        &mut a.registry,
+        pair.a.engine.clone(),
+        &mut pair.a.registry,
+        lost,
     )
     .await
     .expect("a new workspace");
-    sync.round(&mut desktop.service, 0).await.expect("a round");
-    assert_eq!(a.files(), files);
+    for _ in 0..2 {
+        sync.round(&mut desktop.service, 0).await.expect("a round");
+    }
+    assert_eq!(pair.a.files(), files);
+    assert_eq!(sync.status().pending, 0, "the files went up");
+    assert_eq!(sync.status().held, 0);
+    assert!(sync.rid_at("Offline.md").is_some());
 }
 
 /// Set up sync again closes the workspace and starts a new one; a device
@@ -1624,6 +1673,273 @@ async fn a_restricted_domain_rewinds_too() {
         written.iter().any(|path| path == "Pay/March.md"),
         "{written:?}"
     );
+}
+
+/// A workspace editor who only reads a restricted domain writes nothing
+/// there: the domain's access list decides, so a device that can write it
+/// brings the lost file back and the reader lists its copy for review (§14).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reader_of_a_restricted_domain_writes_nothing_again() {
+    let mut pair = pair_of_accounts_with(Server::start().await, Role::Editor).await;
+    let grant = Access {
+        account: pair.desktop.credentials.account,
+        level: Level::Read,
+    };
+    pair.sync_a
+        .restrict_folder(&mut pair.service, "Pay", &[grant])
+        .await
+        .expect("restricted");
+    rounds(&mut pair).await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    pair.a.write("Pay/March.md", b"# March\n");
+    rounds(&mut pair).await;
+    assert!(pair.b.files().contains_key("Pay/March.md"));
+    let files = pair.a.files();
+
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    for _ in 0..3 {
+        pair.sync_b
+            .round(&mut pair.desktop.service, 0)
+            .await
+            .expect("the reader rewinds");
+    }
+    assert_eq!(pair.sync_b.restore_lost(), None);
+    assert!(
+        pair.sync_b.written_again().is_empty(),
+        "it can't write here"
+    );
+    assert_eq!(
+        pair.sync_b.status().to_review,
+        vec!["Pay/March.md".to_owned()]
+    );
+    assert_eq!(
+        pair.sync_b.status().refused,
+        0,
+        "the server refused nothing"
+    );
+
+    rounds(&mut pair).await;
+    assert_eq!(pair.a.files(), files);
+    assert_eq!(pair.b.files(), files);
+    assert_eq!(pair.sync_a.written_again(), ["Pay/March.md".to_owned()]);
+}
+
+/// A workspace viewer with write access to a restricted domain holds the
+/// only copy of a lost change there, and writes it back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_viewer_who_writes_a_restricted_domain_writes_it_again() {
+    let mut pair = pair_of_accounts_with(Server::start().await, Role::Viewer).await;
+    let grant = Access {
+        account: pair.desktop.credentials.account,
+        level: Level::Write,
+    };
+    pair.sync_a
+        .restrict_folder(&mut pair.service, "Pay", &[grant])
+        .await
+        .expect("restricted");
+    rounds(&mut pair).await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    pair.b.write("Pay/April.md", b"# April\n");
+    for _ in 0..2 {
+        pair.sync_b
+            .round(&mut pair.desktop.service, 0)
+            .await
+            .expect("the viewer writes");
+    }
+    assert_eq!(pair.sync_b.status().pending, 0, "it went up");
+
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    rounds(&mut pair).await;
+    assert_eq!(pair.sync_b.restore_lost(), None);
+    assert_eq!(pair.sync_b.written_again(), ["Pay/April.md".to_owned()]);
+    assert_eq!(pair.a.files(), pair.b.files(), "the owner has it now");
+    assert!(pair.a.files().contains_key("Pay/April.md"));
+}
+
+/// A backup that lacks the removal of a device that wrote to the domain:
+/// the device that accepted the removal stops and writes nothing, and the
+/// member who never saw it keeps syncing (§14, §32).
+async fn lost_removal_of_a_writer<B: sync_store::Backend>(server: Server<B>)
+where
+    Server<B>: Restores,
+{
+    let mut pair = pair_of_accounts_on(server).await;
+    rounds(&mut pair).await;
+    let mut link = LinkToRevoke::make(&mut pair).await;
+    let workspace = pair.sync_a.workspace();
+    let mut third = approve(
+        &pair.server,
+        &mut pair.laptop,
+        std::slice::from_mut(pair.sync_a.remote_mut().expect("connected")),
+    )
+    .await;
+    let mut remote = third
+        .service
+        .open_workspace(workspace)
+        .await
+        .expect("opens");
+    third
+        .service
+        .push_file(&mut remote, "Third.md", b"# Third\n")
+        .await
+        .expect("written");
+    rounds(&mut pair).await;
+    assert!(pair.b.files().contains_key("Third.md"));
+    let copy = pair.server.snapshot("before.sqlite3").await;
+
+    link.revoke(&mut pair).await;
+    pair.laptop
+        .service
+        .remove_device(third.id(), &[], &mut [])
+        .await
+        .expect("removed");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("laptop");
+    pair.service
+        .record_heads(pair.sync_a.remote_mut().expect("connected"), &[])
+        .await
+        .expect("recorded");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("laptop");
+    assert!(!pair.sync_a.removal_hold());
+
+    let restored = pair.server.restored(&copy, None).await;
+    reconnect(&mut pair, &restored.base).await;
+    let files = pair.a.files();
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a stopped round");
+    assert_eq!(pair.sync_a.restore_lost(), Some(&Lost::OwnAccount));
+    assert_eq!(pair.a.files(), files, "the stopped device keeps its files");
+    pair.a.write("Stopped.md", b"# Stays here\n");
+    let round = pair
+        .sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a stopped round");
+    assert_eq!(round.pushed, 0, "it writes nothing");
+
+    pair.b.write("Member.md", b"# Member\n");
+    for _ in 0..2 {
+        pair.sync_b
+            .round(&mut pair.desktop.service, 0)
+            .await
+            .expect("the member keeps syncing");
+    }
+    assert_eq!(pair.sync_b.restore_lost(), None);
+    assert_eq!(pair.sync_b.status().pending, 0);
+    link.revoked_again(&mut pair).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_removal_of_a_writer_stops_the_devices_that_accepted_it() {
+    lost_removal_of_a_writer(Server::start().await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_removal_of_a_writer_stops_them_on_postgres() {
+    lost_removal_of_a_writer(Server::start_postgres_alone().await).await;
+}
+
+/// Two restores in a row, the second from an older backup, end in the same
+/// stop: both lost a policy change the laptop accepted, and each raises the
+/// generation (§14, §32).
+async fn two_restores_end_in_one_stop<B: sync_store::Backend>(server: Server<B>)
+where
+    Server<B>: Restores,
+{
+    use app_core::sync::members::MemberChange;
+
+    let mut pair = pair_of_accounts_on(server).await;
+    rounds(&mut pair).await;
+    let mut link = LinkToRevoke::make(&mut pair).await;
+    let older = pair.server.snapshot("older.sqlite3").await;
+    pair.a.write("Middle.md", b"# Middle\n");
+    rounds(&mut pair).await;
+    let newer = pair.server.snapshot("newer.sqlite3").await;
+    link.revoke(&mut pair).await;
+    let member = pair.desktop.credentials.account;
+    pair.sync_a
+        .change_member(
+            &mut pair.service,
+            MemberChange::SetRole {
+                account: member,
+                role: Role::Editor,
+            },
+        )
+        .await
+        .expect("the role changes");
+    let files = pair.a.files();
+
+    let first = pair.server.restored(&newer, None).await;
+    reconnect(&mut pair, &first.base).await;
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a stopped round");
+    assert_eq!(pair.sync_a.restore_lost(), Some(&Lost::Policy));
+    let alerted = pair.sync_a.restore_alert().expect("an alert");
+    link.revoked_again(&mut pair).await;
+
+    // The generation takes the clock's seconds.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let second = pair.server.restored(&older, None).await;
+    reconnect(&mut pair, &second.base).await;
+    pair.a.write("Stopped.md", b"# Stays here\n");
+    let round = pair
+        .sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a stopped round");
+    assert_eq!(round.pushed, 0, "it writes nothing");
+    assert_eq!(pair.sync_a.restore_lost(), Some(&Lost::Policy));
+    assert!(pair.sync_a.restore_alert().expect("an alert") > alerted);
+    let mut expected = files;
+    expected.insert("Stopped.md".to_owned(), b"# Stays here\n".to_vec());
+    assert_eq!(pair.a.files(), expected);
+    link.revoked_again(&mut pair).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_restores_end_in_the_same_stop() {
+    two_restores_end_in_one_stop(Server::start().await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_restores_end_in_the_same_stop_on_postgres() {
+    two_restores_end_in_one_stop(Server::start_postgres_alone().await).await;
+}
+
+/// An editor device reads no pending requests, and still shows that an
+/// account's devices changed, with the new fingerprint, from the chain it
+/// may read (§7). It keeps nothing of the new chain.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_editor_device_shows_a_reset_nobody_asked_it_to_accept() {
+    let mut pair = pair_of_accounts_with(Server::start().await, Role::Editor).await;
+    let workspace = pair.sync_a.workspace();
+    let owner = pair.laptop.credentials.account;
+    assert!(pair.desktop.service.changed_chains().await.is_empty());
+
+    let secrets = std::sync::Arc::new(MemorySecrets::default());
+    let (_new, done) = reset_devices(&pair.server, owner, secrets).await;
+
+    let refused = pair.desktop.service.reset_requests(workspace).await;
+    assert!(
+        matches!(&refused, Err(app_core::sync::SyncError::Refused { code, .. }) if code == "forbidden"),
+        "{refused:?}"
+    );
+    assert_eq!(
+        pair.desktop.service.changed_chains().await,
+        vec![(owner, done.fingerprint)]
+    );
+    assert_eq!(pair.desktop.service.kept_heads().kept_of(&owner).len(), 1);
 }
 
 /// A text-mode note: the restore lost its updates, and a writer that holds

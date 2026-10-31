@@ -550,6 +550,9 @@ impl WorkspaceSync {
         if !entry.on {
             return Err(SyncError::Invalid("sync is off for this folder".into()));
         }
+        if restore::lost_with_its_server(&entry, &credentials, &*secrets)?.is_some() {
+            return Err(SyncError::Check("sync_restore_lost"));
+        }
         let device = credentials.keys.device();
         let journal = Journal::open(engine.root(), &device, &*secrets)?;
         let state: State = journal

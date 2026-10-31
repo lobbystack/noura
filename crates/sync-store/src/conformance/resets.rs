@@ -235,6 +235,43 @@ pub async fn accept_reset_commits_an_approval<B: Backend>(store: Store<B>) {
     assert!(!policy.changes.0.is_empty());
 }
 
+/// An account accepted after a reset keeps its history floor (ticket 60):
+/// from the new card, pulls answer status 3 below it, other routes
+/// `before_history_floor`, and `live`, `manifest` and blobs serve only as
+/// §9 says, through a real `accept_reset`.
+pub async fn an_accepted_account_keeps_its_history_floor<B: Backend>(store: Store<B>) {
+    let mut run = super::checkpoints::world_with_a_floor(store).await;
+    let account = run.invitee.account;
+    sign_up(&run.world.store, account).await;
+    let (keys, session, genesis) = reset_account(&run.world.store, account).await;
+    let new_head = head_of(std::slice::from_ref(&genesis));
+    let request = reset_request(&keys, account, &new_head, run.world.workspace);
+    run.world
+        .store
+        .post_approval_request(session, request.to_bytes())
+        .await
+        .expect("the request");
+    let world = &mut run.world;
+    let change = world.change(
+        0,
+        vec![head_of(&world.links), new_head],
+        PolicyKind::AcceptReset { account },
+    );
+    let envelope = world.envelope(0, &keys.card(account), 1, &world.epoch_key);
+    let pushed = world
+        .push_records(
+            0,
+            vec![
+                RecordRef::Policy(change.clone()),
+                RecordRef::Envelope(envelope),
+            ],
+        )
+        .await
+        .expect("the change commits");
+    world.head = (pushed.policy_revision, change.digest());
+    super::checkpoints::check_the_floor(&run, session).await;
+}
+
 /// A device of the owner account closes a workspace; from then on every
 /// route answers `not_found`, and the account's list drops it (§14).
 pub async fn closing_a_workspace_answers_not_found<B: Backend>(store: Store<B>) {

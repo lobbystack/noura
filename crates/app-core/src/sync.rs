@@ -653,6 +653,39 @@ impl SyncService {
         Ok(chain)
     }
 
+    /// The accounts sharing a workspace with this device whose current
+    /// chain isn't one it keeps, each with the chain's genesis digest, the
+    /// new fingerprint: a reset no workspace of this device accepted yet
+    /// (§7). It reads what every member device may read, so every role
+    /// shows it, and it trusts nothing: no key goes to the new cards.
+    pub async fn changed_chains(&mut self) -> Vec<(Id, Digest)> {
+        let mut changed = Vec::new();
+        for account in self.heads.other_accounts() {
+            let cursor = ChainCursor {
+                account,
+                genesis: None,
+                after: u64::MAX,
+            };
+            let Ok(response) = self.client.read_chains(vec![cursor]).await else {
+                continue;
+            };
+            let Some(page) = response.pages.0.into_iter().next() else {
+                continue;
+            };
+            let kept = self.heads.kept_of(&account);
+            if page.account != account || kept.iter().any(|h| h.genesis == page.genesis) {
+                continue;
+            }
+            // The new fingerprint is that of a chain that verifies.
+            if let Ok((links, genesis)) = self.client.whole_chain(account, Some(page.genesis)).await
+                && AccountChain::verify(&links, &BTreeSet::new()).is_ok()
+            {
+                changed.push((account, genesis));
+            }
+        }
+        changed
+    }
+
     /// Reads `account`'s chain under `genesis` after the realtime channel
     /// said it moved (§7, §23), and keeps its later head, which the
     /// device then records in the workspaces it shares with the account
