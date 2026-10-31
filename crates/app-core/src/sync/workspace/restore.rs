@@ -330,7 +330,8 @@ impl WorkspaceSync {
         Ok(())
     }
 
-    /// Keeps a rollback that holds the device, and returns the error.
+    /// Keeps a rollback that holds the device. The caller returns the
+    /// error itself, with its kind intact.
     pub(super) fn note_failure(&mut self, error: SyncError) -> Result<(), SyncError> {
         if error.code() == Some("sync_restore_lost") {
             return self.stop_lost(Lost::FinalHead(None));
@@ -345,7 +346,7 @@ impl WorkspaceSync {
             self.state.restore.gap = true;
             self.save()?;
         }
-        Err(error)
+        Ok(())
     }
 
     /// Runs before anything else in a round, and whenever a frame or a
