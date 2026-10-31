@@ -60,20 +60,27 @@ pub struct InvitedCandidate {
 /// How long a reset request stays out before the device posts a fresh one:
 /// the server drops a request after 10 minutes (§27).
 pub const RESET_REQUEST_LIFE: Duration = Duration::from_secs(9 * 60);
-/// How long a reset request with an offer gets: the offer's own 10 minutes
-/// on top of the request's.
-pub const RESET_OFFER_LIFE: Duration = Duration::from_secs(20 * 60);
+/// How long a request with an offer gets: the offer's own 10 minutes on top
+/// of the request's.
+pub const OFFER_LIFE: Duration = Duration::from_secs(20 * 60);
+/// How long a request for an invitation or a new device stays out before
+/// the device posts a fresh one. It waits for the server to drop the last,
+/// so an approver never lists two requests from one device and answers the
+/// one this device stopped reading.
+pub const REQUEST_LIFE: Duration = Duration::from_secs(10 * 60 + 5);
 
 impl InvitedCandidate {
-    /// Whether this request is about to lapse at `now` with nobody having
-    /// answered it, so the device posts a fresh one (§7).
+    /// Whether this request lapses at `now` with nobody having finished
+    /// it, so the device posts a fresh one (§7, §10).
     pub fn lapses(&self, now: Instant) -> bool {
         let life = if self.offer.is_some() {
-            RESET_OFFER_LIFE
-        } else {
+            OFFER_LIFE
+        } else if self.invitation == RESET {
             RESET_REQUEST_LIFE
+        } else {
+            REQUEST_LIFE
         };
-        self.invitation == RESET && now.saturating_duration_since(self.posted) >= life
+        now.saturating_duration_since(self.posted) >= life
     }
 
     /// The workspace the invitation is for.

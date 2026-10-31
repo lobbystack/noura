@@ -301,3 +301,154 @@ fn the_window_says_once_what_sync_waits_for() {
     app.poll();
     assert!(app.notice().is_some(), "something new waits");
 }
+
+/// Ben's request reaches Ana with her Members section closed, and when the
+/// 10 minutes pass with nobody answering, his device posts a fresh one that
+/// Ana can still approve.
+#[test]
+fn an_invited_request_reaches_a_closed_section_and_outlives_its_ten_minutes() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let server = runtime.block_on(Server::start());
+    let ana_id = runtime.block_on(server.person("ana@example.com"));
+    let ben_id = runtime.block_on(server.person("ben@example.com"));
+    let start = |data: &tempfile::TempDir, secrets: &Arc<MemorySecrets>| {
+        LiveAccount::start(
+            data.path().to_owned(),
+            secrets.clone(),
+            Arc::new(|_| Ok(())),
+        )
+    };
+
+    let ana_data = tempfile::tempdir().unwrap();
+    let ana_secrets = Arc::new(MemorySecrets::default());
+    let ana = start(&ana_data, &ana_secrets);
+    AccountBackend::act(&ana, AccountAction::SetServer(server.base.clone()));
+    wait(
+        "the address",
+        || AccountBackend::screen(&ana),
+        |s| s.server == server.base,
+    );
+    AccountBackend::act(&ana, AccountAction::SignIn);
+    approve_sign_in(&runtime, &server, &ana, ana_id);
+    wait(
+        "Ana's account",
+        || AccountBackend::screen(&ana),
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if !view.devices.is_empty()),
+    );
+    let folder = Folder::new("Field notes");
+    folder.write("Plan.md", b"# Plan\n");
+    FolderSyncBackend::attach(&ana, Some(folder.engine.clone()));
+    FolderSyncBackend::act(&ana, FolderSyncAction::TurnOn);
+    wait(
+        "the upload",
+        || FolderSyncBackend::screen(&ana),
+        |s| s.phase == FolderSyncPhase::On && s.pending == 0 && s.last_success.is_some(),
+    );
+    MembersBackend::act(
+        &ana,
+        MembersAction::Invite {
+            role: Role::Editor,
+            your_name: "Ana".into(),
+        },
+    );
+    let link = wait("the link", || members(&ana), |s| s.copy.is_some())
+        .copy
+        .unwrap()
+        .0
+        .to_string();
+
+    let ben_data = tempfile::tempdir().unwrap();
+    let ben = account(&ben_data);
+    AccountBackend::act(&ben, AccountAction::OpenInvitation(link));
+    wait(
+        "the invitation",
+        || AccountBackend::screen(&ben),
+        |s| s.invitation.is_some(),
+    );
+    AccountBackend::act(&ben, AccountAction::AcceptInvitation);
+    approve_sign_in(&runtime, &server, &ben, ben_id);
+    wait(
+        "the request",
+        || AccountBackend::screen(&ben),
+        |s| {
+            matches!(
+                s.invitation.as_ref().map(|i| &i.stage),
+                Some(InvitationStage::Waiting { .. })
+            )
+        },
+    );
+
+    // Ana opens the app again and goes nowhere near Members.
+    drop(ana);
+    std::thread::sleep(Duration::from_secs(3));
+    let ana = start(&ana_data, &ana_secrets);
+    FolderSyncBackend::attach(&ana, Some(folder.engine.clone()));
+    wait(
+        "the line in the window",
+        || FolderSyncBackend::screen(&ana),
+        |s| {
+            s.attention.as_deref()
+                == Some(
+                    "Someone you invited waits for your approval. Open Settings > Members to answer.",
+                )
+        },
+    );
+    let first = wait(
+        "the listed request",
+        || {
+            MembersBackend::act(&ana, MembersAction::Refresh);
+            std::thread::sleep(Duration::from_millis(200));
+            members(&ana)
+        },
+        |s| !s.requests.is_empty(),
+    )
+    .requests[0]
+        .commit;
+
+    // Nobody answers for 10 minutes.
+    server.store.clock().advance(Duration::from_secs(601));
+    ben.move_request_clock(app_core::sync::joining::REQUEST_LIFE);
+    let screen = wait(
+        "the fresh request",
+        || {
+            MembersBackend::act(&ana, MembersAction::Refresh);
+            std::thread::sleep(Duration::from_millis(200));
+            members(&ana)
+        },
+        |s| s.requests.len() == 1 && s.requests[0].commit != first,
+    );
+    MembersBackend::act(&ana, MembersAction::Approve(screen.requests[0].commit));
+    let code = |s: &app_core::account::AccountScreen| match s.invitation.as_ref().map(|i| &i.stage)
+    {
+        Some(InvitationStage::Waiting { code, .. }) => code.clone(),
+        _ => None,
+    };
+    let shown = wait(
+        "Ben's code",
+        || AccountBackend::screen(&ben),
+        |s| code(s).is_some(),
+    );
+    let on_ana = wait(
+        "Ana's code",
+        || members(&ana),
+        |s| s.approval.as_ref().is_some_and(|a| a.code.is_some()),
+    );
+    assert_eq!(on_ana.approval.unwrap().code, code(&shown));
+    AccountBackend::act(&ben, AccountAction::ConfirmInvitationCode);
+    MembersBackend::act(&ana, MembersAction::ConfirmApproval);
+    wait(
+        "the new member",
+        || members(&ana),
+        |s| s.approval.is_none() && s.members.len() == 2,
+    );
+    wait(
+        "the join",
+        || AccountBackend::screen(&ben),
+        |s| {
+            matches!(
+                s.invitation.as_ref().map(|i| &i.stage),
+                Some(InvitationStage::Joined { downloading: false })
+            )
+        },
+    );
+}

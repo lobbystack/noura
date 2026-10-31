@@ -113,6 +113,10 @@ pub(super) struct Folder {
     session_ended: bool,
     /// The workspaces of your account that this computer doesn't keep.
     on_account: Vec<(sync_protocol::types::Id, String)>,
+    /// The invited people who wait for this computer to approve them.
+    invited_waiting: usize,
+    /// The new devices of your account that wait for approval.
+    devices_waiting: usize,
 }
 
 /// What a failed round or action tells you in the Workspace sync section.
@@ -132,6 +136,25 @@ fn folder_message(error: &SyncError) -> String {
             "This folder is a copy of a synced folder. Turn on sync to connect it.".into()
         }
         other => crate::account::problem_text(other),
+    }
+}
+
+/// What the window says about the approvals that wait for you (§10).
+fn approvals_attention(invited: usize, devices: usize) -> Option<String> {
+    match (invited, devices) {
+        (0, 0) => None,
+        (0, 1) => Some(
+            "A new device of your account waits for your approval. Open Settings > Sync account to answer.".into(),
+        ),
+        (0, _) => Some(
+            "New devices of your account wait for your approval. Open Settings > Sync account to answer.".into(),
+        ),
+        (1, _) => Some(
+            "Someone you invited waits for your approval. Open Settings > Members to answer.".into(),
+        ),
+        _ => Some(
+            "People you invited wait for your approval. Open Settings > Members to answer.".into(),
+        ),
     }
 }
 
@@ -280,7 +303,17 @@ impl Folder {
             None => FolderSyncScreen::default(),
         };
         screen.last_error = self.last_error.clone().or(self.text_problem.clone());
+        screen.attention = screen
+            .attention
+            .or_else(|| approvals_attention(self.invited_waiting, self.devices_waiting));
         screen
+    }
+
+    /// Takes how many approvals wait for you, which the window says wherever
+    /// you are.
+    pub(super) fn set_waiting_approvals(&mut self, invited: usize, devices: usize) {
+        self.invited_waiting = invited;
+        self.devices_waiting = devices;
     }
 
     /// Whether the open workspace has no synced file yet.
@@ -438,6 +471,7 @@ impl Folder {
         self.account_lost = None;
         self.last_error = None;
         self.on_account.clear();
+        self.set_waiting_approvals(0, 0);
         self.reset_held = self
             .workspace_of_folder(app_data)
             .is_some_and(|w| waits.contains(&w));
@@ -825,5 +859,21 @@ impl Folder {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::approvals_attention;
+
+    #[test]
+    fn the_window_names_the_section_that_answers_an_approval() {
+        assert_eq!(approvals_attention(0, 0), None);
+        let line = |invited, devices| approvals_attention(invited, devices).unwrap();
+        assert!(line(0, 1).contains("A new device of your account"));
+        assert!(line(0, 1).contains("Settings > Sync account"));
+        assert!(line(0, 2).starts_with("New devices"));
+        assert!(line(1, 1).contains("Settings > Members"));
+        assert!(line(2, 0).starts_with("People you invited"));
     }
 }

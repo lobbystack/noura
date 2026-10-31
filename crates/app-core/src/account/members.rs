@@ -25,6 +25,9 @@ use crate::sync::{SyncError, SyncService};
 
 /// How often the open section lists the members and requests again.
 const LIST_AGAIN: Duration = Duration::from_secs(10);
+/// How often a closed section looks for requests, which the window then
+/// says wherever you are. A request lasts 10 minutes (§10).
+const WATCH_AGAIN: Duration = Duration::from_secs(20);
 
 /// What a failed action tells you.
 fn members_message(error: &SyncError) -> String {
@@ -73,8 +76,10 @@ pub(super) struct Membership {
     requests: Vec<InvitedRequest>,
     /// The offer of the approval in progress.
     offer: Option<OutstandingOffer>,
-    /// When the section last listed everything; `None` until it opened.
+    /// When the section last listed everything.
     listed: Option<Instant>,
+    /// Whether you opened the section.
+    opened: bool,
     /// Whether Noura keeps trying a server it couldn't reach.
     pub(super) reaching: bool,
 }
@@ -85,8 +90,13 @@ impl Membership {
         self.offer.is_some()
     }
 
+    /// The invited requests that wait for this device.
+    pub(super) fn requests(&self) -> usize {
+        self.requests.len()
+    }
+
     /// Follows the approval in progress, and lists the section again every
-    /// so often once it opened, so a new request reaches you.
+    /// so often, opened or not, so a new request reaches you.
     pub(super) async fn tick(
         &mut self,
         service: Option<&mut SyncService>,
@@ -116,7 +126,8 @@ impl Membership {
             }
             return;
         }
-        if self.listed.is_none_or(|at| at.elapsed() < LIST_AGAIN) {
+        let wait = if self.opened { LIST_AGAIN } else { WATCH_AGAIN };
+        if self.listed.is_some_and(|at| at.elapsed() < wait) {
             return;
         }
         let device = service.credentials().keys.device();
@@ -143,6 +154,7 @@ impl Membership {
         }
         let notice = self.screen.notice.take();
         self.screen.problem = None;
+        self.opened = true;
         let result = self.try_act(action, service, folder, app_data).await;
         match result {
             Ok(Some(text)) => self.screen.notice = Some(text),

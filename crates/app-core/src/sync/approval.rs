@@ -11,6 +11,7 @@
 //! keeps one offer outstanding.
 
 use std::collections::BTreeSet;
+use std::time::Instant;
 
 use local_core::sync::SyncCredentials;
 use sync_key_envelope::v2::{DeviceKeys, next_link};
@@ -24,6 +25,7 @@ use sync_protocol::records::{
 use sync_protocol::types::{Digest, Id, Key};
 
 use super::device::StoredDevice;
+use super::joining::{OFFER_LIFE, REQUEST_LIFE};
 use super::{DeviceCredentials, KeptHeads, RemoteWorkspace, SyncClient, SyncError, SyncService};
 
 fn mismatch() -> SyncError {
@@ -40,6 +42,8 @@ pub struct Candidate {
     commit: Digest,
     offer: Option<(Signed<Offer>, Digest)>,
     confirmed: bool,
+    /// When the request went out.
+    posted: Instant,
 }
 
 /// Where a candidate's attempt stands.
@@ -52,6 +56,28 @@ pub enum CandidateStep {
     Code(String),
 }
 
+/// Posts an approval request committing to a fresh nonce.
+async fn post(
+    client: &mut SyncClient,
+    keys: &DeviceKeys,
+    account: Id,
+) -> Result<(Key, Digest), SyncError> {
+    let nc = Key(sync_protocol::crypto::random_array()
+        .map_err(|e| SyncError::Invalid(format!("no randomness: {e}")))?);
+    let card = keys.card(account);
+    let commit = approval_commit(&card.fingerprint(), None, &nc);
+    client
+        .post_approval_request(&ApprovalRequest {
+            commit,
+            account: None,
+            invitation: None,
+            invite_proof: None,
+            workspace: None,
+        })
+        .await?;
+    Ok((nc, commit))
+}
+
 impl Candidate {
     /// Posts an approval request for the account's own new device (§10),
     /// committing to a fresh nonce, with no account head, since the device
@@ -61,19 +87,7 @@ impl Candidate {
         keys: DeviceKeys,
         account: Id,
     ) -> Result<Self, SyncError> {
-        let nc = Key(sync_protocol::crypto::random_array()
-            .map_err(|e| SyncError::Invalid(format!("no randomness: {e}")))?);
-        let card = keys.card(account);
-        let commit = approval_commit(&card.fingerprint(), None, &nc);
-        client
-            .post_approval_request(&ApprovalRequest {
-                commit,
-                account: None,
-                invitation: None,
-                invite_proof: None,
-                workspace: None,
-            })
-            .await?;
+        let (nc, commit) = post(&mut client, &keys, account).await?;
         Ok(Self {
             client,
             keys,
@@ -82,7 +96,31 @@ impl Candidate {
             commit,
             offer: None,
             confirmed: false,
+            posted: Instant::now(),
         })
+    }
+
+    /// Whether this attempt lapses at `now`, so the device posts a fresh
+    /// request (§10).
+    pub fn lapses(&self, now: Instant) -> bool {
+        let life = if self.offer.is_some() {
+            OFFER_LIFE
+        } else {
+            REQUEST_LIFE
+        };
+        now.saturating_duration_since(self.posted) >= life
+    }
+
+    /// Starts a new attempt with a fresh nonce and commitment, after the
+    /// last one lapsed.
+    pub async fn post_again(&mut self) -> Result<(), SyncError> {
+        let (nc, commit) = post(&mut self.client, &self.keys, self.account).await?;
+        self.nc = nc;
+        self.commit = commit;
+        self.offer = None;
+        self.confirmed = false;
+        self.posted = Instant::now();
+        Ok(())
     }
 
     /// This device's card.

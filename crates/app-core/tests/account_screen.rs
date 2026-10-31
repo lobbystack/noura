@@ -1549,10 +1549,34 @@ fn a_retired_computer_comes_back_through_the_new_chain() {
     let AccountPhase::WaitingForApproval { fingerprint, .. } = waiting.phase else {
         unreachable!()
     };
-    let pending = runtime
+    // The request lapses with nobody looking, and the device posts a fresh
+    // one by itself.
+    let first = runtime
         .block_on(card.service.pending_devices())
-        .expect("listed");
+        .expect("listed")[0]
+        .commit;
+    app.server.store.clock().advance(Duration::from_secs(601));
+    assert!(
+        runtime
+            .block_on(card.service.pending_devices())
+            .expect("listed")
+            .is_empty(),
+        "the server dropped it"
+    );
+    account.move_request_clock(app_core::sync::joining::REQUEST_LIFE);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let pending = loop {
+        let pending = runtime
+            .block_on(card.service.pending_devices())
+            .expect("listed");
+        if !pending.is_empty() {
+            break pending;
+        }
+        assert!(Instant::now() < deadline, "no fresh request");
+        std::thread::sleep(Duration::from_millis(100));
+    };
     assert_eq!(pending.len(), 1);
+    assert_ne!(pending[0].commit, first);
     let mut offer = runtime
         .block_on(card.service.offer_approval(&pending[0], &mut []))
         .expect("offered");

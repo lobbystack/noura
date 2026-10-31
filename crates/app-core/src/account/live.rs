@@ -80,6 +80,9 @@ enum Message {
     Share(ShareAction),
     Members(MembersAction),
     Attach(Option<Arc<local_core::WorkspaceEngine>>),
+    /// Moves the clock of waiting requests, for a test.
+    #[cfg(feature = "test-hooks")]
+    MoveRequestClock(Duration),
 }
 
 impl Shared {
@@ -202,6 +205,7 @@ impl LiveAccount {
             download: None,
             unopened: BTreeSet::new(),
             reconnect: None,
+            request_clock_ahead: Duration::ZERO,
             reset: None,
             retired: None,
             reset_waits: Vec::new(),
@@ -236,6 +240,14 @@ impl LiveAccount {
             .unwrap_or_else(PoisonError::into_inner)
             .send(message);
         self.shared.interrupt.notify_one();
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+impl LiveAccount {
+    /// Moves the clock that waiting requests compare their age with.
+    pub fn move_request_clock(&self, by: Duration) {
+        self.send(Message::MoveRequestClock(by));
     }
 }
 
@@ -457,6 +469,8 @@ struct Driver {
     unopened: BTreeSet<Id>,
     /// While the stored device waits for its server, the next try.
     reconnect: Option<Reconnect>,
+    /// How far tests moved the clock of waiting requests.
+    request_clock_ahead: Duration,
 }
 
 /// What a failed action tells you.
@@ -660,6 +674,8 @@ impl Driver {
                     ));
                     self.shared.show_members(self.membership.screen.clone());
                 }
+                #[cfg(feature = "test-hooks")]
+                Ok(Message::MoveRequestClock(by)) => self.request_clock_ahead += by,
                 Ok(Message::Attach(engine)) => {
                     self.folder
                         .attach(engine, self.service.as_ref(), &self.store, &self.app_data);
@@ -673,6 +689,8 @@ impl Driver {
                         &self.app_data,
                     ));
                     self.shared.show_members(self.membership.screen.clone());
+                    self.folder
+                        .set_waiting_approvals(self.membership.requests(), self.requests.len());
                     // The pull waits only while nothing else here polls.
                     let long = self.folder.waits()
                         && self.sign_in.is_none()
@@ -1792,6 +1810,7 @@ impl Driver {
                 self.connect(credentials).await?;
             }
         }
+        self.post_request_again().await?;
         self.poll_invited().await?;
         self.poll_download().await?;
         if let (Some(offer), Some(service)) = (self.offer.as_mut(), self.service.as_mut()) {
@@ -1822,6 +1841,44 @@ impl Driver {
             self.keep_up().await;
         }
         Ok(())
+    }
+
+    /// Posts this new device's request again once the last one lapsed, so
+    /// the wait doesn't end in silence (§10).
+    async fn post_request_again(&mut self) -> Result<(), SyncError> {
+        let now = self.request_clock();
+        let Some(waiting) = self.candidate.as_mut() else {
+            return Ok(());
+        };
+        if !waiting.candidate.lapses(now) {
+            return Ok(());
+        }
+        match waiting.candidate.post_again().await {
+            Ok(()) => {}
+            // A server it can't reach leaves the request for the next poll.
+            Err(error @ SyncError::Network(_)) => return Err(error),
+            Err(error) => {
+                self.candidate = None;
+                self.shared
+                    .update(|screen| screen.phase = AccountPhase::SignedOut);
+                return Err(error);
+            }
+        }
+        self.shared.update(|screen| {
+            if let AccountPhase::WaitingForApproval {
+                code, confirmed, ..
+            } = &mut screen.phase
+            {
+                *code = None;
+                *confirmed = false;
+            }
+        });
+        Ok(())
+    }
+
+    /// The time a waiting request compares its age with.
+    fn request_clock(&self) -> Instant {
+        Instant::now() + self.request_clock_ahead
     }
 
     fn invitation_stage(&self, change: impl FnOnce(&mut InvitationStage)) {
@@ -1920,8 +1977,9 @@ impl Driver {
                 if joined {
                     self.invited = None;
                     self.join_workspace(workspace).await?;
+                    return Ok(());
                 }
-                Ok(())
+                self.post_invited_again().await
             }
             // A server it can't reach leaves the request for the next poll.
             Err(error @ SyncError::Network(_)) => Err(error),
@@ -1936,6 +1994,41 @@ impl Driver {
                 })
             }
         }
+    }
+
+    /// Posts the invited device's request again once the last one lapsed,
+    /// while the invitation stays open (§10, §11).
+    async fn post_invited_again(&mut self) -> Result<(), SyncError> {
+        let now = self.request_clock();
+        let (Some(invited), Some(service)) = (self.invited.as_mut(), self.service.as_mut()) else {
+            return Ok(());
+        };
+        if !invited.candidate.as_ref().is_some_and(|c| c.lapses(now)) {
+            return Ok(());
+        }
+        let fresh = service
+            .request_invited_approval(&invited.link, &invited.opened)
+            .await;
+        match fresh {
+            Ok(candidate) => invited.candidate = Some(candidate),
+            // A server it can't reach leaves the request for the next poll.
+            Err(error @ SyncError::Network(_)) => return Err(error),
+            Err(error) => {
+                self.invited = None;
+                self.shared.update(|screen| screen.invitation = None);
+                return Err(error);
+            }
+        }
+        self.invitation_stage(|stage| {
+            if let InvitationStage::Waiting {
+                code, confirmed, ..
+            } = stage
+            {
+                *code = None;
+                *confirmed = false;
+            }
+        });
+        Ok(())
     }
 
     /// Opens the workspace you joined and records your account's head
@@ -2162,7 +2255,7 @@ impl Driver {
         }
         let mut accepted = Vec::new();
         let mut changed = false;
-        let now = Instant::now();
+        let now = Instant::now() + self.request_clock_ahead;
         for (index, candidate) in self.reset_waits.iter_mut().enumerate() {
             if candidate.lapses(now) {
                 changed = true;
