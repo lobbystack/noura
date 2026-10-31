@@ -9,20 +9,23 @@
 //! checks the bucket hashes against the root and fetches the live
 //! operations page by page. As each bucket completes, it checks the
 //! bucket's hash, writes its files and records its progress, so a restart
-//! resumes at the next bucket; the leaf count is checked after the last.
+//! resumes at the next bucket. A returning device fetches only the buckets
+//! that differ from its journal, and on a restart works out which still do.
+//! Every bucket hash and the leaf count are checked before the cursor moves.
 //! The chain verifier starts at the checkpoint's heads, and the device
 //! pulls on from `covered_seq`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use sync_protocol::chain::ChainVerifier;
+use sync_protocol::codec::Decode;
 use sync_protocol::keys::LogJudge;
 use sync_protocol::live::{LiveOp, LiveSet};
 use sync_protocol::manifest::{
     BUCKETS, bucket_hash, bucket_of, heads_digest, leaf_hash, skip_number, verify_bucket,
     verify_buckets, verify_descent,
 };
-use sync_protocol::messages::{EntryRecord, PageStatus, PullCursor};
+use sync_protocol::messages::{CursorCompactedDetail, EntryRecord, PageStatus, PullCursor};
 use sync_protocol::records::{CheckpointBundle, OpClass, Operation, PolicyKind, Signed};
 use sync_protocol::types::{Digest, Id};
 
@@ -34,10 +37,10 @@ use crate::sync::account_heads::KeptCheckpointAnchor;
 const MAX_RESTARTS: usize = 8;
 
 /// The buckets whose hash differs from the one the journal's live set
-/// yields, in ascending order.
-fn differing_buckets(live: &LiveSet, buckets: &[Digest]) -> Vec<u16> {
+/// yields at `at`, in ascending order.
+fn differing_buckets(live: &LiveSet, buckets: &[Digest], at: u64) -> Vec<u16> {
     let mut hashes: Vec<Vec<Digest>> = vec![Vec::new(); BUCKETS];
-    for (rid, mut refs) in live.leaves_at(u64::MAX) {
+    for (rid, mut refs) in live.leaves_at(at) {
         if refs.is_empty() {
             continue;
         }
@@ -60,31 +63,87 @@ impl WorkspaceSync {
     /// `sync_manifest_rollback`, `sync_manifest_mismatch` or the check's own
     /// code, and installs nothing.
     pub(super) async fn bootstrap(&mut self, service: &mut SyncService) -> Result<bool, SyncError> {
+        self.bootstrap_above(service, 0).await
+    }
+
+    /// [`Self::bootstrap`] after a server reported `floor`. The device holds
+    /// the highest floor reported while it bootstraps and keeps it only when
+    /// the bootstrap ends, so a false report doesn't stop it for good.
+    pub(super) async fn bootstrap_above(
+        &mut self,
+        service: &mut SyncService,
+        floor: u64,
+    ) -> Result<bool, SyncError> {
+        let kept = self.state.log.retention_floor;
+        self.state.log.retention_floor = kept.max(floor);
+        let result = self.bootstrap_attempts(service).await;
+        if !matches!(result, Ok(true)) {
+            self.state.log.retention_floor = kept;
+            self.save()?;
+        }
+        result
+    }
+
+    async fn bootstrap_attempts(&mut self, service: &mut SyncService) -> Result<bool, SyncError> {
         let mut attempts = 0;
         loop {
-            let result = self.bootstrap_latest(service).await;
-            match result {
+            let mut at = None;
+            let result = match self.bootstrap_latest(service, &mut at).await {
                 // The floor passed the checkpoint before the bootstrap
-                // ended: it restarts from the latest one, and the buckets
-                // whose hashes match stay (§18).
-                Err(SyncError::Refused { code, .. })
-                    if code == "cursor_compacted" && attempts < MAX_RESTARTS =>
-                {
-                    attempts += 1;
-                    self.state.bootstrap_progress = None;
-                    self.save()?;
+                // ended, if the server's detail holds up: it restarts from
+                // the latest one, and the buckets whose hashes match stay
+                // (§18).
+                Err(SyncError::Refused {
+                    code,
+                    status,
+                    detail,
+                }) if code == "cursor_compacted" => {
+                    self.note_compaction(detail.as_deref(), at)?;
+                    if attempts < MAX_RESTARTS {
+                        attempts += 1;
+                        self.state.bootstrap_progress = None;
+                        self.save()?;
+                        continue;
+                    }
+                    Err(SyncError::Refused {
+                        code,
+                        status,
+                        detail,
+                    })
                 }
-                // A failed check drops the progress; a lost connection
-                // keeps it, and the next attempt resumes at the next
-                // bucket.
-                Err(SyncError::Check(_)) => {
-                    self.state.bootstrap_progress = None;
-                    self.save()?;
-                    return result;
-                }
-                other => return other,
+                result => result,
+            };
+            // A failed check drops the progress; a lost connection keeps
+            // it, and the next attempt resumes where this one stopped.
+            if matches!(result, Err(SyncError::Check(_))) {
+                self.state.bootstrap_progress = None;
+                self.save()?;
             }
+            return result;
         }
+    }
+
+    /// Checks the detail of a `cursor_compacted` from `live` or `manifest`
+    /// (§26), which answered a request at checkpoint `at`, and keeps its
+    /// floor. A floor below one reported, a floor that doesn't pass `at` and
+    /// a latest checkpoint below either report `sync_manifest_rollback`
+    /// (§30), so a server can't force a restart from an old checkpoint.
+    fn note_compaction(&mut self, detail: Option<&[u8]>, at: Option<u64>) -> Result<(), SyncError> {
+        let detail = detail
+            .and_then(|d| CursorCompactedDetail::from_bytes(d).ok())
+            .ok_or(fail("sync_manifest_rollback"))?;
+        let CursorCompactedDetail {
+            retention_floor: floor,
+            checkpoint_covered_seq: latest,
+        } = detail;
+        if floor < self.state.log.retention_floor
+            || latest < floor
+            || at.is_some_and(|at| floor <= at || latest < at)
+        {
+            return Err(fail("sync_manifest_rollback"));
+        }
+        self.state.log.retention_floor = floor;
+        self.save()
     }
 
     /// The checkpoint an interrupted bootstrap was installing, when the
@@ -119,11 +178,21 @@ impl WorkspaceSync {
         Ok(Some((bundle, entry.seq)))
     }
 
-    async fn bootstrap_latest(&mut self, service: &mut SyncService) -> Result<bool, SyncError> {
+    /// One attempt at a bootstrap. `at` learns the `covered_seq` of the
+    /// checkpoint it installs.
+    async fn bootstrap_latest(
+        &mut self,
+        service: &mut SyncService,
+        at: &mut Option<u64>,
+    ) -> Result<bool, SyncError> {
         let (workspace, domain) = (self.state.workspace, self.state.domain);
         let Some(latest) = service.client().checkpoint(workspace, domain).await? else {
             return Ok(false);
         };
+        // The floor never passes the latest checkpoint (§19).
+        if latest.bundle.checkpoint.0.body.covered_seq < self.state.log.retention_floor {
+            return Err(fail("sync_manifest_rollback"));
+        }
         if self.remote.is_none() {
             self.connect(service).await?;
         }
@@ -163,6 +232,7 @@ impl WorkspaceSync {
             (bundle, entry.seq)
         };
         let c = bundle.checkpoint.0.body.clone();
+        *at = Some(c.covered_seq);
         // A restricted domain's marker comes before its other objects, so
         // the root stands before the first file beneath it (§9).
         self.read_marker_first(service, c.covered_seq).await?;
@@ -189,15 +259,13 @@ impl WorkspaceSync {
             .is_some_and(|p| p.checkpoint == digest);
         // What the journal holds decides what comes down: only the objects
         // of the buckets that differ, or, past half of them, every page
-        // as a new device reads them (§18).
-        let differing = if resuming {
-            Vec::new()
-        } else {
-            differing_buckets(&self.state.log.live, &buckets)
+        // as a new device reads them (§18). A resumed attempt keeps its way,
+        // and the journal shows which buckets a returning device has left.
+        let differing = differing_buckets(&self.state.log.live, &buckets, c.covered_seq);
+        let returning = match &self.state.bootstrap_progress {
+            Some(progress) if resuming => progress.next_bucket as usize >= BUCKETS,
+            _ => self.state.log.live.rids().next().is_some() && differing.len() * 2 <= BUCKETS,
         };
-        let returning = !resuming
-            && self.state.log.live.rids().next().is_some()
-            && differing.len() * 2 <= BUCKETS;
         let mut progress = match self.state.bootstrap_progress.take() {
             Some(progress) if progress.checkpoint == digest => progress,
             _ => BootstrapProgress {
@@ -274,7 +342,10 @@ impl WorkspaceSync {
         }
         let leaves = self.state.log.live.leaves_at(c.covered_seq);
         let live_objects = leaves.values().filter(|refs| !refs.is_empty()).count() as u64;
-        if live_objects != c.live_objects || !progress.pending.is_empty() {
+        if live_objects != c.live_objects
+            || !progress.pending.is_empty()
+            || !differing_buckets(&self.state.log.live, &buckets, c.covered_seq).is_empty()
+        {
             return Err(fail("sync_manifest_mismatch"));
         }
         let remote = self

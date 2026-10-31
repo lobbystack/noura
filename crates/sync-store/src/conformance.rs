@@ -136,10 +136,12 @@ macro_rules! conformance_tests {
             usage_counts_what_lives_at_the_head,
             over_quota_the_server_takes_what_frees_space,
             history_yields_to_the_quota_only_as_far_as_it_must,
+            the_pressure_trigger_rearms_only_below_ninety_percent,
             usage_alone_over_quota_moves_no_floor,
             replacements_stop_at_honest_rotations,
             a_closed_workspace_is_reclaimed_domain_by_domain,
             an_account_belongs_to_at_most_a_thousand_workspaces,
+            an_account_in_a_thousand_workspaces_joins_no_more,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {

@@ -4,13 +4,14 @@
 mod sync_support;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use app_core::sync::SyncError;
 use app_core::sync::recovery::{Recovery, open_kit};
 use app_core::sync::workspace::WorkspaceSync;
-use sync_protocol::codec::{Decode, Encode, Sorted};
-use sync_protocol::messages::{Page, PageStatus, PullResponse};
+use sync_protocol::codec::{Bytes, Decode, Encode, Sorted, Text};
+use sync_protocol::messages::{CursorCompactedDetail, ErrorBody, Page, PageStatus, PullResponse};
 use sync_store::{Backend, Retention};
 use sync_support::{Folder, MemorySecrets, Pair, Proxy, Server, approve, cut_off, pair_on};
 
@@ -28,6 +29,13 @@ fn quota(bytes: u64) -> Retention {
         quota_bytes: Some(bytes),
         ..Retention::default()
     }
+}
+
+/// `len` bytes that don't compress, rounded to 32.
+fn noise(len: u32) -> Vec<u8> {
+    (0..len / 32)
+        .flat_map(|i| sync_protocol::crypto::hash(&i.to_be_bytes()).0)
+        .collect()
 }
 
 async fn ready<B: Backend>(server: Server<B>) -> Pair<B> {
@@ -77,6 +85,72 @@ async fn floor_of<B: Backend>(pair: &Pair<B>) -> u64 {
         .expect("read")
         .expect("a head row")
         .retention_floor
+}
+
+/// A connection that drops in the middle of a returning device's bootstrap
+/// leaves buckets it hasn't reached. The next attempt finds them through
+/// their hashes, so edits in them still arrive, and only then does the
+/// cursor move.
+async fn a_returning_bootstrap_resumes_past_a_drop<B: Backend>(server: Server<B>) {
+    let mut pair = ready(server).await;
+    const NOTES: usize = 12;
+    for i in 0..NOTES {
+        pair.a.write(&format!("Note{i}.md"), b"# Before\n");
+    }
+    both_rounds(&mut pair).await;
+
+    for i in 0..NOTES {
+        pair.b.write(&format!("Note{i}.md"), b"# Edited away\n");
+    }
+    walk_the_floor(&mut pair, "away", 16).await;
+    assert!(floor_of(&pair).await > 0, "the floor moved");
+
+    // The third object fetched never comes.
+    let fetched = Arc::new(AtomicUsize::new(0));
+    let counted = fetched.clone();
+    pair.proxy.forge(Box::new(move |_, path| {
+        (path.ends_with("/live") && counted.fetch_add(1, Ordering::SeqCst) >= 2)
+            .then(|| (503, Vec::new()))
+    }));
+    assert!(
+        pair.sync_a.round(&mut pair.service, 0).await.is_err(),
+        "the connection dropped"
+    );
+    let edited = |pair: &Pair<B>| {
+        let files = pair.a.files();
+        (0..NOTES)
+            .filter(|i| files[&format!("Note{i}.md")] == b"# Edited away\n")
+            .count()
+    };
+    let before = edited(&pair);
+    assert!(before < NOTES, "some buckets wait: {before} arrived");
+    pair.proxy.honest();
+
+    for _ in 0..3 {
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("the laptop resumes");
+    }
+    assert_eq!(edited(&pair), NOTES, "the edits in the other buckets came");
+    assert_eq!(pair.a.files(), pair.b.files());
+    assert!(pair.sync_a.checkpoint_failures().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_returning_bootstrap_resumes_past_a_dropped_connection() {
+    a_returning_bootstrap_resumes_past_a_drop(
+        Server::start_with_retention(ENTRIES, keep_little()).await,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_returning_bootstrap_resumes_past_a_dropped_connection_on_postgres() {
+    a_returning_bootstrap_resumes_past_a_drop(
+        Server::start_postgres_with_retention(ENTRIES, keep_little()).await,
+    )
+    .await;
 }
 
 /// A device whose cursor fell below the floor loads what it lacks and
@@ -285,6 +359,92 @@ async fn a_server_that_lowers_the_floor_or_claims_compaction_is_caught() {
     assert_eq!(pair.a.files(), pair.b.files());
 }
 
+/// The body of a `cursor_compacted` that names `floor` and `latest`.
+fn compacted_body(floor: u64, latest: u64) -> Vec<u8> {
+    ErrorBody {
+        code: Text::new("cursor_compacted").unwrap(),
+        message: Text::new("compacted").unwrap(),
+        retry_after_seconds: None,
+        detail: Some(Bytes(
+            CursorCompactedDetail {
+                retention_floor: floor,
+                checkpoint_covered_seq: latest,
+            }
+            .to_bytes(),
+        )),
+    }
+    .to_bytes()
+}
+
+/// `cursor_compacted` from `live` and `manifest` passes the checks a pull
+/// page does (§26, §30): a floor below one reported, a claim about a
+/// checkpoint the server still serves, a latest checkpoint below the one
+/// the device is installing, and a floor past the real latest checkpoint
+/// all report `sync_manifest_rollback`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_false_compaction_from_live_or_manifest_is_caught() {
+    a_false_compaction_is_caught(Server::start_with_retention(ENTRIES, keep_little()).await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_false_compaction_from_live_or_manifest_is_caught_on_postgres() {
+    a_false_compaction_is_caught(
+        Server::start_postgres_with_retention(ENTRIES, keep_little()).await,
+    )
+    .await;
+}
+
+async fn a_false_compaction_is_caught<B: Backend>(server: Server<B>) {
+    let mut pair = ready(server).await;
+    pair.a.write("Note.md", b"# Before\n");
+    both_rounds(&mut pair).await;
+    walk_the_floor(&mut pair, "first", 10).await;
+    both_rounds(&mut pair).await;
+    let reported = floor_of(&pair).await;
+    assert!(reported > 0);
+    pair.b.write("Note.md", b"# Edited away\n");
+    walk_the_floor(&mut pair, "second", 16).await;
+    assert!(floor_of(&pair).await > reported, "the laptop fell behind");
+
+    let (workspace, domain) = (pair.sync_b.workspace(), pair.sync_b.domain());
+    let latest = pair
+        .desktop
+        .service
+        .client()
+        .checkpoint(workspace, domain)
+        .await
+        .expect("read")
+        .expect("a checkpoint")
+        .bundle
+        .checkpoint
+        .0
+        .body
+        .covered_seq;
+    let forge = |pair: &Pair<B>, route: &'static str, floor, claimed| {
+        pair.proxy.forge(Box::new(move |_, path| {
+            path.ends_with(route)
+                .then(|| (410, compacted_body(floor, claimed)))
+        }));
+    };
+    for route in ["/manifest", "/live"] {
+        forge(&pair, route, reported - 1, latest);
+        expect_rollback(&mut pair, "a lower floor").await;
+        forge(&pair, route, latest, latest);
+        expect_rollback(&mut pair, "a checkpoint it still serves").await;
+        forge(&pair, route, latest + 1, latest - 1);
+        expect_rollback(&mut pair, "a latest below the one in use").await;
+    }
+    // The device restarts on this floor, and the real latest checkpoint
+    // then falls below it.
+    forge(&pair, "/live", latest + 1, latest + 1);
+    expect_rollback(&mut pair, "a floor past the real latest").await;
+
+    // Once the server answers honestly, the device catches up.
+    both_rounds(&mut pair).await;
+    both_rounds(&mut pair).await;
+    assert_eq!(pair.a.files(), pair.b.files());
+}
+
 /// A writer whose cover names a pruned operation drops that cover on
 /// `supersedes_unknown` (§19): its edit still lands, as a conflict with the
 /// version it never saw.
@@ -450,10 +610,7 @@ async fn a_bootstrap_the_floor_overtakes_restarts_on_postgres() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_change_over_quota_waits_until_space_frees_up() {
     let mut pair = ready(Server::start_with_retention(1_000_000, quota(64 * 1024)).await).await;
-    // Bytes that don't compress.
-    let big: Vec<u8> = (0..40 * 1024u32 / 32)
-        .flat_map(|i| sync_protocol::crypto::hash(&i.to_be_bytes()).0)
-        .collect();
+    let big = noise(40 * 1024);
     pair.a.write("Filler.md", &big);
     both_rounds(&mut pair).await;
     let usage = pair.sync_a.status().usage.expect("the server reported it");
@@ -481,6 +638,9 @@ async fn a_change_over_quota_waits_until_space_frees_up() {
     );
     assert!(!pair.b.path("A big note.md").exists(), "the big one waits");
     assert!(pair.a.path("A big note.md").exists(), "and stays local");
+    let status = pair.sync_a.status();
+    assert_eq!(status.pending, 0, "no record waits in the outbox");
+    assert_eq!(status.waiting_for_space, 1, "the status says what waits");
 
     // A delete commits and frees its usage.
     std::fs::remove_file(pair.a.path("Filler.md")).expect("removed");
@@ -497,6 +657,67 @@ async fn a_change_over_quota_waits_until_space_frees_up() {
         "the change went out once space freed up"
     );
     assert_eq!(pair.sync_a.status().pending, 0);
+    assert_eq!(pair.sync_a.status().waiting_for_space, 0);
+}
+
+/// A change undone while it waits for space waits for nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_waiting_change_you_take_back_stops_waiting() {
+    let mut pair = ready(Server::start_with_retention(1_000_000, quota(64 * 1024)).await).await;
+    let big = noise(40 * 1024);
+    pair.a.write("Filler.md", &big);
+    both_rounds(&mut pair).await;
+    pair.a.write("A big note.md", &big);
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a refused record doesn't fail the round");
+    assert_eq!(pair.sync_a.status().waiting_for_space, 1);
+
+    std::fs::remove_file(pair.a.path("A big note.md")).expect("removed");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    assert_eq!(pair.sync_a.status().waiting_for_space, 0);
+}
+
+/// An attachment that doesn't fit is refused at its tus creation. The
+/// change waits like a refused record, so the records behind it still go
+/// out, and a delete among them frees the space.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_attachment_over_quota_leaves_the_outbox_moving() {
+    let mut pair = ready(Server::start_with_retention(1_000_000, quota(512 * 1024)).await).await;
+    pair.a.write("Filler.bin", &noise(300 * 1024));
+    both_rounds(&mut pair).await;
+
+    pair.a.write("Photo.bin", &noise(400 * 1024));
+    pair.a.write("Note.md", b"# Behind it\n");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a refused upload doesn't fail the round");
+    assert_eq!(pair.sync_a.status().waiting_for_space, 1);
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("a round on the desktop");
+    assert!(pair.b.path("Note.md").exists(), "the next record went");
+    assert!(!pair.b.path("Photo.bin").exists());
+
+    std::fs::remove_file(pair.a.path("Filler.bin")).expect("removed");
+    for _ in 0..3 {
+        both_rounds(&mut pair).await;
+    }
+    pair.server.store.maintain().await.expect("a pass");
+    for _ in 0..2 {
+        both_rounds(&mut pair).await;
+    }
+    assert!(
+        pair.b.path("Photo.bin").exists(),
+        "it went out once space freed"
+    );
+    assert_eq!(pair.sync_a.status().waiting_for_space, 0);
 }
 
 async fn over_quota_device_changes_go_through<B: Backend>(server: Server<B>) {

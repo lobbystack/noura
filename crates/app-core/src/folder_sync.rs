@@ -118,6 +118,9 @@ pub struct FolderSyncScreen {
     pub usage: Option<String>,
     /// Whether usage stands above the quota, so changes wait.
     pub over_quota: bool,
+    /// Changes the server refused for lack of space, which stay on this
+    /// computer until space frees up (§20).
+    pub waiting_for_space: usize,
     /// Files deleted on another device while this computer was away, which
     /// wait for you (§18).
     pub deleted_away: Vec<String>,
@@ -152,6 +155,7 @@ impl FolderSyncScreen {
             over_quota: status
                 .usage
                 .is_some_and(|u| u.quota.is_some_and(|quota| u.used >= quota)),
+            waiting_for_space: status.waiting_for_space,
             deleted_away: Vec::new(),
             last_error: None,
             last_success: status.last_success.map(local_time),

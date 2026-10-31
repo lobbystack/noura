@@ -125,6 +125,9 @@ pub struct Status {
     pub pending: usize,
     /// Objects in conflict.
     pub conflicts: usize,
+    /// Changes the server refused for lack of space, which stay on this
+    /// device until space frees up (§20).
+    pub waiting_for_space: usize,
     /// Files sync leaves out.
     pub skipped: Vec<Skipped>,
     /// Unix seconds of the last round without an error.
@@ -396,6 +399,7 @@ impl WorkspaceSync {
             moved_in: Vec::new(),
             bootstrap: false,
             bootstrap_progress: None,
+            waiting_for_space: BTreeSet::new(),
         };
         // A device accepts no policy head or epoch below its mark, also
         // when it starts again without a journal (§15).
@@ -680,6 +684,7 @@ impl WorkspaceSync {
                     .values()
                     .map(|f| f.outbox.len())
                     .sum::<usize>(),
+            waiting_for_space: self.state.waiting_for_space.len(),
             conflicts: self.conflicts().len(),
             skipped: self.skipped.clone(),
             last_success: self.state.last_success,
@@ -709,10 +714,9 @@ impl WorkspaceSync {
         let Some(index) = self.state.deleted_away.iter().position(|f| f.path == path) else {
             return Ok(());
         };
-        let file = self.state.deleted_away.remove(index);
-        self.engine
-            .delete_synced(&file.path, &file.revision.to_hex())
-            .map_err(core)?;
+        let revision = self.state.deleted_away[index].revision.to_hex();
+        self.engine.delete_synced(path, &revision).map_err(core)?;
+        self.state.deleted_away.remove(index);
         self.save()
     }
 
@@ -1668,6 +1672,18 @@ impl WorkspaceSync {
         skipped.append(&mut self.skipped_now);
         skipped.sort();
         self.skipped = skipped;
+        // A change that still waits for space went back into an outbox; one
+        // you undid or deleted waits for nothing.
+        let signed_rids: BTreeSet<Id> = self
+            .state
+            .outbox
+            .iter()
+            .chain(self.state.restricted.values().flat_map(|f| &f.outbox))
+            .map(|o| o.record.body.rid)
+            .collect();
+        self.state
+            .waiting_for_space
+            .retain(|rid| signed_rids.contains(rid));
         self.save()?;
         Ok(signed)
     }
@@ -1907,16 +1923,29 @@ impl WorkspaceSync {
     /// server yet, and drops its ciphertext from the journal once the
     /// upload completes (§21).
     async fn upload_blobs(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
-        for index in 0..self.state.outbox.len() {
+        let mut index = 0;
+        while index < self.state.outbox.len() {
             let Some(blob) = self.state.outbox[index].upload.clone() else {
+                index += 1;
                 continue;
             };
             let path = self.journal.dir().join(state::upload_path(&blob.blob));
-            service
+            let uploaded = service
                 .client()
                 .upload_blob(self.state.workspace, self.state.domain, &blob, &path)
-                .await?;
-            self.state.outbox[index].upload = None;
+                .await;
+            match uploaded {
+                Ok(()) => {
+                    self.state.outbox[index].upload = None;
+                    index += 1;
+                }
+                // The records behind it still go out: one of them may be
+                // the delete that frees the space (§20).
+                Err(SyncError::Refused { code, .. }) if code == "quota_exceeded" => {
+                    self.wait_for_space(index)?;
+                }
+                Err(error) => return Err(error),
+            }
             self.save()?;
             self.journal.forget(&state::upload_path(&blob.blob));
         }
@@ -2306,6 +2335,7 @@ impl WorkspaceSync {
             ));
         }
         self.state.own.acked = Some((record.body.counter, record.digest(), receipt.seq));
+        self.state.waiting_for_space.remove(&record.body.rid);
         let key = OpKey {
             device: record.body.device,
             counter: record.body.counter,
@@ -2488,15 +2518,7 @@ impl WorkspaceSync {
                     _ => Err(refused()),
                 }
             }
-            "quota_exceeded" => {
-                // The change stays local and the next capture signs it
-                // again; the next record takes its place (§20).
-                let rejected = self.state.outbox.remove(index);
-                self.forget_own(&rejected.record);
-                self.keep_local(&rejected.record, false);
-                self.usage_checked = None;
-                self.reseal_replacing_or_end(index, &rejected.record)
-            }
+            "quota_exceeded" => self.wait_for_space(index),
             "conflict_limit" | "snapshot_required" => {
                 // The change stays local; the next record takes its place.
                 if index + 1 >= self.state.outbox.len() {
@@ -2580,6 +2602,20 @@ impl WorkspaceSync {
                 .max_by_key(|key| object.states.get(key).and_then(|s| s.seq).unwrap_or(0));
         }
         object.cover_all |= cover_all;
+    }
+
+    /// The server has no space for the outbox's record at `index`: the
+    /// change stays local, the next capture signs it again, and the next
+    /// record takes its place (§20).
+    fn wait_for_space(&mut self, index: usize) -> Result<(), SyncError> {
+        let rejected = self.state.outbox.remove(index);
+        self.forget_own(&rejected.record);
+        self.keep_local(&rejected.record, false);
+        self.state
+            .waiting_for_space
+            .insert(rejected.record.body.rid);
+        self.usage_checked = None;
+        self.reseal_replacing_or_end(index, &rejected.record)
     }
 
     /// Puts the next record, if any, at a dropped record's position.
@@ -3171,12 +3207,9 @@ impl WorkspaceSync {
             // The floor passed the cursor: the device loads what it lacks
             // from the latest checkpoint (§18).
             PageStatus::Compacted => {
-                if !self.bootstrap(service).await? {
+                if !self.bootstrap_above(service, page.retention_floor).await? {
                     return Err(SyncError::Check("sync_manifest_rollback"));
                 }
-                self.state.log.retention_floor =
-                    self.state.log.retention_floor.max(page.retention_floor);
-                self.save()?;
                 return Ok((0, false));
             }
         }

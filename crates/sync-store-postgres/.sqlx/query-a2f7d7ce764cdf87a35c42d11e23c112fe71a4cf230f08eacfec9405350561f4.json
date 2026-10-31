@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT workspace FROM workspaces WHERE quota_pressure = TRUE LIMIT $1",
+  "query": "SELECT workspace FROM workspaces WHERE quota_pressure = TRUE ORDER BY random() LIMIT $1",
   "describe": {
     "columns": [
       {
@@ -24,5 +24,5 @@
       false
     ]
   },
-  "hash": "5c2d150db98ab0a18417883e61cc00b142b392ab5d706b91ea48072b008a5f05"
+  "hash": "a2f7d7ce764cdf87a35c42d11e23c112fe71a4cf230f08eacfec9405350561f4"
 }

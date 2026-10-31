@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT workspace FROM workspaces WHERE quota_pressure = 1 LIMIT ?1",
+  "query": "SELECT workspace FROM workspaces WHERE quota_pressure = 1 ORDER BY random() LIMIT ?1",
   "describe": {
     "columns": [
       {
@@ -22,5 +22,5 @@
       false
     ]
   },
-  "hash": "faa12d15ac81f51d9e9e4ca6ad7499e380bb3a00a30ce365bbc2633464e2cad1"
+  "hash": "1db9baf0d8a89dadd6a44660aad56f16dd52be729d9a6358cbdab9564f82e2c3"
 }

@@ -5,7 +5,7 @@
 //! map from each `rid` to its local file and the states its operations
 //! carried, and the review store's index.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use sync_protocol::chain::ChainVerifier;
@@ -135,6 +135,10 @@ pub struct State {
     /// saved with the files of each bucket it installed.
     #[serde(default)]
     pub bootstrap_progress: Option<BootstrapProgress>,
+    /// The objects whose changes the server last refused with
+    /// `quota_exceeded`, which wait on this device for space (§20).
+    #[serde(default)]
+    pub waiting_for_space: BTreeSet<Id>,
 }
 
 /// One key domain's part of the journal.

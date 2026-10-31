@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT d.workspace, d.domain, d.deleted FROM domains d\n             WHERE d.deleted = 1 OR d.pruned_floor < d.retention_floor\n                OR EXISTS (\n                  SELECT 1 FROM checkpoints c\n                  WHERE c.workspace = d.workspace AND c.domain = d.domain\n                    AND c.covered_seq > d.retention_floor AND c.log_weight <= d.log_weight - ?1\n                )\n             LIMIT ?2",
+  "query": "SELECT d.workspace, d.domain, d.deleted FROM domains d\n             WHERE d.deleted = 1 OR d.pruned_floor < d.retention_floor\n                OR EXISTS (\n                  SELECT 1 FROM checkpoints c\n                  WHERE c.workspace = d.workspace AND c.domain = d.domain\n                    AND c.covered_seq > d.retention_floor AND c.log_weight <= d.log_weight - ?1\n                )\n             ORDER BY random() LIMIT ?2",
   "describe": {
     "columns": [
       {
@@ -46,5 +46,5 @@
       false
     ]
   },
-  "hash": "4a95c564e82358f1da022cfc33f821b5f60b4e2f4ba35694ec6d9fb76dfc5d78"
+  "hash": "f1a24659cbf38fe07d1a28aab31d3e275f8d47168080bfb29ad1a8152cb82800"
 }

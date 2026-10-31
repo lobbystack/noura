@@ -15,16 +15,22 @@ pub const PERIOD: Duration = Duration::from_secs(60);
 
 /// Takes each blob that's due through the collector's three steps: mark the
 /// row, delete the store objects, delete the row. A crash between steps
-/// leaves a marked row that the next pass finishes. Returns how many blobs
-/// it deleted.
+/// leaves a marked row that the next pass finishes, and so does a failure
+/// on one blob, which costs the others nothing. Returns how many blobs it
+/// deleted.
 pub async fn collect_blobs<B: Backend>(
     store: &Store<B>,
     blobs: &dyn SegmentStore,
 ) -> Result<u64, sync_store::Error> {
     let mut collected = 0;
     for target in store.collectable_blobs().await? {
-        let Some(segments) = store.mark_blob(target).await? else {
-            continue;
+        let segments = match store.mark_blob(target).await {
+            Ok(Some(segments)) => segments,
+            Ok(None) => continue,
+            Err(error) => {
+                tracing::warn!("can't mark a collected blob: {error}");
+                continue;
+            }
         };
         let mut gone = true;
         for (index, hash) in segments.iter().enumerate() {
@@ -35,8 +41,10 @@ pub async fn collect_blobs<B: Backend>(
             }
         }
         if gone {
-            store.finish_blob(target).await?;
-            collected += 1;
+            match store.finish_blob(target).await {
+                Ok(()) => collected += 1,
+                Err(error) => tracing::warn!("can't finish a collected blob: {error}"),
+            }
         }
     }
     Ok(collected)
@@ -49,6 +57,9 @@ pub async fn run_once<B: Backend>(
     blobs: &dyn SegmentStore,
 ) -> Result<Maintenance, sync_store::Error> {
     let report = store.maintain().await?;
+    if let Some(failure) = &report.failure {
+        tracing::error!(failed = report.failed, cause = %failure, "maintenance skipped some work");
+    }
     if collect_blobs(store, blobs).await? > 0 {
         store.maintain().await?;
     }

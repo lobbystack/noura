@@ -17,8 +17,8 @@ use sync_protocol::types::{Digest, Id};
 
 use crate::push::{ENTRY_EPOCH, ENTRY_OPERATION, ENTRY_POLICY};
 use crate::{
-    Backend, DEFAULT_RETAINED_BYTES, DomainRow, Error, LockPlan, PruneScan, ReadTxn, Result, Store,
-    WriteTxn, refuse,
+    Backend, DEFAULT_RETAINED_BYTES, DomainRow, Error, LockPlan, PendingDomain, PruneScan, ReadTxn,
+    Result, Store, WriteTxn, refuse,
 };
 
 /// How long an incomplete upload lasts after creation, and a completed one
@@ -68,7 +68,7 @@ pub struct BlobToCollect {
 }
 
 /// What one maintenance pass did.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Maintenance {
     /// Domains whose floor rose.
     pub raised: u64,
@@ -76,6 +76,21 @@ pub struct Maintenance {
     pub pruned: u64,
     /// Domains that finished reclaiming.
     pub reclaimed: u64,
+    /// Domains and workspaces the pass gave up on until the next one.
+    pub failed: u64,
+    /// The first failure, for the server's local log.
+    pub failure: Option<String>,
+}
+
+impl Maintenance {
+    /// One domain or workspace failing costs only its own work: the pass
+    /// goes on to the rest.
+    fn note(&mut self, result: Result<()>) {
+        if let Err(error) = result {
+            self.failed += 1;
+            self.failure.get_or_insert_with(|| error.to_string());
+        }
+    }
 }
 
 fn signed(value: u64) -> i64 {
@@ -445,17 +460,8 @@ impl<B: Backend> Store<B> {
             }))
             .await?;
         for domain in pending {
-            if domain.deleted {
-                if self.reclaim_domain(domain.workspace, domain.domain).await? {
-                    report.reclaimed += 1;
-                }
-                continue;
-            }
-            let (_, raised) = self
-                .persist_floor(domain.workspace, domain.domain, None)
-                .await?;
-            report.raised += u64::from(raised);
-            report.pruned += self.prune_domain(domain.workspace, domain.domain).await?;
+            let result = self.maintain_domain(domain, &mut report).await;
+            report.note(result);
         }
         if let Some(quota) = self.retention.quota_bytes {
             let pressured = self
@@ -465,10 +471,27 @@ impl<B: Backend> Store<B> {
                 }))
                 .await?;
             for workspace in pressured {
-                self.relieve(workspace, quota, &mut report).await?;
+                let result = self.relieve(workspace, quota, &mut report).await;
+                report.note(result);
             }
         }
         Ok(report)
+    }
+
+    /// Reclaims a deleted domain, or raises another's floor and prunes it.
+    async fn maintain_domain(&self, domain: PendingDomain, report: &mut Maintenance) -> Result<()> {
+        if domain.deleted {
+            if self.reclaim_domain(domain.workspace, domain.domain).await? {
+                report.reclaimed += 1;
+            }
+            return Ok(());
+        }
+        let (_, raised) = self
+            .persist_floor(domain.workspace, domain.domain, None)
+            .await?;
+        report.raised += u64::from(raised);
+        report.pruned += self.prune_domain(domain.workspace, domain.domain).await?;
+        Ok(())
     }
 
     /// Raises the workspace's floors one checkpoint at a time, starting

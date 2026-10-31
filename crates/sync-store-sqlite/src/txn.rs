@@ -342,7 +342,7 @@ impl ReadTxn for SqliteTxn {
                   WHERE c.workspace = d.workspace AND c.domain = d.domain
                     AND c.covered_seq > d.retention_floor AND c.log_weight <= d.log_weight - ?1
                 )
-             LIMIT ?2"#,
+             ORDER BY random() LIMIT ?2"#,
             retained,
             limit
         )
@@ -363,7 +363,7 @@ impl ReadTxn for SqliteTxn {
     async fn pressured_workspaces(&mut self, limit: u32) -> Result<Vec<Id>> {
         let limit = i64::from(limit);
         let rows = sqlx::query!(
-            "SELECT workspace FROM workspaces WHERE quota_pressure = 1 LIMIT ?1",
+            "SELECT workspace FROM workspaces WHERE quota_pressure = 1 ORDER BY random() LIMIT ?1",
             limit
         )
         .fetch_all(self.c())

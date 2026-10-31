@@ -13,7 +13,7 @@ use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
 use sync_protocol::blob::{MAX_BLOB_FILE, SEGMENT_LEN, blob_ciphertext_len};
 use sync_protocol::types::{Digest, Id};
-use sync_store::{Backend, BlobCreation, BlobUpload, Recorded, Store};
+use sync_store::{Backend, BlobCreation, BlobUpload, Recorded, Session, Store};
 
 use crate::blobs::segment_key;
 use crate::http::{ApiError, AppState, Auth, Segments, id, refused};
@@ -205,6 +205,29 @@ async fn delete_segments(
     }
 }
 
+/// Whether the object of a segment the store didn't record belongs to
+/// nothing, as after losing a race with the collector (§19). Segment keys
+/// name the blob, the index and the hash, so a rival `PATCH` of the same
+/// bytes shares the object: it stays unless the row is gone or marked, or
+/// records other bytes at this index.
+async fn stranded<B: Backend>(
+    state: &AppState<B>,
+    session: Session,
+    workspace: Id,
+    blob: Id,
+    index: u64,
+    hash: &Digest,
+) -> bool {
+    match state.store.blob_upload(session, workspace, blob).await {
+        Ok(upload) => usize::try_from(index)
+            .ok()
+            .and_then(|index| upload.segments.get(index))
+            .is_some_and(|recorded| recorded != hash),
+        Err(sync_store::Error::Refused(refusal)) => refusal.code == "not_found",
+        Err(_) => false,
+    }
+}
+
 async fn patch<B: Backend>(
     State(state): State<AppState<B>>,
     Auth(session): Auth,
@@ -257,9 +280,8 @@ async fn patch<B: Backend>(
                 .store
                 .record_segment(session, workspace, blob, offset, len, hash)
                 .await;
-            // A segment the store didn't record, such as one that lost a
-            // race with the collector, names no row (§19).
             if recorded.is_err()
+                && stranded(&state, session, workspace, blob, index, &hash).await
                 && let Err(error) = state.blobs.delete(&key).await
             {
                 tracing::warn!("can't delete an unrecorded segment: {error}");

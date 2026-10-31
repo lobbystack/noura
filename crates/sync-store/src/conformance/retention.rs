@@ -836,9 +836,9 @@ pub async fn over_quota_the_server_takes_what_frees_space<B: Backend>(store: Sto
 }
 
 /// The pressure rules (§19, §20): usage and history crossing the quota make
-/// a checkpoint due once in each domain with entries, the trigger re-arms
-/// only below 90%, and floors rise one checkpoint at a time until the
-/// workspace fits, leaving history that the quota doesn't need.
+/// a checkpoint due once in each domain with entries, and floors rise one
+/// checkpoint at a time until the workspace fits, leaving history that the
+/// quota doesn't need.
 pub async fn history_yields_to_the_quota_only_as_far_as_it_must<B: Backend>(store: Store<B>) {
     let length = operation_length();
     let base_guess = 8_000;
@@ -936,6 +936,74 @@ pub async fn history_yields_to_the_quota_only_as_far_as_it_must<B: Backend>(stor
         "pruning brought the workspace back within its quota: {used} + {history} of {quota}"
     );
     assert!(floor > 0, "the floor rose");
+}
+
+/// Moves usage and history together to `percent` of `quota`, through the
+/// history column.
+async fn fill_to<B: Backend>(world: &World<B>, quota: u64, percent: u64) {
+    let (used, history, _) = world.usage().await;
+    let change = (quota * percent / 100) as i64 - (used + history) as i64;
+    let (w, d) = (world.workspace, world.domain);
+    world
+        .store
+        .backend()
+        .write(Box::new(move |txn: &mut B::Write| {
+            Box::pin(async move { txn.add_usage(w, d, 0, change).await })
+        }))
+        .await
+        .expect("history moved");
+}
+
+/// Two more entries: the first notes the pressure, the second is the next
+/// entry a crossing makes a checkpoint due at. Returns the due point.
+async fn due_after_two_entries<B: Backend>(track: &mut Track, world: &World<B>) -> u64 {
+    track.write(world, 0).await;
+    track.write(world, 0).await;
+    world
+        .pull(0, world.store_floor().await)
+        .await
+        .checkpoint_due
+}
+
+/// The trigger has hysteresis (§20): after a crossing, falling only to
+/// between 90% and 100% of the quota and passing it again counts nothing,
+/// and falling below 90% arms the next crossing.
+pub async fn the_pressure_trigger_rearms_only_below_ninety_percent<B: Backend>(store: Store<B>) {
+    let quota = 1_000_000;
+    let world = quota_world(store, quota, 1_000_000, 1).await;
+    let mut track = Track::new(&world).await;
+    let crossings = async |world: &World<B>| world.domain_row(world.domain).await.quota_crossings;
+
+    track.write(&world, 0).await;
+    assert_eq!(crossings(&world).await, 0);
+    fill_to(&world, quota, 101).await;
+    assert!(
+        due_after_two_entries(&mut track, &world).await > 0,
+        "the first crossing makes a checkpoint due"
+    );
+    assert_eq!(crossings(&world).await, 1);
+    commit_checkpoint(&mut track, &world, 0, 0).await;
+
+    // Into the band and back over: the trigger stays spent.
+    fill_to(&world, quota, 95).await;
+    track.write(&world, 0).await;
+    fill_to(&world, quota, 101).await;
+    assert_eq!(
+        due_after_two_entries(&mut track, &world).await,
+        0,
+        "no new crossing without falling below 90%"
+    );
+    assert_eq!(crossings(&world).await, 1);
+
+    // Below 90%, it re-arms, and the next crossing counts.
+    fill_to(&world, quota, 89).await;
+    track.write(&world, 0).await;
+    fill_to(&world, quota, 101).await;
+    assert!(
+        due_after_two_entries(&mut track, &world).await > 0,
+        "the second crossing makes one checkpoint due"
+    );
+    assert_eq!(crossings(&world).await, 2);
 }
 
 /// When usage alone exceeds the quota, history can't bring it back: floors
@@ -1071,7 +1139,8 @@ pub async fn a_closed_workspace_is_reclaimed_domain_by_domain<B: Backend>(store:
 }
 
 /// An account belongs to at most 1,000 workspaces (§27): one more creation
-/// or `add_member` answers `workspace_limit`.
+/// answers `workspace_limit`, and so does one more `add_member`
+/// (`an_account_in_a_thousand_workspaces_joins_no_more`).
 pub async fn an_account_belongs_to_at_most_a_thousand_workspaces<B: Backend>(store: Store<B>) {
     let world = World::new(store, 1).await;
     let account = world.account;
