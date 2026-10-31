@@ -69,6 +69,27 @@ pub struct Server<B: Backend = SqliteBackend> {
     pub postgres: Option<TestDatabase>,
     /// How to reach that database, for a second server instance.
     pub instance: Option<sync_server::Postgres>,
+    /// The text of every mail the server sent.
+    pub mail: Arc<Mutex<Vec<String>>>,
+}
+
+/// A mail transport that keeps each message's text.
+struct Outbox(Arc<Mutex<Vec<String>>>);
+
+impl sync_server::accounts::MailTransport for Outbox {
+    fn send<'a>(
+        &'a self,
+        mail: &'a sync_server::accounts::Mail,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), sync_server::accounts::MailError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        self.0.lock().unwrap().push(mail.text.clone());
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// The database file in a SQLite server's data directory.
@@ -325,10 +346,20 @@ impl<B: Backend> Server<B> {
         let store = Arc::new(store);
         let blobs = sync_server::blobs::DiskStore::open(&dir.path().join("blobs"))
             .expect("the blob store opens");
+        let mail: Arc<Mutex<Vec<String>>> = Arc::default();
+        let outbox = mail.clone();
         let address = sync_server::spawn_with_blobs(
             store.clone(),
             "127.0.0.1:0",
-            sync_server::Accounts::local,
+            move |origin| {
+                sync_server::Accounts::new(
+                    origin,
+                    Default::default(),
+                    "Noura <noura@localhost>".into(),
+                    Box::new(Outbox(outbox)),
+                    None,
+                )
+            },
             Arc::new(blobs),
         )
         .await
@@ -339,6 +370,7 @@ impl<B: Backend> Server<B> {
             dir,
             postgres,
             instance: None,
+            mail,
         }
     }
 
@@ -701,6 +733,7 @@ impl Proxy {
             dir,
             postgres: None,
             instance: None,
+            mail: Arc::default(),
         };
         (server, proxy)
     }

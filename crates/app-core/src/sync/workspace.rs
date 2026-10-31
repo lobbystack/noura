@@ -4139,7 +4139,10 @@ impl WorkspaceSync {
             };
             if let Some(payload) = record.payload.as_ref().filter(|p| is_text(p)) {
                 let blob = text_blob(payload, &mut contents);
-                if blob.is_none() && lists_text_blob(payload) && !self.text_holds(&op.body.rid, &key) {
+                if blob.is_none()
+                    && lists_text_blob(payload)
+                    && !self.text_holds(&op.body.rid, &key)
+                {
                     continue;
                 }
                 self.take_text(&record, blob)?;

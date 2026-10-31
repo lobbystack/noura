@@ -1360,5 +1360,110 @@ async fn a_lost_text_blob_is_covered_by_a_new_snapshot() {
     assert_eq!(pair.a.files(), pair.b.files());
     let written = pair.server.blob_files().len();
     rounds(&mut pair).await;
-    assert_eq!(pair.server.blob_files().len(), written, "one snapshot per loss");
+    assert_eq!(
+        pair.server.blob_files().len(),
+        written,
+        "one snapshot per loss"
+    );
+}
+
+/// M7's harness: many devices of one account all applied a state the
+/// restore lost. Each waits by its rank for that object, so one writes it
+/// again and the others find it written, and none gets `conflict_limit`.
+/// `NOURA_RESTORE_DEVICES` sets the number of devices; CI runs 200.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn many_devices_pick_one_writer_for_a_lost_object() {
+    use app_core::sync::workspace::WorkspaceSync;
+    use sync_support::Folder;
+
+    let count: usize = std::env::var("NOURA_RESTORE_DEVICES")
+        .ok()
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(8);
+    let wait = std::time::Duration::from_secs((count as u64 / 3).clamp(4, 60));
+    let mut pair = pair().await;
+    let workspace = pair.sync_a.workspace();
+    let mut devices = Vec::new();
+    for index in 0..count {
+        let mut desktop = approve(
+            &pair.server,
+            &mut pair.laptop,
+            std::slice::from_mut(pair.sync_a.remote_mut().expect("connected")),
+        )
+        .await;
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("laptop");
+        let mut folder = Folder::new(&format!("Device {index}"));
+        let mut sync = WorkspaceSync::download(
+            &mut desktop.service,
+            folder.engine.clone(),
+            workspace,
+            &mut folder.registry,
+        )
+        .await
+        .expect("it downloads");
+        sync.round(&mut desktop.service, 0).await.expect("a round");
+        devices.push((desktop, folder, sync));
+        // The server caps pending requests, and answered ones count until
+        // they expire.
+        if index % 16 == 15 {
+            let database = pair.server.dir.path().join("data").join(sync_support::DATABASE);
+            rusqlite::Connection::open(database)
+                .expect("the database")
+                .execute("DELETE FROM approval_requests", [])
+                .expect("cleared");
+        }
+    }
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("desktop");
+    let copy = pair.server.backup("before.sqlite3").await;
+    pair.a.write("Lost.md", b"# Lost\n");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("laptop");
+    for (desktop, folder, sync) in &mut devices {
+        sync.round(&mut desktop.service, 0).await.expect("a round");
+        assert!(folder.files().contains_key("Lost.md"));
+    }
+
+    // The laptop stays away, so only the devices that applied it decide.
+    let restored = pair.server.put_back(&copy, true).await;
+    let mut services = Vec::new();
+    for (desktop, _, sync) in &mut devices {
+        services.push(desktop.connect_through(&restored.base).await);
+        sync.set_restore_wait(wait);
+    }
+    let started = std::time::Instant::now();
+    while started.elapsed() < wait + std::time::Duration::from_secs(3) {
+        for ((_, _, sync), service) in devices.iter_mut().zip(services.iter_mut()) {
+            match sync.round(service, 0).await {
+                Ok(_) => {}
+                Err(error) => {
+                    assert_ne!(error.code(), Some("conflict_limit"));
+                    panic!("{error:?}");
+                }
+            }
+        }
+    }
+    let writers = devices
+        .iter()
+        .filter(|(_, _, sync)| sync.written_again().iter().any(|path| path == "Lost.md"))
+        .count();
+    assert!(writers >= 1, "a writer wrote the object again");
+    assert!(
+        writers <= count.div_ceil(8) + 1,
+        "{writers} of {count} devices wrote it"
+    );
+    for ((_, folder, sync), service) in devices.iter_mut().zip(services.iter_mut()) {
+        sync.round(service, 0).await.expect("a round");
+        assert_eq!(
+            folder.files().get("Lost.md").map(Vec::as_slice),
+            Some(&b"# Lost\n"[..])
+        );
+    }
 }

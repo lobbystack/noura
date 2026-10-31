@@ -341,14 +341,18 @@ async fn a_kit_whose_head_a_restore_lost_says_so() {
         )
         .await
         .expect("exported");
-    let kit = open_kit(&path, &export.secret).expect("it opens");
+    let mut kit = open_kit(&path, &export.secret).expect("it opens");
 
     // The restore lost the links the kit added, under a new generation.
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let restored = pair.server.put_back(&copy, true).await;
-    pair.proxy.retarget(&restored.base);
-    let mut signed_in = restored.sign_in(account, &restored.base).await;
-    signed_in.server = pair.proxy.base.clone();
+    let signed_in = restored.sign_in(account, &restored.base).await;
+    // The restored test server listens on another port than the kit names.
+    let mut client = SyncClient::connect(&restored.base, &signed_in.session_token)
+        .await
+        .expect("connects");
+    kit.origin = sync_protocol::codec::Text::new(client.origin().expect("an origin")).unwrap();
+    let _ = client.restore_generation();
     let state = tempfile::tempdir().unwrap();
     let secrets: app_core::sync::Secrets = Arc::new(MemorySecrets::default());
     let refused = Recovery::begin(&signed_in, kit, secrets, state.path()).await;

@@ -85,6 +85,8 @@ fn text_review_lines(sync: &WorkspaceSync) -> Vec<String> {
 /// The open workspace and its sync.
 #[derive(Default)]
 pub(super) struct Folder {
+    /// You asked to reset your devices from the restore notice.
+    reset_wanted: bool,
     engine: Option<Arc<WorkspaceEngine>>,
     sync: Option<WorkspaceSync>,
     last_error: Option<String>,
@@ -331,6 +333,10 @@ impl Folder {
     }
 
     /// The open workspace's sync, when it syncs.
+    pub(super) fn take_reset_wanted(&mut self) -> bool {
+        std::mem::take(&mut self.reset_wanted)
+    }
+
     pub(super) fn sync_mut(&mut self) -> Option<&mut WorkspaceSync> {
         self.sync.as_mut()
     }
@@ -569,9 +575,9 @@ impl Folder {
                     sync.dismiss_restore_alert()?;
                 }
             }
-            // Reset devices runs from the account screen, which asks for
+            // The account screens take it from here: a new sign-in, then
             // the emailed code.
-            FolderSyncAction::ResetDevices => {}
+            FolderSyncAction::ResetDevices => self.reset_wanted = true,
             FolderSyncAction::SetUpAgain => {
                 let (Some(sync), Some(service)) = (self.sync.as_mut(), service) else {
                     return Err(SyncError::Invalid(

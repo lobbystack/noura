@@ -105,6 +105,13 @@ pub struct InvitedRequest {
 /// an `accept_reset` rather than an `add_member`.
 pub const RESET: Id = Id([0; 16]);
 
+impl InvitedCandidate {
+    /// Whether you confirmed the code.
+    pub fn confirmed(&self) -> bool {
+        self.confirmed
+    }
+}
+
 impl SyncService {
     /// Posts this device's approval request for the invitation `opened`
     /// (§10, §11): a commitment to a fresh nonce and to the head of its

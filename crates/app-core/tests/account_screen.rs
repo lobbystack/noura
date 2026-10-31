@@ -898,3 +898,79 @@ fn a_waiting_pull_doesnt_hold_up_what_you_do() {
     drop(account);
     drop(runtime);
 }
+
+/// Reset devices through the real backend: a wrong code stays put, the
+/// right one starts a new chain and shows the new fingerprint.
+#[test]
+fn reset_devices_starts_a_new_chain_from_the_emailed_code() {
+    use app_core::sync::device::{Joined, join};
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let server = runtime.block_on(Server::start());
+    let account_id = runtime.block_on(server.person("ada@example.com"));
+    // Another device, gone now, started the chain.
+    runtime.block_on(async {
+        let signed_in = server.sign_in(account_id, &server.base).await;
+        let secrets = MemorySecrets::default();
+        assert!(matches!(
+            join(&signed_in, &secrets).await.expect("joined"),
+            Joined::First(_)
+        ));
+    });
+    let app_data = tempfile::tempdir().unwrap();
+    let secrets = Arc::new(MemorySecrets::default());
+    let opened = Arc::new(Mutex::new(Vec::new()));
+    let record = opened.clone();
+    let account = LiveAccount::start(
+        app_data.path().to_owned(),
+        secrets.clone(),
+        Arc::new(move |url| {
+            record.lock().unwrap().push(url.to_owned());
+            Ok(())
+        }),
+    );
+    account.act(AccountAction::SetServer(server.base.clone()));
+    wait_for(&account, "the address", |s| s.server == server.base);
+    account.act(AccountAction::StartReset);
+    let screen = wait_for(&account, "the sign-in code", |s| {
+        matches!(s.phase, AccountPhase::SigningIn { .. })
+    });
+    let AccountPhase::SigningIn { user_code } = screen.phase else {
+        unreachable!()
+    };
+    assert!(
+        runtime
+            .block_on(
+                server
+                    .store
+                    .decide_device_grant(account_id, &user_code, true)
+            )
+            .unwrap()
+    );
+    wait_for(&account, "the code field", |s| {
+        matches!(s.phase, AccountPhase::ResetCode)
+    });
+    let code = server
+        .mail
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find_map(|text: &String| text.split_whitespace().nth(5).map(str::to_owned))
+        .expect("the code's mail");
+    account.act(AccountAction::ConfirmReset("WRONGONE".into()));
+    let screen = wait_for(&account, "the refusal", |s| s.problem.is_some());
+    assert!(matches!(screen.phase, AccountPhase::ResetCode));
+    account.act(AccountAction::ConfirmReset(
+        code.trim_end_matches('.').to_owned(),
+    ));
+    let screen = wait_for(
+        &account,
+        "the new chain",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if view.reset_fingerprint.is_some()),
+    );
+    let AccountPhase::SignedIn(view) = screen.phase else {
+        unreachable!()
+    };
+    assert!(view.offer_kit);
+}

@@ -140,6 +140,31 @@ pub(crate) fn section(
                 if ui.button("Cancel").clicked() {
                     actions.push(AccountAction::CancelSignIn);
                 }
+                muted(ui, "Lost every device and your recovery kit?");
+                if ui.button("Reset devices").clicked() {
+                    actions.push(AccountAction::StartReset);
+                }
+            });
+        }
+        AccountPhase::ResetCode => {
+            group(ui, "Reset your devices", |ui| {
+                ui.label("We emailed you a code of 8 characters. It works once, for 10 minutes.");
+                let id = ui.make_persistent_id("reset-code");
+                let mut typed: String = ui.data_mut(|data| data.get_temp(id).unwrap_or_default());
+                ui.add(TextEdit::singleline(&mut typed).hint_text("Reset code"));
+                ui.data_mut(|data| data.insert_temp(id, typed.clone()));
+                ui.horizontal(|ui| {
+                    let ready = !typed.trim().is_empty();
+                    if ui
+                        .add_enabled(ready, Button::new("Start over with this code"))
+                        .clicked()
+                    {
+                        actions.push(AccountAction::ConfirmReset(typed.clone()));
+                    }
+                    if ui.button("Cancel").clicked() {
+                        actions.push(AccountAction::CancelSignIn);
+                    }
+                });
             });
         }
         AccountPhase::Recovering(review) => recovering(ui, review, &mut actions),
@@ -421,6 +446,69 @@ fn recovering(ui: &mut Ui, review: &RecoveryView, actions: &mut Vec<AccountActio
     });
 }
 
+/// What a reset asks of you: your new fingerprint and each workspace that
+/// has to accept it, and the resets you can accept here (§7).
+fn reset_groups(ui: &mut Ui, view: &SignedInView, actions: &mut Vec<AccountAction>) {
+    if let Some(shown) = &view.reset_fingerprint {
+        group(ui, "You reset your devices", |ui| {
+            ui.label("This account's new fingerprint:");
+            fingerprint_line(ui, shown);
+            ui.label("Approve your other devices again, and export a new recovery kit.");
+        });
+    }
+    if !view.reset_waits.is_empty() {
+        group(ui, "Workspaces that have to accept the reset", |ui| {
+            ui.label("An owner or admin of each workspace accepts it. Compare the code with them.");
+            for (index, wait) in view.reset_waits.iter().enumerate() {
+                ui.label(format!("Workspace {}", wait.workspace));
+                match &wait.code {
+                    None => {
+                        muted(ui, "Waiting for an owner or admin.");
+                    }
+                    Some(shown) => {
+                        code(ui, shown);
+                        if wait.confirmed {
+                            muted(ui, "Waiting for them to finish.");
+                        } else if ui.button("Codes match").clicked() {
+                            actions.push(AccountAction::ConfirmResetWait(index));
+                        }
+                    }
+                }
+            }
+        });
+    }
+    if let Some(approval) = &view.reset_approval {
+        group(ui, "Accept this reset", |ui| {
+            ui.label("The person's new device:");
+            fingerprint_line(ui, &approval.fingerprint);
+            match &approval.code {
+                None => {
+                    muted(ui, "Waiting for their device.");
+                }
+                Some(shown) => {
+                    ui.label("Compare this code with theirs, over a channel you both trust:");
+                    code(ui, shown);
+                    if ui.button("Codes match, accept").clicked() {
+                        actions.push(AccountAction::ConfirmAcceptReset);
+                    }
+                }
+            }
+            if ui.button("Cancel").clicked() {
+                actions.push(AccountAction::CancelAcceptReset);
+            }
+        });
+    } else if !view.reset_requests.is_empty() {
+        group(ui, "Resets to accept", |ui| {
+            for (index, request) in view.reset_requests.iter().enumerate() {
+                fingerprint_line(ui, &request.fingerprint);
+                if ui.button("Accept this reset").clicked() {
+                    actions.push(AccountAction::AcceptReset(index));
+                }
+            }
+        });
+    }
+}
+
 fn signed_in_section(
     ui: &mut Ui,
     screen: &AccountScreen,
@@ -435,6 +523,7 @@ fn signed_in_section(
         ui.label("Your account's fingerprint:");
         fingerprint_line(ui, &view.account_fingerprint);
     });
+    reset_groups(ui, view, actions);
     for warning in &view.alerts {
         alert(ui, &warning.text);
         if let Some(device) = warning.end_sessions

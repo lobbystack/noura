@@ -504,7 +504,9 @@ impl Recovery {
                     if generation > listed.generation =>
                 {
                     service.heads.forget_workspace(listed.workspace)?;
-                    review.unverified.push((listed.workspace, "sync_restore_lost"));
+                    review
+                        .unverified
+                        .push((listed.workspace, "sync_restore_lost"));
                     continue;
                 }
                 Err(error) => return Err(error),
