@@ -270,6 +270,7 @@ pub(crate) async fn commit(
     txn: &mut impl WriteTxn,
     cache: &PolicyCache,
     interval: CheckpointInterval,
+    quota: Option<u64>,
     generation: u64,
     session: Session,
     workspace: Id,
@@ -352,14 +353,22 @@ pub(crate) async fn commit(
             "the device isn't active in this workspace",
         ));
     }
-    let mut state = keys::PushState::new(policy, interval, now);
+    let mut state = keys::PushState::new(policy, interval, quota, now);
     let mut receipts = Vec::with_capacity(pushed.len());
     for record in &pushed {
         let index = record.index();
         let result = match record {
-            Pushed::Op(op) => apply(txn, state.policy(), interval, generation, workspace, op)
-                .await
-                .map(|receipt| vec![receipt]),
+            Pushed::Op(op) => apply(
+                txn,
+                state.policy(),
+                interval,
+                quota,
+                generation,
+                workspace,
+                op,
+            )
+            .await
+            .map(|receipt| vec![receipt]),
             Pushed::Checkpoint(_, bundle) => match plan.take() {
                 // The fresh checkpoint of an approval or a grant, planned
                 // before this transaction opened (§17).
@@ -391,9 +400,11 @@ pub(crate) async fn commit(
                     .await
                     .map(|()| Vec::new())
             }
-            Pushed::Profile(_, profile) => apply_profile(txn, state.policy(), workspace, profile)
-                .await
-                .map(|()| Vec::new()),
+            Pushed::Profile(_, profile) => {
+                apply_profile(txn, state.policy(), quota, workspace, profile)
+                    .await
+                    .map(|()| Vec::new())
+            }
         };
         let created = result.map_err(|e| match e {
             Error::Refused(refusal) => failure(index, refusal),
@@ -405,6 +416,7 @@ pub(crate) async fn commit(
         return Err(failure(index, refusal));
     }
     set_history_floors(txn, &state, workspace, &pushed, &receipts).await?;
+    crate::retention::note_pressure(txn, workspace, quota).await?;
     let policy_revision = state.policy().head().0.max(row.policy_revision);
     if changes {
         cache.put(state.policy().clone());
@@ -459,9 +471,16 @@ async fn set_history_floors(
 async fn apply_profile(
     txn: &mut impl WriteTxn,
     policy: &Arc<PolicyChain>,
+    quota: Option<u64>,
     workspace: Id,
     profile: &Signed<Profile>,
 ) -> Result<()> {
+    if crate::retention::over_quota(txn, workspace, quota).await? {
+        return Err(refuse(
+            "quota_exceeded",
+            "a workspace over its quota takes no new profile",
+        ));
+    }
     let p = &profile.body;
     let snapshot = policy.head_snapshot();
     let (head_revision, _) = policy.head();
@@ -550,6 +569,7 @@ async fn apply(
     txn: &mut impl WriteTxn,
     policy: &Arc<PolicyChain>,
     interval: CheckpointInterval,
+    quota: Option<u64>,
     generation: u64,
     workspace: Id,
     pushed: &PushedOp,
@@ -693,12 +713,16 @@ async fn apply(
     // Its weight (§19): the record's length plus each blob no earlier
     // operation listed.
     let mut weight = pushed.bytes.len() as u64;
+    let mut listings = Vec::with_capacity(op.blobs.len());
     for blob in op.blobs.iter() {
-        if !txn.blob_listed(workspace, *blob).await?
-            && let Some(row) = txn.blob(workspace, *blob).await?
-        {
+        let listed = txn.blob_listed(workspace, *blob).await?;
+        if !listed && let Some(row) = txn.blob(workspace, *blob).await? {
             weight = weight.saturating_add(row.length);
         }
+        listings.push(crate::retention::NewListing {
+            blob: *blob,
+            listed,
+        });
     }
 
     // The write.
@@ -713,6 +737,18 @@ async fn apply(
         .await?;
     crate::blobs::list(txn, workspace, domain, seq, &op.blobs).await?;
     crate::checkpoints::note_entry(txn, interval, workspace, domain, seq, weight, false).await?;
+    crate::retention::note_operation(
+        txn,
+        quota,
+        workspace,
+        domain,
+        op.rid,
+        pushed.bytes.len() as u64,
+        (!op.delete).then_some(op.ciphertext.len() as u64),
+        &listings,
+        &live,
+    )
+    .await?;
     txn.set_chain_head(
         workspace,
         domain,

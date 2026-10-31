@@ -41,6 +41,14 @@ pub(crate) fn pending_text(pending: usize) -> String {
     }
 }
 
+/// How many changes wait for space, in words.
+pub(crate) fn waiting_text(waiting: usize) -> String {
+    match waiting {
+        1 => "1 change stays on this computer until the workspace has space.".to_owned(),
+        n => format!("{n} changes stay on this computer until the workspace has space."),
+    }
+}
+
 /// How many people, in words.
 fn people_text(people: usize) -> String {
     match people {
@@ -91,7 +99,18 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
                 } else {
                     "Sync is on."
                 });
-                ui.label(pending_text(screen.pending));
+                if screen.pending > 0 || screen.waiting_for_space == 0 {
+                    ui.label(pending_text(screen.pending));
+                }
+                if screen.waiting_for_space > 0 {
+                    ui.label(waiting_text(screen.waiting_for_space));
+                }
+                if let Some(usage) = &screen.usage {
+                    ui.label(usage);
+                }
+                if screen.over_quota {
+                    ui.label("This workspace is full. New changes stay on this computer until you delete files.");
+                }
                 match &screen.last_success {
                     Some(when) => ui.label(format!("Last synced {when}.")),
                     None => muted(ui, "This computer hasn't finished a sync yet."),
@@ -195,6 +214,26 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
                     }
                 });
             }
+            if !screen.deleted_away.is_empty() {
+                group(
+                    ui,
+                    "Deleted on another device while this one was away",
+                    |ui| {
+                        for path in &screen.deleted_away {
+                            ui.label(path);
+                            ui.horizontal(|ui| {
+                                if ui.button("Delete").clicked() {
+                                    actions
+                                        .push(FolderSyncAction::ConfirmDeletedAway(path.clone()));
+                                }
+                                if ui.button("Keep").clicked() {
+                                    actions.push(FolderSyncAction::KeepDeletedAway(path.clone()));
+                                }
+                            });
+                        }
+                    },
+                );
+            }
             if !screen.unreadable.is_empty() {
                 group(ui, "Versions that couldn't be read", |ui| {
                     for line in &screen.unreadable {
@@ -233,5 +272,9 @@ mod tests {
         assert_eq!(pending_text(0), "Every change is uploaded.");
         assert_eq!(pending_text(1), "1 change waits to upload.");
         assert_eq!(pending_text(3), "3 changes wait to upload.");
+        assert_eq!(
+            waiting_text(1),
+            "1 change stays on this computer until the workspace has space."
+        );
     }
 }

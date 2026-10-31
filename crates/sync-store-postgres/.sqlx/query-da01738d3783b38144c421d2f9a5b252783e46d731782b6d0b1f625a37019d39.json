@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE workspaces SET quota_pressure = FALSE\n                 WHERE workspace = $1 AND quota_pressure = TRUE",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "da01738d3783b38144c421d2f9a5b252783e46d731782b6d0b1f625a37019d39"
+}

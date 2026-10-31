@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT domain, history_bytes, retention_floor, checkpoint_seq FROM domains\n             WHERE workspace = ?1 AND deleted = 0\n             ORDER BY history_bytes DESC, domain",
+  "describe": {
+    "columns": [
+      {
+        "name": "domain",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "domain"
+          }
+        }
+      },
+      {
+        "name": "history_bytes",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "history_bytes"
+          }
+        }
+      },
+      {
+        "name": "retention_floor",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "retention_floor"
+          }
+        }
+      },
+      {
+        "name": "checkpoint_seq",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "checkpoint_seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0cd729656bccd880ccf59da1c97418cdbbba47aba0ce65d35658b3a830c78ff6"
+}

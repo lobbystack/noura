@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM history_floors WHERE workspace = ?1 AND domain = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "630a97599b302c19e69fb06817a8aa979bebb0cb87f4ed78366160899cbbff61"
+}

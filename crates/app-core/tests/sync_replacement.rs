@@ -17,7 +17,13 @@ use std::time::Duration;
 use sync_protocol::codec::{Bytes, Decode, Encode, ExactBytes, Text};
 use sync_protocol::messages::{ErrorBody, KeyRecord, KeysResponse, PushFailureDetail};
 use sync_protocol::types::Id;
-use sync_support::{Folder, Pair, Proxy, approve, pair};
+use sync_support::{Folder, Pair, Proxy, Server, approve, pair, pair_of_accounts_on};
+
+/// A laptop and a desktop of two accounts: a device doesn't replace an epoch
+/// its own account rotated (§9).
+async fn of_accounts() -> Pair<sync_store_sqlite::SqliteBackend> {
+    pair_of_accounts_on(Server::start().await).await
+}
 
 /// Damages, on their way to `reader`, the envelopes that `wrapper` signed,
 /// as a malicious member's or server's would arrive.
@@ -41,13 +47,13 @@ fn damage_envelopes(proxy: &Proxy, reader: Id, wrapper: Id) {
     }));
 }
 
-/// A third device joins and the laptop removes it without recording the
-/// removal, so the desktop records it and rotates to epoch 2.
+/// A third device of the desktop's account joins, and the desktop removes
+/// it, records the removal and rotates to epoch 2.
 async fn desktop_rotates(pair: &mut Pair<sync_store_sqlite::SqliteBackend>) {
     let third = approve(
         &pair.server,
-        &mut pair.laptop,
-        std::slice::from_mut(pair.sync_a.remote_mut().unwrap()),
+        &mut pair.desktop,
+        std::slice::from_mut(pair.sync_b.remote_mut().unwrap()),
     )
     .await;
     pair.sync_a.round(&mut pair.service, 0).await.unwrap();
@@ -55,7 +61,7 @@ async fn desktop_rotates(pair: &mut Pair<sync_store_sqlite::SqliteBackend>) {
         .round(&mut pair.desktop.service, 0)
         .await
         .unwrap();
-    pair.laptop
+    pair.desktop
         .service
         .remove_device(third.id(), &[], &mut [])
         .await
@@ -70,7 +76,7 @@ async fn desktop_rotates(pair: &mut Pair<sync_store_sqlite::SqliteBackend>) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_envelope_is_replaced_and_the_rotator_writes_again() {
-    let mut pair = pair().await;
+    let mut pair = of_accounts().await;
     desktop_rotates(&mut pair).await;
     // The desktop writes under epoch 2.
     pair.b.write("Plan.md", b"# Plan, under epoch 2\n");
@@ -112,6 +118,37 @@ async fn a_failed_envelope_is_replaced_and_the_rotator_writes_again() {
     assert_eq!(pair.a.files()["Plan.md"], b"# Plan, under epoch 2\n");
     assert_eq!(pair.sync_a.status().conflicts, 0);
     assert_eq!(pair.sync_b.status().conflicts, 0);
+}
+
+/// Replacements don't loop (§9, §30): the server refuses a replacement of
+/// a replacement, so the device asks for a re-wrap and the epoch stands
+/// until an honest rotation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replacement_of_a_replacement_asks_for_a_rewrap() {
+    let mut pair = of_accounts().await;
+    desktop_rotates(&mut pair).await;
+    damage_envelopes(&pair.proxy, pair.laptop.id(), pair.desktop.id());
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("the laptop signs a replacement");
+    pair.proxy.honest();
+    assert_eq!(pair.sync_a.remote_mut().unwrap().epoch(), 3);
+
+    // Now the desktop's envelope of that replacement fails.
+    let mut via = pair.desktop.connect_through(&pair.proxy.base).await;
+    damage_envelopes(&pair.proxy, pair.desktop.id(), pair.laptop.id());
+    let _ = pair.sync_b.round(&mut via, 0).await;
+    pair.proxy.honest();
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    assert_eq!(
+        pair.sync_a.remote_mut().unwrap().epoch(),
+        3,
+        "no second replacement committed"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -171,7 +208,7 @@ async fn a_replacement_another_device_used_the_epoch_against_asks_for_a_rewrap()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reader_of_the_skipped_epoch_writes_a_gone_rotators_record_and_profile_again() {
-    let mut pair = pair().await;
+    let mut pair = of_accounts().await;
     let mut fourth = approve(
         &pair.server,
         &mut pair.laptop,
@@ -236,7 +273,7 @@ async fn a_reader_of_the_skipped_epoch_writes_a_gone_rotators_record_and_profile
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_rewrite_whose_cover_the_server_cant_return_writes_nothing_and_waits_for_review() {
-    let mut pair = pair().await;
+    let mut pair = of_accounts().await;
     desktop_rotates(&mut pair).await;
     pair.b.write("Plan.md", b"# Plan, under epoch 2\n");
     pair.sync_b

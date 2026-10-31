@@ -198,6 +198,17 @@ impl LiveSet {
         before != state.ops.len()
     }
 
+    /// Forgets `rid` and everything the set holds of it, as a device does
+    /// when a bootstrap replaces its live operations (§18).
+    pub fn forget(&mut self, rid: &Id) {
+        self.rids.remove(rid);
+    }
+
+    /// Every `rid` the set holds.
+    pub fn rids(&self) -> impl Iterator<Item = &Id> {
+        self.rids.keys()
+    }
+
     /// Takes out the operation whose digest is `digest`, on whichever
     /// `rid` holds it, as a client does when a settled fork reverts a
     /// record (§14). Returns that `rid`.

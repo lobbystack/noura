@@ -9,25 +9,48 @@
 //! checks the bucket hashes against the root and fetches the live
 //! operations page by page. As each bucket completes, it checks the
 //! bucket's hash, writes its files and records its progress, so a restart
-//! resumes at the next bucket; the leaf count is checked after the last.
+//! resumes at the next bucket. A returning device fetches only the buckets
+//! that differ from its journal, and on a restart works out which still do.
+//! Every bucket hash and the leaf count are checked before the cursor moves.
 //! The chain verifier starts at the checkpoint's heads, and the device
 //! pulls on from `covered_seq`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use sync_protocol::chain::ChainVerifier;
+use sync_protocol::codec::Decode;
 use sync_protocol::keys::LogJudge;
 use sync_protocol::live::{LiveOp, LiveSet};
 use sync_protocol::manifest::{
-    BUCKETS, bucket_of, heads_digest, skip_number, verify_bucket, verify_buckets, verify_descent,
+    BUCKETS, bucket_hash, bucket_of, heads_digest, leaf_hash, skip_number, verify_bucket,
+    verify_buckets, verify_descent,
 };
-use sync_protocol::messages::{EntryRecord, PageStatus, PullCursor};
+use sync_protocol::messages::{CursorCompactedDetail, EntryRecord, PageStatus, PullCursor};
 use sync_protocol::records::{CheckpointBundle, OpClass, Operation, PolicyKind, Signed};
 use sync_protocol::types::{Digest, Id};
 
-use super::state::{BootstrapProgress, Log, OpKey, StateInfo};
+use super::state::{BootstrapProgress, DeletedAway, Log, OpKey, StateInfo};
 use super::{Checked, CheckedRecord, SyncError, SyncService, WorkspaceSync};
 use crate::sync::account_heads::KeptCheckpointAnchor;
+
+/// How many times a bootstrap restarts because the floor overtook it.
+const MAX_RESTARTS: usize = 8;
+
+/// The buckets whose hash differs from the one the journal's live set
+/// yields at `at`, in ascending order.
+fn differing_buckets(live: &LiveSet, buckets: &[Digest], at: u64) -> Vec<u16> {
+    let mut hashes: Vec<Vec<Digest>> = vec![Vec::new(); BUCKETS];
+    for (rid, mut refs) in live.leaves_at(at) {
+        if refs.is_empty() {
+            continue;
+        }
+        refs.sort_by_key(|r| (r.device, r.counter));
+        hashes[usize::from(bucket_of(&rid))].push(leaf_hash(&rid, &refs));
+    }
+    (0..BUCKETS as u16)
+        .filter(|i| bucket_hash(*i, &hashes[usize::from(*i)]) != buckets[usize::from(*i)])
+        .collect()
+}
 
 /// Why a bootstrap stops: the client code of the check that failed.
 fn fail(code: &'static str) -> SyncError {
@@ -40,14 +63,87 @@ impl WorkspaceSync {
     /// `sync_manifest_rollback`, `sync_manifest_mismatch` or the check's own
     /// code, and installs nothing.
     pub(super) async fn bootstrap(&mut self, service: &mut SyncService) -> Result<bool, SyncError> {
-        let result = self.bootstrap_latest(service).await;
-        // A failed check drops the progress; a lost connection keeps it,
-        // and the next attempt resumes at the next bucket.
-        if let Err(SyncError::Check(_)) = result {
-            self.state.bootstrap_progress = None;
+        self.bootstrap_above(service, 0).await
+    }
+
+    /// [`Self::bootstrap`] after a server reported `floor`. The device holds
+    /// the highest floor reported while it bootstraps and keeps it only when
+    /// the bootstrap ends, so a false report doesn't stop it for good.
+    pub(super) async fn bootstrap_above(
+        &mut self,
+        service: &mut SyncService,
+        floor: u64,
+    ) -> Result<bool, SyncError> {
+        let kept = self.state.log.retention_floor;
+        self.state.log.retention_floor = kept.max(floor);
+        let result = self.bootstrap_attempts(service).await;
+        if !matches!(result, Ok(true)) {
+            self.state.log.retention_floor = kept;
             self.save()?;
         }
         result
+    }
+
+    async fn bootstrap_attempts(&mut self, service: &mut SyncService) -> Result<bool, SyncError> {
+        let mut attempts = 0;
+        loop {
+            let mut at = None;
+            let result = match self.bootstrap_latest(service, &mut at).await {
+                // The floor passed the checkpoint before the bootstrap
+                // ended, if the server's detail holds up: it restarts from
+                // the latest one, and the buckets whose hashes match stay
+                // (§18).
+                Err(SyncError::Refused {
+                    code,
+                    status,
+                    detail,
+                }) if code == "cursor_compacted" => {
+                    self.note_compaction(detail.as_deref(), at)?;
+                    if attempts < MAX_RESTARTS {
+                        attempts += 1;
+                        self.state.bootstrap_progress = None;
+                        self.save()?;
+                        continue;
+                    }
+                    Err(SyncError::Refused {
+                        code,
+                        status,
+                        detail,
+                    })
+                }
+                result => result,
+            };
+            // A failed check drops the progress; a lost connection keeps
+            // it, and the next attempt resumes where this one stopped.
+            if matches!(result, Err(SyncError::Check(_))) {
+                self.state.bootstrap_progress = None;
+                self.save()?;
+            }
+            return result;
+        }
+    }
+
+    /// Checks the detail of a `cursor_compacted` from `live` or `manifest`
+    /// (§26), which answered a request at checkpoint `at`, and keeps its
+    /// floor. A floor below one reported, a floor that doesn't pass `at` and
+    /// a latest checkpoint below either report `sync_manifest_rollback`
+    /// (§30), so a server can't force a restart from an old checkpoint.
+    fn note_compaction(&mut self, detail: Option<&[u8]>, at: Option<u64>) -> Result<(), SyncError> {
+        let detail = detail
+            .and_then(|d| CursorCompactedDetail::from_bytes(d).ok())
+            .ok_or(fail("sync_manifest_rollback"))?;
+        let CursorCompactedDetail {
+            retention_floor: floor,
+            checkpoint_covered_seq: latest,
+        } = detail;
+        if floor < self.state.log.retention_floor
+            || latest < floor
+            || at.is_some_and(|at| floor <= at || latest < at)
+        {
+            return Err(fail("sync_manifest_rollback"));
+        }
+        self.state.log.retention_floor = floor;
+        self.save()
     }
 
     /// The checkpoint an interrupted bootstrap was installing, when the
@@ -70,7 +166,9 @@ impl WorkspaceSync {
         let EntryRecord::Checkpoint(bundle) = entry.record else {
             return Ok(None);
         };
+        // The floor passed it: the server keeps its record without heads.
         if bundle.checkpoint.0.digest() != digest
+            || heads_digest(&bundle.heads) != bundle.checkpoint.0.body.heads_digest
             || !self
                 .check_bootstrap_checkpoint(service, &bundle, entry.seq)
                 .await?
@@ -80,11 +178,21 @@ impl WorkspaceSync {
         Ok(Some((bundle, entry.seq)))
     }
 
-    async fn bootstrap_latest(&mut self, service: &mut SyncService) -> Result<bool, SyncError> {
+    /// One attempt at a bootstrap. `at` learns the `covered_seq` of the
+    /// checkpoint it installs.
+    async fn bootstrap_latest(
+        &mut self,
+        service: &mut SyncService,
+        at: &mut Option<u64>,
+    ) -> Result<bool, SyncError> {
         let (workspace, domain) = (self.state.workspace, self.state.domain);
         let Some(latest) = service.client().checkpoint(workspace, domain).await? else {
             return Ok(false);
         };
+        // The floor never passes the latest checkpoint (§19).
+        if latest.bundle.checkpoint.0.body.covered_seq < self.state.log.retention_floor {
+            return Err(fail("sync_manifest_rollback"));
+        }
         if self.remote.is_none() {
             self.connect(service).await?;
         }
@@ -124,6 +232,7 @@ impl WorkspaceSync {
             (bundle, entry.seq)
         };
         let c = bundle.checkpoint.0.body.clone();
+        *at = Some(c.covered_seq);
         // A restricted domain's marker comes before its other objects, so
         // the root stands before the first file beneath it (§9).
         self.read_marker_first(service, c.covered_seq).await?;
@@ -143,21 +252,40 @@ impl WorkspaceSync {
         // with each bucket's files, so a restart resumes at the next
         // bucket (§18, step 5).
         let digest = bundle.checkpoint.0.digest();
+        let resuming = self
+            .state
+            .bootstrap_progress
+            .as_ref()
+            .is_some_and(|p| p.checkpoint == digest);
+        // What the journal holds decides what comes down: only the objects
+        // of the buckets that differ, or, past half of them, every page
+        // as a new device reads them (§18). A resumed attempt keeps its way,
+        // and the journal shows which buckets a returning device has left.
+        let differing = differing_buckets(&self.state.log.live, &buckets, c.covered_seq);
+        let returning = match &self.state.bootstrap_progress {
+            Some(progress) if resuming => progress.next_bucket as usize >= BUCKETS,
+            _ => self.state.log.live.rids().next().is_some() && differing.len() * 2 <= BUCKETS,
+        };
         let mut progress = match self.state.bootstrap_progress.take() {
             Some(progress) if progress.checkpoint == digest => progress,
-            _ => {
-                self.state.log.live = LiveSet::new();
-                BootstrapProgress {
-                    checkpoint: digest,
-                    after: None,
-                    next_bucket: 0,
-                    pending: Vec::new(),
-                    live_objects: 0,
-                    last: BTreeMap::new(),
-                }
-            }
+            _ => BootstrapProgress {
+                checkpoint: digest,
+                after: None,
+                next_bucket: if returning { BUCKETS as u32 } else { 0 },
+                pending: Vec::new(),
+                live_objects: 0,
+                last: BTreeMap::new(),
+            },
         };
         self.state.bootstrap_progress = Some(progress.clone());
+        if returning {
+            for index in differing {
+                self.install_differing(service, &bundle, &buckets, index, &mut progress)
+                    .await?;
+                self.state.bootstrap_progress = Some(progress.clone());
+                self.save()?;
+            }
+        }
         while (progress.next_bucket as usize) < BUCKETS {
             let page = service
                 .client()
@@ -202,6 +330,7 @@ impl WorkspaceSync {
                     &buckets,
                     progress.next_bucket..complete,
                     ready,
+                    &BTreeMap::new(),
                     &mut progress,
                 )
                 .await?;
@@ -211,7 +340,12 @@ impl WorkspaceSync {
             self.state.bootstrap_progress = Some(progress.clone());
             self.save()?;
         }
-        if progress.live_objects != c.live_objects || !progress.pending.is_empty() {
+        let leaves = self.state.log.live.leaves_at(c.covered_seq);
+        let live_objects = leaves.values().filter(|refs| !refs.is_empty()).count() as u64;
+        if live_objects != c.live_objects
+            || !progress.pending.is_empty()
+            || !differing_buckets(&self.state.log.live, &buckets, c.covered_seq).is_empty()
+        {
             return Err(fail("sync_manifest_mismatch"));
         }
         let remote = self
@@ -232,7 +366,10 @@ impl WorkspaceSync {
         log.judge =
             LogJudge::from_checkpoint(domain, c.policy_revision, c.epoch, epoch_policy_revision);
         log.verifier = ChainVerifier::from_heads(&bundle.heads);
-        log.last = progress.last.clone();
+        for (device, (revision, generation)) in &progress.last {
+            let last = log.last.entry(*device).or_insert((0, 0));
+            *last = (last.0.max(*revision), last.1.max(*generation));
+        }
         log.wanted.retain(|w| {
             if w.epoch {
                 w.number > c.epoch
@@ -382,6 +519,7 @@ impl WorkspaceSync {
     /// position on each, checks each bucket's hash, then writes their files
     /// and adds them to the domain's live set. A bucket that fails its hash
     /// reports `sync_manifest_mismatch` and installs nothing.
+    #[allow(clippy::too_many_arguments)]
     async fn install_buckets(
         &mut self,
         service: &mut SyncService,
@@ -389,6 +527,7 @@ impl WorkspaceSync {
         buckets: &[Digest],
         range: std::ops::Range<u32>,
         mut ops: Vec<(Signed<Operation>, u64)>,
+        kept: &BTreeMap<Id, Vec<sync_protocol::records::Ref>>,
         progress: &mut BootstrapProgress,
     ) -> Result<(), SyncError> {
         let (workspace, domain) = (self.state.workspace, self.state.domain);
@@ -419,14 +558,31 @@ impl WorkspaceSync {
         ops.sort_by_key(|(_, seq)| *seq);
         // The buckets' own live set, from which their leaves and hashes
         // come; their `rid`s are new to the domain's live set.
+        // Whatever else the journal held in these buckets leaves first: the
+        // manifest says what stands now, and a `rid` it lacks is gone.
         let mut live = self.state.log.live.clone();
+        let incoming: BTreeSet<Id> = ops.iter().map(|(op, _)| op.body.rid).collect();
+        let replaced: Vec<Id> = live
+            .rids()
+            .filter(|rid| range.contains(&u32::from(bucket_of(rid))) && !kept.contains_key(rid))
+            .copied()
+            .collect();
+        let gone: Vec<Id> = replaced
+            .iter()
+            .filter(|rid| !incoming.contains(rid))
+            .copied()
+            .collect();
+        for rid in &replaced {
+            live.forget(rid);
+        }
         let mut fresh = LiveSet::new();
         let mut classes = Vec::with_capacity(ops.len());
         for (op, seq) in &ops {
             fresh.apply(LiveOp::from_operation(op, *seq));
             classes.push(live.apply(LiveOp::from_operation(op, *seq)));
         }
-        let leaves = fresh.leaves_at(c.covered_seq);
+        let mut leaves = fresh.leaves_at(c.covered_seq);
+        leaves.extend(kept.iter().map(|(rid, refs)| (*rid, refs.clone())));
         for index in range {
             let index = index as u16;
             let mine: Vec<_> = leaves
@@ -487,7 +643,93 @@ impl WorkspaceSync {
         let applied = self.apply(checked, fetched);
         self.clear_downloads();
         applied?;
+        for rid in gone {
+            self.left_while_away(rid);
+        }
         Ok(())
+    }
+
+    /// Fetches what bucket `index` holds that the journal lacks, through
+    /// its leaf refs and `live` with `rid` (§18), and installs it. The
+    /// objects whose refs the journal already holds stay as they are.
+    async fn install_differing(
+        &mut self,
+        service: &mut SyncService,
+        bundle: &CheckpointBundle,
+        buckets: &[Digest],
+        index: u16,
+        progress: &mut BootstrapProgress,
+    ) -> Result<(), SyncError> {
+        let (workspace, domain) = (self.state.workspace, self.state.domain);
+        let at = bundle.checkpoint.0.body.covered_seq;
+        let mut after = None;
+        let mut leaves: BTreeMap<Id, Vec<sync_protocol::records::Ref>> = BTreeMap::new();
+        loop {
+            let page = service
+                .client()
+                .manifest_leaves(workspace, domain, at, index, after.as_ref())
+                .await?;
+            for leaf in page.leaves.iter() {
+                leaves.entry(leaf.rid).or_default().push(leaf.op.clone());
+            }
+            match page.next {
+                Some(next) => after = Some(next),
+                None => break,
+            }
+        }
+        let held = self.state.log.live.leaves_at(u64::MAX);
+        let mut kept = BTreeMap::new();
+        let mut ops = Vec::new();
+        for (rid, refs) in leaves {
+            let mut mine = held.get(&rid).cloned().unwrap_or_default();
+            mine.sort_by_key(|r| (r.device, r.counter));
+            if mine == refs {
+                kept.insert(rid, refs);
+                continue;
+            }
+            let mut after = None;
+            loop {
+                let page = service
+                    .client()
+                    .live(workspace, domain, at, Some(rid), after.as_ref())
+                    .await?;
+                for entry in page.entries.0 {
+                    let EntryRecord::Operation(op) = entry.record else {
+                        return Err(fail("sync_manifest_mismatch"));
+                    };
+                    if entry.seq > at || op.body.rid != rid {
+                        return Err(fail("sync_manifest_mismatch"));
+                    }
+                    ops.push((op, entry.seq));
+                }
+                match page.next {
+                    Some(next) => after = Some(next),
+                    None => break,
+                }
+            }
+        }
+        let range = u32::from(index)..u32::from(index) + 1;
+        self.install_buckets(service, bundle, buckets, range, ops, &kept, progress)
+            .await
+    }
+
+    /// A `rid` the journal knew and the manifest lacks. The object goes
+    /// from the journal and its file stays (§18): an unchanged file waits
+    /// for you to confirm its deletion, and a changed one uploads under a
+    /// new `rid` in the next capture.
+    fn left_while_away(&mut self, rid: Id) {
+        let edited = self.local_edit(&rid);
+        let Some(object) = self.state.objects.remove(&rid) else {
+            return;
+        };
+        if let Some(local) = object.local
+            && !edited
+        {
+            self.state.deleted_away.push(DeletedAway {
+                path: local.path,
+                revision: local.revision,
+            });
+        }
     }
 
     /// The checkpoint anchor the device's approval or kit gave this domain

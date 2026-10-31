@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM entries WHERE workspace = $1 AND domain = $2 AND seq IN (\n               SELECT seq FROM entries WHERE workspace = $1 AND domain = $2 ORDER BY seq LIMIT $3\n             )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ba3979ce167553a9ede93b163dcb4cafe02ef6f5d5fc4c42518a52ebcc8b9925"
+}

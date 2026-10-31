@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE domains SET retention_floor = ?3 WHERE workspace = ?1 AND domain = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "f7344cfe45aff4f6828ef11f3fd58289b42f548ff69bd37946bcde3534b0cb9e"
+}

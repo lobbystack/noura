@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT d.workspace, d.domain, d.deleted FROM domains d\n             WHERE d.deleted = 1 OR d.pruned_floor < d.retention_floor\n                OR EXISTS (\n                  SELECT 1 FROM checkpoints c\n                  WHERE c.workspace = d.workspace AND c.domain = d.domain\n                    AND c.covered_seq > d.retention_floor AND c.log_weight <= d.log_weight - ?1\n                )\n             ORDER BY random() LIMIT ?2",
+  "describe": {
+    "columns": [
+      {
+        "name": "workspace",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "workspace"
+          }
+        }
+      },
+      {
+        "name": "domain",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "domain"
+          }
+        }
+      },
+      {
+        "name": "deleted",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "deleted"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "f1a24659cbf38fe07d1a28aab31d3e275f8d47168080bfb29ad1a8152cb82800"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE workspaces\n                 SET quota_pressure = 1, quota_crossings = quota_crossings + 1\n                 WHERE workspace = ?1 AND quota_pressure = 0",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "b8cf860fec58c5f6dc365fba9518842faf7e6c45714be034afd735d90153a737"
+}

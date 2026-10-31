@@ -7,14 +7,14 @@ use std::sync::Arc;
 use sync_protocol::account::AccountChain;
 use sync_protocol::codec::{Decode, Encode, List, Nested, Sorted};
 use sync_protocol::messages::{
-    EpochsResponse, HeadResponse, KeyEntry, KeyRecord, KeysResponse, MAX_BODY, PolicyResponse,
-    RewrapRequest, WorkspaceInfo, WorkspacesResponse,
+    EntryRecord, EpochsResponse, HeadResponse, KeyEntry, KeyRecord, KeysResponse, MAX_BODY,
+    PolicyResponse, RewrapRequest, WorkspaceInfo, WorkspacesResponse,
 };
 use sync_protocol::policy::PolicyChain;
 use sync_protocol::records::{
     AccountLink, Envelope, Epoch, PolicyChange, PolicyKind, Profile, Role, Signed,
 };
-use sync_protocol::types::Id;
+use sync_protocol::types::{Digest, Id};
 
 use crate::policy::{self, ChainCache, PolicyCache};
 use crate::pull::entry;
@@ -150,6 +150,7 @@ pub(crate) async fn authorize_domain(
 pub(crate) async fn workspaces(
     txn: &mut impl ReadTxn,
     session: Session,
+    quota: Option<u64>,
 ) -> Result<WorkspacesResponse> {
     let mut workspaces = Vec::new();
     for (workspace, role) in txn.memberships(session.account).await? {
@@ -160,13 +161,13 @@ pub(crate) async fn workspaces(
             .map(|bytes| Signed::<Profile>::from_bytes(&bytes).map(Nested))
             .transpose()
             .map_err(Error::internal)?;
-        // Usage, history and quotas arrive with ticket 59.
+        let (used_bytes, history_bytes) = txn.workspace_usage(workspace).await?;
         workspaces.push(WorkspaceInfo {
             workspace,
             role,
-            used_bytes: 0,
-            history_bytes: 0,
-            quota_bytes: None,
+            used_bytes,
+            history_bytes,
+            quota_bytes: quota,
             profile,
         });
     }
@@ -559,15 +560,33 @@ pub(crate) async fn chain_record(
     counter: u64,
 ) -> Result<sync_protocol::messages::Entry> {
     authorize_domain(txn, cache, session, workspace, domain).await?;
-    let raw = txn
+    let pruned = || refuse("pruned", "the server pruned that chain position");
+    let Some(raw) = txn
         .position_at_or_above(workspace, domain, device, counter)
         .await?
-        .ok_or_else(|| {
-            refuse(
+    else {
+        // The head row outlives its record (§19).
+        return Err(match txn.chain_head(workspace, domain, device).await? {
+            Some(head) if counter <= head.counter => pruned(),
+            _ => refuse(
                 "not_found",
                 "the device has no record at or above that counter",
-            )
-        })?;
+            ),
+        });
+    };
+    // A record above the counter either follows the record below it, so
+    // the device skipped the counter, or pruning took what lay between.
+    if let EntryRecord::Operation(op) = entry(raw.clone())?.record
+        && op.body.counter != counter
+    {
+        let below = txn
+            .position_below(workspace, domain, device, counter)
+            .await?
+            .map_or(Digest::ZERO, |(_, digest)| digest);
+        if op.body.previous != below {
+            return Err(pruned());
+        }
+    }
     // Another device's record at or below the account's history floor
     // stays out of reach (§9); the device's own records it signed.
     if device != session.device

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM covers WHERE workspace = ?1 AND domain = ?2 AND by_seq = ?3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "05f7fa83742bee3c005920a6935d0110e49c3cea13fae3a694e0ccbc063adc79"
+}

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT blob FROM blob_listings WHERE workspace = ?1 AND domain = ?2 AND seq = ?3",
+  "describe": {
+    "columns": [
+      {
+        "name": "blob",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "blob_listings",
+            "name": "blob"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8776cc62bc25a4049031a1b3c51ba9e8008ce481e93860b8635a34f6bbe5cfbd"
+}

@@ -384,14 +384,14 @@ async fn a_tampered_envelope_or_a_wrong_recipient_list_fails_the_key_check() {
         }))
         .await
         .unwrap();
-    // The phone can't accept that record, so it signs a replacement that
-    // skips it, from the epoch it accepted (§9, ticket 48).
-    phone
-        .service
-        .refresh_keys(&mut remote)
-        .await
-        .expect("recipients the policy doesn't authorize get a replacement");
-    assert_eq!(remote.epoch(), 3);
+    // The phone can't accept that record and signs a replacement. The
+    // laptop that rotated belongs to its account, so the server refuses
+    // it, and the phone asks for a re-wrap instead (§9).
+    assert!(matches!(
+        phone.service.refresh_keys(&mut remote).await,
+        Err(SyncError::KeyMissing)
+    ));
+    assert_eq!(remote.epoch(), 1);
 }
 
 /// A device whose first envelope fails before it accepted any epoch of the

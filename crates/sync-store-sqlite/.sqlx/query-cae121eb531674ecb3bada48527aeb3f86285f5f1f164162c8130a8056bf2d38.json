@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM operations WHERE workspace = ?1 AND domain = ?2 AND seq IN (\n               SELECT seq FROM operations WHERE workspace = ?1 AND domain = ?2\n               ORDER BY seq LIMIT ?3\n             )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "cae121eb531674ecb3bada48527aeb3f86285f5f1f164162c8130a8056bf2d38"
+}

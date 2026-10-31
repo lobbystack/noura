@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE checkpoints SET buckets = NULL, heads = $4\n             WHERE workspace = $1 AND domain = $2 AND number IN (\n               SELECT number FROM checkpoints\n               WHERE workspace = $1 AND domain = $2 AND covered_seq < $3\n                 AND buckets IS NOT NULL\n               ORDER BY number LIMIT $5\n             )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Int8",
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "33a0a051e01058351343b4475fc21ce6418c24e79322ce03d7d36fb83420436a"
+}

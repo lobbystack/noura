@@ -13,6 +13,7 @@ pub mod blobs;
 pub mod data;
 pub mod http;
 pub mod logs;
+pub mod maintenance;
 pub mod postgres;
 pub mod realtime;
 pub mod tus;
@@ -73,6 +74,8 @@ pub struct Config {
     pub postgres: Option<Postgres>,
     /// Where blob segments live.
     pub blob_store: BlobStoreConfig,
+    /// `retained_bytes` and `workspace_quota_bytes` (§19, §20).
+    pub retention: sync_store::Retention,
 }
 
 /// Where `serve` keeps blob segments (§21).
@@ -123,6 +126,7 @@ impl Config {
             account_web: None,
             postgres: None,
             blob_store: BlobStoreConfig::Disk,
+            retention: sync_store::Retention::default(),
         }
     }
 }
@@ -255,8 +259,16 @@ async fn shutdown_signal() {
 /// interrupt or a terminate signal, and closes the database.
 pub async fn serve(config: Config) -> Result<(), CommandError> {
     match &config.postgres {
-        None => run(Arc::new(open_store(&config).await?), &config).await,
-        Some(database) => run(Arc::new(postgres::open_store(database).await?), &config).await,
+        None => {
+            let store = open_store(&config).await?.with_retention(config.retention);
+            run(Arc::new(store), &config).await
+        }
+        Some(database) => {
+            let store = postgres::open_store(database)
+                .await?
+                .with_retention(config.retention);
+            run(Arc::new(store), &config).await
+        }
     }
 }
 
@@ -281,12 +293,15 @@ async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), Co
     let expiry = accounts::spawn_expiry(store.clone());
     tracing::info!("serving");
     eprintln!("sync-server listening on {bound}");
+    let blobs = config.blob_store.open(&config.data_dir)?;
+    let maintenance = maintenance::spawn(store.clone(), blobs.clone());
     let state = AppState {
         store: store.clone(),
         accounts: Arc::new(accounts),
-        blobs: config.blob_store.open(&config.data_dir)?,
+        blobs,
     };
     let served = serve_on(state, listener, shutdown_signal()).await;
+    maintenance.abort();
     pruning.abort();
     expiry.abort();
     counters.abort();

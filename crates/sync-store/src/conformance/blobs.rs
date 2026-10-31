@@ -144,6 +144,9 @@ pub async fn blob_uploads_follow_tus<B: Backend>(store: Store<B>) {
             digest: creation.digest,
             offset: 0,
             complete: false,
+            delete_after: Some(store.clock().now() + crate::UPLOAD_TTL),
+            marked: false,
+            live_listings: 0,
         }
     );
     assert_eq!(

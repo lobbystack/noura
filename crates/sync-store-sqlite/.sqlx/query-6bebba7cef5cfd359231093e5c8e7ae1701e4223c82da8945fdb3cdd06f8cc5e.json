@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE checkpoints SET buckets = NULL, heads = ?4\n             WHERE workspace = ?1 AND domain = ?2 AND number IN (\n               SELECT number FROM checkpoints\n               WHERE workspace = ?1 AND domain = ?2 AND covered_seq < ?3\n                 AND buckets IS NOT NULL\n               ORDER BY number LIMIT ?5\n             )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "6bebba7cef5cfd359231093e5c8e7ae1701e4223c82da8945fdb3cdd06f8cc5e"
+}

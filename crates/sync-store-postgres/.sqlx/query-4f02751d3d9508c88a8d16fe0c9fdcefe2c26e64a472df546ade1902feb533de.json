@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM checkpoints WHERE workspace = $1 AND domain = $2 AND number IN (\n               SELECT number FROM checkpoints WHERE workspace = $1 AND domain = $2\n               ORDER BY number LIMIT $3\n             )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4f02751d3d9508c88a8d16fe0c9fdcefe2c26e64a472df546ade1902feb533de"
+}

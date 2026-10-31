@@ -147,6 +147,7 @@ impl Folder {
                     sync.moves_for_review().len() + screen.held_roots.len(),
                     sync.moved_in().len(),
                 );
+                screen.deleted_away = sync.deleted_away();
                 screen.archived = sync
                     .archived()
                     .iter()
@@ -440,6 +441,16 @@ impl Folder {
                 let restore = matches!(action, FolderSyncAction::RestoreArchived(_));
                 if let Some(sync) = self.sync.as_mut() {
                     sync.resolve_archived(index, restore)?;
+                }
+            }
+            FolderSyncAction::ConfirmDeletedAway(path) => {
+                if let Some(sync) = self.sync.as_mut() {
+                    sync.confirm_deleted_away(&path)?;
+                }
+            }
+            FolderSyncAction::KeepDeletedAway(path) => {
+                if let Some(sync) = self.sync.as_mut() {
+                    sync.keep_deleted_away(&path)?;
                 }
             }
             FolderSyncAction::Connect => {
