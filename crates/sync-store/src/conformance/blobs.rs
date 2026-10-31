@@ -329,6 +329,97 @@ pub async fn blob_digest_mismatch_discards_the_upload<B: Backend>(store: Store<B
         .expect("the ID is free again");
 }
 
+/// A world whose listed blob a restore left missing, with the ciphertext
+/// that belongs under its ID: device 0 uploaded it, and device 1 writes too.
+async fn missing_blob<B: Backend>(store: Store<B>) -> (World<B>, Vec<u8>, BlobCreation) {
+    let world = World::new(store, 2).await;
+    let (ciphertext, creation) = blob_for(100_000, world.domain);
+    let session = world.devices[0].session;
+    world
+        .store
+        .create_blob(session, world.workspace, creation)
+        .await
+        .expect("created");
+    upload_all(&world, 0, creation.blob, &ciphertext).await;
+    let listing = world.op(0, |o| {
+        o.blobs = sync_protocol::codec::Sorted::new(vec![creation.blob]).expect("sorted");
+    });
+    world.push(0, &[listing]).await.expect("listed");
+    let segments = vec![hash(&ciphertext)];
+    assert_eq!(
+        world
+            .store
+            .lose_blob(world.workspace, world.domain, creation.blob, segments)
+            .await
+            .expect("lost"),
+        Some(true)
+    );
+    (world, ciphertext, creation)
+}
+
+async fn still_missing<B: Backend>(world: &World<B>, blob: Id) {
+    let session = world.devices[1].session;
+    let missing = world
+        .store
+        .missing_blobs(session, world.workspace)
+        .await
+        .expect("listed");
+    assert_eq!(missing.blobs.0, vec![blob], "devices still upload it");
+    let upload = world
+        .store
+        .blob_upload(session, world.workspace, blob)
+        .await
+        .expect("the row stays");
+    assert_eq!(upload.row.offset, 0);
+    assert!(upload.segments.is_empty());
+}
+
+/// A wrong digest on a blob that operations list discards the bytes and
+/// keeps the row, so the blob stays missing and another device can upload
+/// it (§19, §21).
+pub async fn a_listed_upload_returns_to_offset_zero<B: Backend>(store: Store<B>) {
+    let (world, ciphertext, creation) = missing_blob(store).await;
+    let usage = world.usage().await;
+    let mut wrong = ciphertext.clone();
+    wrong[0] ^= 1;
+    let Recorded::Discarded(segments) = upload_all(&world, 1, creation.blob, &wrong).await else {
+        panic!("the digest misses");
+    };
+    assert_eq!(segments, vec![hash(&wrong)]);
+    still_missing(&world, creation.blob).await;
+    assert_eq!(world.usage().await, usage, "the listed blob still counts");
+    let Recorded::Stored(row) = upload_all(&world, 1, creation.blob, &ciphertext).await else {
+        panic!("the right bytes fit");
+    };
+    assert!(row.complete);
+}
+
+/// Only the device that created an upload abandons a blob that operations
+/// list, and that returns the row to offset 0 (§21).
+pub async fn only_the_uploader_abandons_a_listed_blob<B: Backend>(store: Store<B>) {
+    let (world, ciphertext, creation) = missing_blob(store).await;
+    let w = world.workspace;
+    assert_eq!(
+        refusal(
+            world
+                .store
+                .abandon_blob(world.devices[1].session, w, creation.blob)
+                .await
+        )
+        .code,
+        "forbidden"
+    );
+    still_missing(&world, creation.blob).await;
+    let upload = world
+        .store
+        .abandon_blob(world.devices[0].session, w, creation.blob)
+        .await
+        .expect("the uploader abandons it");
+    assert!(upload.is_empty(), "no segment came back yet");
+    still_missing(&world, creation.blob).await;
+    upload_all(&world, 1, creation.blob, &ciphertext).await;
+}
+
 /// A push lists only completed uploads of its own domain, and an
 /// operation lists at most 4 blobs.
 pub async fn pushes_list_completed_blobs_of_their_domain<B: Backend>(store: Store<B>) {

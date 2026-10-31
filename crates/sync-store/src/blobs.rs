@@ -115,6 +115,18 @@ fn plan(workspace: Id, domain: Id, blob: Id) -> LockPlan {
     }
 }
 
+/// Drops an upload's stored segments. A blob no operation lists goes with
+/// them; a listed one returns to offset 0, so `missing-blobs` keeps asking
+/// for it and it goes on counting as usage (§19, §20).
+async fn discard(txn: &mut impl WriteTxn, workspace: Id, blob: Id, row: &BlobRow) -> Result<()> {
+    if txn.blob_listed(workspace, blob).await? {
+        return txn.reset_blob(workspace, blob, None).await;
+    }
+    txn.delete_blob(workspace, blob).await?;
+    txn.add_usage(workspace, row.domain, -usage_of(row), 0)
+        .await
+}
+
 impl<B: Backend> Store<B> {
     /// tus creation, `POST .../blobs`: a new upload at offset 0, for a
     /// device that can write the domain. A retry with the same creation
@@ -269,8 +281,7 @@ impl<B: Backend> Store<B> {
                         let mut segments = txn.blob_segments(workspace, blob).await?;
                         segments.push(hash);
                         if digest_of_segment_hashes(&segments) != row.digest {
-                            txn.delete_blob(workspace, blob).await?;
-                            txn.add_usage(workspace, domain, -usage_of(&row), 0).await?;
+                            discard(txn, workspace, blob, &row).await?;
                             return Ok(Recorded::Discarded(segments));
                         }
                     }
@@ -318,9 +329,15 @@ impl<B: Backend> Store<B> {
                             "a completed upload can't be abandoned",
                         ));
                     }
+                    let (_, device) = active(txn, &cache, session, workspace).await?;
+                    if row.device != device {
+                        return Err(refuse(
+                            "forbidden",
+                            "only the uploading device abandons a listed blob",
+                        ));
+                    }
                     let segments = txn.blob_segments(workspace, blob).await?;
-                    txn.delete_blob(workspace, blob).await?;
-                    txn.add_usage(workspace, domain, -usage_of(&row), 0).await?;
+                    discard(txn, workspace, blob, &row).await?;
                     Ok(segments)
                 })
             }))

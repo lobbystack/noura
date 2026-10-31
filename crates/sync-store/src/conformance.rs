@@ -156,6 +156,8 @@ macro_rules! conformance_tests {
             a_proven_session_can_not_close_a_workspace,
             a_closed_workspace_leaves_no_invitation_or_policy_rows,
             creating_a_closed_workspace_again_is_an_id_conflict,
+            a_listed_upload_returns_to_offset_zero,
+            only_the_uploader_abandons_a_listed_blob,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
