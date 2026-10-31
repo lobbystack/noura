@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use collab_sandbox::{
-    Backend, Event, HandleError, JournalRecord, LOAD_BLOCK, LineageStatus, Loader, NoteHandle,
-    Opened, Place, RemoteRecord, Sandbox, SandboxDocument, SharedNote,
+    ALLOWANCE_FUEL, Backend, Event, HandleError, JournalRecord, LOAD_BLOCK, LineageStatus, Loader,
+    NoteHandle, Opened, Place, REFILL_PERIOD, RemoteRecord, Sandbox, SandboxDocument, SharedNote,
 };
 use serde::{Deserialize, Serialize};
 use sync_protocol::codec::{Bytes, Encode, Sorted, Text};
@@ -195,6 +195,9 @@ pub struct TextFile {
     pub records: Vec<TextRecord>,
     /// Each writer's fuel balance when the note last closed.
     pub balances: Vec<(u32, i64)>,
+    /// Unix seconds when those balances last took a refill.
+    #[serde(default)]
+    pub balances_at: u64,
     /// Whether the lineage stopped on this device.
     pub stopped: bool,
     /// The first record that yrs held pending, while one waits.
@@ -407,6 +410,17 @@ impl std::fmt::Debug for TextRuntime {
             .field("sessions", &self.sessions.len())
             .finish_non_exhaustive()
     }
+}
+
+/// `balances` with the refills that came due since `at`, while the note
+/// was closed.
+fn refilled(balances: &[(u32, i64)], at: u64) -> Vec<(u32, i64)> {
+    let periods = super::unix_now().saturating_sub(at) / REFILL_PERIOD.as_secs();
+    let added = ALLOWANCE_FUEL.saturating_mul(i64::try_from(periods).unwrap_or(i64::MAX));
+    balances
+        .iter()
+        .map(|(writer, balance)| (*writer, balance.saturating_add(added).min(ALLOWANCE_FUEL)))
+        .collect()
 }
 
 fn text_name(rid: &Id) -> String {
@@ -643,7 +657,7 @@ impl WorkspaceSync {
             sandbox()?,
             Opened {
                 records,
-                balances: file.balances.clone(),
+                balances: refilled(&file.balances, file.balances_at),
                 loader: Some(loader),
             },
             client_ids,
@@ -676,6 +690,7 @@ impl WorkspaceSync {
             && let Some(mut file) = self.text_file(rid)?
         {
             file.balances = balances;
+            file.balances_at = super::unix_now();
             self.store_text(rid, &file)?;
         }
         self.text.sessions.remove(rid);
@@ -815,6 +830,7 @@ impl WorkspaceSync {
             lineage,
             records: Vec::new(),
             balances: Vec::new(),
+            balances_at: 0,
             stopped: false,
             pending_since: None,
             reviews: Vec::new(),
@@ -1142,6 +1158,7 @@ impl WorkspaceSync {
             lineage,
             records: Vec::new(),
             balances: Vec::new(),
+            balances_at: 0,
             stopped: false,
             pending_since: None,
             reviews: Vec::new(),
@@ -1362,7 +1379,12 @@ impl WorkspaceSync {
             .sessions
             .get(&rid)
             .is_some_and(|s| s.editing || !s.meta.is_empty());
-        if !busy {
+        // Records that wait on a writer's allowance run on its refill.
+        let deferred = file
+            .records
+            .iter()
+            .any(|r| r.judgement == Judgement::Waiting && r.lineage == lineage);
+        if !busy && !deferred {
             self.close_session(&rid)?;
         }
         Ok(())
