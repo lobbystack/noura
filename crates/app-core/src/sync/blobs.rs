@@ -23,6 +23,19 @@ fn corrupt(what: &str) -> SyncError {
     SyncError::Invalid(format!("the downloaded blob {what}"))
 }
 
+/// The `Retry-After` of a response, when it's short enough to sit out.
+fn retry_after(response: &reqwest::Response) -> Option<std::time::Duration> {
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .parse()
+        .ok()
+        .filter(|seconds| *seconds <= super::LONGEST_RATE_WAIT)
+        .map(std::time::Duration::from_secs)
+}
+
 impl SyncClient {
     fn blob_path(workspace: &Id, blob: &Id) -> String {
         format!(
@@ -32,32 +45,48 @@ impl SyncClient {
         )
     }
 
-    /// Sends a tus request and returns its response, or the §26 refusal.
+    /// Sends a tus request and returns its response, or the §26 refusal,
+    /// after it waits out a rate limit as [`SyncClient::send`] does.
     async fn tus(
         &mut self,
         request: reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, SyncError> {
-        let response = request
+        let request = request
             .bearer_auth(&self.token)
-            .header("Tus-Resumable", "1.0.0")
-            .send()
-            .await
-            .map_err(network)?;
-        if response.status().is_success() {
-            return Ok(response);
+            .header("Tus-Resumable", "1.0.0");
+        let mut retries = 0;
+        loop {
+            let attempt = request.try_clone();
+            let response = attempt
+                .ok_or_else(|| SyncError::Invalid("a tus request has a stream body".into()))?
+                .send()
+                .await
+                .map_err(network)?;
+            if response.status().is_success() {
+                return Ok(response);
+            }
+            // A `HEAD` has no body, so the wait comes from the header.
+            if retries < super::RATE_RETRIES
+                && response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+                && let Some(wait) = retry_after(&response)
+            {
+                retries += 1;
+                tokio::time::sleep(wait).await;
+                continue;
+            }
+            let status = response.status().as_u16();
+            let bytes = response.bytes().await.map_err(network)?;
+            let error =
+                <sync_protocol::messages::ErrorBody as sync_protocol::codec::Decode>::from_bytes(
+                    &bytes,
+                )
+                .map_err(network)?;
+            return Err(SyncError::Refused {
+                code: error.code.0,
+                status,
+                detail: error.detail.map(|d| d.0),
+            });
         }
-        let status = response.status().as_u16();
-        let bytes = response.bytes().await.map_err(network)?;
-        let error =
-            <sync_protocol::messages::ErrorBody as sync_protocol::codec::Decode>::from_bytes(
-                &bytes,
-            )
-            .map_err(network)?;
-        Err(SyncError::Refused {
-            code: error.code.0,
-            status,
-            detail: error.detail.map(|d| d.0),
-        })
     }
 
     /// The server's `Upload-Offset` for the upload of `blob`.

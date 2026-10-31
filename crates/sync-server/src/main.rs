@@ -36,6 +36,15 @@
 //!   S3-compatible service: keep blob segments in that bucket instead of the
 //!   data directory's `blobs` directory. The standard `AWS_*` variables give
 //!   the credentials and region.
+//! - `NOURA_TRUSTED_PROXY_HEADER`: the header your reverse proxy sets to the
+//!   client's IP. Without it the server ignores such headers and counts
+//!   sign-in per connection address.
+//! - `NOURA_RATE_PUSHES_PER_SECOND`, `NOURA_RATE_PUSH_BYTES_PER_MINUTE`,
+//!   `NOURA_RATE_UPLOAD_BYTES_PER_MINUTE`, `NOURA_RATE_READ_BYTES_PER_MINUTE`,
+//!   `NOURA_RATE_BOOTSTRAP_BYTES_PER_MINUTE`,
+//!   `NOURA_RATE_OTHER_REQUESTS_PER_MINUTE` and
+//!   `NOURA_RATE_SIGN_IN_PER_MINUTE`: the rate limits of each device, and of
+//!   each client IP for sign-in.
 //!
 //! `blobs migrate-to-s3` moves a disk store's segments into the bucket those
 //! variables name, checks each one's hash, and deletes the local copy only
@@ -177,6 +186,8 @@ fn serve(arguments: Arguments) -> Result<(), String> {
     config.account_web = env("NOURA_ACCOUNT_WEB_DIR").map(PathBuf::from);
     config.blob_store = blob_store();
     config.retention = retention()?;
+    config.rate_limits = rate_limits()?;
+    config.trusted_proxy_header = env("NOURA_TRUSTED_PROXY_HEADER");
     runtime()
         .block_on(sync_server::serve(config))
         .map_err(|e| e.to_string())
@@ -200,6 +211,33 @@ fn retention() -> Result<sync_store::Retention, String> {
     }
     retention.quota_bytes = bytes("NOURA_WORKSPACE_QUOTA_BYTES")?;
     Ok(retention)
+}
+
+/// The default rate limits with each `NOURA_RATE_*` variable applied.
+fn rate_limits() -> Result<sync_server::RateLimits, String> {
+    let mut limits = sync_server::RateLimits::default();
+    for (name, limit) in [
+        ("NOURA_RATE_PUSHES_PER_SECOND", &mut limits.pushes),
+        ("NOURA_RATE_PUSH_BYTES_PER_MINUTE", &mut limits.push_bytes),
+        (
+            "NOURA_RATE_UPLOAD_BYTES_PER_MINUTE",
+            &mut limits.upload_bytes,
+        ),
+        ("NOURA_RATE_READ_BYTES_PER_MINUTE", &mut limits.read_bytes),
+        (
+            "NOURA_RATE_BOOTSTRAP_BYTES_PER_MINUTE",
+            &mut limits.bootstrap_bytes,
+        ),
+        ("NOURA_RATE_OTHER_REQUESTS_PER_MINUTE", &mut limits.requests),
+        ("NOURA_RATE_SIGN_IN_PER_MINUTE", &mut limits.sign_in),
+    ] {
+        if let Some(value) = env(name) {
+            limit.allowance = value
+                .parse()
+                .map_err(|_| format!("{name} isn't a whole number"))?;
+        }
+    }
+    Ok(limits)
 }
 
 /// The blob store `NOURA_S3_BUCKET` and `NOURA_S3_ENDPOINT` name, or the

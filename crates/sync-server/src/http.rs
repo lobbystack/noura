@@ -8,7 +8,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{FromRequestParts, MatchedPath, Path, RawQuery, Request, State};
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER};
 use axum::http::request::Parts;
 use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
@@ -59,7 +59,16 @@ impl IntoResponse for ApiError {
             Error::Refused(refusal) => {
                 let status = StatusCode::from_u16(refusal.status())
                     .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-                encoded(status, refusal.body().to_bytes())
+                let body = refusal.body();
+                let wait = body.retry_after_seconds;
+                let mut response = encoded(status, body.to_bytes());
+                // A `HEAD` carries no body, so its wait goes in the header.
+                if let Some(seconds) = wait {
+                    response
+                        .headers_mut()
+                        .insert(RETRY_AFTER, HeaderValue::from(seconds));
+                }
+                response
             }
             Error::Internal(cause) => {
                 let body = ErrorBody {
@@ -115,6 +124,25 @@ pub struct ChainReader(pub SessionRow);
 /// device code nobody enrolled reads nothing (§7).
 pub struct Enrolling(pub Session, pub Digest);
 
+/// Counts a request of `subject` against its rate limits (§26).
+async fn admit<B: Backend>(
+    parts: &Parts,
+    state: &AppState<B>,
+    subject: Id,
+) -> Result<(), ApiError> {
+    let (Some(route), Some(meter)) = (
+        parts.extensions.get::<MatchedPath>(),
+        parts.extensions.get::<crate::rate::Meter>(),
+    ) else {
+        return Ok(());
+    };
+    let limiter = state.store.backend().limiter();
+    state
+        .rate
+        .admit(&*limiter, (&parts.method, route.as_str()), subject, meter)
+        .await
+}
+
 /// Refuses a session that holds no card yet.
 fn bound(session: Session) -> Result<Session, ApiError> {
     if session.device == UNBOUND {
@@ -136,6 +164,7 @@ impl<B: Backend> FromRequestParts<AppState<B>> for ChainReader {
         let token = bearer(parts)?;
         let row = state.store.session_row(token).await?.0;
         bound(row.session)?;
+        admit(parts, state, row.session.device).await?;
         Ok(ChainReader(row))
     }
 }
@@ -157,7 +186,9 @@ impl<B: Backend> FromRequestParts<AppState<B>> for Auth {
         state: &AppState<B>,
     ) -> Result<Self, Self::Rejection> {
         let token = bearer(parts)?;
-        Ok(Auth(bound(state.store.session(token).await?)?))
+        let session = bound(state.store.session(token).await?)?;
+        admit(parts, state, session.device).await?;
+        Ok(Auth(session))
     }
 }
 
@@ -170,6 +201,13 @@ impl<B: Backend> FromRequestParts<AppState<B>> for Enrolling {
     ) -> Result<Self, Self::Rejection> {
         let token = bearer(parts)?;
         let (session, hash) = state.store.session_and_hash(token).await?;
+        // A session with no card yet counts against its account.
+        let subject = if session.device == UNBOUND {
+            session.account
+        } else {
+            session.device
+        };
+        admit(parts, state, subject).await?;
         Ok(Enrolling(session, hash))
     }
 }
@@ -183,7 +221,9 @@ impl<B: Backend> FromRequestParts<AppState<B>> for AuthWithHash {
     ) -> Result<Self, Self::Rejection> {
         let token = bearer(parts)?;
         let (session, hash) = state.store.session_and_hash(token).await?;
-        Ok(AuthWithHash(bound(session)?, hash))
+        let session = bound(session)?;
+        admit(parts, state, session.device).await?;
+        Ok(AuthWithHash(session, hash))
     }
 }
 
@@ -195,6 +235,8 @@ pub struct AppState<B: Backend> {
     pub accounts: Arc<crate::accounts::Accounts>,
     /// Where blob segments live (§21).
     pub blobs: Arc<dyn crate::blobs::SegmentStore>,
+    /// The rate limits (§26).
+    pub rate: Arc<crate::rate::RateGate>,
 }
 
 impl<B: Backend> Clone for AppState<B> {
@@ -203,6 +245,7 @@ impl<B: Backend> Clone for AppState<B> {
             store: self.store.clone(),
             accounts: self.accounts.clone(),
             blobs: self.blobs.clone(),
+            rate: self.rate.clone(),
         }
     }
 }
@@ -338,14 +381,19 @@ async fn epochs<B: Backend>(
 }
 
 async fn push<B: Backend>(
-    State(store): State<Arc<Store<B>>>,
+    State(state): State<AppState<B>>,
     Auth(session): Auth,
     Segments(workspace): Segments<String>,
     request: Body,
 ) -> Result<Response, ApiError> {
     let workspace = id(&workspace)?;
     let bytes = body(request).await?;
-    Ok(ok(&store.push(session, workspace, bytes).await?))
+    let limiter = state.store.backend().limiter();
+    state
+        .rate
+        .take_push_body(&*limiter, session.device, bytes.len() as u64)
+        .await?;
+    Ok(ok(&state.store.push(session, workspace, bytes).await?))
 }
 
 async fn pull<B: Backend>(
@@ -860,6 +908,7 @@ async fn stamp_and_log(generation: u64, request: Request, next: Next) -> Respons
 /// The routes of §26 that the server serves so far, and the account pages.
 pub fn router<B: Backend>(state: AppState<B>) -> Router {
     let generation = state.store.restore_generation();
+    let gate = state.clone();
     Router::new()
         .route("/v2/limits", get(limits::<B>))
         .route("/v2/accounts/chain", post(append_chain::<B>))
@@ -962,6 +1011,10 @@ pub fn router<B: Backend>(state: AppState<B>) -> Router {
         .fallback(not_found)
         .method_not_allowed_fallback(not_found)
         .with_state(state)
+        .layer(middleware::from_fn_with_state(
+            gate,
+            crate::rate::layer::<B>,
+        ))
         .layer(middleware::from_fn(move |request: Request, next: Next| {
             stamp_and_log(generation, request, next)
         }))
