@@ -352,11 +352,15 @@ impl SyncClient {
 
     /// Every link of one chain, page by page: the account's current chain
     /// when `genesis` is absent. Returns the links and the chain's genesis.
+    /// A read that met a new restore generation reports
+    /// `sync_restore_generation`, because the device compares what it kept
+    /// after a restore rather than judging a chain as forked (§14).
     pub async fn whole_chain(
         &mut self,
         account: Id,
         genesis: Option<Digest>,
     ) -> Result<(Vec<Signed<AccountLink>>, Digest), SyncError> {
+        let seen = self.generation;
         let mut links: Vec<Signed<AccountLink>> = Vec::new();
         let mut genesis = genesis;
         loop {
@@ -378,6 +382,9 @@ impl SyncClient {
             genesis = Some(page.genesis);
             let more = !page.links.0.is_empty();
             links.extend(page.links.0.into_iter().map(|l| l.0));
+            if self.generation > seen {
+                return Err(SyncError::Check("sync_restore_generation"));
+            }
             if links.len() as u64 >= page.head_seqno || !more {
                 return Ok((links, page.genesis));
             }

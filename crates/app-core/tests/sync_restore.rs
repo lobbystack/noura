@@ -7,7 +7,10 @@
 mod sync_support;
 
 use app_core::sync::workspace::restore::Lost;
-use sync_support::{MemorySecrets, Pair, Server, approve, pair, pair_of_accounts_on, pair_on};
+use sync_support::{
+    Desktop, MemorySecrets, Pair, Server, approve, approve_new, new_desktop_in, pair,
+    pair_of_accounts_on, pair_on, reset_devices,
+};
 
 const NO_WAIT: std::time::Duration = std::time::Duration::ZERO;
 
@@ -164,76 +167,16 @@ async fn a_lost_link_of_your_own_chain_stops_the_workspace() {
     assert_eq!(round.pushed, 0, "it writes nothing");
 }
 
-/// A restore that lost a link of a member's chain: the member resets, an
-/// owner compares the approval code and accepts, and both resume.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_member_resets_and_the_owner_accepts_the_reset() {
+/// The approval that commits a reset (§7, §10): `member`'s device asks,
+/// the owner opens the workspace and offers, they compare the code, and
+/// the owner pushes the `accept_reset`.
+async fn accept_the_reset<B: sync_store::Backend>(
+    pair: &mut Pair<B>,
+    member: &mut Desktop,
+    workspace: sync_protocol::types::Id,
+) -> (app_core::sync::joining::InvitedCandidate, u64) {
     use app_core::sync::approval::CandidateStep;
-    use app_core::sync::device::{Joined, join};
-    use std::sync::Arc;
 
-    let mut pair = pair_of_accounts_on(Server::start().await).await;
-    let copy = pair.server.backup("before.sqlite3").await;
-    let workspace = pair.sync_a.workspace();
-    let account = pair.desktop.credentials.account;
-    // A new device of the member: a link the backup lacks, which the owner
-    // follows. No workspace records it, so no policy change goes.
-    let _third = approve(&pair.server, &mut pair.desktop, &mut []).await;
-    let genesis = pair.desktop.credentials.reference_head.genesis;
-    pair.service
-        .follow_account(account, genesis)
-        .await
-        .expect("the owner keeps the new head");
-    rounds(&mut pair).await;
-
-    let restored = pair.server.put_back(&copy, true).await;
-    let floors_before = floors(&restored, account);
-    reconnect(&mut pair, &restored.base).await;
-    pair.sync_a
-        .round(&mut pair.service, 0)
-        .await
-        .expect("laptop");
-    pair.sync_b
-        .round(&mut pair.desktop.service, 0)
-        .await
-        .expect("desktop");
-    assert_eq!(pair.sync_b.restore_lost(), Some(&Lost::OwnAccount));
-    assert_eq!(
-        pair.sync_a.restore_lost(),
-        Some(&Lost::MemberAccount(account))
-    );
-
-    // The member signs in on a new card and resets.
-    let signed_in = restored.sign_in(account, &restored.base).await;
-    let secrets = Arc::new(MemorySecrets::default());
-    let Joined::NeedsApproval { keys, mut client } =
-        join(&signed_in, &*secrets).await.expect("enrolled")
-    else {
-        panic!("the account has a chain");
-    };
-    let session = sync_store::Session::new(account, keys.device());
-    let (code, _) = restored
-        .store
-        .issue_reset_code(session)
-        .await
-        .expect("a code");
-    let done = app_core::sync::reset::reset(
-        &mut client,
-        &*secrets,
-        account,
-        &keys,
-        &signed_in.session_token,
-        &code,
-    )
-    .await
-    .expect("the reset");
-    assert_ne!(done.fingerprint, sync_protocol::types::Digest::ZERO);
-    let state = tempfile::tempdir().expect("a folder");
-    let mut member =
-        sync_support::Desktop::connect(&restored.base, done.credentials.clone(), secrets, state)
-            .await;
-
-    // Its device asks the workspace to accept it.
     let mut candidate = member
         .service
         .request_reset_approval(workspace)
@@ -273,6 +216,432 @@ async fn a_member_resets_and_the_owner_accepts_the_reset() {
         .accept_reset(&mut pair.service, offer)
         .await
         .expect("accepted");
+    (candidate, revision)
+}
+
+/// A restore cut the member's chain short of the head its device keeps. On
+/// that computer the reset keeps the old device's secrets aside and drops
+/// what it kept of the retired chain, so the old head stops nothing, and
+/// the new device goes on to resume (§7, §14).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reset_drops_the_kept_head_of_its_own_retired_chain() {
+    use app_core::sync::KeptHeads;
+    use app_core::sync::device::{StoredDevice, retired_item};
+
+    let mut pair = pair_of_accounts_on(Server::start().await).await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    let workspace = pair.sync_a.workspace();
+    let account = pair.desktop.credentials.account;
+    let _third = approve(&pair.server, &mut pair.desktop, &mut []).await;
+    let genesis = pair.desktop.credentials.reference_head.genesis;
+    pair.service
+        .follow_account(account, genesis)
+        .await
+        .expect("the owner keeps the new head");
+    rounds(&mut pair).await;
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("desktop");
+    assert_eq!(pair.sync_b.restore_lost(), Some(&Lost::OwnAccount));
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("laptop");
+
+    // This computer holds the card, under the restored server's address.
+    let old = pair.desktop.id();
+    let secrets = pair.desktop.secrets.clone();
+    assert_eq!(
+        pair.desktop.service.kept_heads().kept_of(&account)[0].seqno,
+        2
+    );
+    StoredDevice::new(
+        &restored.base,
+        account,
+        &pair.desktop.credentials.keys,
+        &pair.desktop.credentials.session_token,
+    )
+    .save(&*secrets)
+    .expect("stored");
+    let (mut member, done) = reset_devices(&restored, account, secrets.clone()).await;
+    assert_eq!(done.retired, Some(old));
+    assert!(
+        local_core::sync::SyncCredentials::read_optional(
+            &*secrets,
+            &retired_item(&restored.base, &old)
+        )
+        .expect("read")
+        .is_some(),
+        "the old device's secrets stay aside"
+    );
+
+    let dir = pair.desktop.state.path();
+    KeptHeads::forget_retired(dir, &old, &*secrets).expect("dropped");
+    let kept = KeptHeads::open(dir, account, old, &*secrets).expect("no rollback");
+    assert!(kept.kept_of(&account).is_empty());
+
+    let (candidate, _) = accept_the_reset(&mut pair, &mut member, workspace).await;
+    assert!(
+        member
+            .service
+            .join_invited(&candidate)
+            .await
+            .expect("the change verifies")
+    );
+    assert_eq!(member.service.kept_heads().stopped([account]), None);
+    let files = pair.b.files();
+    let rebuilt = app_core::sync::workspace::WorkspaceSync::rebuild(
+        &mut member.service,
+        pair.b.engine.clone(),
+        &mut pair.b.registry,
+    )
+    .await
+    .expect("the folder rebuilds");
+    assert_eq!(rebuilt.restore_lost(), None);
+    assert_eq!(pair.b.files(), files);
+}
+
+/// A device you still hold, on the chain your reset retired, learns of the
+/// reset, signs in as a new device, and a device on the new chain approves
+/// it (§7 step 3). It trusts the workspace once the reset device records
+/// the account's head there again (`sync-v2-approval.json`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_of_the_retired_chain_comes_back_through_the_new_chain() {
+    use app_core::sync::SyncError;
+    use std::sync::Arc;
+
+    let mut pair = pair_of_accounts_on(Server::start().await).await;
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("laptop");
+    let workspace = pair.sync_a.workspace();
+    let account = pair.desktop.credentials.account;
+    let secrets = Arc::new(MemorySecrets::default());
+    let (mut member, done) = reset_devices(&pair.server, account, secrets).await;
+
+    // The old device answers `device_removed`, and no link says why.
+    let Err(SyncError::Refused { code, detail, .. }) =
+        pair.desktop.service.client().workspaces().await
+    else {
+        panic!("the session ended");
+    };
+    assert_eq!(code, "device_removed");
+    let new = pair
+        .desktop
+        .service
+        .retired_by_reset(detail.as_deref())
+        .await
+        .expect("read")
+        .expect("a reset");
+    assert_eq!(new, done.fingerprint);
+
+    // Signing in moves the old card aside, and the new chain approves.
+    let candidate = new_desktop_in(
+        &pair.server,
+        account,
+        &pair.server.base,
+        pair.desktop.secrets.clone(),
+    )
+    .await;
+    assert_ne!(
+        candidate.candidate.fingerprint(),
+        pair.desktop.credentials.card().fingerprint()
+    );
+    let mut sibling = approve_new(&pair.server, &mut member, candidate, &mut []).await;
+    assert_ne!(sibling.id(), pair.desktop.id());
+    assert_eq!(
+        sibling.service.own_chain().await.expect("own").head_seqno(),
+        2
+    );
+    assert!(
+        sibling.service.open_workspace(workspace).await.is_err(),
+        "nothing accepted the reset yet"
+    );
+
+    let (accepted, _) = accept_the_reset(&mut pair, &mut member, workspace).await;
+    assert!(
+        member
+            .service
+            .join_invited(&accepted)
+            .await
+            .expect("the change verifies")
+    );
+    let mut rebuilt = app_core::sync::workspace::WorkspaceSync::rebuild(
+        &mut member.service,
+        pair.b.engine.clone(),
+        &mut pair.b.registry,
+    )
+    .await
+    .expect("the folder rebuilds");
+    let mut remote = member
+        .service
+        .open_workspace(workspace)
+        .await
+        .expect("verified");
+    member
+        .service
+        .record_heads(&mut remote, &[])
+        .await
+        .expect("the account's head goes in");
+    rebuilt
+        .round(&mut member.service, 0)
+        .await
+        .expect("a round");
+
+    let mut folder = sync_support::Folder::new("Sibling");
+    let mut downloaded = app_core::sync::workspace::WorkspaceSync::download(
+        &mut sibling.service,
+        folder.engine.clone(),
+        workspace,
+        &mut folder.registry,
+    )
+    .await
+    .expect("the sibling trusts the workspace");
+    downloaded
+        .round(&mut sibling.service, 0)
+        .await
+        .expect("a round");
+    assert_eq!(folder.files(), pair.b.files());
+}
+
+/// An owner with no other owner or admin resets and reaches Set up sync
+/// again from the new card (§14). The folder's old journal gives the new
+/// workspace its name, and the members find the old one closed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reset_owner_sets_up_sync_again_from_the_new_card() {
+    use app_core::sync::members::MemberChange;
+    use app_core::sync::workspace::WorkspaceSync;
+
+    let Pair {
+        server,
+        mut service,
+        laptop,
+        a: mut folder,
+        mut sync_a,
+        mut desktop,
+        b,
+        mut sync_b,
+        proxy: _proxy,
+    } = pair_of_accounts_on(Server::start().await).await;
+    sync_a
+        .change_member(
+            &mut service,
+            MemberChange::SetRole {
+                account: desktop.credentials.account,
+                role: sync_protocol::records::Role::Editor,
+            },
+        )
+        .await
+        .expect("no other admin");
+    sync_a.round(&mut service, 0).await.expect("laptop");
+    sync_b
+        .round(&mut desktop.service, 0)
+        .await
+        .expect("desktop");
+    let old = sync_a.workspace();
+    let old_device = laptop.id();
+    let files = folder.files();
+    drop(sync_a);
+
+    let owner = laptop.credentials.account;
+    let (mut card, done) = reset_devices(&server, owner, laptop.secrets.clone()).await;
+    assert_eq!(done.retired, Some(old_device));
+    let mut fresh = WorkspaceSync::set_up_after_reset(
+        &mut card.service,
+        folder.engine.clone(),
+        &mut folder.registry,
+        done.retired,
+    )
+    .await
+    .expect("set up again");
+    assert_ne!(fresh.workspace(), old);
+    assert_eq!(fresh.name(), "Field notes");
+    fresh.round(&mut card.service, 0).await.expect("a round");
+    assert_eq!(folder.files(), files);
+
+    let round = sync_b
+        .round(&mut desktop.service, 0)
+        .await
+        .expect("a stopped round");
+    assert_eq!(round.applied, 0);
+    assert_eq!(sync_b.restore_lost(), Some(&Lost::Closed));
+    assert_eq!(b.files(), files, "the member keeps its files");
+}
+
+/// With an admin left who can accept the reset, the server refuses the new
+/// card's close and the folder stays as it was (§14).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reset_owner_with_an_admin_keeps_the_accept_reset_path() {
+    use app_core::sync::SyncError;
+    use app_core::sync::workspace::WorkspaceSync;
+
+    let mut pair = pair_of_accounts_on(Server::start().await).await;
+    let old = pair.sync_a.workspace();
+    let owner = pair.laptop.credentials.account;
+    let (mut card, done) = reset_devices(&pair.server, owner, pair.laptop.secrets.clone()).await;
+    let refused = WorkspaceSync::set_up_after_reset(
+        &mut card.service,
+        pair.a.engine.clone(),
+        &mut pair.a.registry,
+        done.retired,
+    )
+    .await;
+    assert!(matches!(
+        refused,
+        Err(SyncError::Refused { ref code, .. }) if code == "forbidden"
+    ));
+    assert_eq!(
+        pair.a
+            .registry
+            .of_folder(pair.a.engine.root())
+            .expect("still mapped")
+            .workspace,
+        old
+    );
+    assert!(
+        pair.sync_b
+            .round(&mut pair.desktop.service, 0)
+            .await
+            .is_ok()
+    );
+    assert_eq!(pair.sync_b.restore_lost(), None);
+}
+
+/// An `accept_reset` a server serves again ends no stop: a device looks
+/// only above the policy head it accepted, and the old change neither
+/// resumes the workspace nor leaves the device free to read the retired
+/// chain short (§14).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_old_accept_reset_leaves_the_stop_in_place() {
+    use std::sync::Arc;
+    use sync_protocol::codec::{Decode, Encode, List, Nested};
+    use sync_protocol::messages::PolicyResponse;
+
+    let mut pair = pair_of_accounts_on(Server::start().await).await;
+    let workspace = pair.sync_a.workspace();
+    let account = pair.desktop.credentials.account;
+    let secrets = Arc::new(MemorySecrets::default());
+    let (mut member, _) = reset_devices(&pair.server, account, secrets).await;
+    let (candidate, revision) = accept_the_reset(&mut pair, &mut member, workspace).await;
+    assert!(
+        member
+            .service
+            .join_invited(&candidate)
+            .await
+            .expect("the change verifies")
+    );
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    let old = pair
+        .service
+        .client()
+        .policy(workspace, revision - 1)
+        .await
+        .expect("read")
+        .changes
+        .0[0]
+        .clone();
+
+    // A link of the new chain that the restore loses.
+    let copy = pair.server.backup("before.sqlite3").await;
+    let _sibling = approve(&pair.server, &mut member, &mut []).await;
+    let genesis = member.credentials.reference_head.genesis;
+    pair.service
+        .follow_account(account, genesis)
+        .await
+        .expect("kept");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    let restored = pair.server.put_back(&copy, true).await;
+    pair.proxy.retarget(&restored.base);
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    assert_eq!(
+        pair.sync_a.restore_lost(),
+        Some(&Lost::MemberAccount(account))
+    );
+
+    let digest = old.0.digest();
+    pair.proxy.tamper(Box::new(move |path, body| {
+        if !path.contains("/policy") {
+            return body;
+        }
+        let mut response = PolicyResponse::from_bytes(&body).expect("a policy response");
+        if response.changes.0.iter().any(|c| c.0.digest() == digest) {
+            return body;
+        }
+        let mut changes = vec![Nested(old.0.clone())];
+        changes.extend(response.changes.0.clone());
+        response.changes = List(changes);
+        response.to_bytes()
+    }));
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a stopped round");
+    pair.proxy.honest();
+    assert_eq!(
+        pair.sync_a.restore_lost(),
+        Some(&Lost::MemberAccount(account)),
+        "the old change ended nothing"
+    );
+    assert!(!pair.service.kept_heads().excused(&account));
+}
+
+/// A restore that lost a link of a member's chain: the member resets, an
+/// owner compares the approval code and accepts, and both resume.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_member_resets_and_the_owner_accepts_the_reset() {
+    use std::sync::Arc;
+
+    let mut pair = pair_of_accounts_on(Server::start().await).await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    let workspace = pair.sync_a.workspace();
+    let account = pair.desktop.credentials.account;
+    // A new device of the member: a link the backup lacks, which the owner
+    // follows. No workspace records it, so no policy change goes.
+    let _third = approve(&pair.server, &mut pair.desktop, &mut []).await;
+    let genesis = pair.desktop.credentials.reference_head.genesis;
+    pair.service
+        .follow_account(account, genesis)
+        .await
+        .expect("the owner keeps the new head");
+    rounds(&mut pair).await;
+
+    let restored = pair.server.put_back(&copy, true).await;
+    let floors_before = floors(&restored, account);
+    reconnect(&mut pair, &restored.base).await;
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("laptop");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("desktop");
+    assert_eq!(pair.sync_b.restore_lost(), Some(&Lost::OwnAccount));
+    assert_eq!(
+        pair.sync_a.restore_lost(),
+        Some(&Lost::MemberAccount(account))
+    );
+
+    // The member signs in on a new card and resets.
+    let secrets = Arc::new(MemorySecrets::default());
+    let (mut member, done) = reset_devices(&restored, account, secrets).await;
+    assert_ne!(done.fingerprint, sync_protocol::types::Digest::ZERO);
+
+    // Its device asks the workspace to accept it.
+    let (candidate, revision) = accept_the_reset(&mut pair, &mut member, workspace).await;
     assert!(revision > 1);
 
     // The owner's stop for that chain ends, and it syncs again.

@@ -660,6 +660,36 @@ fn an_invitee_pastes_a_link_accepts_and_compares_the_code() {
     );
 }
 
+/// A computer whose chain a reset retired says so and offers to come back
+/// as a new device.
+#[test]
+fn a_retired_device_shows_the_new_fingerprint_and_signs_in_again() {
+    let app_data = tempfile::tempdir().unwrap();
+    let account = Arc::new(FakeAccount::default());
+    account.show(AccountScreen {
+        server: "https://sync.example.com".into(),
+        phase: AccountPhase::Retired {
+            fingerprint: ACCOUNT.into(),
+        },
+        ..AccountScreen::default()
+    });
+    let mut harness = harness(app_data.path(), account.clone());
+    harness.run();
+    assert!(
+        harness
+            .query_by_label("Your account's devices were reset")
+            .is_some()
+    );
+    harness.get_by_label("Sign in as a new device").click();
+    harness.run();
+    assert!(
+        account
+            .taken()
+            .iter()
+            .any(|action| matches!(action, AccountAction::SignIn))
+    );
+}
+
 /// Reset devices: the code field, then the new fingerprint with each
 /// workspace that has to accept it, and the acceptance on another account's
 /// device.
@@ -690,6 +720,7 @@ fn the_reset_screens_ask_for_the_code_and_show_what_comes_next() {
             workspace: "66666666".into(),
             code: Some("1234 5678".into()),
             confirmed: false,
+            set_up_again: true,
         }],
         ..SignedInView::default()
     }));
@@ -702,6 +733,14 @@ fn the_reset_screens_ask_for_the_code_and_show_what_comes_next() {
             .taken()
             .iter()
             .any(|action| matches!(action, AccountAction::ConfirmResetWait(0)))
+    );
+    harness.get_by_label("Set up sync again").click();
+    harness.run();
+    assert!(
+        account
+            .taken()
+            .iter()
+            .any(|action| matches!(action, AccountAction::SetUpAfterReset(0)))
     );
 
     account.show(signed_in(SignedInView {

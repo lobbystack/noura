@@ -200,6 +200,7 @@ fn stored_own_head(
     let Some(text) = credentials
         .read_optional(&own_head_name(device))
         .map_err(credential_error)?
+        .filter(|text| !text.is_empty())
     else {
         return Ok(None);
     };
@@ -217,6 +218,7 @@ fn stored_refusals(
     let Some(text) = credentials
         .read_optional(&refusals_name(device))
         .map_err(credential_error)?
+        .filter(|text| !text.is_empty())
     else {
         return Ok(BTreeMap::new());
     };
@@ -268,6 +270,31 @@ pub(crate) fn journal_key(
 }
 
 impl KeptHeads {
+    /// Drops everything `device` keeps in `dir`, its own-account head and
+    /// refusals included, once a reset retired that device: a device drops
+    /// its kept head of any chain its own reset retired (§7, §14), and the
+    /// card never comes back. The journal key stays, because the folder's
+    /// old journal still opens with it.
+    pub fn forget_retired(
+        dir: &Path,
+        device: &Id,
+        credentials: &dyn SyncCredentials,
+    ) -> Result<(), SyncError> {
+        match std::fs::remove_file(dir.join(KEPT_HEADS_FILE)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(SyncError::Invalid(format!(
+                    "the kept heads can't be removed: {error}"
+                )));
+            }
+        }
+        for item in [own_head_name(device), refusals_name(device)] {
+            credentials.delete(&item).map_err(credential_error)?;
+        }
+        Ok(())
+    }
+
     /// Opens the heads `device` of account `own` keeps in `dir`. A file
     /// whose keyed hash fails, or whose own-account head lies below the one
     /// the credential store keeps, reports `sync_journal_rollback`; the
@@ -734,6 +761,12 @@ impl KeptHeads {
     /// drops the chain.
     pub fn excuse_short(&mut self, account: Id) {
         self.excused.insert(account);
+    }
+
+    /// Ends [`KeptHeads::excuse_short`]: what let the device read the chain
+    /// short didn't verify.
+    pub fn withdraw_excuse(&mut self, account: &Id) {
+        self.excused.remove(account);
     }
 
     /// Whether [`KeptHeads::excuse_short`] holds for `account`.

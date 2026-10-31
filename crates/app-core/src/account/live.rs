@@ -193,6 +193,7 @@ impl LiveAccount {
             joined: None,
             download_into: None,
             reset: None,
+            retired: None,
             reset_waits: Vec::new(),
             reset_requests: Vec::new(),
             accepting: None,
@@ -338,6 +339,9 @@ enum Purpose {
     Reset,
 }
 
+/// Why a reset owner's Set up sync again stops at the server (§14).
+const ANOTHER_MANAGER: &str = "Another owner or admin of this workspace can accept your reset, so it stays open. Ask them to accept it.";
+
 /// A reset under way: a new card, enrolled, that waits for the emailed
 /// code.
 struct Resetting {
@@ -393,6 +397,8 @@ struct Driver {
     invited: Option<Invited>,
     /// The reset that waits for its emailed code.
     reset: Option<Resetting>,
+    /// The device a reset on this computer retired.
+    retired: Option<Id>,
     /// The workspaces that have yet to accept your reset.
     reset_waits: Vec<InvitedCandidate>,
     /// Members' reset requests in the attached workspace.
@@ -623,6 +629,8 @@ impl Driver {
                         && self.sign_in.is_none()
                         && self.candidate.is_none()
                         && self.offer.is_none()
+                        && self.accepting.is_none()
+                        && self.reset_waits.is_empty()
                         && self.recovery.is_none()
                         && self.invited.is_none()
                         && self.download_into.is_none()
@@ -762,6 +770,19 @@ impl Driver {
         let Some(service) = self.service.as_mut() else {
             return Ok(());
         };
+        if let Some(new) = service.retired_by_reset(detail.as_deref()).await? {
+            self.service = None;
+            self.workspaces.clear();
+            self.folder.after_reset(&[], &self.app_data);
+            self.shared.update(|screen| {
+                screen.busy = false;
+                screen.can_retry = false;
+                screen.phase = AccountPhase::Retired {
+                    fingerprint: fingerprint(&new),
+                };
+            });
+            return Ok(());
+        }
         let by = match service.verify_removal(detail.as_deref()).await {
             Ok(by) => fingerprint(&by.signer_fingerprint),
             Err(error @ SyncError::Check(_)) => {
@@ -1265,11 +1286,20 @@ impl Driver {
                 self.reset = None;
                 self.service = None;
                 self.workspaces.clear();
+                self.retired = done.retired;
+                if let Some(device) = done.retired {
+                    KeptHeads::forget_retired(&self.state_dir(&device), &device, &*self.store)?;
+                }
+                self.folder.after_reset(&[], &self.app_data);
                 self.connect(done.credentials.clone()).await?;
                 let mut waits = Vec::new();
+                let mut owned = BTreeSet::new();
                 if let Some(service) = self.service.as_mut() {
                     let listed = service.client().workspaces().await?;
                     for workspace in listed.workspaces.iter() {
+                        if workspace.role == sync_protocol::records::Role::Owner {
+                            owned.insert(workspace.workspace);
+                        }
                         match service.request_reset_approval(workspace.workspace).await {
                             Ok(candidate) => waits.push(candidate),
                             Err(error) => {
@@ -1279,12 +1309,16 @@ impl Driver {
                     }
                 }
                 let shown = fingerprint(&done.fingerprint);
+                let held: Vec<Id> = waits.iter().map(|c| c.workspace()).collect();
+                self.folder.after_reset(&held, &self.app_data);
+                let here = self.folder.workspace_of_folder(&self.app_data);
                 let lines = waits
                     .iter()
                     .map(|c| crate::account::ResetWait {
                         workspace: short_id(&c.workspace()),
                         code: None,
                         confirmed: false,
+                        set_up_again: owned.contains(&c.workspace()) && here == Some(c.workspace()),
                     })
                     .collect();
                 self.reset_waits = waits;
@@ -1303,6 +1337,25 @@ impl Driver {
                         }
                     });
                 }
+            }
+            AccountAction::SetUpAfterReset(index) => {
+                if self.reset_waits.get(index).is_none() {
+                    return Err(SyncError::Invalid("That workspace no longer waits.".into()));
+                }
+                let service = self.service.as_mut().ok_or_else(not_signed_in)?;
+                self.folder
+                    .set_up_after_reset(service, self.retired, &self.app_data)
+                    .await
+                    .map_err(|error| match error {
+                        SyncError::Refused { code, .. } if code == "forbidden" => {
+                            SyncError::Invalid(ANOTHER_MANAGER.into())
+                        }
+                        other => other,
+                    })?;
+                self.reset_waits.remove(index);
+                self.signed_in(|view| {
+                    view.reset_waits.remove(index);
+                });
             }
             AccountAction::AcceptReset(index) => {
                 let request = self
@@ -1817,12 +1870,21 @@ impl Driver {
     /// chain, a device whose session ended takes the new one, and a later
     /// one waits for approval.
     async fn joined(&mut self, signed_in: SignedIn) -> Result<(), SyncError> {
+        let before = StoredDevice::load(&*self.store, &signed_in.server)?
+            .filter(|stored| stored.account == signed_in.account)
+            .map(|stored| stored.keys().map(|keys| keys.device()))
+            .transpose()?;
         match join(&signed_in, &*self.store).await? {
             Joined::First(credentials) | Joined::Again(credentials) => {
                 self.connect(credentials).await
             }
             Joined::NeedsApproval { keys, client } => {
                 let device = keys.device();
+                // The card this computer held can't enroll any more.
+                if let Some(old) = before.filter(|old| *old != device) {
+                    KeptHeads::forget_retired(&self.state_dir(&old), &old, &*self.store)?;
+                    self.retired = Some(old);
+                }
                 let state = self.state_dir(&device);
                 let heads = KeptHeads::open(&state, signed_in.account, device, &*self.store)?;
                 let candidate = Candidate::request(client, keys, signed_in.account).await?;

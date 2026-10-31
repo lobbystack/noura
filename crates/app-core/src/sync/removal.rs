@@ -216,6 +216,33 @@ impl SyncService {
         })
     }
 
+    /// Whether a `device_removed` answer means that a reset retired this
+    /// device's chain (§7): the answer names that chain and the server's
+    /// current chain, which verifies from its own genesis, is another one.
+    /// Returns the account's new fingerprint. No link of the old chain can
+    /// say so, which is why the app only tells you and ends nothing else:
+    /// coming back takes a new sign-in and an approval code you compare.
+    pub async fn retired_by_reset(
+        &mut self,
+        detail: Option<&[u8]>,
+    ) -> Result<Option<Digest>, SyncError> {
+        let Some(detail) = detail.and_then(|bytes| DeviceRemovedDetail::from_bytes(bytes).ok())
+        else {
+            return Ok(None);
+        };
+        let account = self.credentials.account;
+        let own = self.credentials.reference_head.genesis;
+        if detail.genesis != own {
+            return Ok(None);
+        }
+        let (links, genesis) = self.client.whole_chain(account, None).await?;
+        if genesis == own {
+            return Ok(None);
+        }
+        let chain = super::verify_served(account, genesis, &links, &BTreeSet::new())?;
+        Ok(Some(chain.genesis()))
+    }
+
     /// Whether this device is the account's last active device, so signing
     /// out leaves you needing a recovery kit or a reset to read synced data
     /// again (§7).

@@ -1158,8 +1158,19 @@ pub struct NewDesktop {
 /// Signs a new device of `account` in, then posts its approval request and
 /// polls for offers through `base`, such as a tampering proxy.
 pub async fn new_desktop<B: Backend>(server: &Server<B>, account: Id, base: &str) -> NewDesktop {
-    let signed_in = server.sign_in(account, &server.base).await;
     let secrets = Arc::new(MemorySecrets::default());
+    new_desktop_in(server, account, base, secrets).await
+}
+
+/// [`new_desktop`] on a computer whose credential store is `secrets`, such
+/// as one that held a card a reset retired.
+pub async fn new_desktop_in<B: Backend>(
+    server: &Server<B>,
+    account: Id,
+    base: &str,
+    secrets: Arc<MemorySecrets>,
+) -> NewDesktop {
+    let signed_in = server.sign_in(account, &server.base).await;
     let (keys, client) = match app_core::sync::device::join(&signed_in, &*secrets)
         .await
         .expect("enrolled")
@@ -1188,6 +1199,42 @@ pub async fn new_desktop<B: Backend>(server: &Server<B>, account: Id, base: &str
     }
 }
 
+/// Reset devices the way the app runs it (§7): a new sign-in, a new card
+/// that enrolls, the emailed code and a genesis, in the credential store
+/// `secrets`. Returns the new device with what the reset reported.
+pub async fn reset_devices<B: Backend>(
+    server: &Server<B>,
+    account: Id,
+    secrets: Arc<MemorySecrets>,
+) -> (Desktop, app_core::sync::reset::ResetDone) {
+    let signed_in = server.sign_in(account, &server.base).await;
+    let keys = sync_key_envelope::v2::DeviceKeys::generate().expect("random");
+    let mut client = app_core::sync::SyncClient::connect(&server.base, &signed_in.session_token)
+        .await
+        .expect("connects");
+    app_core::sync::device::enroll_card(&mut client, &keys, account)
+        .await
+        .expect("enrolled");
+    let (code, _) = server
+        .store
+        .issue_reset_code(sync_store::Session::new(account, keys.device()))
+        .await
+        .expect("a code");
+    let done = app_core::sync::reset::reset(
+        &mut client,
+        &*secrets,
+        account,
+        &keys,
+        &signed_in.session_token,
+        &code,
+    )
+    .await
+    .expect("the reset");
+    let state = tempfile::tempdir().expect("a folder");
+    let desktop = Desktop::connect(&server.base, done.credentials.clone(), secrets, state).await;
+    (desktop, done)
+}
+
 /// Approves a new device of `approver`'s account through the whole flow of
 /// §10, recording its head in `workspaces`, and returns its service.
 pub async fn approve<B: Backend>(
@@ -1196,7 +1243,17 @@ pub async fn approve<B: Backend>(
     workspaces: &mut [app_core::sync::RemoteWorkspace],
 ) -> Desktop {
     let account = approver.credentials.account;
-    let mut new = new_desktop(server, account, &server.base).await;
+    let new = new_desktop(server, account, &server.base).await;
+    approve_new(server, approver, new, workspaces).await
+}
+
+/// Approves `new` from `approver` and returns its service.
+pub async fn approve_new<B: Backend>(
+    server: &Server<B>,
+    approver: &mut Desktop,
+    mut new: NewDesktop,
+    workspaces: &mut [app_core::sync::RemoteWorkspace],
+) -> Desktop {
     let fingerprint = new.candidate.fingerprint();
     let pending = approver
         .service

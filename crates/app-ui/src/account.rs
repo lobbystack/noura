@@ -171,6 +171,23 @@ pub(crate) fn section(
         AccountPhase::SignedIn(signed_in) => {
             signed_in_section(ui, &screen, signed_in, &mut actions, picker);
         }
+        AccountPhase::Retired { fingerprint } => {
+            group(ui, "Your account's devices were reset", |ui| {
+                ui.label("Someone with access to your email started a new device list, so this computer no longer syncs. Your files stay on this computer.");
+                ui.label("The account's new fingerprint:");
+                fingerprint_line(ui, fingerprint);
+                muted(
+                    ui,
+                    "If that was you, sign in as a new device and approve it from your new device. If it wasn't, secure your email first.",
+                );
+                if ui
+                    .add_enabled(!screen.busy, Button::new("Sign in as a new device"))
+                    .clicked()
+                {
+                    actions.push(AccountAction::SignIn);
+                }
+            });
+        }
         AccountPhase::Removed { by } => {
             group(ui, "This computer was removed", |ui| {
                 ui.label("A device of your account removed this computer, so it no longer syncs. Your files stay on this computer.");
@@ -472,6 +489,15 @@ fn reset_groups(ui: &mut Ui, view: &SignedInView, actions: &mut Vec<AccountActio
                         } else if ui.button("Codes match").clicked() {
                             actions.push(AccountAction::ConfirmResetWait(index));
                         }
+                    }
+                }
+                if wait.set_up_again {
+                    muted(
+                        ui,
+                        "No other owner or admin? Close this workspace and start a new one from this folder. Members keep their files, and you invite them again.",
+                    );
+                    if ui.button("Set up sync again").clicked() {
+                        actions.push(AccountAction::SetUpAfterReset(index));
                     }
                 }
             }

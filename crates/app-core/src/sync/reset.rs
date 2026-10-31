@@ -9,7 +9,7 @@ use sync_protocol::account::AccountChain;
 use sync_protocol::records::{AccountHead, AccountLink, Signed};
 use sync_protocol::types::Digest;
 
-use super::device::StoredDevice;
+use super::device::{StoredDevice, keep_retired};
 use super::{DeviceCredentials, SyncClient, SyncError};
 
 /// What a finished reset gives you: the device's new credentials and the
@@ -22,6 +22,10 @@ pub struct ResetDone {
     pub fingerprint: Digest,
     /// The head an approval request for each workspace names.
     pub head: AccountHead,
+    /// The device this computer held on the retired chain, whose secrets
+    /// stay aside and whose kept heads no longer count
+    /// ([`super::account_heads::KeptHeads::forget_retired`]).
+    pub retired: Option<sync_protocol::types::Id>,
 }
 
 impl std::fmt::Debug for ResetDone {
@@ -56,6 +60,10 @@ pub async fn reset(
         .map_err(|e| SyncError::Check(e.client_code()))?;
     let head = chain.head();
     let server = client.base().to_owned();
+    let retired = match StoredDevice::load(store, &server)? {
+        Some(old) if old.account == account => Some(keep_retired(store, &server, &old)?),
+        _ => None,
+    };
     let mut stored = StoredDevice::new(&server, account, keys, token);
     stored.reference_head = Some(head.clone());
     stored.save(store)?;
@@ -66,5 +74,6 @@ pub async fn reset(
         credentials,
         fingerprint: genesis.digest(),
         head,
+        retired,
     })
 }

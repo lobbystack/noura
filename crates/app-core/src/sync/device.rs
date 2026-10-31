@@ -345,6 +345,21 @@ pub fn retired_item(server: &str, device: &Id) -> String {
     format!("{}.retired.{}", device_item(server), device.to_hex())
 }
 
+/// Moves the secrets of `stored`, whose card a link removed or a reset
+/// retired, to [`retired_item`], and returns its device.
+pub(crate) fn keep_retired(
+    store: &dyn SyncCredentials,
+    server: &str,
+    stored: &StoredDevice,
+) -> Result<Id, SyncError> {
+    let device = stored.keys()?.device();
+    let text = Zeroizing::new(serde_json::to_string(stored).map_err(credential_error)?);
+    store
+        .write(&retired_item(server, &device), &text)
+        .map_err(credential_error)?;
+    Ok(device)
+}
+
 /// What a signed-in device enrolls with: the device the credential store
 /// already holds for this server and account, or fresh keys.
 enum Enrolled {
@@ -375,11 +390,7 @@ pub async fn join(signed_in: &SignedIn, store: &dyn SyncCredentials) -> Result<J
                     Enrolled::Existing(stored, keys)
                 }
                 Err(SyncError::Refused { code, .. }) if code == "id_conflict" => {
-                    let text =
-                        Zeroizing::new(serde_json::to_string(&stored).map_err(credential_error)?);
-                    store
-                        .write(&retired_item(&signed_in.server, &keys.device()), &text)
-                        .map_err(credential_error)?;
+                    keep_retired(store, &signed_in.server, &stored)?;
                     fresh(&mut client, signed_in, store).await?
                 }
                 Err(error) => return Err(error),

@@ -96,6 +96,9 @@ impl WorkspaceSync {
                 "the other device hasn't shown its code yet".into(),
             ));
         }
+        if let Some(super::restore::Lost::MemberAccount(account)) = self.state.restore.lost {
+            service.kept_heads_mut().excuse_short(account);
+        }
         let mut remote = match self.remote.take() {
             Some(remote) => remote,
             None => self.open_for_reset(service).await?,

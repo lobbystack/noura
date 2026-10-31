@@ -87,6 +87,9 @@ fn text_review_lines(sync: &WorkspaceSync) -> Vec<String> {
 pub(super) struct Folder {
     /// You asked to reset your devices from the restore notice.
     reset_wanted: bool,
+    /// This folder's workspace has yet to accept a reset, so it stays out
+    /// of sync until then.
+    reset_held: bool,
     engine: Option<Arc<WorkspaceEngine>>,
     sync: Option<WorkspaceSync>,
     last_error: Option<String>,
@@ -332,6 +335,48 @@ impl Folder {
         Ok(())
     }
 
+    /// Lets go of the device a reset retired. While `waits` names the
+    /// workspace of this folder, it stays out of sync until that workspace
+    /// accepts the reset (§7) and the folder connects again.
+    pub(super) fn after_reset(&mut self, waits: &[sync_protocol::types::Id], app_data: &Path) {
+        self.sync = None;
+        self.live = Live::default();
+        self.rebuild = false;
+        self.reset_held = self
+            .workspace_of_folder(app_data)
+            .is_some_and(|w| waits.contains(&w));
+    }
+
+    /// The workspace the registry maps this folder to.
+    pub(super) fn workspace_of_folder(&self, app_data: &Path) -> Option<sync_protocol::types::Id> {
+        let engine = self.engine.as_ref()?;
+        let registry = Registry::open(app_data).ok()?;
+        registry
+            .of_folder(engine.root())
+            .map(|entry| entry.workspace)
+    }
+
+    /// Set up sync again from a reset owner's new card (§14).
+    pub(super) async fn set_up_after_reset(
+        &mut self,
+        service: &mut SyncService,
+        retired: Option<sync_protocol::types::Id>,
+        app_data: &Path,
+    ) -> Result<(), SyncError> {
+        let engine = self
+            .engine
+            .clone()
+            .ok_or_else(|| SyncError::Invalid("Open the workspace's folder first.".into()))?;
+        let mut registry = Registry::open(app_data)?;
+        let sync =
+            WorkspaceSync::set_up_after_reset(service, engine, &mut registry, retired).await?;
+        self.sync = Some(sync);
+        self.reset_held = false;
+        self.not_connected = false;
+        self.last_error = None;
+        Ok(())
+    }
+
     /// The open workspace's sync, when it syncs.
     pub(super) fn take_reset_wanted(&mut self) -> bool {
         std::mem::take(&mut self.reset_wanted)
@@ -371,6 +416,9 @@ impl Folder {
         let Some(service) = service else {
             return;
         };
+        if self.reset_held {
+            return;
+        }
         self.open(Some(service), store, app_data);
         if self.rebuild
             && let Some(engine) = self.engine.clone()
@@ -606,6 +654,7 @@ impl Folder {
                 };
                 registry.connect(&server, account, workspace, engine.root())?;
                 self.sync = Some(WorkspaceSync::rebuild(service, engine, &mut registry).await?);
+                self.reset_held = false;
                 self.not_connected = false;
                 self.last_error = None;
             }

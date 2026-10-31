@@ -16,7 +16,10 @@ use app_core::sync::device::StoredDevice;
 use app_core::sync::{KeptHeads, SyncService};
 use sync_protocol::types::{from_base64url, to_base64url, to_hex};
 use sync_store::{Backend as _, WriteTxn as _};
-use sync_support::{MemorySecrets, Proxy, Server, first_desktop, new_desktop};
+use sync_support::{
+    Desktop, MemorySecrets, Pair, Proxy, Server, first_desktop, new_desktop, new_desktop_in,
+    pair_of_accounts_on, reset_devices,
+};
 
 fn wait_for(
     account: &LiveAccount,
@@ -973,4 +976,365 @@ fn reset_devices_starts_a_new_chain_from_the_emailed_code() {
         unreachable!()
     };
     assert!(view.offer_kit);
+}
+
+/// The owner's computer of `pair` as the app runs it: the account backend
+/// over the device, its kept heads and its folder's journal. The owner's
+/// sync and service end here.
+fn owner_app(pair: Pair<sync_store_sqlite::SqliteBackend>) -> (LiveAccount, OwnerApp) {
+    let Pair {
+        server,
+        proxy,
+        laptop,
+        service,
+        a,
+        sync_a,
+        desktop,
+        b,
+        sync_b,
+    } = pair;
+    let workspace = sync_a.workspace();
+    drop(sync_a);
+    drop(service);
+    let state = a.app_data.path().join("sync").join(laptop.id().to_hex());
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::copy(
+        laptop
+            .state
+            .path()
+            .join(app_core::sync::account_heads::KEPT_HEADS_FILE),
+        state.join(app_core::sync::account_heads::KEPT_HEADS_FILE),
+    )
+    .unwrap();
+    std::fs::write(
+        a.app_data
+            .path()
+            .join(app_core::account::live::ACCOUNT_FILE),
+        serde_json::json!({"server": server.base}).to_string(),
+    )
+    .unwrap();
+    let secrets = laptop.secrets.clone();
+    let account = LiveAccount::start(a.app_data.path().to_owned(), secrets, Arc::new(|_| Ok(())));
+    app_core::folder_sync::FolderSyncBackend::attach(&account, Some(a.engine.clone()));
+    wait_for(
+        &account,
+        "the signed-in account",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if !view.devices.is_empty()),
+    );
+    (
+        account,
+        OwnerApp {
+            server,
+            _proxy: proxy,
+            laptop,
+            a,
+            desktop,
+            b,
+            sync_b,
+            workspace,
+        },
+    )
+}
+
+struct OwnerApp {
+    server: Server,
+    _proxy: Proxy,
+    laptop: Desktop,
+    a: sync_support::Folder,
+    desktop: Desktop,
+    b: sync_support::Folder,
+    sync_b: app_core::sync::workspace::WorkspaceSync,
+    workspace: sync_protocol::types::Id,
+}
+
+/// The live path of an `accept_reset` (§7, §10): a member's reset request
+/// shows on the owner's screen with the alert, Accept shows the approval
+/// code once the other device answers, and Codes match commits the change,
+/// which the reset device verifies.
+#[test]
+fn the_account_backend_accepts_a_members_reset() {
+    use app_core::sync::approval::CandidateStep;
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let pair = runtime.block_on(async { pair_of_accounts_on(Server::start().await).await });
+    let member_account = pair.desktop.credentials.account;
+    let (account, app) = owner_app(pair);
+
+    let secrets = Arc::new(MemorySecrets::default());
+    let (mut member, _) = runtime.block_on(reset_devices(&app.server, member_account, secrets));
+    let mut candidate = runtime
+        .block_on(member.service.request_reset_approval(app.workspace))
+        .expect("the request");
+
+    // The device list comes up between pulls, and a message ends a pull's
+    // wait.
+    let started = Instant::now();
+    let screen = loop {
+        let screen = AccountBackend::screen(&account);
+        if matches!(&screen.phase, AccountPhase::SignedIn(view) if view.reset_requests.len() == 1) {
+            break screen;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(45),
+            "the request never showed: {screen:?}"
+        );
+        app_core::folder_sync::FolderSyncBackend::act(
+            &account,
+            app_core::folder_sync::FolderSyncAction::DismissRestore,
+        );
+        std::thread::sleep(Duration::from_secs(3));
+    };
+    let AccountPhase::SignedIn(view) = screen.phase else {
+        unreachable!()
+    };
+    assert!(
+        view.alerts.iter().any(|a| a.text.contains("changed")),
+        "{:?}",
+        view.alerts
+    );
+    AccountBackend::act(&account, AccountAction::AcceptReset(0));
+    wait_for(
+        &account,
+        "the acceptance",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if view.reset_approval.is_some()),
+    );
+    let CandidateStep::Code(shown) = runtime
+        .block_on(member.service.poll_invited(&mut candidate))
+        .expect("polled")
+    else {
+        panic!("a code");
+    };
+    wait_for(&account, "the code", |s| {
+        matches!(
+            &s.phase,
+            AccountPhase::SignedIn(view)
+                if view.reset_approval.as_ref().and_then(|a| a.code.as_ref()) == Some(&shown)
+        )
+    });
+    candidate.confirm();
+    AccountBackend::act(&account, AccountAction::ConfirmAcceptReset);
+    wait_for(
+        &account,
+        "the commit",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if view.reset_approval.is_none()),
+    );
+    let started = Instant::now();
+    while !runtime
+        .block_on(member.service.join_invited(&candidate))
+        .unwrap_or(false)
+    {
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "never accepted"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    drop(account);
+    drop(app);
+    drop(runtime);
+}
+
+/// A computer on the retired chain (§7 step 3): the next read shows that
+/// the account's devices were reset with the new fingerprint, it signs in
+/// as a new device, the reset device approves it, and it signs in again
+/// with new keys.
+#[test]
+fn a_retired_computer_comes_back_through_the_new_chain() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let pair = runtime.block_on(async { pair_of_accounts_on(Server::start().await).await });
+    let (account, app) = owner_app(pair);
+    let owner = app.laptop.credentials.account;
+    let old = app.laptop.id();
+
+    let (mut card, done) = runtime.block_on(reset_devices(
+        &app.server,
+        owner,
+        Arc::new(MemorySecrets::default()),
+    ));
+    let screen = wait_for(&account, "the retired screen", |s| {
+        matches!(s.phase, AccountPhase::Retired { .. })
+    });
+    let AccountPhase::Retired { fingerprint } = screen.phase else {
+        unreachable!()
+    };
+    assert!(!fingerprint.is_empty());
+    drop(done);
+
+    AccountBackend::act(&account, AccountAction::SignIn);
+    let screen = wait_for(&account, "the sign-in code", |s| {
+        matches!(s.phase, AccountPhase::SigningIn { .. })
+    });
+    let AccountPhase::SigningIn { user_code } = screen.phase else {
+        unreachable!()
+    };
+    runtime
+        .block_on(
+            app.server
+                .store
+                .decide_device_grant(owner, &user_code, true),
+        )
+        .unwrap();
+    let waiting = wait_for(&account, "the approval", |s| {
+        matches!(s.phase, AccountPhase::WaitingForApproval { .. })
+    });
+    let AccountPhase::WaitingForApproval { fingerprint, .. } = waiting.phase else {
+        unreachable!()
+    };
+    let pending = runtime
+        .block_on(card.service.pending_devices())
+        .expect("listed");
+    assert_eq!(pending.len(), 1);
+    let mut offer = runtime
+        .block_on(card.service.offer_approval(&pending[0], &mut []))
+        .expect("offered");
+    let shown = wait_for(&account, "the code", |s| {
+        matches!(
+            &s.phase,
+            AccountPhase::WaitingForApproval { code: Some(_), .. }
+        )
+    });
+    let AccountPhase::WaitingForApproval {
+        code: Some(shown), ..
+    } = shown.phase
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        runtime
+            .block_on(card.service.approval_code(&mut offer))
+            .expect("read"),
+        Some(shown)
+    );
+    AccountBackend::act(&account, AccountAction::ConfirmCode);
+    wait_for(&account, "the confirmation", |s| {
+        matches!(
+            s.phase,
+            AccountPhase::WaitingForApproval {
+                confirmed: true,
+                ..
+            }
+        )
+    });
+    runtime
+        .block_on(card.service.confirm_approval(offer, &mut []))
+        .expect("committed");
+    let screen = wait_for(&account, "the new device", |s| {
+        matches!(s.phase, AccountPhase::SignedIn(_))
+    });
+    let AccountPhase::SignedIn(view) = screen.phase else {
+        unreachable!()
+    };
+    let this = view
+        .devices
+        .iter()
+        .find(|d| d.this_device)
+        .expect("this device");
+    assert_ne!(this.device, old);
+    assert_eq!(this.fingerprint, fingerprint);
+    drop(account);
+    drop(app);
+    drop(runtime);
+}
+
+/// A reset owner with no other owner or admin (§14): the reset screen
+/// offers Set up sync again for the folder, and the action starts a new
+/// workspace from it; the member finds the old one closed.
+#[test]
+fn the_account_backend_sets_up_sync_again_after_a_reset() {
+    use app_core::folder_sync::{FolderSyncBackend, FolderSyncPhase};
+    use app_core::sync::members::MemberChange;
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let mut pair = runtime.block_on(async { pair_of_accounts_on(Server::start().await).await });
+    let member = pair.desktop.credentials.account;
+    runtime.block_on(async {
+        pair.sync_a
+            .change_member(
+                &mut pair.service,
+                MemberChange::SetRole {
+                    account: member,
+                    role: sync_protocol::records::Role::Editor,
+                },
+            )
+            .await
+            .expect("no other admin");
+    });
+    let (account, mut app) = owner_app(pair);
+    let owner = app.laptop.credentials.account;
+    let files = app.a.files();
+
+    AccountBackend::act(&account, AccountAction::StartReset);
+    let screen = wait_for(&account, "the sign-in code", |s| {
+        matches!(s.phase, AccountPhase::SigningIn { .. })
+    });
+    let AccountPhase::SigningIn { user_code } = screen.phase else {
+        unreachable!()
+    };
+    runtime
+        .block_on(
+            app.server
+                .store
+                .decide_device_grant(owner, &user_code, true),
+        )
+        .unwrap();
+    wait_for(&account, "the code field", |s| {
+        matches!(s.phase, AccountPhase::ResetCode)
+    });
+    let code = app
+        .server
+        .mail
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find_map(|text: &String| text.split_whitespace().nth(5).map(str::to_owned))
+        .expect("the code's mail");
+    AccountBackend::act(
+        &account,
+        AccountAction::ConfirmReset(code.trim_end_matches('.').to_owned()),
+    );
+    let screen = wait_for(
+        &account,
+        "the workspace that waits",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if !view.reset_waits.is_empty()),
+    );
+    let AccountPhase::SignedIn(view) = screen.phase else {
+        unreachable!()
+    };
+    assert!(view.reset_waits[0].set_up_again);
+
+    AccountBackend::act(&account, AccountAction::SetUpAfterReset(0));
+    wait_for(
+        &account,
+        "the wait's end",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if view.reset_waits.is_empty()),
+    );
+    let started = Instant::now();
+    loop {
+        let screen = FolderSyncBackend::screen(&account);
+        if screen.phase == FolderSyncPhase::On && screen.pending == 0 && !screen.busy {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the folder never synced: {screen:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(app.a.files(), files);
+
+    runtime.block_on(async {
+        app.sync_b
+            .round(&mut app.desktop.service, 0)
+            .await
+            .expect("a stopped round");
+    });
+    assert_eq!(
+        app.sync_b.restore_lost(),
+        Some(&app_core::sync::workspace::restore::Lost::Closed)
+    );
+    assert_eq!(app.b.files(), files);
+    drop(account);
+    drop(app);
+    drop(runtime);
 }

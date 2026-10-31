@@ -143,6 +143,11 @@ pub struct Restore {
 }
 
 /// A rollback code that holds the device until the generation changes.
+fn names_reset(kind: &sync_protocol::records::PolicyKind, account: Id) -> bool {
+    matches!(kind, sync_protocol::records::PolicyKind::AcceptReset { account: named }
+        if *named == account)
+}
+
 fn holds(code: &str) -> bool {
     matches!(code, "sync_server_rollback" | "sync_policy_rollback")
 }
@@ -446,33 +451,51 @@ impl WorkspaceSync {
         let workspace = self.state.workspace;
         let accepted = self.state.policy.last().map_or(0, |c| c.body.revision);
         let above = service.client().policy(workspace, accepted).await?;
-        let names = |kind: &sync_protocol::records::PolicyKind| {
-            matches!(kind, sync_protocol::records::PolicyKind::AcceptReset { account: named }
-                if *named == account)
-        };
-        if !above.changes.0.iter().any(|c| names(&c.0.body.kind)) {
+        if !above
+            .changes
+            .0
+            .iter()
+            .any(|c| names_reset(&c.0.body.kind, account))
+        {
             return Ok(());
         }
         service.kept_heads_mut().excuse_short(account);
+        let resumed = self.verify_reset(service, account, accepted).await;
+        if !matches!(resumed, Ok(true)) {
+            service.kept_heads_mut().withdraw_excuse(&account);
+        }
+        resumed.map(|_| ())
+    }
+
+    /// Verifies the workspace again and ends the stop for `account` when a
+    /// change above `accepted` names its new chain. Any other answer
+    /// leaves the stop as it is.
+    async fn verify_reset(
+        &mut self,
+        service: &mut SyncService,
+        account: Id,
+        accepted: u64,
+    ) -> Result<bool, SyncError> {
+        let workspace = self.state.workspace;
         let remote = match service.open_workspace(workspace).await {
             Ok(remote) => remote,
             // A forged or broken change leaves the stop as it is.
             Err(SyncError::Check(code)) => {
                 tracing::warn!(code, "an accept_reset didn't verify");
-                return Ok(());
+                return Ok(false);
             }
-            Err(SyncError::KeyMissing) => return Ok(()),
+            Err(SyncError::KeyMissing) => return Ok(false),
             Err(error) => return Err(error),
         };
         if let Some(kept) = self.state.policy.last()
             && remote.policy.change(kept.body.revision).map(|c| c.digest()) != Some(kept.digest())
         {
-            return Ok(());
+            return Ok(false);
         }
         let head = remote.policy.head().0;
         let named = (accepted + 1..=head)
             .filter_map(|revision| remote.policy.change(revision))
-            .filter(|change| names(&change.body.kind))
+            .filter(|change| names_reset(&change.body.kind, account))
             .find_map(|change| change.body.heads.iter().find(|h| h.account == account))
             .map(|named| named.genesis);
         let current = remote
@@ -482,14 +505,15 @@ impl WorkspaceSync {
             .get(&account)
             .map(|member| member.head.genesis);
         let (Some(genesis), true) = (named, named == current) else {
-            return Ok(());
+            return Ok(false);
         };
         service
             .kept_heads_mut()
             .drop_retired(&account, &genesis, workspace)?;
         self.state.restore.lost = None;
         self.state.restore.pending = true;
-        self.save()
+        self.save()?;
+        Ok(true)
     }
 
     /// The verified workspace for an owner or admin device that answers
@@ -1309,6 +1333,73 @@ impl WorkspaceSync {
     /// its other writes.
     pub(super) fn rewrites_pending(&self) -> bool {
         !self.state.restore.rewrites.is_empty()
+    }
+
+    /// Set up sync again from a card of a reset owner account (§14): the
+    /// card can't read the workspace in `engine`'s folder, whose journal
+    /// belongs to the `retired` device, if this computer held one. The
+    /// server closes the workspace only when no other owner or admin is
+    /// active there; its refusal changes nothing here. The rest goes as
+    /// in [`Self::set_up_again`], and a failure after the close can be
+    /// tried again.
+    pub async fn set_up_after_reset(
+        service: &mut SyncService,
+        engine: std::sync::Arc<local_core::WorkspaceEngine>,
+        registry: &mut crate::sync::registry::Registry,
+        retired: Option<Id>,
+    ) -> Result<Self, SyncError> {
+        let entry = registry
+            .of_folder(engine.root())
+            .cloned()
+            .ok_or_else(|| SyncError::Invalid("this folder doesn't sync".into()))?;
+        match service.client().close_workspace(entry.workspace).await {
+            Ok(()) => {}
+            Err(SyncError::Refused { code, .. }) if code == "not_found" => {}
+            Err(error) => return Err(error),
+        }
+        let secrets = service.secrets();
+        let old = retired.and_then(|device| {
+            let journal =
+                crate::sync::journal::Journal::open(engine.root(), &device, &*secrets).ok()?;
+            let state: super::state::State = journal
+                .read(crate::sync::journal::STATE_FILE)
+                .ok()
+                .flatten()?;
+            Some((journal, state))
+        });
+        let name = old.as_ref().map_or_else(
+            || {
+                engine
+                    .root()
+                    .file_name()
+                    .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+            },
+            |(_, state)| state.name.clone(),
+        );
+        let mut remote = service.create_workspace(&name).await?;
+        let (_, profile) = super::profile_of(service, &mut remote).await?;
+        let mut archived = Vec::new();
+        if let Some((journal, state)) = &old {
+            archived = Self::archive(journal, Some(state), &state.replica)?;
+            archived.extend(state.archived.clone());
+        }
+        drop(old);
+        service.kept_heads_mut().forget_workspace(entry.workspace)?;
+        registry.remove(&entry.server, &entry.account, &entry.workspace)?;
+        let server = service.client().base().to_owned();
+        let replica = registry.connect(
+            &server,
+            service.credentials().account,
+            remote.workspace,
+            engine.root(),
+        )?;
+        let generation = service.client().restore_generation();
+        let mut fresh = Self::start(
+            service, engine, remote, server, replica, generation, &name, profile,
+        )?;
+        fresh.state.archived = archived;
+        fresh.save()?;
+        Ok(fresh)
     }
 
     /// Set up sync again (§14): closes this workspace on the server, which

@@ -118,6 +118,12 @@ pub enum AccountPhase {
         /// The fingerprint of the device that removed it.
         by: String,
     },
+    /// A reset retired this device's chain (§7): it signs in as a new
+    /// device, and a device on the new chain approves it.
+    Retired {
+        /// The account's new fingerprint.
+        fingerprint: String,
+    },
 }
 
 /// The signed-in account.
@@ -170,6 +176,9 @@ pub struct ResetWait {
     pub code: Option<String>,
     /// Whether you confirmed the code here.
     pub confirmed: bool,
+    /// Whether this folder may start over instead: your account owns the
+    /// workspace and the folder syncs it (§14).
+    pub set_up_again: bool,
 }
 
 /// One device of your account.
@@ -347,6 +356,9 @@ pub enum AccountAction {
     ConfirmReset(String),
     /// Your approval code matches the one on the accepting device.
     ConfirmResetWait(usize),
+    /// Set up sync again for this reset wait's workspace, because nobody
+    /// else can accept the reset (§14).
+    SetUpAfterReset(usize),
     /// Answer a member's reset request here.
     AcceptReset(usize),
     /// You compared the code: this device commits the `accept_reset`.
@@ -397,6 +409,9 @@ impl std::fmt::Debug for AccountAction {
             AccountAction::ConfirmReset(_) => f.write_str("ConfirmReset"),
             AccountAction::ConfirmResetWait(index) => {
                 f.debug_tuple("ConfirmResetWait").field(index).finish()
+            }
+            AccountAction::SetUpAfterReset(index) => {
+                f.debug_tuple("SetUpAfterReset").field(index).finish()
             }
             AccountAction::AcceptReset(index) => f.debug_tuple("AcceptReset").field(index).finish(),
             AccountAction::ConfirmAcceptReset => f.write_str("ConfirmAcceptReset"),
