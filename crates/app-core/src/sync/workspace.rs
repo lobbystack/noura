@@ -4050,9 +4050,11 @@ impl WorkspaceSync {
                         .checkpoints
                         .last_reached()
                         .map_or(0, |(_, r)| r.policy_revision);
-                    log.check_final_heads(record.body.covered_seq, &bundle.heads, |device| {
-                        policy.card_gone(device, previous)
-                    })?;
+                    if log.rewound {
+                        log.check_final_heads(record.body.covered_seq, &bundle.heads, |device| {
+                            policy.card_gone(device, previous)
+                        })?;
+                    }
                     // The checkpoint a client bootstrapped from, or one it
                     // fetched by digest, reaches it again (§17).
                     if log.checkpoints.has_reached(&record.digest()) {

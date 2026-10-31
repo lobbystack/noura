@@ -89,6 +89,30 @@ impl SyncService {
         Ok(new_revision > old_revision)
     }
 
+    /// Checks the current epoch's envelopes as a pull does at that epoch's
+    /// entry, with the revision of the latest policy entry before it, and
+    /// takes no key.
+    #[cfg(feature = "test-hooks")]
+    pub async fn check_keys_after_entry(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        policy: &sync_protocol::policy::PolicyChain,
+        entry_revision: u64,
+    ) -> Result<(), SyncError> {
+        let recipient = self.credentials.keys.clone();
+        self.load_keys_at(
+            workspace,
+            domain,
+            policy,
+            &recipient,
+            true,
+            Some(entry_revision),
+        )
+        .await
+        .map(|_| ())
+    }
+
     /// Takes the workspace domain's keys again, from `keys/current` and
     /// lineage, after a rotation or a replacement (§9). The epoch the device
     /// accepted last must still be in the chain, or a replacement must have

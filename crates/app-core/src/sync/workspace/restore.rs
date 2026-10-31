@@ -896,6 +896,7 @@ impl WorkspaceSync {
         let reached = std::mem::take(&mut self.state.log.checkpoints.reached);
         let mut log = Log::new(domain);
         log.final_heads = finals;
+        log.rewound = true;
         if start.is_some() {
             log.checkpoints.reached = reached;
             log.checkpoints.forget_above(covered);
