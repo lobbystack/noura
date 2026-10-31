@@ -592,15 +592,32 @@ pub async fn collect_quarantine(blobs: &dyn SegmentStore, now: u64) -> std::io::
     Ok(deleted)
 }
 
-/// Holds this instance's lease until the task is aborted.
-pub fn spawn_lease<B: Backend>(store: Arc<Store<B>>, instance: Id) -> tokio::task::JoinHandle<()> {
+/// Holds this instance's lease every `period` until the task is aborted, or
+/// until the database reports another restore generation than the one this
+/// process serves: an instance that lost its database through a failover
+/// lets its lease lapse, so `mark-restored` passes it by. The task then
+/// fires `moved` and ends, and the process restarts on the new generation.
+pub fn spawn_lease<B: Backend>(
+    store: Arc<Store<B>>,
+    instance: Id,
+    period: Duration,
+    moved: tokio::sync::oneshot::Sender<()>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut every = tokio::time::interval(LEASE_PERIOD);
+        let mut every = tokio::time::interval(period);
         loop {
             every.tick().await;
             let until = store.clock().now() + LEASE_SECONDS;
-            if let Err(error) = store.hold_lease(instance, until).await {
-                tracing::error!(cause = %error, "can't refresh the instance's lease");
+            match store.hold_lease(instance, until).await {
+                Ok(stored) if stored != store.restore_generation() => {
+                    tracing::error!("the database moved to another restore generation");
+                    let _ = moved.send(());
+                    return;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::error!(cause = %error, "can't refresh the instance's lease");
+                }
             }
         }
     })

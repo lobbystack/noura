@@ -14,6 +14,7 @@ use sync_protocol::messages::{MissingBlobsResponse, PushResponse};
 use sync_protocol::types::{Digest, Id, to_base64url};
 use sync_server::blobs::{DiskStore, SegmentStore, segment_key};
 use sync_server::restore::{QUARANTINE, check_blobs, collect_quarantine, secret_beside, unix_now};
+use sync_store::Backend;
 
 fn stderr(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
@@ -264,6 +265,57 @@ async fn unlisted_blobs_are_safe_when_the_generation_rises() {
     .await
     .expect("marked");
     assert!(after(seen), "mark-restored");
+}
+
+/// An instance that stayed up while another generation reached its database
+/// stops, because it would go on reporting the old one (§14).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_lease_reports_a_generation_that_moved() {
+    let (_root, data) = fresh();
+    let config = sync_server::Config::new(data.clone(), "127.0.0.1:0".parse().expect("an address"));
+    let store = std::sync::Arc::new(sync_server::open_store(&config).await.expect("the store"));
+    let (moved, generation_moved) = tokio::sync::oneshot::channel();
+    let lease = sync_server::restore::spawn_lease(
+        store.clone(),
+        Id::random().expect("random"),
+        std::time::Duration::from_millis(20),
+        moved,
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(!lease.is_finished(), "the same generation holds the lease");
+    raise_behind_the_server(&db_file(&data)).await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), generation_moved)
+        .await
+        .expect("the lease sees it")
+        .expect("it fires");
+    store.backend().close().await;
+}
+
+/// The change `mark-restored` makes on another machine.
+async fn raise_behind_the_server(path: &Path) {
+    let mut connection = database(path).await;
+    sqlx::query("UPDATE server SET restore_generation = restore_generation + 1")
+        .execute(&mut connection)
+        .await
+        .expect("raised");
+    connection.close().await.expect("closed");
+}
+
+/// `serve` itself stops with an error at its next lease refresh.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serve_exits_when_the_generation_moves() {
+    let (_root, data) = fresh();
+    let mut server = Server::start(&data);
+    raise_behind_the_server(&db_file(&data)).await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
+    let status = loop {
+        if let Some(status) = server.child.try_wait().expect("a status") {
+            break status;
+        }
+        assert!(std::time::Instant::now() < deadline, "serve stays up");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
+    assert!(!status.success());
 }
 
 async fn set_delete_after(path: &Path, blob: Id, at: i64) {

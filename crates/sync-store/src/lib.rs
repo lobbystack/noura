@@ -69,6 +69,7 @@ pub use hub::{EventHub, Relayed, Subscription};
 pub use limiter::{Limit, Limiter, MemoryLimiter, Taken};
 pub use policy::PolicyCache;
 pub use realtime::Watch;
+pub use restore::READY_FOR;
 pub use retention::{BlobToCollect, Maintenance, Retention, UPLOAD_TTL};
 
 /// The restore generation a new database starts at (§14). Restores raise it
@@ -1815,6 +1816,13 @@ pub trait Backend: Send + Sync + 'static {
         self.write(job)
     }
 
+    /// Resolves once the store can't take a write again until the process
+    /// restarts, as when SQLite's one writer task ended. A backend that
+    /// recovers on its own never resolves.
+    fn failed(&self) -> BoxFut<'_, ()> {
+        Box::pin(std::future::pending())
+    }
+
     /// Starts feeding `hub` the commits that other instances on the same
     /// database announce. A database that one instance serves needs
     /// nothing.
@@ -1882,6 +1890,8 @@ impl Clock {
 /// and the reads of §26, each checked as the spec sets.
 pub struct Store<B: Backend> {
     backend: B,
+    /// The last readiness answer and when it came.
+    readiness: tokio::sync::Mutex<Option<(std::time::Instant, bool)>>,
     policies: PolicyCache,
     chains: policy::ChainCache,
     hub: EventHub,
@@ -1906,6 +1916,7 @@ impl<B: Backend> Store<B> {
         backend.attach(hub.clone()).await?;
         Ok(Self {
             backend,
+            readiness: tokio::sync::Mutex::new(None),
             policies: PolicyCache::default(),
             chains: policy::ChainCache::default(),
             hub,

@@ -44,7 +44,7 @@ Each command reads `NOURA_DATA_DIR`, `NOURA_DATABASE_URL` and `NOURA_LISTEN`, an
 |---|---|
 | `migrate [--data DIR] [--database-url URL]` | Creates or updates the database. In SQLite mode the first run creates the server secret. |
 | `serve [--data DIR] [--database-url URL] [--listen ADDRESS] [--origin ORIGIN]` | Serves until it gets an interrupt or a terminate signal, then waits up to 30 seconds for requests in flight. |
-| `healthcheck [--listen ADDRESS]` | Exits 0 when a Noura sync server answers `GET /v2/limits` within 5 seconds. |
+| `healthcheck [--listen ADDRESS]` | Exits 0 when a Noura sync server answers `GET /v2/ready` within 5 seconds. |
 | `backup --to FILE [--data DIR]` | Copies a running SQLite database, and writes the secret to `FILE.secret`. |
 | `restore --from FILE [--secret FILE] [--data DIR]` | Puts a SQLite backup into a data directory. |
 | `mark-restored [--data DIR] [--database-url URL]` | Records a restore you did with other tools. |
@@ -185,4 +185,8 @@ Tell your users after a restore that lost signed state, and point them at Reset 
 
 ## Check that the server is healthy
 
-Run `sync-server healthcheck --listen 127.0.0.1:8080`. It asks `GET /v2/limits`, which takes no session and has no rate limit, so an HTTP health check can use that path. The server writes daily log files to `logs` in the data directory and keeps them for 14 days. They hold route templates, request IDs and status codes.
+Run `sync-server healthcheck --listen 127.0.0.1:8080`. It asks `GET /v2/ready`, which takes a real write through the store, so it fails when the server can't commit anything, and it answers 200 at most one write every 2 seconds. It takes no session and has no rate limit, so an HTTP health check can use that path. `GET /v2/limits` answers from memory and shows only that the process is up.
+
+The server exits with an error in two cases that only a restart cures: its database moved to another restore generation, or its SQLite writer stopped. Run it under something that restarts it.
+
+The server writes daily log files to `logs` in the data directory and keeps them for 14 days. They hold route templates, request IDs and status codes. Each file stops taking request lines at 64 MiB and goes on with warnings and errors up to 128 MiB.

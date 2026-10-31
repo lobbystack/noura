@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use support::{Client, seed_store};
 use sync_server::listen::ConnectionLimits;
 use sync_server::{AppState, RateGate};
+use sync_store::Backend;
 use sync_store_sqlite::SqliteBackend;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -207,6 +208,51 @@ async fn connections_stop_at_the_limit_with_channels_counted() {
         .await
         .expect("a place frees up");
     assert!(answer.starts_with(b"HTTP/1.1 200"));
+}
+
+/// A store whose writer stopped answers `/v2/ready` with an error while
+/// `/v2/limits` goes on, and the server exits with an error, so its
+/// supervisor restarts it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_whose_writer_stops_fails_its_check_and_exits() {
+    let (store, dir) = store().await;
+    let address = sync_server::spawn(store.clone(), "127.0.0.1:0")
+        .await
+        .expect("serving");
+    let client = Client::new(format!("http://localhost:{}", address.port()), None);
+    assert_eq!(client.get("/v2/ready").await.status.as_u16(), 200);
+    assert!(sync_server::healthcheck(address));
+
+    let mut config = sync_server::Config::new(
+        dir.path().join("data"),
+        "127.0.0.1:0".parse().expect("an address"),
+    );
+    config.origin = Some("https://sync.example.com".into());
+    let running = {
+        let store = store.clone();
+        tokio::spawn(async move { sync_server::run(store, &config).await })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _ = store
+        .backend()
+        .write::<()>(Box::new(|_| {
+            Box::pin(async { panic!("a write job fails") })
+        }))
+        .await;
+    let ended = tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .expect("the server stops")
+        .expect("no panic");
+    let error = ended.expect_err("it stops with an error");
+    assert!(error.to_string().contains("writer"), "{error}");
+
+    tokio::time::sleep(sync_store::READY_FOR).await;
+    let reply = client.get("/v2/ready").await;
+    assert_eq!(reply.status.as_u16(), 500);
+    assert_eq!(reply.error().code.as_str(), "internal");
+    assert!(reply.generation().is_some());
+    assert!(!sync_server::healthcheck(address));
+    assert_eq!(client.get("/v2/limits").await.status.as_u16(), 200);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
