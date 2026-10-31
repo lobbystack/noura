@@ -8,20 +8,11 @@ mod sync_support;
 
 use app_core::sync::workspace::restore::Lost;
 use sync_support::{
-    Desktop, MemorySecrets, Pair, Server, approve, approve_new, new_desktop_in, pair,
-    pair_of_accounts_on, pair_on, reset_devices,
+    Desktop, LinkToRevoke, MemorySecrets, Pair, Server, approve, approve_new, new_desktop_in, pair,
+    pair_of_accounts_on, pair_on, reconnect, reset_devices, rounds,
 };
 
 const NO_WAIT: std::time::Duration = std::time::Duration::ZERO;
-
-/// Both devices through the proxy, which now reaches `base`.
-async fn reconnect<B: sync_store::Backend>(pair: &mut Pair<B>, base: &str) {
-    pair.proxy.retarget(base);
-    pair.service = pair.laptop.connect_through(&pair.proxy.base).await;
-    pair.desktop.service = pair.desktop.connect_through(&pair.proxy.base).await;
-    pair.sync_a.set_restore_wait(NO_WAIT);
-    pair.sync_b.set_restore_wait(NO_WAIT);
-}
 
 /// Changes a backup with `sql`, for a restore that loses exactly one kind
 /// of signed state.
@@ -29,19 +20,6 @@ fn edit_backup(copy: &std::path::Path, sql: &str) {
     let connection = rusqlite::Connection::open(copy).expect("the copy opens");
     let changed = connection.execute(sql, []).expect("the change");
     assert!(changed > 0, "{sql}");
-}
-
-async fn rounds<B: sync_store::Backend>(pair: &mut Pair<B>) {
-    for _ in 0..3 {
-        pair.sync_a
-            .round(&mut pair.service, 0)
-            .await
-            .expect("laptop");
-        pair.sync_b
-            .round(&mut pair.desktop.service, 0)
-            .await
-            .expect("desktop");
-    }
 }
 
 /// A desktop that wrote behind the backup: the laptop writes, both apply.
@@ -54,7 +32,9 @@ async fn write_after_backup<B: sync_store::Backend>(pair: &mut Pair<B>) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_restore_that_lost_only_content_writes_it_again() {
     let mut pair = pair().await;
+    let mut link = LinkToRevoke::make(&mut pair).await;
     let copy = pair.server.backup("before.sqlite3").await;
+    link.revoke(&mut pair).await;
     write_after_backup(&mut pair).await;
     let files = pair.a.files();
 
@@ -76,6 +56,7 @@ async fn a_restore_that_lost_only_content_writes_it_again() {
     rounds(&mut pair).await;
     assert_eq!(pair.a.files(), pair.b.files());
     assert!(pair.a.files().contains_key("After.md"));
+    link.revoked_again(&mut pair).await;
 }
 
 /// The backup keeps a removal but not the checkpoint that followed it. The
@@ -258,7 +239,9 @@ async fn a_lower_generation_is_a_rollback() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_lost_link_of_your_own_chain_stops_the_workspace() {
     let mut pair = pair().await;
+    let mut link = LinkToRevoke::make(&mut pair).await;
     let copy = pair.server.backup("before.sqlite3").await;
+    link.revoke(&mut pair).await;
     // A third device: a link of the account chain the backup lacks.
     let mut third = approve(
         &pair.server,
@@ -288,6 +271,7 @@ async fn a_lost_link_of_your_own_chain_stops_the_workspace() {
         .await
         .expect("a stopped round");
     assert_eq!(round.pushed, 0, "it writes nothing");
+    link.revoked_again(&mut pair).await;
 }
 
 /// The approval that commits a reset (§7, §10): `member`'s device asks,
@@ -954,7 +938,9 @@ async fn a_device_uploads_a_lost_blob_again_under_its_id() {
     pair.a.write("photo.png", &bytes);
     rounds(&mut pair).await;
     assert_eq!(pair.b.files().get("photo.png"), Some(&bytes));
+    let mut link = LinkToRevoke::make(&mut pair).await;
     let copy = pair.server.backup("before.sqlite3").await;
+    link.revoke(&mut pair).await;
     let stored = pair.server.blob_files();
     assert!(!stored.is_empty());
     for file in &stored {
@@ -971,6 +957,7 @@ async fn a_device_uploads_a_lost_blob_again_under_its_id() {
     );
     assert!(stored.iter().all(|file| file.exists()));
     assert_eq!(pair.a.files(), pair.b.files());
+    link.revoked_again(&mut pair).await;
 }
 
 /// Every request of the comparison fails once in turn, and the device still
@@ -1015,10 +1002,12 @@ async fn a_comparison_cut_short_runs_again_at_every_step() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_restores_in_a_row_end_like_one() {
     let mut pair = pair().await;
+    let mut link = LinkToRevoke::make(&mut pair).await;
     let older = pair.server.backup("older.sqlite3").await;
     pair.a.write("Middle.md", b"# Middle\n");
     rounds(&mut pair).await;
     let newer = pair.server.backup("newer.sqlite3").await;
+    link.revoke(&mut pair).await;
     write_after_backup(&mut pair).await;
     let files = pair.a.files();
 
@@ -1031,6 +1020,7 @@ async fn two_restores_in_a_row_end_like_one() {
     assert!(pair.sync_a.round(&mut pair.service, 0).await.is_err());
     pair.proxy.honest();
     assert!(pair.sync_a.status().restored.is_some());
+    link.revoked_again(&mut pair).await;
 
     // The second, from an older backup, reaches the device mid-rewind. The
     // generation takes the clock's seconds.
@@ -1048,6 +1038,7 @@ async fn two_restores_in_a_row_end_like_one() {
             "{lost}: {written:?}"
         );
     }
+    link.revoked_again(&mut pair).await;
 }
 
 /// A stopped device applies nothing a frame carries.
@@ -1341,7 +1332,9 @@ async fn set_up_sync_again_stays_with_the_owner_and_survives_a_failure() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_lost_envelope_stops_the_workspace() {
     let mut pair = pair().await;
+    let mut link = LinkToRevoke::make(&mut pair).await;
     let copy = pair.server.backup("before.sqlite3").await;
+    link.revoke(&mut pair).await;
     edit_backup(&copy, "DELETE FROM key_entries WHERE recipient IS NOT NULL");
     let files = pair.a.files();
     let restored = pair.server.put_back(&copy, true).await;
@@ -1361,12 +1354,15 @@ async fn a_lost_envelope_stops_the_workspace() {
     assert_eq!(pair.a.files(), files);
     let notice = app_core::folder_sync::restore_notice(&pair.sync_a.status()).expect("a notice");
     assert!(notice.set_up_again);
+    link.revoked_again(&mut pair).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_lost_epoch_record_stops_the_workspace() {
     let mut pair = pair().await;
+    let mut link = LinkToRevoke::make(&mut pair).await;
     let copy = pair.server.backup("before.sqlite3").await;
+    link.revoke(&mut pair).await;
     edit_backup(
         &copy,
         "UPDATE epochs SET digest = zeroblob(32), epoch = epoch + 1",
@@ -1376,6 +1372,7 @@ async fn a_lost_epoch_record_stops_the_workspace() {
     let round = pair.sync_a.round(&mut pair.service, 0).await;
     assert!(round.is_ok(), "{round:?}");
     assert!(pair.sync_a.restore_lost().is_some());
+    link.revoked_again(&mut pair).await;
 }
 
 /// A policy change only the owner's device accepted: it stops, and the
@@ -1388,7 +1385,9 @@ async fn a_lost_policy_change_stops_only_the_devices_that_accepted_it() {
 
     let mut pair = pair_of_accounts_on(Server::start().await).await;
     rounds(&mut pair).await;
+    let mut link = LinkToRevoke::make(&mut pair).await;
     let copy = pair.server.backup("before.sqlite3").await;
+    link.revoke(&mut pair).await;
     let member = pair.desktop.credentials.account;
     pair.sync_a
         .change_member(
@@ -1428,6 +1427,7 @@ async fn a_lost_policy_change_stops_only_the_devices_that_accepted_it() {
             .await
             .is_ok()
     );
+    link.revoked_again(&mut pair).await;
 }
 
 /// A lost attachment keeps its `blob_ref`: a new operation reuses it and
@@ -1435,7 +1435,9 @@ async fn a_lost_policy_change_stops_only_the_devices_that_accepted_it() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_lost_attachment_comes_back_under_the_same_blob() {
     let mut pair = pair().await;
+    let mut link = LinkToRevoke::make(&mut pair).await;
     let copy = pair.server.backup("before.sqlite3").await;
+    link.revoke(&mut pair).await;
     let bytes: Vec<u8> = (0..3_000_000u32).map(|i| (i % 249) as u8).collect();
     pair.a.write("photo.png", &bytes);
     rounds(&mut pair).await;
@@ -1451,6 +1453,13 @@ async fn a_lost_attachment_comes_back_under_the_same_blob() {
         "the same objects, under the same keys"
     );
     assert_eq!(pair.a.files(), pair.b.files());
+    // What the database no longer knew sat in quarantine, and goes after
+    // 7 days and no sooner.
+    let quarantined = pair.server.quarantined().len() as u64;
+    assert!(quarantined > 0);
+    assert_eq!(pair.server.collect_quarantine(6).await, 0);
+    assert_eq!(pair.server.collect_quarantine(8).await, quarantined);
+    link.revoked_again(&mut pair).await;
 }
 
 /// An edit that reached no other device while a restore took its older
@@ -1819,8 +1828,10 @@ async fn a_failover_to_an_asynchronous_standby_is_a_rollback_until_it_is_marked(
     let mut pair = pair_on(Server::start_postgres_alone().await).await;
     pair.a.write("Kept.md", b"# Kept\n");
     rounds(&mut pair).await;
+    let mut link = LinkToRevoke::make(&mut pair).await;
     let standby = pair.server.standby();
     let again = pair.server.standby();
+    link.revoke(&mut pair).await;
     write_after_backup(&mut pair).await;
     let files = pair.a.files();
 
@@ -1845,6 +1856,7 @@ async fn a_failover_to_an_asynchronous_standby_is_a_rollback_until_it_is_marked(
     assert_eq!(pair.a.files(), pair.b.files());
     assert!(pair.a.files().contains_key("Lost.md"));
     assert!(pair.a.files().contains_key("Held.md"));
+    link.revoked_again(&mut pair).await;
 }
 
 /// §32's restore runs on PostgreSQL: only content lost, then a second
@@ -1852,16 +1864,19 @@ async fn a_failover_to_an_asynchronous_standby_is_a_rollback_until_it_is_marked(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_restores_on_postgres_end_like_one() {
     let mut pair = pair_on(Server::start_postgres_alone().await).await;
+    let mut link = LinkToRevoke::make(&mut pair).await;
     let older = pair.server.standby();
     pair.a.write("Middle.md", b"# Middle\n");
     rounds(&mut pair).await;
     let newer = pair.server.standby();
+    link.revoke(&mut pair).await;
     write_after_backup(&mut pair).await;
     let files = pair.a.files();
 
     let first = pair.server.fail_over(&newer, true).await;
     reconnect(&mut pair, &first.base).await;
     rounds(&mut pair).await;
+    link.revoked_again(&mut pair).await;
     assert_eq!(pair.a.files(), files);
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let second = pair.server.fail_over(&older, true).await;
@@ -1870,13 +1885,16 @@ async fn two_restores_on_postgres_end_like_one() {
     assert_eq!(pair.sync_a.restore_lost(), None);
     assert_eq!(pair.a.files(), files);
     assert_eq!(pair.b.files(), files);
+    link.revoked_again(&mut pair).await;
 }
 
 /// A lost link of your own chain stops the workspace on PostgreSQL too.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_lost_account_link_stops_the_workspace_on_postgres() {
     let mut pair = pair_on(Server::start_postgres_alone().await).await;
+    let mut link = LinkToRevoke::make(&mut pair).await;
     let standby = pair.server.standby();
+    link.revoke(&mut pair).await;
     let mut third = approve(
         &pair.server,
         &mut pair.laptop,
@@ -1894,6 +1912,142 @@ async fn a_lost_account_link_stops_the_workspace_on_postgres() {
         .expect("a stopped round");
     assert_eq!(pair.sync_a.restore_lost(), Some(&Lost::OwnAccount));
     assert_eq!(pair.a.files(), files);
+    link.revoked_again(&mut pair).await;
+}
+
+/// A restore that kept the attachment's objects and lost its rows, on
+/// PostgreSQL. The objects wait in quarantine for 7 days, and the device
+/// writes the file again under the same blob.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_store_that_outlived_its_blob_rows_on_postgres() {
+    let mut pair = pair_on(Server::start_postgres_alone().await).await;
+    let mut link = LinkToRevoke::make(&mut pair).await;
+    let standby = pair.server.standby();
+    link.revoke(&mut pair).await;
+    let bytes: Vec<u8> = (0..3_000_000u32).map(|i| (i % 247) as u8).collect();
+    pair.a.write("photo.png", &bytes);
+    rounds(&mut pair).await;
+    let stored = pair.server.blob_files();
+    assert!(!stored.is_empty());
+
+    let restored = pair.server.fail_over(&standby, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    rounds(&mut pair).await;
+    assert_eq!(pair.sync_a.restore_lost(), None);
+    assert!(
+        stored.iter().all(|file| file.exists()),
+        "the same objects, under the same keys"
+    );
+    assert_eq!(pair.b.files().get("photo.png"), Some(&bytes));
+    let quarantined = pair.server.quarantined().len() as u64;
+    assert!(quarantined > 0);
+    assert_eq!(pair.server.collect_quarantine(6).await, 0);
+    assert_eq!(pair.server.collect_quarantine(8).await, quarantined);
+    link.revoked_again(&mut pair).await;
+}
+
+/// A blob store that lost objects a live operation lists, on PostgreSQL: a
+/// device that holds the file uploads them again under the same IDs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_store_that_lost_listed_objects_on_postgres() {
+    let mut pair = pair_on(Server::start_postgres_alone().await).await;
+    let mut link = LinkToRevoke::make(&mut pair).await;
+    let bytes: Vec<u8> = (0..3_000_000u32).map(|i| (i % 241) as u8).collect();
+    pair.a.write("photo.png", &bytes);
+    rounds(&mut pair).await;
+    let standby = pair.server.standby();
+    link.revoke(&mut pair).await;
+    let stored = pair.server.blob_files();
+    assert!(!stored.is_empty());
+    for file in &stored {
+        std::fs::remove_file(file).expect("lost");
+    }
+
+    let restored = pair.server.fail_over(&standby, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    rounds(&mut pair).await;
+    assert_eq!(pair.sync_a.restore_lost(), None);
+    assert!(stored.iter().all(|file| file.exists()));
+    assert_eq!(pair.a.files(), pair.b.files());
+    link.revoked_again(&mut pair).await;
+}
+
+/// §32's runs that lose one kind of signed state, on PostgreSQL: each stops
+/// the device, which keeps its files and still ends the revoked link.
+async fn stops_on_postgres(sql: &str, expected: impl Fn(&Lost) -> bool) {
+    let mut pair = pair_on(Server::start_postgres_alone().await).await;
+    let mut link = LinkToRevoke::make(&mut pair).await;
+    let standby = pair.server.standby();
+    link.revoke(&mut pair).await;
+    let files = pair.a.files();
+    let restored = pair
+        .server
+        .fail_over_edited(&standby, true, Some(sql))
+        .await;
+    reconnect(&mut pair, &restored.base).await;
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a stopped round");
+    let lost = pair.sync_a.restore_lost().expect("stopped");
+    assert!(expected(lost), "{lost:?}");
+    assert_eq!(pair.a.files(), files);
+    link.revoked_again(&mut pair).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_envelope_stops_the_workspace_on_postgres() {
+    stops_on_postgres(
+        "DELETE FROM key_entries WHERE recipient IS NOT NULL",
+        |lost| matches!(lost, Lost::Envelope | Lost::Epoch),
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_epoch_record_stops_the_workspace_on_postgres() {
+    stops_on_postgres(
+        "UPDATE epochs SET digest = decode(repeat('00', 32), 'hex'), epoch = epoch + 1",
+        |_| true,
+    )
+    .await;
+}
+
+/// A policy change only the owner's device accepted, on PostgreSQL.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_policy_change_stops_the_workspace_on_postgres() {
+    use app_core::sync::members::MemberChange;
+    use sync_protocol::records::Role;
+
+    let mut pair = pair_of_accounts_on(Server::start_postgres_alone().await).await;
+    rounds(&mut pair).await;
+    let mut link = LinkToRevoke::make(&mut pair).await;
+    let standby = pair.server.standby();
+    link.revoke(&mut pair).await;
+    let member = pair.desktop.credentials.account;
+    pair.sync_a
+        .change_member(
+            &mut pair.service,
+            MemberChange::SetRole {
+                account: member,
+                role: Role::Admin,
+            },
+        )
+        .await
+        .expect("promoted");
+    let restored = pair.server.fail_over(&standby, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a stopped round");
+    assert_eq!(pair.sync_a.restore_lost(), Some(&Lost::Policy));
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("the member keeps syncing");
+    assert_eq!(pair.sync_b.restore_lost(), None);
+    link.revoked_again(&mut pair).await;
 }
 
 /// A snapshot blob a restore lost: no file holds it, so a writer that holds

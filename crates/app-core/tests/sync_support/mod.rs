@@ -348,9 +348,23 @@ impl Server<PgBackend> {
     /// Serves the copy `standby` after a failover, on the same secret and
     /// blobs. With `recorded`, the operator ran `mark-restored` first.
     pub async fn fail_over(&self, standby: &Path, recorded: bool) -> Self {
+        self.fail_over_edited(standby, recorded, None).await
+    }
+
+    /// [`Self::fail_over`], with `sql` run on the promoted database first,
+    /// for a restore that loses exactly one kind of signed state.
+    pub async fn fail_over_edited(
+        &self,
+        standby: &Path,
+        recorded: bool,
+        sql: Option<&str>,
+    ) -> Self {
         let database = self.postgres.as_ref().expect("a PostgreSQL server");
         let cluster = Arc::new(database.cluster.promoted(standby));
         let database = database.on(cluster);
+        if let Some(sql) = sql {
+            database.execute(sql).await;
+        }
         let config = sync_server::Postgres {
             url: database.url.clone(),
             secret: self.instance.as_ref().expect("a config").secret.clone(),
@@ -420,6 +434,28 @@ impl<B: Backend> Server<B> {
             .into_iter()
             .filter(|f| !f.to_string_lossy().contains(".partial"))
             .collect()
+    }
+
+    /// The objects under the blob store's quarantine prefix.
+    pub fn quarantined(&self) -> Vec<PathBuf> {
+        self.blob_files()
+            .into_iter()
+            .filter(|f| f.to_string_lossy().contains("/quarantine/"))
+            .collect()
+    }
+
+    /// Runs the quarantine collector as of `days` days from now and returns
+    /// what it deleted.
+    pub async fn collect_quarantine(&self, days: u64) -> u64 {
+        let blobs =
+            sync_server::blobs::DiskStore::open(&self.dir.path().join("blobs")).expect("a store");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after 1970")
+            .as_secs();
+        sync_server::restore::collect_quarantine(&blobs, now + days * 24 * 3600)
+            .await
+            .expect("collected")
     }
 
     /// The files that hold what the server stored, blob segments included.
@@ -1477,6 +1513,104 @@ pub async fn pair_on<B: Backend>(server: Server<B>) -> Pair<B> {
 
 /// A [`Pair`] on `server` whose desktop belongs to another account, a
 /// member the laptop's account invited as an admin.
+/// A share link the laptop made before a backup, to revoke after it.
+pub struct LinkToRevoke {
+    book: app_core::sync::shares::ShareBook,
+    token_hash: sync_protocol::types::Digest,
+    address: String,
+    workspace: Id,
+    _dir: tempfile::TempDir,
+}
+
+impl LinkToRevoke {
+    /// Makes a link to `Plan.md`.
+    pub async fn make<B: Backend>(pair: &mut Pair<B>) -> Self {
+        use app_core::sync::shares::{NewShare, ShareBook, snapshot_of};
+
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let mut book = ShareBook::open(dir.path(), pair.laptop.id()).expect("the book");
+        let (title, markdown) = snapshot_of("Plan", "# Plan\n");
+        let workspace = pair.sync_a.workspace();
+        let created = pair
+            .service
+            .create_share(
+                &mut book,
+                NewShare {
+                    workspace,
+                    domain: pair.sync_a.domain(),
+                    note: pair.sync_a.rid_at("Plan.md").expect("Plan.md syncs"),
+                    title: &title,
+                    markdown: markdown.as_bytes(),
+                    days: 7,
+                },
+            )
+            .await
+            .expect("the link");
+        let (address, _) = created.url.split_once('#').expect("a fragment");
+        let (origin, token) = address.split_once("/s/").expect("a share path");
+        Self {
+            address: format!("{origin}/v2/shares/{token}"),
+            token_hash: created.link.token_hash,
+            book,
+            workspace,
+            _dir: dir,
+        }
+    }
+
+    async fn status(&self) -> u16 {
+        reqwest::get(&self.address)
+            .await
+            .expect("the server answers")
+            .status()
+            .as_u16()
+    }
+
+    /// Revokes the link.
+    pub async fn revoke<B: Backend>(&mut self, pair: &mut Pair<B>) {
+        pair.service
+            .revoke_share(&mut self.book, self.workspace, self.token_hash, 0)
+            .await
+            .expect("revoked");
+        assert_eq!(self.status().await, 404, "the link ended");
+    }
+
+    /// The restore brought the link back, and the laptop, which saw the new
+    /// generation, ends it again.
+    pub async fn revoked_again<B: Backend>(&self, pair: &mut Pair<B>) {
+        assert_eq!(self.status().await, 200, "the restore brought it back");
+        assert!(pair.sync_a.revoke_due());
+        pair.service
+            .revoke_shares_again(&self.book)
+            .await
+            .expect("revoked again");
+        pair.sync_a.revoked_again().expect("recorded");
+        assert_eq!(self.status().await, 404, "the link ended again");
+    }
+}
+
+/// Both devices through the proxy, which now reaches `base`.
+pub async fn reconnect<B: Backend>(pair: &mut Pair<B>, base: &str) {
+    pair.proxy.retarget(base);
+    pair.service = pair.laptop.connect_through(&pair.proxy.base).await;
+    pair.desktop.service = pair.desktop.connect_through(&pair.proxy.base).await;
+    pair.sync_a.set_restore_wait(std::time::Duration::ZERO);
+    pair.sync_b.set_restore_wait(std::time::Duration::ZERO);
+}
+
+/// Three rounds of each device in turn.
+pub async fn rounds<B: Backend>(pair: &mut Pair<B>) {
+    for _ in 0..3 {
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("laptop");
+        pair.sync_b
+            .round(&mut pair.desktop.service, 0)
+            .await
+            .expect("desktop");
+    }
+}
+
 pub async fn pair_of_accounts_on<B: Backend>(server: Server<B>) -> Pair<B> {
     let proxy = Proxy::start(&server.base).await;
     let mut laptop = first_desktop(&server, "ana@example.com").await;

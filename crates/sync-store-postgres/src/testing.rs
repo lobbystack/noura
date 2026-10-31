@@ -459,6 +459,18 @@ impl TestDatabase {
         }
     }
 
+    /// Runs `sql` in this database.
+    pub async fn execute(&self, sql: &str) {
+        let mut connection = PgConnection::connect(&self.url)
+            .await
+            .expect("the database answers");
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.to_owned()))
+            .execute(&mut connection)
+            .await
+            .expect("the statement runs");
+        connection.close().await.expect("closed");
+    }
+
     /// Every column of every table the database holds, with its values.
     pub async fn columns(&self) -> Vec<StoredColumn> {
         use sqlx::Row;
