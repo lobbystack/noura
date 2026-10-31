@@ -1832,6 +1832,8 @@ Each file lists `records` and `cases`. A record gives a type, its bytes in hexad
 
 The store conformance suite runs `sync-v2-live.json` against both stores, so SQLite and PostgreSQL compute the same live sets as clients.
 
+`sync-v2-live.json`, `sync-v2-chain.json` and `sync-v2-profile.json` also hold `restore_cases`: decision tables for [§14](#after-a-server-restore) (the lag test, what a differing file counts as, a raced rewrite, final heads, and a lost profile revision).
+
 ### Store and soak tests
 
 Beyond the fixtures, the implementation tests these cases against both stores:

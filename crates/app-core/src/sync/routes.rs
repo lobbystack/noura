@@ -88,7 +88,7 @@ impl SyncClient {
             .await
     }
 
-    /// `GET /v2/devices`.
+    /// `POST /v2/account/reset-code`.
     pub async fn reset_code(&mut self) -> Result<(), SyncError> {
         self.call_empty(reqwest::Method::POST, "/v2/account/reset-code", None)
             .await

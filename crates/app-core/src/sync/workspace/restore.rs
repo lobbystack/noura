@@ -147,6 +147,9 @@ fn holds(code: &str) -> bool {
     matches!(code, "sync_server_rollback" | "sync_policy_rollback")
 }
 
+/// A restricted domain with its latest accepted epoch and envelope.
+type DomainKeys = (Id, Option<Signed<Epoch>>, Option<Signed<Envelope>>);
+
 /// The fixed code of a kept rollback.
 fn rollback_code(code: &str) -> &'static str {
     match code {
@@ -572,7 +575,7 @@ impl WorkspaceSync {
         let snapshot = remote.policy.head_snapshot();
         let device = self.credentials.keys.device();
         let recipient = self.credentials.keys.clone();
-        let frames: Vec<(Id, Option<Signed<Epoch>>, Option<Signed<Envelope>>)> = self
+        let frames: Vec<DomainKeys> = self
             .state
             .restricted
             .iter()

@@ -348,11 +348,10 @@ async fn a_kit_whose_head_a_restore_lost_says_so() {
     let restored = pair.server.put_back(&copy, true).await;
     let signed_in = restored.sign_in(account, &restored.base).await;
     // The restored test server listens on another port than the kit names.
-    let mut client = SyncClient::connect(&restored.base, &signed_in.session_token)
+    let client = SyncClient::connect(&restored.base, &signed_in.session_token)
         .await
         .expect("connects");
     kit.origin = sync_protocol::codec::Text::new(client.origin().expect("an origin")).unwrap();
-    let _ = client.restore_generation();
     let state = tempfile::tempdir().unwrap();
     let secrets: app_core::sync::Secrets = Arc::new(MemorySecrets::default());
     let refused = Recovery::begin(&signed_in, kit, secrets, state.path()).await;
