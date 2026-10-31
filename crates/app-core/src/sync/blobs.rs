@@ -76,6 +76,14 @@ impl SyncClient {
             }
             let status = response.status().as_u16();
             let bytes = response.bytes().await.map_err(network)?;
+            // A `HEAD` has no body here either.
+            if bytes.is_empty() && status == reqwest::StatusCode::NOT_FOUND.as_u16() {
+                return Err(SyncError::Refused {
+                    code: "not_found".into(),
+                    status,
+                    detail: None,
+                });
+            }
             let error =
                 <sync_protocol::messages::ErrorBody as sync_protocol::codec::Decode>::from_bytes(
                     &bytes,
@@ -90,7 +98,11 @@ impl SyncClient {
     }
 
     /// The server's `Upload-Offset` for the upload of `blob`.
-    async fn blob_offset(&mut self, workspace: &Id, blob: &Id) -> Result<u64, SyncError> {
+    pub(crate) async fn blob_offset(
+        &mut self,
+        workspace: &Id,
+        blob: &Id,
+    ) -> Result<u64, SyncError> {
         let url = format!("{}{}", self.base, Self::blob_path(workspace, blob));
         let response = self.tus(self.http.head(url)).await?;
         response
