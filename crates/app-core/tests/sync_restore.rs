@@ -1991,6 +1991,11 @@ async fn a_writers_records_that_disagree_with_its_final_head_stop_the_rewind() {
     use sync_protocol::records::Role;
 
     let mut pair = pair_of_accounts_on(Server::start().await).await;
+    // A checkpoint covering the change would answer the final head without
+    // the chain records this test withholds.
+    let never = std::time::Duration::from_secs(1 << 40);
+    pair.sync_a.set_checkpoint_wait(never);
+    pair.sync_b.set_checkpoint_wait(never);
     pair.b.write("Member.md", b"# Member\n");
     rounds(&mut pair).await;
     let member = pair.desktop.credentials.account;

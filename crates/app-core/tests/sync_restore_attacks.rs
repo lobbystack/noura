@@ -392,6 +392,8 @@ async fn a_checkpoint_head_that_differs_from_the_final_head_stops_the_rewind() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_re_signed_record_below_the_final_head_stops_the_rewind() {
     let mut pair = two_accounts().await;
+    pair.sync_a.set_checkpoint_wait(NEVER);
+    pair.sync_b.set_checkpoint_wait(NEVER);
     demote_the_member(&mut pair).await;
     let _restored = claim_a_restore(&mut pair).await;
     let keys = pair.desktop.credentials.keys.clone();
