@@ -237,8 +237,8 @@ fn signed_in_shows_the_account_its_devices_and_their_actions() {
 fn after_a_removal_the_removed_devices_changes_show_with_their_undo() {
     let app_data = tempfile::tempdir().unwrap();
     let account = Arc::new(FakeAccount::default());
-    let kept = "Device 1111 2222 made a change (set_role) in workspace 0a0b0c0d, and it stays. Your role can undo it with set_role.";
-    let stuck = "Device 1111 2222 made a change (transfer_owner) in workspace 0a0b0c0d, and it stays. Your role can't undo it.";
+    let kept = "Device 1111 2222 changed a member's role in workspace 0a0b0c0d, and that stays. Your role can undo it.";
+    let stuck = "Device 1111 2222 transferred ownership in workspace 0a0b0c0d, and that stays. Your role can't undo it.";
     account.show(signed_in(SignedInView {
         account_fingerprint: ACCOUNT.into(),
         devices: devices(),
@@ -258,7 +258,7 @@ fn the_device_list_alerts_and_signs_out_a_device_nobody_approved() {
     let app_data = tempfile::tempdir().unwrap();
     let account = Arc::new(FakeAccount::default());
     let unknown = format!("A device that nobody approved signed in to your account: {PHONE}.");
-    let changed = "Device 1111 2222 changed workspace 0a0b0c0d at revision 4 (set_role).";
+    let changed = "Device 1111 2222 changed a member's role in workspace 0a0b0c0d at revision 4.";
     account.show(signed_in(SignedInView {
         account_fingerprint: ACCOUNT.into(),
         devices: devices(),
@@ -505,7 +505,7 @@ fn the_recovery_review_shows_members_unverified_workspaces_and_your_devices() {
     let account = Arc::new(FakeAccount::default());
     let change = "Your account: add_device by device 22222222.";
     let members = "Workspace 33333333 has these members: your account, account 55555555.";
-    let unverified = "Noura couldn't verify workspace 66666666 (sync_workspace_unverified), so the recovery leaves it out.";
+    let unverified = "Noura couldn't verify workspace 66666666, so the recovery leaves it out.";
     account.show(AccountScreen {
         server: "https://sync.example.com".into(),
         phase: AccountPhase::Recovering(RecoveryView {

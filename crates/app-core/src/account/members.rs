@@ -27,6 +27,7 @@ const LIST_AGAIN: Duration = Duration::from_secs(10);
 
 /// What a failed action tells you.
 fn members_message(error: &SyncError) -> String {
+    tracing::warn!(kind = ?error.code(), "a Members action failed");
     match error {
         SyncError::Refused { code, .. } if code == "forbidden" => {
             "Your role in this workspace doesn't allow that.".into()
@@ -40,9 +41,7 @@ fn members_message(error: &SyncError) -> String {
         SyncError::Refused { code, .. } if code == "offer_expired" => {
             "The approval took longer than 10 minutes, so it stopped. Choose Approve to start again.".into()
         }
-        SyncError::Network(_) => "The sync server can't be reached. Try again in a moment.".into(),
-        SyncError::Invalid(text) => text.clone(),
-        other => format!("That didn't work: {other}."),
+        other => crate::account::problem_text(other),
     }
 }
 

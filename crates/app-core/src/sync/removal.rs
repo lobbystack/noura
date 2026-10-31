@@ -128,7 +128,7 @@ impl SyncService {
         let chain = self.own_chain().await?;
         let removed = chain
             .removal(self.credentials.keys.device(), target, &[])
-            .map_err(|e| SyncError::Invalid(format!("this card can't be removed: {e}")))?;
+            .map_err(|e| crate::sync::local_failure("Noura can't remove this device.", e))?;
         let card = |id: &Id| chain.card(id).map(|s| s.card.clone());
         let target_card = card(&target).ok_or_else(|| SyncError::Invalid("no such card".into()))?;
         let with_it: Vec<Card> = removed
@@ -164,14 +164,15 @@ impl SyncService {
         let device = self.credentials.keys.device();
         let removed = chain
             .removal(device, target, keep)
-            .map_err(|e| SyncError::Invalid(format!("this card can't be removed: {e}")))?;
+            .map_err(|e| crate::sync::local_failure("Noura can't remove this device.", e))?;
         let link = next_link(
             &self.credentials.keys,
             &chain.head(),
             LinkKind::Remove {
                 device: target,
-                keep: Sorted::new(keep.to_vec())
-                    .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
+                keep: Sorted::new(keep.to_vec()).map_err(|e| {
+                    crate::sync::local_failure("Noura can't remove this device.", e.name())
+                })?,
             },
         );
         let digest = link.digest();
@@ -303,9 +304,9 @@ impl SyncService {
         self.client.append_chain(vec![link]).await?;
         StoredDevice::delete(store, self.client.base())?;
         for item in super::account_heads::device_items(&device) {
-            store
-                .delete(&item)
-                .map_err(|e| SyncError::Invalid(format!("the credential store failed: {e}")))?;
+            store.delete(&item).map_err(|e| {
+                crate::sync::local_failure("The system's credential store failed.", e)
+            })?;
         }
         Ok(())
     }

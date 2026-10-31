@@ -81,11 +81,13 @@ fn sandbox() -> Result<&'static Sandbox, SyncError> {
     SANDBOX
         .get_or_init(|| Sandbox::new(Backend::Cranelift).map_err(|error| error.to_string()))
         .as_ref()
-        .map_err(|error| SyncError::Invalid(format!("the collaboration sandbox: {error}")))
+        .map_err(|error| {
+            crate::sync::local_failure("Live editing stopped on this computer.", error)
+        })
 }
 
 fn handle_error(error: HandleError) -> SyncError {
-    SyncError::Invalid(format!("the note's document: {error}"))
+    crate::sync::local_failure("Noura can't read this note's live document.", error)
 }
 
 /// The sandbox's verdict on a record, as the journal keeps it.
@@ -1951,7 +1953,7 @@ impl WorkspaceSync {
                 self.state.objects.get_mut(&rid).expect("present").base = Some(base);
                 self.set_base(rid, file, &bytes, Some(revision))
             }
-            Err(SyncError::Invalid(message)) if message.starts_with("revision_conflict") => Ok(()),
+            Err(SyncError::FileChanged) => Ok(()),
             Err(error) => Err(error),
         }
     }

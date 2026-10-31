@@ -63,7 +63,7 @@ pub fn device_items(device: &Id) -> Vec<String> {
 }
 
 fn credential_error(error: impl std::fmt::Display) -> SyncError {
-    SyncError::Invalid(format!("the credential store failed: {error}"))
+    super::local_failure("The system's credential store failed.", error)
 }
 
 fn rolled_back() -> SyncError {
@@ -290,9 +290,10 @@ impl KeptHeads {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
-                return Err(SyncError::Invalid(format!(
-                    "the kept heads can't be removed: {error}"
-                )));
+                return Err(super::local_failure(
+                    "Noura can't update this computer's sync records.",
+                    error,
+                ));
             }
         }
         for item in [own_head_name(device), refusals_name(device)] {
@@ -317,9 +318,10 @@ impl KeptHeads {
             Ok(bytes) => parse(&key, &bytes).ok_or_else(rolled_back)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Stored::default(),
             Err(error) => {
-                return Err(SyncError::Invalid(format!(
-                    "the kept heads can't be read: {error}"
-                )));
+                return Err(super::local_failure(
+                    "Noura can't read this computer's sync records.",
+                    error,
+                ));
             }
         };
         let heads = Self {
@@ -1019,7 +1021,9 @@ impl KeptHeads {
             file.write_all(&bytes)?;
             file.commit()
         };
-        write().map_err(|e| SyncError::Invalid(format!("the kept heads can't be written: {e}")))
+        write().map_err(|e| {
+            super::local_failure("Noura can't update this computer's sync records.", e)
+        })
     }
 }
 

@@ -113,6 +113,7 @@ pub(super) struct Folder {
 
 /// What a failed round or action tells you in the Workspace sync section.
 fn folder_message(error: &SyncError) -> String {
+    tracing::warn!(kind = ?error.code(), "a sync action failed");
     match error {
         SyncError::Network(_) => {
             "The sync server can't be reached. Your changes wait on this computer.".into()
@@ -126,9 +127,7 @@ fn folder_message(error: &SyncError) -> String {
         SyncError::Check("sync_folder_not_connected") => {
             "This folder is a copy of a synced folder. Turn on sync to connect it.".into()
         }
-        SyncError::Check(code) => format!("Sync stopped: the server's answer failed a check ({code})."),
-        SyncError::Invalid(text) => text.clone(),
-        other => format!("Sync stopped: {other}."),
+        other => crate::account::problem_text(other),
     }
 }
 

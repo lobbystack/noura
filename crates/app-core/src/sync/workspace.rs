@@ -313,14 +313,17 @@ fn unix_now() -> u64 {
 }
 
 fn core(error: local_core::CoreError) -> SyncError {
-    SyncError::Invalid(format!("{}: {}", error.code, error.message))
+    if error.code == "revision_conflict" {
+        return SyncError::FileChanged;
+    }
+    super::local_failure(&error.message, &error.code)
 }
 
 /// Whether the folder at `folder` holds nothing, apart from the files the
 /// system leaves in any folder.
 pub fn is_empty_folder(folder: &Path) -> Result<bool, SyncError> {
     let entries = std::fs::read_dir(folder)
-        .map_err(|e| SyncError::Invalid(format!("the folder can't be read: {e}")))?;
+        .map_err(|e| super::local_failure("Noura can't read this folder.", e))?;
     Ok(entries.flatten().all(|entry| {
         matches!(
             entry.file_name().to_str(),
@@ -2299,8 +2302,7 @@ impl WorkspaceSync {
         } else {
             found.file.relative_path.clone()
         };
-        let path = SyncPath::new(synced.clone())
-            .map_err(|e| SyncError::Invalid(format!("path: {}", e.name())))?;
+        let path = SyncPath::new(synced.clone()).map_err(|e| super::bad_path(e.name()))?;
         let size = found
             .bytes
             .as_ref()
@@ -2370,7 +2372,7 @@ impl WorkspaceSync {
         blob_ref: &sync_protocol::records::BlobRef,
     ) -> Result<bool, SyncError> {
         let unreadable =
-            |e: std::io::Error| SyncError::Invalid(format!("can't read the file: {e}"));
+            |e: std::io::Error| super::local_failure("Noura can't read a file it was syncing.", e);
         let Some(mut file) = self.engine.open_synced(path).map_err(core)? else {
             return Ok(false);
         };
@@ -2452,7 +2454,9 @@ impl WorkspaceSync {
                         .ok_or_else(|| SyncError::Invalid("the file went away".into()))?;
                     let len = file
                         .metadata()
-                        .map_err(|e| SyncError::Invalid(format!("can't read the file: {e}")))?
+                        .map_err(|e| {
+                            super::local_failure("Noura can't read a file it was syncing.", e)
+                        })?
                         .len();
                     sync_protocol::blob::encrypt_blob_to(
                         std::io::BufReader::with_capacity(1 << 16, file),

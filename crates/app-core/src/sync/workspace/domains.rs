@@ -508,8 +508,8 @@ impl WorkspaceSync {
             ));
         }
         let marker_path = format!("{folder}/{MARKER}");
-        let path = SyncPath::new(marker_path.clone())
-            .map_err(|e| SyncError::Invalid(format!("path: {}", e.name())))?;
+        let path =
+            SyncPath::new(marker_path.clone()).map_err(|e| crate::sync::bad_path(e.name()))?;
         let mut remote = self.remote.take().ok_or(SyncError::KeyMissing)?;
         let committed = self
             .push_new_domain(service, &mut remote, path, grants)

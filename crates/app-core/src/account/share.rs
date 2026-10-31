@@ -33,6 +33,7 @@ pub(super) struct Sharing {
 
 /// What a failed share action tells you.
 fn share_message(error: &SyncError) -> String {
+    tracing::warn!(kind = ?error.code(), "a share action failed");
     match error {
         SyncError::Refused { code, .. } if code == "forbidden" => {
             "Only owners and admins of this workspace can share notes.".into()
@@ -43,9 +44,7 @@ fn share_message(error: &SyncError) -> String {
         SyncError::Refused { code, .. } if code == "not_found" => {
             "That link no longer exists. Someone revoked it, or it expired.".into()
         }
-        SyncError::Network(_) => "The sync server can't be reached. Try again in a moment.".into(),
-        SyncError::Invalid(text) => text.clone(),
-        other => format!("Sharing stopped: {other}."),
+        other => crate::account::problem_text(other),
     }
 }
 

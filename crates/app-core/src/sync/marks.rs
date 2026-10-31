@@ -141,7 +141,7 @@ pub fn blob_wrap_key(
 }
 
 fn failed(error: impl std::fmt::Display) -> SyncError {
-    SyncError::Invalid(format!("the credential store failed: {error}"))
+    super::local_failure("The system's credential store failed.", error)
 }
 
 impl Mark {

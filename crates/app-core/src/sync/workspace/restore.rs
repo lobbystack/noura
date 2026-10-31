@@ -1324,7 +1324,7 @@ impl WorkspaceSync {
         let target = journals.join(&file);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)
-                .map_err(|e| SyncError::Invalid(format!("can't keep the version: {e}")))?;
+                .map_err(|e| crate::sync::local_failure("Noura can't keep this version.", e))?;
         }
         crate::sync::journal::durable_write(&target, &bytes)?;
         self.state.archived.push(super::rebuild::Archived {

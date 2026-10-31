@@ -23,6 +23,77 @@ use sync_protocol::types::Digest;
 pub use sync_protocol::types::Id;
 use zeroize::Zeroizing;
 
+/// What the screens say when the server no longer takes this computer's
+/// session.
+pub(crate) const SESSION_ENDED: &str = "This computer's session with the sync server ended. Sign in again with your browser, and this device keeps its keys.";
+
+/// The sentence the screens show for `error`, for the errors a screen has
+/// no sentence of its own for. Protocol codes and system details stay out
+/// of it: the caller logs the error's code.
+pub(crate) fn problem_text(error: &crate::sync::SyncError) -> String {
+    use crate::sync::SyncError;
+    match error {
+        SyncError::ProtocolUnsupported(_) => {
+            "This sync server runs a version of sync that Noura can't use. Update Noura, or ask the server's operator.".into()
+        }
+        SyncError::Refused { code, .. } => refused_text(code).into(),
+        SyncError::Network(_) => "The sync server can't be reached. Try again in a moment.".into(),
+        SyncError::Check(_) => {
+            "Sync stopped because the server's answer failed a check. Your files stay on this computer.".into()
+        }
+        SyncError::KeyMissing => {
+            "This workspace's key hasn't reached this computer yet. Another device sends it the next time it syncs.".into()
+        }
+        SyncError::Invalid(text) => text.clone(),
+        SyncError::SignIn(end) => end.to_string(),
+        SyncError::FileChanged | SyncError::KitRevoked => error.to_string(),
+    }
+}
+
+/// What a refusal from the server means to you.
+fn refused_text(code: &str) -> &'static str {
+    match code {
+        "unauthorized" => SESSION_ENDED,
+        "device_removed" => "The sync server says this computer no longer belongs to your account.",
+        "forbidden" => "Your role in this workspace doesn't allow that.",
+        "not_found" => "The sync server no longer has that.",
+        "rate_limited" => "The sync server asked Noura to slow down. Try again in a minute.",
+        "quota_exceeded" => "This workspace is over its storage quota.",
+        "workspace_limit" => "Your account has reached its limit of workspaces.",
+        "recipient_limit" => "This workspace has reached its limit of 512 devices.",
+        _ => "The sync server refused that. Try again in a moment.",
+    }
+}
+
+/// A policy change, as what its signer did (§8).
+pub(crate) fn policy_change_words(kind: &str) -> &'static str {
+    match kind {
+        "genesis" => "started the workspace",
+        "add_member" => "added a member",
+        "set_role" => "changed a member's role",
+        "remove_member" => "removed a member",
+        "create_domain" => "restricted a folder",
+        "set_access" => "changed who can open a restricted folder",
+        "delete_domain" => "deleted a restricted folder",
+        "transfer_owner" => "transferred ownership",
+        "accept_reset" => "accepted a member's device reset",
+        "account_heads" => "recorded new devices",
+        _ => "changed the workspace",
+    }
+}
+
+/// An account chain link, as what its signer did (§7).
+pub(crate) fn link_words(kind: &str) -> &'static str {
+    match kind {
+        "genesis" => "started your account",
+        "add_device" => "added a device to your account",
+        "add_recovery" => "added a recovery kit to your account",
+        "recover_device" => "recovered your account with a kit",
+        "remove" => "removed a device from your account",
+        _ => "changed your account",
+    }
+}
+
 /// A fingerprint as the screens show it: 64 lowercase hexadecimal
 /// characters in 16 groups of 4 (§7).
 pub fn fingerprint(digest: &Digest) -> String {

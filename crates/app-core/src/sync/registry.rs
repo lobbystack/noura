@@ -57,7 +57,7 @@ struct Stored {
 }
 
 fn failed(error: impl std::fmt::Display) -> SyncError {
-    SyncError::Invalid(format!("the list of synced folders can't be used: {error}"))
+    super::local_failure("Noura can't use its list of synced folders.", error)
 }
 
 impl Registry {

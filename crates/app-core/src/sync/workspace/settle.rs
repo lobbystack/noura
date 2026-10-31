@@ -320,9 +320,7 @@ impl WorkspaceSync {
                 self.state.objects.get_mut(&rid).expect("present").base = Some(target);
                 Ok(())
             }
-            Err(SyncError::Invalid(message)) if message.starts_with("revision_conflict") => {
-                self.keep_for_review(&rid, &target, contents)
-            }
+            Err(SyncError::FileChanged) => self.keep_for_review(&rid, &target, contents),
             Err(error) => Err(error),
         }
     }
@@ -597,7 +595,7 @@ impl WorkspaceSync {
         let body = self.content_body(&rid, &content_branch, contents)?;
         match self.place(&rid, &path, &body, revision) {
             Ok(()) => {}
-            Err(SyncError::Invalid(message)) if message.starts_with("revision_conflict") => {
+            Err(SyncError::FileChanged) => {
                 self.keep_for_review(&rid, &path_branch, contents)?;
                 return self.keep_for_review(&rid, &content_branch, contents);
             }

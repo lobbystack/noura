@@ -105,7 +105,7 @@ impl std::fmt::Debug for StoredDevice {
 }
 
 fn credential_error(error: impl std::fmt::Display) -> SyncError {
-    SyncError::Invalid(format!("the credential store failed: {error}"))
+    super::local_failure("The system's credential store failed.", error)
 }
 
 impl StoredDevice {
@@ -252,7 +252,7 @@ impl DeviceSignIn {
             ));
         }
         open_browser(&verification_uri)
-            .map_err(|e| SyncError::Invalid(format!("the browser didn't open: {e}")))?;
+            .map_err(|e| super::local_failure("Your browser didn't open.", e))?;
         Ok(Self {
             client,
             device_code: grant.device_code,

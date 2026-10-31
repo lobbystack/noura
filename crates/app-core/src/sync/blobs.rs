@@ -20,7 +20,7 @@ const RETRIES: u32 = 5;
 const SEGMENT: u64 = SEGMENT_LEN as u64;
 
 fn corrupt(what: &str) -> SyncError {
-    SyncError::Invalid(format!("the downloaded blob {what}"))
+    super::local_failure("A file the server sent didn't check out.", what)
 }
 
 /// The `Retry-After` of a response, when it's short enough to sit out.
@@ -142,7 +142,7 @@ impl SyncClient {
             .header("Upload-Metadata", metadata);
         self.tus(request).await?;
         let mut source = std::fs::File::open(file)
-            .map_err(|e| SyncError::Invalid(format!("can't read the blob to upload: {e}")))?;
+            .map_err(|e| super::local_failure("Noura can't read a file it was uploading.", e))?;
         let mut failures = 0;
         loop {
             let offset = self.blob_offset(&workspace, &blob_ref.blob).await?;
@@ -154,7 +154,9 @@ impl SyncClient {
             source
                 .seek(SeekFrom::Start(offset))
                 .and_then(|_| source.read_exact(&mut segment))
-                .map_err(|e| SyncError::Invalid(format!("can't read the blob to upload: {e}")))?;
+                .map_err(|e| {
+                    super::local_failure("Noura can't read a file it was uploading.", e)
+                })?;
             let url = format!(
                 "{}{}",
                 self.base,
@@ -217,7 +219,8 @@ impl SyncClient {
         ciphertext: &Path,
         plaintext: &Path,
     ) -> Result<(), SyncError> {
-        let disk = |e: std::io::Error| SyncError::Invalid(format!("can't keep the download: {e}"));
+        let disk =
+            |e: std::io::Error| super::local_failure("Noura can't keep a file it downloaded.", e);
         if let Some(parent) = ciphertext.parent() {
             std::fs::create_dir_all(parent).map_err(disk)?;
         }

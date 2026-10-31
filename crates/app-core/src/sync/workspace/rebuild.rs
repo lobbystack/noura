@@ -633,7 +633,7 @@ impl WorkspaceSync {
         let journals = self.engine.root().join(journal::JOURNALS);
         if restore {
             let bytes = std::fs::read(journals.join(&item.file))
-                .map_err(|e| SyncError::Invalid(format!("the kept version can't be read: {e}")))?;
+                .map_err(|e| crate::sync::local_failure("Noura can't read the kept version.", e))?;
             if hash(&bytes) != item.revision {
                 return Err(SyncError::Invalid("the kept version changed".into()));
             }

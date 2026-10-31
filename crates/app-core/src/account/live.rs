@@ -22,7 +22,8 @@ use super::share::Sharing;
 use super::{
     AccountAction, AccountBackend, AccountPhase, AccountScreen, AlertEntry, ApprovalView,
     DeviceEntry, InvitationStage, InvitationView, KitReplacementView, KitView, RecoveryView,
-    RemovalView, RequestEntry, SignOutView, SignedInView, fingerprint,
+    RemovalView, RequestEntry, SignOutView, SignedInView, fingerprint, link_words,
+    policy_change_words, problem_text,
 };
 use crate::folder_sync::{FolderSyncAction, FolderSyncBackend, FolderSyncScreen};
 use crate::members::{MembersAction, MembersBackend, MembersScreen, role_name};
@@ -431,8 +432,6 @@ pub const UNVERIFIED_REMOVAL: &str = "The sync server says a device removed this
 
 fn message(error: &SyncError) -> String {
     match error {
-        SyncError::SignIn(end) => end.to_string(),
-        SyncError::KitRevoked => error.to_string(),
         SyncError::Check("sync_restore_lost") => {
             "The server's operator restored a backup that lacks what this kit names. Reset your devices to go on."
                 .into()
@@ -453,9 +452,7 @@ fn message(error: &SyncError) -> String {
             "Another offer reached this device, so the approval stopped. Start it again from one of your devices."
                 .into()
         }
-        SyncError::Network(_) => "The sync server can't be reached. Try again in a moment.".into(),
-        SyncError::Invalid(text) => text.clone(),
-        other => format!("Sync stopped: {other}."),
+        other => problem_text(other),
     }
 }
 
@@ -472,8 +469,8 @@ pub(crate) fn alert_text(alert: &DeviceAlert, short: &dyn Fn(&Id) -> String) -> 
             "A device that nobody approved signed in to your account: {}.",
             fingerprint(&card.fingerprint())
         ),
-        DeviceAlert::UnverifiedWorkspace { workspace, code } => format!(
-            "Noura can't verify workspace {} on this server ({code}).",
+        DeviceAlert::UnverifiedWorkspace { workspace, .. } => format!(
+            "Noura can't verify workspace {} on this server, so it stays out of sync here.",
             short_id(workspace)
         ),
         DeviceAlert::Link {
@@ -483,8 +480,9 @@ pub(crate) fn alert_text(alert: &DeviceAlert, short: &dyn Fn(&Id) -> String) -> 
             recovery,
             ..
         } => format!(
-            "Device {} changed your account ({kind}) for {} {}.",
+            "Device {} {}: {} {}.",
             short(signer),
+            link_words(kind),
             if *recovery { "recovery kit" } else { "device" },
             fingerprint(&card.fingerprint())
         ),
@@ -494,8 +492,9 @@ pub(crate) fn alert_text(alert: &DeviceAlert, short: &dyn Fn(&Id) -> String) -> 
             kind,
             signer,
         } => format!(
-            "Device {} changed workspace {} at revision {revision} ({kind}).",
+            "Device {} {} in workspace {} at revision {revision}.",
             short(signer),
+            policy_change_words(kind),
             short_id(workspace)
         ),
     }
@@ -517,19 +516,15 @@ pub(crate) fn recovery_view(account: Id, review: &RecoveryReview) -> RecoveryVie
             .links
             .iter()
             .map(|l| {
-                format!(
-                    "Your account: {} by device {}.",
-                    l.kind,
-                    short_id(&l.signer)
-                )
+                format!("Device {} {}.", short_id(&l.signer), link_words(l.kind))
             })
             .chain(review.changes.iter().map(|c| {
                 format!(
-                    "Workspace {} at revision {}: {} by device {}.",
+                    "Device {} {} in workspace {} at revision {}.",
+                    short_id(&c.signer),
+                    policy_change_words(c.kind),
                     short_id(&c.workspace),
-                    c.revision,
-                    c.kind,
-                    short_id(&c.signer)
+                    c.revision
                 )
             }))
             .collect(),
@@ -552,8 +547,8 @@ pub(crate) fn recovery_view(account: Id, review: &RecoveryReview) -> RecoveryVie
                     "The server lost what your kit names in workspace {}, so the recovery leaves it out. An owner can set it up again.",
                     short_id(workspace)
                 ),
-                code => format!(
-                    "Noura couldn't verify workspace {} ({code}), so the recovery leaves it out.",
+                _ => format!(
+                    "Noura couldn't verify workspace {}, so the recovery leaves it out.",
                     short_id(workspace)
                 ),
             })
@@ -719,12 +714,7 @@ impl Driver {
         match stored.credentials() {
             Ok(Some(credentials)) => {
                 if let Err(error) = self.connect(credentials).await {
-                    let text = match &error {
-                        SyncError::Refused { code, .. } if code == "unauthorized" => {
-                            "This computer's session with the sync server ended. Sign in again with your browser, and this device keeps its keys.".to_owned()
-                        }
-                        other => message(other),
-                    };
+                    let text = message(&error);
                     tracing::warn!(kind = ?error.code(), "the sync account didn't connect");
                     self.shared.update(|screen| {
                         screen.busy = false;
@@ -1018,9 +1008,9 @@ impl Driver {
                 end_sessions: None,
                 check_again: None,
             }))
-            .chain(refused.iter().map(|(account, code)| AlertEntry {
+            .chain(refused.iter().map(|(account, _)| AlertEntry {
                 text: format!(
-                    "Noura stopped trusting the device list of account {} ({code}), so the workspaces you share with it wait. Check again once the operator repairs the server or that person resets their devices.",
+                    "Noura stopped trusting the device list of account {}, so the workspaces you share with it wait. Check again once the operator repairs the server or that person resets their devices.",
                     short_id(account)
                 ),
                 end_sessions: None,
@@ -1032,6 +1022,9 @@ impl Driver {
             .iter()
             .map(|alert| {
                 let text = alert_text(alert, &short);
+                if let DeviceAlert::UnverifiedWorkspace { code, .. } = alert {
+                    tracing::debug!(code, "a workspace didn't verify");
+                }
                 // A card with no session left holds nothing more to end.
                 let end_sessions = match alert {
                     DeviceAlert::UnknownCard { card, sessions } if *sessions > 0 => {
@@ -1267,13 +1260,14 @@ impl Driver {
                             None => change.signer.to_hex().chars().take(8).collect(),
                         };
                         let workspace: String = change.workspace.to_hex().chars().take(8).collect();
-                        let undo = match change.undo {
-                            Some(undo) => format!("Your role can undo it with {undo}."),
-                            None => "Your role can't undo it.".to_owned(),
+                        let undo = if change.undo.is_some() {
+                            "Your role can undo it."
+                        } else {
+                            "Your role can't undo it."
                         };
                         format!(
-                            "Device {by} made a change ({}) in workspace {workspace}, and it stays. {undo}",
-                            change.kind
+                            "Device {by} {} in workspace {workspace}, and that stays. {undo}",
+                            policy_change_words(change.kind)
                         )
                     })
                     .collect();
@@ -2140,7 +2134,7 @@ mod tests {
         );
         assert_eq!(
             text,
-            "Device fp-2 changed workspace abababab at revision 7 (set_role)."
+            "Device fp-2 changed a member's role in workspace abababab at revision 7."
         );
         let text = alert_text(
             &DeviceAlert::UnverifiedWorkspace {
@@ -2151,7 +2145,7 @@ mod tests {
         );
         assert_eq!(
             text,
-            "Noura can't verify workspace cdcdcdcd on this server (sync_policy_forked)."
+            "Noura can't verify workspace cdcdcdcd on this server, so it stays out of sync here."
         );
         let card = DeviceKeys::generate().unwrap().card(id(1));
         let text = alert_text(
@@ -2167,9 +2161,35 @@ mod tests {
         assert_eq!(
             text,
             format!(
-                "Device fp-4 changed your account (add_device) for device {}.",
+                "Device fp-4 added a device to your account: device {}.",
                 fingerprint(&card.fingerprint())
             )
+        );
+    }
+
+    /// No sentence a screen shows carries a code of the protocol.
+    #[test]
+    fn a_failure_reads_as_a_sentence_without_its_code() {
+        let refused = |code: &str| SyncError::Refused {
+            code: code.into(),
+            status: 409,
+            detail: None,
+        };
+        for error in [
+            SyncError::Check("sync_chain_gap"),
+            SyncError::Check("sync_policy_forked"),
+            refused("policy_conflict"),
+            refused("unauthorized"),
+            SyncError::KeyMissing,
+            SyncError::ProtocolUnsupported(1),
+        ] {
+            let text = message(&error);
+            assert!(!text.contains('_'), "{text}");
+            assert!(!text.starts_with("Sync stopped: "), "{text}");
+        }
+        assert_eq!(
+            message(&refused("unauthorized")),
+            crate::account::SESSION_ENDED
         );
     }
 
@@ -2197,8 +2217,8 @@ mod tests {
         assert_eq!(
             view.changes,
             vec![
-                "Your account: add_device by device 22222222.".to_owned(),
-                "Workspace 33333333 at revision 2: add_member by device 44444444.".to_owned(),
+                "Device 22222222 added a device to your account.".to_owned(),
+                "Device 44444444 added a member in workspace 33333333 at revision 2.".to_owned(),
             ]
         );
         assert_eq!(
@@ -2209,7 +2229,10 @@ mod tests {
         );
         assert_eq!(
             view.unverified,
-            vec!["Noura couldn't verify workspace 66666666 (sync_workspace_unverified), so the recovery leaves it out.".to_owned()]
+            vec![
+                "Noura couldn't verify workspace 66666666, so the recovery leaves it out."
+                    .to_owned()
+            ]
         );
         assert_eq!(
             view.devices,

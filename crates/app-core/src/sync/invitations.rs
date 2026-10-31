@@ -43,11 +43,11 @@ fn another_server() -> SyncError {
 }
 
 fn failed(error: impl std::fmt::Display) -> SyncError {
-    SyncError::Invalid(format!("the list of invitations can't be used: {error}"))
+    super::local_failure("Noura can't use its list of invitations.", error)
 }
 
 fn store_failed(error: impl std::fmt::Display) -> SyncError {
-    SyncError::Invalid(format!("the credential store failed: {error}"))
+    super::local_failure("The system's credential store failed.", error)
 }
 
 /// An invitation link's parts: the server's origin, the token in its path

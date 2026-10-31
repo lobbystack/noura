@@ -94,6 +94,10 @@ pub enum SyncError {
     /// rules of §13.
     #[error("{0}")]
     Invalid(String),
+    /// A file changed between the read and the write, so the write left
+    /// it alone (`revision_conflict`).
+    #[error("A file changed while Noura worked on it. Noura tries again.")]
+    FileChanged,
     /// A sign-in through the browser ended without a session (§7).
     #[error("{0}")]
     SignIn(device::SignInEnd),
@@ -127,6 +131,21 @@ impl SyncError {
             _ => None,
         }
     }
+}
+
+/// A failure on this computer: `what` is the sentence you read, and
+/// `detail`, such as an operating system error, goes to the diagnostic log.
+pub(crate) fn local_failure(what: &str, detail: impl std::fmt::Display) -> SyncError {
+    tracing::warn!(%detail, "{what}");
+    SyncError::Invalid(what.to_owned())
+}
+
+/// A path that breaks the rules of §13, by the rule's name.
+pub(crate) fn bad_path(rule: impl std::fmt::Display) -> SyncError {
+    local_failure(
+        "A file's path can't sync, because its name doesn't work on every computer.",
+        rule,
+    )
 }
 
 fn network(error: impl std::fmt::Display) -> SyncError {
@@ -1540,8 +1559,7 @@ impl SyncService {
         bytes: &[u8],
     ) -> Result<Receipt, SyncError> {
         self.check_stops(&remote.policy)?;
-        let path =
-            SyncPath::new(path).map_err(|e| SyncError::Invalid(format!("path: {}", e.name())))?;
+        let path = SyncPath::new(path).map_err(|e| bad_path(e.name()))?;
         let epoch = remote
             .epochs
             .latest()

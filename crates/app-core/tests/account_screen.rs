@@ -638,7 +638,7 @@ fn the_recovery_review_shows_unlisted_workspaces_with_their_members() {
         review
             .changes
             .iter()
-            .any(|c| c.starts_with(&format!("Workspace {short}"))),
+            .any(|c| c.contains(&format!("in workspace {short}"))),
         "{review:?}"
     );
     assert_eq!(review.devices.len(), 1);

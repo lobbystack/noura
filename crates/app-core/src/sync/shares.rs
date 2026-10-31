@@ -98,7 +98,7 @@ pub struct ShareBook {
 }
 
 fn failed(error: impl std::fmt::Display) -> SyncError {
-    SyncError::Invalid(format!("the list of share links can't be used: {error}"))
+    super::local_failure("Noura can't use its list of share links.", error)
 }
 
 fn now() -> u64 {
@@ -244,7 +244,7 @@ impl LinkSecrets {
             ShareError::TooLarge => SyncError::Invalid(
                 "This note is too large to share. A shared note holds at most 960 KB.".into(),
             ),
-            other => SyncError::Invalid(format!("the note can't be sealed: {other}")),
+            other => super::local_failure("Noura can't encrypt this note.", other),
         })
     }
 
@@ -383,7 +383,7 @@ impl SyncService {
         // update.
         self.secrets
             .write(&item, &secrets.encode())
-            .map_err(|e| SyncError::Invalid(format!("the credential store failed: {e}")))?;
+            .map_err(|e| super::local_failure("The system's credential store failed.", e))?;
         let request = CreateShareRequest {
             token_hash,
             domain: share.domain,
@@ -528,7 +528,7 @@ impl SyncService {
         let text = self
             .secrets
             .read_optional(&secret_item(&book.device, token_hash))
-            .map_err(|e| SyncError::Invalid(format!("the credential store failed: {e}")))?;
+            .map_err(|e| super::local_failure("The system's credential store failed.", e))?;
         text.as_deref()
             .filter(|t| !t.is_empty())
             .and_then(|t| LinkSecrets::decode(t))
