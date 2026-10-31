@@ -33,6 +33,7 @@ mod devices;
 mod domains;
 mod invitations;
 mod keys;
+mod retention;
 mod shares;
 pub use blobs::*;
 pub use checkpoints::*;
@@ -40,6 +41,7 @@ pub use devices::*;
 pub use domains::*;
 pub use invitations::*;
 pub use keys::*;
+pub use retention::*;
 pub use shares::*;
 
 /// Declares one `#[tokio::test]` per conformance case. `$open` is an async
@@ -124,6 +126,22 @@ macro_rules! conformance_tests {
             a_foreign_head_is_forbidden,
             add_member_of_a_member_is_forbidden,
             one_device_under_two_accounts_is_an_id_conflict,
+            retention_floor_follows_the_weight_after_a_checkpoint,
+            bucket_hashes_count_in_weight,
+            pruning_keeps_servable_checkpoints_through_a_crash,
+            the_floor_compacts_cursors_and_routes,
+            deleted_domains_are_reclaimed_in_batches,
+            the_collector_follows_a_blobs_three_states,
+            a_push_racing_the_collector_stays_consistent,
+            usage_counts_what_lives_at_the_head,
+            over_quota_the_server_takes_what_frees_space,
+            history_yields_to_the_quota_only_as_far_as_it_must,
+            the_pressure_trigger_rearms_only_below_ninety_percent,
+            usage_alone_over_quota_moves_no_floor,
+            replacements_stop_at_honest_rotations,
+            a_closed_workspace_is_reclaimed_domain_by_domain,
+            an_account_belongs_to_at_most_a_thousand_workspaces,
+            an_account_in_a_thousand_workspaces_joins_no_more,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
@@ -720,6 +738,10 @@ pub async fn live_sets_match_the_fixture<B: Backend>(store: Store<B>) {
             "live_set" => {
                 let floors = case["floors"].as_array().expect("floors");
                 let mut classes = Vec::new();
+                if case.get("prune").is_some() {
+                    let last = ops.iter().map(|op| op.seq).max().expect("an operation");
+                    retention::log_of(&store, workspace, domain, last).await;
+                }
                 for at in 0..=ops.len() {
                     for floor in floors {
                         let after = floor
@@ -753,6 +775,23 @@ pub async fn live_sets_match_the_fixture<B: Backend>(store: Store<B>) {
                     }
                 }
                 assert_eq!(json!(classes), case["classes"], "{label}: classes");
+                if let Some(prune) = case.get("prune") {
+                    let gone: BTreeSet<(Id, u64)> = prune["gone"]
+                        .as_array()
+                        .expect("gone")
+                        .iter()
+                        .map(|g| (id_of(&g["device"]), u64_of(&g["counter"])))
+                        .collect();
+                    let seqs: BTreeSet<u64> = ops
+                        .iter()
+                        .filter(|op| !gone.contains(&(op.device, op.counter)))
+                        .map(|op| op.seq)
+                        .collect();
+                    let floor = u64_of(&prune["floor"]);
+                    let lowest = u64_of(&prune["checkpoint_floor"]);
+                    let left = retention::prune_at(&store, workspace, domain, floor, lowest).await;
+                    assert_eq!(left, seqs, "{label}: what pruning kept");
+                }
                 for (rid, want) in case["expect"].as_object().expect("live sets") {
                     let live = store
                         .live_at(workspace, Id::from_hex(rid).expect("rid"), u64::MAX)
@@ -2487,6 +2526,24 @@ pub async fn pushes_into_several_domains_race_policy_changes<B: Backend>(
             }
         })
     };
+    // The collector and the pruner join the race on both instances (§15).
+    let collectors: Vec<_> = stores
+        .iter()
+        .map(|store| {
+            let store = store.clone();
+            tokio::spawn(async move {
+                loop {
+                    store.maintain().await.expect("a pass");
+                    for target in store.collectable_blobs().await.expect("due") {
+                        if store.mark_blob(target).await.expect("marked").is_some() {
+                            store.finish_blob(target).await.expect("finished");
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+        })
+        .collect();
     let pushed = tokio::time::timeout(Duration::from_secs(120), async {
         let mut pushed = BTreeSet::new();
         for pusher in pushers {
@@ -2497,6 +2554,10 @@ pub async fn pushes_into_several_domains_race_policy_changes<B: Backend>(
     })
     .await
     .expect("nothing deadlocks");
+    for collector in collectors {
+        assert!(!collector.is_finished(), "the collector kept running");
+        collector.abort();
+    }
     let mut found = BTreeSet::new();
     for domain in &written {
         for entry in domain_log(

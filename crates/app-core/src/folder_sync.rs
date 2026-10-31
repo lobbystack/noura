@@ -132,6 +132,16 @@ pub struct FolderSyncScreen {
     /// What waits for you in the Members section, which the window says
     /// once wherever you are (§9).
     pub attention: Option<String>,
+    /// The workspace's storage against its quota, one line (§20).
+    pub usage: Option<String>,
+    /// Whether usage stands above the quota, so changes wait.
+    pub over_quota: bool,
+    /// Changes the server refused for lack of space, which stay on this
+    /// computer until space frees up (§20).
+    pub waiting_for_space: usize,
+    /// Files deleted on another device while this computer was away, which
+    /// wait for you (§18).
+    pub deleted_away: Vec<String>,
     /// What went wrong last, for you to read.
     pub last_error: Option<String>,
     /// When the last round finished without an error, as local time.
@@ -161,10 +171,40 @@ impl FolderSyncScreen {
             ended: status.ended.as_ref().map(ended_line),
             skipped: status.skipped.iter().map(skipped_line).collect(),
             attention: None,
+            usage: status.usage.map(usage_line),
+            over_quota: status
+                .usage
+                .is_some_and(|u| u.quota.is_some_and(|quota| u.used >= quota)),
+            waiting_for_space: status.waiting_for_space,
+            deleted_away: Vec::new(),
             last_error: None,
             last_success: status.last_success.map(local_time),
             busy: false,
         }
+    }
+}
+
+/// A number of bytes for people to read.
+fn size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    if value < 1024.0 {
+        return format!("{bytes} bytes");
+    }
+    let mut unit = 0;
+    value /= 1024.0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
+}
+
+/// The workspace's storage, against its quota when it has one.
+fn usage_line(usage: crate::sync::workspace::Usage) -> String {
+    match usage.quota {
+        Some(quota) => format!("{} of {} used.", size(usage.used), size(quota)),
+        None => format!("{} used.", size(usage.used)),
     }
 }
 
@@ -252,6 +292,10 @@ pub enum FolderSyncAction {
     RestoreArchived(usize),
     /// Throw an earlier journal's version away.
     DiscardArchived(usize),
+    /// Delete a file another device deleted while this one was away.
+    ConfirmDeletedAway(String),
+    /// Keep such a file: it uploads as a new file.
+    KeepDeletedAway(String),
     /// Connect a copied folder, which then syncs as after a lost journal.
     Connect,
     /// You renamed the workspace: a synced one takes the name in its

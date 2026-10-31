@@ -76,20 +76,36 @@ pub const DATABASE: &str = "sync.sqlite3";
 
 impl Server<SqliteBackend> {
     pub async fn start() -> Self {
-        Self::start_with(sync_store::CheckpointInterval::default()).await
+        Self::start_with(
+            sync_store::CheckpointInterval::default(),
+            sync_store::Retention::default(),
+        )
+        .await
     }
 
     /// The server on SQLite, with checkpoints falling due every `entries`
     /// log entries (§17).
     pub async fn start_with_interval(entries: u64) -> Self {
-        Self::start_with(sync_store::CheckpointInterval {
-            entries,
-            weight: u64::MAX,
-        })
+        Self::start_with_retention(entries, sync_store::Retention::default()).await
+    }
+
+    /// The server on SQLite, with checkpoints falling due every `entries`
+    /// log entries and `retention`'s settings (§19, §20).
+    pub async fn start_with_retention(entries: u64, retention: sync_store::Retention) -> Self {
+        Self::start_with(
+            sync_store::CheckpointInterval {
+                entries,
+                weight: u64::MAX,
+            },
+            retention,
+        )
         .await
     }
 
-    async fn start_with(interval: sync_store::CheckpointInterval) -> Self {
+    async fn start_with(
+        interval: sync_store::CheckpointInterval,
+        retention: sync_store::Retention,
+    ) -> Self {
         let dir = tempfile::tempdir().expect("temporary directory");
         let data = dir.path().join("data");
         sync_server::migrate(&data).await.expect("migrated");
@@ -99,7 +115,8 @@ impl Server<SqliteBackend> {
         ))
         .await
         .expect("the store opens")
-        .with_checkpoint_interval(interval);
+        .with_checkpoint_interval(interval)
+        .with_retention(retention);
         Self::serve(store, dir, None).await
     }
 }
@@ -108,20 +125,39 @@ impl Server<PgBackend> {
     /// The server on a fresh database in the test binary's throwaway
     /// cluster under the target directory.
     pub async fn start_postgres() -> Self {
-        Self::start_postgres_with(sync_store::CheckpointInterval::default()).await
+        Self::start_postgres_with(
+            sync_store::CheckpointInterval::default(),
+            sync_store::Retention::default(),
+        )
+        .await
     }
 
     /// The server on PostgreSQL, with checkpoints falling due every
     /// `entries` log entries (§17).
     pub async fn start_postgres_with_interval(entries: u64) -> Self {
-        Self::start_postgres_with(sync_store::CheckpointInterval {
-            entries,
-            weight: u64::MAX,
-        })
+        Self::start_postgres_with_retention(entries, sync_store::Retention::default()).await
+    }
+
+    /// The server on PostgreSQL, with checkpoints falling due every
+    /// `entries` log entries and `retention`'s settings (§19, §20).
+    pub async fn start_postgres_with_retention(
+        entries: u64,
+        retention: sync_store::Retention,
+    ) -> Self {
+        Self::start_postgres_with(
+            sync_store::CheckpointInterval {
+                entries,
+                weight: u64::MAX,
+            },
+            retention,
+        )
         .await
     }
 
-    async fn start_postgres_with(interval: sync_store::CheckpointInterval) -> Self {
+    async fn start_postgres_with(
+        interval: sync_store::CheckpointInterval,
+        retention: sync_store::Retention,
+    ) -> Self {
         let database = Cluster::shared(Path::new(env!("CARGO_TARGET_TMPDIR")))
             .database()
             .await;
@@ -135,7 +171,8 @@ impl Server<PgBackend> {
         let store = sync_server::postgres::open_store(&postgres)
             .await
             .expect("the store opens")
-            .with_checkpoint_interval(interval);
+            .with_checkpoint_interval(interval)
+            .with_retention(retention);
         let dir = tempfile::tempdir().expect("temporary directory");
         let mut server = Self::serve(store, dir, Some(database)).await;
         server.instance = Some(postgres);
@@ -1168,6 +1205,54 @@ pub async fn pair_on<B: Backend>(server: Server<B>) -> Pair<B> {
     )
     .await
     .expect("the download starts");
+    sync_b
+        .round(&mut desktop.service, 0)
+        .await
+        .expect("a round");
+    sync_a.round(&mut service, 0).await.expect("a round");
+    assert_eq!(b.files(), a.files());
+    Pair {
+        server,
+        proxy,
+        laptop,
+        service,
+        a,
+        sync_a,
+        desktop,
+        b,
+        sync_b,
+    }
+}
+
+/// A [`Pair`] on `server` whose desktop belongs to another account, a
+/// member the laptop's account invited as an admin.
+pub async fn pair_of_accounts_on<B: Backend>(server: Server<B>) -> Pair<B> {
+    let proxy = Proxy::start(&server.base).await;
+    let mut laptop = first_desktop(&server, "ana@example.com").await;
+    let mut service = laptop.connect_through(&proxy.base).await;
+    let mut a = Folder::new("Field notes");
+    a.write("Plan.md", b"# Plan\n");
+    let mut sync_a = app_core::sync::workspace::WorkspaceSync::turn_on(
+        &mut service,
+        a.engine.clone(),
+        "Field notes",
+        &mut a.registry,
+    )
+    .await
+    .expect("sync turns on");
+    sync_a.round(&mut service, 0).await.expect("a round");
+    let mut book =
+        app_core::sync::invitations::InvitationBook::open(laptop.state.path(), laptop.id())
+            .expect("the book opens");
+    let mut desktop = first_desktop(&server, "ben@example.com").await;
+    let (mut sync_b, b) = invite_and_join(
+        &mut laptop,
+        &mut sync_a,
+        &mut book,
+        &mut desktop,
+        sync_protocol::records::Role::Admin,
+    )
+    .await;
     sync_b
         .round(&mut desktop.service, 0)
         .await

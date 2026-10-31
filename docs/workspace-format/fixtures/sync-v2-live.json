@@ -429,6 +429,312 @@
 			]
 		},
 		{
+			"classes": [
+				"state",
+				"state",
+				"state"
+			],
+			"expect": {
+				"c887498ee1ee0e66c38342a3b3bed1c6": [
+					{
+						"counter": 3,
+						"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+					}
+				]
+			},
+			"floors": [],
+			"kind": "live_set",
+			"name": "pruning_takes_an_operation_a_covering_one_at_or_below_the_floor_covers",
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				},
+				{
+					"counter": 2,
+					"covers": [
+						{
+							"counter": 1,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+						}
+					],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "a7e32a97234d475f11f09ca128a5abcdec647810a6a66e83e0dec8d5a44311ae",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 2,
+					"weight": 300
+				},
+				{
+					"counter": 3,
+					"covers": [
+						{
+							"counter": 2,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+						}
+					],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "771ed2c5300b00606d62569ce358f20c3f155e2e8021c758fa902f0685ac9aad",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 3,
+					"weight": 300
+				}
+			],
+			"prune": {
+				"checkpoint_floor": 0,
+				"floor": 2,
+				"gone": [
+					{
+						"counter": 1,
+						"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+					}
+				]
+			}
+		},
+		{
+			"classes": [
+				"state",
+				"state",
+				"state"
+			],
+			"expect": {
+				"b28656206addfe77ba41f5b5a5564bdf": [
+					{
+						"counter": 1,
+						"device": "53f07745fcdc1a9f15ddfd11b930c264"
+					}
+				],
+				"c887498ee1ee0e66c38342a3b3bed1c6": []
+			},
+			"floors": [
+				{
+					"covered_seq": 3,
+					"dropped": [
+						{
+							"counter": 2,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+							"rid": "c887498ee1ee0e66c38342a3b3bed1c6"
+						}
+					],
+					"floor": 2,
+					"previous_floor": 0
+				}
+			],
+			"kind": "live_set",
+			"name": "pruning_takes_a_dropped_delete_below_every_servable_floor",
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				},
+				{
+					"counter": 2,
+					"covers": [
+						{
+							"counter": 1,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+						}
+					],
+					"delete": true,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "a7e32a97234d475f11f09ca128a5abcdec647810a6a66e83e0dec8d5a44311ae",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 2,
+					"weight": 300
+				},
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "53f07745fcdc1a9f15ddfd11b930c264",
+					"digest": "d0f717c83421d3055fa272dffcc98fc3e4a782120ec2d0c0e2f56e403d6e8e47",
+					"rid": "b28656206addfe77ba41f5b5a5564bdf",
+					"seq": 3,
+					"weight": 300
+				}
+			],
+			"prune": {
+				"checkpoint_floor": 2,
+				"floor": 3,
+				"gone": [
+					{
+						"counter": 1,
+						"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+					},
+					{
+						"counter": 2,
+						"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+					}
+				]
+			}
+		},
+		{
+			"classes": [
+				"state",
+				"state",
+				"state"
+			],
+			"expect": {
+				"b28656206addfe77ba41f5b5a5564bdf": [
+					{
+						"counter": 1,
+						"device": "53f07745fcdc1a9f15ddfd11b930c264"
+					}
+				],
+				"c887498ee1ee0e66c38342a3b3bed1c6": []
+			},
+			"floors": [
+				{
+					"covered_seq": 3,
+					"dropped": [
+						{
+							"counter": 2,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+							"rid": "c887498ee1ee0e66c38342a3b3bed1c6"
+						}
+					],
+					"floor": 2,
+					"previous_floor": 0
+				}
+			],
+			"kind": "live_set",
+			"name": "pruning_keeps_a_dropped_delete_a_servable_checkpoint_still_holds",
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				},
+				{
+					"counter": 2,
+					"covers": [
+						{
+							"counter": 1,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+						}
+					],
+					"delete": true,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "a7e32a97234d475f11f09ca128a5abcdec647810a6a66e83e0dec8d5a44311ae",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 2,
+					"weight": 300
+				},
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "53f07745fcdc1a9f15ddfd11b930c264",
+					"digest": "d0f717c83421d3055fa272dffcc98fc3e4a782120ec2d0c0e2f56e403d6e8e47",
+					"rid": "b28656206addfe77ba41f5b5a5564bdf",
+					"seq": 3,
+					"weight": 300
+				}
+			],
+			"prune": {
+				"checkpoint_floor": 1,
+				"floor": 3,
+				"gone": [
+					{
+						"counter": 1,
+						"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+					}
+				]
+			}
+		},
+		{
+			"classes": [
+				"state",
+				"state",
+				"state"
+			],
+			"expect": {
+				"c887498ee1ee0e66c38342a3b3bed1c6": [
+					{
+						"counter": 1,
+						"device": "53f07745fcdc1a9f15ddfd11b930c264"
+					},
+					{
+						"counter": 2,
+						"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+					}
+				]
+			},
+			"floors": [],
+			"kind": "live_set",
+			"name": "pruning_keeps_an_edit_against_a_delete",
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				},
+				{
+					"counter": 2,
+					"covers": [
+						{
+							"counter": 1,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+						}
+					],
+					"delete": true,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "a7e32a97234d475f11f09ca128a5abcdec647810a6a66e83e0dec8d5a44311ae",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 2,
+					"weight": 300
+				},
+				{
+					"counter": 1,
+					"covers": [
+						{
+							"counter": 1,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+						}
+					],
+					"delete": false,
+					"device": "53f07745fcdc1a9f15ddfd11b930c264",
+					"digest": "fc0fe3460920b5d17ea6f7c6c3687aa984bc27385404f24860d759f7fbcac289",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 3,
+					"weight": 300
+				}
+			],
+			"prune": {
+				"checkpoint_floor": 3,
+				"floor": 3,
+				"gone": [
+					{
+						"counter": 1,
+						"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+					}
+				]
+			}
+		},
+		{
 			"expect": "supersedes_incomplete",
 			"kind": "live_check",
 			"name": "a_state_operation_that_leaves_its_own_earlier_state_live",
@@ -1125,7 +1431,7 @@
 			]
 		}
 	],
-	"description": "Live sets (sync-v2.md §13, §17): each case applies operations in log order and lists the class the server gives each and the live set of each object afterward, computed alike by server and client. `floors` applies a checkpoint's rising floor at its covered_seq; `covers_for` asks which covers an edit writes. `journal_less_match` matches local files to objects when a folder syncs without its journal (§15, §18), against the states each live set derives (§16), and `archived` lists what connecting a folder keeps of the old review store.",
+	"description": "Live sets (sync-v2.md §13, §17): each case applies operations in log order and lists the class the server gives each and the live set of each object afterward, computed alike by server and client. `floors` applies a checkpoint's rising floor at its covered_seq; `prune` names what the store deletes at a retention floor (§19), which leaves every live set as it stands; `covers_for` asks which covers an edit writes. `journal_less_match` matches local files to objects when a folder syncs without its journal (§15, §18), against the states each live set derives (§16), and `archived` lists what connecting a folder keeps of the old review store.",
 	"fixture_keys_are_public_test_values": true,
 	"keys": {},
 	"records": []

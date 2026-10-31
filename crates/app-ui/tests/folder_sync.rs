@@ -330,3 +330,53 @@ fn a_note_that_stopped_merging_waits_for_your_choice_and_left_out_edits_show() {
     harness.run();
     assert_eq!(sync.taken(), vec![FolderSyncAction::KeepLastGood(rid)]);
 }
+
+#[test]
+fn changes_waiting_for_space_replace_the_uploaded_line() {
+    let app_data = tempfile::tempdir().unwrap();
+    let sync = Arc::new(FakeSync::default());
+    sync.show(FolderSyncScreen {
+        phase: FolderSyncPhase::On,
+        waiting_for_space: 2,
+        ..FolderSyncScreen::default()
+    });
+    let harness = harness(app_data.path(), sync);
+    harness.get_by_label("2 changes stay on this computer until the workspace has space.");
+    assert!(
+        harness
+            .query_by_label("Every change is uploaded.")
+            .is_none(),
+        "the change hasn't reached the server"
+    );
+}
+
+#[test]
+fn a_file_deleted_while_away_offers_delete_and_keep() {
+    let app_data = tempfile::tempdir().unwrap();
+    let sync = Arc::new(FakeSync::default());
+    sync.show(FolderSyncScreen {
+        phase: FolderSyncPhase::On,
+        deleted_away: vec!["Notes/Old.md".into()],
+        ..FolderSyncScreen::default()
+    });
+    let mut harness = harness(app_data.path(), sync.clone());
+    harness.get_by_role_and_label(
+        Role::Group,
+        "Deleted on another device while this one was away",
+    );
+    harness.get_by_label("Notes/Old.md");
+    harness
+        .get_by_role_and_label(Role::Button, "Delete")
+        .click();
+    harness.run();
+    assert_eq!(
+        sync.taken(),
+        vec![FolderSyncAction::ConfirmDeletedAway("Notes/Old.md".into())]
+    );
+    harness.get_by_role_and_label(Role::Button, "Keep").click();
+    harness.run();
+    assert_eq!(
+        sync.taken(),
+        vec![FolderSyncAction::KeepDeletedAway("Notes/Old.md".into())]
+    );
+}

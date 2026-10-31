@@ -59,8 +59,11 @@ pub(crate) async fn append(
     }
     let account = session.account;
     txn.lock_account(account).await?;
-    let chains = policy::chains_of(txn, account).await?;
+    // The genesis first: under READ COMMITTED, a rival genesis that commits
+    // after this read is either in the chains read next or met by
+    // `start_chain`, and never both missed.
     let current = txn.current_genesis(account).await?;
+    let chains = policy::chains_of(txn, account).await?;
     let listed = listed_elsewhere(&chains, current);
     let mut chain: Option<AccountChain> = current.and_then(|genesis| chains.get(&genesis).cloned());
     let start = chain.as_ref().map_or(1, |c| c.head_seqno() + 1);

@@ -26,15 +26,17 @@ use crate::{Backend, CheckpointInterval, ReadTxn, Session, Store, WriteTxn};
 /// What a test wrote: each device's chain, the objects it made and the
 /// checkpoints the server accepted.
 #[derive(Default)]
-struct Track {
-    heads: BTreeMap<Id, Ref>,
-    rids: Vec<Id>,
-    accepted: Vec<Signed<Checkpoint>>,
-    epoch: Option<Signed<Epoch>>,
+pub(super) struct Track {
+    pub(super) heads: BTreeMap<Id, Ref>,
+    pub(super) rids: Vec<Id>,
+    pub(super) accepted: Vec<Signed<Checkpoint>>,
+    pub(super) epoch: Option<Signed<Epoch>>,
+    /// The `rid`s whose lone delete a checkpoint's `floor` dropped.
+    pub(super) dropped: BTreeSet<Id>,
 }
 
 impl Track {
-    async fn new<B: Backend>(world: &World<B>) -> Self {
+    pub(super) async fn new<B: Backend>(world: &World<B>) -> Self {
         Self {
             epoch: Some(world.first_epoch().await),
             ..Self::default()
@@ -43,12 +45,12 @@ impl Track {
 
     /// Pushes an operation of `device` on a new object and returns its
     /// sequence.
-    async fn write<B: Backend>(&mut self, world: &World<B>, device: usize) -> u64 {
+    pub(super) async fn write<B: Backend>(&mut self, world: &World<B>, device: usize) -> u64 {
         self.write_with(world, device, |_| {}).await
     }
 
     /// [`Track::write`] after `edit` changes the operation.
-    async fn write_with<B: Backend>(
+    pub(super) async fn write_with<B: Backend>(
         &mut self,
         world: &World<B>,
         device: usize,
@@ -88,6 +90,9 @@ impl Track {
     async fn manifest<B: Backend>(&self, world: &World<B>, at: u64) -> Manifest {
         let mut leaves = BTreeMap::new();
         for rid in &self.rids {
+            if self.dropped.contains(rid) {
+                continue;
+            }
             let refs: Vec<Ref> = world
                 .store
                 .live_at(world.workspace, *rid, at)
@@ -108,7 +113,7 @@ impl Track {
 
     /// An honest checkpoint at `covered_seq`, signed by `signer`, with the
     /// heads at or below it, after `edit` changes it.
-    async fn checkpoint<B: Backend>(
+    pub(super) async fn checkpoint<B: Backend>(
         &self,
         world: &World<B>,
         signer: usize,
@@ -158,7 +163,7 @@ impl Track {
     }
 }
 
-async fn push_checkpoint<B: Backend>(
+pub(super) async fn push_checkpoint<B: Backend>(
     world: &World<B>,
     device: usize,
     bundle: &CheckpointBundle,
@@ -168,7 +173,7 @@ async fn push_checkpoint<B: Backend>(
         .await
 }
 
-fn interval(entries: u64) -> CheckpointInterval {
+pub(super) fn interval(entries: u64) -> CheckpointInterval {
     CheckpointInterval {
         entries,
         weight: u64::MAX,
@@ -354,7 +359,7 @@ pub async fn checkpoint_checks_match_the_fixture<B: Backend>(store: Store<B>) {
             let first = track.epoch.clone().expect("epoch 1");
             let readers: BTreeSet<Id> = world.devices.iter().map(|d| d.id()).collect();
             let bad = SecretKey::random().expect("random");
-            let second = world.epoch_after(1, 2, &first, &world.epoch_key, &bad, &readers);
+            let second = world.epoch_after(2, 2, &first, &world.epoch_key, &bad, &readers);
             world.inject_epoch(second.clone(), readers.clone()).await;
             let key = SecretKey::random().expect("random");
             let replacement = world.epoch_after(0, 3, &first, &world.epoch_key, &key, &readers);
@@ -958,11 +963,12 @@ pub async fn removals_make_checkpoints_due_and_leave_the_heads<B: Backend>(store
 /// A replacement makes a checkpoint due at its entry (§17), since the
 /// latest checkpoint may name the epoch it skips.
 pub async fn replacements_make_checkpoints_due<B: Backend>(store: Store<B>) {
-    let world = World::new(store, 2).await;
+    let mut world = World::new(store, 2).await;
+    let rotator = super::domains::member_device(&mut world).await;
     let first = world.first_epoch().await;
     let readers: BTreeSet<Id> = world.devices.iter().map(|d| d.id()).collect();
     let bad = SecretKey::random().expect("random");
-    let second = world.epoch_after(1, 2, &first, &world.epoch_key, &bad, &readers);
+    let second = world.epoch_after(rotator, 2, &first, &world.epoch_key, &bad, &readers);
     world.inject_epoch(second, readers.clone()).await;
     assert_eq!(world.pull(0, 0).await.checkpoint_due, 0);
     let key = SecretKey::random().expect("random");
@@ -974,7 +980,7 @@ pub async fn replacements_make_checkpoints_due<B: Backend>(store: Store<B>) {
     for device in &world.devices {
         records.push(RecordRef::Envelope(world.envelope(
             0,
-            &device.keys.card(world.account),
+            &device.keys.card(device.session.account),
             3,
             &key,
         )));

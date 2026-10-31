@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM epochs WHERE workspace = ?1 AND domain = ?2 AND epoch IN (\n               SELECT epoch FROM epochs WHERE workspace = ?1 AND domain = ?2\n               ORDER BY epoch LIMIT ?3\n             )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "b55facf7ba01beda66fb2cd9999f05ca374620258c321d30acd397424a29d263"
+}

@@ -30,6 +30,7 @@ mod pull;
 mod push;
 mod reads;
 mod realtime;
+mod retention;
 mod shares;
 
 #[cfg(feature = "conformance")]
@@ -66,6 +67,7 @@ pub use hub::{EventHub, Relayed};
 pub use limiter::{Limit, Limiter, MemoryLimiter, Taken};
 pub use policy::PolicyCache;
 pub use realtime::Watch;
+pub use retention::{BlobToCollect, Maintenance, Retention, UPLOAD_TTL};
 
 /// The restore generation a new database starts at (§14). Restores raise it
 /// (ticket 60).
@@ -379,6 +381,10 @@ pub struct WorkspaceRow {
     pub policy_revision: u64,
     /// The policy head's digest.
     pub policy_head: Digest,
+    /// Whether usage and history together stand above the quota (§20).
+    pub quota_pressure: bool,
+    /// How many times they crossed it.
+    pub quota_crossings: u64,
 }
 
 /// A domain's head row.
@@ -402,6 +408,89 @@ pub struct DomainRow {
     pub entries_since_checkpoint: u64,
     /// Their weight (§19).
     pub weight_since_checkpoint: u64,
+    /// Whether `delete_domain` deleted the domain, or a closed workspace
+    /// took it along; the server reclaims it in batches (§19).
+    pub deleted: bool,
+    /// The running weight of every entry the domain's log ever took.
+    pub log_weight: u64,
+    /// The domain's share of the workspace's usage (§20).
+    pub usage_bytes: u64,
+    /// Its history weight (§20).
+    pub history_bytes: u64,
+    /// The floor through which pruning finished.
+    pub pruned_floor: u64,
+    /// The workspace's last quota crossing this domain handled.
+    pub crossing_seen: u64,
+    /// The workspace's count of quota crossings.
+    pub quota_crossings: u64,
+}
+
+/// What each log entry changes on a domain's head row (§17, §19).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CheckpointProgress {
+    /// Entries after the latest checkpoint's entry.
+    pub entries: u64,
+    /// Their weight.
+    pub weight: u64,
+    /// The due point, or 0.
+    pub due: u64,
+    /// The running weight of the log.
+    pub log_weight: u64,
+    /// The last quota crossing the domain handled.
+    pub crossing_seen: u64,
+}
+
+/// A domain's numbers that the pressure rule of §20 reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DomainHistory {
+    /// The domain.
+    pub domain: Id,
+    /// Its history weight.
+    pub history_bytes: u64,
+    /// Its retention floor.
+    pub retention_floor: u64,
+    /// Its latest checkpoint's `covered_seq`.
+    pub checkpoint_seq: u64,
+}
+
+/// A domain with pruning or reclaiming to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingDomain {
+    /// The workspace.
+    pub workspace: Id,
+    /// The domain.
+    pub domain: Id,
+    /// Whether it waits to be reclaimed.
+    pub deleted: bool,
+}
+
+/// What one pruning scan may delete (§19).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PruneScan {
+    /// The sequence the scan continues after.
+    pub after: u64,
+    /// The retention floor.
+    pub floor: u64,
+    /// The highest sequence of a dropped lone delete that may go: the floor
+    /// or the lowest `floor` field among servable checkpoints.
+    pub delete_floor: u64,
+    /// The newest epoch entry at or below the floor, which stays.
+    pub keep_epoch: u64,
+    /// The newest policy entry at or below the floor, which stays.
+    pub keep_policy: u64,
+}
+
+/// A log entry pruning deletes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrunedEntry {
+    /// Its sequence.
+    pub seq: u64,
+    /// Its record type.
+    pub record_type: u8,
+    /// Its record's length.
+    pub length: u64,
+    /// Its `rid`, for an operation.
+    pub rid: Option<Id>,
 }
 
 /// A checkpoint as stored (§17, §19): its record, which the server keeps
@@ -420,8 +509,10 @@ pub struct CheckpointRow {
     pub floor: u64,
     /// The signed checkpoint record.
     pub record: Vec<u8>,
-    /// Its heads, as an encoded `list<ref>`.
+    /// Its heads, as an encoded `list<ref>`; none once the floor passes it.
     pub heads: Vec<u8>,
+    /// The log's running weight through its entry.
+    pub log_weight: u64,
 }
 
 /// When a checkpoint falls due by volume (§17): at the entry that brings
@@ -514,8 +605,8 @@ pub struct LinkRow {
 }
 
 /// A blob's row (§21, §29): what its creation named and how far its upload
-/// reached. It holds no unpadded size and no time; the blob store's file
-/// times date the upload.
+/// reached. It holds no unpadded size, and a time only while the upload is
+/// incomplete or unlisted; the blob store's file times date the upload.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlobRow {
     /// The blob ID, unique within its workspace.
@@ -532,6 +623,12 @@ pub struct BlobRow {
     pub offset: u64,
     /// Whether the upload completed and its digest matched.
     pub complete: bool,
+    /// When the collector may take it, while no retained operation lists it.
+    pub delete_after: Option<u64>,
+    /// Whether the collector marked it: no push lists it from then on.
+    pub marked: bool,
+    /// How many operations live at the domain's head list it.
+    pub live_listings: u64,
 }
 
 /// A share link's row (§24): what the server stores of it, which is the
@@ -620,6 +717,95 @@ pub struct WriteGroup {
 /// The reads a store transaction offers. Every read in one transaction sees
 /// one snapshot.
 pub trait ReadTxn: Send {
+    /// The sum of the workspace's domains' usage and history (§15, §20),
+    /// leaving out domains that wait to be reclaimed.
+    fn workspace_usage(&mut self, workspace: Id)
+    -> impl Future<Output = Result<(u64, u64)>> + Send;
+    /// The history of the workspace's domains, most first.
+    fn domain_histories(
+        &mut self,
+        workspace: Id,
+    ) -> impl Future<Output = Result<Vec<DomainHistory>>> + Send;
+    /// Domains with pruning or reclaiming to do, under `retained_bytes`.
+    fn pending_domains(
+        &mut self,
+        retained_bytes: u64,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<PendingDomain>>> + Send;
+    /// Workspaces whose usage and history stand above the quota.
+    fn pressured_workspaces(&mut self, limit: u32) -> impl Future<Output = Result<Vec<Id>>> + Send;
+    /// The `covered_seq` of the newest checkpoint whose entry ends at or
+    /// below `log_weight` of running weight.
+    fn checkpoint_at_weight(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        log_weight: u64,
+    ) -> impl Future<Output = Result<Option<u64>>> + Send;
+    /// The lowest `covered_seq` of a checkpoint above `covered_seq`.
+    fn checkpoint_above(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        covered_seq: u64,
+    ) -> impl Future<Output = Result<Option<u64>>> + Send;
+    /// The `floor` field of the oldest checkpoint at or above `covered_seq`.
+    fn servable_floor(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        covered_seq: u64,
+    ) -> impl Future<Output = Result<Option<u64>>> + Send;
+    /// Up to `limit` log entries pruning may delete, in ascending order.
+    fn prunable_entries(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        scan: &PruneScan,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<PrunedEntry>>> + Send;
+    /// The blobs the operation at `seq` lists.
+    fn listed_blobs(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        seq: u64,
+    ) -> impl Future<Output = Result<Vec<Id>>> + Send;
+    /// The length of the record at `seq`.
+    fn entry_length(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        seq: u64,
+    ) -> impl Future<Output = Result<Option<u64>>> + Send;
+    /// The length of an epoch's stored bundle.
+    fn epoch_bundle_length(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        epoch: u64,
+    ) -> impl Future<Output = Result<Option<u64>>> + Send;
+    /// Whether any operation names the `rid`.
+    fn rid_in_use(&mut self, workspace: Id, rid: Id) -> impl Future<Output = Result<bool>> + Send;
+    /// The blobs due for the collector at `now`: marked rows first, then
+    /// those whose time has come.
+    fn collectable_blobs(
+        &mut self,
+        now: u64,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<retention::BlobToCollect>>> + Send;
+    /// Whether the domain still holds blob rows.
+    fn domain_has_blobs(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+    ) -> impl Future<Output = Result<bool>> + Send;
+    /// Share links expired at `now`, as token hash, workspace and domain.
+    fn expired_shares(
+        &mut self,
+        now: u64,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<(Digest, Id, Id)>>> + Send;
     /// The server's restore generation.
     fn restore_generation(&mut self) -> impl Future<Output = Result<u64>> + Send;
     /// The session whose token hashes to `token_hash`.
@@ -752,6 +938,14 @@ pub trait ReadTxn: Send {
     /// The sequence and digest of the device's operation at exactly
     /// `counter`.
     fn position(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        device: Id,
+        counter: u64,
+    ) -> impl Future<Output = Result<Option<(u64, Digest)>>> + Send;
+    /// The device's highest record below `counter`, as sequence and digest.
+    fn position_below(
         &mut self,
         workspace: Id,
         domain: Id,
@@ -1005,6 +1199,110 @@ pub trait ReadTxn: Send {
 
 /// The writes a store's write transaction offers, besides its reads.
 pub trait WriteTxn: ReadTxn {
+    /// Adds to the domain's usage and history, either of which may fall.
+    fn add_usage(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        usage: i64,
+        history: i64,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Persists the highest retention floor published (§19).
+    fn set_retention_floor(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        floor: u64,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Records the floor through which pruning finished.
+    fn set_pruned_floor(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        floor: u64,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Marks the domain deleted, in the transaction of its `delete_domain`.
+    fn mark_domain_deleted(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Deletes a log entry, with the operation rows of an operation.
+    fn delete_log_entry(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        seq: u64,
+        record_type: u8,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Deletes a `rid` no operation names any more.
+    fn delete_rid(&mut self, workspace: Id, rid: Id) -> impl Future<Output = Result<()>> + Send;
+    /// Deletes a blob listing of a pruned operation.
+    fn delete_blob_listing(
+        &mut self,
+        workspace: Id,
+        blob: Id,
+        domain: Id,
+        seq: u64,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Sets or clears when the collector may take the blob.
+    fn set_blob_delete_after(
+        &mut self,
+        workspace: Id,
+        blob: Id,
+        delete_after: Option<u64>,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Adds to the count of operations live at the head that list the blob.
+    fn add_blob_live(
+        &mut self,
+        workspace: Id,
+        blob: Id,
+        delta: i64,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Marks the blob deleted, the collector's first step.
+    fn mark_blob(&mut self, workspace: Id, blob: Id) -> impl Future<Output = Result<()>> + Send;
+    /// Drops the heads and bucket hashes of up to `limit` checkpoints below
+    /// `floor`, and returns how many it changed. The records stay.
+    fn clear_checkpoint_data(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        floor: u64,
+        empty_heads: &[u8],
+        limit: u32,
+    ) -> impl Future<Output = Result<u64>> + Send;
+    /// Records that usage and history stand above or within the quota.
+    /// Going above counts a crossing. Returns whether the state changed, so
+    /// two racing pushes count one crossing.
+    fn set_quota_pressure(
+        &mut self,
+        workspace: Id,
+        above: bool,
+    ) -> impl Future<Output = Result<bool>> + Send;
+    /// Deletes up to `limit` rows from each table of a deleted domain's log,
+    /// checkpoints, keys and links, and returns how many it deleted. Blob
+    /// rows stay for the collector.
+    fn reclaim_rows(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        limit: u32,
+    ) -> impl Future<Output = Result<u64>> + Send;
+    /// Sets up to `limit` of the domain's waiting blobs to expire at `now`,
+    /// and returns how many it changed.
+    fn expire_domain_blobs(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        now: u64,
+        limit: u32,
+    ) -> impl Future<Output = Result<u64>> + Send;
+    /// Deletes a reclaimed domain's head row.
+    fn delete_domain_row(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+    ) -> impl Future<Output = Result<()>> + Send;
     /// Takes the locks of §15 in their order, before any read the push's
     /// checks depend on.
     fn lock(&mut self, plan: &LockPlan) -> impl Future<Output = Result<()>> + Send;
@@ -1119,14 +1417,13 @@ pub trait WriteTxn: ReadTxn {
         buckets: &[u8],
     ) -> impl Future<Output = Result<()>> + Send;
     /// Sets the domain's entries and weight since its latest checkpoint
-    /// entry, and its due point.
+    /// entry, its due point, its log's running weight and the last quota
+    /// crossing it handled.
     fn set_checkpoint_progress(
         &mut self,
         workspace: Id,
         domain: Id,
-        entries: u64,
-        weight: u64,
-        due: u64,
+        progress: &CheckpointProgress,
     ) -> impl Future<Output = Result<()>> + Send;
     /// Records an operation's live-set fields, its covers included.
     fn insert_operation(
@@ -1511,7 +1808,7 @@ pub struct Store<B: Backend> {
     chains: policy::ChainCache,
     hub: EventHub,
     generation: u64,
-    retained_bytes: u64,
+    retention: Retention,
     interval: CheckpointInterval,
     secret: Option<SecretKey>,
     clock: Clock,
@@ -1535,7 +1832,7 @@ impl<B: Backend> Store<B> {
             chains: policy::ChainCache::default(),
             hub,
             generation,
-            retained_bytes: DEFAULT_RETAINED_BYTES,
+            retention: Retention::default(),
             interval: CheckpointInterval::default(),
             secret: None,
             clock: Clock::default(),
@@ -1545,6 +1842,12 @@ impl<B: Backend> Store<B> {
     /// Sets when checkpoints fall due by volume (§17); tests shorten it.
     pub fn with_checkpoint_interval(mut self, interval: CheckpointInterval) -> Self {
         self.interval = interval;
+        self
+    }
+
+    /// Sets `retained_bytes` and `workspace_quota_bytes` (§19, §20).
+    pub fn with_retention(mut self, retention: Retention) -> Self {
+        self.retention = retention;
         self
     }
 
@@ -1585,7 +1888,7 @@ impl<B: Backend> Store<B> {
             max_covers: MAX_COVERS as u32,
             max_recipients: MAX_RECIPIENTS as u32,
             presence_per_second: 2,
-            retained_bytes: self.retained_bytes,
+            retained_bytes: self.retention.retained_bytes,
         }
     }
 
@@ -1864,9 +2167,10 @@ impl<B: Backend> Store<B> {
 
     /// `GET /v2/workspaces`.
     pub async fn workspaces(&self, session: Session) -> Result<WorkspacesResponse> {
+        let quota = self.retention.quota_bytes;
         self.backend
             .read(Box::new(move |txn: &mut B::Read| {
-                Box::pin(async move { reads::workspaces(txn, session).await })
+                Box::pin(async move { reads::workspaces(txn, session, quota).await })
             }))
             .await
     }
@@ -2131,6 +2435,7 @@ impl<B: Backend> Store<B> {
         let cache = self.policies.clone();
         let generation = self.generation;
         let interval = self.interval;
+        let quota = self.retention.quota_bytes;
         let now = self.clock().now();
         let response = if let [push::Pushed::Checkpoint(..)] = ops.as_slice() {
             let Some(push::Pushed::Checkpoint(_, bundle)) = ops.pop() else {
@@ -2167,7 +2472,8 @@ impl<B: Backend> Store<B> {
             let job: WriteJob<B::Write, PushResponse> = Box::new(move |txn: &mut B::Write| {
                 Box::pin(async move {
                     push::commit(
-                        txn, &cache, interval, generation, session, workspace, ops, plan, now,
+                        txn, &cache, interval, quota, generation, session, workspace, ops, plan,
+                        now,
                     )
                     .await
                 })

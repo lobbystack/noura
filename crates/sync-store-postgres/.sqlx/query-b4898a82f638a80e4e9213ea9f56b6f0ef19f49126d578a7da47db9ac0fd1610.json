@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT workspace, blob, domain FROM blobs\n             WHERE marked = TRUE OR delete_after <= $1\n             ORDER BY marked DESC LIMIT $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "workspace",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "workspace"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "blob",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "blob"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "domain",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "domain"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b4898a82f638a80e4e9213ea9f56b6f0ef19f49126d578a7da47db9ac0fd1610"
+}

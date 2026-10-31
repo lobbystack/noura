@@ -127,6 +127,9 @@ pub struct Status {
     pub pending: usize,
     /// Objects in conflict.
     pub conflicts: usize,
+    /// Changes the server refused for lack of space, which stay on this
+    /// device until space frees up (§20).
+    pub waiting_for_space: usize,
     /// Files sync leaves out.
     pub skipped: Vec<Skipped>,
     /// Unix seconds of the last round without an error.
@@ -144,7 +147,27 @@ pub struct Status {
     pub ended: Option<Ended>,
     /// Objects the device refuses to write.
     pub refused: usize,
+    /// Files deleted on another device while this one was away, which wait
+    /// for you (§18).
+    pub deleted_away: usize,
+    /// The workspace's usage against its quota, once the server reported
+    /// it (§20).
+    pub usage: Option<Usage>,
 }
+
+/// A workspace's storage, as `GET /v2/workspaces` reports it (§20).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Usage {
+    /// The bytes that count toward the quota.
+    pub used: u64,
+    /// The bytes of history, which yield to the quota.
+    pub history: u64,
+    /// The quota, absent when unlimited.
+    pub quota: Option<u64>,
+}
+
+/// How long the device keeps the usage it last read.
+const USAGE_REFRESH: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The sync state of one folder.
 pub struct WorkspaceSync {
@@ -194,6 +217,9 @@ pub struct WorkspaceSync {
     rematch: bool,
     /// The moves that wait for you, from the latest capture.
     reviews: Vec<MoveReview>,
+    /// The workspace's usage, and when the device last read it.
+    usage: Option<Usage>,
+    usage_checked: Option<std::time::Instant>,
     /// The moves you confirmed, which the next capture signs.
     confirmed_moves: BTreeSet<Id>,
     /// What the running capture leaves out.
@@ -344,6 +370,7 @@ impl WorkspaceSync {
             workspace: remote.workspace,
             domain: remote.domain,
             generation,
+            deleted_away: Vec::new(),
             policy: policy_changes(&remote.policy),
             epochs: remote.epochs_oldest_first().into_iter().cloned().collect(),
             envelope: remote.envelope.clone(),
@@ -378,6 +405,7 @@ impl WorkspaceSync {
             moved_in: Vec::new(),
             bootstrap: false,
             bootstrap_progress: None,
+            waiting_for_space: BTreeSet::new(),
         };
         // A device accepts no policy head or epoch below its mark, also
         // when it starts again without a journal (§15).
@@ -415,6 +443,8 @@ impl WorkspaceSync {
             parked: BTreeMap::new(),
             rematch: false,
             reviews: Vec::new(),
+            usage: None,
+            usage_checked: None,
             confirmed_moves: BTreeSet::new(),
             skipped_now: Vec::new(),
             move_wait: MOVE_WAIT,
@@ -538,6 +568,8 @@ impl WorkspaceSync {
             parked: BTreeMap::new(),
             rematch: false,
             reviews: Vec::new(),
+            usage: None,
+            usage_checked: None,
             confirmed_moves: BTreeSet::new(),
             skipped_now: Vec::new(),
             move_wait: MOVE_WAIT,
@@ -663,6 +695,7 @@ impl WorkspaceSync {
                     .values()
                     .map(|f| f.outbox.len())
                     .sum::<usize>(),
+            waiting_for_space: self.state.waiting_for_space.len(),
             conflicts: self.conflicts().len(),
             skipped: self.skipped.clone(),
             last_success: self.state.last_success,
@@ -672,6 +705,61 @@ impl WorkspaceSync {
             archived: self.state.archived.len(),
             refused: self.state.refused.len(),
             ended: self.state.ended.clone(),
+            deleted_away: self.state.deleted_away.len(),
+            usage: self.usage,
+        }
+    }
+
+    /// Files whose objects were deleted on another device while this one
+    /// was away, by path (§18).
+    pub fn deleted_away(&self) -> Vec<String> {
+        self.state
+            .deleted_away
+            .iter()
+            .map(|f| f.path.clone())
+            .collect()
+    }
+
+    /// Confirms the deletion of a file [`Self::deleted_away`] lists.
+    pub fn confirm_deleted_away(&mut self, path: &str) -> Result<(), SyncError> {
+        let Some(index) = self.state.deleted_away.iter().position(|f| f.path == path) else {
+            return Ok(());
+        };
+        let revision = self.state.deleted_away[index].revision.to_hex();
+        self.engine.delete_synced(path, &revision).map_err(core)?;
+        self.state.deleted_away.remove(index);
+        self.save()
+    }
+
+    /// Keeps a file [`Self::deleted_away`] lists: it uploads as a new
+    /// object in the next capture.
+    pub fn keep_deleted_away(&mut self, path: &str) -> Result<(), SyncError> {
+        self.state.deleted_away.retain(|f| f.path != path);
+        self.save()
+    }
+
+    /// Reads the workspace's usage and quota, at most once a minute.
+    async fn refresh_usage(&mut self, service: &mut SyncService) {
+        let now = std::time::Instant::now();
+        if self
+            .usage_checked
+            .is_some_and(|at| now.duration_since(at) < USAGE_REFRESH)
+        {
+            return;
+        }
+        if let Ok(response) = service.client().workspaces().await {
+            self.usage_checked = Some(now);
+            if let Some(info) = response
+                .workspaces
+                .iter()
+                .find(|w| w.workspace == self.state.workspace)
+            {
+                self.usage = Some(Usage {
+                    used: info.used_bytes,
+                    history: info.history_bytes,
+                    quota: info.quota_bytes,
+                });
+            }
         }
     }
 
@@ -1008,6 +1096,10 @@ impl WorkspaceSync {
             captured += self.capture()?;
             pushed += self.push(service).await?;
         }
+        if pushed > 0 {
+            self.usage_checked = None;
+        }
+        self.refresh_usage(service).await;
         self.state.last_success = Some(unix_now());
         self.save()?;
         Ok(Round {
@@ -1470,11 +1562,18 @@ impl WorkspaceSync {
         let roots = self.state.held_roots.clone();
         let markers = self.marker_objects();
         let holding_new = self.markers_pending();
+        let waiting: BTreeMap<String, Digest> = self
+            .state
+            .deleted_away
+            .iter()
+            .map(|f| (f.path.clone(), f.revision))
+            .collect();
         let (changes, mut skipped) = capture::changes(
             &listing,
             &self.state.objects,
             &markers,
             &held,
+            &waiting,
             |path| {
                 roots
                     .iter()
@@ -1482,6 +1581,18 @@ impl WorkspaceSync {
             },
             |file| read_for_sync(&engine, &file.relative_path, file.size),
         );
+        // A file you changed or took away leaves the list: a change uploads
+        // as a new object (§18).
+        let objects = &self.state.objects;
+        self.state.deleted_away.retain(|f| {
+            listing
+                .files
+                .iter()
+                .any(|file| file.relative_path == f.path)
+                && !objects
+                    .values()
+                    .any(|o| o.local.as_ref().is_some_and(|l| l.path == f.path))
+        });
         let mut signed = rewritten + ticked + moved_markers;
         self.reviews.clear();
         for change in changes {
@@ -1596,6 +1707,18 @@ impl WorkspaceSync {
         skipped.append(&mut self.skipped_now);
         skipped.sort();
         self.skipped = skipped;
+        // A change that still waits for space went back into an outbox; one
+        // you undid or deleted waits for nothing.
+        let signed_rids: BTreeSet<Id> = self
+            .state
+            .outbox
+            .iter()
+            .chain(self.state.restricted.values().flat_map(|f| &f.outbox))
+            .map(|o| o.record.body.rid)
+            .collect();
+        self.state
+            .waiting_for_space
+            .retain(|rid| signed_rids.contains(rid));
         self.save()?;
         Ok(signed)
     }
@@ -1836,16 +1959,29 @@ impl WorkspaceSync {
     /// server yet, and drops its ciphertext from the journal once the
     /// upload completes (§21).
     async fn upload_blobs(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
-        for index in 0..self.state.outbox.len() {
+        let mut index = 0;
+        while index < self.state.outbox.len() {
             let Some(blob) = self.state.outbox[index].upload.clone() else {
+                index += 1;
                 continue;
             };
             let path = self.journal.dir().join(state::upload_path(&blob.blob));
-            service
+            let uploaded = service
                 .client()
                 .upload_blob(self.state.workspace, self.state.domain, &blob, &path)
-                .await?;
-            self.state.outbox[index].upload = None;
+                .await;
+            match uploaded {
+                Ok(()) => {
+                    self.state.outbox[index].upload = None;
+                    index += 1;
+                }
+                // The records behind it still go out: one of them may be
+                // the delete that frees the space (§20).
+                Err(SyncError::Refused { code, .. }) if code == "quota_exceeded" => {
+                    self.wait_for_space(index)?;
+                }
+                Err(error) => return Err(error),
+            }
             self.save()?;
             self.journal.forget(&state::upload_path(&blob.blob));
         }
@@ -2021,6 +2157,18 @@ impl WorkspaceSync {
         forced: bool,
         replacing: Option<(u64, Digest)>,
     ) -> Result<(), SyncError> {
+        self.reseal_covering(index, forced, replacing, None)
+    }
+
+    /// [`Self::reseal`], with `covers` taking the place of the first
+    /// record's.
+    fn reseal_covering(
+        &mut self,
+        index: usize,
+        forced: bool,
+        replacing: Option<(u64, Digest)>,
+        covers: Option<Vec<Cover>>,
+    ) -> Result<(), SyncError> {
         let own = self.credentials.keys.device();
         let mut previous = if index == 0 {
             self.state.own.acked.map_or(Digest::ZERO, |(_, d, _)| d)
@@ -2065,7 +2213,10 @@ impl WorkspaceSync {
                 attempt,
                 old.body.rid,
                 old.body.delete,
-                old.body.supersedes.to_vec(),
+                match &covers {
+                    Some(covers) if i == index => covers.clone(),
+                    _ => old.body.supersedes.to_vec(),
+                },
                 &payload,
             )?;
             previous = resealed.digest();
@@ -2087,6 +2238,7 @@ impl WorkspaceSync {
                     object.base = Some(new_key);
                 }
             }
+            self.rekey_text(&old.body.rid, old_key, new_key)?;
             self.state.outbox[i].record = resealed;
             self.recount_own(&old.body.rid);
         }
@@ -2222,6 +2374,7 @@ impl WorkspaceSync {
             ));
         }
         self.state.own.acked = Some((record.body.counter, record.digest(), receipt.seq));
+        self.state.waiting_for_space.remove(&record.body.rid);
         let key = OpKey {
             device: record.body.device,
             counter: record.body.counter,
@@ -2330,7 +2483,9 @@ impl WorkspaceSync {
                 let record = self.state.outbox[index].record.clone();
                 let mut kept = Vec::new();
                 for cover in record.body.supersedes.iter() {
-                    let found = service
+                    // Pruning takes an operation a writer's view still
+                    // holds, and the cover goes with it (§19).
+                    let found = match service
                         .client()
                         .chain_position(
                             self.state.workspace,
@@ -2338,7 +2493,11 @@ impl WorkspaceSync {
                             cover.device,
                             cover.counter,
                         )
-                        .await?;
+                        .await
+                    {
+                        Err(SyncError::Refused { code, .. }) if code == "pruned" => None,
+                        found => found?,
+                    };
                     let exists = found.is_some_and(|entry| match entry.record {
                         EntryRecord::Operation(op) => {
                             op.body.counter == cover.counter && op.body.rid == record.body.rid
@@ -2354,6 +2513,15 @@ impl WorkspaceSync {
                 }
                 if kept.len() == record.body.supersedes.len() {
                     return Err(refused());
+                }
+                if kept.is_empty() {
+                    // With no cover left it would class as a patch. The
+                    // change stays local, and the next capture covers what
+                    // the device pulls by then.
+                    let rejected = self.state.outbox.remove(index);
+                    self.forget_own(&rejected.record);
+                    self.keep_local(&rejected.record, false);
+                    return self.reseal_replacing_or_end(index, &rejected.record);
                 }
                 self.recover(index, kept)
             }
@@ -2389,16 +2557,20 @@ impl WorkspaceSync {
                     _ => Err(refused()),
                 }
             }
-            "snapshot_required" if self.is_text_update(&self.state.outbox[index].record) => {
+            "snapshot_required" | "quota_exceeded"
+                if self.is_text_update(&self.state.outbox[index].record) =>
+            {
                 // The document holds the patch, so a snapshot takes its
-                // place and carries it (§14).
+                // place and carries it (§14). The journal gives the patch
+                // up only then, as a closed note rebuilds from the journal.
                 let rejected = self.state.outbox.remove(index);
                 self.forget_own(&rejected.record);
-                self.forget_text_record(&rejected.record)?;
                 self.snapshot_required(rejected.record.body.rid)?;
+                self.forget_text_record(&rejected.record)?;
                 self.reseal_replacing(index, &rejected.record)
             }
-            "conflict_limit" | "quota_exceeded" | "snapshot_required" => {
+            "quota_exceeded" => self.wait_for_space(index),
+            "conflict_limit" | "snapshot_required" => {
                 // The change stays local; the next record takes its place.
                 if index + 1 >= self.state.outbox.len() {
                     return Err(refused());
@@ -2443,11 +2615,7 @@ impl WorkspaceSync {
     /// Re-seals the record at `index` with other covers, then the later
     /// ones, which counts toward the cap.
     fn recover(&mut self, index: usize, covers: Vec<Cover>) -> Result<(), SyncError> {
-        let mut record = self.state.outbox[index].record.clone();
-        record.body.supersedes =
-            Sorted::new(covers).map_err(|e| SyncError::Invalid(e.name().to_owned()))?;
-        self.state.outbox[index].record = record;
-        self.reseal_from(index, false)
+        self.reseal_covering(index, false, None, Some(covers))
     }
 
     /// Puts the outbox's record at `index`, the one after a rejected
@@ -2485,6 +2653,21 @@ impl WorkspaceSync {
                 .max_by_key(|key| object.states.get(key).and_then(|s| s.seq).unwrap_or(0));
         }
         object.cover_all |= cover_all;
+    }
+
+    /// The server has no space for the outbox's record at `index`: the
+    /// change stays local, the next capture signs it again, and the next
+    /// record takes its place (§20).
+    fn wait_for_space(&mut self, index: usize) -> Result<(), SyncError> {
+        let rejected = self.state.outbox.remove(index);
+        self.forget_own(&rejected.record);
+        self.hold_refused_snapshot(&rejected.record)?;
+        self.keep_local(&rejected.record, false);
+        self.state
+            .waiting_for_space
+            .insert(rejected.record.body.rid);
+        self.usage_checked = None;
+        self.reseal_replacing_or_end(index, &rejected.record)
     }
 
     /// Puts the next record, if any, at a dropped record's position.
@@ -3089,13 +3272,13 @@ impl WorkspaceSync {
                 self.save()?;
                 return Ok((0, false));
             }
+            // The floor passed the cursor: the device loads what it lacks
+            // from the latest checkpoint (§18).
             PageStatus::Compacted => {
-                // Bootstrapping from a checkpoint arrives with ticket 58.
-                return Err(SyncError::Refused {
-                    code: "cursor_compacted".into(),
-                    status: 200,
-                    detail: None,
-                });
+                if !self.bootstrap_above(service, page.retention_floor).await? {
+                    return Err(SyncError::Check("sync_manifest_rollback"));
+                }
+                return Ok((0, false));
             }
         }
         let accepted = self.accepted_revision();
@@ -3479,16 +3662,18 @@ impl WorkspaceSync {
             self.stopped = Some("sync_restore_lost");
             return Err(SyncError::Check("sync_restore_lost"));
         }
-        if page.status == PageStatus::Ok {
-            if page.head < self.state.log.cursor
-                || page.head < self.state.log.head
-                || page.checkpoint_seq < self.state.log.checkpoint_seq
-            {
-                return Err(SyncError::Check("sync_server_rollback"));
-            }
-            if page.retention_floor < self.state.log.retention_floor {
-                return Err(SyncError::Check("sync_manifest_rollback"));
-            }
+        let floored = matches!(page.status, PageStatus::Ok | PageStatus::Compacted);
+        if (page.status == PageStatus::Ok
+            && (page.head < self.state.log.cursor || page.head < self.state.log.head))
+            || (floored && page.checkpoint_seq < self.state.log.checkpoint_seq)
+        {
+            return Err(SyncError::Check("sync_server_rollback"));
+        }
+        if floored && page.retention_floor < self.state.log.retention_floor {
+            return Err(SyncError::Check("sync_manifest_rollback"));
+        }
+        if page.status == PageStatus::Compacted && page.after >= page.retention_floor {
+            return Err(SyncError::Check("sync_manifest_rollback"));
         }
         page.check_shape()
             .map_err(|_| SyncError::Network("the pull page breaks §15".into()))

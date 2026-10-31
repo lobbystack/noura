@@ -15,7 +15,8 @@ use sync_protocol::types::{Digest, Id};
 
 use crate::reads::reader;
 use crate::{
-    Backend, BlobRow, LockPlan, ReadTxn, Result, Session, Store, WriteTxn, policy, refuse,
+    Backend, BlobRow, LockPlan, ReadTxn, Result, Session, Store, UPLOAD_TTL, WriteTxn, policy,
+    refuse,
 };
 
 /// What a tus creation names in `Upload-Length` and `Upload-Metadata`.
@@ -49,6 +50,11 @@ pub enum Recorded {
     /// dropped its rows. The caller deletes these segments' objects and
     /// answers `blob_digest_mismatch`.
     Discarded(Vec<Digest>),
+}
+
+/// What a blob's row adds to usage while no operation lists it (§20).
+fn usage_of(row: &BlobRow) -> i64 {
+    i64::try_from(row.length).unwrap_or(i64::MAX)
 }
 
 /// The segment length as a `u64`.
@@ -85,7 +91,7 @@ async fn own_upload(
     let row = txn
         .blob(workspace, blob)
         .await?
-        .filter(|row| row.device == device)
+        .filter(|row| row.device == device && !row.marked)
         .ok_or_else(|| refuse("not_found", "no such upload"))?;
     if !policy.head_snapshot().can_write(&device, &row.domain) {
         return Err(refuse("forbidden", "the device can't write this domain"));
@@ -129,6 +135,8 @@ impl<B: Backend> Store<B> {
             ));
         }
         let cache = self.policies.clone();
+        let quota = self.retention.quota_bytes;
+        let now = self.clock().now();
         self.backend
             .write(Box::new(move |txn: &mut B::Write| {
                 Box::pin(async move {
@@ -154,8 +162,17 @@ impl<B: Backend> Store<B> {
                         digest: creation.digest,
                         offset: 0,
                         complete: false,
+                        delete_after: Some(now + UPLOAD_TTL),
+                        marked: false,
+                        live_listings: 0,
                     };
                     if let Some(stored) = txn.blob(workspace, creation.blob).await? {
+                        if stored.marked {
+                            return Err(refuse(
+                                "blob_incomplete",
+                                "the collector is deleting this upload",
+                            ));
+                        }
                         let same = stored.domain == row.domain
                             && stored.device == row.device
                             && stored.length == row.length
@@ -166,6 +183,10 @@ impl<B: Backend> Store<B> {
                         return Err(refuse("id_conflict", "another upload holds this blob ID"));
                     }
                     txn.insert_blob(workspace, &row).await?;
+                    let length = i64::try_from(row.length).unwrap_or(i64::MAX);
+                    txn.add_usage(workspace, row.domain, length, 0).await?;
+                    crate::retention::check_quota(txn, workspace, quota, length).await?;
+                    crate::retention::note_pressure(txn, workspace, quota).await?;
                     Ok(row)
                 })
             }))
@@ -228,6 +249,7 @@ impl<B: Backend> Store<B> {
     ) -> Result<Recorded> {
         let domain = self.blob_upload(session, workspace, blob).await?.row.domain;
         let cache = self.policies.clone();
+        let now = self.clock().now();
         self.backend
             .write(Box::new(move |txn: &mut B::Write| {
                 Box::pin(async move {
@@ -242,14 +264,25 @@ impl<B: Backend> Store<B> {
                         segments.push(hash);
                         if digest_of_segment_hashes(&segments) != row.digest {
                             txn.delete_blob(workspace, blob).await?;
+                            txn.add_usage(workspace, domain, -usage_of(&row), 0).await?;
                             return Ok(Recorded::Discarded(segments));
                         }
                     }
                     txn.append_blob_segment(workspace, blob, index, hash, next, complete)
                         .await?;
+                    // A completed upload that no push lists goes 24 hours
+                    // after completion (§19).
+                    let delete_after = if complete {
+                        let at = Some(now + UPLOAD_TTL);
+                        txn.set_blob_delete_after(workspace, blob, at).await?;
+                        at
+                    } else {
+                        row.delete_after
+                    };
                     Ok(Recorded::Stored(BlobRow {
                         offset: next,
                         complete,
+                        delete_after,
                         ..row
                     }))
                 })
@@ -280,6 +313,7 @@ impl<B: Backend> Store<B> {
                     }
                     let segments = txn.blob_segments(workspace, blob).await?;
                     txn.delete_blob(workspace, blob).await?;
+                    txn.add_usage(workspace, domain, -usage_of(&row), 0).await?;
                     Ok(segments)
                 })
             }))
@@ -303,6 +337,7 @@ impl<B: Backend> Store<B> {
                     let row = txn
                         .blob(workspace, blob)
                         .await?
+                        .filter(|row| !row.marked)
                         .ok_or_else(|| refuse("not_found", "no such blob"))?;
                     let listed = txn.blob_listed(workspace, blob).await?;
                     let serves = if listed {
@@ -387,7 +422,8 @@ pub(crate) async fn check_listed(
 ) -> Result<()> {
     for blob in blobs {
         let row = txn.blob(workspace, *blob).await?;
-        let Some(row) = row.filter(|row| row.complete) else {
+        // A push never lists a marked blob (§19).
+        let Some(row) = row.filter(|row| row.complete && !row.marked) else {
             return Err(refuse(
                 "blob_incomplete",
                 "the workspace holds no completed upload with that ID",

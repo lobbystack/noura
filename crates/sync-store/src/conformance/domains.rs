@@ -284,6 +284,60 @@ async fn add_member<B: Backend>(world: &mut World<B>) -> Invitee {
     invitee
 }
 
+/// An `add_member` for an account in 1,000 workspaces answers
+/// `workspace_limit` (§27), and a member already here doesn't count again.
+pub async fn an_account_in_a_thousand_workspaces_joins_no_more<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 1).await;
+    let (invite, invitee) = requested(&world, Role::Editor).await;
+    let account = invitee.account;
+    world
+        .store
+        .backend()
+        .write(Box::new(move |txn: &mut B::Write| {
+            Box::pin(async move {
+                for i in 0..1_000u32 {
+                    let mut id = [9; 16];
+                    id[..4].copy_from_slice(&i.to_be_bytes());
+                    crate::WriteTxn::upsert_member(txn, Id(id), account, 2).await?;
+                }
+                Ok(())
+            })
+        }))
+        .await
+        .expect("memberships");
+    let add = world.change(
+        0,
+        vec![head_of(&world.links), invitee.head()],
+        PolicyKind::AddMember {
+            account,
+            role: Role::Editor,
+            invitation: invite.invitation,
+        },
+    );
+    assert_eq!(
+        push_failure(world.push_records(0, vec![RecordRef::Policy(add)]).await),
+        ("workspace_limit", 0)
+    );
+}
+
+/// Adds a member with one device to the world's devices, and returns its
+/// index.
+pub(super) async fn member_device<B: Backend>(world: &mut World<B>) -> usize {
+    let invitee = add_member(world).await;
+    let token = [world.devices.len() as u8 + 1; 32];
+    world
+        .store
+        .create_session(token, invitee.session)
+        .await
+        .expect("a session");
+    world.devices.push(crate::conformance::Device {
+        keys: invitee.keys,
+        session: invitee.session,
+        token,
+    });
+    world.devices.len() - 1
+}
+
 fn of_domain(entry: &KeyEntry, domain: &Id) -> bool {
     match &entry.record {
         KeyRecord::Epoch(epoch) => epoch.body.domain == *domain,

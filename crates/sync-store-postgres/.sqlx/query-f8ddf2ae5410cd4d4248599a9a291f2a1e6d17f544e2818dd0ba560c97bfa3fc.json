@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT floor FROM checkpoints\n             WHERE workspace = $1 AND domain = $2 AND covered_seq >= $3\n             ORDER BY covered_seq LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "floor",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "checkpoints",
+            "name": "floor"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f8ddf2ae5410cd4d4248599a9a291f2a1e6d17f544e2818dd0ba560c97bfa3fc"
+}

@@ -3,7 +3,7 @@
 
 mod sync_support;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -839,6 +839,58 @@ async fn a_snapshot_takes_the_place_of_a_patch_the_server_refused() {
     assert_eq!(read(&pair.b, PLAN), "# Plan refused\n");
     let file = pair.sync_b.text_file(&rid).unwrap().unwrap();
     assert!(file.records.iter().any(|record| record.snapshot));
+}
+
+/// A patch and the snapshot that replaces it can both meet a full workspace.
+/// The change waits on this device and reaches the other once space frees.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_patch_the_server_has_no_space_for_waits_and_goes_out_as_a_snapshot() {
+    let mut pair = pair().await;
+    let (mut a, _b) = open_both(&mut pair).await;
+    type_at(&mut a, 6, " waiting");
+    pair.sync_a.capture().expect("a capture");
+    let detail = PushFailureDetail {
+        record_index: 0,
+        code: Text("quota_exceeded".into()),
+        record_detail: None,
+    };
+    let bytes = ErrorBody {
+        code: Text("quota_exceeded".into()),
+        message: Text("the workspace is full".into()),
+        retry_after_seconds: None,
+        detail: Some(Bytes(detail.to_bytes())),
+    }
+    .to_bytes();
+    let refused = Arc::new(AtomicUsize::new(0));
+    let count = refused.clone();
+    pair.proxy.forge(Box::new(move |method, path| {
+        (method == "POST" && path.ends_with("/ops") && count.fetch_add(1, Ordering::Relaxed) < 2)
+            .then(|| (507, bytes.clone()))
+    }));
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a refused record doesn't fail the round");
+    assert!(refused.load(Ordering::Relaxed) >= 2);
+    assert_eq!(pair.sync_a.status().waiting_for_space, 1);
+
+    // Later edits wait behind the same change, and nothing is lost on the
+    // way: the desktop never has to wait on a missing record.
+    type_at(&mut a, 14, " still");
+    for _ in 0..3 {
+        both_rounds(&mut pair).await;
+    }
+    assert_eq!(pair.sync_a.status().waiting_for_space, 0);
+    assert_eq!(read(&pair.b, PLAN), "# Plan waiting still\n");
+    let rid = pair.sync_b.rid_at(PLAN).unwrap();
+    let file = pair.sync_b.text_file(&rid).unwrap().unwrap();
+    assert!(!file.stopped);
+    assert!(file.pending_since.is_none(), "no update waits on a record");
+    let own = pair.sync_a.text_file(&rid).unwrap().unwrap();
+    assert!(
+        own.records.iter().all(|r| r.seq.is_some()),
+        "no refused record stays in the journal"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -43,12 +43,13 @@ fn live(entries: &[(&str, u64)]) -> Value {
 pub fn fixture() -> Fixture {
     let mut f = Fixture::new(
         "sync-v2-live.json",
-        "Live sets (sync-v2.md §13, §17): each case applies operations in log order and lists the class the server gives each and the live set of each object afterward, computed alike by server and client. `floors` applies a checkpoint's rising floor at its covered_seq; `covers_for` asks which covers an edit writes. `journal_less_match` matches local files to objects when a folder syncs without its journal (§15, §18), against the states each live set derives (§16), and `archived` lists what connecting a folder keeps of the old review store.",
+        "Live sets (sync-v2.md §13, §17): each case applies operations in log order and lists the class the server gives each and the live set of each object afterward, computed alike by server and client. `floors` applies a checkpoint's rising floor at its covered_seq; `prune` names what the store deletes at a retention floor (§19), which leaves every live set as it stands; `covers_for` asks which covers an edit writes. `journal_less_match` matches local files to objects when a folder syncs without its journal (§15, §18), against the states each live set derives (§16), and `archived` lists what connecting a folder keeps of the old review store.",
     );
     let a = "live device a";
     let b = "live device b";
     let c = "live device c";
     let note = "live note";
+    let note_2 = "live note 2";
 
     f.case(json!({
         "kind": "live_set",
@@ -114,6 +115,62 @@ pub fn fixture() -> Fixture {
         "classes": ["state", "state"],
         "floors": [{"previous_floor": 0, "floor": 5, "covered_seq": 10, "dropped": []}],
         "expect": {id(note).to_hex(): live(&[(a, 2)])},
+    }));
+    // Pruning (§19): `prune` names the retention floor and the lowest
+    // `floor` field among servable checkpoints, and `gone` the operations
+    // the store deletes. Live sets at the floor and above don't change.
+    let gone = |entries: &[(&str, u64)]| live(entries);
+    f.case(json!({
+        "kind": "live_set",
+        "name": "pruning_takes_an_operation_a_covering_one_at_or_below_the_floor_covers",
+        "ops": [
+            op(note, a, 1, 1, &[], false),
+            op(note, a, 2, 2, &[(a, 1)], false),
+            op(note, a, 3, 3, &[(a, 2)], false),
+        ],
+        "classes": ["state", "state", "state"],
+        "floors": [],
+        "prune": {"floor": 2, "checkpoint_floor": 0, "gone": gone(&[(a, 1)])},
+        "expect": {id(note).to_hex(): live(&[(a, 3)])},
+    }));
+    f.case(json!({
+        "kind": "live_set",
+        "name": "pruning_takes_a_dropped_delete_below_every_servable_floor",
+        "ops": [
+            op(note, a, 1, 1, &[], false),
+            op(note, a, 2, 2, &[(a, 1)], true),
+            op(note_2, b, 1, 3, &[], false),
+        ],
+        "classes": ["state", "state", "state"],
+        "floors": [{"previous_floor": 0, "floor": 2, "covered_seq": 3, "dropped": [{"rid": id(note).to_hex(), "device": device(a).to_hex(), "counter": 2}]}],
+        "prune": {"floor": 3, "checkpoint_floor": 2, "gone": gone(&[(a, 1), (a, 2)])},
+        "expect": {id(note).to_hex(): live(&[]), id(note_2).to_hex(): live(&[(b, 1)])},
+    }));
+    f.case(json!({
+        "kind": "live_set",
+        "name": "pruning_keeps_a_dropped_delete_a_servable_checkpoint_still_holds",
+        "ops": [
+            op(note, a, 1, 1, &[], false),
+            op(note, a, 2, 2, &[(a, 1)], true),
+            op(note_2, b, 1, 3, &[], false),
+        ],
+        "classes": ["state", "state", "state"],
+        "floors": [{"previous_floor": 0, "floor": 2, "covered_seq": 3, "dropped": [{"rid": id(note).to_hex(), "device": device(a).to_hex(), "counter": 2}]}],
+        "prune": {"floor": 3, "checkpoint_floor": 1, "gone": gone(&[(a, 1)])},
+        "expect": {id(note).to_hex(): live(&[]), id(note_2).to_hex(): live(&[(b, 1)])},
+    }));
+    f.case(json!({
+        "kind": "live_set",
+        "name": "pruning_keeps_an_edit_against_a_delete",
+        "ops": [
+            op(note, a, 1, 1, &[], false),
+            op(note, a, 2, 2, &[(a, 1)], true),
+            op(note, b, 1, 3, &[(a, 1)], false),
+        ],
+        "classes": ["state", "state", "state"],
+        "floors": [],
+        "prune": {"floor": 3, "checkpoint_floor": 3, "gone": gone(&[(a, 1)])},
+        "expect": {id(note).to_hex(): live(&[(a, 2), (b, 1)])},
     }));
     f.case(json!({
         "kind": "live_check",

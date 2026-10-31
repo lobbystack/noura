@@ -58,6 +58,10 @@ pub const REBASE_AT: usize = 16 << 20;
 /// A device's own records carry IDs above every log sequence until the log
 /// gives them one.
 const OWN_RECORDS: u64 = 1 << 62;
+/// The counter of a snapshot the server had no space for. No signed record
+/// has it, so the record that takes the snapshot's counter finds its own
+/// entry in the journal.
+const HELD: u64 = 0;
 /// How many review entries the journal keeps for one note. A note whose
 /// lineage stopped keeps that entry past the limit.
 const MAX_REVIEWS: usize = 64;
@@ -1222,6 +1226,7 @@ impl WorkspaceSync {
             meta,
             in_blob.then_some(document.as_slice()),
         )?;
+        self.release_held(rid, file);
         self.state.objects.get_mut(&rid).expect("signed").base = Some(key);
         Ok(())
     }
@@ -1489,10 +1494,9 @@ impl WorkspaceSync {
             return Ok(());
         };
         // This device's own snapshot on its way holds the lineage up.
-        let own_snapshot = file
-            .records
-            .iter()
-            .any(|r| r.snapshot && r.seq.is_none() && r.lineage == file.lineage);
+        let own_snapshot = file.records.iter().any(|r| {
+            r.snapshot && r.seq.is_none() && r.key.counter != HELD && r.lineage == file.lineage
+        });
         let live = own_snapshot
             .then_some(file.lineage)
             .or_else(|| self.live_lineage(&rid));
@@ -1816,6 +1820,12 @@ impl WorkspaceSync {
             .into_iter()
             .partition(|r| r.seq.is_none() || live.contains(&r.key));
         file.records = kept;
+        self.release_records(rid, file, gone);
+        Ok(())
+    }
+
+    /// Drops from the journal what only `gone` records used.
+    fn release_records(&self, rid: Id, file: &TextFile, gone: Vec<TextRecord>) {
         for record in gone {
             let used = |digest: &Digest| {
                 file.records
@@ -1829,7 +1839,6 @@ impl WorkspaceSync {
                 self.journal.forget(&record_path(&rid, &blob));
             }
         }
-        Ok(())
     }
 
     /// Ends text mode on this device: the note's file is what it holds now,
@@ -2002,7 +2011,12 @@ impl WorkspaceSync {
             self.write_note(rid, &mut file)?;
         }
         self.store_text(&rid, &file)?;
-        if !changed {
+        // What the server had no space for goes again as a snapshot (§20).
+        let waiting = self.state.waiting_for_space.contains(&rid) && self.can_write_note(&rid);
+        if waiting {
+            self.write_snapshot(rid, false)?;
+        }
+        if !changed && !waiting {
             return Ok(0);
         }
         self.touch(&rid);
@@ -2014,7 +2028,7 @@ impl WorkspaceSync {
         if !editing {
             self.close_session(&rid)?;
         }
-        Ok(signed)
+        Ok(signed + usize::from(waiting))
     }
 
     /// One tick of text mode: takes the documents' merged changes to the
@@ -2455,6 +2469,55 @@ impl WorkspaceSync {
         file.records
             .retain(|r| r.key.device != record.body.device || r.key.counter != record.body.counter);
         self.store_text(&rid, &file)
+    }
+
+    /// Sets aside a snapshot the server had no space for (§20). It may
+    /// carry a patch that left the journal, so a closed note still rebuilds
+    /// from it, until the next snapshot replaces it.
+    pub(super) fn hold_refused_snapshot(
+        &mut self,
+        record: &Signed<Operation>,
+    ) -> Result<(), SyncError> {
+        let rid = record.body.rid;
+        let Some(mut file) = self.text_file(&rid)? else {
+            return Ok(());
+        };
+        let refused = |r: &TextRecord| {
+            r.snapshot && r.key.device == record.body.device && r.key.counter == record.body.counter
+        };
+        if !file.records.iter().any(refused) {
+            return Ok(());
+        }
+        self.release_held(rid, &mut file);
+        for held in file.records.iter_mut().filter(|r| refused(r)) {
+            held.key.counter = HELD;
+        }
+        self.store_text(&rid, &file)
+    }
+
+    /// Drops a held snapshot, once a newer snapshot holds what it held.
+    fn release_held(&self, rid: Id, file: &mut TextFile) {
+        let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut file.records)
+            .into_iter()
+            .partition(|r| r.key.counter == HELD);
+        file.records = kept;
+        self.release_records(rid, file, gone);
+    }
+
+    /// Moves a re-sealed record's journal entry to its new counter, where
+    /// its echo finds it.
+    pub(super) fn rekey_text(&mut self, rid: &Id, old: OpKey, new: OpKey) -> Result<(), SyncError> {
+        if old == new {
+            return Ok(());
+        }
+        let Some(mut file) = self.text_file(rid)? else {
+            return Ok(());
+        };
+        let Some(record) = file.records.iter_mut().find(|r| r.key == old) else {
+            return Ok(());
+        };
+        record.key = new;
+        self.store_text(rid, &file)
     }
 
     /// The server asked for a snapshot of the note before it takes another

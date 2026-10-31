@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM rids WHERE workspace = $1 AND rid = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4f8820a42d29e5c1557bf8182a651b46f1f7ac5f2d39bba7fc4a9856b6fa22e9"
+}

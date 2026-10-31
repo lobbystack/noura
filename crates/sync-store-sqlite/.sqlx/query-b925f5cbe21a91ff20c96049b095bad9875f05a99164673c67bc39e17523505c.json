@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO blobs (workspace, blob, domain, device, length, digest, upload_offset, complete, delete_after) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "b925f5cbe21a91ff20c96049b095bad9875f05a99164673c67bc39e17523505c"
+}

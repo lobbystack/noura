@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM history_floors WHERE workspace = $1 AND domain = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4c64d46a4eeadcc2516d8cc60a417efcda9149e4db9fca33b86ed0852d597dcb"
+}

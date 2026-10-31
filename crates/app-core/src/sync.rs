@@ -1668,6 +1668,11 @@ fn check_page(page: &Page, cursor: u64) -> Result<(), SyncError> {
     if page.status == PageStatus::Ok && page.head < cursor {
         return Err(SyncError::Check("sync_server_rollback"));
     }
+    // A status 2 page whose cursor isn't below its floor claims a
+    // compaction that didn't happen (§15, §30).
+    if page.status == PageStatus::Compacted && cursor >= page.retention_floor {
+        return Err(SyncError::Check("sync_manifest_rollback"));
+    }
     page.check_shape()
         .map_err(|_| SyncError::Network("the pull page breaks §15".into()))
 }

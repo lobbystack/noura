@@ -1495,15 +1495,16 @@ async fn a_new_device_bootstraps_right_after_a_replacement() {
     use sync_protocol::messages::{KeyRecord, KeysResponse};
     use sync_support::{Folder, approve};
 
-    let mut pair = pair_with_checkpoints(6).await;
+    let mut pair = sync_support::pair_of_accounts_on(Server::start_with_interval(6).await).await;
+    pair.sync_b.set_checkpoint_wait(Duration::ZERO);
     pair.sync_a
         .set_checkpoint_wait(Duration::from_secs(1 << 40));
-    // A third device joins and the laptop removes it without recording the
-    // removal, so the desktop records it and rotates to epoch 2.
+    // A third device of the desktop's account joins, and the desktop removes
+    // it, records the removal and rotates to epoch 2.
     let third = approve(
         &pair.server,
-        &mut pair.laptop,
-        std::slice::from_mut(pair.sync_a.remote_mut().unwrap()),
+        &mut pair.desktop,
+        std::slice::from_mut(pair.sync_b.remote_mut().unwrap()),
     )
     .await;
     pair.sync_a.round(&mut pair.service, 0).await.unwrap();
@@ -1511,7 +1512,7 @@ async fn a_new_device_bootstraps_right_after_a_replacement() {
         .round(&mut pair.desktop.service, 0)
         .await
         .unwrap();
-    pair.laptop
+    pair.desktop
         .service
         .remove_device(third.id(), &[], &mut [])
         .await
@@ -1523,12 +1524,13 @@ async fn a_new_device_bootstraps_right_after_a_replacement() {
         .expect("the desktop records the head and rotates");
     assert_eq!(pair.sync_b.remote_mut().unwrap().epoch(), 2);
     // The desktop alone signs a checkpoint under epoch 2.
+    let before = pair.sync_b.latest_checkpoint().map_or(0, |c| c.body.number);
     let skipped = checkpoint_until(
         &mut pair.desktop.service,
         &pair.b,
         &mut pair.sync_b,
         "e2",
-        |_| true,
+        |number| number > before,
     )
     .await;
     assert_eq!(skipped.body.epoch, 2);
