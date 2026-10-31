@@ -154,6 +154,14 @@ pub struct Status {
     /// The workspace's usage against its quota, once the server reported
     /// it (§20).
     pub usage: Option<Usage>,
+    /// What a restore lost that stopped this workspace (§14).
+    pub restore_lost: Option<restore::Lost>,
+    /// A rollback that holds this workspace until the generation changes.
+    pub rollback: Option<String>,
+    /// The generation of a restore the app hasn't shown you yet.
+    pub restored: Option<u64>,
+    /// The paths this device wrote again after a restore.
+    pub written_again: Vec<String>,
 }
 
 /// A workspace's storage, as `GET /v2/workspaces` reports it (§20).
@@ -706,6 +714,10 @@ impl WorkspaceSync {
                     .map(|f| f.outbox.len())
                     .sum::<usize>(),
             waiting_for_space: self.state.waiting_for_space.len(),
+            restore_lost: self.state.restore.lost.clone(),
+            rollback: self.state.restore.rollback.clone(),
+            restored: self.state.restore.alerted,
+            written_again: self.state.restore.written_again.clone(),
             conflicts: self.conflicts().len(),
             skipped: self.skipped.clone(),
             last_success: self.state.last_success,
@@ -1081,6 +1093,20 @@ impl WorkspaceSync {
                     Ok(_) => Ok(Round::default()),
                     Err(error) => Err(error),
                 }
+            }
+            Err(SyncError::Refused {
+                code,
+                status,
+                detail,
+            }) if code == "not_found" => {
+                if self.note_closed(service).await? {
+                    return Ok(Round::default());
+                }
+                Err(SyncError::Refused {
+                    code,
+                    status,
+                    detail,
+                })
             }
             Err(error) => {
                 self.note_failure(error.clone_check())?;

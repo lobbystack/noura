@@ -134,14 +134,14 @@ impl Server<SqliteBackend> {
 
     /// Serves `copy` from a new data directory after `restore`, or, with
     /// `recorded` false, as a database put back by hand, which keeps its
-    /// generation. Blobs stay in the one store. Returns the new base URL.
-    pub async fn put_back(&self, copy: &Path, recorded: bool) -> String {
-        let data = self.dir.path().join(format!(
-            "restored-{}",
-            Id::random().expect("random").to_hex()
-        ));
+    /// generation. Blobs stay in the one store. Returns the new server.
+    pub async fn put_back(&self, copy: &Path, recorded: bool) -> Server {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let data = dir.path().join("data");
         std::fs::create_dir_all(&data).expect("a directory");
         std::os::unix::fs::symlink(self.dir.path().join("blobs"), data.join("blobs"))
+            .expect("the shared blob store");
+        std::os::unix::fs::symlink(self.dir.path().join("blobs"), dir.path().join("blobs"))
             .expect("the shared blob store");
         if recorded {
             sync_server::restore::restore(&data, copy, None, &sync_server::BlobStoreConfig::Disk)
@@ -159,22 +159,12 @@ impl Server<SqliteBackend> {
                 .expect("a file copy carries no stamp");
         }
         let store = sync_server::open_store(&sync_server::Config::new(
-            data.clone(),
+            data,
             "127.0.0.1:0".parse().expect("an address"),
         ))
         .await
         .expect("the store opens");
-        let blobs =
-            sync_server::blobs::DiskStore::open(&data.join("blobs")).expect("the blob store");
-        let address = sync_server::spawn_with_blobs(
-            Arc::new(store),
-            "127.0.0.1:0",
-            sync_server::Accounts::local,
-            Arc::new(blobs),
-        )
-        .await
-        .expect("serving");
-        format!("http://localhost:{}", address.port())
+        Self::serve(store, dir, None).await
     }
 }
 

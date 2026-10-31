@@ -548,6 +548,22 @@ impl Folder {
                     sync.keep_deleted_away(&path)?;
                 }
             }
+            FolderSyncAction::DismissRestore => {
+                if let Some(sync) = self.sync.as_mut() {
+                    sync.dismiss_restore_alert()?;
+                }
+            }
+            // Reset devices runs from the account screen, which asks for
+            // the emailed code.
+            FolderSyncAction::ResetDevices => {}
+            FolderSyncAction::SetUpAgain => {
+                let (Some(sync), Some(service)) = (self.sync.take(), service) else {
+                    return Err(SyncError::Invalid(
+                        "Sign in to a sync account to set this workspace up again.".into(),
+                    ));
+                };
+                self.sync = Some(sync.set_up_again(service, &mut registry).await?);
+            }
             FolderSyncAction::Connect => {
                 let (Some(engine), Some(service)) = (self.engine.clone(), service) else {
                     return Err(SyncError::Invalid(

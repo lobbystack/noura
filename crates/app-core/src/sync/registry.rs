@@ -145,6 +145,14 @@ impl Registry {
         self.save()
     }
 
+    /// Drops the entry of `workspace`.
+    pub fn remove(&mut self, server: &str, account: &Id, workspace: &Id) -> Result<(), SyncError> {
+        self.folders.retain(|f| {
+            !(f.server == server && f.account == *account && f.workspace == *workspace)
+        });
+        self.save()
+    }
+
     fn save(&self) -> Result<(), SyncError> {
         let bytes = serde_json::to_vec_pretty(&Stored {
             folders: self.folders.clone(),

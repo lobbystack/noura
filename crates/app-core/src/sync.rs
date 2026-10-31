@@ -29,6 +29,7 @@ pub mod realtime;
 pub mod recovery;
 pub mod registry;
 pub mod removal;
+pub mod reset;
 mod routes;
 pub mod shares;
 pub mod upkeep;
@@ -783,10 +784,11 @@ impl SyncService {
             return Ok(());
         }
         let Some((account, _)) = short.iter().find(|(account, genesis)| {
-            snapshot
-                .members
-                .get(account)
-                .is_some_and(|member| member.head.genesis == *genesis)
+            !self.heads.excused(account)
+                && snapshot
+                    .members
+                    .get(account)
+                    .is_some_and(|member| member.head.genesis == *genesis)
         }) else {
             return Ok(());
         };

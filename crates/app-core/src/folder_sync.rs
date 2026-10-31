@@ -142,6 +142,8 @@ pub struct FolderSyncScreen {
     /// Files deleted on another device while this computer was away, which
     /// wait for you (§18).
     pub deleted_away: Vec<String>,
+    /// What a server restore did here, when it needs your attention.
+    pub restore: Option<RestoreNotice>,
     /// What went wrong last, for you to read.
     pub last_error: Option<String>,
     /// When the last round finished without an error, as local time.
@@ -177,11 +179,81 @@ impl FolderSyncScreen {
                 .is_some_and(|u| u.quota.is_some_and(|quota| u.used >= quota)),
             waiting_for_space: status.waiting_for_space,
             deleted_away: Vec::new(),
+            restore: restore_notice(status),
             last_error: None,
             last_success: status.last_success.map(local_time),
             busy: false,
         }
     }
+}
+
+/// What the app says about a server restore, and the way back it offers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RestoreNotice {
+    /// The banner's sentence.
+    pub line: String,
+    /// Whether Reset devices is the way back.
+    pub reset_devices: bool,
+    /// Whether Set up sync again is the way back.
+    pub set_up_again: bool,
+    /// The objects this computer wrote again.
+    pub written_again: Vec<String>,
+}
+
+/// The banner for a restore, a rollback or a stop (§14), if any.
+pub fn restore_notice(status: &Status) -> Option<RestoreNotice> {
+    use crate::sync::workspace::restore::Lost;
+    if let Some(lost) = &status.restore_lost {
+        let short = |id: &Id| id.to_hex().chars().take(8).collect::<String>();
+        let (line, reset_devices, set_up_again) = match lost {
+            Lost::OwnAccount => (
+                "The server was restored from a backup that lacks your latest devices. Sync stopped. Reset your devices to go on.".to_owned(),
+                true,
+                false,
+            ),
+            Lost::MemberAccount(account) => (
+                format!(
+                    "The server was restored from a backup that lacks devices of account {}. Sync stopped here until that person resets their devices and an owner or admin accepts the reset.",
+                    short(account)
+                ),
+                false,
+                false,
+            ),
+            Lost::Policy | Lost::Epoch | Lost::Envelope | Lost::Checkpoints | Lost::FinalHead(_) => (
+                "The server was restored from a backup that lacks part of this workspace's history. Sync stopped. An owner can set the workspace up again.".to_owned(),
+                false,
+                true,
+            ),
+            Lost::Server => (
+                "This server no longer knows your account. Sync stopped. You can turn sync on for this folder as a new workspace.".to_owned(),
+                false,
+                true,
+            ),
+            Lost::Closed => (
+                "The owner closed this workspace. Your files stay on this computer as they are.".to_owned(),
+                false,
+                false,
+            ),
+        };
+        return Some(RestoreNotice {
+            line,
+            reset_devices,
+            set_up_again,
+            written_again: Vec::new(),
+        });
+    }
+    if status.rollback.is_some() {
+        return Some(RestoreNotice {
+            line: "The server went back to an older state without reporting a restore. Sync stopped here until its operator marks the restore.".to_owned(),
+            ..RestoreNotice::default()
+        });
+    }
+    status.restored.map(|_| RestoreNotice {
+        line: "The server reports a restore from a backup. Sync checked what it holds and went on."
+            .to_owned(),
+        written_again: status.written_again.clone(),
+        ..RestoreNotice::default()
+    })
 }
 
 /// A number of bytes for people to read.
@@ -301,6 +373,12 @@ pub enum FolderSyncAction {
     /// You renamed the workspace: a synced one takes the name in its
     /// profile, when your role lets you (§25).
     Rename(String),
+    /// Dismiss the restore notice.
+    DismissRestore,
+    /// Start a new account chain after a restore lost a link of it (§7).
+    ResetDevices,
+    /// Close the workspace and start it over from this folder (§14).
+    SetUpAgain,
 }
 
 /// Carries out what you do in the Workspace sync section and reports where

@@ -101,6 +101,10 @@ pub struct InvitedRequest {
     pub role: Role,
 }
 
+/// The invitation ID that marks an approval as a reset's, whose commit is
+/// an `accept_reset` rather than an `add_member`.
+pub const RESET: Id = Id([0; 16]);
+
 impl SyncService {
     /// Posts this device's approval request for the invitation `opened`
     /// (§10, §11): a commitment to a fresh nonce and to the head of its
@@ -134,6 +138,69 @@ impl SyncService {
             offer: None,
             confirmed: false,
         })
+    }
+
+    /// Posts the approval request of a reset account's device for
+    /// `workspace` (§7, §10), which carries its new account head. It
+    /// answers like an invited request, with an owner or admin as the
+    /// approver.
+    pub async fn request_reset_approval(
+        &mut self,
+        workspace: Id,
+    ) -> Result<InvitedCandidate, SyncError> {
+        let head = self.own_chain().await?.head();
+        let card = self.credentials.card();
+        let nc = random_key()?;
+        let commit = approval_commit(&card.fingerprint(), Some(&head), &nc);
+        self.client
+            .post_approval_request(&ApprovalRequest {
+                commit,
+                account: Some(head.clone()),
+                invitation: None,
+                invite_proof: None,
+                workspace: Some(workspace),
+            })
+            .await?;
+        Ok(InvitedCandidate {
+            workspace,
+            invitation: RESET,
+            inviter_fingerprint: Digest::ZERO,
+            head,
+            nc,
+            commit,
+            offer: None,
+            confirmed: false,
+        })
+    }
+
+    /// The reset requests pending in `workspace`, for an owner or admin
+    /// device (§7). They answer through [`Self::offer_invited`].
+    pub async fn reset_requests(
+        &mut self,
+        workspace: Id,
+    ) -> Result<Vec<InvitedRequest>, SyncError> {
+        let pending = self.client.workspace_pending_devices(workspace).await?;
+        let mut requests = Vec::new();
+        for entry in pending.pending.0 {
+            let (None, Some(head), Some(named)) =
+                (entry.invitation, entry.account, entry.workspace)
+            else {
+                continue;
+            };
+            let card = entry.card.0;
+            if named != workspace || card.account != head.account {
+                continue;
+            }
+            requests.push(InvitedRequest {
+                fingerprint: card.fingerprint(),
+                card,
+                commit: entry.commit,
+                head,
+                invitation: RESET,
+                role: sync_protocol::records::Role::Viewer,
+            });
+        }
+        Ok(requests)
     }
 
     /// Looks for offers that name `candidate`'s commitment. The first one
@@ -171,8 +238,10 @@ impl SyncService {
                         &candidate.nc,
                     )
                     .map_err(|_| mismatch())?;
-                    let from_inviter =
-                        body.approver_card.0.fingerprint() == candidate.inviter_fingerprint;
+                    // A reset takes any owner or admin; the code you
+                    // compare and the commit's check decide.
+                    let from_inviter = candidate.invitation == RESET
+                        || body.approver_card.0.fingerprint() == candidate.inviter_fingerprint;
                     let anchors_one = body.anchors.len() == 1
                         && body
                             .anchors

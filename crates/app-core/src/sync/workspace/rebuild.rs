@@ -187,7 +187,7 @@ impl WorkspaceSync {
     }
 
     /// Moves an old journal's review store aside and lists what it kept.
-    fn archive(
+    pub(super) fn archive(
         journal: Journal,
         old: Option<&State>,
         replica: &Id,

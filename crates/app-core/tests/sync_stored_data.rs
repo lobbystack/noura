@@ -31,6 +31,7 @@ const TRANSIENT: &[&str] = &[
     "pending_passkeys",
     "ceremonies",
     "challenges",
+    "reset_codes",
     "rate_counts",
     "rate_limits",
 ];

@@ -180,6 +180,8 @@ pub struct KeptHeads {
     trusted: BTreeMap<Id, u64>,
     witnessed: BTreeSet<Digest>,
     checkpoint_anchors: BTreeMap<(Id, Id), KeptCheckpointAnchor>,
+    /// Accounts whose retired chain the device may read short (§14).
+    excused: BTreeSet<Id>,
 }
 
 impl std::fmt::Debug for KeptHeads {
@@ -308,6 +310,7 @@ impl KeptHeads {
                 .map(|n| ((n.workspace, n.account), n.genesis))
                 .collect(),
             refused: stored_refusals(credentials, &device)?,
+            excused: BTreeSet::new(),
             anchors: stored
                 .anchors
                 .into_iter()
@@ -403,6 +406,7 @@ impl KeptHeads {
                 .map(|(workspace, account, genesis)| ((workspace, account), genesis))
                 .collect(),
             refused: stored_refusals(credentials, &device)?,
+            excused: BTreeSet::new(),
             anchors: BTreeMap::new(),
             trusted: BTreeMap::new(),
             witnessed: BTreeSet::new(),
@@ -702,6 +706,39 @@ impl KeptHeads {
     /// Forgets the chains a workspace named, once the device left it.
     pub fn forget_workspace(&mut self, workspace: Id) -> Result<(), SyncError> {
         self.name_members(workspace, [])
+    }
+
+    /// Drops what the device keeps of `account`'s chains other than
+    /// `genesis`, once it verified an `accept_reset` that names that chain
+    /// (§7, §14), or its own reset retired them: a retired chain no longer
+    /// affects the workspace. The refusal that chain set ends too.
+    pub fn drop_retired(
+        &mut self,
+        account: &Id,
+        genesis: &Digest,
+        workspace: Id,
+    ) -> Result<(), SyncError> {
+        self.refused.remove(account);
+        self.excused.remove(account);
+        self.names.remove(&(workspace, *account));
+        self.heads
+            .retain(|(held, chain), _| held != account || chain == genesis);
+        self.links
+            .retain(|(held, chain), _| held != account || chain == genesis);
+        self.save()
+    }
+
+    /// Lets the device read `account`'s retired chain short of the head it
+    /// keeps, while it answers that account's reset in a workspace a
+    /// restore stopped for that chain (§14). It lasts until the device
+    /// drops the chain.
+    pub fn excuse_short(&mut self, account: Id) {
+        self.excused.insert(account);
+    }
+
+    /// Whether [`KeptHeads::excuse_short`] holds for `account`.
+    pub fn excused(&self, account: &Id) -> bool {
+        self.excused.contains(account)
     }
 
     /// The accounts of which the device keeps two current chains, because

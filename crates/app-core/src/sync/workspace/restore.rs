@@ -206,6 +206,9 @@ impl WorkspaceSync {
                 self.save()?;
             }
         }
+        if let Some(Lost::MemberAccount(account)) = self.state.restore.lost.clone() {
+            self.resume_after_reset(service, account).await?;
+        }
         if self.state.restore.lost.is_some() {
             return Ok(false);
         }
@@ -258,6 +261,47 @@ impl WorkspaceSync {
             }
         }
         Ok(true)
+    }
+
+    /// A workspace stopped only for `account`'s chain resumes, with the
+    /// reconciliation, once the device verifies there an `accept_reset`
+    /// that names the account's new chain (§14). The retired chain then no
+    /// longer counts here.
+    async fn resume_after_reset(
+        &mut self,
+        service: &mut SyncService,
+        account: Id,
+    ) -> Result<(), SyncError> {
+        let changes = service.client().policy(self.state.workspace, 0).await?;
+        let accepted = changes.changes.0.iter().find_map(|change| {
+            let body = &change.0.body;
+            matches!(body.kind, sync_protocol::records::PolicyKind::AcceptReset { account: named }
+                if named == account)
+            .then(|| body.heads.iter().find(|h| h.account == account))
+            .flatten()
+            .map(|head| head.genesis)
+        });
+        let Some(genesis) = accepted else {
+            return Ok(());
+        };
+        service
+            .kept_heads_mut()
+            .drop_retired(&account, &genesis, self.state.workspace)?;
+        self.state.restore.lost = None;
+        self.save()?;
+        self.compare(service).await
+    }
+
+    /// The verified workspace for an owner or admin device that answers
+    /// the reset of the account this workspace stopped for (§14).
+    pub async fn open_for_reset(
+        &mut self,
+        service: &mut SyncService,
+    ) -> Result<crate::sync::RemoteWorkspace, SyncError> {
+        if let Some(Lost::MemberAccount(account)) = self.state.restore.lost {
+            service.kept_heads_mut().excuse_short(account);
+        }
+        service.open_workspace(self.state.workspace).await
     }
 
     /// What the server lost of the state this device accepted, if anything.
@@ -697,5 +741,75 @@ impl WorkspaceSync {
     /// its other writes.
     pub(super) fn rewrites_pending(&self) -> bool {
         !self.state.restore.rewrites.is_empty()
+    }
+
+    /// Set up sync again (§14): closes this workspace on the server, which
+    /// answers `not_found` from then on, carries the review store over
+    /// through the archive, and turns sync on for this folder as a new
+    /// workspace, with a new ID, genesis and keys. An owner device can do
+    /// this whether or not it found the loss itself. You invite the members
+    /// again.
+    pub async fn set_up_again(
+        self,
+        service: &mut SyncService,
+        registry: &mut crate::sync::registry::Registry,
+    ) -> Result<Self, SyncError> {
+        match service.client().close_workspace(self.state.workspace).await {
+            Ok(()) => {}
+            Err(SyncError::Refused { code, .. }) if code == "not_found" => {}
+            Err(error) => return Err(error),
+        }
+        let name = self.state.name.clone();
+        let engine = self.engine.clone();
+        let Self { journal, state, .. } = self;
+        let mut archived = Self::archive(journal, Some(&state), &state.replica)?;
+        archived.extend(state.archived.clone());
+        service.kept_heads_mut().forget_workspace(state.workspace)?;
+        registry.remove(&state.server, &state.account, &state.workspace)?;
+        let mut fresh = Self::turn_on(service, engine, &name, registry).await?;
+        fresh.state.archived = archived;
+        fresh.save()?;
+        Ok(fresh)
+    }
+
+    /// Reports the owner's closing as a stop, when the server answers
+    /// `not_found` for the whole workspace.
+    pub(super) async fn note_closed(
+        &mut self,
+        service: &mut SyncService,
+    ) -> Result<bool, SyncError> {
+        match service.client().policy(self.state.workspace, 0).await {
+            Err(SyncError::Refused { code, .. }) if code == "not_found" => {
+                self.stop_lost(Lost::Closed)?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Whether the app may offer Set up sync again here: this device's
+    /// account owns the workspace.
+    pub fn may_set_up_again(&self) -> bool {
+        self.state
+            .policy
+            .iter()
+            .rev()
+            .find_map(|change| {
+                change
+                    .body
+                    .heads
+                    .iter()
+                    .any(|h| h.account == self.state.account)
+                    .then_some(())
+            })
+            .is_some()
+            && self.remote.as_ref().is_none_or(|remote| {
+                remote
+                    .policy
+                    .head_snapshot()
+                    .members
+                    .get(&self.state.account)
+                    .is_some_and(|m| m.role == sync_protocol::records::Role::Owner)
+            })
     }
 }
