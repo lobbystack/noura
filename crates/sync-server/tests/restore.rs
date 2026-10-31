@@ -154,6 +154,33 @@ fn disk(data: &Path) -> DiskStore {
     DiskStore::open(&data.join("blobs")).expect("the blob store")
 }
 
+/// `backup --to` with a bare file name writes into the working directory,
+/// and a secret already there stops it before the copy, with nothing left
+/// behind, so the rerun works.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn backup_takes_a_bare_file_name_and_leaves_nothing_when_it_fails() {
+    let (root, data) = fresh();
+    let backup = || {
+        Command::new(BIN)
+            .args(["backup", "--to", "b.sqlite3", "--data"])
+            .arg(&data)
+            .current_dir(root.path())
+            .output()
+            .expect("runs")
+    };
+    let secret = root.path().join("b.sqlite3.secret");
+    let copy = root.path().join("b.sqlite3");
+    std::fs::write(&secret, b"in the way").expect("written");
+    let refused = backup();
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("b.sqlite3.secret"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(!root.path().join("b.sqlite3.partial").exists());
+    assert!(!copy.exists());
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn migrate_starts_the_generation_at_the_current_time() {
     let before = unix_now();

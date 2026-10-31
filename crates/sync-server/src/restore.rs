@@ -63,9 +63,17 @@ fn matches(secret: &SecretKey, check: &[u8; 32]) -> bool {
     secret_check(secret).expose() == check
 }
 
+/// The directory that holds `path`: `.` for a bare file name.
+pub(crate) fn directory_of(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+}
+
 fn sync_parent(path: &Path) -> Result<(), CommandError> {
     #[cfg(unix)]
-    if let Some(parent) = path.parent() {
+    {
+        let parent = directory_of(path);
         fs::File::open(parent)
             .and_then(|dir| dir.sync_all())
             .map_err(|e| fail(format!("can't flush {}: {e}", parent.display())))?;
@@ -102,8 +110,11 @@ pub struct BlobCheck {
 /// it. Returns the secret file's path.
 pub async fn backup(data: &Path, to: &Path) -> Result<PathBuf, CommandError> {
     crate::data::check_ready(data).await?;
-    if to.exists() {
-        return Err(fail(format!("{} already exists", to.display())));
+    let path = secret_beside(to);
+    for taken in [to, path.as_path()] {
+        if taken.exists() {
+            return Err(fail(format!("{} already exists", taken.display())));
+        }
     }
     let secret = read_secret(&data.join(SECRET_FILE))?
         .ok_or_else(|| fail("the data directory holds no server secret"))?;
@@ -117,9 +128,15 @@ pub async fn backup(data: &Path, to: &Path) -> Result<PathBuf, CommandError> {
         let _ = fs::remove_file(&partial);
         return Err(fail(format!("the copy failed: {error}")));
     }
-    let path = secret_beside(to);
-    data::write_secret_at(&path, &secret)?;
-    fs::rename(&partial, to).map_err(|e| fail(format!("can't name the copy: {e}")))?;
+    if let Err(error) = data::write_secret_at(&path, &secret) {
+        let _ = fs::remove_file(&partial);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&partial, to) {
+        let _ = fs::remove_file(&partial);
+        let _ = fs::remove_file(&path);
+        return Err(fail(format!("can't name the copy: {error}")));
+    }
     sync_parent(to)?;
     Ok(path)
 }
