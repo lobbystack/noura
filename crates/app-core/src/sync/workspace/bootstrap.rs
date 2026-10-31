@@ -480,7 +480,8 @@ impl WorkspaceSync {
                     .ok(),
                 _ => None,
             };
-            let content = payload.and_then(|p| super::carried(&p, &mut BTreeMap::new()));
+            let content =
+                payload.and_then(|p| super::carried(&p, &mut BTreeMap::new(), &self.blob_wrap));
             let key = OpKey {
                 device: op.body.device,
                 counter: op.body.counter,

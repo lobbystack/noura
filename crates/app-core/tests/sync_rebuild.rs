@@ -53,10 +53,9 @@ async fn a_start_without_a_journal_stores_its_new_block() {
     drop(sync_b);
     lose_journal(&b, desktop.id());
     b.reopen();
-    let _sync =
-        WorkspaceSync::rebuild(&mut desktop.service, b.engine.clone(), &mut b.registry)
-            .await
-            .expect("the folder syncs again");
+    let _sync = WorkspaceSync::rebuild(&mut desktop.service, b.engine.clone(), &mut b.registry)
+        .await
+        .expect("the folder syncs again");
     assert!(reserved(&desktop) > before, "the store holds the new block");
 }
 

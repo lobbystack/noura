@@ -839,7 +839,13 @@ impl SyncService {
         }
         let keys = self.credentials.keys.clone();
         let loaded = self
-            .load_keys(remote.workspace, request.domain, &remote.policy, &keys, true)
+            .load_keys(
+                remote.workspace,
+                request.domain,
+                &remote.policy,
+                &keys,
+                true,
+            )
             .await;
         let (epochs, keys, _) = match loaded {
             Ok(loaded) => loaded,

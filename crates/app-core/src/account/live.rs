@@ -882,8 +882,7 @@ impl Driver {
             })
             .collect();
         let shown = self.service.as_ref().and_then(|service| {
-            (!lines.is_empty())
-                .then(|| fingerprint(&service.credentials().reference_head.genesis))
+            (!lines.is_empty()).then(|| fingerprint(&service.credentials().reference_head.genesis))
         });
         self.signed_in(|view| {
             view.reset_waits = lines;
@@ -1021,7 +1020,7 @@ impl Driver {
             }))
             .chain(refused.iter().map(|(account, code)| AlertEntry {
                 text: format!(
-                    "Noura stopped trusting the device list of account {} ({code}), so the workspaces you share with it wait. Check again once the server is repaired or that person reset their devices.",
+                    "Noura stopped trusting the device list of account {} ({code}), so the workspaces you share with it wait. Check again once the operator repairs the server or that person resets their devices.",
                     short_id(account)
                 ),
                 end_sessions: None,

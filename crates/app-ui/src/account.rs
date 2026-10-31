@@ -187,7 +187,10 @@ pub(crate) fn section(
                     if primary_button(ui, "Reset devices", !screen.busy).clicked() {
                         actions.push(AccountAction::StartReset);
                     }
-                    if ui.add_enabled(!screen.busy, Button::new("Try again")).clicked() {
+                    if ui
+                        .add_enabled(!screen.busy, Button::new("Try again"))
+                        .clicked()
+                    {
                         actions.push(AccountAction::Retry);
                     }
                 });

@@ -14,14 +14,14 @@ mod sync_support;
 use std::sync::Arc;
 use std::time::Duration;
 
+use app_core::sync::upkeep::Task;
+use app_core::sync::workspace::WorkspaceSync;
 use sync_protocol::codec::{Bytes, Decode, Encode, ExactBytes, Sorted, Text};
 use sync_protocol::messages::{
     EntryRecord, ErrorBody, KeyRecord, KeysResponse, PullResponse, PushFailureDetail,
 };
-use sync_protocol::types::Id;
-use app_core::sync::upkeep::Task;
-use app_core::sync::workspace::WorkspaceSync;
 use sync_protocol::records::{Access, Level, Role};
+use sync_protocol::types::Id;
 use sync_support::{
     Folder, Pair, Proxy, Server, approve, pair, pair_of_accounts_on, pair_of_accounts_with,
 };

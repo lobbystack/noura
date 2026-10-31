@@ -550,6 +550,25 @@ fn text_name(rid: &Id) -> String {
     format!("text-{}.json", rid.to_hex())
 }
 
+/// `payload` as the journal keeps it: the blob's bytes sit beside it, so a
+/// note needs no blob key at rest, and none stays in a file of the folder
+/// (§15, §21).
+fn without_blob_key(payload: &Payload) -> Payload {
+    let mut kept = payload.clone();
+    if let PayloadKind::TextSnapshot {
+        content: Content::Blob(blob),
+        ..
+    }
+    | PayloadKind::TextUpdate {
+        content: Content::Blob(blob),
+        ..
+    } = &mut kept.kind
+    {
+        blob.blob_key = sync_protocol::types::SecretKey([0; 32]);
+    }
+    kept
+}
+
 fn record_path(rid: &Id, digest: &Digest) -> String {
     format!("text/{}/{}", rid.to_hex(), digest.to_hex())
 }
@@ -1235,7 +1254,7 @@ impl WorkspaceSync {
         rid: Id,
         bytes: &[u8],
         meta_len: usize,
-    ) -> Result<(Content, Option<sync_protocol::records::BlobRef>), SyncError> {
+    ) -> Result<(Content, Option<super::state::BlobMeta>), SyncError> {
         if bytes.len() + meta_len + PAYLOAD_OVERHEAD <= MAX_PAYLOAD_LEN {
             return Ok((
                 Content::Inline {
@@ -1279,7 +1298,7 @@ impl WorkspaceSync {
         meta: &[MetaEntry],
         blob: Option<&[u8]>,
     ) -> Result<(), SyncError> {
-        let bytes = payload.to_bytes();
+        let bytes = without_blob_key(payload).to_bytes();
         let digest = hash(&bytes);
         self.journal.keep(&record_path(&rid, &digest), &bytes)?;
         let blob = match blob {
@@ -1534,7 +1553,7 @@ impl WorkspaceSync {
             own.digest = op.digest();
             own.epoch = op.body.epoch;
         } else {
-            let bytes = payload.to_bytes();
+            let bytes = without_blob_key(payload).to_bytes();
             let digest = hash(&bytes);
             self.journal.keep(&record_path(&rid, &digest), &bytes)?;
             let blob = match blob {
@@ -2648,6 +2667,34 @@ impl WorkspaceSync {
             }
         }
         Ok(None)
+    }
+
+    /// The blob keys in the note's kept records, for a test that looks for
+    /// them at rest.
+    #[cfg(feature = "test-hooks")]
+    pub fn kept_text_keys_for_testing(&self, rid: &Id) -> Vec<sync_protocol::types::SecretKey> {
+        let Ok(Some(file)) = self.text_file(rid) else {
+            return Vec::new();
+        };
+        file.records
+            .iter()
+            .filter_map(|record| {
+                let path = record_path(rid, &record.payload);
+                let bytes = self.journal.kept(&path, &record.payload).ok()?;
+                let payload = Payload::from_bytes(&bytes).ok()?;
+                match payload.kind {
+                    PayloadKind::TextSnapshot {
+                        content: Content::Blob(blob),
+                        ..
+                    }
+                    | PayloadKind::TextUpdate {
+                        content: Content::Blob(blob),
+                        ..
+                    } => Some(blob.blob_key),
+                    _ => None,
+                }
+            })
+            .collect()
     }
 
     /// Whether the journal holds this record of the note already.

@@ -308,11 +308,7 @@ impl EpochChain {
         Ok(())
     }
 
-    fn check_signed(
-        &self,
-        record: &Signed<Epoch>,
-        policy: &PolicyChain,
-    ) -> Result<(), KeyError> {
+    fn check_signed(&self, record: &Signed<Epoch>, policy: &PolicyChain) -> Result<(), KeyError> {
         let body = &record.body;
         if body.workspace != self.workspace || body.domain != self.domain {
             return Err(KeyError::Domain);

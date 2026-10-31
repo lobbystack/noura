@@ -121,7 +121,7 @@ impl SyncClient {
         &mut self,
         workspace: Id,
         domain: Id,
-        blob_ref: &BlobRef,
+        blob_ref: &super::workspace::state::BlobMeta,
         file: &Path,
     ) -> Result<(), SyncError> {
         let metadata = format!(

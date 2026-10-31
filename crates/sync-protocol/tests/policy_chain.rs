@@ -663,7 +663,9 @@ fn a_domain_holds_at_most_512_readers() {
         let chain = chain
             .get(&carol.account(), &carol.chain.head().genesis)
             .unwrap();
-        snapshot.head_snapshot().head_fits(chain, chain.head_seqno())
+        snapshot
+            .head_snapshot()
+            .head_fits(chain, chain.head_seqno())
     };
     carol.chain.remove(&signer, &phone, &[]);
     assert!(fits(&carol), "the removal alone takes one out");

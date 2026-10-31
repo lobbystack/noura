@@ -9,10 +9,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use sync_protocol::chain::ChainVerifier;
+use sync_protocol::crypto::{open, random_nonce, seal};
 use sync_protocol::keys::LogJudge;
 use sync_protocol::live::LiveSet;
-use sync_protocol::records::{Cover, Envelope, Epoch, Operation, PolicyChange, Signed};
-use sync_protocol::types::{Digest, Id};
+use sync_protocol::records::{BlobRef, Cover, Envelope, Epoch, Operation, PolicyChange, Signed};
+use sync_protocol::types::{Digest, Id, Nonce, SecretKey, from_hex, to_hex};
 
 /// The journal format this client writes.
 pub const VERSION: u32 = 1;
@@ -613,10 +614,10 @@ pub struct Content {
     pub object_id: String,
     /// The review store's copy of the bytes, when the device keeps one.
     pub kept: Option<String>,
-    /// The blob that carries the bytes, for a file above the inline limit
-    /// (§21). A move inside the domain reuses it.
+    /// The blob that carries the bytes, for a file above the inline limit,
+    /// with its key wrapped (§15, §21). A move inside the domain reuses it.
     #[serde(default)]
-    pub blob: Option<sync_protocol::records::BlobRef>,
+    pub blob: Option<KeptBlob>,
     /// The text lineage, for a `text_snapshot` (§22).
     #[serde(default)]
     pub text: Option<Id>,
@@ -637,8 +638,9 @@ pub struct Outgoing {
     /// The blob the record brought. Its ciphertext stays in the journal at
     /// [`upload_path`] until the server acknowledges the record, since the
     /// collector may delete a completed upload no push listed yet (§14).
+    /// Its key sits in the record's encrypted payload.
     #[serde(default)]
-    pub upload: Option<sync_protocol::records::BlobRef>,
+    pub upload: Option<BlobMeta>,
     /// Whether that blob's upload completed.
     #[serde(default)]
     pub uploaded: bool,
@@ -646,6 +648,78 @@ pub struct Outgoing {
     /// push with its other half (§9).
     #[serde(default)]
     pub pair: Option<MovePair>,
+}
+
+/// A `blob_ref` without its key, which the journal may hold in the clear.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlobMeta {
+    /// The blob ID.
+    pub blob: Id,
+    /// The blob's ciphertext length.
+    pub ciphertext_length: u64,
+    /// `BLAKE3(tag(noura.sync.blob.parts) || list<digest>)`.
+    pub ciphertext_digest: Digest,
+    /// The file's length `L`.
+    pub plaintext_length: u64,
+}
+
+impl BlobMeta {
+    /// What `blob` says, without its key.
+    pub fn of(blob: &BlobRef) -> Self {
+        Self {
+            blob: blob.blob,
+            ciphertext_length: blob.ciphertext_length,
+            ciphertext_digest: blob.ciphertext_digest,
+            plaintext_length: blob.plaintext_length,
+        }
+    }
+
+    fn with_key(&self, blob_key: SecretKey) -> BlobRef {
+        BlobRef {
+            blob: self.blob,
+            ciphertext_length: self.ciphertext_length,
+            ciphertext_digest: self.ciphertext_digest,
+            blob_key,
+            plaintext_length: self.plaintext_length,
+        }
+    }
+}
+
+/// A `blob_ref` as the journal keeps it for a state whose signed record it
+/// doesn't hold: the key sealed under the workspace's blob wrap key, which
+/// only the credential store holds at rest (§15).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptBlob {
+    /// Everything but the key.
+    pub meta: BlobMeta,
+    /// The nonce and the sealed key, in hexadecimal.
+    wrapped: String,
+}
+
+impl KeptBlob {
+    /// Seals `blob`'s key under `wrap`. Without randomness there is nothing
+    /// to keep: the state then lends no blob, and the file seals afresh.
+    pub fn wrap(blob: &BlobRef, wrap: &SecretKey) -> Option<Self> {
+        let nonce = random_nonce().ok()?;
+        let sealed = seal(wrap, &nonce, &blob.blob.0, blob.blob_key.expose());
+        let mut bytes = nonce.0.to_vec();
+        bytes.extend_from_slice(&sealed);
+        Some(Self {
+            meta: BlobMeta::of(blob),
+            wrapped: to_hex(&bytes),
+        })
+    }
+
+    /// The whole `blob_ref`, or `None` when `wrap` doesn't open it, as after
+    /// the credential store lost the key.
+    pub fn open(&self, wrap: &SecretKey) -> Option<BlobRef> {
+        let bytes = from_hex(&self.wrapped)?;
+        let (nonce, sealed) = bytes.split_at_checked(24)?;
+        let nonce = Nonce(nonce.try_into().ok()?);
+        let key = open(wrap, &nonce, &self.meta.blob.0, sealed).ok()?;
+        let key: [u8; 32] = key.as_slice().try_into().ok()?;
+        Some(self.meta.with_key(SecretKey(key)))
+    }
 }
 
 /// A move between domains: the object's `rid` in the source domain and
@@ -683,6 +757,37 @@ pub struct Held {
     pub path: String,
     /// Its revision.
     pub revision: Digest,
+}
+
+#[cfg(test)]
+mod blob_tests {
+    use super::*;
+
+    #[test]
+    fn a_kept_blob_opens_under_its_wrap_key_alone() {
+        let key = SecretKey([7; 32]);
+        let blob = BlobRef {
+            blob: Id([1; 16]),
+            ciphertext_length: 9,
+            ciphertext_digest: Digest([2; 32]),
+            blob_key: key.clone(),
+            plaintext_length: 3,
+        };
+        let wrap = SecretKey([3; 32]);
+        let kept = KeptBlob::wrap(&blob, &wrap).unwrap();
+        let text = serde_json::to_string(&kept).unwrap();
+        assert!(!text.contains(&to_hex(key.expose())));
+        assert_eq!(kept.open(&wrap), Some(blob.clone()));
+        assert_eq!(kept.open(&SecretKey([4; 32])), None);
+        let moved = KeptBlob {
+            meta: BlobMeta {
+                blob: Id([9; 16]),
+                ..kept.meta.clone()
+            },
+            ..kept
+        };
+        assert_eq!(moved.open(&wrap), None, "the seal names the blob");
+    }
 }
 
 #[cfg(test)]

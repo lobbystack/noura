@@ -955,7 +955,7 @@ Connecting a folder discards its journal but not its review store. The client fi
 
 A device syncs one folder per remote workspace. The app keeps a registry in its application data, outside every workspace, that maps each account and remote workspace to one folder and a random replica ID, which the journal also stores. A folder whose journal holds another replica ID, such as a copy you made in Finder or a folder another Mac opened through a cloud drive, doesn't sync until you connect it, and connecting it discards its journal, bootstraps and matches its files as after a lost journal.
 
-Device signing and HPKE secrets live only in the operating system's credential store. Epoch keys exist only in memory: the client unwraps them from the stored envelopes with the device's HPKE secret.
+Device signing and HPKE secrets live only in the operating system's credential store. Epoch keys exist only in memory: the client unwraps them from the stored envelopes with the device's HPKE secret. The journal holds no blob key in the clear. For a record in its outbox the client reads the key from the record's encrypted payload. For any other state it keeps the `blob_ref` with the key sealed under a per-workspace random key that only the credential store holds, with the blob ID as associated data, and when that key is gone the state lends no blob and the client seals the file afresh. A kept text record keeps its payload with 32 zero bytes in place of the blob key, since the blob's bytes sit beside it.
 
 Within one scan, a deleted ordinary file and a created one with the same content revision, and the same operating system file ID where the platform reports one, count as a move: the client writes a state operation on the same `rid` with the new path and reuses the `blob_ref`. Two files that share one frontmatter ID don't sync as that object until you resolve the local `identity_conflict` ([v1.md](v1.md#classification)).
 
@@ -1178,7 +1178,7 @@ A file whose payload would exceed 262,144 bytes travels as a blob: a separately 
 
 ### Blob format
 
-Each blob gets a fresh random 32-byte key, carried only inside the referencing operation's encrypted payload.
+Each blob gets a fresh random 32-byte key, carried only inside the referencing operation's encrypted payload. At rest a client holds it sealed under a key in its credential store ([§15](#client-journal)).
 
 ```text
 header      = tag(noura.sync.blob) || id blob || 19-byte nonce_prefix

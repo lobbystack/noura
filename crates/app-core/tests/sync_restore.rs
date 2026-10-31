@@ -2619,6 +2619,12 @@ async fn a_lost_text_blob_is_covered_by_a_new_snapshot() {
     rounds(&mut pair).await;
     pair.sync_a.close_text(PLAN).expect("closed");
     rounds(&mut pair).await;
+    let kept = pair.sync_a.kept_text_keys_for_testing(&rid);
+    assert!(!kept.is_empty(), "a record whose bytes travel in a blob");
+    assert!(
+        kept.iter().all(|key| key.expose() == &[0; 32]),
+        "a kept text record holds no blob key (§15)"
+    );
     let copy = pair.server.backup("before.sqlite3").await;
     let lost = pair.server.blob_files();
     assert!(!lost.is_empty(), "the snapshot travels in a blob");

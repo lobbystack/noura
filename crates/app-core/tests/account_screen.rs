@@ -1358,10 +1358,7 @@ fn a_restart_after_a_lost_link_of_your_chain_offers_reset_devices() {
         matches!(s.phase, AccountPhase::ChainStopped)
     });
     // The server's device page names its own address, not the proxy's.
-    AccountBackend::act(
-        &account,
-        AccountAction::SetServer(restored.base.clone()),
-    );
+    AccountBackend::act(&account, AccountAction::SetServer(restored.base.clone()));
     AccountBackend::act(&account, AccountAction::StartReset);
     wait_for(&account, "the sign-in", |s| {
         matches!(s.phase, AccountPhase::SigningIn { .. })

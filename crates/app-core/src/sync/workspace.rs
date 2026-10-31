@@ -62,12 +62,12 @@ pub use moves::{HeldFile, MOVE_WAIT, MoveReview};
 use settle::{Bodies, Body};
 pub use state::Ended;
 use state::{
-    Content as Carried, Held, Log, Object, OpKey, Outgoing, Own, ProfileMark, State, StateInfo,
-    Wanted,
+    BlobMeta, Content as Carried, Held, KeptBlob, Log, Object, OpKey, Outgoing, Own, ProfileMark,
+    State, StateInfo, Wanted,
 };
 
 use super::journal::{self, Journal, STATE_FILE};
-use super::marks::Mark;
+use super::marks::{Mark, blob_wrap_key};
 use super::registry::Registry;
 use super::{DeviceCredentials, RemoteWorkspace, Secrets, SyncError, SyncService, random};
 
@@ -260,6 +260,8 @@ pub struct WorkspaceSync {
     /// The restricted domains whose envelope failed on this device, which
     /// wait for a re-wrap (§9).
     key_stops: BTreeSet<Id>,
+    /// Seals the blob keys the journal keeps (§15).
+    blob_wrap: SecretKey,
     lent_blob: Option<sync_protocol::records::BlobRef>,
     /// The domains whose page may have written files the state file
     /// doesn't map yet, each with the sequence the page reaches (§15).
@@ -499,7 +501,9 @@ impl WorkspaceSync {
         let keys = remote.keys.clone();
         let mut state = state;
         state.log.wanted = Vec::new();
+        let blob_wrap = blob_wrap_key(&*secrets, &device, &state.workspace)?;
         let mut sync = Self {
+            blob_wrap,
             engine,
             journal,
             state,
@@ -642,7 +646,9 @@ impl WorkspaceSync {
         let next = mark.start();
         mark.write(&*secrets, &device, &state.workspace)?;
         let journal_applying = journal.read(journal::APPLYING_FILE)?.unwrap_or_default();
+        let blob_wrap = blob_wrap_key(&*secrets, &device, &state.workspace)?;
         let mut sync = Self {
+            blob_wrap,
             engine,
             journal,
             keys: BTreeMap::new(),
@@ -1108,6 +1114,22 @@ impl WorkspaceSync {
         service: &mut SyncService,
     ) -> Result<usize, SyncError> {
         self.upload_missing(service, false).await
+    }
+
+    /// Every blob key this device can reach at rest, for a test that looks
+    /// for them in the folder.
+    #[cfg(feature = "test-hooks")]
+    pub fn blob_keys_for_testing(&self) -> Vec<SecretKey> {
+        let kept = self
+            .state
+            .objects
+            .values()
+            .flat_map(|object| object.states.values())
+            .filter_map(|state| state.content.as_ref()?.blob.as_ref()?.open(&self.blob_wrap));
+        let listed = self.state.outbox.iter().filter_map(|outgoing| {
+            self.blob_of_record(&outgoing.record, outgoing.upload.as_ref()?)
+        });
+        kept.chain(listed).map(|blob| blob.blob_key).collect()
     }
 
     /// Takes the policy and keys, saves and stops there, as an app that
@@ -1665,8 +1687,7 @@ impl WorkspaceSync {
         self.state.epochs = epochs;
         self.want_entries();
         if let Some(old) = self.state.envelope.take_if(|old| {
-            ended.iter().any(|e| e.body.epoch == old.body.epoch)
-                && remote.envelope.is_some()
+            ended.iter().any(|e| e.body.epoch == old.body.epoch) && remote.envelope.is_some()
         }) {
             self.state.ended_envelopes.push(old);
         }
@@ -2303,7 +2324,8 @@ impl WorkspaceSync {
                 )
             } else {
                 let (blob, upload) = self.blob_for(rid, found)?;
-                (Content::Blob(blob.clone()), Some(blob), upload)
+                let kept = KeptBlob::wrap(&blob, &self.blob_wrap);
+                (Content::Blob(blob), kept, upload)
             };
         let payload = Payload {
             rid,
@@ -2394,26 +2416,20 @@ impl WorkspaceSync {
         &self,
         rid: Id,
         found: &Found,
-    ) -> Result<
-        (
-            sync_protocol::records::BlobRef,
-            Option<sync_protocol::records::BlobRef>,
-        ),
-        SyncError,
-    > {
+    ) -> Result<(sync_protocol::records::BlobRef, Option<BlobMeta>), SyncError> {
         let revision = found.revision;
         if let Some(blob_ref) = &self.lent_blob
             && self.seal_again(&found.file.relative_path, &revision, blob_ref)?
         {
-            return Ok((blob_ref.clone(), Some(blob_ref.clone())));
+            return Ok((blob_ref.clone(), Some(BlobMeta::of(blob_ref))));
         }
         if let Some(object) = self.state.objects.get(&rid)
             && let Some(blob) = object
                 .states
                 .values()
                 .filter_map(|state| state.content.as_ref())
-                .find(|content| content.revision == revision && content.blob.is_some())
-                .and_then(|content| content.blob.clone())
+                .filter(|content| content.revision == revision)
+                .find_map(|content| content.blob.as_ref()?.open(&self.blob_wrap))
         {
             return Ok((blob, None));
         }
@@ -2463,7 +2479,8 @@ impl WorkspaceSync {
                 return Err(error);
             }
         };
-        Ok((blob_ref.clone(), Some(blob_ref)))
+        let meta = BlobMeta::of(&blob_ref);
+        Ok((blob_ref, Some(meta)))
     }
 
     /// Uploads each blob of the outbox's records that hasn't reached the
@@ -2529,11 +2546,7 @@ impl WorkspaceSync {
 
     /// Writes the blob of the outbox's record at `index` to the journal
     /// again, from the file, when the file still holds the record's bytes.
-    fn seal_listed(
-        &self,
-        index: usize,
-        blob: &sync_protocol::records::BlobRef,
-    ) -> Result<bool, SyncError> {
+    fn seal_listed(&self, index: usize, blob: &BlobMeta) -> Result<bool, SyncError> {
         let record = &self.state.outbox[index].record;
         let key = OpKey {
             device: record.body.device,
@@ -2545,8 +2558,64 @@ impl WorkspaceSync {
         let Some(content) = object.states.get(&key).and_then(|s| s.content.as_ref()) else {
             return Ok(false);
         };
+        let opened = self
+            .blob_of_record(record, blob)
+            .or_else(|| content.blob.as_ref()?.open(&self.blob_wrap));
+        let Some(blob_ref) = opened else {
+            return Ok(false);
+        };
         let path = object.local.as_ref().map_or(&content.path, |l| &l.path);
-        self.seal_again(path, &content.revision, blob)
+        self.seal_again(path, &content.revision, &blob_ref)
+    }
+
+    /// The whole `blob_ref` of `blob`, from the encrypted payload of a
+    /// record this device signed: the key stays there and nowhere else in
+    /// the outbox (§15).
+    fn blob_of_record(
+        &self,
+        record: &Signed<Operation>,
+        blob: &BlobMeta,
+    ) -> Option<sync_protocol::records::BlobRef> {
+        let payload = self.open_outgoing(record).ok()?;
+        let (PayloadKind::File {
+            content: Content::Blob(blob_ref),
+            ..
+        }
+        | PayloadKind::TextSnapshot {
+            content: Content::Blob(blob_ref),
+            ..
+        }
+        | PayloadKind::TextUpdate {
+            content: Content::Blob(blob_ref),
+            ..
+        }) = payload.kind
+        else {
+            return None;
+        };
+        (blob_ref.blob == blob.blob).then_some(blob_ref)
+    }
+
+    /// Opens a record of this device's outbox.
+    fn open_outgoing(&self, record: &Signed<Operation>) -> Result<Payload, SyncError> {
+        let key = self
+            .keys
+            .get(&record.body.epoch)
+            .ok_or(SyncError::Check("sync_key_mismatch"))?;
+        let epoch_record = self
+            .state
+            .epochs
+            .iter()
+            .chain(self.state.ended_epochs.iter())
+            .find(|e| e.body.epoch == record.body.epoch)
+            .map(|e| e.digest())
+            .ok_or(SyncError::Check("sync_key_mismatch"))?;
+        // A record that covers nothing may be a new object's state or a
+        // text update, and only its payload tells which.
+        record
+            .body
+            .open_payload(key, &epoch_record, OpClass::State)
+            .or_else(|_| record.body.open_payload(key, &epoch_record, OpClass::Patch))
+            .map_err(|_| SyncError::Check("sync_record_unreadable"))
     }
 
     /// Takes out the record at `index`, whose blob no longer exists anywhere
@@ -2592,7 +2661,7 @@ impl WorkspaceSync {
 
     /// The blob the outbox's record at `index` lists: one it brought, or
     /// one it borrowed from an earlier state.
-    fn listed_blob(&self, index: usize) -> Option<sync_protocol::records::BlobRef> {
+    fn listed_blob(&self, index: usize) -> Option<BlobMeta> {
         let outgoing = &self.state.outbox[index];
         let record = &outgoing.record;
         let key = OpKey {
@@ -2608,7 +2677,8 @@ impl WorkspaceSync {
                 .content
                 .as_ref()?
                 .blob
-                .clone()
+                .as_ref()
+                .map(|blob| blob.meta.clone())
         })
     }
 
@@ -2808,25 +2878,7 @@ impl WorkspaceSync {
         };
         for i in index..self.state.outbox.len() {
             let old = self.state.outbox[i].record.clone();
-            let key = self
-                .keys
-                .get(&old.body.epoch)
-                .ok_or(SyncError::Check("sync_key_mismatch"))?;
-            let epoch_record = self
-                .state
-                .epochs
-                .iter()
-                .chain(self.state.ended_epochs.iter())
-                .find(|e| e.body.epoch == old.body.epoch)
-                .map(|e| e.digest())
-                .ok_or(SyncError::Check("sync_key_mismatch"))?;
-            // A record that covers nothing may be a new object's state or
-            // a text update, and only its payload tells which.
-            let payload = old
-                .body
-                .open_payload(key, &epoch_record, OpClass::State)
-                .or_else(|_| old.body.open_payload(key, &epoch_record, OpClass::Patch))
-                .map_err(|_| SyncError::Check("sync_record_unreadable"))?;
+            let payload = self.open_outgoing(&old)?;
             if i == index && !forced {
                 self.state.outbox[i].reseals += 1;
                 if self.state.outbox[i].reseals > RESEAL_LIMIT {
@@ -4834,7 +4886,7 @@ impl WorkspaceSync {
                 _ => {}
             }
             let content = match record.payload {
-                Some(payload) => carried(&payload, &mut contents),
+                Some(payload) => carried(&payload, &mut contents, &self.blob_wrap),
                 None => {
                     let unreadable = state::Unreadable {
                         rid: op.body.rid,
@@ -5484,7 +5536,7 @@ fn text_blob(payload: &Payload, contents: &mut Bodies) -> Option<Vec<u8>> {
 
 /// What a payload carries, keeping a file's bytes in `contents` by the
 /// revision they hash to.
-fn carried(payload: &Payload, contents: &mut Bodies) -> Option<Carried> {
+fn carried(payload: &Payload, contents: &mut Bodies, wrap: &SecretKey) -> Option<Carried> {
     match &payload.kind {
         PayloadKind::File {
             object_id,
@@ -5532,7 +5584,7 @@ fn carried(payload: &Payload, contents: &mut Bodies) -> Option<Carried> {
             delete: false,
             object_id: object_id.0.clone(),
             kept: None,
-            blob: Some(blob.clone()),
+            blob: KeptBlob::wrap(blob, wrap),
             text: None,
         }),
         // Text records go through `take_text`.

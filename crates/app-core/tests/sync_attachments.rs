@@ -7,7 +7,8 @@
 mod sync_support;
 
 use sync_protocol::blob::is_valid_blob_ciphertext_len;
-use sync_support::{Pair, pair};
+use sync_protocol::types::to_hex;
+use sync_support::{Pair, pair, rounds};
 
 /// A marker that appears only in the plaintext of the test files.
 const MARKER: &[u8] = b"ATTACHMENT-PLAINTEXT-MARKER";
@@ -206,4 +207,69 @@ async fn two_edits_of_one_attachment_keep_both_versions() {
     };
     assert!(kept(&a, &desktop_version));
     assert!(kept(&b, &laptop_version));
+}
+
+/// Whether any file under `dir` holds `needle`.
+fn holds(dir: &std::path::Path, needle: &[u8]) -> bool {
+    std::fs::read_dir(dir).unwrap().flatten().any(|entry| {
+        let path = entry.path();
+        if path.is_dir() {
+            holds(&path, needle)
+        } else {
+            std::fs::read(&path)
+                .unwrap()
+                .windows(needle.len())
+                .any(|window| window == needle)
+        }
+    })
+}
+
+/// No blob key sits in the folder, in the clear or as hexadecimal, while a
+/// record waits in the outbox, after it went, or on the device that pulled
+/// it: a copy of the folder opens no blob of the server's (§15, §21).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_blob_key_rests_in_the_folder() {
+    let mut pair = pair().await;
+    pair.a.write("Scan.pdf", &vec![7; 400_000]);
+    pair.sync_a.capture().expect("signed into the outbox");
+    let check = |sync: &app_core::sync::workspace::WorkspaceSync, folder: &sync_support::Folder| {
+        let keys = sync.blob_keys_for_testing();
+        assert!(!keys.is_empty(), "a key to look for");
+        let journals = folder.path(".noura/sync");
+        for key in keys {
+            let raw = key.expose();
+            assert!(!holds(&journals, raw));
+            assert!(!holds(&journals, to_hex(raw).as_bytes()));
+        }
+    };
+    check(&pair.sync_a, &pair.a);
+    rounds(&mut pair).await;
+    assert_eq!(pair.a.files(), pair.b.files());
+    check(&pair.sync_a, &pair.a);
+    check(&pair.sync_b, &pair.b);
+}
+
+/// A blob that went missing from the journal seals again after a restart
+/// from the key in the record's payload (§14, §15).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_outbox_record_keeps_its_blob_key_in_its_payload() {
+    let mut pair = pair().await;
+    pair.a.write("Scan.pdf", &vec![7; 400_000]);
+    pair.sync_a.capture().expect("signed into the outbox");
+    let uploads = pair
+        .a
+        .path(".noura/sync")
+        .join(pair.laptop.id().to_hex())
+        .join("uploads");
+    std::fs::remove_dir_all(&uploads).expect("the ciphertext goes");
+    pair.sync_a.lose_saves();
+    pair.sync_a = app_core::sync::workspace::WorkspaceSync::open(
+        pair.a.engine.clone(),
+        pair.laptop.credentials.clone(),
+        pair.laptop.secrets(),
+        &pair.a.registry,
+    )
+    .expect("the folder opens");
+    rounds(&mut pair).await;
+    assert_eq!(pair.a.files(), pair.b.files());
 }

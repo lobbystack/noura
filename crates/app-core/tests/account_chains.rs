@@ -1314,9 +1314,14 @@ fn a_reset_one_workspace_accepted_stays_open_in_another() {
     )
     .unwrap();
     heads.refuse_short(member, &secrets);
-    assert_eq!(heads.stopped_in(&first, [member]), Some("sync_account_forked"));
+    assert_eq!(
+        heads.stopped_in(&first, [member]),
+        Some("sync_account_forked")
+    );
 
-    heads.drop_retired(&member, &fresh, first, &secrets).unwrap();
+    heads
+        .drop_retired(&member, &fresh, first, &secrets)
+        .unwrap();
     assert_eq!(heads.stopped_in(&first, [member]), None, "accepted here");
     assert_eq!(
         heads.stopped_in(&second, [member]),
@@ -1333,7 +1338,9 @@ fn a_reset_one_workspace_accepted_stays_open_in_another() {
     );
     assert_eq!(heads.kept_in(&second, &member).len(), 2);
 
-    heads.drop_retired(&member, &fresh, second, &secrets).unwrap();
+    heads
+        .drop_retired(&member, &fresh, second, &secrets)
+        .unwrap();
     assert_eq!(heads.stopped_in(&second, [member]), None);
     assert_eq!(heads.kept_of(&member).len(), 1, "no workspace names it");
     let reopened = KeptHeads::open(dir.path(), own, device, &secrets).unwrap();

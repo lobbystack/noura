@@ -1421,8 +1421,9 @@ impl WorkspaceSync {
             // byte when the server lacks it (§14).
             self.lent_blob = content
                 .blob
-                .clone()
-                .filter(|_| found.revision == content.revision);
+                .as_ref()
+                .filter(|_| found.revision == content.revision)
+                .and_then(|blob| blob.open(&self.blob_wrap));
             let signed = self.in_domain(domain, |sync| sync.sign_file(rid, &found, covers));
             self.lent_blob = None;
             signed?;
@@ -1726,15 +1727,15 @@ impl WorkspaceSync {
                 let local = object.local.as_ref()?;
                 object.states.values().find_map(|state| {
                     let content = state.content.as_ref()?;
-                    let blob_ref = content.blob.as_ref()?;
-                    (blob_ref.blob == blob && content.revision == local.revision).then(|| {
-                        (
-                            local.path.clone(),
-                            content.revision,
-                            blob_ref.clone(),
-                            object.domain.unwrap_or(self.state.domain),
-                        )
-                    })
+                    let kept = content.blob.as_ref()?;
+                    let listed = kept.meta.blob == blob && content.revision == local.revision;
+                    let blob_ref = kept.open(&self.blob_wrap).filter(|_| listed)?;
+                    Some((
+                        local.path.clone(),
+                        content.revision,
+                        blob_ref,
+                        object.domain.unwrap_or(self.state.domain),
+                    ))
                 })
             });
             let Some((path, revision, blob_ref, domain)) = found else {
@@ -1763,7 +1764,12 @@ impl WorkspaceSync {
                 let path = self.journal.dir().join(&upload);
                 match service
                     .client()
-                    .upload_blob(workspace, domain, &blob_ref, &path)
+                    .upload_blob(
+                        workspace,
+                        domain,
+                        &super::state::BlobMeta::of(&blob_ref),
+                        &path,
+                    )
                     .await
                 {
                     Ok(()) => uploaded += 1,

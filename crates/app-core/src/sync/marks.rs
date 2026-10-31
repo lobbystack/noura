@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 
 use local_core::sync::SyncCredentials;
 use serde::{Deserialize, Serialize};
-use sync_protocol::types::{Digest, Id};
+use sync_protocol::types::{Digest, Id, SecretKey, from_hex, to_hex};
 
 use super::SyncError;
 
@@ -97,10 +97,47 @@ fn name(device: &Id, workspace: &Id) -> String {
     )
 }
 
-/// The credential store items a device's marks use for `workspaces`, which
-/// signing out deletes.
+fn blob_wrap_name(device: &Id, workspace: &Id) -> String {
+    format!(
+        "noura.sync.v2.blob-wrap.{}.{}",
+        device.to_hex(),
+        workspace.to_hex()
+    )
+}
+
+/// The credential store items a device's marks and blob wrap keys use for
+/// `workspaces`, which signing out deletes.
 pub fn items(device: &Id, workspaces: impl IntoIterator<Item = Id>) -> Vec<String> {
-    workspaces.into_iter().map(|w| name(device, &w)).collect()
+    workspaces
+        .into_iter()
+        .flat_map(|w| [name(device, &w), blob_wrap_name(device, &w)])
+        .collect()
+}
+
+/// The key that seals the blob keys `device` keeps at rest for `workspace`
+/// (§15), which it creates the first time. It lives only in the credential
+/// store, so a copy of the folder holds no blob key it can open.
+pub fn blob_wrap_key(
+    credentials: &dyn SyncCredentials,
+    device: &Id,
+    workspace: &Id,
+) -> Result<SecretKey, SyncError> {
+    let name = blob_wrap_name(device, workspace);
+    if let Some(text) = credentials
+        .read_optional(&name)
+        .map_err(failed)?
+        .filter(|text| !text.is_empty())
+    {
+        let bytes: [u8; 32] = from_hex(&text)
+            .and_then(|b| b.try_into().ok())
+            .ok_or_else(|| SyncError::Invalid("the blob wrap key doesn't parse".into()))?;
+        return Ok(SecretKey(bytes));
+    }
+    let key = SecretKey::random().map_err(|e| SyncError::Invalid(format!("no randomness: {e}")))?;
+    credentials
+        .write(&name, &to_hex(key.expose()))
+        .map_err(failed)?;
+    Ok(key)
 }
 
 fn failed(error: impl std::fmt::Display) -> SyncError {
