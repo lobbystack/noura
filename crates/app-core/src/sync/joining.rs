@@ -585,11 +585,12 @@ mod tests {
         assert!(posted.lapses(start + RESET_REQUEST_LIFE));
         let answered = candidate(RESET, true);
         assert!(!answered.lapses(answered.posted + RESET_REQUEST_LIFE));
-        assert!(answered.lapses(answered.posted + RESET_OFFER_LIFE));
+        assert!(answered.lapses(answered.posted + OFFER_LIFE));
         let invited = candidate(Id([9; 16]), false);
         assert!(
-            !invited.lapses(invited.posted + RESET_OFFER_LIFE),
-            "only a reset posts itself again"
+            !invited.lapses(invited.posted + RESET_REQUEST_LIFE),
+            "an invited request waits for the server to drop it"
         );
+        assert!(invited.lapses(invited.posted + REQUEST_LIFE));
     }
 }
