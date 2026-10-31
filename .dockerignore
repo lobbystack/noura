@@ -9,5 +9,6 @@ target
 **/.env.*
 **/*.log
 .agents
+.claude
 .codex
 .railway

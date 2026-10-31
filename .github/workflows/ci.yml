@@ -306,6 +306,15 @@ jobs:
           echo "::error::The server on PostgreSQL never passed its health check."
           exit 1
 
+  # The image the self-hosting guide and the Railway configuration run.
+  server-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: scripts/check-server-image.sh
+
   # Both stores' queries are checked at compile time against offline data in
   # crates/sync-store-sqlite/.sqlx and crates/sync-store-postgres/.sqlx, so
   # builds need no database. This job rebuilds that data from the

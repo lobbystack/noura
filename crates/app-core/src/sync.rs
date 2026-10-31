@@ -167,6 +167,22 @@ pub struct SyncClient {
     generation: u64,
 }
 
+/// How many times one request waits out `rate_limited` before it reports it.
+const RATE_RETRIES: u32 = 8;
+/// The longest wait a request sits out. A longer one, such as the expiry of
+/// a pending approval request, reaches the caller.
+const LONGEST_RATE_WAIT: u64 = 60;
+
+/// How long to wait before sending a request again that `error` refused,
+/// when it says to wait out a rate limit (§26).
+fn rate_wait(error: &ErrorBody) -> Option<std::time::Duration> {
+    (error.code.as_str() == "rate_limited")
+        .then_some(error.retry_after_seconds)
+        .flatten()
+        .filter(|seconds| *seconds <= LONGEST_RATE_WAIT)
+        .map(std::time::Duration::from_secs)
+}
+
 impl SyncClient {
     /// Connects to the server at `base`, such as `https://sync.noura.app`,
     /// and refuses one that doesn't advertise protocol 2.
@@ -226,13 +242,44 @@ impl SyncClient {
         path: &str,
         body: Option<Vec<u8>>,
     ) -> Result<Vec<u8>, SyncError> {
-        let mut request = self.http.request(method, format!("{}{path}", self.base));
-        if !self.token.is_empty() {
-            request = request.bearer_auth(&self.token);
+        let mut retries = 0;
+        loop {
+            let mut request = self
+                .http
+                .request(method.clone(), format!("{}{path}", self.base));
+            if !self.token.is_empty() {
+                request = request.bearer_auth(&self.token);
+            }
+            if let Some(body) = &body {
+                request = request
+                    .header("content-type", MEDIA_TYPE)
+                    .body(body.clone());
+            }
+            match self.exchange(request).await? {
+                Ok(bytes) => return Ok(bytes),
+                Err((error, status)) => {
+                    if retries < RATE_RETRIES
+                        && let Some(wait) = rate_wait(&error)
+                    {
+                        retries += 1;
+                        tokio::time::sleep(wait).await;
+                        continue;
+                    }
+                    return Err(SyncError::Refused {
+                        code: error.code.0,
+                        status,
+                        detail: error.detail.map(|d| d.0),
+                    });
+                }
+            }
         }
-        if let Some(body) = body {
-            request = request.header("content-type", MEDIA_TYPE).body(body);
-        }
+    }
+
+    /// One request's bytes, or its §26 refusal with the HTTP status.
+    async fn exchange(
+        &mut self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<Result<Vec<u8>, (ErrorBody, u16)>, SyncError> {
         let response = request.send().await.map_err(network)?;
         let status = response.status();
         if let Some(generation) = response
@@ -246,13 +293,9 @@ impl SyncClient {
         let bytes = response.bytes().await.map_err(network)?;
         if !status.is_success() {
             let error = ErrorBody::from_bytes(&bytes).map_err(network)?;
-            return Err(SyncError::Refused {
-                code: error.code.0,
-                status: status.as_u16(),
-                detail: error.detail.map(|d| d.0),
-            });
+            return Ok(Err((error, status.as_u16())));
         }
-        Ok(bytes.to_vec())
+        Ok(Ok(bytes.to_vec()))
     }
 
     /// `POST /v2/workspaces`.

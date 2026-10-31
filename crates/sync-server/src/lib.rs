@@ -15,6 +15,7 @@ pub mod http;
 pub mod logs;
 pub mod maintenance;
 pub mod postgres;
+pub mod rate;
 pub mod realtime;
 pub mod restore;
 pub mod tus;
@@ -33,6 +34,7 @@ pub use accounts::{Accounts, Allowlist, MailTransport, PublicOrigin};
 pub use data::{CommandError, Migrated, check_ready, migrate};
 pub use http::AppState;
 pub use postgres::Postgres;
+pub use rate::{RateGate, RateLimits};
 
 /// How `serve` sends mail.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -77,6 +79,11 @@ pub struct Config {
     pub blob_store: BlobStoreConfig,
     /// `retained_bytes` and `workspace_quota_bytes` (§19, §20).
     pub retention: sync_store::Retention,
+    /// The rate limits (§26).
+    pub rate_limits: RateLimits,
+    /// The header a trusted proxy sets to the client's IP. Without one the
+    /// server counts sign-in per connection and ignores such headers.
+    pub trusted_proxy_header: Option<String>,
 }
 
 /// Where `serve` keeps blob segments (§21).
@@ -128,6 +135,8 @@ impl Config {
             postgres: None,
             blob_store: BlobStoreConfig::Disk,
             retention: sync_store::Retention::default(),
+            rate_limits: RateLimits::default(),
+            trusted_proxy_header: None,
         }
     }
 }
@@ -192,7 +201,8 @@ pub async fn serve_on<B: Backend>(
     listener: TcpListener,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
-    axum::serve(listener, http::router(state))
+    let service = http::router(state).into_make_service_with_connect_info::<SocketAddr>();
+    axum::serve(listener, service)
         .with_graceful_shutdown(shutdown)
         .await
 }
@@ -224,6 +234,18 @@ pub async fn spawn_with_blobs<B: Backend>(
     accounts: impl FnOnce(PublicOrigin) -> Accounts,
     blobs: Arc<dyn blobs::SegmentStore>,
 ) -> std::io::Result<SocketAddr> {
+    spawn_limited(store, address, accounts, blobs, RateGate::unlimited()).await
+}
+
+/// [`spawn_with_blobs`] with the rate limits of `rate`; the other `spawn`
+/// functions count nothing.
+pub async fn spawn_limited<B: Backend>(
+    store: Arc<Store<B>>,
+    address: &str,
+    accounts: impl FnOnce(PublicOrigin) -> Accounts,
+    blobs: Arc<dyn blobs::SegmentStore>,
+    rate: RateGate,
+) -> std::io::Result<SocketAddr> {
     let listener = TcpListener::bind(address).await?;
     let bound = listener.local_addr()?;
     let origin = PublicOrigin::parse(&format!("http://localhost:{}", bound.port()))
@@ -232,6 +254,7 @@ pub async fn spawn_with_blobs<B: Backend>(
         store,
         accounts: Arc::new(accounts(origin)),
         blobs,
+        rate: Arc::new(rate),
     };
     tokio::spawn(serve_on(state, listener, std::future::pending()));
     Ok(bound)
@@ -273,6 +296,17 @@ pub async fn serve(config: Config) -> Result<(), CommandError> {
     }
 }
 
+/// The rate gate `config` names.
+fn rate_gate(config: &Config) -> Result<RateGate, CommandError> {
+    let header = config
+        .trusted_proxy_header
+        .as_deref()
+        .map(str::parse)
+        .transpose()
+        .map_err(|_| CommandError("NOURA_TRUSTED_PROXY_HEADER isn't a header name".into()))?;
+    Ok(RateGate::new(config.rate_limits, header))
+}
+
 async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), CommandError> {
     let listener = TcpListener::bind(config.listen)
         .await
@@ -282,6 +316,7 @@ async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), Co
         .map_err(|e| CommandError(e.to_string()))?;
     let origin = public_origin(config.origin.as_deref(), bound)?;
     let accounts = accounts_for(config, origin)?;
+    let rate = rate_gate(config)?;
     if !accounts.has_passkeys() {
         eprintln!(
             "sync-server: passkeys need a domain name in the public origin; the pages offer email links alone"
@@ -309,6 +344,7 @@ async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), Co
         store: store.clone(),
         accounts: Arc::new(accounts),
         blobs,
+        rate: Arc::new(rate),
     };
     let served = serve_on(state, listener, shutdown_signal()).await;
     maintenance.abort();

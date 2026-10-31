@@ -1540,18 +1540,19 @@ Client error codes: `sync_chain_gap`, `sync_chain_reordered`, `sync_chain_replay
 
 ### Rate limits
 
-The server limits sync traffic per device and in bytes, with a separate allowance for bootstrap pages and range reads, and limits sign-in per client IP. Records that reach a device through the realtime channel don't count. A request over a limit gets `rate_limited` with `retry_after_seconds`. The defaults, which a server setting changes:
+The server limits sync traffic per device and in bytes, with a separate allowance for bootstrap pages and range reads, and limits sign-in per client IP. A session with no card yet counts against its account. Records that reach a device through the realtime channel don't count. A request over a limit gets `rate_limited` with `retry_after_seconds`, and the same wait in a `Retry-After` header, because a `HEAD` response has no body. The server counts a response after it builds it, so a read may overdraw its budget by its own response, reads already in flight may each do the same, and the next read then waits; a read or an upload costs at least 1 KiB, so empty answers don't run free. The server reads a client's IP only from a header the operator configures, and otherwise from the connection, and it counts an IPv6 client by its /64. The defaults, which a server setting changes:
 
 | Traffic | Default per device |
 |---|---|
 | Pushes | 10 a second, which leaves room for the 500 ms text tick, presence and rotations |
-| Push bodies and blob uploads (tus `PATCH`) | 64 MiB a minute |
+| Push bodies | 64 MiB a minute |
+| Blob uploads (tus `PATCH`, and `HEAD`, which a client sends before each segment) | 512 MiB a minute |
 | Pulls, chain and checkpoint fetches, policy and keys | 128 MiB a minute |
 | Bootstrap allowance: `live`, `manifest` and blob range reads | 512 MiB a minute |
 | Other sync requests | 600 a minute |
 | Sign-in requests (device grant, magic link, passkey, reset code) | 30 a minute per client IP |
 
-At these defaults, the join in [§28](#28-worked-example-100000-objects) downloads its 10 GB of attachments in about 20 minutes.
+At these defaults, the join in [§28](#28-worked-example-100000-objects) downloads its 10 GB of attachments in about 20 minutes, and a device uploads them in about 20 minutes while its edits go on from the push budget.
 
 ## 27. Limits
 
@@ -1641,7 +1642,7 @@ Moving a folder that holds the 5,000 attachments to another folder of the worksp
 
 ### Download pacing
 
-At the default bootstrap allowance of 512 MiB a minute ([§26](#rate-limits)), the join downloads its 10 GB of attachments in about 20 minutes, and its 339 pages of live operations take less than a minute of allowance. A limit counted only in requests would hold it back: at 120 requests a minute, the 15,000 attachment ranges alone would take 125 minutes.
+At the default bootstrap allowance of 512 MiB a minute ([§26](#rate-limits)), the join downloads its 10 GB of attachments in about 20 minutes, and its 339 pages of live operations take less than a minute of allowance. A device that uploads those attachments takes about 20 minutes at the upload budget of 512 MiB a minute, with its 5,000 creation requests inside the 600 other requests a minute, and the push budget stays free for its edits. A limit counted only in requests would hold it back: at 120 requests a minute, the 15,000 attachment ranges alone would take 125 minutes.
 
 ## 29. What the server stores
 
@@ -1665,7 +1666,7 @@ At the default bootstrap allowance of 512 MiB a minute ([§26](#rate-limits)), t
 | Share links | token hash, workspace, domain, creating device, expiry, signed padded snapshot | that a domain has a shared item, which device shared it, and from its expiry roughly when |
 | Invitations | while open: ID, token hash, workspace, role, inviter, accepting account, status, expiry, padded context | who is inviting whom, with which role, until the invitation ends |
 | Workspace profile | signed encrypted record | when the name changed |
-| Rate counters | key, window length, count and the end of the count's window; the server deletes a count within a minute after its window ends | request volume, and which keys sent requests in the current window |
+| Rate counters | key, which holds a device ID, an account ID or a keyed hash of a client IP, window length, count and the end of the count's window; the server deletes a count within a minute after its window ends | request volume, and which keys sent requests in the current window |
 | Presence | nothing stored | |
 
 No stored table holds an object type, a per-record timestamp or an unpadded size. The blob store's file times date uploads, as the creation-times note below says.
@@ -1932,7 +1933,7 @@ These choices go beyond the list of topics the protocol had to cover. Each one s
 10. **Edit beats delete.** Confirmed. A conflict keeps the edit until you choose, and a returning device asks before deleting files the manifest lacks.
 11. **Edit mode and size class stay visible.** Confirmed. Patches that cover nothing show text mode, and blob IDs show content above 256 KiB. Hiding them would mean dropping server-side compaction or blob authorization.
 12. **Only the inviting device approves an invitee.** Changed: the inviting device's `add_member` records the invitee's account head, which the invitee's request committed to, so no separate device change exists and clients check one change.
-13. **Sync rate limits count bytes per device.** Confirmed, with a bootstrap allowance and the defaults in [§26](#rate-limits); records delivered over the realtime channel don't count. Ticket 52 gives uploads a budget of their own.
+13. **Sync rate limits count bytes per device.** Confirmed, with a bootstrap allowance and the defaults in [§26](#rate-limits); records delivered over the realtime channel don't count. Uploads have a budget of their own, 512 MiB a minute.
 14. **Rollback protection lives in the credential store.** Changed: the mark covers the device's own account chain head and its reserved load numbers, and the removed list is gone. A high-water mark per workspace keeps a restored or copied workspace folder from rolling a device back or reusing its counters, and the own-head entry keeps a rolled-back app data folder from accepting a shorter account chain.
 15. **A text-mode note's path and properties travel beside its yrs body.** Changed: they left the yrs document. Each is a `meta` entry in the encrypted payload that merges per key by log position, with ties broken by record digest, so renames and frontmatter edits merge without review and the verdict judges every write from the record alone. A write that a restore lost comes back as a new write. A lineage derives from the first document's bytes, so two devices that start editing at once from the same state agree on it, and two that build different documents conflict.
 16. **Every operation names its writer's latest checkpoint and the restore generation.** Confirmed. These 48 bytes per record keep a server from hiding a checkpoint from one client while records still cross.
