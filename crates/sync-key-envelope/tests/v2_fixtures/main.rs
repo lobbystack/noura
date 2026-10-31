@@ -54,6 +54,24 @@ fn fixtures() -> Vec<common::Fixture> {
         share::fixture(),
         recovery::fixture(),
     ]
+    .into_iter()
+    .map(with_restore_cases)
+    .collect()
+}
+
+/// Adds the decision tables of a restore (§14), which the client's own
+/// tests read, to the fixtures that name them.
+fn with_restore_cases(mut fixture: common::Fixture) -> common::Fixture {
+    let cases: serde_json::Value =
+        serde_json::from_str(include_str!("restore_cases.json")).expect("the cases parse");
+    let key = match fixture.file {
+        "sync-v2-live.json" => "live",
+        "sync-v2-chain.json" => "chain",
+        "sync-v2-profile.json" => "profile",
+        _ => return fixture,
+    };
+    fixture.set("restore_cases", cases[key].clone());
+    fixture
 }
 
 fn directory() -> PathBuf {

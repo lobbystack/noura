@@ -1,0 +1,466 @@
+{
+  "chain": [
+    {
+      "covered": 12,
+      "expect": "pass",
+      "final": {
+        "counter": 3,
+        "digest": 7,
+        "entry": 10
+      },
+      "heads": [
+        [
+          3,
+          7
+        ]
+      ],
+      "kind": "final_checkpoint",
+      "name": "checkpoint_lists_the_final_head"
+    },
+    {
+      "covered": 12,
+      "expect": "sync_restore_lost",
+      "final": {
+        "counter": 3,
+        "digest": 7,
+        "entry": 10
+      },
+      "heads": [
+        [
+          4,
+          8
+        ]
+      ],
+      "kind": "final_checkpoint",
+      "name": "checkpoint_lists_another_head"
+    },
+    {
+      "covered": 12,
+      "expect": "sync_restore_lost",
+      "final": {
+        "counter": 3,
+        "digest": 7,
+        "entry": 10
+      },
+      "heads": [],
+      "kind": "final_checkpoint",
+      "name": "checkpoint_drops_a_demoted_device"
+    },
+    {
+      "covered": 12,
+      "expect": "pass",
+      "final": {
+        "counter": 3,
+        "digest": 7,
+        "entry": 10
+      },
+      "heads": [],
+      "kind": "final_checkpoint",
+      "may_leave": true,
+      "name": "removed_card_leaves_the_checkpoint"
+    },
+    {
+      "covered": 12,
+      "expect": "pass",
+      "final": {
+        "counter": 0,
+        "digest": 0,
+        "entry": 10
+      },
+      "heads": [],
+      "kind": "final_checkpoint",
+      "name": "zero_final_head_needs_no_listed_head"
+    },
+    {
+      "covered": 9,
+      "expect": "pass",
+      "final": {
+        "counter": 3,
+        "digest": 7,
+        "entry": 10
+      },
+      "heads": [
+        [
+          5,
+          9
+        ]
+      ],
+      "kind": "final_checkpoint",
+      "name": "own_entry_after_the_change_covered_seq_before_it"
+    },
+    {
+      "covered": 12,
+      "expect": "pass",
+      "final": {
+        "counter": 3,
+        "digest": 7,
+        "entry": 10,
+        "until": 11
+      },
+      "heads": [
+        [
+          5,
+          9
+        ]
+      ],
+      "kind": "final_checkpoint",
+      "name": "access_given_back_ends_the_window"
+    },
+    {
+      "expect": "pass",
+      "final": {
+        "counter": 3,
+        "digest": 7,
+        "entry": 10,
+        "records": [
+          [
+            2,
+            5
+          ],
+          [
+            3,
+            7
+          ]
+        ]
+      },
+      "kind": "final_record",
+      "name": "fetched_record_passes",
+      "record": [
+        3,
+        7
+      ],
+      "seq": 8
+    },
+    {
+      "expect": "sync_restore_lost",
+      "final": {
+        "counter": 3,
+        "digest": 7,
+        "entry": 10,
+        "records": [
+          [
+            2,
+            5
+          ],
+          [
+            3,
+            7
+          ]
+        ]
+      },
+      "kind": "final_record",
+      "name": "re_signed_record_is_refused",
+      "record": [
+        3,
+        8
+      ],
+      "seq": 8
+    },
+    {
+      "expect": "sync_restore_lost",
+      "final": {
+        "counter": 3,
+        "digest": 7,
+        "entry": 10
+      },
+      "kind": "final_record",
+      "name": "record_above_the_head_before_the_entry",
+      "record": [
+        4,
+        8
+      ],
+      "seq": 9
+    },
+    {
+      "expect": "pass",
+      "final": {
+        "counter": 3,
+        "digest": 7,
+        "entry": 10
+      },
+      "kind": "final_record",
+      "name": "record_above_the_head_after_the_entry_on_another_page",
+      "record": [
+        4,
+        8
+      ],
+      "seq": 11
+    },
+    {
+      "expect": false,
+      "kind": "bootstrap_final",
+      "listed": true,
+      "name": "bootstrapped_past_a_demotion_and_a_promotion",
+      "regained": true
+    },
+    {
+      "expect": false,
+      "kind": "bootstrap_final",
+      "listed": false,
+      "name": "removed_card_dropped_from_the_bootstrap_checkpoint",
+      "regained": false
+    },
+    {
+      "expect": true,
+      "kind": "bootstrap_final",
+      "listed": true,
+      "name": "bootstrapped_past_a_demotion_that_stands",
+      "regained": false
+    }
+  ],
+  "live": [
+    {
+      "expect": true,
+      "journal_live": [
+        "a1"
+      ],
+      "journal_states": [
+        "a1"
+      ],
+      "kind": "lag",
+      "name": "server_lacks_the_rid",
+      "server_live": []
+    },
+    {
+      "expect": true,
+      "journal_live": [
+        "a2"
+      ],
+      "journal_states": [
+        "a1",
+        "a2"
+      ],
+      "kind": "lag",
+      "name": "server_holds_an_older_state",
+      "server_live": [
+        "a1"
+      ]
+    },
+    {
+      "expect": false,
+      "journal_live": [
+        "a2"
+      ],
+      "journal_states": [
+        "a1",
+        "a2"
+      ],
+      "kind": "lag",
+      "name": "server_holds_the_live_state",
+      "server_live": [
+        "a2"
+      ]
+    },
+    {
+      "expect": false,
+      "journal_live": [
+        "a1"
+      ],
+      "journal_states": [
+        "a1"
+      ],
+      "kind": "lag",
+      "name": "device_behind_another_device_ahead",
+      "server_live": [
+        "b1"
+      ]
+    },
+    {
+      "expect": true,
+      "journal_live": [
+        "a2",
+        "b2"
+      ],
+      "journal_states": [
+        "a1",
+        "a2",
+        "b2"
+      ],
+      "kind": "lag",
+      "name": "journal_held_a_conflict_the_server_lost",
+      "server_live": [
+        "a1"
+      ]
+    },
+    {
+      "expect": false,
+      "journal_live": [
+        "a2",
+        "b2"
+      ],
+      "journal_states": [
+        "a2",
+        "b2"
+      ],
+      "kind": "lag",
+      "name": "one_branch_of_a_conflict_survives",
+      "server_live": [
+        "a2"
+      ]
+    },
+    {
+      "applied": [
+        [
+          "Plan.md",
+          "r1"
+        ]
+      ],
+      "expect": "edit",
+      "file": [
+        "Plan.md",
+        "r2"
+      ],
+      "kind": "file",
+      "name": "file_over_the_applied_state_is_an_edit",
+      "server": [
+        [
+          "Plan.md",
+          "r1"
+        ]
+      ]
+    },
+    {
+      "applied": [
+        [
+          "Plan.md",
+          "r2"
+        ]
+      ],
+      "expect": "edit",
+      "file": [
+        "Plan.md",
+        "r3"
+      ],
+      "kind": "file",
+      "name": "same_state_under_another_operation_is_an_edit",
+      "server": [
+        [
+          "Plan.md",
+          "r2"
+        ]
+      ]
+    },
+    {
+      "applied": [
+        [
+          "Plan.md",
+          "r1"
+        ]
+      ],
+      "expect": "follow",
+      "file": [
+        "Plan.md",
+        "r1"
+      ],
+      "kind": "file",
+      "name": "file_the_journal_applied_follows_the_server",
+      "server": [
+        [
+          "Plan.md",
+          "r2"
+        ]
+      ]
+    },
+    {
+      "applied": [
+        [
+          "Plan.md",
+          "r1"
+        ]
+      ],
+      "expect": "review",
+      "file": [
+        "Plan.md",
+        "r9"
+      ],
+      "kind": "file",
+      "name": "stale_file_over_a_newer_state_goes_to_review",
+      "server": [
+        [
+          "Plan.md",
+          "r2"
+        ]
+      ]
+    },
+    {
+      "applied": [
+        [
+          "Plan.md",
+          "r1"
+        ]
+      ],
+      "expect": "review",
+      "file": [
+        "Plan.md",
+        "r9"
+      ],
+      "kind": "file",
+      "name": "another_path_is_another_state",
+      "server": [
+        [
+          "Moved.md",
+          "r1"
+        ]
+      ]
+    },
+    {
+      "expect": true,
+      "kind": "race",
+      "live": [
+        "a3",
+        "b1"
+      ],
+      "name": "rewrite_race_covers_a_patch_of_its_own",
+      "own": "a3",
+      "states": [
+        "b1"
+      ]
+    },
+    {
+      "expect": false,
+      "kind": "race",
+      "live": [
+        "a3"
+      ],
+      "name": "rewrite_that_won_covers_nothing",
+      "own": "a3",
+      "states": [
+        "a3"
+      ]
+    },
+    {
+      "expect": false,
+      "kind": "race",
+      "live": [
+        "c1"
+      ],
+      "name": "rewrite_already_covered_needs_nothing",
+      "own": "a3",
+      "states": [
+        "c1"
+      ]
+    }
+  ],
+  "profile": [
+    {
+      "accepted": {
+        "revision": 4
+      },
+      "expect": "accepted",
+      "forgets_after_comparison": true,
+      "kind": "profile_after_restore",
+      "name": "restore_lost_a_rename",
+      "server_revision": 3
+    },
+    {
+      "accepted": {
+        "revision": 4
+      },
+      "expect": "sync_profile_rollback",
+      "forgets_after_comparison": false,
+      "kind": "profile_after_restore",
+      "name": "no_generation_change_keeps_the_mark",
+      "server_revision": 3
+    }
+  ]
+}
