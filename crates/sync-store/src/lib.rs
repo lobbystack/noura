@@ -1545,6 +1545,16 @@ pub trait WriteTxn: ReadTxn {
         devices: &[Id],
         link: RemovedBy,
     ) -> impl Future<Output = Result<()>> + Send;
+    /// Marks every session that proved one of `cards` removed by `link`,
+    /// except those of `keep`, which only lose the proof: a reset retires
+    /// the identities those sessions read as (§7).
+    fn retire_proven_sessions(
+        &mut self,
+        account: Id,
+        cards: &[Id],
+        keep: Id,
+        link: RemovedBy,
+    ) -> impl Future<Output = Result<()>> + Send;
     /// Deletes every session of one device of the account and returns how
     /// many it deleted.
     fn delete_device_sessions(

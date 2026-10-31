@@ -6,12 +6,14 @@ use std::time::Duration;
 use sync_key_envelope::v2::DeviceKeys;
 use sync_protocol::codec::{Encode, Nested, Text};
 use sync_protocol::messages::{ApprovalRequest, RecordRef, ResetRequest};
-use sync_protocol::records::{AccountHead, AccountLink, PolicyKind, Role, Signed, approval_commit};
+use sync_protocol::records::{
+    AccountHead, AccountLink, LinkKind, PolicyKind, Role, Signed, approval_commit,
+};
 use sync_protocol::types::{Id, Key};
 
 use super::invitations::Invitee;
 use super::{World, genesis_link, head_of, push_failure, random_token, refusal};
-use crate::{Backend, Session, Store, WriteTxn};
+use crate::{Backend, ReadTxn, Session, Store, WriteTxn};
 
 /// Gives an account an address, as signing up does.
 async fn sign_up<B: Backend>(store: &Store<B>, account: Id) {
@@ -569,3 +571,94 @@ pub async fn an_accept_reset_without_a_request_is_forbidden<B: Backend>(store: S
     let refused = store.push(session, workspace, body.to_bytes()).await;
     assert_eq!(refusal(refused).code, "forbidden");
 }
+/// A card of the account with a session that proved `kit`.
+async fn proven_card<B: Backend>(
+    store: &Store<B>,
+    account: Id,
+    kit: &DeviceKeys,
+) -> (DeviceKeys, Session, [u8; 32]) {
+    let keys = DeviceKeys::generate().expect("random");
+    store
+        .enroll_card(keys.card(account))
+        .await
+        .expect("enrolled");
+    let token = random_token();
+    let session = Session::new(account, keys.device());
+    store.create_session(token, session).await.expect("session");
+    let origin = "https://sync.example.com";
+    let challenge = store
+        .challenge(session)
+        .await
+        .expect("a challenge")
+        .challenge;
+    let proof = sync_key_envelope::v2::recovery_proof(kit, origin, &keys.card(account), challenge);
+    store
+        .prove_recovery(session, sync_protocol::crypto::hash(&token), origin, proof)
+        .await
+        .expect("proven");
+    (
+        keys,
+        Session {
+            recovery: Some(kit.device()),
+            ..session
+        },
+        token,
+    )
+}
+
+/// A workspace whose policy records a recovery card of its one account.
+async fn world_with_kit<B: Backend>(store: Store<B>) -> (World<B>, DeviceKeys) {
+    let mut world = World::new(store, 1).await;
+    sign_up(&world.store, world.account).await;
+    let kit = DeviceKeys::generate().expect("random");
+    let head = world
+        .append_link(
+            0,
+            LinkKind::AddRecovery {
+                card: Nested(kit.card(world.account)),
+            },
+        )
+        .await;
+    let change = world.change(0, vec![head], PolicyKind::AccountHeads);
+    let domain = world.domain;
+    world.inject_policy(change, vec![domain], None).await;
+    (world, kit)
+}
+
+/// A reset ends the session of every card on the chain (§7), and that
+/// takes in a session on an unlisted card that proved a card of the chain:
+/// its proof names a retired identity. The session that resets keeps going
+/// without its proof.
+pub async fn a_reset_ends_the_sessions_that_proved_its_recovery_card<B: Backend>(store: Store<B>) {
+    let (world, kit) = world_with_kit(store).await;
+    let (account, w) = (world.account, world.workspace);
+    let store = world.store.clone();
+    let (_, thief, thief_token) = proven_card(&store, account, &kit).await;
+    assert!(
+        store.policy(thief, w, 0).await.is_ok(),
+        "the proof reads as the kit until the reset"
+    );
+
+    let (keys, resetting, resetting_token) = proven_card(&store, account, &kit).await;
+    let (code, _) = store.issue_reset_code(resetting).await.expect("a code");
+    store
+        .reset_account(resetting, reset(&code, genesis_link(&keys, account)))
+        .await
+        .expect("the reset");
+
+/// A proof reads a workspace as the recovery card, and closes nothing:
+/// only an active device of the owner account closes a workspace (§14).
+pub async fn a_proven_session_can_not_close_a_workspace<B: Backend>(store: Store<B>) {
+    let (world, kit) = world_with_kit(store).await;
+    let (_, proven, _) = proven_card(&world.store, world.account, &kit).await;
+    assert_eq!(
+        refusal(world.store.close_workspace(proven, world.workspace).await).code,
+        "forbidden"
+    );
+    world
+        .store
+        .close_workspace(world.devices[0].session, world.workspace)
+        .await
+        .expect("an active device closes it");
+}
+

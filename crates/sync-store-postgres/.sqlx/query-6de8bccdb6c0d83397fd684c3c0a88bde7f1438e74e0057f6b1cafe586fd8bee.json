@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sessions SET removed = $4\n                 WHERE account = $1 AND recovery = $2 AND device <> $3 AND removed IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6de8bccdb6c0d83397fd684c3c0a88bde7f1438e74e0057f6b1cafe586fd8bee"
+}

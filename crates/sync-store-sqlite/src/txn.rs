@@ -3501,6 +3501,45 @@ impl WriteTxn for SqliteTxn {
         Ok(())
     }
 
+    async fn retire_proven_sessions(
+        &mut self,
+        account: Id,
+        cards: &[Id],
+        keep: Id,
+        link: RemovedBy,
+    ) -> Result<()> {
+        let account = &account.0[..];
+        let keep = &keep.0[..];
+        let detail = DeviceRemovedDetail {
+            genesis: link.genesis,
+            seqno: link.seqno,
+        }
+        .to_bytes();
+        for card in cards {
+            let card = &card.0[..];
+            sqlx::query!(
+                "UPDATE sessions SET removed = ?4
+                 WHERE account = ?1 AND recovery = ?2 AND device <> ?3 AND removed IS NULL",
+                account,
+                card,
+                keep,
+                detail
+            )
+            .execute(self.c())
+            .await
+            .map_err(db)?;
+        }
+        sqlx::query!(
+            "UPDATE sessions SET recovery = NULL WHERE account = ?1 AND device = ?2",
+            account,
+            keep
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
     async fn delete_device_sessions(&mut self, account: Id, device: Id) -> Result<u64> {
         let account = &account.0[..];
         let device = &device.0[..];

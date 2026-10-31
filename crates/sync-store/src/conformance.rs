@@ -152,6 +152,8 @@ macro_rules! conformance_tests {
             an_accepted_reset_leaves_the_ordinary_closing_rule,
             an_account_belongs_to_at_most_a_thousand_workspaces,
             an_account_in_a_thousand_workspaces_joins_no_more,
+            a_reset_ends_the_sessions_that_proved_its_recovery_card,
+            a_proven_session_can_not_close_a_workspace,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
