@@ -158,6 +158,7 @@ macro_rules! conformance_tests {
             creating_a_closed_workspace_again_is_an_id_conflict,
             a_listed_upload_returns_to_offset_zero,
             only_the_uploader_abandons_a_listed_blob,
+            chain_reads_take_at_most_256_distinct_cursors,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {
@@ -3093,6 +3094,49 @@ pub async fn a_removed_member_reads_the_policy_up_to_its_removal<B: Backend>(sto
     let outsider = Session::new(Id::random().expect("random"), Id::random().expect("random"));
     let policy = world.store.policy(outsider, world.workspace, 0).await;
     assert_eq!(refusal(policy).code, "forbidden");
+}
+
+/// A chain read takes at most 256 cursors, each naming its chain once, and
+/// two cursors may still read two chains of one account (§7, §27).
+pub async fn chain_reads_take_at_most_256_distinct_cursors<B: Backend>(store: Store<B>) {
+    use sync_protocol::messages::{ChainCursor, ChainsRequest};
+    let world = World::new(store, 1).await;
+    let (session, account) = (world.devices[0].session, world.account);
+    let genesis = head_of(&world.links[..1]).genesis;
+    let cursor = |genesis, after| ChainCursor {
+        account,
+        genesis,
+        after,
+    };
+    let read = |cursors: Vec<ChainCursor>| {
+        world.store.read_chains(
+            session,
+            ChainsRequest {
+                cursors: List(cursors),
+            },
+        )
+    };
+    let distinct = (0..257)
+        .map(|_| ChainCursor {
+            account: Id::random().expect("random"),
+            genesis: None,
+            after: 0,
+        })
+        .collect();
+    assert_eq!(refusal(read(distinct).await).code, "too_large");
+    assert_eq!(
+        refusal(read(vec![cursor(None, 0), cursor(None, 1)]).await).code,
+        "bad_request",
+        "a chain named twice"
+    );
+    assert_eq!(
+        refusal(read(vec![cursor(Some(genesis), 0), cursor(Some(genesis), 1)]).await).code,
+        "bad_request"
+    );
+    let pages = read(vec![cursor(None, 0), cursor(Some(genesis), 0)])
+        .await
+        .expect("the current chain, and by its genesis");
+    assert_eq!(pages.pages.0.len(), 2);
 }
 
 /// `POST /v2/accounts/chains` (§7): a member's current chain in full to

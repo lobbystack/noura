@@ -571,6 +571,7 @@ pub async fn an_accept_reset_without_a_request_is_forbidden<B: Backend>(store: S
     let refused = store.push(session, workspace, body.to_bytes()).await;
     assert_eq!(refusal(refused).code, "forbidden");
 }
+
 /// A card of the account with a session that proved `kit`.
 async fn proven_card<B: Backend>(
     store: &Store<B>,
@@ -645,6 +646,22 @@ pub async fn a_reset_ends_the_sessions_that_proved_its_recovery_card<B: Backend>
         .reset_account(resetting, reset(&code, genesis_link(&keys, account)))
         .await
         .expect("the reset");
+
+    assert_eq!(
+        refusal(
+            store
+                .session(&sync_protocol::types::to_base64url(&thief_token))
+                .await
+        )
+        .code,
+        "device_removed"
+    );
+    let kept = store
+        .session(&sync_protocol::types::to_base64url(&resetting_token))
+        .await
+        .expect("the reset's own session stays");
+    assert_eq!(kept.recovery, None, "its proof named the retired chain");
+}
 
 /// A proof reads a workspace as the recovery card, and closes nothing:
 /// only an active device of the owner account closes a workspace (§14).

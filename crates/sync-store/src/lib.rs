@@ -2053,11 +2053,12 @@ impl<B: Backend> Store<B> {
         request: ChainsRequest,
     ) -> Result<ChainsResponse> {
         let cache = self.policies.clone();
+        let verified = self.chains.clone();
         let now = self.clock.now();
         self.backend
             .read(Box::new(move |txn: &mut B::Read| {
                 Box::pin(async move {
-                    chains::read(txn, &cache, session, &request.cursors.0, now).await
+                    chains::read(txn, &cache, &verified, session, &request.cursors.0, now).await
                 })
             }))
             .await

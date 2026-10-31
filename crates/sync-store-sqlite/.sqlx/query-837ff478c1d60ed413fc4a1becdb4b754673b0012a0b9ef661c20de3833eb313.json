@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT w.workspace AS \"workspace!\" FROM workspaces w\n               WHERE w.closed = 1\n                 AND NOT EXISTS (SELECT 1 FROM domains d WHERE d.workspace = w.workspace)\n                 AND EXISTS (SELECT 1 FROM policy_changes p WHERE p.workspace = w.workspace)\n               LIMIT ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "workspace!",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "workspace"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "837ff478c1d60ed413fc4a1becdb4b754673b0012a0b9ef661c20de3833eb313"
+}

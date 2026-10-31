@@ -738,6 +738,7 @@ pub async fn approval_requests_offers_and_reveals<B: Backend>(store: Store<B>) {
     );
     let _: AccountHead = head_of(&links);
 }
+
 /// A poll that read a grant before the device page approved it never wipes
 /// the approval: the device signs in on a later poll (§7).
 pub async fn device_polls_race_their_decision<B: Backend>(

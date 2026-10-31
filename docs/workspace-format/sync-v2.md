@@ -1456,7 +1456,7 @@ Five routes page, each with its own cursor: `policy` by revision (`after`, the l
 | `POST /v2/devices` | `bytes enroll` | |
 | `GET /v2/devices` | | `list<device_info>`: `bytes card`, `u32 sessions`, `u8 state` (1 enrolled and listed by no chain, 2 active in the account's chain) |
 | `POST /v2/accounts/chain` | `list<bytes>` of account links | `u64 seqno` of the chain's new head |
-| `POST /v2/accounts/chains` | `list<chain_cursor>`: `id account`, `opt<digest> genesis` (absent for the account's current chain), `u64 after` | `list<chain_page>`, one per cursor in request order: `id account`, `digest genesis`, `u8 status` (1 current, 2 retired by a reset), `u64 head_seqno`, `list<bytes>` of links after `after` in seqno order; at most 1 MiB in all |
+| `POST /v2/accounts/chains` | `list<chain_cursor>`: `id account`, `opt<digest> genesis` (absent for the account's current chain), `u64 after` | `list<chain_page>`, one per cursor in request order: `id account`, `digest genesis`, `u8 status` (1 current, 2 retired by a reset), `u64 head_seqno`, `list<bytes>` of links after `after` in seqno order; at most 1 MiB in all. More than 256 cursors get `too_large`, and two cursors that name one chain the same way get `bad_request` |
 | `POST /v2/account/reset` | `str code`, `bytes genesis` | |
 | `POST /v2/approval-requests` | `digest commit`, `opt<account_head> account`, `opt<id> invitation`, `opt<digest> invite_proof`, `opt<id> workspace` (present for a reset, [§10](#approval-request)) | |
 | `GET /v2/approval-requests`, `GET .../pending-devices` | | `list<pending>`: `bytes card`, `digest commit`, `opt<account_head> account`, `opt<id> invitation`, `opt<digest> invite_proof`, `opt<id> workspace` |
@@ -1583,6 +1583,7 @@ At these defaults, the join in [§28](#28-worked-example-100000-objects) downloa
 | Workspaces | 1,000 per account, 100 of them owned |
 | Card indices; load numbers | 16,777,215 per workspace over its life; 1 to 536,870,911 per device and workspace |
 | Pending approval requests | 32 per account, 100 per workspace |
+| Cursors per `POST /v2/accounts/chains` | 256 |
 | Re-seals per chain position that no newer epoch or policy change forces | 3 |
 | Text mode | the writer's device leaves it at 4 MiB of UTF-8 text; a note rebases at 16 MiB of encoded document; a record that jumps past 8 MiB of text or 32 MiB of document stops the lineage on that device |
 | Collaboration sandbox verdict, per record | 1,000,000 fuel units plus 1,000 per byte of the decrypted payload and blob file, 512 MiB of memory, one pinned guest module |

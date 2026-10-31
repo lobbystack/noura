@@ -309,7 +309,9 @@ impl<B: Backend> Store<B> {
     }
 
     /// tus `DELETE`: abandons an incomplete upload and returns its stored
-    /// segments, whose objects the caller then deletes.
+    /// segments, whose objects the caller then deletes. A blob that
+    /// operations list stays, at offset 0, and only the device that created
+    /// the upload may do this to it (§19).
     pub async fn abandon_blob(
         &self,
         session: Session,
