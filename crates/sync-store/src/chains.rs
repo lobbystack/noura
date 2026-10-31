@@ -3,6 +3,7 @@
 //! enrollment challenges and recovery proofs (§12).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use sync_key_envelope::v2::{RecoveryContext, verify_recovery_proof};
 use sync_protocol::account::{AccountChain, AccountError};

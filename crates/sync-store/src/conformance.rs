@@ -185,6 +185,8 @@ macro_rules! instance_tests {
             chain_appends_race_pushes_recording_the_head,
             blob_uploads_race_pushes_and_policy_changes,
             share_writes_race_pushes_and_policy_changes,
+            device_polls_race_their_decision,
+            device_polls_race_each_other,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {

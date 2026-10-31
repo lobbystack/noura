@@ -3553,6 +3553,65 @@ impl WriteTxn for PgTxn {
         Ok(())
     }
 
+    async fn locked_device_grant(&mut self, code_hash: Digest) -> Result<Option<DeviceGrantRow>> {
+        let hash = &code_hash.0[..];
+        let row = sqlx::query!(
+            "SELECT device_code_hash, user_code_hash, account, denied, poll_interval, next_poll,
+                    expires_at
+             FROM device_grants WHERE device_code_hash = $1 FOR UPDATE",
+            hash
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        if let Some(delay) = self.policy_read_delay {
+            tokio::time::sleep(delay).await;
+        }
+        row.map(|r| {
+            grant_row(
+                r.device_code_hash,
+                r.user_code_hash,
+                r.account,
+                r.denied,
+                r.poll_interval,
+                r.next_poll,
+                r.expires_at,
+            )
+        })
+        .transpose()
+    }
+
+    async fn locked_device_grant_by_user_code(
+        &mut self,
+        user_code_hash: Digest,
+    ) -> Result<Option<DeviceGrantRow>> {
+        let hash = &user_code_hash.0[..];
+        let row = sqlx::query!(
+            "SELECT device_code_hash, user_code_hash, account, denied, poll_interval, next_poll,
+                    expires_at
+             FROM device_grants WHERE user_code_hash = $1 FOR UPDATE",
+            hash
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        if let Some(delay) = self.policy_read_delay {
+            tokio::time::sleep(delay).await;
+        }
+        row.map(|r| {
+            grant_row(
+                r.device_code_hash,
+                r.user_code_hash,
+                r.account,
+                r.denied,
+                r.poll_interval,
+                r.next_poll,
+                r.expires_at,
+            )
+        })
+        .transpose()
+    }
+
     async fn update_device_grant(&mut self, row: &DeviceGrantRow) -> Result<()> {
         let code = &row.device_code_hash.0[..];
         let account = row.account.as_ref().map(|a| a.0.to_vec());

@@ -3454,6 +3454,18 @@ impl WriteTxn for SqliteTxn {
         Ok(())
     }
 
+    async fn locked_device_grant(&mut self, code_hash: Digest) -> Result<Option<DeviceGrantRow>> {
+        // The one writer holds the database for the whole transaction.
+        self.device_grant(code_hash).await
+    }
+
+    async fn locked_device_grant_by_user_code(
+        &mut self,
+        user_code_hash: Digest,
+    ) -> Result<Option<DeviceGrantRow>> {
+        self.device_grant_by_user_code(user_code_hash).await
+    }
+
     async fn update_device_grant(&mut self, row: &DeviceGrantRow) -> Result<()> {
         let code = &row.device_code_hash.0[..];
         let account = row.account.as_ref().map(|a| a.0.to_vec());

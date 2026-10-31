@@ -1533,6 +1533,17 @@ pub trait WriteTxn: ReadTxn {
         row: &DeviceGrantRow,
     ) -> impl Future<Output = Result<()>> + Send;
     /// Replaces a device grant's state.
+    fn locked_device_grant(
+        &mut self,
+        code_hash: Digest,
+    ) -> impl Future<Output = Result<Option<DeviceGrantRow>>> + Send;
+    /// [`ReadTxn::device_grant_by_user_code`], and it holds the row against
+    /// other writers until the transaction ends.
+    fn locked_device_grant_by_user_code(
+        &mut self,
+        user_code_hash: Digest,
+    ) -> impl Future<Output = Result<Option<DeviceGrantRow>>> + Send;
+    /// Stores a grant's new state.
     fn update_device_grant(
         &mut self,
         row: &DeviceGrantRow,
