@@ -67,6 +67,17 @@ pub enum RewrapAnswer {
     Refused(Id),
 }
 
+/// What a removal the workspace hasn't recorded means for a device's
+/// writes (§9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemovalHold {
+    /// The device holds its writes.
+    pub held: bool,
+    /// A domain is full, so no change can record the removal until room
+    /// frees, and the device writes as before.
+    pub over_limit: bool,
+}
+
 impl SyncService {
     /// Takes the workspace's policy again from the server and keeps it when
     /// it extends the accepted one; returns whether it moved. A shorter
@@ -240,9 +251,15 @@ impl SyncService {
     /// head it accepted of a member account, later than the one the
     /// workspace records, takes a card out of the workspace, or the change
     /// that recorded such a head still waits for its rotation. While it
-    /// holds, the device encrypts nothing there.
-    pub async fn removal_hold(&mut self, remote: &RemoteWorkspace) -> Result<bool, SyncError> {
+    /// holds, the device encrypts nothing there. A head the server must
+    /// refuse with `recipient_limit`, which the verified policy confirms,
+    /// holds nothing, and the answer says so for the app's alert.
+    pub async fn removal_hold(
+        &mut self,
+        remote: &RemoteWorkspace,
+    ) -> Result<RemovalHold, SyncError> {
         let snapshot = remote.policy.head_snapshot().clone();
+        let mut over_limit = false;
         for pending in self.pending_heads(remote).await? {
             let recorded = snapshot
                 .members
@@ -263,16 +280,28 @@ impl SyncService {
                     Err(error) => return Err(SyncError::Check(error.client_code())),
                 }
             };
+            // A chain cut below the head the device accepted can't show
+            // the removal, so it ends no hold.
+            if !chain.contains(&pending.head) {
+                return Err(SyncError::Check("sync_account_forked"));
+            }
             let takes_out = snapshot.devices.iter().any(|(device, wd)| {
                 wd.account == pending.account
                     && chain.card(device).is_some()
                     && !chain.is_active_at(device, pending.head.seqno)
             });
-            if takes_out {
-                return Ok(true);
+            if takes_out && snapshot.head_fits(&chain, pending.head.seqno) {
+                return Ok(RemovalHold {
+                    held: true,
+                    over_limit,
+                });
             }
+            over_limit |= takes_out;
         }
-        Ok(self.rotation_pending(remote))
+        Ok(RemovalHold {
+            held: self.rotation_pending(remote),
+            over_limit,
+        })
     }
 
     /// Records `pending` in `remote` after its wait, unless another change

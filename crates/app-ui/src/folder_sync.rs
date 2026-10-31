@@ -156,6 +156,12 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
                     "A device left your account. Sync holds your changes until this workspace records it and changes its key.",
                 );
             }
+            if screen.removal_over_limit {
+                alert(
+                    ui,
+                    "A device left an account here, but this workspace is at its limit of 512 devices. The device keeps reading new changes until someone leaves.",
+                );
+            }
             group(ui, "Status", |ui| {
                 ui.label(if paused {
                     "Sync is paused. Your changes wait on this computer until you resume."

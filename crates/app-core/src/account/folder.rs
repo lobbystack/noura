@@ -224,6 +224,7 @@ impl Folder {
                     })
                     .collect();
                 screen.removal_hold = sync.removal_hold();
+                screen.removal_over_limit = sync.removal_over_limit();
                 screen.attention = attention(
                     sync.moves_for_review().len() + screen.held_roots.len(),
                     sync.moved_in().len(),

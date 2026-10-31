@@ -130,6 +130,9 @@ pub struct FolderSyncScreen {
     /// Whether sync holds your changes after a device left your account,
     /// until the workspace records it and changes its key (§9).
     pub removal_hold: bool,
+    /// Whether a device left your account but the workspace is too full to
+    /// record it, so that device keeps reading new changes (§9).
+    pub removal_over_limit: bool,
     /// What ended sync for this computer, when a change took its access
     /// to the workspace (§15).
     pub ended: Option<String>,
@@ -179,6 +182,7 @@ impl FolderSyncScreen {
             archived: Vec::new(),
             unreadable: Vec::new(),
             removal_hold: false,
+            removal_over_limit: false,
             ended: status.ended.as_ref().map(ended_line),
             skipped: status.skipped.iter().map(skipped_line).collect(),
             attention: None,

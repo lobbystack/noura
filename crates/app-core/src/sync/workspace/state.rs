@@ -88,6 +88,10 @@ pub struct State {
     /// the workspace hasn't recorded and rotated past (§9).
     #[serde(default)]
     pub removal_hold: bool,
+    /// Whether the verified policy shows that a domain is too full to
+    /// record such a removal, so the device writes as before (§9).
+    #[serde(default)]
+    pub removal_over_limit: bool,
     /// Epoch records the device accepted that a replacement ended since
     /// (§9), kept to open its own records under them.
     #[serde(default)]

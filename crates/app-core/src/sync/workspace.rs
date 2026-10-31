@@ -460,6 +460,7 @@ impl WorkspaceSync {
             archived: Vec::new(),
             refused: Vec::new(),
             removal_hold: false,
+            removal_over_limit: false,
             ended_epochs: Vec::new(),
             ended_envelopes: Vec::new(),
             rewrite_epochs: Vec::new(),
@@ -989,12 +990,20 @@ impl WorkspaceSync {
         let Some(remote) = self.remote.as_ref() else {
             return Ok(());
         };
-        let held = service.removal_hold(remote).await?;
-        self.state.removal_hold = held;
-        if was != held {
+        let hold = service.removal_hold(remote).await?;
+        let changed = was != hold.held || self.state.removal_over_limit != hold.over_limit;
+        self.state.removal_hold = hold.held;
+        self.state.removal_over_limit = hold.over_limit;
+        if changed {
             self.save()?;
         }
         Ok(())
+    }
+
+    /// Whether a removal can't be recorded here until a domain has room, so
+    /// the removed card stays among its readers (§9).
+    pub fn removal_over_limit(&self) -> bool {
+        self.state.removal_over_limit
     }
 
     /// Whether the device holds its writes after it learned of a removal

@@ -243,6 +243,7 @@ fn a_held_removal_and_unreadable_versions_show() {
     sync.show(FolderSyncScreen {
         phase: FolderSyncPhase::On,
         removal_hold: true,
+        removal_over_limit: true,
         unreadable: vec!["Plan.md: a version from device abababab couldn't be read, so this computer keeps the last version that could.".into()],
         ..FolderSyncScreen::default()
     });
@@ -250,6 +251,10 @@ fn a_held_removal_and_unreadable_versions_show() {
     harness.get_by_role_and_label(
         Role::Alert,
         "A device left your account. Sync holds your changes until this workspace records it and changes its key.",
+    );
+    harness.get_by_role_and_label(
+        Role::Alert,
+        "A device left an account here, but this workspace is at its limit of 512 devices. The device keeps reading new changes until someone leaves.",
     );
     harness.get_by_role_and_label(Role::Group, "Versions that couldn't be read");
     harness.get_by_label("Plan.md: a version from device abababab couldn't be read, so this computer keeps the last version that could.");

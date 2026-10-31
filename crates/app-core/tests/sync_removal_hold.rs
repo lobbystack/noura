@@ -8,7 +8,9 @@
 
 mod sync_support;
 
-use sync_support::{Pair, approve, pair};
+use sync_protocol::codec::{Decode, Encode};
+use sync_protocol::messages::ChainsResponse;
+use sync_support::{Pair, Server, approve, pair, pair_of_accounts_on};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_member_device_that_learned_the_head_holds_its_writes() {
@@ -115,4 +117,70 @@ async fn the_remover_holds_while_the_server_refuses_the_recording() {
     assert_eq!(round.pushed, 1);
     sync_b.round(&mut desktop.service, 0).await.unwrap();
     assert_eq!(b.files()["Plan.md"], b"# Plan, by the remover\n");
+}
+
+/// A server that serves the removed head everywhere but to the hold's own
+/// read can't end the hold there (§9).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_chain_cut_below_the_accepted_head_ends_no_hold() {
+    let mut pair = pair_of_accounts_on(Server::start().await).await;
+    let third = approve(
+        &pair.server,
+        &mut pair.laptop,
+        std::slice::from_mut(pair.sync_a.remote_mut().unwrap()),
+    )
+    .await;
+    pair.laptop
+        .service
+        .record_heads(pair.sync_a.remote_mut().unwrap(), &[])
+        .await
+        .expect("the third device's head goes in");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("a round");
+    pair.laptop
+        .service
+        .remove_device(third.id(), &[], &mut [])
+        .await
+        .expect("removed");
+    let account = pair.laptop.credentials.account;
+    let genesis = pair.laptop.service.kept_heads().kept_of(&account)[0].genesis;
+    pair.desktop
+        .service
+        .follow_account(account, genesis)
+        .await
+        .expect("the desktop accepts the head");
+    let remote = pair.sync_b.remote_mut().unwrap();
+    let hold = pair
+        .desktop
+        .service
+        .removal_hold(remote)
+        .await
+        .expect("the hold");
+    assert!(hold.held && !hold.over_limit);
+
+    pair.proxy.tamper(Box::new(move |path, body| {
+        if !path.ends_with("/accounts/chains") {
+            return body;
+        }
+        let mut response = ChainsResponse::from_bytes(&body).unwrap();
+        for page in response.pages.0.iter_mut() {
+            if page.account == account {
+                page.links.0.pop();
+                page.head_seqno -= 1;
+            }
+        }
+        response.to_bytes()
+    }));
+    let mut tampered = pair.desktop.connect_through(&pair.proxy.base).await;
+    let error = tampered
+        .removal_hold(pair.sync_b.remote_mut().unwrap())
+        .await
+        .expect_err("a chain short of the kept head");
+    assert_eq!(error.code(), Some("sync_account_forked"));
 }

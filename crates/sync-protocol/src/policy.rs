@@ -195,6 +195,24 @@ impl Snapshot {
         self.signs(device) && self.can_read(device, domain)
     }
 
+    /// Whether a change recording `chain`'s head at `seqno` keeps every
+    /// domain the account reads within [`MAX_READERS`]. A verified policy
+    /// confirms a `recipient_limit` refusal this way (§8, §9).
+    pub fn head_fits(&self, chain: &AccountChain, seqno: u64) -> bool {
+        let account = chain.account();
+        let cards = chain.active_at(seqno).len();
+        self.domains.keys().all(|domain| {
+            self.account_level(&account, domain).is_none()
+                || self
+                    .readers(domain)
+                    .iter()
+                    .filter(|device| self.account_of(device) != Some(account))
+                    .count()
+                    + cards
+                    <= MAX_READERS
+        })
+    }
+
     fn signs(&self, device: &Id) -> bool {
         self.devices.get(device).is_some_and(|d| !d.recovery)
     }

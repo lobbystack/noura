@@ -657,8 +657,18 @@ fn a_domain_holds_at_most_512_readers() {
     // A later head that adds one card and removes one still commits.
     let signer = carol.first().clone();
     let phone = carol.devices[1].clone();
+    let snapshot = verify(&policy, &[&alice, &bob, &carol]).unwrap();
+    let fits = |carol: &Person| {
+        let chain = chains(&[&carol.chain]);
+        let chain = chain
+            .get(&carol.account(), &carol.chain.head().genesis)
+            .unwrap();
+        snapshot.head_snapshot().head_fits(chain, chain.head_seqno())
+    };
     carol.chain.remove(&signer, &phone, &[]);
+    assert!(fits(&carol), "the removal alone takes one out");
     carol.add("carol tablet");
+    assert!(fits(&carol), "one in and one out");
     policy.push(
         carol.first(),
         vec![carol.chain.head()],
@@ -667,6 +677,7 @@ fn a_domain_holds_at_most_512_readers() {
     assert!(verify(&policy, &[&alice, &bob, &carol]).is_ok());
     // One that adds more than it removes doesn't.
     carol.add("carol watch");
+    assert!(!fits(&carol), "a refusal the device confirms");
     policy.push(
         carol.first(),
         vec![carol.chain.head()],
