@@ -43,7 +43,7 @@ Each command reads `NOURA_DATA_DIR`, `NOURA_DATABASE_URL` and `NOURA_LISTEN`, an
 | Command | What it does |
 |---|---|
 | `migrate [--data DIR] [--database-url URL]` | Creates or updates the database. In SQLite mode the first run creates the server secret. |
-| `serve [--data DIR] [--database-url URL] [--listen ADDRESS] [--origin ORIGIN]` | Serves until it gets an interrupt or a terminate signal. |
+| `serve [--data DIR] [--database-url URL] [--listen ADDRESS] [--origin ORIGIN]` | Serves until it gets an interrupt or a terminate signal, then waits up to 30 seconds for requests in flight. |
 | `healthcheck [--listen ADDRESS]` | Exits 0 when a Noura sync server answers `GET /v2/limits` within 5 seconds. |
 | `backup --to FILE [--data DIR]` | Copies a running SQLite database, and writes the secret to `FILE.secret`. |
 | `restore --from FILE [--secret FILE] [--data DIR]` | Puts a SQLite backup into a data directory. |
@@ -74,6 +74,9 @@ Each command reads `NOURA_DATA_DIR`, `NOURA_DATABASE_URL` and `NOURA_LISTEN`, an
 | `NOURA_S3_BUCKET` | none | Keep blob segments in this bucket |
 | `NOURA_S3_ENDPOINT` | AWS | The endpoint of an S3-compatible service |
 | `NOURA_TRUSTED_PROXY_HEADER` | none | The header your reverse proxy sets to the client's IP |
+| `NOURA_MAX_CONNECTIONS` | 1024 | How many connections stay open at once, realtime channels included; further ones wait |
+
+Keep the process's file descriptor limit above `NOURA_MAX_CONNECTIONS`. Give a container at least 40 seconds to stop, so the 30-second wait ends before the runtime kills it. A server that gets killed leaves its lease behind for up to 90 seconds.
 
 `NOURA_RETAINED_BYTES` bounds the history a device can catch up from without a new bootstrap. `NOURA_WORKSPACE_QUOTA_BYTES` counts live data, policy changes and epoch bundles, and history gives way to the quota while those fit.
 

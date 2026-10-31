@@ -15,6 +15,11 @@ base64.workspace = true
 blake3.workspace = true
 bytes.workspace = true
 futures.workspace = true
+# The accept loop: hyper's HTTP/1 connections, which take the header timeout
+# that `axum::serve` doesn't expose.
+http-body.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
 # Keeps blob segments on S3-compatible storage (sync-v2.md §21).
 object_store.workspace = true
 # webauthn-rs links OpenSSL. Building it from source keeps the Linux server one
@@ -31,6 +36,7 @@ sync-store-sqlite = { version = "0.2.0", path = "../sync-store-sqlite" }
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tower-service.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 url.workspace = true
@@ -46,7 +52,6 @@ passkey-crypto.workspace = true
 passkey-types.workspace = true
 public-suffix.workspace = true
 # An S3-compatible emulator that the blob store suite runs against.
-hyper-util.workspace = true
 s3s.workspace = true
 s3s-fs.workspace = true
 # The tests read and change the database the way an operator's tools would.

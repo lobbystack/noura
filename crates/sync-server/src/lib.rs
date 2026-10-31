@@ -12,6 +12,7 @@ pub mod accounts;
 pub mod blobs;
 pub mod data;
 pub mod http;
+pub mod listen;
 pub mod logs;
 pub mod maintenance;
 pub mod postgres;
@@ -33,6 +34,7 @@ use tokio::net::TcpListener;
 pub use accounts::{Accounts, Allowlist, MailTransport, PublicOrigin};
 pub use data::{CommandError, Migrated, check_ready, migrate};
 pub use http::AppState;
+pub use listen::ConnectionLimits;
 pub use postgres::Postgres;
 pub use rate::{ChannelLimits, RateGate, RateLimits};
 
@@ -84,6 +86,8 @@ pub struct Config {
     /// The header a trusted proxy sets to the client's IP. Without one the
     /// server counts sign-in per connection and ignores such headers.
     pub trusted_proxy_header: Option<String>,
+    /// What one connection can hold.
+    pub connections: ConnectionLimits,
 }
 
 /// Where `serve` keeps blob segments (§21).
@@ -137,6 +141,7 @@ impl Config {
             retention: sync_store::Retention::default(),
             rate_limits: RateLimits::default(),
             trusted_proxy_header: None,
+            connections: ConnectionLimits::default(),
         }
     }
 }
@@ -200,11 +205,9 @@ pub async fn serve_on<B: Backend>(
     state: AppState<B>,
     listener: TcpListener,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
-) -> std::io::Result<()> {
-    let service = http::router(state).into_make_service_with_connect_info::<SocketAddr>();
-    axum::serve(listener, service)
-        .with_graceful_shutdown(shutdown)
-        .await
+    limits: ConnectionLimits,
+) {
+    listen::serve(http::router(state), listener, shutdown, limits).await;
 }
 
 /// Serves `store` on a new listener at `address` in the background, for
@@ -256,7 +259,8 @@ pub async fn spawn_limited<B: Backend>(
         blobs,
         rate: Arc::new(rate),
     };
-    tokio::spawn(serve_on(state, listener, std::future::pending()));
+    let limits = ConnectionLimits::default();
+    tokio::spawn(serve_on(state, listener, std::future::pending(), limits));
     Ok(bound)
 }
 
@@ -346,7 +350,7 @@ async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), Co
         blobs,
         rate: Arc::new(rate),
     };
-    let served = serve_on(state, listener, shutdown_signal()).await;
+    serve_on(state, listener, shutdown_signal(), config.connections).await;
     maintenance.abort();
     lease.abort();
     if let Err(error) = store.drop_lease(instance).await {
@@ -357,7 +361,7 @@ async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), Co
     counters.abort();
     store.backend().close().await;
     tracing::info!("stopped");
-    served.map_err(|e| CommandError(format!("the server failed: {e}")))
+    Ok(())
 }
 
 /// `sync-server blobs migrate-to-s3`: moves every segment of the data

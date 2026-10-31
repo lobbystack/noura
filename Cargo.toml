@@ -113,6 +113,9 @@ object_store = { version = "0.14.2", default-features = false, features = ["aws"
 # Apache-2.0.
 s3s = "0.17.0"
 s3s-fs = "0.17.0"
+# The sync server's accept loop. MIT.
+http-body = "1"
+hyper = { version = "1", default-features = false, features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 # The desktop app's updater. It checks the signatures cargo-packager writes
 # with minisign, which the desktop tests use to sign a local feed.
@@ -233,6 +236,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 # Reads plugin manifests, with the line and column of each error.
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"] }
+tower-service = "0.3"
 tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

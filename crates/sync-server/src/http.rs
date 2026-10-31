@@ -260,7 +260,19 @@ async fn body(body: Body) -> Result<Vec<u8>, ApiError> {
     axum::body::to_bytes(body, MAX_BODY)
         .await
         .map(|bytes| bytes.to_vec())
-        .map_err(|_| refused("too_large", "the body exceeds 1 MiB"))
+        .map_err(|error| {
+            if crate::listen::is_late(&error) {
+                late_body()
+            } else {
+                refused("too_large", "the body exceeds 1 MiB")
+            }
+        })
+}
+
+/// A body that didn't arrive in time. The server committed nothing and the
+/// client sends it again later.
+pub(crate) fn late_body() -> ApiError {
+    ApiError(Error::internal("a request body took too long to arrive"))
 }
 
 fn decode<T: Decode>(bytes: &[u8]) -> Result<T, ApiError> {
