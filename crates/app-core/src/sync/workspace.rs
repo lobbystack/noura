@@ -185,6 +185,8 @@ pub struct Usage {
 
 /// How long the device keeps the usage it last read.
 const USAGE_REFRESH: std::time::Duration = std::time::Duration::from_secs(60);
+/// How often a sync that a change ended looks for its access again.
+const ACCESS_RECHECK: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The sync state of one folder.
 pub struct WorkspaceSync {
@@ -237,6 +239,8 @@ pub struct WorkspaceSync {
     /// The workspace's usage, and when the device last read it.
     usage: Option<Usage>,
     usage_checked: Option<std::time::Instant>,
+    /// When an ended sync last looked at the policy.
+    access_checked: Option<std::time::Instant>,
     /// The moves you confirmed, which the next capture signs.
     confirmed_moves: BTreeSet<Id>,
     /// What the running capture leaves out.
@@ -542,6 +546,7 @@ impl WorkspaceSync {
             reviews: Vec::new(),
             usage: None,
             usage_checked: None,
+            access_checked: None,
             confirmed_moves: BTreeSet::new(),
             skipped_now: Vec::new(),
             finding: Finding::default(),
@@ -686,6 +691,7 @@ impl WorkspaceSync {
             reviews: Vec::new(),
             usage: None,
             usage_checked: None,
+            access_checked: None,
             confirmed_moves: BTreeSet::new(),
             skipped_now: Vec::new(),
             finding: Finding::default(),
@@ -1281,7 +1287,7 @@ impl WorkspaceSync {
     ) -> Result<Round, SyncError> {
         // A change took this device's access: nothing more goes out or
         // comes in, and the files stay as they are (§15).
-        if self.state.ended.is_some() {
+        if self.state.ended.is_some() && !self.access_returned(service).await {
             return Ok(Round::default());
         }
         // A stopped workspace keeps its files and does nothing (§14).
@@ -1752,6 +1758,67 @@ impl WorkspaceSync {
             self.follow_profile(service).await?;
         }
         Ok(())
+    }
+
+    /// Whether a change gave back the access that ended sync, looking at
+    /// the policy once per [`ACCESS_RECHECK`]. A failed look waits for the
+    /// next one.
+    async fn access_returned(&mut self, service: &mut SyncService) -> bool {
+        let now = std::time::Instant::now();
+        if self
+            .access_checked
+            .is_some_and(|at| now.duration_since(at) < ACCESS_RECHECK)
+        {
+            return false;
+        }
+        self.access_checked = Some(now);
+        match self.check_access_again(service).await {
+            Ok(returned) => returned,
+            Err(error) => {
+                tracing::debug!(kind = ?error.code(), "the policy didn't answer an ended sync");
+                false
+            }
+        }
+    }
+
+    /// Looks at the policy now and resumes sync when it lets this device
+    /// read the domain again, as after an invitation back: the same chain
+    /// goes on (§8), and the next round pulls what it missed. Returns
+    /// whether sync runs.
+    pub async fn check_access_again(
+        &mut self,
+        service: &mut SyncService,
+    ) -> Result<bool, SyncError> {
+        if self.state.ended.is_none() {
+            return Ok(true);
+        }
+        if self.remote.is_some() {
+            self.refresh_policy(service).await?;
+        } else {
+            // After a restart: a removed device gets no key to open with.
+            match service.open_workspace(self.state.workspace).await {
+                Ok(remote) => self.remote = Some(remote),
+                Err(SyncError::Refused { code, .. }) if code == "forbidden" => return Ok(false),
+                Err(error) => return Err(error),
+            }
+        }
+        if !self.can_read_domain() {
+            return Ok(false);
+        }
+        self.state.ended = None;
+        self.remote = None;
+        self.save()?;
+        Ok(true)
+    }
+
+    fn can_read_domain(&self) -> bool {
+        let own = self.credentials.keys.device();
+        self.remote.as_ref().is_some_and(|remote| {
+            remote
+                .policy
+                .head_snapshot()
+                .can_read(&own, &self.state.domain)
+        })
     }
 
     /// Takes the policy again, and nothing else: a device that lost its

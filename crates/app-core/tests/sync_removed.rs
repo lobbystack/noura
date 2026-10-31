@@ -219,3 +219,76 @@ async fn a_removed_member_stops_and_shows_who_removed_it() {
     .expect("the journal opens");
     assert!(sync_c.status().ended.is_some());
 }
+
+/// A member invited back resumes in the folder they kept: their chain goes
+/// on (§8), the first round after the change finds its access again, and
+/// an invitation accepted here doesn't wait for the next look.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_invited_back_resumes_in_the_same_folder() {
+    use app_core::sync::invitations::InvitationBook;
+    use app_core::sync::members::MemberChange;
+    use sync_support::{invite, invite_and_join};
+
+    let server = Server::start().await;
+    let mut ana = first_desktop(&server, "ana@example.com").await;
+    let mut ben = first_desktop(&server, "ben@example.com").await;
+    let mut a = Folder::new("Field notes");
+    a.write("Plan.md", b"# Plan\n");
+    let mut sync_a = WorkspaceSync::turn_on(
+        &mut ana.service,
+        a.engine.clone(),
+        "Field notes",
+        &mut a.registry,
+    )
+    .await
+    .expect("sync turns on");
+    sync_a.round(&mut ana.service, 0).await.expect("a round");
+    let mut book = InvitationBook::open(ana.state.path(), ana.id()).expect("the book");
+    let (mut sync_b, b) =
+        invite_and_join(&mut ana, &mut sync_a, &mut book, &mut ben, Role::Editor).await;
+    assert_eq!(b.files()["Plan.md"], b"# Plan\n");
+
+    let account = ben.credentials.account;
+    sync_a
+        .change_member(&mut ana.service, MemberChange::Remove(account))
+        .await
+        .expect("removed");
+    sync_b.round(&mut ben.service, 0).await.expect("a round");
+    assert!(sync_b.status().ended.is_some());
+
+    // Ana writes while Ben is away, and Ben writes on his own copy.
+    a.write("Away.md", b"# Away\n");
+    sync_a.round(&mut ana.service, 0).await.expect("a round");
+    b.write("Mine.md", b"# Mine\n");
+
+    invite(&mut ana, &mut sync_a, &mut book, &mut ben, Role::Editor).await;
+    sync_b.round(&mut ben.service, 0).await.expect("a round");
+    assert!(
+        sync_b.status().ended.is_none(),
+        "the round found the access"
+    );
+    for _ in 0..3 {
+        sync_b.round(&mut ben.service, 0).await.expect("a round");
+        sync_a.round(&mut ana.service, 0).await.expect("a round");
+    }
+    assert_eq!(b.files()["Away.md"], b"# Away\n");
+    assert_eq!(a.files()["Mine.md"], b"# Mine\n");
+
+    // Removed again: a round looks once, and stays ended.
+    sync_a
+        .change_member(&mut ana.service, MemberChange::Remove(account))
+        .await
+        .expect("removed");
+    sync_b.round(&mut ben.service, 0).await.expect("a round");
+    sync_b.round(&mut ben.service, 0).await.expect("a round");
+    assert!(sync_b.status().ended.is_some());
+    invite(&mut ana, &mut sync_a, &mut book, &mut ben, Role::Editor).await;
+    // The join doesn't wait for the next look.
+    assert!(
+        sync_b
+            .check_access_again(&mut ben.service)
+            .await
+            .expect("looked")
+    );
+    assert!(sync_b.status().ended.is_none());
+}

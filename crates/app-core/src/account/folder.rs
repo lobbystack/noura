@@ -358,6 +358,16 @@ impl Folder {
             .engine
             .clone()
             .ok_or_else(|| SyncError::Invalid("Choose a folder first.".into()))?;
+        // A member invited back resumes in the folder they kept (§8).
+        if let Some(sync) = self.sync.as_mut().filter(|s| s.workspace() == workspace) {
+            if !sync.check_access_again(service).await? {
+                return Err(SyncError::Invalid(
+                    "This computer can't read that workspace yet. Try again in a moment.".into(),
+                ));
+            }
+            self.last_error = None;
+            return Ok(());
+        }
         let mut registry = Registry::open(app_data)?;
         // The folder you synced before connects to the workspace an owner
         // set up again (§14); it matches rather than downloads.
