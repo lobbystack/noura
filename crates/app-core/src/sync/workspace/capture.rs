@@ -39,6 +39,9 @@ pub enum SkipWhy {
     /// The file crossed into or out of a restricted folder, which is a
     /// move between domains (§9).
     CrossesRoot,
+    /// This device can't write there, so the change stays in the file
+    /// until it can (§14).
+    CantWrite,
 }
 
 /// A file sync leaves out.

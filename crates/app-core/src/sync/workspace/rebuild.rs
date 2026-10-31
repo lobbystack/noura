@@ -416,7 +416,20 @@ impl WorkspaceSync {
             .cloned()
             .ok_or_else(|| SyncError::Invalid("no such held version".into()))?;
         let live = self.live_contents(&rid);
+        // A delete that waits holds no file, so "both" keeps the live state.
+        let deleted = held.revision == Digest::ZERO;
         match choice {
+            HeldChoice::KeepMine if deleted => {
+                let view: BTreeSet<OpKey> = self.live_states(&rid).into_iter().collect();
+                let covers = self.covers_of(&rid, &view);
+                self.state.held.remove(&rid);
+                let domain = self.object_domain(&rid);
+                self.in_domain(domain, |sync| sync.sign_delete(rid, covers))?;
+            }
+            HeldChoice::KeepBoth | HeldChoice::KeepLive if deleted => {
+                self.state.held.remove(&rid);
+                self.adopt_live(rid, &live)?;
+            }
             HeldChoice::KeepMine => {
                 let view: BTreeSet<OpKey> = self.live_states(&rid).into_iter().collect();
                 let covers = self.covers_of(&rid, &view);

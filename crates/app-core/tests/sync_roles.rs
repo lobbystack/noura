@@ -8,13 +8,13 @@ mod sync_support;
 use app_core::folder_sync::FolderSyncScreen;
 use app_core::sync::invitations::{InvitationBook, NewInvitation};
 use app_core::sync::members::MemberChange;
-use app_core::sync::workspace::WorkspaceSync;
+use app_core::sync::workspace::{SkipWhy, WorkspaceSync};
 use app_core::sync::{RemoteWorkspace, SyncError};
 use sync_protocol::messages::{PageStatus, PullCursor};
 use sync_protocol::records::Role;
 use sync_protocol::types::Id;
 use sync_store::Backend;
-use sync_support::{Desktop, Folder, Proxy, Server, approve, first_desktop, invite_and_join};
+use sync_support::{Desktop, Folder, Server, approve, first_desktop, invite_and_join};
 
 /// The owner's desktop with a synced workspace and its invitation book.
 struct Owner {
@@ -102,22 +102,19 @@ async fn each_role_holds_the_rights_of_section_8() {
         ben_folder.files()["Later.md"],
         b"Written after Ben joined.\n"
     );
-    // The client sends the viewer's edit, and the server refuses it with
-    // `forbidden`, the one refusal on which the client drops what waits
-    // and keeps the file as it is (§14).
+    // The client signs nothing for a viewer: the file keeps the edit and
+    // the status lists it. `forbidden` meets a device that hasn't learned
+    // of its new role yet (sync_refusals.rs).
     ben_folder.write("Viewer.md", b"A viewer's edit.\n");
-    assert_eq!(ben_sync.capture().expect("captured"), 1);
-    let proxy = Proxy::start(&server.base).await;
-    let mut through = ben.connect_through(&proxy.base).await;
-    assert_eq!(ben_sync.push(&mut through).await.expect("dropped"), 0);
-    assert!(
-        proxy
-            .requests()
-            .iter()
-            .any(|r| r.method == "POST" && r.path.ends_with("/ops")),
-        "the push went out"
-    );
+    assert_eq!(ben_sync.capture().expect("captured"), 0);
     assert!(ben_sync.outbox().is_empty());
+    assert!(
+        ben_sync
+            .status()
+            .skipped
+            .iter()
+            .any(|s| s.path == "Viewer.md" && s.why == SkipWhy::CantWrite)
+    );
     assert_eq!(ben_folder.files()["Viewer.md"], b"A viewer's edit.\n");
     ana.sync
         .round(&mut ana.desktop.service, 0)
@@ -237,8 +234,8 @@ async fn each_role_holds_the_rights_of_section_8() {
             "{change:?}"
         );
     }
-    // Dan, a viewer now, is refused at the server.
-    dan_sync.round(&mut dan.service, 0).await.expect("a round");
+    // Dan, a viewer now though his device hasn't learned it, is refused at
+    // the server.
     dan_folder.write("Editor.md", b"Changed by a viewer.\n");
     assert_eq!(dan_sync.capture().expect("captured"), 1);
     assert_eq!(dan_sync.push(&mut dan.service).await.expect("dropped"), 0);

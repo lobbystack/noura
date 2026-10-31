@@ -602,6 +602,143 @@ async fn a_pair_that_loses_a_half_comes_undone_and_tries_again() {
     assert!(!team.outsider_folder.files().contains_key("Plan.md"));
 }
 
+/// A pair refused on a device that didn't write the file comes undone onto
+/// the state it started from, so its second try covers that state, which
+/// keeps the delete a state operation every reader can apply (§9, §13).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_undone_pair_covers_the_source_when_it_goes_again() {
+    let (server, proxy) = Proxy::in_front().await;
+    let mut team = team(&server).await;
+    let mut proxied = team.grantee.connect_through(&proxy.base).await;
+    let domain = team.restrict(Level::Write).await;
+    rename(&team.grantee_folder, "Plan.md", "Pay/Plan.md");
+    refuse_ops(&proxy, "forbidden", 1);
+    for _ in 0..3 {
+        team.grantee_sync
+            .round(&mut proxied, 0)
+            .await
+            .expect("a round");
+    }
+    proxy.honest();
+    assert_eq!(team.grantee_sync.status().pending, 0);
+    let moved = team.grantee_sync.rid_at("Pay/Plan.md").expect("mapped");
+    assert_eq!(team.grantee_sync.object_domain(&moved), Some(domain));
+
+    team.settle().await;
+    assert!(!team.outsider_folder.files().contains_key("Plan.md"));
+    assert!(!team.folder.files().contains_key("Plan.md"));
+    assert_eq!(team.folder.files()["Pay/Plan.md"], b"# Plan\n");
+    assert_eq!(team.outsider_sync.status().unreadable, 0);
+    assert_eq!(team.sync.status().unreadable, 0);
+}
+
+/// Refuses the next push with `code` for the record at `index`.
+fn refuse_ops(proxy: &Proxy, code: &'static str, index: u16) {
+    use sync_protocol::codec::{Bytes, Encode, Text};
+    use sync_protocol::messages::{ErrorBody, PushFailureDetail};
+
+    let once = std::sync::atomic::AtomicBool::new(false);
+    proxy.forge(Box::new(move |method, path| {
+        if method != "POST"
+            || !path.ends_with("/ops")
+            || once.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return None;
+        }
+        let detail = PushFailureDetail {
+            record_index: index.into(),
+            code: Text(code.to_owned()),
+            record_detail: None,
+        };
+        let body = ErrorBody {
+            code: Text(code.to_owned()),
+            message: Text("refused".to_owned()),
+            retry_after_seconds: None,
+            detail: Some(Bytes(detail.to_bytes())),
+        };
+        Some((403, body.to_bytes()))
+    }));
+}
+
+/// A moved attachment that gets `quota_exceeded` at its upload undoes the
+/// whole pair: the source's delete never goes alone or blocks its outbox,
+/// and the move goes out with its `origin` once space frees up (§9, §20).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_move_over_quota_comes_undone_and_goes_once_space_frees_up() {
+    let retention = sync_store::Retention {
+        quota_bytes: Some(1024 * 1024),
+        ..sync_store::Retention::default()
+    };
+    let server = Server::start_with_retention(1_000_000, retention).await;
+    let mut team = team(&server).await;
+    let domain = team.restrict(Level::Write).await;
+    let photo: Vec<u8> = (0..500_000u32).map(|i| (i % 251) as u8).collect();
+    let filler: Vec<u8> = (0..300_000u32).map(|i| (i % 241) as u8).collect();
+    team.folder.write("Photo.bin", &photo);
+    team.folder.write("Filler.bin", &filler);
+    team.settle().await;
+    let old = team.sync.rid_at("Photo.bin").expect("mapped");
+
+    rename(&team.folder, "Photo.bin", "Pay/Photo.bin");
+    team.folder.write("Behind.md", b"# Behind it\n");
+    team.sync
+        .round(&mut team.owner.service, 0)
+        .await
+        .expect("a refused upload doesn't fail the round");
+    assert_eq!(team.sync.status().waiting_for_space, 1);
+    assert_eq!(team.sync.rid_at("Pay/Photo.bin"), Some(old), "undone");
+    team.outsider_sync
+        .round(&mut team.outsider.service, 0)
+        .await
+        .expect("a round");
+    assert!(
+        team.outsider_folder.files().contains_key("Behind.md"),
+        "the record behind the pair went out"
+    );
+    assert!(team.outsider_folder.files().contains_key("Photo.bin"));
+
+    std::fs::remove_file(team.folder.path("Filler.bin")).expect("removed");
+    for _ in 0..3 {
+        team.settle().await;
+        server.store.maintain().await.expect("a pass");
+    }
+    assert_eq!(team.sync.status().waiting_for_space, 0);
+    let moved = team.sync.rid_at("Pay/Photo.bin").expect("mapped");
+    assert_ne!(moved, old);
+    assert_eq!(team.sync.object_domain(&moved), Some(domain));
+    assert!(team.grantee_folder.files()["Pay/Photo.bin"] == photo);
+    assert!(!team.outsider_folder.files().contains_key("Photo.bin"));
+    assert_eq!(team.outsider_sync.status().conflicts, 0);
+}
+
+/// A device that can name no cover for an object the log knows signs
+/// nothing: a state with no cover on a known `rid` would count as a patch
+/// nobody can read, so its file waits for you (§13, §14).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_object_with_no_cover_to_name_waits_for_you() {
+    let server = Server::start().await;
+    let mut team = team(&server).await;
+    team.restrict(Level::Write).await;
+    rename(&team.folder, "Plan.md", "Pay/Plan.md");
+    team.sync
+        .round(&mut team.owner.service, 0)
+        .await
+        .expect("a round");
+    // The grantee edits the file before it pulls the move, so the new
+    // object takes the file with no state of its own.
+    team.grantee_folder.write("Plan.md", b"# Ben's plan\n");
+    team.grantee_sync
+        .pull(&mut team.grantee.service, 0)
+        .await
+        .expect("pulled");
+    let moved = team.grantee_sync.rid_at("Plan.md").expect("mapped");
+    team.grantee_sync.confirm_move(moved);
+    team.grantee_sync.capture().expect("captured");
+    assert_eq!(team.grantee_sync.status().pending, 0, "it signed nothing");
+    assert_eq!(team.grantee_sync.status().held, 1);
+    assert_eq!(team.grantee_folder.files()["Plan.md"], b"# Ben's plan\n");
+}
+
 /// A member taken off and granted again holds old keys and a cursor below
 /// its new floor on the same device: it reads what's live at the floor,
 /// its hold ends, and it writes again.

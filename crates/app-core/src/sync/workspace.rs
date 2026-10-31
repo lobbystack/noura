@@ -324,6 +324,23 @@ pub fn is_empty_folder(folder: &Path) -> Result<bool, SyncError> {
     }))
 }
 
+/// Sets aside in `waiting` a refusal that concerns the records in an outbox
+/// and not the connection or the workspace, so the round goes on to its
+/// pull (§14). The first one stands for the rest.
+fn keep_waiting(
+    result: Result<usize, SyncError>,
+    waiting: &mut Option<SyncError>,
+) -> Result<usize, SyncError> {
+    match result {
+        Err(SyncError::Refused { ref code, .. }) if code == "not_found" => result,
+        Err(error @ (SyncError::Refused { .. } | SyncError::Check("sync_reseal_limit"))) => {
+            waiting.get_or_insert(error);
+            Ok(0)
+        }
+        result => result,
+    }
+}
+
 impl WorkspaceSync {
     /// Turns sync on for the workspace that `engine` opened: creates the
     /// remote workspace named `name` in one request (its genesis, the
@@ -1255,7 +1272,9 @@ impl WorkspaceSync {
         } else {
             self.capture()?
         };
-        let mut pushed = self.push_everything(service).await?;
+        // A refusal that waits costs this round its push, not its pull (§14).
+        let mut waiting = None;
+        let mut pushed = self.push_each(service, &mut waiting).await?;
         // A blob the server's check marks missing later still comes back.
         if self.state.restore.alerted.is_some()
             || self
@@ -1284,12 +1303,17 @@ impl WorkspaceSync {
         // device writes again at once (§9); merges go out next round.
         if !self.state.rewrite_epochs.is_empty() {
             captured += self.capture()?;
-            pushed += self.push(service).await?;
+            let result = self.push(service).await;
+            pushed += keep_waiting(result, &mut waiting)?;
         }
         if pushed > 0 {
             self.usage_checked = None;
         }
         self.refresh_usage(service).await;
+        if let Some(error) = waiting {
+            self.save()?;
+            return Err(error);
+        }
         self.state.last_success = Some(unix_now());
         self.state.restore.gap = false;
         self.save()?;
@@ -1813,6 +1837,13 @@ impl WorkspaceSync {
                     if waiting_for_page {
                         continue;
                     }
+                    if !self.may_write(domain_of(&found.file.relative_path, &self.state.roots)) {
+                        skipped.push(Skipped {
+                            path: found.file.relative_path.clone(),
+                            why: SkipWhy::CantWrite,
+                        });
+                        continue;
+                    }
                     if found.file.size > sync_protocol::blob::MAX_BLOB_FILE {
                         skipped.push(Skipped {
                             path: found.file.relative_path.clone(),
@@ -1851,6 +1882,18 @@ impl WorkspaceSync {
                         continue;
                     }
                     let domain = self.object_domain(&rid);
+                    if !self.may_write(domain) {
+                        if self.holds_base(&rid, &found) {
+                            self.state.objects.get_mut(&rid).expect("listed").local =
+                                Some(found.local());
+                        } else {
+                            skipped.push(Skipped {
+                                path: found.file.relative_path.clone(),
+                                why: SkipWhy::CantWrite,
+                            });
+                        }
+                        continue;
+                    }
                     // A file that crossed a root is a move between domains,
                     // and a workspace-domain object inside a new root waits
                     // for its move (§9).
@@ -1869,6 +1912,10 @@ impl WorkspaceSync {
                         signed += self.capture_text(rid, &found, false)?;
                         continue;
                     }
+                    if self.uncovered(&rid) {
+                        self.hold_uncovered_file(rid, &found);
+                        continue;
+                    }
                     self.in_domain(domain, |sync| {
                         let covers = sync.edit_covers(&rid);
                         sync.sign_file(rid, &found, covers)
@@ -1877,13 +1924,21 @@ impl WorkspaceSync {
                 }
                 Change::Delete { rid } => {
                     let domain = self.object_domain(&rid);
+                    if !self.may_write(domain) {
+                        if let Some(local) = &self.state.objects[&rid].local {
+                            skipped.push(Skipped {
+                                path: local.path.clone(),
+                                why: SkipWhy::CantWrite,
+                            });
+                        }
+                        continue;
+                    }
+                    if self.uncovered(&rid) {
+                        self.hold_uncovered_delete(rid);
+                        continue;
+                    }
                     self.in_domain(domain, |sync| {
-                        let covers = if sync.in_text_mode(&rid) {
-                            let view = sync.live_ops(&rid).into_iter().collect();
-                            sync.covers_of(&rid, &view)
-                        } else {
-                            sync.edit_covers(&rid)
-                        };
+                        let covers = sync.delete_covers(&rid);
                         sync.sign_delete(rid, covers)
                     })?;
                     self.end_text(rid)?;
@@ -1891,6 +1946,7 @@ impl WorkspaceSync {
                 }
             }
         }
+        signed += self.delete_again(&mut skipped)?;
         // An object this device wrote that yields its path to another
         // object moves to the name it shows (§16).
         for rid in self.yielded_moves() {
@@ -1907,6 +1963,9 @@ impl WorkspaceSync {
                 continue;
             }
             let domain = self.object_domain(&rid);
+            if !self.may_write(domain) || self.uncovered(&rid) {
+                continue;
+            }
             self.in_domain(domain, |sync| {
                 let covers = sync.edit_covers(&rid);
                 sync.sign_file(rid, &found, covers)
@@ -1937,6 +1996,122 @@ impl WorkspaceSync {
             .waiting_for_space
             .retain(|rid| signed_rids.contains(rid));
         self.save()?;
+        Ok(signed)
+    }
+
+    /// Whether the policy this device accepted lets it write `domain`.
+    /// Before it connected it can't tell, and the server has the last word.
+    fn may_write(&self, domain: Option<Id>) -> bool {
+        let device = self.credentials.keys.device();
+        self.remote.as_ref().is_none_or(|remote| {
+            let domain = domain.unwrap_or(remote.domain);
+            remote.policy.head_snapshot().can_write(&device, &domain)
+        })
+    }
+
+    /// Whether `found` holds the state the object's file started from, so
+    /// a device that can't write has nothing to keep.
+    fn holds_base(&self, rid: &Id, found: &Found) -> bool {
+        self.state.objects.get(rid).is_some_and(|object| {
+            object
+                .base
+                .and_then(|base| object.states.get(&base))
+                .and_then(|state| state.content.as_ref())
+                .is_some_and(|content| {
+                    content.revision == found.revision && content.path == found.file.relative_path
+                })
+        })
+    }
+
+    /// Whether an edit of `rid` could name no cover though the log holds
+    /// live operations on it. A state with no cover would count as a patch
+    /// that nobody can read (§13), and any cover the device could name now
+    /// would replace a version it never read (§14), so it signs nothing.
+    pub(super) fn uncovered(&self, rid: &Id) -> bool {
+        !self.live_ops(rid).is_empty() && self.edit_covers(rid).is_empty()
+    }
+
+    /// Holds `found`, an edit with no cover to name, for your choice (§15).
+    pub(super) fn hold_uncovered_file(&mut self, rid: Id, found: &Found) {
+        if let Some(object) = self.state.objects.get_mut(&rid) {
+            object.local = Some(found.local());
+        }
+        self.state.held.insert(
+            rid,
+            Held {
+                path: found.file.relative_path.clone(),
+                revision: found.revision,
+            },
+        );
+    }
+
+    /// Holds a delete with no cover to name for your choice (§15). The
+    /// version you hold is the file's absence.
+    fn hold_uncovered_delete(&mut self, rid: Id) {
+        let Some(local) = self
+            .state
+            .objects
+            .get_mut(&rid)
+            .and_then(|o| o.local.take())
+        else {
+            return;
+        };
+        self.state.held.insert(
+            rid,
+            Held {
+                path: local.path,
+                revision: Digest::ZERO,
+            },
+        );
+    }
+
+    /// The covers of a delete of `rid`: a note's whole lineage, since its
+    /// patches go with it, and an edit's covers for any other object.
+    fn delete_covers(&self, rid: &Id) -> Vec<Cover> {
+        let text = self.in_text_mode(rid)
+            || self.state.objects.get(rid).is_some_and(|object| {
+                object
+                    .base
+                    .and_then(|base| object.states.get(&base))
+                    .and_then(|state| state.content.as_ref())
+                    .is_some_and(|content| content.text.is_some())
+            });
+        if text {
+            let view = self.live_ops(rid).into_iter().collect();
+            self.covers_of(rid, &view)
+        } else {
+            self.edit_covers(rid)
+        }
+    }
+
+    /// Signs again each delete the server refused. Returns how many records
+    /// it signed.
+    fn delete_again(&mut self, skipped: &mut Vec<Skipped>) -> Result<usize, SyncError> {
+        let rids: Vec<Id> = self
+            .state
+            .objects
+            .iter()
+            .filter(|(rid, object)| object.delete_again && !self.state.held.contains_key(rid))
+            .map(|(rid, _)| *rid)
+            .collect();
+        let mut signed = 0;
+        for rid in rids {
+            let domain = self.object_domain(&rid);
+            if !self.may_write(domain) {
+                if let Some(path) = self.synced_path_of(&rid) {
+                    skipped.push(Skipped {
+                        path,
+                        why: SkipWhy::CantWrite,
+                    });
+                }
+                continue;
+            }
+            self.in_domain(domain, |sync| {
+                let covers = sync.delete_covers(&rid);
+                sync.sign_delete(rid, covers)
+            })?;
+            signed += 1;
+        }
         Ok(signed)
     }
 
@@ -2222,37 +2397,150 @@ impl WorkspaceSync {
         Ok((blob_ref.clone(), Some(blob_ref)))
     }
 
-    /// Uploads each blob the outbox's records list that hasn't reached the
-    /// server yet, and drops its ciphertext from the journal once the
-    /// upload completes (§21).
+    /// Uploads each blob of the outbox's records that hasn't reached the
+    /// server yet (§21). The ciphertext stays in the journal until the
+    /// server acknowledges the record that lists it.
     async fn upload_blobs(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
         let mut index = 0;
         while index < self.state.outbox.len() {
-            let Some(blob) = self.state.outbox[index].upload.clone() else {
+            let outgoing = &self.state.outbox[index];
+            if outgoing.upload.is_none()
+                || outgoing.uploaded
+                || self.upload_at(service, index).await?
+            {
                 index += 1;
-                continue;
-            };
-            let path = self.journal.dir().join(state::upload_path(&blob.blob));
-            let uploaded = service
-                .client()
-                .upload_blob(self.state.workspace, self.state.domain, &blob, &path)
-                .await;
-            match uploaded {
-                Ok(()) => {
-                    self.state.outbox[index].upload = None;
-                    index += 1;
-                }
-                // The records behind it still go out: one of them may be
-                // the delete that frees the space (§20).
-                Err(SyncError::Refused { code, .. }) if code == "quota_exceeded" => {
-                    self.wait_for_space(index)?;
-                }
-                Err(error) => return Err(error),
             }
-            self.save()?;
-            self.journal.forget(&state::upload_path(&blob.blob));
         }
         Ok(())
+    }
+
+    /// Uploads the blob of the outbox's record at `index`. A refused upload
+    /// goes the way of a refused record, so the records behind it still go
+    /// out (§20). Returns whether the record stayed at `index`.
+    async fn upload_at(
+        &mut self,
+        service: &mut SyncService,
+        index: usize,
+    ) -> Result<bool, SyncError> {
+        let blob = self.state.outbox[index]
+            .upload
+            .clone()
+            .expect("the record has a blob to upload");
+        let upload = state::upload_path(&blob.blob);
+        let path = self.journal.dir().join(&upload);
+        if !path.exists() && !self.seal_listed(index, &blob)? {
+            self.give_up_blob(index)?;
+            self.save()?;
+            return Ok(false);
+        }
+        let uploaded = service
+            .client()
+            .upload_blob(self.state.workspace, self.state.domain, &blob, &path)
+            .await;
+        let stayed = match uploaded {
+            Ok(()) => {
+                self.state.outbox[index].uploaded = true;
+                true
+            }
+            // One of the records behind it may be the delete that frees
+            // the space (§20).
+            Err(SyncError::Refused { code, .. }) if code == "quota_exceeded" => {
+                self.wait_for_space(index)?;
+                false
+            }
+            Err(SyncError::Refused { code, .. }) if code == "forbidden" => {
+                Box::pin(self.refused_at(service, index, &code, None)).await?;
+                false
+            }
+            Err(error) => return Err(error),
+        };
+        self.save()?;
+        Ok(stayed)
+    }
+
+    /// Writes the blob of the outbox's record at `index` to the journal
+    /// again, from the file, when the file still holds the record's bytes.
+    fn seal_listed(
+        &self,
+        index: usize,
+        blob: &sync_protocol::records::BlobRef,
+    ) -> Result<bool, SyncError> {
+        let record = &self.state.outbox[index].record;
+        let key = OpKey {
+            device: record.body.device,
+            counter: record.body.counter,
+        };
+        let Some(object) = self.state.objects.get(&record.body.rid) else {
+            return Ok(false);
+        };
+        let Some(content) = object.states.get(&key).and_then(|s| s.content.as_ref()) else {
+            return Ok(false);
+        };
+        let path = object.local.as_ref().map_or(&content.path, |l| &l.path);
+        self.seal_again(path, &content.revision, blob)
+    }
+
+    /// Takes out the record at `index`, whose blob no longer exists anywhere
+    /// and whose file moved on: the file keeps the change, and the next
+    /// capture signs it again (§14).
+    fn give_up_blob(&mut self, index: usize) -> Result<(), SyncError> {
+        let rejected = self.take_outgoing(index);
+        self.hold_refused_snapshot(&rejected.record)?;
+        self.keep_local(&rejected.record, false);
+        self.resend_text_later(&rejected.record);
+        self.reseal_replacing_or_end(index, &rejected.record)
+    }
+
+    /// The server finds the blob of the outbox's record at `index`
+    /// incomplete (§14): the upload's offset tells whether it lost the blob.
+    /// A complete upload contradicts the refusal, so the same bytes go out
+    /// later, and otherwise the blob goes up again.
+    async fn blob_incomplete(
+        &mut self,
+        service: &mut SyncService,
+        index: usize,
+        refused: SyncError,
+    ) -> Result<(), SyncError> {
+        let Some(blob) = self.listed_blob(index) else {
+            return Err(refused);
+        };
+        let offset = match service
+            .client()
+            .blob_offset(&self.state.workspace, &blob.blob)
+            .await
+        {
+            Err(SyncError::Refused { code, .. }) if code == "not_found" => 0,
+            offset => offset?,
+        };
+        if offset >= blob.ciphertext_length {
+            return Err(refused);
+        }
+        let outgoing = &mut self.state.outbox[index];
+        outgoing.upload = Some(blob);
+        outgoing.uploaded = false;
+        self.upload_at(service, index).await.map(|_| ())
+    }
+
+    /// The blob the outbox's record at `index` lists: one it brought, or
+    /// one it borrowed from an earlier state.
+    fn listed_blob(&self, index: usize) -> Option<sync_protocol::records::BlobRef> {
+        let outgoing = &self.state.outbox[index];
+        let record = &outgoing.record;
+        let key = OpKey {
+            device: record.body.device,
+            counter: record.body.counter,
+        };
+        outgoing.upload.clone().or_else(|| {
+            self.state
+                .objects
+                .get(&record.body.rid)?
+                .states
+                .get(&key)?
+                .content
+                .as_ref()?
+                .blob
+                .clone()
+        })
     }
 
     fn sign_delete(&mut self, rid: Id, covers: Vec<Cover>) -> Result<(), SyncError> {
@@ -2269,7 +2557,12 @@ impl WorkspaceSync {
         target: Option<sync_protocol::records::Origin>,
     ) -> Result<(), SyncError> {
         let object = &self.state.objects[&rid];
-        let revision = object.local.as_ref().map_or(Digest::ZERO, |l| l.revision);
+        let started = object
+            .base
+            .and_then(|base| object.states.get(&base))
+            .and_then(|state| state.content.as_ref())
+            .map_or(Digest::ZERO, |content| content.revision);
+        let revision = object.local.as_ref().map_or(started, |l| l.revision);
         let payload = Payload {
             rid,
             kind: PayloadKind::Delete {
@@ -2293,6 +2586,7 @@ impl WorkspaceSync {
         let object = self.state.objects.get_mut(&rid).expect("signed for it");
         object.local = None;
         object.base = Some(key);
+        object.delete_again = false;
         Ok(())
     }
 
@@ -2347,6 +2641,7 @@ impl WorkspaceSync {
             reseals: 0,
             rewrite: false,
             upload: None,
+            uploaded: false,
             pair: None,
         });
         Ok(key)
@@ -2531,20 +2826,39 @@ impl WorkspaceSync {
     }
 
     /// Pushes every domain's outbox, with each move between domains in one
-    /// push. Returns how many records the server acknowledged.
+    /// push. Returns how many records the server acknowledged, or the first
+    /// refusal that left a record waiting, once every domain had its turn.
     pub async fn push_everything(&mut self, service: &mut SyncService) -> Result<usize, SyncError> {
+        let mut waiting = None;
+        let pushed = self.push_each(service, &mut waiting).await?;
+        waiting.map_or(Ok(pushed), Err)
+    }
+
+    /// [`Self::push_everything`], which leaves the first refusal that kept
+    /// a record waiting in `waiting`: one domain's refusal stops no other
+    /// domain, and no pull.
+    async fn push_each(
+        &mut self,
+        service: &mut SyncService,
+        waiting: &mut Option<SyncError>,
+    ) -> Result<usize, SyncError> {
         let mut pushed = 0;
         loop {
-            pushed += self.push(service).await?;
+            let result = self.push(service).await;
+            pushed += keep_waiting(result, waiting)?;
             for domain in self.loaded_domains() {
                 self.swap_domain(domain);
                 let result = self.push(service).await;
                 self.swap_domain(domain);
-                pushed += result?;
+                pushed += keep_waiting(result, waiting)?;
             }
-            let moved = self.push_pairs(service).await?;
+            // A pair that lost a half at its upload holds its domain's
+            // outbox until it comes undone (§9).
+            let undone = self.undo_lone_pairs()?;
+            let result = self.push_pairs(service).await;
+            let moved = keep_waiting(result, waiting)?;
             pushed += moved;
-            if moved == 0 {
+            if moved == 0 && undone == 0 {
                 return Ok(pushed);
             }
         }
@@ -2589,9 +2903,8 @@ impl WorkspaceSync {
             }
             attempts += 1;
             if attempts > 64 {
-                return Err(SyncError::Network(
-                    "the server keeps refusing the push".into(),
-                ));
+                // The rest goes next round, after the pull.
+                return Ok(acknowledged);
             }
             let mut size = 0;
             let mut batch = Vec::new();
@@ -2615,6 +2928,7 @@ impl WorkspaceSync {
                         self.acknowledge(outgoing, receipt)?;
                     }
                     acknowledged += sent;
+                    attempts = 0;
                     if at_cap {
                         self.stopped = None;
                     }
@@ -2648,6 +2962,9 @@ impl WorkspaceSync {
         }
         self.state.own.acked = Some((record.body.counter, record.digest(), receipt.seq));
         self.state.waiting_for_space.remove(&record.body.rid);
+        if let Some(blob) = &outgoing.upload {
+            self.journal.forget(&state::upload_path(&blob.blob));
+        }
         let key = OpKey {
             device: record.body.device,
             counter: record.body.counter,
@@ -2737,8 +3054,7 @@ impl WorkspaceSync {
             "supersedes_unknown" if self.state.outbox[index].rewrite => {
                 // A rewrite keeps its cover or writes nothing; the version
                 // waits for review (§9).
-                let rejected = self.state.outbox.remove(index);
-                self.forget_own(&rejected.record);
+                let rejected = self.take_outgoing(index);
                 let rid = rejected.record.body.rid;
                 if let Some(local) = self.state.objects.get(&rid).and_then(|o| o.local.clone()) {
                     self.state.held.insert(
@@ -2792,8 +3108,7 @@ impl WorkspaceSync {
                     // any cover it could name now replaces a version the
                     // device never read: a text-mode note merges what it
                     // pulls, and a file's version waits for review (§14).
-                    let rejected = self.state.outbox.remove(index);
-                    self.forget_own(&rejected.record);
+                    let rejected = self.take_outgoing(index);
                     self.hold_uncovered_edit(&rejected.record);
                     return self.reseal_replacing_or_end(index, &rejected.record);
                 }
@@ -2837,29 +3152,33 @@ impl WorkspaceSync {
                 // The document holds the patch, so a snapshot takes its
                 // place and carries it (§14). The journal gives the patch
                 // up only then, as a closed note rebuilds from the journal.
-                let rejected = self.state.outbox.remove(index);
-                self.forget_own(&rejected.record);
+                let rejected = self.take_outgoing(index);
                 self.snapshot_required(rejected.record.body.rid)?;
                 self.forget_text_record(&rejected.record)?;
                 self.reseal_replacing(index, &rejected.record)
             }
             "quota_exceeded" => self.wait_for_space(index),
             "conflict_limit" | "snapshot_required" => {
-                // The change stays local; the next record takes its place.
-                if index + 1 >= self.state.outbox.len() {
-                    return Err(refused());
-                }
-                let rejected = self.state.outbox.remove(index);
-                self.forget_own(&rejected.record);
+                // The change stays local, and the next record, if any,
+                // takes its place.
+                let rejected = self.take_outgoing(index);
+                self.hold_refused_snapshot(&rejected.record)?;
                 self.keep_local(&rejected.record, record_code == "conflict_limit");
-                self.reseal_replacing(index, &rejected.record)
+                self.reseal_replacing_or_end(index, &rejected.record)
             }
+            "blob_incomplete" => self.blob_incomplete(service, index, refused()).await,
             "forbidden" => {
-                // The device's write access is gone: drop what waits; the
-                // files keep their changes (§14).
-                let dropped: Vec<_> = self.state.outbox.drain(index..).collect();
-                for outgoing in &dropped {
-                    self.forget_own(&outgoing.record);
+                // The device's write access is gone: drop what waits. The
+                // files keep their changes, and sign again once it can
+                // write (§14).
+                while self.state.outbox.len() > index {
+                    let dropped = self.take_outgoing(index);
+                    if dropped.rewrite {
+                        continue;
+                    }
+                    self.hold_refused_snapshot(&dropped.record)?;
+                    self.keep_local(&dropped.record, false);
+                    self.resend_text_later(&dropped.record);
                 }
                 self.state.own.head = self
                     .state
@@ -2867,6 +3186,10 @@ impl WorkspaceSync {
                     .last()
                     .map(|o| (o.record.body.counter, o.record.digest()))
                     .or(self.state.own.acked.map(|(c, d, _)| (c, d)));
+                // Capture holds what it would sign from here on.
+                if let Err(error) = self.refresh(service).await {
+                    tracing::warn!(%error, "the policy didn't refresh after a refusal");
+                }
                 Ok(())
             }
             _ => Err(refused()),
@@ -2927,6 +3250,7 @@ impl WorkspaceSync {
                 .max_by_key(|key| object.states.get(key).and_then(|s| s.seq).unwrap_or(0));
         }
         object.cover_all |= cover_all;
+        object.delete_again |= record.body.delete;
     }
 
     /// Keeps a refused record's change in its file, for review when the
@@ -2939,8 +3263,9 @@ impl WorkspaceSync {
             .get(&rid)
             .filter(|object| object.text.is_none())
             .and_then(|object| object.local.clone());
-        match file {
-            Some(local) => {
+        let deleted = self.synced_path_of(&rid).filter(|_| record.body.delete);
+        match (file, deleted) {
+            (Some(local), _) => {
                 self.state.held.insert(
                     rid,
                     Held {
@@ -2949,7 +3274,18 @@ impl WorkspaceSync {
                     },
                 );
             }
-            None => self.keep_local(record, false),
+            // The version you hold is the file's absence, which waits for
+            // you the same way.
+            (None, Some(path)) => {
+                self.state.held.insert(
+                    rid,
+                    Held {
+                        path,
+                        revision: Digest::ZERO,
+                    },
+                );
+            }
+            (None, None) => self.keep_local(record, false),
         }
     }
 
@@ -2957,8 +3293,7 @@ impl WorkspaceSync {
     /// change stays local, the next capture signs it again, and the next
     /// record takes its place (§20).
     fn wait_for_space(&mut self, index: usize) -> Result<(), SyncError> {
-        let rejected = self.state.outbox.remove(index);
-        self.forget_own(&rejected.record);
+        let rejected = self.take_outgoing(index);
         self.hold_refused_snapshot(&rejected.record)?;
         self.keep_local(&rejected.record, false);
         self.state
@@ -3203,6 +3538,17 @@ impl WorkspaceSync {
             written += 1;
         }
         Ok(written)
+    }
+
+    /// Takes the record at `index` out of the outbox, with what the device
+    /// kept for it: the record never reached the server.
+    pub(super) fn take_outgoing(&mut self, index: usize) -> Outgoing {
+        let outgoing = self.state.outbox.remove(index);
+        if let Some(blob) = &outgoing.upload {
+            self.journal.forget(&state::upload_path(&blob.blob));
+        }
+        self.forget_own(&outgoing.record);
+        outgoing
     }
 
     /// Forgets a record of this device that never reached the server.

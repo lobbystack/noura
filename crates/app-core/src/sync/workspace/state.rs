@@ -542,6 +542,11 @@ pub struct Object {
     /// branch, as one the server refused with `conflict_limit` does.
     #[serde(default)]
     pub cover_all: bool,
+    /// Whether the server refused this device's delete of the object, so
+    /// the next capture signs it again and nothing writes the file back
+    /// until then (§14).
+    #[serde(default)]
+    pub delete_again: bool,
     /// The text lineage the note's document follows, in text mode (§22).
     #[serde(default)]
     pub text: Option<Id>,
@@ -615,10 +620,14 @@ pub struct Outgoing {
     /// skipped, which keeps its cover or writes nothing (§9).
     #[serde(default)]
     pub rewrite: bool,
-    /// The blob the record lists that still waits for its upload. Its
-    /// ciphertext lies in the journal at [`upload_path`].
+    /// The blob the record brought. Its ciphertext stays in the journal at
+    /// [`upload_path`] until the server acknowledges the record, since the
+    /// collector may delete a completed upload no push listed yet (§14).
     #[serde(default)]
     pub upload: Option<sync_protocol::records::BlobRef>,
+    /// Whether that blob's upload completed.
+    #[serde(default)]
+    pub uploaded: bool,
     /// The move between domains this record is half of, which goes in one
     /// push with its other half (§9).
     #[serde(default)]
@@ -635,7 +644,7 @@ pub struct MovePair {
     pub target: Id,
 }
 
-/// Where the journal keeps a blob's ciphertext until its upload completes.
+/// Where the journal keeps a blob's ciphertext until a push lists it.
 pub fn upload_path(blob: &sync_protocol::types::Id) -> String {
     format!("uploads/{}", sync_protocol::types::to_hex(&blob.0))
 }

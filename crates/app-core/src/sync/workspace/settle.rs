@@ -151,8 +151,12 @@ impl WorkspaceSync {
         if branches.is_empty() {
             return Ok(());
         }
-        // A held version stays in its file until you choose (§15).
-        let edited = self.local_edit(&rid) || self.state.held.contains_key(&rid);
+        // A held version stays in its file until you choose (§15), and an
+        // edit that waits in the outbox until the server takes it, as a
+        // conflict branch if it must be.
+        let edited = self.local_edit(&rid)
+            || self.state.held.contains_key(&rid)
+            || self.unsent_edit(&rid, &object);
         if branches.len() == 1 {
             // A text-mode note's file follows its document (§22).
             let text = object
@@ -195,10 +199,29 @@ impl WorkspaceSync {
         Ok(())
     }
 
+    /// Whether a state of `rid` this device signed still waits in the
+    /// outbox. A rewrite carries no edit.
+    fn unsent_edit(&self, rid: &Id, object: &super::state::Object) -> bool {
+        self.state.outbox.iter().any(|outgoing| {
+            let record = &outgoing.record;
+            record.body.rid == *rid
+                && !outgoing.rewrite
+                && object.states.contains_key(&OpKey {
+                    device: record.body.device,
+                    counter: record.body.counter,
+                })
+        })
+    }
+
     /// Whether `rid`'s file holds edits sync hasn't captured: its bytes
-    /// differ from the ones the journal last saw, or it went away.
+    /// differ from the ones the journal last saw, or it went away, or a
+    /// delete the server refused waits to go out again.
     pub(super) fn local_edit(&self, rid: &Id) -> bool {
-        let Some(local) = self.state.objects.get(rid).and_then(|o| o.local.as_ref()) else {
+        let object = self.state.objects.get(rid);
+        if object.is_some_and(|o| o.delete_again) {
+            return true;
+        }
+        let Some(local) = object.and_then(|o| o.local.as_ref()) else {
             return false;
         };
         match stat(self.engine.root(), &local.path) {

@@ -565,6 +565,16 @@ impl<B: Backend> Server<B> {
             .collect()
     }
 
+    /// Runs the blob collector as its background pass does, after the
+    /// server's clock moved past a completed upload's 24 hours.
+    pub async fn collect_blobs(&self) -> u64 {
+        let blobs =
+            sync_server::blobs::DiskStore::open(&self.dir.path().join("blobs")).expect("a store");
+        sync_server::maintenance::collect_blobs(&self.store, &blobs)
+            .await
+            .expect("collected")
+    }
+
     /// Runs the quarantine collector as of `days` days from now and returns
     /// what it deleted.
     pub async fn collect_quarantine(&self, days: u64) -> u64 {

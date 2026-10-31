@@ -644,6 +644,13 @@ impl WorkspaceSync {
             .collect()
     }
 
+    /// Signs a dropped text update again once the device can write.
+    pub(super) fn resend_text_later(&mut self, record: &Signed<Operation>) {
+        if self.is_text_update(record) {
+            self.text.lost.insert(record.body.rid);
+        }
+    }
+
     /// Signs again the updates a kill left out of every outbox. Returns how
     /// many records it signed.
     fn resend_lost_text(&mut self) -> Result<usize, SyncError> {
@@ -2038,6 +2045,11 @@ impl WorkspaceSync {
         found: &Found,
         yielded: bool,
     ) -> Result<usize, SyncError> {
+        // The file keeps a change the device can't send: taken into the
+        // document it would leave with the document (§14).
+        if !self.can_write_note(&rid) {
+            return Ok(0);
+        }
         let Some(mut file) = self.text_file(&rid)? else {
             return Ok(0);
         };

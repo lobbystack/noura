@@ -902,7 +902,11 @@ impl WorkspaceSync {
             log.checkpoints.forget_above(covered);
         }
         self.state.log = log;
-        self.state.outbox.clear();
+        for outgoing in std::mem::take(&mut self.state.outbox) {
+            if let Some(blob) = outgoing.upload {
+                self.journal.forget(&super::state::upload_path(&blob.blob));
+            }
+        }
         self.state.own.head = None;
         self.state.own.acked = None;
         self.state.bootstrap_progress = None;

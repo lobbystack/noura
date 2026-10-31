@@ -156,7 +156,7 @@ impl WorkspaceSync {
             .is_some_and(|path| self.stays_for_move(rid, &path))
     }
 
-    fn synced_path_of(&self, rid: &Id) -> Option<String> {
+    pub(super) fn synced_path_of(&self, rid: &Id) -> Option<String> {
         let object = self.state.objects.get(rid)?;
         object
             .states
@@ -254,6 +254,10 @@ impl WorkspaceSync {
         }
         if !self.may_move(source, target) {
             self.skipped_now.push(self.skip_crossing(&path));
+            return Ok(0);
+        }
+        if self.uncovered(&rid) {
+            self.hold_uncovered_file(rid, found);
             return Ok(0);
         }
         self.sign_move(rid, found, target)?;
@@ -433,6 +437,7 @@ impl WorkspaceSync {
                             .as_ref()
                             .is_some_and(|local| beneath(&local.path, &root.folder))
                         && self.awaits_move(rid)
+                        && !self.uncovered(rid)
                 })
                 .map(|(rid, _)| *rid)
                 .collect();
@@ -620,9 +625,8 @@ impl WorkspaceSync {
             }
             attempts += 1;
             if attempts > 64 {
-                return Err(SyncError::Network(
-                    "the server keeps refusing the push".into(),
-                ));
+                // The rest goes next round, after the pull.
+                return Ok(acknowledged);
             }
             let records: Vec<RecordRef> = batch.iter().cloned().map(RecordRef::Operation).collect();
             match service.client().push(self.state.workspace, records).await {
@@ -635,6 +639,7 @@ impl WorkspaceSync {
                         })?;
                     }
                     acknowledged += batch.len();
+                    attempts = 0;
                     self.save()?;
                     let accepted = self.state.policy.last().map_or(0, |c| c.body.revision);
                     if response.policy_revision > accepted {
@@ -708,12 +713,16 @@ impl WorkspaceSync {
                     if let Some(index) =
                         sync.state.outbox.iter().position(|o| o.pair == Some(*pair))
                     {
-                        let rejected = sync.state.outbox.remove(index);
-                        sync.forget_own(&rejected.record);
+                        let rejected = sync.take_outgoing(index);
                         sync.reseal_replacing_or_end(index, &rejected.record)?;
                     }
                     Ok::<_, SyncError>(())
                 })?;
+            }
+            // What waits for space is the file's move, whichever object
+            // holds it next.
+            if self.state.waiting_for_space.remove(&pair.target) {
+                self.state.waiting_for_space.insert(pair.source);
             }
             let local = self
                 .state
@@ -721,14 +730,28 @@ impl WorkspaceSync {
                 .remove(&pair.target)
                 .and_then(|object| object.local);
             if let Some(object) = self.state.objects.get_mut(&pair.source) {
-                object.local = local.map(|mut local| {
+                object.delete_again = false;
+                if let Some(mut local) = local {
                     local.revision = sync_protocol::types::Digest::ZERO;
                     local.size = u64::MAX;
-                    local
-                });
+                    object.local = Some(local);
+                }
             }
         }
         Ok(())
+    }
+
+    /// Undoes each pair with one record left in the outboxes, as after a
+    /// refusal outside a pair's push. Returns how many it undid.
+    pub(super) fn undo_lone_pairs(&mut self) -> Result<usize, SyncError> {
+        let lone: BTreeMap<MovePair, usize> = self
+            .open_pairs()
+            .into_iter()
+            .filter(|(_, records)| *records < 2)
+            .collect();
+        self.undo_broken_pairs(&lone)?;
+        self.save()?;
+        Ok(lone.len())
     }
 
     /// Where the placement rules put `rid`'s file, with the §9 exception

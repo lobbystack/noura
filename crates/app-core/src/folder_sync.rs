@@ -342,6 +342,7 @@ pub fn skipped_line(skipped: &crate::sync::workspace::Skipped) -> String {
         SkipWhy::TooLarge => "files above 256 KB sync once attachments arrive",
         SkipWhy::HeldRoot => "it waits until you confirm who may see this folder",
         SkipWhy::CrossesRoot => "it moved into or out of a restricted folder",
+        SkipWhy::CantWrite => "your role can't edit here, so your change stays on this computer",
     };
     let path = if skipped.path.is_empty() {
         "The workspace folder"
