@@ -46,6 +46,8 @@ jobs:
       NOURA_SCALE_NOTES: '95000'
       NOURA_SCALE_ATTACHMENTS: '5000'
       NOURA_SCALE_DEVICES: '197'
+      # What the build leaves of the job's timeout.
+      NOURA_SCALE_LIMIT_SECONDS: '18600'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

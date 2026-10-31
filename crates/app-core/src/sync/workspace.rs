@@ -2436,7 +2436,7 @@ impl WorkspaceSync {
 
     /// Pushes every domain's outbox, with each move between domains in one
     /// push. Returns how many records the server acknowledged.
-    async fn push_everything(&mut self, service: &mut SyncService) -> Result<usize, SyncError> {
+    pub async fn push_everything(&mut self, service: &mut SyncService) -> Result<usize, SyncError> {
         let mut pushed = 0;
         loop {
             pushed += self.push(service).await?;

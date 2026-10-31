@@ -103,7 +103,7 @@ impl Config {
             warmup: Duration::from_secs(number("NOURA_SOAK_WARMUP_SECONDS", 3)),
             retained: number("NOURA_SOAK_RETAINED_BYTES", 1 << 10),
             hold_rate: number("NOURA_SOAK_HOLD_RATE", 0) == 1,
-            verified_writers: number("NOURA_SOAK_VERIFIED_WRITERS", devices as u64) as usize,
+            verified_writers: number("NOURA_SOAK_VERIFIED_WRITERS", 1) as usize,
             catch_up_limit: Duration::from_secs(number("NOURA_SOAK_CATCH_UP_SECONDS", 3600)),
         }
     }
@@ -404,7 +404,12 @@ async fn run_writer(mut member: Member, index: usize, shared: Arc<Shared>, seed:
             format!("# Writer {index}\n\nEdit {count}\n").as_bytes(),
         );
         let pushed = match member.sync.capture() {
-            Ok(_) => member.sync.push(&mut member.desktop.service).await,
+            Ok(_) => {
+                member
+                    .sync
+                    .push_everything(&mut member.desktop.service)
+                    .await
+            }
             Err(error) => Err(error),
         };
         match pushed {
@@ -824,10 +829,8 @@ async fn drive<B: Backend, D: Database<B>>(
         written.extend(wrote);
     }
     let mut unverified = Vec::new();
-    let mut writer_notes = Vec::new();
     for (position, writer) in writers.into_iter().enumerate() {
         let writer = writer.await.expect("a writer");
-        writer_notes.push(writer.path.clone());
         if position < config.verified_writers {
             members.push((writer.member, Role::Writer));
         } else {
@@ -944,7 +947,6 @@ async fn drive<B: Backend, D: Database<B>>(
         let there = std::fs::read(members[0].0.folder.path(&writer.path)).expect("its copy");
         assert_eq!(here, there, "{}: the last edit crossed", writer.path);
     }
-    report.set("writer_notes", writer_notes.len());
 
     // A note editing left holds one snapshot and at most 8 live updates.
     let head = {

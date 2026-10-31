@@ -12,7 +12,7 @@
 //! `NOURA_SCALE_DEVICES=197`. Every device belongs to one account, so each
 //! reads all 3 domains, and a removal uploads 199 envelopes per domain where
 //! §28's 2 restricted domains hold 20 devices. `NOURA_SCALE_SEED` repeats a
-//! run, and `NOURA_SCALE_REPORT` names the file
+//! run, `NOURA_SCALE_LIMIT_SECONDS` fails one that overruns, and `NOURA_SCALE_REPORT` names the file
 //! the numbers go to. The counting allocator serves the whole binary, so
 //! each store's run takes this binary's process alone: CI runs one test at
 //! a time, as the cargo commands in the workflow show.
@@ -311,7 +311,12 @@ where
         None,
     );
     let server = as_server(|| server_side.block_on(start(interval, Retention::default(), limits)));
-    client_runtime().block_on(drive::<B, D>(store, sizes, server));
+    // A run that overruns ends here, and its report goes out with what it
+    // measured, rather than the job's timeout killing it with nothing.
+    let limit = Duration::from_secs(number("NOURA_SCALE_LIMIT_SECONDS", 86_400));
+    client_runtime()
+        .block_on(async { tokio::time::timeout(limit, drive::<B, D>(store, sizes, server)).await })
+        .unwrap_or_else(|_| panic!("the run took more than {limit:?}: its seed is printed above"));
     server_side.shutdown_background();
 }
 
