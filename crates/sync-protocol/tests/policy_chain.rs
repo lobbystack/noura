@@ -190,6 +190,31 @@ fn a_recovery_identity_signs_no_policy_change() {
     );
 }
 
+/// A recovery identity reads what its account reads, and writes and wraps
+/// nothing (§12).
+#[test]
+fn a_recovery_identity_reads_and_writes_nothing() {
+    let mut alice = Person::new("alice");
+    let kit = device(alice.account(), "alice kit");
+    let signer = alice.first().clone();
+    alice.chain.add_recovery(&signer, &kit);
+    let mut policy = PolicyBuilder::new(WORKSPACE);
+    policy.push(
+        &signer,
+        vec![alice.chain.head()],
+        PolicyKind::Genesis {
+            workspace_domain: WS_DOMAIN,
+        },
+    );
+    let chain = verify(&policy, &[&alice]).unwrap();
+    let snapshot = chain.head_snapshot();
+    assert!(snapshot.can_read(&kit.id(), &WS_DOMAIN));
+    assert!(!snapshot.can_write(&kit.id(), &WS_DOMAIN));
+    assert!(!snapshot.can_wrap(&kit.id(), &WS_DOMAIN));
+    assert!(snapshot.can_write(&signer.id(), &WS_DOMAIN));
+    assert!(snapshot.can_wrap(&signer.id(), &WS_DOMAIN));
+}
+
 #[test]
 fn roles_limit_who_signs_each_kind() {
     let alice = Person::new("alice");

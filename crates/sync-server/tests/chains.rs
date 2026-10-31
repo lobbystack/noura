@@ -1045,6 +1045,19 @@ async fn a_recovery_proof_lets_the_session_act_for_the_recovery_identity() {
     );
 }
 
+/// A recovery identity holds no session of its own (§12), so its card
+/// can't enroll, whoever holds the kit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_recovery_identity_can_not_enroll() {
+    let (recovery, _dir) = recovery().await;
+    let card = recovery.kit.card(recovery.family.account);
+    let refused = recovery.store.enroll_card(card).await;
+    assert_eq!(
+        refused.err().map(|e| e.to_string().contains("id_conflict")),
+        Some(true)
+    );
+}
+
 /// Review of `0eef7d5`, with the recovery of `sync-v2-recovery.json`, in
 /// step 5's order (§12): the recovered device records the head after
 /// `recover_device` in the first of the account's two workspaces, which it

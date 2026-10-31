@@ -317,14 +317,17 @@ pub(crate) async fn read(
 /// Stores a card that a session of its account enrolled, or takes the same
 /// card again byte for byte. A device ID that a link of the account removed
 /// or that a chain a reset retired lists, or that the store holds with
-/// other bytes, gets `id_conflict` (§7). Ticket 47's enrollment route calls
-/// this after it verifies the proof.
+/// other bytes, gets `id_conflict` (§7). So does a recovery identity, which
+/// holds no session of its own (§12), and any card a chain lists that the
+/// store never enrolled. Ticket 47's enrollment route calls this after it
+/// verifies the proof.
 pub(crate) async fn enroll(txn: &mut impl WriteTxn, card: &Card) -> Result<()> {
     // The chain row orders an enrollment with the appends that read the
     // card or remove its device ID.
     txn.lock_account(card.account).await?;
     let bytes = card.to_bytes();
     let current = txn.current_genesis(card.account).await?;
+    let mut listed = false;
     for (genesis, chain) in policy::chains_of(txn, card.account).await? {
         let Some(state) = chain.card(&card.device) else {
             continue;
@@ -335,6 +338,13 @@ pub(crate) async fn enroll(txn: &mut impl WriteTxn, card: &Card) -> Result<()> {
                 "a link removed this device ID, or a reset retired it",
             ));
         }
+        if state.recovery {
+            return Err(refuse(
+                "id_conflict",
+                "a recovery identity holds no session of its own",
+            ));
+        }
+        listed = true;
     }
     let same = |held: Option<(Id, Vec<u8>)>| match held {
         Some((account, held)) if account == card.account && held == bytes => Ok(()),
@@ -345,6 +355,12 @@ pub(crate) async fn enroll(txn: &mut impl WriteTxn, card: &Card) -> Result<()> {
     };
     if let Some(held) = txn.enrolled_card(card.device).await? {
         return same(Some(held));
+    }
+    if listed {
+        return Err(refuse(
+            "id_conflict",
+            "a chain lists this device ID, and it was never enrolled",
+        ));
     }
     // An enrollment of the same device ID under another account, or one of
     // an account without a chain row to lock, can commit meanwhile: the

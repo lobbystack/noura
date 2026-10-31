@@ -13,7 +13,6 @@ use sync_protocol::types::{Digest, Id};
 
 use crate::chains::SIGN_IN_TTL;
 use crate::devices::{normalized_code, reset_code_hash, reset_code_new};
-use crate::reads::reader;
 use crate::{
     Backend, Error, LinkRow, LockPlan, ReadTxn, RemovedBy, Result, Session, Store, WriteTxn,
     policy, refuse,
@@ -137,7 +136,10 @@ async fn may_close(txn: &mut impl ReadTxn, snapshot: &Snapshot, session: Session
         return Ok(false);
     };
     if current == member.head.genesis {
-        return Ok(reader(snapshot, session).is_some());
+        return Ok(snapshot
+            .devices
+            .get(&session.device)
+            .is_some_and(|device| !device.recovery));
     }
     let chains = policy::chains_of(txn, session.account).await?;
     let on_new_chain = chains

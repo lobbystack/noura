@@ -179,10 +179,24 @@ impl Snapshot {
         self.level(device, domain).is_some()
     }
 
-    /// Whether `device` could write `domain` at this revision.
+    /// Whether `device` could write `domain` at this revision. A recovery
+    /// identity reads what its account reads and writes nothing (§12).
     pub fn can_write(&self, device: &Id, domain: &Id) -> bool {
-        self.level(device, domain)
-            .is_some_and(|l| l >= Level::Write)
+        self.signs(device)
+            && self
+                .level(device, domain)
+                .is_some_and(|l| l >= Level::Write)
+    }
+
+    /// Whether `device` could sign an epoch record or an envelope of
+    /// `domain` at this revision: it reads the domain and isn't a recovery
+    /// identity, whose keys only ever open what was wrapped for it (§12).
+    pub fn can_wrap(&self, device: &Id, domain: &Id) -> bool {
+        self.signs(device) && self.can_read(device, domain)
+    }
+
+    fn signs(&self, device: &Id) -> bool {
+        self.devices.get(device).is_some_and(|d| !d.recovery)
     }
 
     /// Whether `account` manages restricted domain `domain`.

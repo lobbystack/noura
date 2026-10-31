@@ -281,12 +281,36 @@ impl EpochChain {
         self.accepted.values().next()
     }
 
+    /// The checks of §9 that an entry of an epoch a replacement ended can
+    /// pass without its key: domain, policy position, signer and recipients.
+    /// The device never accepted that record, and its log entry alone names
+    /// the rotator whose records under it count as unreadable (§13).
+    pub fn check_ended_entry(
+        &self,
+        record: &Signed<Epoch>,
+        policy: &PolicyChain,
+    ) -> Result<(), KeyError> {
+        self.check_signed(record, policy)
+    }
+
     /// The checks of §9 on one record that don't depend on the records
     /// before it: domain, policy position, signer, recipients and key.
     fn check_record(
         &self,
         record: &Signed<Epoch>,
         key: &SecretKey,
+        policy: &PolicyChain,
+    ) -> Result<(), KeyError> {
+        self.check_signed(record, policy)?;
+        if !key_matches(&record.body, key) {
+            return Err(KeyError::KeyCheck);
+        }
+        Ok(())
+    }
+
+    fn check_signed(
+        &self,
+        record: &Signed<Epoch>,
         policy: &PolicyChain,
     ) -> Result<(), KeyError> {
         let body = &record.body;
@@ -306,14 +330,11 @@ impl EpochChain {
         record
             .verify(&card.card.signing_public)
             .map_err(|_| KeyError::Signature)?;
-        if !snapshot.can_read(&body.rotating_device, &self.domain) {
+        if !snapshot.can_wrap(&body.rotating_device, &self.domain) {
             return Err(KeyError::Signer);
         }
         if body.recipients_digest != recipients_digest(&snapshot.readers(&self.domain)) {
             return Err(KeyError::Recipients);
-        }
-        if !key_matches(body, key) {
-            return Err(KeyError::KeyCheck);
         }
         Ok(())
     }
@@ -423,7 +444,7 @@ impl EpochChain {
         record
             .verify(&card.card.signing_public)
             .map_err(|_| KeyError::Signature)?;
-        if !snapshot.can_read(&body.rotating_device, &self.domain) {
+        if !snapshot.can_wrap(&body.rotating_device, &self.domain) {
             return Err(KeyError::Signer);
         }
         if body.recipients_digest != recipients_digest(&snapshot.readers(&self.domain)) {
@@ -639,7 +660,7 @@ pub fn check_envelope(
     let authorizes = |revision: u64| {
         policy.at(revision).and_then(|s| {
             let device = s.devices.get(&body.wrapping_device)?;
-            s.can_read(&body.wrapping_device, &body.domain)
+            s.can_wrap(&body.wrapping_device, &body.domain)
                 .then(|| envelope.verify(&device.card.signing_public).is_ok())
         })
     };

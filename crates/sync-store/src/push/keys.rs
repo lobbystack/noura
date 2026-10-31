@@ -312,7 +312,7 @@ pub(crate) async fn apply_epoch(
         ));
     }
     let rotator = body.rotating_device;
-    if !at.can_read(&rotator, &domain) || !snapshot.can_read(&rotator, &domain) {
+    if !at.can_wrap(&rotator, &domain) || !snapshot.can_wrap(&rotator, &domain) {
         return Err(refuse(
             "forbidden",
             "the rotating device couldn't read the domain at its revision or can't now",
@@ -685,7 +685,7 @@ pub(crate) async fn apply_envelope(
         .domain(workspace, domain)
         .await?
         .ok_or_else(|| refuse("not_found", "no such domain"))?;
-    if !snapshot.can_read(&body.wrapping_device, &domain) {
+    if !snapshot.can_wrap(&body.wrapping_device, &domain) {
         return Err(refuse(
             "forbidden",
             "the wrapping device can't read the domain",

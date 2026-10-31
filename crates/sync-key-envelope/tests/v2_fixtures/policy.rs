@@ -682,6 +682,38 @@ pub fn fixture() -> Fixture {
         "recovery_signer",
         2,
     );
+    // A recovery identity reads what its account reads and rotates nothing.
+    let kit_policy = genesis(&kit_owner);
+    let key = super::common::secret("recovery fixture epoch 1");
+    let verified = sync_protocol::policy::PolicyChain::verify(
+        &kit_policy.changes,
+        &super::world::verified_chains(&[&kit_owner.chain]),
+    )
+    .unwrap();
+    let by_kit_epoch = super::world::epoch_record(
+        &verified,
+        workspace(),
+        ws_domain(),
+        1,
+        None,
+        1,
+        &kit,
+        &key,
+        None,
+    );
+    f.case(json!({
+        "kind": "epoch_chain",
+        "name": "recovery_identity_signs_an_epoch",
+        "account_chains": chains(&[&kit_owner.chain]),
+        "changes": changes(&kit_policy),
+        "domain": ws_domain().to_hex(),
+        "steps": [{
+            "epoch": to_hex(&by_kit_epoch.to_bytes()),
+            "key": to_hex(key.expose()),
+            "expect": {"error": "signer"},
+        }],
+    }));
+
     let mut again = base.clone();
     add_member(&mut again, &alice, &bob, Role::Viewer);
     refused(
