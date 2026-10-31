@@ -928,6 +928,14 @@ pub trait ReadTxn: Send {
         workspace: Id,
         after: u64,
     ) -> impl Future<Output = Result<Vec<Vec<u8>>>> + Send;
+    /// Whether the workspace's row stands closed. [`Self::workspace`] hides
+    /// such a row.
+    fn workspace_closed(&mut self, workspace: Id) -> impl Future<Output = Result<bool>> + Send;
+    /// Closed workspaces with no domain left whose policy rows still stand.
+    fn drained_closed_workspaces(
+        &mut self,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<Id>>> + Send;
     /// The latest profile record.
     fn latest_profile(
         &mut self,
@@ -1714,8 +1722,15 @@ pub trait WriteTxn: ReadTxn {
     ) -> impl Future<Output = Result<()>> + Send;
     /// Deletes the account's reset code.
     fn take_reset_code(&mut self, account: Id) -> impl Future<Output = Result<()>> + Send;
-    /// Marks a workspace closed and drops its members.
+    /// Marks a workspace closed and drops its members and invitations.
     fn close_workspace(&mut self, workspace: Id) -> impl Future<Output = Result<()>> + Send;
+    /// Deletes what a closed workspace with no domain left still names: its
+    /// policy chain, profiles, key stream, recorded accounts and approval
+    /// requests. Its closed row stays, so nothing takes the ID again.
+    fn delete_closed_workspace_rows(
+        &mut self,
+        workspace: Id,
+    ) -> impl Future<Output = Result<()>> + Send;
     /// Starts or extends an instance's lease.
     fn hold_lease(&mut self, instance: Id, until: u64) -> impl Future<Output = Result<()>> + Send;
     /// Ends an instance's lease.

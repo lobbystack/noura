@@ -662,3 +662,74 @@ pub async fn a_proven_session_can_not_close_a_workspace<B: Backend>(store: Store
         .expect("an active device closes it");
 }
 
+/// Closing a workspace ends its invitation links at once, and once its
+/// last domain goes, maintenance deletes what names its members: the policy
+/// chain, the profile, the recorded accounts and the approval requests.
+pub async fn a_closed_workspace_leaves_no_invitation_or_policy_rows<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 1).await;
+    let w = world.workspace;
+    let owner = world.devices[0].session;
+    let account = world.account;
+    let invite = super::invitations::Invite::new(Role::Editor);
+    world
+        .store
+        .create_invitation(owner, w, invite.creation(w))
+        .await
+        .expect("an invitation");
+    assert!(world.store.invitation_context(invite.token).await.is_ok());
+    world.store.close_workspace(owner, w).await.expect("closed");
+    assert_eq!(
+        refusal(world.store.invitation_context(invite.token).await).code,
+        "invitation_invalid",
+        "the link ends with the workspace"
+    );
+
+    world.store.maintain().await.expect("a pass");
+    world.store.maintain().await.expect("another pass");
+    let left = world
+        .store
+        .backend()
+        .read(Box::new(move |txn: &mut B::Read| {
+            Box::pin(async move {
+                Ok((
+                    txn.policy_changes(w, 0).await?.len(),
+                    txn.workspaces_recording(account).await?.len(),
+                    txn.workspace_approval_requests(w).await?.len(),
+                    txn.drained_closed_workspaces(16).await?,
+                ))
+            })
+        }))
+        .await
+        .expect("read");
+    assert_eq!(left, (0, 0, 0, Vec::new()));
+}
+
+/// Retrying the creation of a closed workspace answers `id_conflict`, as
+/// any other creation under an ID in use does (§26).
+pub async fn creating_a_closed_workspace_again_is_an_id_conflict<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 1).await;
+    let (account, session) = (world.account, world.devices[0].session);
+    let cards = [world.devices[0].keys.card(account)];
+    let (body, genesis, _) = super::creation(&world.devices[0].keys, &world.links, &cards);
+    world
+        .store
+        .create_workspace(session, body.clone())
+        .await
+        .expect("created");
+    world
+        .store
+        .close_workspace(session, genesis.body.workspace)
+        .await
+        .expect("closed");
+    assert_eq!(
+        refusal(world.store.create_workspace(session, body.clone()).await).code,
+        "id_conflict"
+    );
+    world.store.maintain().await.expect("a pass");
+    world.store.maintain().await.expect("another pass");
+    assert_eq!(
+        refusal(world.store.create_workspace(session, body).await).code,
+        "id_conflict",
+        "the ID stays used after the reclaim"
+    );
+}

@@ -154,6 +154,8 @@ macro_rules! conformance_tests {
             an_account_in_a_thousand_workspaces_joins_no_more,
             a_reset_ends_the_sessions_that_proved_its_recovery_card,
             a_proven_session_can_not_close_a_workspace,
+            a_closed_workspace_leaves_no_invitation_or_policy_rows,
+            creating_a_closed_workspace_again_is_an_id_conflict,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {

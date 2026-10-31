@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM recorded_accounts WHERE workspace = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "6df56da62c19b14613c20647a102a07bd6bfe9fa0c1e03b289bf9c935bd411c3"
+}
