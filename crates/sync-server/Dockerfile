@@ -21,6 +21,7 @@ RUN apk add --no-cache ca-certificates su-exec \
 COPY --from=build /out/sync-server /usr/local/bin/sync-server
 COPY --from=build /out/account-web /usr/share/noura/account-web
 COPY crates/sync-server/docker/entrypoint.sh /usr/local/bin/noura-entrypoint
+COPY crates/sync-server/THIRD_PARTY_NOTICES.txt /usr/share/noura/THIRD_PARTY_NOTICES.txt
 USER noura
 ENV NOURA_DATA_DIR=/data \
 	NOURA_LISTEN=0.0.0.0:8080 \
