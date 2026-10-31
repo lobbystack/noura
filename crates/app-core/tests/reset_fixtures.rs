@@ -167,12 +167,9 @@ fn the_account_reset_cases_reach_their_outcomes() {
                 let workspace = Id::random().unwrap();
                 let genesis = digest(&case["new_genesis"]);
                 heads
-                    .drop_retired(&kept.account, &genesis, workspace)
+                    .drop_retired(&kept.account, &genesis, workspace, &secrets)
                     .unwrap();
                 assert!(heads.kept_of(&kept.account).is_empty(), "{name}");
-                heads
-                    .clear_refusal(&kept.account, &secrets)
-                    .expect("no stop stays");
                 assert_eq!(heads.stopped([kept.account]), None, "{name}");
             }
             kind => panic!("{name}: unknown kind {kind}"),

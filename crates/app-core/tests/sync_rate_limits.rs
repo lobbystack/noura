@@ -105,7 +105,12 @@ async fn a_blob_upload_and_download_wait_out_their_budgets() {
     let file = dir.path().join("blob");
     std::fs::write(&file, &ciphertext).expect("written");
     client
-        .upload_blob(world.workspace, world.domain, &blob_ref, &file)
+        .upload_blob(
+            world.workspace,
+            world.domain,
+            &app_core::sync::workspace::state::BlobMeta::of(&blob_ref),
+            &file,
+        )
         .await
         .expect("uploads");
     let read = client

@@ -2847,13 +2847,13 @@ pub async fn account_chain_appends_check_who_sends_them<B: Backend>(store: Store
 pub async fn enrolled_cards_bind_again_but_never_a_removed_id<B: Backend>(store: Store<B>) {
     let (account, keys, links) = account(2);
     store
-        .append_account_links(links.clone())
-        .await
-        .expect("chain");
-    store
         .enroll_card(keys[1].card(account))
         .await
         .expect("enrolled");
+    store
+        .append_account_links(links.clone())
+        .await
+        .expect("chain");
     store
         .enroll_card(keys[1].card(account))
         .await
