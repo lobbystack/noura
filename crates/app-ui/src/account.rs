@@ -398,7 +398,11 @@ fn signed_out(
         group(ui, "Connect again", |ui| {
             muted(
                 ui,
-                "This computer holds a device of your account that couldn't connect.",
+                if screen.reconnecting {
+                    "This computer holds a device of your account. Noura keeps trying the server."
+                } else {
+                    "This computer holds a device of your account that couldn't connect."
+                },
             );
             if ui
                 .add_enabled(!screen.busy, Button::new("Try again"))

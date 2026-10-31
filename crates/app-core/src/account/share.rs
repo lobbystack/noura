@@ -12,7 +12,7 @@ use super::folder::Folder;
 use crate::folder_sync::local_time;
 use crate::shares::{
     DEFAULT_SHARE_DAYS, LinkText, NEEDS_ACCOUNT, NoteLinkEntry, ShareAction, ShareScreen,
-    WorkspaceLinkEntry,
+    UNREACHABLE, WorkspaceLinkEntry,
 };
 use crate::sync::shares::{NewShare, ShareBook, latest_expiry, snapshot_of};
 use crate::sync::{SyncError, SyncService};
@@ -29,6 +29,8 @@ struct Note {
 pub(super) struct Sharing {
     pub(super) screen: ShareScreen,
     note: Option<Note>,
+    /// Whether Noura keeps trying a server it couldn't reach.
+    pub(super) reaching: bool,
 }
 
 /// What a failed share action tells you.
@@ -112,7 +114,14 @@ impl Sharing {
             _ => {}
         }
         let Some(service) = service else {
-            self.screen.unavailable = Some(NEEDS_ACCOUNT.into());
+            self.screen.unavailable = Some(
+                if self.reaching {
+                    UNREACHABLE
+                } else {
+                    NEEDS_ACCOUNT
+                }
+                .into(),
+            );
             return Ok(());
         };
         let Some(note) = self.note.as_ref() else {

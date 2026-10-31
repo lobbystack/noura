@@ -79,6 +79,25 @@ fn a_workspace_that_doesnt_sync_offers_to_turn_it_on() {
 }
 
 #[test]
+fn a_server_out_of_reach_says_so_and_asks_for_no_sign_in() {
+    let app_data = tempfile::tempdir().unwrap();
+    let sync = Arc::new(FakeSync::default());
+    sync.show(FolderSyncScreen {
+        phase: FolderSyncPhase::Unreachable,
+        ..FolderSyncScreen::default()
+    });
+    let harness = harness(app_data.path(), sync);
+    harness.get_by_label(
+        "Noura can't reach the sync server. It keeps trying, and your files stay on this computer.",
+    );
+    assert!(
+        harness
+            .query_by_label_contains("Sign in to a sync account")
+            .is_none()
+    );
+}
+
+#[test]
 fn a_running_sync_shows_its_status_and_pauses() {
     let app_data = tempfile::tempdir().unwrap();
     let sync = Arc::new(FakeSync::default());

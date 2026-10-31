@@ -139,6 +139,11 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
                 "Sign in to a sync account in Settings, then Sync account, to sync this workspace with your other computers.",
             );
         }
+        FolderSyncPhase::Unreachable => {
+            ui.label(
+                "Noura can't reach the sync server. It keeps trying, and your files stay on this computer.",
+            );
+        }
         FolderSyncPhase::Off => {
             ui.label("This workspace doesn't sync. Its files stay on this computer.");
             if primary_button(ui, "Turn on sync", !screen.busy).clicked() {

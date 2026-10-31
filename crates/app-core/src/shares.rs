@@ -21,6 +21,10 @@ pub use crate::sync::shares::DEFAULT_SHARE_DAYS;
 /// What the dialog says on a computer without a sync account.
 pub const NEEDS_ACCOUNT: &str = "Sharing needs an account. Sign in under Settings > Sync account, then turn on sync for this workspace.";
 
+/// What the dialog says while Noura keeps trying a server it can't reach.
+pub const UNREACHABLE: &str =
+    "Noura can't reach the sync server, so sharing waits. It keeps trying.";
+
 /// A link to copy, kept out of logs and wiped from memory when it goes.
 #[derive(Clone, PartialEq, Eq)]
 pub struct LinkText(pub Zeroizing<String>);

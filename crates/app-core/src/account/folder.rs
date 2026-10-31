@@ -109,6 +109,8 @@ pub(super) struct Folder {
     account_lost: Option<sync_protocol::types::Id>,
     /// The workspace's realtime channel and its pull schedule.
     live: Live,
+    /// A round met the server's `unauthorized`, which the backend answers.
+    session_ended: bool,
 }
 
 /// What a failed round or action tells you in the Workspace sync section.
@@ -151,7 +153,7 @@ fn short(id: &sync_protocol::types::Id) -> String {
 
 impl Folder {
     /// The section's state now.
-    pub(super) fn screen(&self, signed_in: bool) -> FolderSyncScreen {
+    pub(super) fn screen(&self, signed_in: bool, reaching: bool) -> FolderSyncScreen {
         if self.engine.is_none() {
             return FolderSyncScreen::default();
         }
@@ -257,6 +259,10 @@ impl Folder {
             },
             None if signed_in => FolderSyncScreen {
                 phase: FolderSyncPhase::Off,
+                ..FolderSyncScreen::default()
+            },
+            None if reaching => FolderSyncScreen {
+                phase: FolderSyncPhase::Unreachable,
                 ..FolderSyncScreen::default()
             },
             None => FolderSyncScreen::default(),
@@ -379,7 +385,9 @@ impl Folder {
         self.sync = None;
         self.live = Live::default();
         self.rebuild = false;
+        self.not_connected = false;
         self.account_lost = None;
+        self.last_error = None;
         self.reset_held = self
             .workspace_of_folder(app_data)
             .is_some_and(|w| waits.contains(&w));
@@ -435,11 +443,17 @@ impl Folder {
         Ok(())
     }
 
-    /// The open workspace's sync, when it syncs.
+    /// Whether a round found the server no longer takes this session.
+    pub(super) fn take_session_ended(&mut self) -> bool {
+        std::mem::take(&mut self.session_ended)
+    }
+
+    /// Whether you asked to reset your devices.
     pub(super) fn take_reset_wanted(&mut self) -> bool {
         std::mem::take(&mut self.reset_wanted)
     }
 
+    /// The open workspace's sync, when it syncs.
     pub(super) fn sync_mut(&mut self) -> Option<&mut WorkspaceSync> {
         self.sync.as_mut()
     }
@@ -540,6 +554,7 @@ impl Folder {
             }
             Err(error) => {
                 tracing::warn!(kind = ?error.code(), "a sync round failed");
+                self.session_ended = error.code() == Some("unauthorized");
                 self.last_error = Some(folder_message(&error));
             }
         }

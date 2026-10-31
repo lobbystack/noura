@@ -163,6 +163,28 @@ fn a_stopped_chain_offers_reset_devices_and_a_retry() {
 }
 
 #[test]
+fn a_device_waiting_for_its_server_says_noura_keeps_trying() {
+    let app_data = tempfile::tempdir().unwrap();
+    let account = Arc::new(FakeAccount::default());
+    account.show(AccountScreen {
+        server: "https://sync.example.com".into(),
+        can_retry: true,
+        reconnecting: true,
+        problem: Some("The sync server can't be reached. Try again in a moment.".into()),
+        ..AccountScreen::default()
+    });
+    let mut harness = harness(app_data.path(), account.clone());
+    harness.get_by_label(
+        "This computer holds a device of your account. Noura keeps trying the server.",
+    );
+    harness
+        .get_by_role_and_label(Role::Button, "Try again")
+        .click_accesskit();
+    harness.run();
+    assert_eq!(account.taken(), vec![AccountAction::Retry]);
+}
+
+#[test]
 fn signed_out_shows_the_server_address_sign_in_and_recovery() {
     let app_data = tempfile::tempdir().unwrap();
     let account = Arc::new(FakeAccount::default());

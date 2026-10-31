@@ -13,7 +13,8 @@ use sync_protocol::types::Id;
 use super::folder::Folder;
 use crate::account::fingerprint;
 use crate::members::{
-    LinkText, MemberApproval, MembersAction, MembersScreen, NEEDS_ACCOUNT, NEEDS_SYNC, role_name,
+    LinkText, MemberApproval, MembersAction, MembersScreen, NEEDS_ACCOUNT, NEEDS_SYNC, UNREACHABLE,
+    role_name,
 };
 use crate::sync::approval::OutstandingOffer;
 use crate::sync::invitations::{InvitationBook, NewInvitation};
@@ -74,6 +75,8 @@ pub(super) struct Membership {
     offer: Option<OutstandingOffer>,
     /// When the section last listed everything; `None` until it opened.
     listed: Option<Instant>,
+    /// Whether Noura keeps trying a server it couldn't reach.
+    pub(super) reaching: bool,
 }
 
 impl Membership {
@@ -158,7 +161,14 @@ impl Membership {
     ) -> Result<Option<String>, SyncError> {
         let Some(service) = service else {
             self.screen = MembersScreen {
-                unavailable: Some(NEEDS_ACCOUNT.into()),
+                unavailable: Some(
+                    if self.reaching {
+                        UNREACHABLE
+                    } else {
+                        NEEDS_ACCOUNT
+                    }
+                    .into(),
+                ),
                 ..MembersScreen::default()
             };
             return Ok(None);

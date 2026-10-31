@@ -117,6 +117,8 @@ pub struct AccountScreen {
     /// Whether this computer holds a device that couldn't connect, such as
     /// when the server can't be reached, so you can try again.
     pub can_retry: bool,
+    /// Whether Noura keeps trying a server it couldn't reach.
+    pub reconnecting: bool,
     /// The invitation you opened (§11).
     pub invitation: Option<InvitationView>,
 }

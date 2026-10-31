@@ -30,6 +30,9 @@ pub enum FolderSyncPhase {
     On,
     /// You paused sync.
     Paused,
+    /// This computer holds a device of your account, but the sync server
+    /// can't be reached yet, and Noura keeps trying.
+    Unreachable,
     /// The folder is a copy of a synced folder, or its journal names
     /// another replica: it syncs once you connect it (§15).
     NotConnected,

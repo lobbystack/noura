@@ -27,6 +27,9 @@ use crate::sync::invitations::WorkspaceInvitation;
 use crate::sync::joining::InvitedRequest;
 use crate::sync::workspace::WorkspaceSync;
 
+/// What the section says while Noura keeps trying a server it can't reach.
+pub const UNREACHABLE: &str =
+    "Noura can't reach the sync server, so it can't list the members. It keeps trying.";
 /// What the section says on a computer without a sync account.
 pub const NEEDS_ACCOUNT: &str = "Members need a sync account. Sign in under Settings > Sync account, then turn on sync for this workspace.";
 

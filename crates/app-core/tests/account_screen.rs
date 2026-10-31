@@ -1051,6 +1051,20 @@ fn owner_app_at(
     pair: Pair<sync_store_sqlite::SqliteBackend>,
     base: &str,
 ) -> (LiveAccount, OwnerApp) {
+    let (account, app) = start_owner_app(pair, base);
+    wait_for(
+        &account,
+        "the signed-in account",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if !view.devices.is_empty()),
+    );
+    (account, app)
+}
+
+/// [`owner_app_at`], before the account connects.
+fn start_owner_app(
+    pair: Pair<sync_store_sqlite::SqliteBackend>,
+    base: &str,
+) -> (LiveAccount, OwnerApp) {
     let Pair {
         server,
         proxy,
@@ -1090,11 +1104,6 @@ fn owner_app_at(
     stored.save(&*secrets).unwrap();
     let account = LiveAccount::start(a.app_data.path().to_owned(), secrets, Arc::new(|_| Ok(())));
     app_core::folder_sync::FolderSyncBackend::attach(&account, Some(a.engine.clone()));
-    wait_for(
-        &account,
-        "the signed-in account",
-        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if !view.devices.is_empty()),
-    );
     (
         account,
         OwnerApp {
@@ -1713,4 +1722,170 @@ fn the_account_backend_sets_up_sync_again_after_a_reset() {
     drop(account);
     drop(app);
     drop(runtime);
+}
+
+fn wait_for_folder(
+    account: &LiveAccount,
+    what: &str,
+    done: impl Fn(&app_core::folder_sync::FolderSyncScreen) -> bool,
+) -> app_core::folder_sync::FolderSyncScreen {
+    use app_core::folder_sync::FolderSyncBackend;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let screen = FolderSyncBackend::screen(account);
+        if done(&screen) {
+            return screen;
+        }
+        assert!(Instant::now() < deadline, "{what} never showed: {screen:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// After a sign-out the folder holds no sync of the old session, so
+/// Settings stops saying sync is on.
+#[test]
+fn a_sign_out_lets_go_of_the_folders_sync() {
+    use app_core::folder_sync::FolderSyncPhase;
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let pair = runtime.block_on(sync_support::pair());
+    let (account, _app) = owner_app(pair);
+    wait_for_folder(&account, "sync on", |s| s.phase == FolderSyncPhase::On);
+    AccountBackend::act(&account, AccountAction::SignOut);
+    wait_for(
+        &account,
+        "the sign-out's warning",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if view.sign_out.is_some()),
+    );
+    AccountBackend::act(&account, AccountAction::ConfirmSignOut);
+    wait_for(&account, "the sign-out", |s| {
+        matches!(s.phase, AccountPhase::SignedOut)
+    });
+    wait_for_folder(&account, "the folder let go", |s| {
+        s.phase == FolderSyncPhase::Unavailable
+    });
+    drop(account);
+    std::thread::sleep(Duration::from_millis(300));
+}
+
+/// A device of the account removes this computer: its folder stops
+/// showing sync as on right away.
+#[test]
+fn a_removal_lets_go_of_the_folders_sync() {
+    use app_core::folder_sync::FolderSyncPhase;
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let pair = runtime.block_on(sync_support::pair());
+    let (account, mut app) = owner_app(pair);
+    wait_for_folder(&account, "sync on", |s| s.phase == FolderSyncPhase::On);
+    let laptop = app.laptop.id();
+    runtime.block_on(async {
+        let remote = app.sync_b.remote_mut().expect("connected");
+        app.desktop
+            .service
+            .remove_device(laptop, &[], std::slice::from_mut(remote))
+            .await
+            .expect("the laptop leaves");
+    });
+    wait_for(&account, "the removal", |s| {
+        matches!(s.phase, AccountPhase::Removed { .. })
+    });
+    wait_for_folder(&account, "the folder let go", |s| {
+        s.phase == FolderSyncPhase::Unavailable
+    });
+    drop(account);
+    std::thread::sleep(Duration::from_millis(300));
+}
+
+/// A server restore loses this computer's session while the app runs: the
+/// screens go to signed out with the way back, and a new sign-in syncs.
+#[test]
+fn a_session_lost_while_running_offers_to_sign_in_again() {
+    use app_core::folder_sync::FolderSyncPhase;
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let pair = runtime.block_on(sync_support::pair());
+    let (account, app) = owner_app(pair);
+    wait_for_folder(&account, "sync on", |s| s.phase == FolderSyncPhase::On);
+    let (account_id, device) = (app.laptop.credentials.account, app.laptop.id());
+    runtime
+        .block_on(app.server.store.backend().write(Box::new(
+            move |txn: &mut sync_store_sqlite::SqliteTxn| {
+                Box::pin(async move {
+                    txn.delete_device_sessions(account_id, device)
+                        .await
+                        .map(|_| ())
+                })
+            },
+        )))
+        .unwrap();
+    let screen = wait_for(&account, "the offer to sign in", |s| {
+        s.can_retry && matches!(s.phase, AccountPhase::SignedOut)
+    });
+    assert!(
+        screen
+            .problem
+            .as_deref()
+            .is_some_and(|p| p.contains("session")),
+        "{screen:?}"
+    );
+    wait_for_folder(&account, "the folder let go", |s| {
+        s.phase == FolderSyncPhase::Unavailable
+    });
+    drop(account);
+    std::thread::sleep(Duration::from_millis(300));
+}
+
+/// Noura starts before the network: the screens say so and offer no false
+/// sign-in, and once the server answers the session syncs by itself.
+#[test]
+fn a_start_without_a_network_connects_once_the_server_answers() {
+    use app_core::folder_sync::FolderSyncPhase;
+    use app_core::members::{MembersAction, MembersBackend, UNREACHABLE};
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let pair = runtime.block_on(sync_support::pair());
+    let upstream = pair.server.base.rsplit(':').next().unwrap().to_owned();
+    let spare = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = spare.local_addr().unwrap().port();
+    drop(spare);
+    let (account, _app) = start_owner_app(pair, &format!("http://localhost:{port}"));
+
+    let screen = wait_for(&account, "the failed connect", |s| s.reconnecting);
+    assert!(screen.can_retry, "{screen:?}");
+    assert!(
+        matches!(screen.phase, AccountPhase::SignedOut),
+        "{screen:?}"
+    );
+    wait_for_folder(&account, "the unreachable line", |s| {
+        s.phase == FolderSyncPhase::Unreachable
+    });
+    MembersBackend::act(&account, MembersAction::Refresh);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while MembersBackend::screen(&account).unavailable.as_deref() != Some(UNREACHABLE) {
+        assert!(Instant::now() < deadline, "the Members line never showed");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // The network comes back: a port forward to the server opens.
+    runtime.spawn(async move {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+            .await
+            .unwrap();
+        loop {
+            let (mut inbound, _) = listener.accept().await.unwrap();
+            let target = format!("127.0.0.1:{upstream}");
+            tokio::spawn(async move {
+                if let Ok(mut outbound) = tokio::net::TcpStream::connect(target).await {
+                    let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                }
+            });
+        }
+    });
+    let screen = wait_for(
+        &account,
+        "the account by itself",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if !view.devices.is_empty()),
+    );
+    assert_eq!(screen.problem, None);
+    assert!(!screen.reconnecting);
+    wait_for_folder(&account, "sync on", |s| s.phase == FolderSyncPhase::On);
+    drop(account);
+    std::thread::sleep(Duration::from_millis(300));
 }

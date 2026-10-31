@@ -45,6 +45,11 @@ pub const ACCOUNT_FILE: &str = "sync-account.json";
 const TICK: Duration = Duration::from_secs(2);
 /// How long the thread rests between rounds while a note is open.
 const TEXT_WAIT: Duration = Duration::from_millis(50);
+/// The first wait before Noura connects again to a server it couldn't
+/// reach, which doubles after each failed try.
+const RECONNECT_FIRST: Duration = Duration::from_secs(2);
+/// The longest wait between tries.
+const RECONNECT_MOST: Duration = Duration::from_secs(60);
 
 #[derive(Default, Serialize, Deserialize)]
 struct Remembered {
@@ -193,6 +198,7 @@ impl LiveAccount {
             invited: None,
             joined: None,
             download_into: None,
+            reconnect: None,
             reset: None,
             retired: None,
             reset_waits: Vec::new(),
@@ -346,6 +352,25 @@ enum Purpose {
 /// Why a reset owner's Set up sync again stops at the server (§14).
 const ANOTHER_MANAGER: &str = "Another owner or admin of this workspace can accept your reset, so it stays open. Ask them to accept it.";
 
+/// The next try at a server the stored device couldn't reach.
+#[derive(Clone, Copy)]
+struct Reconnect {
+    at: Instant,
+    /// How long this try waited.
+    wait: Duration,
+}
+
+impl Reconnect {
+    /// The try after `earlier`, or the first.
+    fn after(earlier: Option<Reconnect>) -> Self {
+        let wait = earlier.map_or(RECONNECT_FIRST, |try_| (try_.wait * 2).min(RECONNECT_MOST));
+        Self {
+            at: Instant::now() + wait,
+            wait,
+        }
+    }
+}
+
 /// A reset under way: a new card, enrolled, that waits for the emailed
 /// code.
 struct Resetting {
@@ -423,6 +448,8 @@ struct Driver {
     joined: Option<Id>,
     /// The folder that workspace downloads into, once the windows show it.
     download_into: Option<PathBuf>,
+    /// While the stored device waits for its server, the next try.
+    reconnect: Option<Reconnect>,
 }
 
 /// What a failed action tells you.
@@ -607,6 +634,7 @@ impl Driver {
                     }
                 }),
                 Ok(Message::Share(action)) => {
+                    self.sharing.reaching = self.reconnect.is_some();
                     runtime.block_on(self.sharing.act(
                         action,
                         self.service.as_mut(),
@@ -616,6 +644,7 @@ impl Driver {
                     self.shared.show_share(self.sharing.screen.clone());
                 }
                 Ok(Message::Members(action)) => {
+                    self.membership.reaching = self.reconnect.is_some();
                     runtime.block_on(self.membership.act(
                         action,
                         self.service.as_mut(),
@@ -656,12 +685,45 @@ impl Driver {
                         &self.shared.interrupt,
                         &self.shared.text,
                     ));
+                    if self.folder.take_session_ended() {
+                        self.session_ended();
+                    }
                 }
                 Err(RecvTimeoutError::Disconnected) => return,
             }
-            self.shared
-                .show_folder(self.folder.screen(self.service.is_some()));
+            self.shared.show_folder(
+                self.folder
+                    .screen(self.service.is_some(), self.reconnect.is_some()),
+            );
         }
+    }
+
+    /// Lets go of everything that ran on the service, so nothing goes on
+    /// under old credentials: the folder's sync, its realtime channel, the
+    /// open approvals and the lists the screens showed.
+    fn drop_service(&mut self) {
+        self.service = None;
+        self.workspaces.clear();
+        self.requests.clear();
+        self.reset_requests.clear();
+        self.offer = None;
+        self.accepting = None;
+        self.membership = Membership::default();
+        self.folder.after_reset(&[], &self.app_data);
+    }
+
+    /// The server stopped taking this computer's session, as a restore can
+    /// do while the app runs: the device keeps its keys, and the signed-out
+    /// screen offers the way back.
+    fn session_ended(&mut self) {
+        tracing::warn!("the sync server ended this computer's session");
+        self.drop_service();
+        self.shared.update(|screen| {
+            screen.busy = false;
+            screen.can_retry = true;
+            screen.problem = Some(super::SESSION_ENDED.to_owned());
+            screen.phase = AccountPhase::SignedOut;
+        });
     }
 
     fn fail(&self, error: &SyncError) {
@@ -702,7 +764,11 @@ impl Driver {
     /// try again, and signing in again binds a new session to the same
     /// card (§7).
     async fn resume(&mut self) {
-        self.shared.update(|screen| screen.can_retry = false);
+        let earlier = self.reconnect.take();
+        self.shared.update(|screen| {
+            screen.can_retry = false;
+            screen.reconnecting = false;
+        });
         if self.server.is_empty() {
             return;
         }
@@ -716,10 +782,13 @@ impl Driver {
                 if let Err(error) = self.connect(credentials).await {
                     let text = message(&error);
                     tracing::warn!(kind = ?error.code(), "the sync account didn't connect");
+                    let reconnecting = matches!(error, SyncError::Network(_));
+                    self.reconnect = reconnecting.then(|| Reconnect::after(earlier));
                     self.shared.update(|screen| {
                         screen.busy = false;
                         screen.problem = Some(text);
                         screen.can_retry = true;
+                        screen.reconnecting = reconnecting;
                     });
                 }
             }
@@ -754,8 +823,7 @@ impl Driver {
                 .service
                 .as_ref()
                 .is_some_and(|service| service.kept_heads().stopped([]).is_some());
-            self.service = None;
-            self.workspaces.clear();
+            self.drop_service();
             if !own_stop {
                 return Err(error);
             }
@@ -770,6 +838,9 @@ impl Driver {
             return Ok(());
         }
         self.wait_for_resets().await;
+        self.reconnect = None;
+        self.shared.update(|screen| screen.reconnecting = false);
+        self.reachable();
         Ok(())
     }
 
@@ -890,9 +961,7 @@ impl Driver {
             return Ok(());
         };
         if let Some(new) = service.retired_by_reset(detail.as_deref()).await? {
-            self.service = None;
-            self.workspaces.clear();
-            self.folder.after_reset(&[], &self.app_data);
+            self.drop_service();
             self.shared.update(|screen| {
                 screen.busy = false;
                 screen.can_retry = false;
@@ -910,8 +979,7 @@ impl Driver {
             }
             Err(error) => return Err(error),
         };
-        self.service = None;
-        self.workspaces.clear();
+        self.drop_service();
         self.shared.update(|screen| {
             screen.busy = false;
             screen.can_retry = false;
@@ -1446,13 +1514,11 @@ impl Driver {
                 )
                 .await?;
                 self.reset = None;
-                self.service = None;
-                self.workspaces.clear();
+                self.drop_service();
                 self.retired = done.retired;
                 if let Some(device) = done.retired {
                     KeptHeads::forget_retired(&self.state_dir(&device), &device, &*self.store)?;
                 }
-                self.folder.after_reset(&[], &self.app_data);
                 self.reset_waits.clear();
                 self.connect(done.credentials.clone()).await?;
                 let shown = fingerprint(&done.fingerprint);
@@ -1534,8 +1600,7 @@ impl Driver {
                 // The service stays when the sign-out fails, so you can try
                 // again.
                 service.sign_out(&mut self.workspaces, &*self.store).await?;
-                self.service = None;
-                self.workspaces.clear();
+                self.drop_service();
                 self.shared.update(|screen| {
                     screen.busy = false;
                     screen.phase = AccountPhase::SignedOut;
@@ -1549,12 +1614,34 @@ impl Driver {
     /// Polls what waits: the device grant, the new device's approval, the
     /// approving device's code, and every few seconds the device list.
     async fn tick(&mut self) {
-        if let Err(error) = self.poll().await {
-            self.fail(&error);
+        match self.poll().await {
+            Ok(()) => {}
+            Err(SyncError::Refused { code, .. })
+                if code == "unauthorized" && self.service.is_some() =>
+            {
+                self.session_ended();
+            }
+            Err(error) => self.fail(&error),
+        }
+    }
+
+    /// Tries the server again while the stored device waits for it, unless
+    /// you're signing in, which connects by itself.
+    async fn reconnect_when_due(&mut self) {
+        let due = self
+            .reconnect
+            .is_some_and(|reconnect| Instant::now() >= reconnect.at);
+        let signing_in = self.sign_in.is_some()
+            || self.candidate.is_some()
+            || self.recovery.is_some()
+            || self.reset.is_some();
+        if due && self.service.is_none() && !signing_in {
+            self.resume().await;
         }
     }
 
     async fn poll(&mut self) -> Result<(), SyncError> {
+        self.reconnect_when_due().await;
         if let Some(pending) = self.sign_in.as_mut()
             && Instant::now() >= pending.next_poll
         {
@@ -2075,9 +2162,7 @@ impl Driver {
             // A first device starts a new chain, so a sync of the account
             // this computer held before ends here (§14).
             Joined::First(credentials) => {
-                self.service = None;
-                self.workspaces.clear();
-                self.folder.after_reset(&[], &self.app_data);
+                self.drop_service();
                 self.connect(credentials).await
             }
             Joined::Again(credentials) => self.connect(credentials).await,
