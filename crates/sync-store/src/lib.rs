@@ -30,6 +30,7 @@ mod pull;
 mod push;
 mod reads;
 mod realtime;
+pub mod restore;
 mod retention;
 mod shares;
 
@@ -894,7 +895,19 @@ pub trait ReadTxn: Send {
         &mut self,
         account: Id,
     ) -> impl Future<Output = Result<Option<AccountHead>>> + Send;
-    /// A workspace's row.
+    /// A page of every blob row, in workspace and blob order, after
+    /// `after`, for the check a restore runs against the blob store (§19).
+    fn blob_rows(
+        &mut self,
+        after: Option<(Id, Id)>,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<(Id, BlobRow)>>> + Send;
+    /// The blobs a retained operation lists that have no complete upload,
+    /// which a restore left missing (§19).
+    fn missing_blobs(&mut self, workspace: Id) -> impl Future<Output = Result<Vec<Id>>> + Send;
+    /// The instances whose leases last past `now`.
+    fn live_instances(&mut self, now: u64) -> impl Future<Output = Result<Vec<Id>>> + Send;
+    /// A workspace's row, unless its owner closed it.
     fn workspace(
         &mut self,
         workspace: Id,
@@ -1668,6 +1681,18 @@ pub trait WriteTxn: ReadTxn {
         offset: u64,
         complete: bool,
     ) -> impl Future<Output = Result<()>> + Send;
+    /// Returns a blob whose objects a restore lost to an upload at offset
+    /// 0 that the collector leaves alone until `delete_after`.
+    fn reset_blob(
+        &mut self,
+        workspace: Id,
+        blob: Id,
+        delete_after: Option<u64>,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Starts or extends an instance's lease.
+    fn hold_lease(&mut self, instance: Id, until: u64) -> impl Future<Output = Result<()>> + Send;
+    /// Ends an instance's lease.
+    fn drop_lease(&mut self, instance: Id) -> impl Future<Output = Result<()>> + Send;
     /// Deletes the blob's row and its segment rows.
     fn delete_blob(&mut self, workspace: Id, blob: Id) -> impl Future<Output = Result<()>> + Send;
     /// Records that the operation at `seq` in `domain` lists the blob.

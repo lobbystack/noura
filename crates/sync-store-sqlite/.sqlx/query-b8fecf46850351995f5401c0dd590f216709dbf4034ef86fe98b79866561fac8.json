@@ -1,12 +1,12 @@
 {
-  "db_name": "PostgreSQL",
-  "query": "SELECT owner, creation_digest, creation_response, policy_revision, policy_head,\n                    quota_pressure, quota_crossings\n             FROM workspaces WHERE workspace = $1",
+  "db_name": "SQLite",
+  "query": "SELECT owner, creation_digest, creation_response, policy_revision, policy_head,\n                    quota_pressure, quota_crossings\n             FROM workspaces WHERE workspace = ?1 AND closed = 0",
   "describe": {
     "columns": [
       {
-        "ordinal": 0,
         "name": "owner",
-        "type_info": "Bytea",
+        "ordinal": 0,
+        "type_info": "Blob",
         "origin": {
           "Table": {
             "table": "workspaces",
@@ -15,9 +15,9 @@
         }
       },
       {
-        "ordinal": 1,
         "name": "creation_digest",
-        "type_info": "Bytea",
+        "ordinal": 1,
+        "type_info": "Blob",
         "origin": {
           "Table": {
             "table": "workspaces",
@@ -26,9 +26,9 @@
         }
       },
       {
-        "ordinal": 2,
         "name": "creation_response",
-        "type_info": "Bytea",
+        "ordinal": 2,
+        "type_info": "Blob",
         "origin": {
           "Table": {
             "table": "workspaces",
@@ -37,9 +37,9 @@
         }
       },
       {
-        "ordinal": 3,
         "name": "policy_revision",
-        "type_info": "Int8",
+        "ordinal": 3,
+        "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "workspaces",
@@ -48,9 +48,9 @@
         }
       },
       {
-        "ordinal": 4,
         "name": "policy_head",
-        "type_info": "Bytea",
+        "ordinal": 4,
+        "type_info": "Blob",
         "origin": {
           "Table": {
             "table": "workspaces",
@@ -59,9 +59,9 @@
         }
       },
       {
-        "ordinal": 5,
         "name": "quota_pressure",
-        "type_info": "Bool",
+        "ordinal": 5,
+        "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "workspaces",
@@ -70,9 +70,9 @@
         }
       },
       {
-        "ordinal": 6,
         "name": "quota_crossings",
-        "type_info": "Int8",
+        "ordinal": 6,
+        "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "workspaces",
@@ -82,9 +82,7 @@
       }
     ],
     "parameters": {
-      "Left": [
-        "Bytea"
-      ]
+      "Right": 1
     },
     "nullable": [
       false,
@@ -96,5 +94,5 @@
       false
     ]
   },
-  "hash": "e33da58a458e282e352f842c765db7d1920e7ccc55bd9f79cb94e90fab10b637"
+  "hash": "b8fecf46850351995f5401c0dd590f216709dbf4034ef86fe98b79866561fac8"
 }

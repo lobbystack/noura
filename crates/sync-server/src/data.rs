@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 
 use sync_protocol::ids::secret_check;
 use sync_protocol::types::SecretKey;
-use sync_store::INITIAL_RESTORE_GENERATION;
 use sync_store_sqlite::DATABASE_FILE;
 
 /// The server secret's file in the data directory.
@@ -57,8 +56,16 @@ pub(crate) fn read_secret(path: &Path) -> Result<Option<SecretKey>, CommandError
 /// Writes a new secret, readable by its owner alone, durably, and never
 /// over an existing file.
 fn write_secret(data: &Path, secret: &SecretKey) -> Result<(), CommandError> {
-    let path = data.join(SECRET_FILE);
-    let partial = data.join(format!("{SECRET_FILE}.partial"));
+    write_secret_at(&data.join(SECRET_FILE), secret)
+}
+
+/// Writes a new secret file at `path`, readable by its owner alone,
+/// durably, and never over an existing file.
+pub(crate) fn write_secret_at(path: &Path, secret: &SecretKey) -> Result<(), CommandError> {
+    let data = path.parent().unwrap_or(Path::new("."));
+    let mut partial = path.as_os_str().to_owned();
+    partial.push(".partial");
+    let partial = PathBuf::from(partial);
     let _ = fs::remove_file(&partial);
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -75,7 +82,7 @@ fn write_secret(data: &Path, secret: &SecretKey) -> Result<(), CommandError> {
                 "a secret file appeared",
             ));
         }
-        fs::rename(&partial, &path)?;
+        fs::rename(&partial, path)?;
         #[cfg(unix)]
         File::open(data)?.sync_all()?;
         Ok(())
@@ -145,7 +152,7 @@ pub async fn migrate(data: &Path) -> Result<Migrated, CommandError> {
         sync_store_sqlite::store_secret_check(
             &database,
             *secret_check(&secret).expose(),
-            INITIAL_RESTORE_GENERATION,
+            crate::restore::unix_now(),
         )
         .await
         .map_err(|e| fail(format!("can't store the secret's key check: {e}")))?;
@@ -178,6 +185,11 @@ pub async fn check_ready(data: &Path) -> Result<(), CommandError> {
             "migrations {:?} are pending; run `sync-server migrate` first",
             state.pending
         )));
+    }
+    if state.stamped {
+        return Err(fail(
+            "this database is a backup copy; run `sync-server restore` or `mark-restored` first",
+        ));
     }
     match read_secret(&data.join(SECRET_FILE))? {
         Some(secret) if matches(&secret, &check) => Ok(()),

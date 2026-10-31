@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO instances (instance, lease_until) VALUES (?1, ?2)\n             ON CONFLICT (instance) DO UPDATE SET lease_until = excluded.lease_until",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "eb8177d40b89019615819e264ee2426230c249aca08894a90f8cb1ebad54c06a"
+}

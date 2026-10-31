@@ -165,3 +165,35 @@ pub async fn track_commit_timestamp(url: &str) -> Result<bool, sqlx::Error> {
     connection.close().await?;
     Ok(row.setting == "on")
 }
+
+/// Raises the restore generation to the larger of the stored one plus 1
+/// and `floor` and returns the new generation.
+pub async fn raise_generation(url: &str, floor: u64) -> Result<u64, sqlx::Error> {
+    let floor = i64::try_from(floor)
+        .map_err(|_| sqlx::Error::Protocol("the restore generation exceeds a BIGINT".into()))?;
+    let mut connection = connect(url).await?;
+    let row = sqlx::query!(
+        "UPDATE server SET restore_generation = GREATEST(restore_generation + 1, $1)
+         WHERE id = 1 RETURNING restore_generation",
+        floor
+    )
+    .fetch_one(&mut connection)
+    .await?;
+    connection.close().await?;
+    u64::try_from(row.restore_generation)
+        .map_err(|_| sqlx::Error::Protocol("the stored restore generation is negative".into()))
+}
+
+/// How many instances hold a lease past `now`.
+pub async fn live_instances(url: &str, now: u64) -> Result<usize, sqlx::Error> {
+    let mut connection = connect(url).await?;
+    let now = i64::try_from(now).unwrap_or(i64::MAX);
+    let row = sqlx::query!(
+        r#"SELECT COUNT(*) AS "count!" FROM instances WHERE lease_until > $1"#,
+        now
+    )
+    .fetch_one(&mut connection)
+    .await?;
+    connection.close().await?;
+    Ok(usize::try_from(row.count).unwrap_or(usize::MAX))
+}

@@ -16,6 +16,7 @@ pub mod logs;
 pub mod maintenance;
 pub mod postgres;
 pub mod realtime;
+pub mod restore;
 pub mod tus;
 
 use std::io::{Read, Write};
@@ -294,6 +295,13 @@ async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), Co
     tracing::info!("serving");
     eprintln!("sync-server listening on {bound}");
     let blobs = config.blob_store.open(&config.data_dir)?;
+    let instance = sync_protocol::types::Id::random()
+        .map_err(|e| CommandError(format!("no randomness: {e}")))?;
+    store
+        .hold_lease(instance, store.clock().now() + restore::LEASE_SECONDS)
+        .await
+        .map_err(|e| CommandError(format!("can't take a lease: {e}")))?;
+    let lease = restore::spawn_lease(store.clone(), instance);
     let maintenance = maintenance::spawn(store.clone(), blobs.clone());
     let state = AppState {
         store: store.clone(),
@@ -302,6 +310,10 @@ async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), Co
     };
     let served = serve_on(state, listener, shutdown_signal()).await;
     maintenance.abort();
+    lease.abort();
+    if let Err(error) = store.drop_lease(instance).await {
+        tracing::warn!("can't drop the instance's lease: {error}");
+    }
     pruning.abort();
     expiry.abort();
     counters.abort();

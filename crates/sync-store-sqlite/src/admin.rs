@@ -29,12 +29,29 @@ pub struct DatabaseState {
     pub secret_check: Option<[u8; 32]>,
     /// The restore generation, once stored.
     pub restore_generation: Option<u64>,
+    /// Whether `backup` stamped this database, which `serve` then refuses.
+    pub stamped: bool,
 }
 
 async fn table_exists(connection: &mut SqliteConnection, name: &str) -> Result<bool, sqlx::Error> {
     let row = sqlx::query!(
         r#"SELECT COUNT(*) AS "count!: i64" FROM sqlite_master WHERE type = 'table' AND name = ?1"#,
         name
+    )
+    .fetch_one(&mut *connection)
+    .await?;
+    Ok(row.count > 0)
+}
+
+async fn column_exists(
+    connection: &mut SqliteConnection,
+    table: &str,
+    column: &str,
+) -> Result<bool, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"SELECT COUNT(*) AS "count!: i64" FROM pragma_table_info(?1) WHERE name = ?2"#,
+        table,
+        column
     )
     .fetch_one(&mut *connection)
     .await?;
@@ -63,6 +80,7 @@ pub async fn inspect(path: &Path) -> Result<DatabaseState, sqlx::Error> {
             changed: Vec::new(),
             secret_check: None,
             restore_generation: None,
+            stamped: false,
         });
     }
     let mut connection = connect(path, false).await?;
@@ -103,6 +121,14 @@ pub async fn inspect(path: &Path) -> Result<DatabaseState, sqlx::Error> {
     } else {
         (None, None)
     };
+    let stamped = if column_exists(&mut connection, "server", "backup_stamp").await? {
+        sqlx::query!("SELECT backup_stamp FROM server WHERE id = 1")
+            .fetch_optional(&mut connection)
+            .await?
+            .is_some_and(|row| row.backup_stamp != 0)
+    } else {
+        false
+    };
     connection.close().await?;
     Ok(DatabaseState {
         exists: true,
@@ -110,6 +136,7 @@ pub async fn inspect(path: &Path) -> Result<DatabaseState, sqlx::Error> {
         changed,
         secret_check,
         restore_generation,
+        stamped,
     })
 }
 
@@ -145,4 +172,77 @@ pub async fn store_secret_check(
     .await?;
     connection.close().await?;
     Ok(done.rows_affected() == 1)
+}
+
+/// Copies the database to `target` with `VACUUM INTO`, which reads one
+/// snapshot beside a running server, stamps the copy and flushes it. It then
+/// truncates the write-ahead log, which grew during the copy because no
+/// checkpoint can pass the copy's snapshot. A busy server just leaves the
+/// log for its own next checkpoint.
+pub async fn backup_into(database: &Path, target: &Path) -> Result<(), sqlx::Error> {
+    let mut connection = connect(database, false).await?;
+    let path = target.to_string_lossy().into_owned();
+    sqlx::query("VACUUM INTO ?1")
+        .bind(path)
+        .execute(&mut connection)
+        .await?;
+    let mut copy = connect(target, false).await?;
+    sqlx::query!("UPDATE server SET backup_stamp = 1 WHERE id = 1")
+        .execute(&mut copy)
+        .await?;
+    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        .execute(&mut copy)
+        .await?;
+    sqlx::query("PRAGMA journal_mode = DELETE")
+        .execute(&mut copy)
+        .await?;
+    copy.close().await?;
+    std::fs::File::open(target)
+        .and_then(|file| file.sync_all())
+        .map_err(sqlx::Error::Io)?;
+    let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        .execute(&mut connection)
+        .await;
+    connection.close().await
+}
+
+/// Raises the restore generation to the larger of the stored one plus 1
+/// and `floor`, clears the stamp and returns the new generation.
+pub async fn raise_generation(path: &Path, floor: u64) -> Result<u64, sqlx::Error> {
+    let floor = i64::try_from(floor)
+        .map_err(|_| sqlx::Error::Protocol("the restore generation exceeds an INTEGER".into()))?;
+    let mut connection = connect(path, false).await?;
+    let row = sqlx::query!(
+        "UPDATE server SET restore_generation = MAX(restore_generation + 1, ?1), backup_stamp = 0
+         WHERE id = 1 RETURNING restore_generation",
+        floor
+    )
+    .fetch_one(&mut connection)
+    .await?;
+    connection.close().await?;
+    u64::try_from(row.restore_generation)
+        .map_err(|_| sqlx::Error::Protocol("the stored restore generation is negative".into()))
+}
+
+/// How many instances hold a lease past `now`. A missing database or one
+/// from before leases holds none.
+pub async fn live_instances(path: &Path, now: u64) -> Result<usize, sqlx::Error> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let mut connection = connect(path, false).await?;
+    let count = if table_exists(&mut connection, "instances").await? {
+        let now = i64::try_from(now).unwrap_or(i64::MAX);
+        sqlx::query!(
+            r#"SELECT COUNT(*) AS "count!: i64" FROM instances WHERE lease_until > ?1"#,
+            now
+        )
+        .fetch_one(&mut connection)
+        .await?
+        .count
+    } else {
+        0
+    };
+    connection.close().await?;
+    Ok(usize::try_from(count).unwrap_or(usize::MAX))
 }

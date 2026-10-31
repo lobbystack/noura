@@ -91,8 +91,12 @@ async fn own_upload(
     let row = txn
         .blob(workspace, blob)
         .await?
-        .filter(|row| row.device == device && !row.marked)
+        .filter(|row| !row.marked)
         .ok_or_else(|| refuse("not_found", "no such upload"))?;
+    // Any writer may upload a blob a restore left missing again (§19).
+    if row.device != device && (row.complete || !txn.blob_listed(workspace, blob).await?) {
+        return Err(refuse("not_found", "no such upload"));
+    }
     if !policy.head_snapshot().can_write(&device, &row.domain) {
         return Err(refuse("forbidden", "the device can't write this domain"));
     }
@@ -173,8 +177,10 @@ impl<B: Backend> Store<B> {
                                 "the collector is deleting this upload",
                             ));
                         }
+                        let missing =
+                            !stored.complete && txn.blob_listed(workspace, creation.blob).await?;
                         let same = stored.domain == row.domain
-                            && stored.device == row.device
+                            && (stored.device == row.device || missing)
                             && stored.length == row.length
                             && stored.digest == row.digest;
                         if same {
@@ -273,7 +279,8 @@ impl<B: Backend> Store<B> {
                     // A completed upload that no push lists goes 24 hours
                     // after completion (§19).
                     let delete_after = if complete {
-                        let at = Some(now + UPLOAD_TTL);
+                        let listed = txn.blob_listed(workspace, blob).await?;
+                        let at = (!listed).then_some(now + UPLOAD_TTL);
                         txn.set_blob_delete_after(workspace, blob, at).await?;
                         at
                     } else {

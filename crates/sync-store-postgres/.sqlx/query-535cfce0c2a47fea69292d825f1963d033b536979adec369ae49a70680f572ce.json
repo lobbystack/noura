@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT blob AS \"blob!\" FROM blobs AS b\n               WHERE b.workspace = $1 AND NOT b.complete AND NOT b.marked AND EXISTS (\n                 SELECT 1 FROM blob_listings AS l\n                 WHERE l.workspace = b.workspace AND l.blob = b.blob\n               )\n               ORDER BY blob",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "blob!",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "blob"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "535cfce0c2a47fea69292d825f1963d033b536979adec369ae49a70680f572ce"
+}

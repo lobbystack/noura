@@ -793,6 +793,14 @@ async fn pending_devices<B: Backend>(
     Ok(ok(&store.pending_devices(session, id(&workspace)?).await?))
 }
 
+async fn missing_blobs<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments(workspace): Segments<String>,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store.missing_blobs(session, id(&workspace)?).await?))
+}
+
 async fn not_found() -> ApiError {
     refused("not_found", "no such route")
 }
@@ -884,6 +892,7 @@ pub fn router<B: Backend>(state: AppState<B>) -> Router {
             "/v2/workspaces/{w}/pending-devices",
             get(pending_devices::<B>),
         )
+        .route("/v2/workspaces/{w}/missing-blobs", get(missing_blobs::<B>))
         .route("/v2/workspaces/{w}/pull", post(pull::<B>))
         .route(
             "/v2/workspaces/{w}/realtime",

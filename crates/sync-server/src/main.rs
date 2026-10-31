@@ -6,6 +6,9 @@
 //!                         [--origin ORIGIN]
 //! sync-server healthcheck [--listen ADDRESS]
 //! sync-server blobs migrate-to-s3 [--data DIR]
+//! sync-server backup --to FILE [--data DIR] [--database-url URL]
+//! sync-server restore --from FILE [--secret FILE] [--data DIR]
+//! sync-server mark-restored [--data DIR] [--database-url URL]
 //! sync-server version
 //! ```
 //!
@@ -44,8 +47,9 @@ use std::process::ExitCode;
 
 use sync_server::postgres::{SECRET_FILE_VARIABLE, SECRET_VARIABLE, secret_from};
 
-const USAGE: &str = "usage: sync-server <migrate|serve|healthcheck|blobs migrate-to-s3|version> [--data DIR] \
-                     [--database-url URL] [--listen ADDRESS] [--origin ORIGIN]";
+const USAGE: &str = "usage: sync-server <migrate|serve|healthcheck|blobs migrate-to-s3|backup|restore|\
+                     mark-restored|version> [--data DIR] [--database-url URL] [--listen ADDRESS] \
+                     [--origin ORIGIN] [--to FILE] [--from FILE] [--secret FILE]";
 
 /// A set, non-empty environment variable.
 fn env(name: &str) -> Option<String> {
@@ -58,6 +62,9 @@ struct Arguments {
     database_url: Option<String>,
     listen: String,
     origin: Option<String>,
+    to: Option<PathBuf>,
+    from: Option<PathBuf>,
+    secret: Option<PathBuf>,
 }
 
 fn arguments() -> Result<Arguments, String> {
@@ -74,6 +81,7 @@ fn arguments() -> Result<Arguments, String> {
         .filter(|url| !url.is_empty());
     let mut listen = std::env::var("NOURA_LISTEN").unwrap_or_else(|_| "127.0.0.1:8080".to_owned());
     let mut origin = env("NOURA_PUBLIC_ORIGIN");
+    let (mut to, mut from, mut secret) = (None, None, None);
     while let Some(flag) = args.next() {
         let value = args
             .next()
@@ -83,6 +91,9 @@ fn arguments() -> Result<Arguments, String> {
             "--database-url" => database_url = Some(value),
             "--listen" => listen = value,
             "--origin" => origin = Some(value),
+            "--to" => to = Some(PathBuf::from(value)),
+            "--from" => from = Some(PathBuf::from(value)),
+            "--secret" => secret = Some(PathBuf::from(value)),
             _ => return Err(format!("unknown option {flag}\n{USAGE}")),
         }
     }
@@ -92,6 +103,9 @@ fn arguments() -> Result<Arguments, String> {
         database_url,
         listen,
         origin,
+        to,
+        from,
+        secret,
     })
 }
 
@@ -214,6 +228,71 @@ fn migrate_blobs(arguments: Arguments) -> Result<(), String> {
     Ok(())
 }
 
+fn backup(arguments: Arguments) -> Result<(), String> {
+    if arguments.database_url.is_some() {
+        return Err(sync_server::restore::backup_postgres().to_string());
+    }
+    let to = arguments
+        .to
+        .ok_or_else(|| format!("backup needs --to FILE\n{USAGE}"))?;
+    let secret = runtime()
+        .block_on(sync_server::restore::backup(&arguments.data_dir, &to))
+        .map_err(|e| e.to_string())?;
+    eprintln!(
+        "sync-server: wrote {} and its secret {}; keep them together",
+        to.display(),
+        secret.display()
+    );
+    Ok(())
+}
+
+fn report(restored: sync_server::restore::Restored) {
+    let blobs = restored.blobs;
+    eprintln!(
+        "sync-server: restore generation {}; quarantined {} object(s), returned {}, gave {} \
+         blob(s) a fresh 24 hours, and {} blob(s) wait for devices to upload them again",
+        restored.generation, blobs.quarantined, blobs.returned, blobs.refreshed, blobs.missing
+    );
+}
+
+fn restore(arguments: Arguments) -> Result<(), String> {
+    let from = arguments
+        .from
+        .ok_or_else(|| format!("restore needs --from FILE\n{USAGE}"))?;
+    let restored = runtime()
+        .block_on(sync_server::restore::restore(
+            &arguments.data_dir,
+            &from,
+            arguments.secret.as_deref(),
+            &blob_store(),
+        ))
+        .map_err(|e| e.to_string())?;
+    report(restored);
+    Ok(())
+}
+
+fn mark_restored(arguments: Arguments) -> Result<(), String> {
+    let database = postgres(arguments.database_url)?;
+    let store = blob_store();
+    let restored = runtime()
+        .block_on(async {
+            match &database {
+                None => sync_server::restore::mark_restored(&arguments.data_dir, &store).await,
+                Some(database) => {
+                    sync_server::restore::mark_restored_postgres(
+                        database,
+                        &arguments.data_dir,
+                        &store,
+                    )
+                    .await
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    report(restored);
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let arguments = match arguments() {
         Ok(arguments) => arguments,
@@ -226,6 +305,9 @@ fn main() -> ExitCode {
         "migrate" => migrate(arguments),
         "serve" => serve(arguments),
         "blobs migrate-to-s3" => migrate_blobs(arguments),
+        "backup" => backup(arguments),
+        "restore" => restore(arguments),
+        "mark-restored" => mark_restored(arguments),
         "healthcheck" => listen_address(&arguments.listen).and_then(|listen| {
             if sync_server::healthcheck(listen) {
                 Ok(())

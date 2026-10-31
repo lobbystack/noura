@@ -509,6 +509,9 @@ impl SegmentStore for MeetingPuts {
     fn list(&self) -> BoxFuture<'_, io::Result<Vec<String>>> {
         self.inner.list()
     }
+    fn list_under(&self, prefix: &str) -> BoxFuture<'_, io::Result<Vec<String>>> {
+        self.inner.list_under(prefix)
+    }
 }
 
 /// Two `PATCH`es at one offset race: `first` and `second` are their bodies.
@@ -601,6 +604,9 @@ impl SegmentStore for BrokenDeletes {
     }
     fn list(&self) -> BoxFuture<'_, io::Result<Vec<String>>> {
         self.inner.list()
+    }
+    fn list_under(&self, prefix: &str) -> BoxFuture<'_, io::Result<Vec<String>>> {
+        self.inner.list_under(prefix)
     }
 }
 

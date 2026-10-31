@@ -79,7 +79,10 @@ async fn migrate_then_serve_on_an_empty_data_directory() {
     let key = SecretKey(secret.clone().try_into().expect("32 bytes"));
     assert_eq!(check, secret_check(&key).expose().to_vec());
     assert_ne!(check, secret);
-    assert_eq!(generation, 1);
+    assert!(
+        generation > 1_000_000_000,
+        "the generation starts at the Unix time"
+    );
     let dump = std::fs::read(data.join(sync_store_sqlite::DATABASE_FILE)).expect("database");
     assert!(
         !dump.windows(32).any(|w| w == secret.as_slice()),

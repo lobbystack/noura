@@ -1018,12 +1018,86 @@ impl ReadTxn for SqliteTxn {
         .transpose()
     }
 
+    async fn blob_rows(
+        &mut self,
+        after: Option<(Id, Id)>,
+        limit: u32,
+    ) -> Result<Vec<(Id, BlobRow)>> {
+        let (workspace, blob) = after.unwrap_or((Id([0; 16]), Id([0; 16])));
+        let started = after.is_some();
+        let workspace = &workspace.0[..];
+        let blob = &blob.0[..];
+        let limit = i64::from(limit);
+        let rows = sqlx::query!(
+            r#"SELECT workspace AS "workspace!", blob AS "blob!", domain, device, length, digest,
+                      upload_offset, complete, delete_after, marked, live_listings
+               FROM blobs
+               WHERE ?1 = 0 OR (workspace, blob) > (?2, ?3)
+               ORDER BY workspace, blob LIMIT ?4"#,
+            started,
+            workspace,
+            blob,
+            limit
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|r| {
+                Ok((
+                    id(r.workspace)?,
+                    BlobRow {
+                        blob: id(r.blob)?,
+                        domain: id(r.domain)?,
+                        device: id(r.device)?,
+                        length: uint(r.length)?,
+                        digest: digest(r.digest)?,
+                        offset: uint(r.upload_offset)?,
+                        complete: r.complete != 0,
+                        delete_after: r.delete_after.map(uint).transpose()?,
+                        marked: r.marked != 0,
+                        live_listings: uint(r.live_listings)?,
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    async fn missing_blobs(&mut self, workspace: Id) -> Result<Vec<Id>> {
+        let workspace = &workspace.0[..];
+        let rows = sqlx::query!(
+            r#"SELECT blob AS "blob!" FROM blobs AS b
+               WHERE b.workspace = ?1 AND b.complete = 0 AND b.marked = 0 AND EXISTS (
+                 SELECT 1 FROM blob_listings AS l
+                 WHERE l.workspace = b.workspace AND l.blob = b.blob
+               )
+               ORDER BY blob"#,
+            workspace
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter().map(|r| id(r.blob)).collect()
+    }
+
+    async fn live_instances(&mut self, now: u64) -> Result<Vec<Id>> {
+        let now = at_most(now);
+        let rows = sqlx::query!(
+            r#"SELECT instance AS "instance!" FROM instances WHERE lease_until > ?1"#,
+            now
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter().map(|r| id(r.instance)).collect()
+    }
+
     async fn workspace(&mut self, workspace: Id) -> Result<Option<WorkspaceRow>> {
         let workspace = &workspace.0[..];
         let row = sqlx::query!(
             "SELECT owner, creation_digest, creation_response, policy_revision, policy_head,
                     quota_pressure, quota_crossings
-             FROM workspaces WHERE workspace = ?1",
+             FROM workspaces WHERE workspace = ?1 AND closed = 0",
             workspace
         )
         .fetch_optional(self.c())
@@ -3932,6 +4006,60 @@ impl WriteTxn for SqliteTxn {
         .execute(self.c())
         .await
         .map_err(db)?;
+        Ok(())
+    }
+
+    async fn reset_blob(
+        &mut self,
+        workspace: Id,
+        blob: Id,
+        delete_after: Option<u64>,
+    ) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let blob = &blob.0[..];
+        let delete_after = delete_after.map(at_most);
+        sqlx::query!(
+            "DELETE FROM blob_segments WHERE workspace = ?1 AND blob = ?2",
+            workspace,
+            blob
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        sqlx::query!(
+            "UPDATE blobs SET upload_offset = 0, complete = 0, delete_after = ?3
+             WHERE workspace = ?1 AND blob = ?2",
+            workspace,
+            blob,
+            delete_after
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn hold_lease(&mut self, instance: Id, until: u64) -> Result<()> {
+        let instance = &instance.0[..];
+        let until = at_most(until);
+        sqlx::query!(
+            "INSERT INTO instances (instance, lease_until) VALUES (?1, ?2)
+             ON CONFLICT (instance) DO UPDATE SET lease_until = excluded.lease_until",
+            instance,
+            until
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn drop_lease(&mut self, instance: Id) -> Result<()> {
+        let instance = &instance.0[..];
+        sqlx::query!("DELETE FROM instances WHERE instance = ?1", instance)
+            .execute(self.c())
+            .await
+            .map_err(db)?;
         Ok(())
     }
 
