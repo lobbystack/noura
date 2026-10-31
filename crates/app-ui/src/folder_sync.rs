@@ -79,6 +79,13 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
                 }
             });
         }
+        if !notice.to_review.is_empty() {
+            group(ui, "Files to review after the restore", |ui| {
+                for path in &notice.to_review {
+                    ui.label(path);
+                }
+            });
+        }
         ui.horizontal(|ui| {
             if notice.reset_devices && primary_button(ui, "Reset devices", !screen.busy).clicked() {
                 actions.push(FolderSyncAction::ResetDevices);

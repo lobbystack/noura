@@ -198,6 +198,8 @@ pub struct RestoreNotice {
     pub set_up_again: bool,
     /// The objects this computer wrote again.
     pub written_again: Vec<String>,
+    /// Conflict branches and newer files that wait for you.
+    pub to_review: Vec<String>,
 }
 
 /// The banner for a restore, a rollback or a stop (§14), if any.
@@ -239,7 +241,7 @@ pub fn restore_notice(status: &Status) -> Option<RestoreNotice> {
             line,
             reset_devices,
             set_up_again,
-            written_again: Vec::new(),
+            ..RestoreNotice::default()
         });
     }
     if status.rollback.is_some() {
@@ -252,6 +254,7 @@ pub fn restore_notice(status: &Status) -> Option<RestoreNotice> {
         line: "The server reports a restore from a backup. Noura checked what it holds and kept syncing."
             .to_owned(),
         written_again: status.written_again.clone(),
+        to_review: status.to_review.clone(),
         ..RestoreNotice::default()
     })
 }

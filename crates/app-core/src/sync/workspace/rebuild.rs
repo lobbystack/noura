@@ -126,6 +126,7 @@ impl WorkspaceSync {
         let old: Option<State> = journal.read(STATE_FILE).ok().flatten();
         let old_replica = old.as_ref().map_or(entry.replica, |s| s.replica);
         let mut archived = Self::archive(&journal, old.as_ref(), &old_replica)?;
+        drop(journal);
         let server = service.client().base().to_owned();
         let replica = registry.connect(&server, entry.account, entry.workspace, engine.root())?;
         if entry.paused {

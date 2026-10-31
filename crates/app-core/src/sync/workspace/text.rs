@@ -2429,6 +2429,70 @@ impl WorkspaceSync {
         Ok(())
     }
 
+    /// Forgets the log positions of `lost` records, so a snapshot's `meta`
+    /// names 0 for their writes (§14, §22).
+    pub(super) fn forget_text_positions(
+        &mut self,
+        rid: &Id,
+        lost: &[OpKey],
+    ) -> Result<(), SyncError> {
+        let Some(mut file) = self.text_file(rid)? else {
+            return Ok(());
+        };
+        for record in &mut file.records {
+            if lost.contains(&record.key) {
+                record.seq = None;
+            }
+        }
+        self.store_text(rid, &file)
+    }
+
+    /// The text-mode note whose record lists `blob`, when this device holds
+    /// the note's document.
+    pub(super) fn text_note_of_blob(&self, blob: &Id) -> Result<Option<Id>, SyncError> {
+        let notes: Vec<Id> = self
+            .state
+            .objects
+            .iter()
+            .filter(|(_, object)| object.text.is_some())
+            .map(|(rid, _)| *rid)
+            .collect();
+        for rid in notes {
+            let Some(file) = self.text_file(&rid)? else {
+                continue;
+            };
+            for record in file.records.iter().filter(|r| r.blob.is_some()) {
+                let Ok(bytes) = self
+                    .journal
+                    .kept(&record_path(&rid, &record.payload), &record.payload)
+                else {
+                    continue;
+                };
+                let Ok(payload) = <Payload as sync_protocol::codec::Decode>::from_bytes(&bytes)
+                else {
+                    continue;
+                };
+                let (PayloadKind::TextSnapshot { content, .. }
+                | PayloadKind::TextUpdate { content, .. }) = payload.kind
+                else {
+                    continue;
+                };
+                if matches!(content, Content::Blob(listed) if listed.blob == *blob) {
+                    return Ok(Some(rid));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Whether the journal holds this record of the note already.
+    pub(super) fn text_holds(&self, rid: &Id, key: &OpKey) -> bool {
+        self.text_file(rid)
+            .ok()
+            .flatten()
+            .is_some_and(|file| file.records.iter().any(|r| r.key == *key))
+    }
+
     /// A snapshot's covers (§22): for each device, the highest live
     /// operation below its lowest live patch the document hasn't
     /// integrated, deferred or pending, so those patches stay live.

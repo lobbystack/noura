@@ -21,6 +21,14 @@ async fn reconnect(pair: &mut Pair<SqliteBackend>, base: &str) {
     pair.sync_b.set_restore_wait(NO_WAIT);
 }
 
+/// Changes a backup with `sql`, for a restore that loses exactly one kind
+/// of signed state.
+fn edit_backup(copy: &std::path::Path, sql: &str) {
+    let connection = rusqlite::Connection::open(copy).expect("the copy opens");
+    let changed = connection.execute(sql, []).expect("the change");
+    assert!(changed > 0, "{sql}");
+}
+
 async fn rounds(pair: &mut Pair<SqliteBackend>) {
     for _ in 0..3 {
         pair.sync_a
@@ -322,8 +330,17 @@ fn two_hundred_writers_rank_one_writer_first_for_each_object() {
         .iter()
         .find(|w| rank(&rid, w, &writers) == 199)
         .unwrap();
-    assert!(wait_for(rank(&rid, first, &writers), 200, 60) < 2);
-    assert!(wait_for(rank(&rid, last, &writers), 200, 60) >= 59);
+    let waits: Vec<u64> = writers
+        .iter()
+        .map(|w| wait_for(rank(&rid, w, &writers), 200, 60))
+        .collect();
+    assert!(waits.iter().all(|wait| *wait < 60_000));
+    let mut sorted = waits.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), 200, "no two ranks share a moment");
+    assert!(wait_for(rank(&rid, first, &writers), 200, 60) < 300);
+    assert!(wait_for(rank(&rid, last, &writers), 200, 60) >= 59_700);
 }
 
 /// A server that claims a restore shows you an alert, and with nothing
@@ -734,4 +751,478 @@ async fn set_up_sync_again_stays_with_the_owner_and_survives_a_failure() {
         .await
         .expect("set up");
     assert_ne!(fresh.workspace(), old);
+}
+
+/// One run per kind of loss: each stops the workspace with what went, and
+/// the app says an owner can set it up again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_envelope_stops_the_workspace() {
+    let mut pair = pair().await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    edit_backup(&copy, "DELETE FROM key_entries WHERE recipient IS NOT NULL");
+    let files = pair.a.files();
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a stopped round");
+    assert!(
+        matches!(
+            pair.sync_a.restore_lost(),
+            Some(Lost::Envelope | Lost::Epoch)
+        ),
+        "{:?}",
+        pair.sync_a.restore_lost()
+    );
+    assert_eq!(pair.a.files(), files);
+    let notice = app_core::folder_sync::restore_notice(&pair.sync_a.status()).expect("a notice");
+    assert!(notice.set_up_again);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_epoch_record_stops_the_workspace() {
+    let mut pair = pair().await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    edit_backup(
+        &copy,
+        "UPDATE epochs SET digest = zeroblob(32), epoch = epoch + 1",
+    );
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    let round = pair.sync_a.round(&mut pair.service, 0).await;
+    assert!(round.is_ok(), "{round:?}");
+    assert!(pair.sync_a.restore_lost().is_some());
+}
+
+/// A policy change only the owner's device accepted: it stops, and the
+/// member's device, which never saw the change, finds nothing missing and
+/// keeps syncing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_policy_change_stops_only_the_devices_that_accepted_it() {
+    use app_core::sync::members::MemberChange;
+    use sync_protocol::records::Role;
+
+    let mut pair = pair_of_accounts_on(Server::start().await).await;
+    rounds(&mut pair).await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    let member = pair.desktop.credentials.account;
+    pair.sync_a
+        .change_member(
+            &mut pair.service,
+            MemberChange::SetRole {
+                account: member,
+                role: Role::Admin,
+            },
+        )
+        .await
+        .expect("promoted");
+
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a stopped round");
+    assert_eq!(pair.sync_a.restore_lost(), Some(&Lost::Policy));
+    pair.a.write("Stopped.md", b"# Stays here\n");
+    let round = pair
+        .sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a stopped round");
+    assert_eq!(round.pushed, 0);
+
+    pair.b.write("Member.md", b"# Member\n");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("the member keeps syncing");
+    assert_eq!(pair.sync_b.restore_lost(), None);
+    assert!(
+        pair.sync_b
+            .round(&mut pair.desktop.service, 0)
+            .await
+            .is_ok()
+    );
+}
+
+/// A lost attachment keeps its `blob_ref`: a new operation reuses it and
+/// the bytes go back under the same ID.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_attachment_comes_back_under_the_same_blob() {
+    let mut pair = pair().await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    let bytes: Vec<u8> = (0..3_000_000u32).map(|i| (i % 249) as u8).collect();
+    pair.a.write("photo.png", &bytes);
+    rounds(&mut pair).await;
+    let stored = pair.server.blob_files();
+    assert!(!stored.is_empty());
+
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    rounds(&mut pair).await;
+    assert_eq!(pair.sync_a.restore_lost(), None);
+    assert!(
+        stored.iter().all(|file| file.exists()),
+        "the same objects, under the same keys"
+    );
+    assert_eq!(pair.a.files(), pair.b.files());
+}
+
+/// An edit that reached no other device while a restore took its older
+/// state away stays yours: a file that differs from the state the journal
+/// last applied, over a server that kept that state, counts as an edit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_local_edit_survives_the_rewind() {
+    let mut pair = pair().await;
+    pair.a.write("Note.md", b"# First\n");
+    rounds(&mut pair).await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    pair.a.write("Note.md", b"# Unsent edit\n");
+
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    rounds(&mut pair).await;
+    assert_eq!(pair.sync_a.status().held, 0);
+    assert_eq!(pair.a.files()["Note.md"], b"# Unsent edit\n");
+    assert_eq!(pair.b.files()["Note.md"], b"# Unsent edit\n");
+}
+
+/// A file behind the state another device wrote again goes to review
+/// rather than over it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stale_file_can_not_cover_a_newer_state() {
+    let mut pair = pair().await;
+    pair.a.write("Note.md", b"# One\n");
+    rounds(&mut pair).await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    // The laptop goes on ahead; the desktop stays behind, with its own edit.
+    pair.a.write("Note.md", b"# Two\n");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("laptop");
+    pair.b.write("Note.md", b"# Desktop\n");
+
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    for _ in 0..4 {
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("laptop");
+    }
+    assert_eq!(pair.a.files()["Note.md"], b"# Two\n");
+    for _ in 0..4 {
+        pair.sync_b
+            .round(&mut pair.desktop.service, 0)
+            .await
+            .expect("desktop");
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("laptop");
+    }
+    assert_eq!(pair.a.files()["Note.md"], b"# Two\n", "the rewrite stands");
+    assert!(
+        pair.sync_b.status().held > 0 || pair.sync_b.status().conflicts > 0,
+        "the desktop's version waits for you"
+    );
+}
+
+/// A conflict the journal held lists its other branch for review when a
+/// restore loses both sides.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_conflict_the_journal_held_lists_every_branch() {
+    let mut pair = pair().await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    pair.a.write("Plan.md", b"# Laptop\n");
+    pair.b.write("Plan.md", b"# Desktop\n");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("laptop");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("desktop");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("laptop");
+    assert_eq!(pair.sync_a.status().conflicts, 1);
+
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    rounds(&mut pair).await;
+    assert!(
+        pair.sync_a
+            .status()
+            .to_review
+            .iter()
+            .any(|path| path == "Plan.md"),
+        "{:?}",
+        pair.sync_a.status().to_review
+    );
+    assert!(!pair.sync_a.archived().is_empty(), "its bytes stay");
+}
+
+/// A change only a viewer applied stays in its files, listed for review.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_change_only_a_viewer_applied_is_listed_for_review() {
+    use app_core::sync::invitations::InvitationBook;
+    use sync_protocol::records::Role;
+
+    let mut pair = pair_of_accounts_on(Server::start().await).await;
+    rounds(&mut pair).await;
+    let dir = tempfile::tempdir().expect("a folder");
+    let mut book = InvitationBook::open(dir.path(), pair.laptop.id()).expect("a book");
+    let mut viewer = sync_support::first_desktop(&pair.server, "vera@example.com").await;
+    let (mut sync_v, folder) = sync_support::invite_and_join(
+        &mut pair.laptop,
+        &mut pair.sync_a,
+        &mut book,
+        &mut viewer,
+        Role::Viewer,
+    )
+    .await;
+    sync_v.round(&mut viewer.service, 0).await.expect("joined");
+    let copy = pair.server.backup("before.sqlite3").await;
+    pair.a.write("Lost.md", b"# Lost\n");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("laptop");
+    sync_v.round(&mut viewer.service, 0).await.expect("viewer");
+    assert!(folder.files().contains_key("Lost.md"));
+
+    let restored = pair.server.put_back(&copy, true).await;
+    let mut service = viewer.connect_through(&restored.base).await;
+    sync_v.set_restore_wait(NO_WAIT);
+    sync_v.round(&mut service, 0).await.expect("a round");
+    assert_eq!(sync_v.status().to_review, vec!["Lost.md".to_owned()]);
+    assert!(sync_v.written_again().is_empty(), "a viewer writes nothing");
+    assert!(folder.files().contains_key("Lost.md"));
+}
+
+/// A file in a restricted domain comes back from its own rewind, with the
+/// domain's log and final heads kept across it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restricted_domain_rewinds_too() {
+    let mut pair = pair().await;
+    pair.sync_a
+        .restrict_folder(&mut pair.service, "Pay", &[])
+        .await
+        .expect("restricted");
+    rounds(&mut pair).await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    pair.a.write("Pay/March.md", b"# March\n");
+    rounds(&mut pair).await;
+    let files = pair.a.files();
+
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    rounds(&mut pair).await;
+    assert_eq!(pair.sync_a.restore_lost(), None);
+    assert_eq!(pair.a.files(), files);
+    assert_eq!(pair.b.files(), files);
+    let written = [pair.sync_a.written_again(), pair.sync_b.written_again()].concat();
+    assert!(
+        written.iter().any(|path| path == "Pay/March.md"),
+        "{written:?}"
+    );
+}
+
+/// A text-mode note: the restore lost its updates, and a writer that holds
+/// the document writes a snapshot under the same lineage.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_text_mode_note_comes_back_as_a_snapshot() {
+    use editor_core::text_mode::{CollabDocument, Utf16Splice};
+
+    const PLAN: &str = "Plan.md";
+    let mut pair = pair().await;
+    pair.a.write(PLAN, b"# Plan\n");
+    rounds(&mut pair).await;
+    let (_, document) = pair.sync_a.open_text(PLAN).expect("the note opens");
+    let mut document = document.expect("the document");
+    rounds(&mut pair).await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    document.edit(
+        vec![Utf16Splice {
+            start: 7,
+            removed: 0,
+            inserted: "Lost words.\n".to_owned(),
+        }],
+        true,
+    );
+    rounds(&mut pair).await;
+    pair.sync_a.close_text(PLAN).expect("closed");
+    rounds(&mut pair).await;
+    let text = pair.a.files()[PLAN].clone();
+    assert!(String::from_utf8_lossy(&text).contains("Lost words."));
+
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    rounds(&mut pair).await;
+    rounds(&mut pair).await;
+    assert_eq!(pair.sync_a.restore_lost(), None);
+    assert!(
+        String::from_utf8_lossy(&pair.b.files()[PLAN]).contains("Lost words."),
+        "{:?}",
+        String::from_utf8_lossy(&pair.b.files()[PLAN])
+    );
+}
+
+/// A device that lost write access keeps a final head; a rewind from
+/// sequence 0 fetches its records by chain position, and a server that
+/// can't serve them stops the workspace before any file changes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_writers_records_that_disagree_with_its_final_head_stop_the_rewind() {
+    use app_core::sync::members::MemberChange;
+    use sync_protocol::records::Role;
+
+    let mut pair = pair_of_accounts_on(Server::start().await).await;
+    pair.b.write("Member.md", b"# Member\n");
+    rounds(&mut pair).await;
+    let member = pair.desktop.credentials.account;
+    pair.sync_a
+        .change_member(
+            &mut pair.service,
+            MemberChange::SetRole {
+                account: member,
+                role: Role::Viewer,
+            },
+        )
+        .await
+        .expect("demoted");
+    rounds(&mut pair).await;
+    let files = pair.a.files();
+    let copy = pair.server.backup("before.sqlite3").await;
+
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    pair.proxy.forge(Box::new(|_, path| {
+        path.contains("/chain/")
+            .then(|| (404, sync_support::not_found_body()))
+    }));
+    let round = pair.sync_a.round(&mut pair.service, 0).await;
+    assert!(round.is_ok(), "{round:?}");
+    assert!(
+        matches!(pair.sync_a.restore_lost(), Some(Lost::FinalHead(Some(_)))),
+        "{:?}",
+        pair.sync_a.restore_lost()
+    );
+    assert_eq!(pair.a.files(), files, "no file changed");
+}
+
+/// The honest run of the same restore passes: the head and the records
+/// form one chain that ends at the final head.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_honest_restore_passes_every_final_head() {
+    use app_core::sync::members::MemberChange;
+    use sync_protocol::records::Role;
+
+    let mut pair = pair_of_accounts_on(Server::start().await).await;
+    pair.b.write("Member.md", b"# Member\n");
+    rounds(&mut pair).await;
+    let member = pair.desktop.credentials.account;
+    pair.sync_a
+        .change_member(
+            &mut pair.service,
+            MemberChange::SetRole {
+                account: member,
+                role: Role::Viewer,
+            },
+        )
+        .await
+        .expect("demoted");
+    rounds(&mut pair).await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    assert_eq!(pair.sync_a.restore_lost(), None);
+}
+
+/// Two writers race on a rewrite: the one the server took as a patch covers
+/// both with a state operation, so nothing stays unreadable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_writers_that_race_on_a_rewrite_settle() {
+    let mut pair = pair().await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    write_after_backup(&mut pair).await;
+    let files = pair.a.files();
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+
+    // Each rewinds and writes with the other's record out of sight: the
+    // laptop's push waits until the desktop's went through.
+    let (arrived, release) = pair.proxy.hold("/ops");
+    let (first, _) = tokio::join!(pair.sync_a.round(&mut pair.service, 0), async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), arrived.notified())
+            .await
+            .expect("the laptop pushes");
+        pair.sync_b
+            .round(&mut pair.desktop.service, 0)
+            .await
+            .expect("desktop");
+        pair.sync_b
+            .round(&mut pair.desktop.service, 0)
+            .await
+            .expect("desktop");
+        release.notify_one();
+    });
+    first.expect("laptop");
+    rounds(&mut pair).await;
+    assert_eq!(pair.a.files(), files);
+    assert_eq!(pair.b.files(), files);
+    assert!(
+        pair.sync_a.unreadable().is_empty(),
+        "nothing stays unreadable"
+    );
+    assert!(
+        pair.sync_b.unreadable().is_empty(),
+        "nothing stays unreadable"
+    );
+}
+
+/// An owner's restore over a review store: the branch whose author is gone
+/// survives Set up sync again in the archive, which lists it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn set_up_sync_again_carries_the_review_store() {
+    let mut pair = pair().await;
+    pair.a.write("Plan.md", b"# Laptop\n");
+    pair.b.write("Plan.md", b"# Desktop\n");
+    rounds(&mut pair).await;
+    assert_eq!(pair.sync_a.status().conflicts, 1);
+    let fresh = pair
+        .sync_a
+        .set_up_again(&mut pair.service, &mut pair.a.registry)
+        .await
+        .expect("set up");
+    assert_eq!(fresh.archived().len(), 1);
+    assert_eq!(fresh.archived()[0].path, "Plan.md");
+}
+
+/// After a generation change a stopped workspace still owes its revoked
+/// links, whatever you dismissed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_generation_change_keeps_the_revocation_due_past_a_dismissal() {
+    let mut pair = pair().await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    assert!(pair.sync_a.revoke_due());
+    pair.sync_a.dismiss_restore_alert().expect("dismissed");
+    assert!(pair.sync_a.revoke_due());
+    pair.sync_a.revoked_again().expect("recorded");
+    assert!(!pair.sync_a.revoke_due());
 }

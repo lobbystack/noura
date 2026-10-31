@@ -400,8 +400,35 @@ impl Log {
                         counter: head.counter,
                         digest: head.digest,
                         until: None,
+                        records: Vec::new(),
                     }),
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuses a record that disagrees with a final head during the pull
+    /// (§14): at or below its counter, one other than those the device
+    /// fetched by position, and above it, one before the change's entry.
+    pub fn check_final_record(
+        &self,
+        device: &Id,
+        counter: u64,
+        digest: &Digest,
+        seq: u64,
+    ) -> Result<(), super::SyncError> {
+        for kept in self.final_heads.iter().filter(|k| k.device == *device) {
+            if kept.until.is_some_and(|until| until <= seq) {
+                continue;
+            }
+            let refused = if counter <= kept.counter {
+                !kept.records.is_empty() && !kept.records.contains(&(counter, *digest))
+            } else {
+                seq < kept.entry
+            };
+            if refused {
+                return Err(super::SyncError::Check("sync_restore_lost"));
             }
         }
         Ok(())
@@ -638,6 +665,7 @@ mod final_head_tests {
             counter: 3,
             digest: Digest([7; 32]),
             until,
+            records: Vec::new(),
         }
     }
 
@@ -687,6 +715,38 @@ mod final_head_tests {
         let mut log = Log::new(Id([2; 16]));
         log.final_heads.push(kept(Some(11)));
         assert!(log.check_final_heads(12, &[head(4, 8)], |_| false).is_ok());
+    }
+
+    #[test]
+    fn the_pull_takes_no_other_record_at_or_below_a_final_head() {
+        let mut log = Log::new(Id([2; 16]));
+        log.final_heads.push(FinalHead {
+            records: vec![(2, Digest([5; 32])), (3, Digest([7; 32]))],
+            ..kept(None)
+        });
+        let device = Id([1; 16]);
+        assert!(
+            log.check_final_record(&device, 3, &Digest([7; 32]), 8)
+                .is_ok()
+        );
+        assert!(
+            log.check_final_record(&device, 3, &Digest([8; 32]), 8)
+                .is_err(),
+            "a record signed again"
+        );
+        assert!(
+            log.check_final_record(&device, 4, &Digest([8; 32]), 9)
+                .is_err(),
+            "above the final head, before the entry"
+        );
+        assert!(
+            log.check_final_record(&device, 4, &Digest([8; 32]), 11)
+                .is_ok()
+        );
+        assert!(
+            log.check_final_record(&Id([3; 16]), 4, &Digest([8; 32]), 9)
+                .is_ok()
+        );
     }
 
     #[test]

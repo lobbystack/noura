@@ -19,8 +19,8 @@ use sync_protocol::messages::EntryRecord;
 use sync_protocol::records::{CheckpointBundle, Envelope, Epoch, Signed};
 use sync_protocol::types::{Digest, Id};
 
-use super::state::{BootstrapProgress, Content, Log, Object, OpKey};
-use super::{SyncError, SyncService, WorkspaceSync, unix_now};
+use super::state::{BootstrapProgress, Content, Local, Log, Object, OpKey};
+use super::{SyncError, SyncService, WorkspaceSync};
 use crate::sync::account_heads::KeptCheckpointAnchor;
 
 /// The longest a device waits before it writes a lost object again (§14).
@@ -58,7 +58,7 @@ pub enum Lost {
 
 /// A device's final head in a domain, kept for a change that ended its
 /// write access there (§14).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FinalHead {
     /// The device.
     pub device: Id,
@@ -74,13 +74,18 @@ pub struct FinalHead {
     /// The sequence of the entry of a later change that gave write access
     /// back.
     pub until: Option<u64>,
+    /// The records the device fetched by chain position up to the final
+    /// head for a rewind that starts below the entry: the pull takes no
+    /// others at those counters.
+    #[serde(default)]
+    pub records: Vec<(u64, Digest)>,
 }
 
 /// A journal's last applied state of an object that the restore left
 /// behind, which the device writes again once its wait ends.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Rewrite {
-    /// Unix seconds from which the device writes it.
+    /// Unix milliseconds from which the device writes it.
     pub due: u64,
     /// The object as the journal held it.
     pub object: Object,
@@ -121,6 +126,14 @@ pub struct Restore {
     pub rewrites: BTreeMap<Id, Rewrite>,
     /// The paths the device wrote again since the restore.
     pub written_again: Vec<String>,
+    /// Other branches of conflicts the journal held, and newer files a
+    /// viewer device can't write again, for you to review.
+    #[serde(default)]
+    pub to_review: Vec<String>,
+    /// This device's rewrites that named no cover, which another device's
+    /// rewrite may have raced, with the keys they took.
+    #[serde(default)]
+    pub uncovered: BTreeMap<Id, OpKey>,
 }
 
 /// A rollback code that holds the device until the generation changes.
@@ -158,16 +171,25 @@ pub fn rank(rid: &Id, device: &Id, writers: &BTreeSet<Id>) -> usize {
     writers.iter().filter(|w| score(w).0 < own.0).count()
 }
 
-/// The seconds a device of rank `rank` among `writers` waits, within
-/// `limit`: each rank gets its own stretch of the wait, and a random point
-/// inside it.
+/// The milliseconds a device of rank `rank` among `writers` waits, within
+/// `limit` seconds: each rank gets its own stretch of the wait, and a
+/// random point inside it. Stretches never collapse into one, however many
+/// writers share the wait.
 pub fn wait_for(rank: usize, writers: usize, limit: u64) -> u64 {
+    let limit = limit.saturating_mul(1000);
     if limit == 0 {
         return 0;
     }
     let writers = writers.max(1) as u64;
     let stretch = (limit / writers).max(1);
-    (rank as u64).saturating_mul(stretch).min(limit - 1) + random_below(stretch).min(limit - 1)
+    (rank as u64).min(writers - 1).saturating_mul(stretch) + random_below(stretch)
+}
+
+/// The current Unix time in milliseconds.
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 impl WorkspaceSync {
@@ -190,6 +212,7 @@ impl WorkspaceSync {
     pub fn dismiss_restore_alert(&mut self) -> Result<(), SyncError> {
         self.state.restore.alerted = None;
         self.state.restore.written_again.clear();
+        self.state.restore.to_review.clear();
         self.save()
     }
 
@@ -465,6 +488,11 @@ impl WorkspaceSync {
             Ok(remote) => remote,
             Err(SyncError::KeyMissing) => return Ok(Some(Lost::Envelope)),
             Err(SyncError::Check("sync_key_mismatch")) => return Ok(Some(Lost::Epoch)),
+            // The policy just passed, so the workspace stands: its epochs
+            // went.
+            Err(SyncError::Refused { code, .. }) if code == "not_found" => {
+                return Ok(Some(Lost::Epoch));
+            }
             Err(error) => return Err(error),
         };
         if let Some(lost) = self
@@ -504,6 +532,9 @@ impl WorkspaceSync {
                 Ok(loaded) => loaded,
                 Err(SyncError::KeyMissing) => return Ok(Some(Lost::Envelope)),
                 Err(SyncError::Check("sync_key_mismatch")) => return Ok(Some(Lost::Epoch)),
+                Err(SyncError::Refused { code, .. }) if code == "not_found" => {
+                    return Ok(Some(Lost::Epoch));
+                }
                 Err(error) => return Err(error),
             };
             if let Some(lost) = self
@@ -639,18 +670,19 @@ impl WorkspaceSync {
             (b.checkpoint.0.body.covered_seq, revision)
         });
         let finals = self.state.log.final_heads.clone();
-        for kept in &finals {
+        for (index, kept) in finals.iter().enumerate() {
             let may_leave = self
                 .remote
                 .as_ref()
                 .is_some_and(|remote| remote.policy.card_gone(&kept.device, previous));
-            if !self
+            let checked = self
                 .check_final_head(service, kept, covered, &start_heads, may_leave)
-                .await?
-            {
+                .await?;
+            let Some(records) = checked else {
                 self.stop_lost(Lost::FinalHead(Some(kept.device)))?;
                 return Ok(None);
-            }
+            };
+            self.state.log.final_heads[index].records = records;
         }
         Ok(Some(start))
     }
@@ -735,7 +767,7 @@ impl WorkspaceSync {
         // Before the pull, which needs those blobs, and after the checks
         // that can stop the workspace: a stopped one uploads nothing.
         if self.state.restore.journal.is_none() {
-            self.upload_missing(service).await?;
+            self.upload_missing(service, false).await?;
         }
 
         // The journal keeps the objects as they stand, for step 2. What a
@@ -800,21 +832,23 @@ impl WorkspaceSync {
         covered: u64,
         heads: &BTreeMap<Id, (u64, Digest)>,
         may_leave: bool,
-    ) -> Result<bool, SyncError> {
+    ) -> Result<Option<Vec<(u64, Digest)>>, SyncError> {
+        let passed = |ok: bool| ok.then(Vec::new);
         if kept.until.is_some_and(|until| until <= covered) {
-            return Ok(true);
+            return Ok(passed(true));
         }
         let listed = heads.get(&kept.device).copied();
         if kept.entry <= covered {
-            return Ok(match listed {
+            return Ok(passed(match listed {
                 Some((counter, digest)) => counter == kept.counter && digest == kept.digest,
                 None => kept.counter == 0 || may_leave,
-            });
+            }));
         }
         let (mut counter, mut previous) = listed.unwrap_or((0, Digest::ZERO));
         if counter > kept.counter {
-            return Ok(false);
+            return Ok(None);
         }
+        let mut records = Vec::new();
         let (workspace, domain) = (self.state.workspace, self.state.domain);
         while counter < kept.counter {
             let next = counter + 1;
@@ -823,22 +857,23 @@ impl WorkspaceSync {
                 .chain_position(workspace, domain, kept.device, next)
                 .await?
             else {
-                return Ok(false);
+                return Ok(None);
             };
             let EntryRecord::Operation(op) = &entry.record else {
-                return Ok(false);
+                return Ok(None);
             };
             if op.body.device != kept.device
                 || op.body.previous != previous
                 || op.body.counter <= counter
                 || op.body.counter > kept.counter
             {
-                return Ok(false);
+                return Ok(None);
             }
             previous = op.digest();
             counter = op.body.counter;
+            records.push((counter, previous));
         }
-        Ok(previous == kept.digest)
+        Ok(passed(previous == kept.digest).map(|_| records))
     }
 
     /// Pulls to the server's head from the start of the rewind, matches the
@@ -910,10 +945,11 @@ impl WorkspaceSync {
             .unwrap_or_default();
         let can_write = writers.contains(&device);
         let limit = self.restore_wait.as_secs();
-        let now = unix_now();
+        let now = unix_millis();
         let mut lag = BTreeSet::new();
         for (rid, (object, live)) in journal {
-            let Some(content) = Self::contents(object, live).into_iter().next() else {
+            let contents = Self::contents(object, live);
+            let Some(content) = contents.first().cloned() else {
                 continue;
             };
             let server_live = if self.state.objects.contains_key(rid) {
@@ -927,10 +963,18 @@ impl WorkspaceSync {
                 && server_live
                     .iter()
                     .all(|key| object.states.contains_key(key) && !live.contains(key));
-            if !behind || (content.delete && !self.state.objects.contains_key(rid)) {
+            let text_behind = object.text.is_some() && !self.lost_text_records(rid)?.is_empty();
+            if (!behind && !text_behind)
+                || (content.delete && !self.state.objects.contains_key(rid))
+            {
                 continue;
             }
             lag.insert(*rid);
+            // Every branch of a conflict the journal held goes to review;
+            // the first is the one written again.
+            for branch in contents.iter().skip(1).filter(|c| !c.delete) {
+                self.keep_branch_for_review(branch)?;
+            }
             if can_write {
                 let wait = wait_for(rank(rid, &device, &writers), writers.len(), limit);
                 self.state.restore.rewrites.insert(
@@ -942,6 +986,10 @@ impl WorkspaceSync {
                         live: live.clone(),
                     },
                 );
+            } else if !content.delete {
+                // A viewer device writes nothing: its newer file stays, and
+                // you decide what becomes of it.
+                self.state.restore.to_review.push(content.path);
             }
         }
         self.lagging = lag.clone();
@@ -968,19 +1016,95 @@ impl WorkspaceSync {
                     .iter()
                     .any(|a| a.path == c.path && a.revision == c.revision)
             });
-            if let Some((key, _)) = matching {
+            if let Some((key, content)) = matching {
                 let key = *key;
+                let local = Local {
+                    path: content.path.clone(),
+                    revision: content.revision,
+                    size: 0,
+                    modified_ns: 0,
+                    file_id: None,
+                };
                 self.state.held.remove(&rid);
-                self.state.objects.get_mut(&rid).expect("listed").base = Some(key);
+                let object = self.state.objects.get_mut(&rid).expect("listed");
+                // Against that base, the next capture finds your edit.
+                object.base = Some(key);
+                object.local = Some(local);
+                continue;
+            }
+            // The file still holds what the journal applied, so it holds no
+            // edit of yours: it follows the server's newer state.
+            let unchanged = self.state.held.get(&rid).is_some_and(|held| {
+                applied
+                    .iter()
+                    .any(|a| a.path == held.path && a.revision == held.revision)
+            });
+            if unchanged {
+                self.state.held.remove(&rid);
+                let kept = object.local.clone();
+                self.state.objects.get_mut(&rid).expect("listed").local = kept;
+                self.settle(rid, &BTreeMap::new())?;
             }
         }
         self.save()
     }
 
+    /// Lists a branch of a conflict the journal held for review, with a
+    /// copy of its bytes in the archive when the journal kept them.
+    fn keep_branch_for_review(&mut self, branch: &Content) -> Result<(), SyncError> {
+        self.state.restore.to_review.push(branch.path.clone());
+        let Some(kept) = branch.kept.as_deref() else {
+            return Ok(());
+        };
+        let Ok(bytes) = self.journal.kept(kept, &branch.revision) else {
+            return Ok(());
+        };
+        let file = format!(
+            "{}/{}/{}",
+            crate::sync::journal::ARCHIVE,
+            self.state.replica.to_hex(),
+            branch.revision.to_hex()
+        );
+        let journals = self.engine.root().join(crate::sync::journal::JOURNALS);
+        let target = journals.join(&file);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| SyncError::Invalid(format!("can't keep the version: {e}")))?;
+        }
+        crate::sync::journal::durable_write(&target, &bytes)?;
+        self.state.archived.push(super::rebuild::Archived {
+            path: branch.path.clone(),
+            file,
+            revision: branch.revision,
+        });
+        Ok(())
+    }
+
+    /// The records of a text-mode note's journal that the server's chains
+    /// no longer reach: writes the restore lost.
+    fn lost_text_records(&self, rid: &Id) -> Result<Vec<OpKey>, SyncError> {
+        let Some(file) = self.text_file(rid)? else {
+            return Ok(Vec::new());
+        };
+        let log = self.log_of(self.state.objects.get(rid).and_then(|o| o.domain));
+        Ok(file
+            .records
+            .iter()
+            .filter(|record| log.verifier.head(&record.key.device).counter < record.key.counter)
+            .map(|record| record.key)
+            .collect())
+    }
+
+    /// Whether a rewrite's wait ended.
+    pub(super) fn rewrites_due(&self) -> bool {
+        let now = unix_millis();
+        self.state.restore.rewrites.values().any(|r| r.due <= now)
+    }
+
     /// Writes again each lost object whose wait ended and that still lags,
     /// as a new operation covering the server's live operations.
     pub(super) fn write_again_due(&mut self) -> Result<usize, SyncError> {
-        let now = unix_now();
+        let now = unix_millis();
         let due: Vec<Id> = self
             .state
             .restore
@@ -1010,17 +1134,15 @@ impl WorkspaceSync {
                 content,
                 ..
             } = rewrite;
+            let domain = object.domain;
             if content.delete {
                 let covers = self.covers_of(&rid, &view);
                 let path = object.local.as_ref().map(|l| l.path.clone());
-                self.sign_delete(rid, covers)?;
+                self.in_domain(domain, |sync| sync.sign_delete(rid, covers))?;
                 written += 1;
                 self.state.restore.written_again.extend(path);
                 continue;
             }
-            let Ok(found) = self.found_on_disk(&content.path) else {
-                continue;
-            };
             let known = self.state.objects.get(&rid).cloned();
             if let Some(known) = known {
                 object.states = known.states;
@@ -1029,14 +1151,87 @@ impl WorkspaceSync {
             }
             object.base = None;
             object.own_highest = 0;
+            let lineage = object.text;
             self.state.objects.insert(rid, object);
+            if lineage.is_some() && self.text_file(&rid)?.is_some() {
+                self.write_text_again(rid)?;
+                written += 1;
+                self.state.restore.written_again.push(content.path);
+                continue;
+            }
+            let Ok(found) = self.found_on_disk(&content.path) else {
+                continue;
+            };
             let covers = self.covers_of(&rid, &view);
-            self.sign_file(rid, &found, covers)?;
+            let uncovered = covers.is_empty();
+            // The same bytes keep their `blob_ref`, uploaded again byte for
+            // byte when the server lacks it (§14).
+            self.lent_blob = content
+                .blob
+                .clone()
+                .filter(|_| found.revision == content.revision);
+            let signed = self.in_domain(domain, |sync| sync.sign_file(rid, &found, covers));
+            self.lent_blob = None;
+            signed?;
+            if uncovered && let Some(key) = self.state.objects[&rid].base {
+                self.state.restore.uncovered.insert(rid, key);
+            }
             written += 1;
             self.state.restore.written_again.push(content.path);
         }
         if written > 0 {
             self.save()?;
+        }
+        Ok(written)
+    }
+
+    /// Writes a text-mode note again as a `text_snapshot` under its lineage,
+    /// merged with what the server took since the restore. Its `meta`
+    /// entries name 0 for each write the restore lost, which therefore
+    /// counts as a new write (§14, §22).
+    fn write_text_again(&mut self, rid: Id) -> Result<(), SyncError> {
+        let lost = self.lost_text_records(&rid)?;
+        self.forget_text_positions(&rid, &lost)?;
+        self.write_snapshot(rid, false)
+    }
+
+    /// Two rewrites raced when this device's record named no cover and the
+    /// server already held another device's: the server took this one as a
+    /// patch, which nobody can read. A state operation that covers both
+    /// settles it (§14).
+    pub(super) fn settle_rewrite_race(&mut self) -> Result<usize, SyncError> {
+        let waiting = std::mem::take(&mut self.state.restore.uncovered);
+        let mut written = 0;
+        for (rid, key) in waiting {
+            let Some(acked) = self
+                .state
+                .objects
+                .get(&rid)
+                .and_then(|o| o.states.get(&key))
+            else {
+                continue;
+            };
+            // Still on its way: the next round looks again.
+            if acked.seq.is_none() {
+                self.state.restore.uncovered.insert(rid, key);
+                continue;
+            }
+            let all: BTreeSet<OpKey> = self.live_ops(&rid).into_iter().collect();
+            let states: BTreeSet<OpKey> = self.live_states(&rid).into_iter().collect();
+            if !all.contains(&key) || states.contains(&key) {
+                continue;
+            }
+            let path = self.state.objects[&rid]
+                .local
+                .as_ref()
+                .map(|local| local.path.clone());
+            let Some(found) = path.and_then(|path| self.found_on_disk(&path).ok()) else {
+                continue;
+            };
+            let covers = self.covers_of(&rid, &all);
+            let domain = self.state.objects[&rid].domain;
+            self.in_domain(domain, |sync| sync.sign_file(rid, &found, covers))?;
+            written += 1;
         }
         Ok(written)
     }
@@ -1161,6 +1356,7 @@ impl WorkspaceSync {
                         counter: head.counter,
                         digest: head.op_digest,
                         until: None,
+                        records: Vec::new(),
                     });
                 }
             }
@@ -1184,6 +1380,7 @@ impl WorkspaceSync {
     pub(super) async fn upload_missing(
         &mut self,
         service: &mut SyncService,
+        snapshots: bool,
     ) -> Result<usize, SyncError> {
         let workspace = self.state.workspace;
         let device = self.credentials.keys.device();
@@ -1211,6 +1408,16 @@ impl WorkspaceSync {
                 })
             });
             let Some((path, blob_ref, domain)) = found else {
+                // No file holds a text record's yrs bytes: a writer that
+                // holds the note's document writes a snapshot that covers
+                // the operation instead (§14, §21).
+                if snapshots && let Some(rid) = self.text_note_of_blob(&blob)? {
+                    let domain = self.state.objects[&rid].domain.unwrap_or(self.state.domain);
+                    if writer(&domain, self) {
+                        self.write_snapshot(rid, false)?;
+                        self.save()?;
+                    }
+                }
                 continue;
             };
             if !writer(&domain, self) {

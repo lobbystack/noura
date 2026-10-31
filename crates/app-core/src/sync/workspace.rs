@@ -160,6 +160,8 @@ pub struct Status {
     pub rollback: Option<String>,
     /// The generation of a restore the app hasn't shown you yet.
     pub restored: Option<u64>,
+    /// What a restore left for you to review.
+    pub to_review: Vec<String>,
     /// Whether this device's account owns the workspace, as far as it knows.
     pub owner: bool,
     /// The paths this device wrote again after a restore.
@@ -248,6 +250,8 @@ pub struct WorkspaceSync {
     presence: presence::PresenceRuntime,
     /// The longest wait before the device writes lost objects again (§14).
     restore_wait: std::time::Duration,
+    /// The `blob_ref` a rewrite reuses for the bytes it signs now.
+    lent_blob: Option<sync_protocol::records::BlobRef>,
     /// When the device last asked which blobs the server misses.
     missing_checked: Option<std::time::Instant>,
     /// The objects a rewind writes again, which matching leaves alone.
@@ -467,6 +471,7 @@ impl WorkspaceSync {
             armed: BTreeSet::new(),
             frame_generation: None,
             restore_wait: restore::REWRITE_WAIT,
+            lent_blob: None,
             missing_checked: None,
             lagging: BTreeSet::new(),
             active: None,
@@ -595,6 +600,7 @@ impl WorkspaceSync {
             armed: BTreeSet::new(),
             frame_generation: None,
             restore_wait: restore::REWRITE_WAIT,
+            lent_blob: None,
             missing_checked: None,
             lagging: BTreeSet::new(),
             active: None,
@@ -732,6 +738,7 @@ impl WorkspaceSync {
             restore_lost: self.state.restore.lost.clone(),
             rollback: self.state.restore.rollback.clone(),
             restored: self.state.restore.alerted,
+            to_review: self.state.restore.to_review.clone(),
             owner: self.state.restore.owner,
             written_again: self.state.restore.written_again.clone(),
             conflicts: self.conflicts().len(),
@@ -1158,8 +1165,12 @@ impl WorkspaceSync {
             self.capture()?;
             return Err(error);
         }
-        // The device reconciles a domain before it writes there again.
+        // The device reconciles a domain before it writes there again. It
+        // checks each object once more just before it signs (§14).
         let mut captured = if self.rewrites_pending() {
+            if self.rewrites_due() {
+                self.pull_until(service, 0, wake).await?;
+            }
             self.write_again_due()?
         } else {
             self.capture()?
@@ -1171,7 +1182,7 @@ impl WorkspaceSync {
                 .missing_checked
                 .is_none_or(|at| at.elapsed() >= restore::MISSING_EVERY)
         {
-            self.upload_missing(service).await?;
+            self.upload_missing(service, true).await?;
             self.missing_checked = Some(std::time::Instant::now());
         }
         if self.state.profile_recheck && unix_now() >= self.state.rewrite_due {
@@ -1179,6 +1190,7 @@ impl WorkspaceSync {
             self.follow_profile(service).await?;
         }
         let (applied, waiting_for_key) = self.pull_until(service, wait_seconds, wake).await?;
+        captured += self.settle_rewrite_race()?;
         self.settle_moved_away()?;
         self.rotate_domains(service, false).await?;
         self.sign_checkpoint(service).await?;
@@ -2006,6 +2018,35 @@ impl WorkspaceSync {
         SyncError,
     > {
         let revision = found.revision;
+        if let Some(blob_ref) = &self.lent_blob {
+            let file = self
+                .engine
+                .open_synced(&found.file.relative_path)
+                .map_err(core)?
+                .ok_or_else(|| SyncError::Invalid("the file went away".into()))?;
+            let len = file
+                .metadata()
+                .map_err(|e| SyncError::Invalid(format!("can't read the file: {e}")))?
+                .len();
+            let upload = state::upload_path(&blob_ref.blob);
+            let key = blob_ref.blob_key.clone();
+            let rebuilt = self.journal.keep_with(&upload, |out| {
+                sync_protocol::blob::encrypt_blob_to(
+                    std::io::BufReader::with_capacity(1 << 16, file),
+                    len,
+                    blob_ref.blob,
+                    key,
+                    out,
+                )
+                .map_err(|e| SyncError::Invalid(e.to_string()))
+            });
+            if matches!(&rebuilt, Ok((rebuilt, _))
+                if rebuilt.ciphertext_digest == blob_ref.ciphertext_digest)
+            {
+                return Ok((blob_ref.clone(), Some(blob_ref.clone())));
+            }
+            self.journal.forget(&upload);
+        }
         if let Some(object) = self.state.objects.get(&rid)
             && let Some(blob) = object
                 .states
@@ -3492,7 +3533,10 @@ impl WorkspaceSync {
         // Objects a file in their way held back before get another try.
         if !self.matching {
             for rid in self.unsettled() {
-                self.settle(rid, &BTreeMap::new())?;
+                // The rewrite settles an object a rewind found lagging.
+                if !self.state.restore.rewrites.contains_key(&rid) {
+                    self.settle(rid, &BTreeMap::new())?;
+                }
             }
             // A hold that ended leaves files to match with the domain's
             // live objects before anything writes there (§9).
@@ -4038,6 +4082,12 @@ impl WorkspaceSync {
                     log.checkpoints.reach(record, entry.seq);
                 }
                 EntryRecord::Operation(op) => {
+                    log.check_final_record(
+                        &op.body.device,
+                        op.body.counter,
+                        &op.digest(),
+                        entry.seq,
+                    )?;
                     match check_operation(
                         remote, &self.keys, &ended, &mut log, op, entry.seq, fetcher,
                     )? {
@@ -4155,6 +4205,17 @@ impl WorkspaceSync {
                 touched.push(op.body.rid);
             }
         }
+        // A record stays unreadable only until something covers it (§13).
+        for rid in &touched {
+            let live: BTreeSet<OpKey> = self.live_ops(rid).into_iter().collect();
+            self.state.unreadable.retain(|u| {
+                u.rid != *rid
+                    || live.contains(&OpKey {
+                        device: u.device,
+                        counter: u.counter,
+                    })
+            });
+        }
         // A move's create comes before its delete: the new object takes
         // the file, and a delete whose create hasn't arrived waits (§9).
         for (moved, origin) in arrivals {
@@ -4220,7 +4281,11 @@ impl WorkspaceSync {
                 ..
             }) = &record.payload
             {
-                if record.op.body.device != own {
+                let key = OpKey {
+                    device: record.op.body.device,
+                    counter: record.op.body.counter,
+                };
+                if record.op.body.device != own && !self.text_holds(&record.op.body.rid, &key) {
                     let path = service
                         .client()
                         .download_blob(self.state.workspace, blob, None, &downloads)
