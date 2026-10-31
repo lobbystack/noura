@@ -175,6 +175,7 @@ impl WorkspaceSync {
             )?;
             if !known {
                 let next = self.mark.start().get(&domain).copied().unwrap_or(1);
+                self.write_mark()?;
                 self.state
                     .restricted
                     .insert(domain, Frame::new(domain, next));
@@ -191,6 +192,16 @@ impl WorkspaceSync {
         self.update_roots()?;
         self.share_domain_keys();
         self.save()
+    }
+
+    /// Writes the mark to the credential store, as every raised reservation
+    /// does before a counter in it is signed (§14).
+    fn write_mark(&self) -> Result<(), SyncError> {
+        self.mark.write(
+            &*self.secrets,
+            &self.credentials.keys.device(),
+            &self.state.workspace,
+        )
     }
 
     /// Hands the workspace's verified state the keys of the domains the
@@ -617,11 +628,8 @@ impl WorkspaceSync {
 
         // The marker, the first record of this device's chain there.
         let counter = self.mark.start().get(&domain).copied().unwrap_or(1);
-        if self.mark.needs_block(&domain, counter) {
-            self.mark.reserve(&domain, counter);
-            self.mark
-                .write(&*self.secrets, &device, &self.state.workspace)?;
-        }
+        self.mark.reserve(&domain, counter);
+        self.write_mark()?;
         let bytes = marker_content(&domain).into_bytes();
         let revision = hash(&bytes);
         let payload = Payload {

@@ -51,6 +51,43 @@ fn ops_of(page: &Page, device: Id) -> Vec<usize> {
         .collect()
 }
 
+/// A device's signed first record of one domain, carried in another
+/// domain's log, would count as unreadable there and make the device's real
+/// first record look like a fork (§13).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_record_of_another_domain_holds_the_cursor() {
+    let mut pair = pair().await;
+    let signing = pair.desktop.credentials.keys.signing().clone();
+    let device = pair.desktop.id();
+    tamper_pulls(&pair.proxy, move |page| {
+        let mut entries = entries(page);
+        for entry in entries.iter_mut() {
+            if let EntryRecord::Operation(op) = &mut entry.record
+                && op.body.device == device
+            {
+                let mut body = op.body.clone();
+                body.domain = Id([0xee; 16]);
+                *op = Signed::sign(body, &signing);
+            }
+        }
+        set_entries(page, entries);
+    });
+    pair.b.write("One.md", b"# One\n");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("the desktop pushes");
+    let cursor = pair.sync_a.cursor();
+    let error = pair
+        .sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect_err("a record of another log");
+    assert_eq!(error.code(), Some("sync_chain_reordered"));
+    assert_eq!(pair.sync_a.cursor(), cursor);
+    assert!(!pair.a.files().contains_key("One.md"));
+}
+
 /// The desktop writes three files in one round, which the laptop hasn't
 /// pulled yet.
 async fn three_from_the_desktop(pair: &mut Pair<sync_store_sqlite::SqliteBackend>) {

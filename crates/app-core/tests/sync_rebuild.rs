@@ -8,6 +8,7 @@
 mod sync_support;
 
 use app_core::sync::SyncError;
+use app_core::sync::marks::Mark;
 use app_core::sync::registry::Registry;
 use app_core::sync::workspace::WorkspaceSync;
 use app_core::sync::workspace::rebuild::HeldChoice;
@@ -23,6 +24,40 @@ fn journal_file(folder: &Folder, device: sync_protocol::types::Id) -> std::path:
         .path(".noura/sync")
         .join(device.to_hex())
         .join("journal.json")
+}
+
+/// A start raises the reservation before anything signs in the new block,
+/// so losing the journal again can't sign one of its counters twice (§14).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_start_without_a_journal_stores_its_new_block() {
+    let Pair {
+        server: _server,
+        proxy: _proxy,
+        laptop: _laptop,
+        service: _service,
+        a: _a,
+        sync_a: _sync_a,
+        mut desktop,
+        mut b,
+        sync_b,
+    } = pair().await;
+    let (workspace, domain) = (sync_b.workspace(), sync_b.domain());
+    let reserved = |desktop: &sync_support::Desktop| {
+        Mark::read(&*desktop.secrets(), &desktop.id(), &workspace)
+            .unwrap()
+            .unwrap()
+            .domains[&domain]
+            .reserved
+    };
+    let before = reserved(&desktop);
+    drop(sync_b);
+    lose_journal(&b, desktop.id());
+    b.reopen();
+    let _sync =
+        WorkspaceSync::rebuild(&mut desktop.service, b.engine.clone(), &mut b.registry)
+            .await
+            .expect("the folder syncs again");
+    assert!(reserved(&desktop) > before, "the store holds the new block");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

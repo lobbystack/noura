@@ -39,7 +39,7 @@ use sync_protocol::chain::{ChainError, ChainFetcher, ChainRecord, ChainVerdict, 
 use sync_protocol::codec::{Bytes, Decode, Encode, Sorted, Text};
 use sync_protocol::crypto::{hash, random_nonce};
 use sync_protocol::keys::{
-    SkippedEpochRecord, judge_skipped_epoch_record, key_matches, walk_lineage,
+    SkippedEpochRecord, judge_skipped_epoch_record, key_matches, open_lineage, walk_lineage,
 };
 use sync_protocol::live::LiveOp;
 use sync_protocol::matching::{domain_of, synced_path};
@@ -420,6 +420,8 @@ impl WorkspaceSync {
         let journal = Journal::open(engine.root(), &device, &*secrets)?;
         let mut mark = Mark::read(&*secrets, &device, &remote.workspace)?.unwrap_or_default();
         let next = mark.start().get(&remote.domain).copied().unwrap_or(1);
+        // The new block is on the store before anything signs in it (§14).
+        mark.write(&*secrets, &device, &remote.workspace)?;
         let owner = remote
             .policy
             .head_snapshot()
@@ -459,6 +461,7 @@ impl WorkspaceSync {
             refused: Vec::new(),
             removal_hold: false,
             ended_epochs: Vec::new(),
+            ended_envelopes: Vec::new(),
             rewrite_epochs: Vec::new(),
             rewrite_others: Vec::new(),
             rewrite_due: 0,
@@ -720,7 +723,39 @@ impl WorkspaceSync {
                 keys.insert(record.body.epoch, key);
             }
         }
+        self.ended_keys(&mut keys);
         Ok(keys)
+    }
+
+    /// Adds the keys of the epochs a replacement ended that this device
+    /// accepted: each kept envelope's, and those its lineage reaches. An
+    /// envelope that no longer opens leaves the records under it to the
+    /// server's next answer, and the domain goes on.
+    fn ended_keys(&self, keys: &mut BTreeMap<u64, SecretKey>) {
+        let card = self.credentials.card();
+        let records = || self.state.ended_epochs.iter().chain(&self.state.epochs);
+        for envelope in &self.state.ended_envelopes {
+            let Some(mut record) = records().find(|e| e.body.epoch == envelope.body.epoch) else {
+                continue;
+            };
+            let Ok(mut key) = unwrap(&envelope.body, &self.credentials.keys, &card) else {
+                continue;
+            };
+            if !key_matches(&record.body, &key) {
+                continue;
+            }
+            keys.insert(record.body.epoch, key.clone());
+            while let Some(older) = records().find(|e| e.digest() == record.body.previous) {
+                let Ok(derived) = open_lineage(&record.body, &key) else {
+                    break;
+                };
+                if !key_matches(&older.body, &derived) {
+                    break;
+                }
+                keys.entry(older.body.epoch).or_insert(derived.clone());
+                (record, key) = (older, derived);
+            }
+        }
     }
 
     /// The workspace this folder syncs.
@@ -1056,6 +1091,17 @@ impl WorkspaceSync {
         service: &mut SyncService,
     ) -> Result<usize, SyncError> {
         self.upload_missing(service, false).await
+    }
+
+    /// Takes the policy and keys, saves and stops there, as an app that
+    /// quits between accepting an epoch and its next push does.
+    #[cfg(feature = "test-hooks")]
+    pub async fn refresh_for_testing(
+        &mut self,
+        service: &mut SyncService,
+    ) -> Result<(), SyncError> {
+        self.refresh(service).await?;
+        self.save()
     }
 
     /// Kills the app, as [`Self::lose_saves`] does, once the next page's
@@ -1601,6 +1647,12 @@ impl WorkspaceSync {
         }
         self.state.epochs = epochs;
         self.want_entries();
+        if let Some(old) = self.state.envelope.take_if(|old| {
+            ended.iter().any(|e| e.body.epoch == old.body.epoch)
+                && remote.envelope.is_some()
+        }) {
+            self.state.ended_envelopes.push(old);
+        }
         if remote.envelope.is_some() {
             self.state.envelope = remote.envelope.clone();
         }
@@ -4579,7 +4631,12 @@ impl WorkspaceSync {
                     let Some(accepted) = accepted else {
                         if remote.epochs.ended_at(epoch.body.epoch).is_some() {
                             // A replacement ended it; its records are judged
-                            // as records under a skipped epoch.
+                            // as records under a skipped epoch, once the
+                            // entry itself verifies (§9).
+                            remote
+                                .epochs
+                                .check_ended_entry(epoch, &remote.policy)
+                                .map_err(|e| SyncError::Check(e.client_code()))?;
                             log.judge.epoch_entry(&epoch.body);
                             log.skipped_rotators
                                 .insert(epoch.body.epoch, epoch.body.rotating_device);
@@ -5227,6 +5284,11 @@ fn check_operation(
     fetcher: &mut Cached<'_>,
 ) -> Result<Judged, SyncError> {
     let body = &op.body;
+    // A record from another log: an honest server stores each record in the
+    // domain it names (§13).
+    if body.workspace != remote.workspace || body.domain != remote.domain {
+        return Err(SyncError::Check("sync_chain_reordered"));
+    }
     let policy = &remote.policy;
     let device = policy
         .at(body.policy_revision)

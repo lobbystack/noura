@@ -14,9 +14,12 @@ mod sync_support;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sync_protocol::codec::{Bytes, Decode, Encode, ExactBytes, Text};
-use sync_protocol::messages::{ErrorBody, KeyRecord, KeysResponse, PushFailureDetail};
+use sync_protocol::codec::{Bytes, Decode, Encode, ExactBytes, Sorted, Text};
+use sync_protocol::messages::{
+    EntryRecord, ErrorBody, KeyRecord, KeysResponse, PullResponse, PushFailureDetail,
+};
 use sync_protocol::types::Id;
+use app_core::sync::workspace::WorkspaceSync;
 use sync_support::{Folder, Pair, Proxy, Server, approve, pair, pair_of_accounts_on};
 
 /// A laptop and a desktop of two accounts: a device doesn't replace an epoch
@@ -152,6 +155,103 @@ async fn a_failed_envelope_is_replaced_and_the_rotator_writes_again() {
     assert_eq!(pair.a.files()["Plan.md"], b"# Plan, under epoch 2\n");
     assert_eq!(pair.sync_a.status().conflicts, 0);
     assert_eq!(pair.sync_b.status().conflicts, 0);
+}
+
+/// A device that quits with a record under an epoch a replacement just
+/// ended still reaches that epoch's key, so its next push re-seals (§9).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_key_of_an_ended_epoch_survives_a_restart() {
+    let mut pair = of_accounts().await;
+    desktop_rotates(&mut pair).await;
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("the desktop takes epoch 2");
+    pair.b.write("Waits.md", b"# Waits under epoch 2\n");
+    pair.sync_b.capture().expect("signed under epoch 2");
+
+    damage_envelopes(&pair.proxy, pair.laptop.id(), pair.desktop.id());
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("the laptop signs a replacement");
+    pair.proxy.honest();
+    assert_eq!(pair.sync_a.remote_mut().unwrap().epoch(), 3);
+
+    pair.sync_b
+        .refresh_for_testing(&mut pair.desktop.service)
+        .await
+        .expect("the desktop accepts the replacement");
+    pair.sync_b.lose_saves();
+    pair.sync_b = WorkspaceSync::open(
+        pair.b.engine.clone(),
+        pair.desktop.credentials.clone(),
+        pair.desktop.secrets(),
+        &pair.b.registry,
+    )
+    .expect("the folder opens again");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("the record goes out under the current epoch");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    assert_eq!(pair.a.files()["Waits.md"], b"# Waits under epoch 2\n");
+}
+
+/// An entry of an epoch a replacement ended names the rotator whose records
+/// count as unreadable, so a forged one holds the cursor (§9).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_forged_entry_of_an_ended_epoch_holds_the_cursor() {
+    let mut pair = of_accounts().await;
+    desktop_rotates(&mut pair).await;
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("the desktop takes epoch 2");
+    let (reader, wrapper) = (pair.laptop.id(), pair.desktop.id());
+    pair.proxy.tamper(Box::new(move |path, body| {
+        if path.ends_with("/pull") {
+            let mut response = PullResponse::from_bytes(&body).unwrap();
+            for page in response.pages.0.iter_mut() {
+                let mut entries = page.entries.to_vec();
+                for entry in entries.iter_mut() {
+                    if let EntryRecord::Epoch(epoch) = &mut entry.record
+                        && epoch.body.epoch == 2
+                    {
+                        epoch.body.rotating_device = reader;
+                    }
+                }
+                page.entries = Sorted::new(entries).unwrap();
+            }
+            return response.to_bytes();
+        }
+        if !(path.ends_with("/keys/current") || path.ends_with("/keys")) {
+            return body;
+        }
+        let mut keys = KeysResponse::from_bytes(&body).unwrap();
+        for entry in keys.entries.0.iter_mut() {
+            if let KeyRecord::Envelope(envelope) = &mut entry.record
+                && envelope.body.recipient == reader
+                && envelope.body.wrapping_device == wrapper
+            {
+                let mut bytes = envelope.body.ciphertext.as_slice().to_vec();
+                bytes[0] ^= 1;
+                envelope.body.ciphertext = ExactBytes::new(bytes).unwrap();
+            }
+        }
+        keys.to_bytes()
+    }));
+    let cursor = pair.sync_a.cursor();
+    let forged = pair.sync_a.round(&mut pair.service, 0).await;
+    assert_eq!(
+        forged.err().and_then(|e| e.code().map(str::to_owned)),
+        Some("sync_key_mismatch".to_owned())
+    );
+    assert_eq!(pair.sync_a.cursor(), cursor, "the cursor holds");
+    pair.proxy.honest();
 }
 
 /// Replacements don't loop (§9, §30): the server refuses a replacement of

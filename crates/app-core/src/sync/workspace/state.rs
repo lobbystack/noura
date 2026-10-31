@@ -92,6 +92,11 @@ pub struct State {
     /// (§9), kept to open its own records under them.
     #[serde(default)]
     pub ended_epochs: Vec<Signed<Epoch>>,
+    /// This device's envelopes of those epochs, still wrapped, so a restart
+    /// reaches their keys while records under them wait to be written
+    /// again (§9, §15).
+    #[serde(default)]
+    pub ended_envelopes: Vec<Signed<Envelope>>,
     /// Those epochs whose records this device still writes again (§9).
     #[serde(default)]
     pub rewrite_epochs: Vec<u64>,
@@ -165,6 +170,9 @@ pub struct Frame {
     pub outbox: Vec<Outgoing>,
     /// Epoch records a replacement ended since.
     pub ended_epochs: Vec<Signed<Epoch>>,
+    /// This device's envelopes of those epochs, still wrapped.
+    #[serde(default)]
+    pub ended_envelopes: Vec<Signed<Envelope>>,
     /// Those epochs whose records this device still writes again.
     pub rewrite_epochs: Vec<u64>,
     /// Those epochs whose other devices' records it writes again later.
@@ -192,6 +200,7 @@ impl Frame {
             },
             outbox: Vec::new(),
             ended_epochs: Vec::new(),
+            ended_envelopes: Vec::new(),
             rewrite_epochs: Vec::new(),
             rewrite_others: Vec::new(),
             rewrite_due: 0,
@@ -215,6 +224,7 @@ impl State {
         std::mem::swap(&mut self.own, &mut frame.own);
         std::mem::swap(&mut self.outbox, &mut frame.outbox);
         std::mem::swap(&mut self.ended_epochs, &mut frame.ended_epochs);
+        std::mem::swap(&mut self.ended_envelopes, &mut frame.ended_envelopes);
         std::mem::swap(&mut self.rewrite_epochs, &mut frame.rewrite_epochs);
         std::mem::swap(&mut self.rewrite_others, &mut frame.rewrite_others);
         std::mem::swap(&mut self.rewrite_due, &mut frame.rewrite_due);
