@@ -101,7 +101,7 @@ The defaults let a new device download a workspace of 100,000 objects and 10 GB 
 | `NOURA_RATE_OTHER_REQUESTS_PER_MINUTE` | 600 | Other sync requests |
 | `NOURA_RATE_SIGN_IN_PER_MINUTE` | 30, per client IP | Device grants, magic links, passkeys and reset codes |
 
-Keep each byte budget above 1 MiB, the largest single request or response. A smaller push or upload budget refuses a full-size request in every window. A request over a limit gets HTTP 429 with `rate_limited` and `retry_after_seconds`, and the desktop app waits and tries again. In PostgreSQL mode, all instances count against one allowance.
+Keep each byte budget above 1 MiB, the largest single request or response. A smaller push or upload budget refuses a full-size request in every window. A session with no card yet counts against its account. A request over a limit gets HTTP 429 with `rate_limited` and `retry_after_seconds`, and the desktop app waits and tries again. In PostgreSQL mode, all instances count against one allowance.
 
 ## The server secret
 

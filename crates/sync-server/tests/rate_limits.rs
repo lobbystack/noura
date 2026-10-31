@@ -25,8 +25,10 @@ use sync_protocol::records::BlobRef;
 use sync_protocol::types::{Digest, Id, SecretKey};
 use sync_server::blobs::{Objects, SegmentStore};
 use sync_server::{Accounts, RateGate, RateLimits};
-use sync_store::{Backend, Limit, Store};
-use sync_store_postgres::testing::Cluster;
+use sync_store::devices::UNBOUND;
+use sync_store::{Backend, Limit, Session, Store};
+use sync_store_postgres::PgBackend;
+use sync_store_postgres::testing::{Cluster, TestDatabase};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
@@ -287,6 +289,51 @@ async fn other_sync_requests_count_per_device_and_the_limits_route_never_does() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sessions_with_no_card_count_against_their_account() {
+    // Creating the workspace took the first of device 0's requests.
+    let world = limited(RateLimits {
+        requests: hour(2),
+        ..wide()
+    })
+    .await;
+    let unbound = async || {
+        let token: [u8; 32] = sync_protocol::crypto::random_array().expect("random");
+        let session = Session {
+            account: world.account.account,
+            device: UNBOUND,
+            recovery: None,
+        };
+        world
+            .store
+            .create_session(token, session)
+            .await
+            .expect("the session is stored");
+        Client::new(
+            world.base.clone(),
+            Some(sync_protocol::types::to_base64url(&token)),
+        )
+    };
+    let (first, second) = (unbound().await, unbound().await);
+    let challenge = "/v2/devices/challenge";
+    assert_eq!(
+        first.post(challenge, Vec::new()).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        second.post(challenge, Vec::new()).await.status,
+        StatusCode::OK
+    );
+    assert_limited(&first.post(challenge, Vec::new()).await);
+    assert_limited(&second.post(challenge, Vec::new()).await);
+
+    // A device with a card has an allowance of its own.
+    assert_eq!(
+        world.client(0).get("/v2/workspaces").await.status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_device_that_uploads_keeps_pushing_within_the_push_budget() {
     let world = limited(RateLimits {
         push_bytes: hour(64 * 1024),
@@ -469,8 +516,9 @@ async fn records_on_the_realtime_channel_cost_nothing() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_limits_hold_across_two_postgres_instances() {
+/// A world on PostgreSQL at `limits`, a second instance on its database and
+/// blob store, and that database, which goes away with its value.
+async fn two_postgres_instances(limits: RateLimits) -> (World<PgBackend>, String, TestDatabase) {
     let database = Cluster::shared(Path::new(env!("CARGO_TARGET_TMPDIR")))
         .database()
         .await;
@@ -488,14 +536,6 @@ async fn the_limits_hold_across_two_postgres_instances() {
                 .expect("the store opens"),
         )
     };
-    let limits = RateLimits {
-        pushes: hour(2),
-        read_bytes: hour(2 * sync_server::rate::MIN_CHARGE),
-        // Creating the workspace takes the first request.
-        requests: hour(3),
-        sign_in: hour(2),
-        ..wide()
-    };
     let gate = || RateGate::new(limits, Some(HeaderName::from_static("x-real-ip")));
     let dir = tempfile::tempdir().expect("temporary directory");
     let one = world_on(open().await, gate(), dir).await;
@@ -508,8 +548,21 @@ async fn the_limits_hold_across_two_postgres_instances() {
     )
     .await
     .expect("serving");
-    let two = format!("http://{second}");
     assert_ne!(one.store.restore_generation(), 0);
+    (one, format!("http://{second}"), database)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_limits_hold_across_two_postgres_instances() {
+    let (one, two, _database) = two_postgres_instances(RateLimits {
+        pushes: hour(2),
+        read_bytes: hour(2 * sync_server::rate::MIN_CHARGE),
+        // Creating the workspace takes the first request.
+        requests: hour(3),
+        sign_in: hour(2),
+        ..wide()
+    })
+    .await;
 
     // Each instance serves half of an allowance, and neither serves more.
     let (first, digest) = one.push(0, 1, Digest::ZERO).await;
@@ -548,6 +601,68 @@ async fn the_limits_hold_across_two_postgres_instances() {
     assert_eq!(authorize(&two, client).await.status, StatusCode::OK);
     assert_limited(&authorize(&one.base, client).await);
     assert_limited(&authorize(&two, client).await);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn byte_budgets_hold_across_two_postgres_instances() {
+    const PUSH_BYTES: u64 = 4096;
+    let (ciphertext, blob_ref) = World::<PgBackend>::blob(300_000);
+    let (one, two, _database) = two_postgres_instances(RateLimits {
+        push_bytes: hour(PUSH_BYTES),
+        // Room for the upload, and for less than the least a `HEAD` costs.
+        upload_bytes: hour(ciphertext.len() as u64 + sync_server::rate::MIN_CHARGE - 1),
+        bootstrap_bytes: hour(100_000),
+        ..wide()
+    })
+    .await;
+    let on_one = one.client(0);
+    let on_two = Client::new(two.clone(), Some(one.account.token(0)));
+
+    // Pushes take turns between the instances until the budget runs out. On
+    // budgets of their own, the two would accept about twice as many bytes.
+    let path = format!("/v2/workspaces/{}/ops", one.workspace());
+    let (mut accepted, mut previous) = (0, Digest::ZERO);
+    for counter in 1.. {
+        let op = one
+            .created
+            .op(&one.account.keys[0], counter, previous, |_| {});
+        let body = push_body(std::slice::from_ref(&op));
+        let size = body.len() as u64;
+        let client = if counter % 2 == 1 { &on_one } else { &on_two };
+        let reply = client.post(&path, body).await;
+        if reply.status == StatusCode::TOO_MANY_REQUESTS {
+            assert_limited(&reply);
+            assert!(accepted + size > PUSH_BYTES, "refused early: {accepted}");
+            assert!(counter > 2, "both instances took a push");
+            break;
+        }
+        let _: PushResponse = reply.decode();
+        accepted += size;
+        assert!(accepted <= PUSH_BYTES, "accepted {accepted} bytes");
+        previous = op.digest();
+    }
+
+    // An upload through one instance leaves the other no room for a `HEAD`.
+    let location = one.create_blob(0, &blob_ref).await;
+    let patched = one.patch(0, &location, 0, &ciphertext).await;
+    assert_eq!(patched.status(), StatusCode::NO_CONTENT);
+    let head = reqwest::Client::new()
+        .head(format!("{two}{location}"))
+        .bearer_auth(one.account.token(0))
+        .header("Tus-Resumable", "1.0.0")
+        .send()
+        .await
+        .expect("head");
+    assert_eq!(head.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(head.headers().contains_key(RETRY_AFTER));
+
+    // A response past the budget, counted after the handler on one instance,
+    // holds back the next read on the other.
+    assert_eq!(
+        on_one.get(&location).await.status,
+        StatusCode::PARTIAL_CONTENT
+    );
+    assert_limited(&on_two.get(&location).await);
 }
 
 #[test]

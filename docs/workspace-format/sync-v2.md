@@ -1540,7 +1540,7 @@ Client error codes: `sync_chain_gap`, `sync_chain_reordered`, `sync_chain_replay
 
 ### Rate limits
 
-The server limits sync traffic per device and in bytes, with a separate allowance for bootstrap pages and range reads, and limits sign-in per client IP. Records that reach a device through the realtime channel don't count. A request over a limit gets `rate_limited` with `retry_after_seconds`, and the same wait in a `Retry-After` header, because a `HEAD` response has no body. A read may overdraw its budget by its own response, and the next read then waits; a read or an upload costs at least 1 KiB, so empty answers don't run free. The server reads a client's IP only from a header the operator configures, and otherwise from the connection, and it counts an IPv6 client by its /64. The defaults, which a server setting changes:
+The server limits sync traffic per device and in bytes, with a separate allowance for bootstrap pages and range reads, and limits sign-in per client IP. A session with no card yet counts against its account. Records that reach a device through the realtime channel don't count. A request over a limit gets `rate_limited` with `retry_after_seconds`, and the same wait in a `Retry-After` header, because a `HEAD` response has no body. The server counts a response after it builds it, so a read may overdraw its budget by its own response, reads already in flight may each do the same, and the next read then waits; a read or an upload costs at least 1 KiB, so empty answers don't run free. The server reads a client's IP only from a header the operator configures, and otherwise from the connection, and it counts an IPv6 client by its /64. The defaults, which a server setting changes:
 
 | Traffic | Default per device |
 |---|---|
@@ -1666,7 +1666,7 @@ At the default bootstrap allowance of 512 MiB a minute ([§26](#rate-limits)), t
 | Share links | token hash, workspace, domain, creating device, expiry, signed padded snapshot | that a domain has a shared item, which device shared it, and from its expiry roughly when |
 | Invitations | while open: ID, token hash, workspace, role, inviter, accepting account, status, expiry, padded context | who is inviting whom, with which role, until the invitation ends |
 | Workspace profile | signed encrypted record | when the name changed |
-| Rate counters | key, which holds a device ID or a keyed hash of a client IP, window length, count and the end of the count's window; the server deletes a count within a minute after its window ends | request volume, and which keys sent requests in the current window |
+| Rate counters | key, which holds a device ID, an account ID or a keyed hash of a client IP, window length, count and the end of the count's window; the server deletes a count within a minute after its window ends | request volume, and which keys sent requests in the current window |
 | Presence | nothing stored | |
 
 No stored table holds an object type, a per-record timestamp or an unpadded size. The blob store's file times date uploads, as the creation-times note below says.

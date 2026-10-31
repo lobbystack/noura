@@ -1,8 +1,10 @@
 //! The rate limits of §26. Sign-in requests count per client IP in an outer
 //! layer, before any handler runs. Sync traffic counts per device once a
-//! session names the device: requests and pushes before the handler, the
-//! bodies of pushes and uploads as soon as they're read, and the responses
-//! of reads after the handler, up to the allowance they found open.
+//! session names the device, and a session with no card yet counts against
+//! its account: requests and pushes before the handler, the bodies of pushes
+//! and uploads as soon as they're read, and the responses of reads after the
+//! handler. A read checks only that its least cost fits, so reads in flight
+//! together can overdraw a budget by their responses.
 //! Records on the realtime channel pass through none of this.
 //!
 //! Counters go through the store's [`Limiter`], so in PostgreSQL mode every
@@ -34,8 +36,8 @@ const fn per_minute(allowance: u64) -> Limit {
     }
 }
 
-/// The limits of §26. Sync limits apply per device, the sign-in limit per
-/// client IP.
+/// The limits of §26. Sync limits apply per device, or per account for a
+/// session with no card yet, and the sign-in limit per client IP.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RateLimits {
     /// Pushes.
