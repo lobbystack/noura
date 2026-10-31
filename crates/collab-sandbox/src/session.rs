@@ -30,9 +30,10 @@ use std::time::{Duration, Instant};
 
 use crate::Sandbox;
 use crate::note::{
-    ClientIds, DocumentError, Effects, Event, LineageStatus, LocalUpdate, Note, RemoteRecord,
+    ClientIds, DocumentError, Effects, Event, LineageStatus, LocalUpdate, Note, Opened,
+    RemoteRecord,
 };
-use crate::op::{Mismatch, Op, transform};
+use crate::op::{Mismatch, Op, three_way, transform};
 
 /// An edit, undo or redo from the editor.
 struct ClientMessage {
@@ -68,6 +69,15 @@ enum Request {
         at: u64,
     },
     EndUndoStep,
+    /// Applies an outside edit made from `base`, which moved the file to
+    /// `text`, on top of what the document merged since `base`.
+    Merge {
+        base: String,
+        text: String,
+        at: u64,
+        answer: Answer<()>,
+    },
+    Balances(Answer<Vec<(u32, i64)>>),
     Record(Box<RemoteRecord>),
     TakeUpdates(Answer<Vec<LocalUpdate>>),
     State(Answer<Vec<u8>>),
@@ -189,6 +199,9 @@ pub struct NoteHandle {
     /// gone: the editor and the document went apart, so no more changes
     /// apply.
     broken: bool,
+    /// Whether the thread outlives this side, for the sync client to take
+    /// what the editor left in the document.
+    outlived: bool,
     started: Instant,
 }
 
@@ -211,6 +224,29 @@ impl NoteHandle {
     /// shows its file, which holds the last merged state, until
     /// [`Opening::poll`] hands over the handle and the document's text.
     pub fn start(sandbox: &Sandbox, journal: Vec<Vec<u8>>, client_ids: ClientIds) -> Opening {
+        let records = journal
+            .into_iter()
+            .enumerate()
+            .map(|(id, bytes)| crate::note::JournalRecord {
+                id: id as u64,
+                snapshot: id == 0,
+                place: crate::note::Place::default(),
+                bytes,
+            })
+            .collect();
+        Self::start_lineage(
+            sandbox,
+            Opened {
+                records,
+                ..Opened::default()
+            },
+            client_ids,
+        )
+    }
+
+    /// [`Self::start`] from the journal's records with their places, each
+    /// writer's balance and where deferred records come back from.
+    pub fn start_lineage(sandbox: &Sandbox, source: Opened, client_ids: ClientIds) -> Opening {
         let (requests, inbox) = mpsc::channel();
         let (outbox, replies) = mpsc::channel();
         let (opened_tx, opened) = mpsc::channel();
@@ -220,7 +256,7 @@ impl NoteHandle {
         let spawned = std::thread::Builder::new()
             .name("collab-sandbox".into())
             .spawn(move || {
-                let mut note = match Note::open(&sandbox, journal, client_ids) {
+                let mut note = match Note::open_lineage(&sandbox, source, client_ids) {
                     Ok(note) => note,
                     Err(error) => {
                         let _ = opened_tx.send(Err(error));
@@ -250,6 +286,7 @@ impl NoteHandle {
             outgoing: VecDeque::new(),
             len,
             broken: false,
+            outlived: false,
             started: Instant::now(),
         }
     }
@@ -257,6 +294,13 @@ impl NoteHandle {
     /// The sync client's side of the note.
     pub fn shared(&self) -> SharedNote {
         self.shared.clone()
+    }
+
+    /// Lets the thread run on after this side drops, until the last
+    /// [`SharedNote`] goes, so that closing a note's tab leaves the edits
+    /// that wait in the document for the sync client to send.
+    pub fn outlive(&mut self) {
+        self.outlived = true;
     }
 
     fn now(&self) -> u64 {
@@ -429,7 +473,9 @@ impl Drop for NoteHandle {
     /// Ends the thread once it finishes the work ahead of it, without
     /// waiting for that work.
     fn drop(&mut self) {
-        let _ = self.shared.send(Request::Close);
+        if !self.outlived {
+            let _ = self.shared.send(Request::Close);
+        }
     }
 }
 
@@ -443,13 +489,13 @@ pub struct Opening {
     opened: Option<Receiver<Result<(String, u32), DocumentError>>>,
 }
 
-type Opened = Result<(NoteHandle, String), HandleError>;
+type OpenedNote = Result<(NoteHandle, String), HandleError>;
 
 impl Opening {
     /// The handle and the document's text once the journal loaded, without
     /// waiting: `None` while it still loads, and an error when it failed.
     /// After it returns `Some`, it returns [`HandleError::Closed`].
-    pub fn poll(&mut self) -> Option<Opened> {
+    pub fn poll(&mut self) -> Option<OpenedNote> {
         let result = match &self.opened {
             None => Err(HandleError::Closed),
             Some(opened) => match opened.try_recv() {
@@ -463,7 +509,7 @@ impl Opening {
 
     /// Waits until the journal loaded, then returns the handle and the
     /// document's text.
-    pub fn wait(mut self) -> Opened {
+    pub fn wait(mut self) -> OpenedNote {
         let result = match &self.opened {
             None => Err(HandleError::Closed),
             Some(opened) => match opened.recv() {
@@ -474,7 +520,7 @@ impl Opening {
         self.finish(result)
     }
 
-    fn finish(&mut self, result: Result<(String, u32), HandleError>) -> Opened {
+    fn finish(&mut self, result: Result<(String, u32), HandleError>) -> OpenedNote {
         self.opened = None;
         let (text, len) = result?;
         let (shared, replies) = self.parts.take().ok_or(HandleError::Closed)?;
@@ -512,9 +558,34 @@ impl SharedNote {
         Ok(answered.recv().map_err(|_| HandleError::Closed)??)
     }
 
+    /// Whether the note's thread still runs.
+    pub fn is_alive(&self) -> bool {
+        let (flushed, _) = mpsc::channel();
+        self.requests.send(Request::Flush(flushed)).is_ok()
+    }
+
     /// Hands the thread a remote record to judge and merge.
     pub fn receive(&self, record: RemoteRecord) -> Result<(), HandleError> {
         self.send(Request::Record(Box::new(record)))
+    }
+
+    /// Applies an outside edit of the file: the change from `base`, what
+    /// the file held, to `text`, what it holds now, on top of what the
+    /// document merged since `base`, which stays. Undo never takes it back,
+    /// and it reaches the editor like a collaborator's. Waits for the
+    /// requests ahead of it.
+    pub fn merge_text(&self, base: String, text: String, at: u64) -> Result<(), HandleError> {
+        self.ask(|answer| Request::Merge {
+            base,
+            text,
+            at,
+            answer,
+        })
+    }
+
+    /// Each writer's balance, which the journal keeps.
+    pub fn balances(&self) -> Result<Vec<(u32, i64)>, HandleError> {
+        self.ask(Request::Balances)
     }
 
     /// Your changes since the last call, one update per load, for the
@@ -740,6 +811,25 @@ fn serve(mut note: Note, inbox: &Receiver<Request>, outbox: &Sender<Reply>, shar
                 }
             }
             Some(Request::EndUndoStep) => failed = note.end_undo_step().err(),
+            Some(Request::Merge {
+                base,
+                text,
+                at,
+                answer: to,
+            }) => {
+                let result = note.text().and_then(|current| {
+                    let (op, _) = three_way(&base, &text, &current)?;
+                    note.local(&op, false, at).map(|()| op)
+                });
+                reply = match result {
+                    Ok(op) => {
+                        effects.changes.push(op);
+                        answer(to, Ok(()))
+                    }
+                    Err(error) => answer(to, Err(error)),
+                };
+            }
+            Some(Request::Balances(to)) => reply = answer(to, Ok(note.balances(now))),
             Some(Request::TakeUpdates(to)) => reply = answer(to, note.take_updates()),
             Some(Request::State(to)) => reply = answer(to, note.state()),
             Some(Request::Text(to)) => reply = answer(to, note.text()),
@@ -818,6 +908,7 @@ mod tests {
             outgoing: VecDeque::new(),
             len,
             broken: false,
+            outlived: false,
             started: Instant::now(),
         };
         (handle, outbox, inbox)

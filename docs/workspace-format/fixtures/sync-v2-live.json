@@ -1077,6 +1077,80 @@
 			]
 		},
 		{
+			"classes": [
+				"state",
+				"patch",
+				"patch",
+				"state"
+			],
+			"expect": {
+				"c887498ee1ee0e66c38342a3b3bed1c6": [
+					{
+						"counter": 2,
+						"device": "53f07745fcdc1a9f15ddfd11b930c264"
+					},
+					{
+						"counter": 1,
+						"device": "cb972fd8531c28e0317d24d1941bbcad"
+					}
+				]
+			},
+			"floors": [],
+			"kind": "live_set",
+			"name": "a_snapshot_leaves_a_deferred_patch_live",
+			"ops": [
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "f7e78d25be316bf60f3424c5e0b0f3bd",
+					"digest": "fc7ae257690230aac865136e50b91e2efc7c0b7fe2506d5f79bfc48c0edbd86a",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 1,
+					"weight": 300
+				},
+				{
+					"counter": 1,
+					"covers": [],
+					"delete": false,
+					"device": "53f07745fcdc1a9f15ddfd11b930c264",
+					"digest": "fc0fe3460920b5d17ea6f7c6c3687aa984bc27385404f24860d759f7fbcac289",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 2,
+					"weight": 300
+				},
+				{
+					"counter": 2,
+					"covers": [],
+					"delete": false,
+					"device": "53f07745fcdc1a9f15ddfd11b930c264",
+					"digest": "6bfde6fac8e6fe60f584c428764c72fd179c22a570143792b5229c4937a969b7",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 3,
+					"weight": 300
+				},
+				{
+					"counter": 1,
+					"covers": [
+						{
+							"counter": 1,
+							"device": "f7e78d25be316bf60f3424c5e0b0f3bd"
+						},
+						{
+							"counter": 1,
+							"device": "53f07745fcdc1a9f15ddfd11b930c264"
+						}
+					],
+					"delete": false,
+					"device": "cb972fd8531c28e0317d24d1941bbcad",
+					"digest": "dcf78fda6e8ccb88b273bc5a3abdf6a292145c689126bd3720408baf58b5c878",
+					"rid": "c887498ee1ee0e66c38342a3b3bed1c6",
+					"seq": 4,
+					"weight": 300
+				}
+			]
+		},
+		{
 			"expect": [
 				{
 					"rid": "a2b2b0deb8ce7851571aa16a7a02d452",

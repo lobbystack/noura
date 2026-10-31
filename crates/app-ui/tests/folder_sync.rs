@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use app_core::folder_sync::{
     ArchivedEntry, BranchEntry, ConflictEntry, FolderSyncAction, FolderSyncBackend,
     FolderSyncPhase, FolderSyncScreen, HeldChoice, HeldEntry, HeldRootEntry, Id, OpKey,
+    StoppedNoteEntry,
 };
 use app_core::{App, settings_section};
 use app_ui::NouraUi;
@@ -286,6 +287,48 @@ fn a_copied_folder_offers_to_connect() {
         .click();
     harness.run();
     assert_eq!(sync.taken(), vec![FolderSyncAction::Connect]);
+}
+
+#[test]
+fn a_note_that_stopped_merging_waits_for_your_choice_and_left_out_edits_show() {
+    let app_data = tempfile::tempdir().unwrap();
+    let sync = Arc::new(FakeSync::default());
+    let rid = Id([3; 16]);
+    let moved = Id([4; 16]);
+    sync.show(FolderSyncScreen {
+        phase: FolderSyncPhase::On,
+        stopped_notes: vec![
+            StoppedNoteEntry {
+                rid,
+                path: "Plan.md".into(),
+                outside: false,
+            },
+            StoppedNoteEntry {
+                rid: moved,
+                path: "Pay/Rates.md".into(),
+                outside: true,
+            },
+        ],
+        text_reviews: vec![
+            "Plan.md: a version from device 1a2b3c4d disagreed with this computer's records, and Noura rebuilt the note.".into(),
+        ],
+        ..FolderSyncScreen::default()
+    });
+    let mut harness = harness(app_data.path(), sync.clone());
+    harness.get_by_label("A collaborator's edit stopped Plan.md from merging on this computer.");
+    harness.get_by_label(
+        "A rename took Pay/Rates.md outside its shared folder, so its file stays where it is.",
+    );
+    harness.get_by_label(
+        "Plan.md: a version from device 1a2b3c4d disagreed with this computer's records, and Noura rebuilt the note.",
+    );
+    harness
+        .get_all_by_role_and_label(Role::Button, "Keep the last good version")
+        .next()
+        .unwrap()
+        .click();
+    harness.run();
+    assert_eq!(sync.taken(), vec![FolderSyncAction::KeepLastGood(rid)]);
 }
 
 #[test]

@@ -142,6 +142,7 @@ pub fn record(sandbox: &Sandbox, data: &[u8]) -> usize {
                 card_count: 3,
                 payload,
                 blob: in_blob.then(|| data.to_vec()),
+                place: Default::default(),
             },
             Instant::now(),
         );
@@ -149,7 +150,7 @@ pub fn record(sandbox: &Sandbox, data: &[u8]) -> usize {
         merged += effects
             .events
             .iter()
-            .filter(|event| matches!(event, Event::Merged { .. }))
+            .filter(|event| matches!(event, Event::Merged { .. } | Event::Refused { .. }))
             .count();
     }
     merged
@@ -162,14 +163,9 @@ const BASE: &str = "fuzz 😀 base\n";
 /// A note's invariants after a record: the text matches the length the
 /// note keeps, the changes the record sent the editor take its text from
 /// [`BASE`] to the note's on code points alone (see `apply_on_code_points`),
-/// a stopped note kept its last good state, and a device boots from the
-/// note's state.
-///
-/// The booted device may hold another text: a hostile item whose right
-/// origin lies left of its origin, or that names its own later clocks,
-/// integrates in one place as it arrives and in another from a snapshot.
-/// The verdict can't see that without the document, and ticket 55's
-/// integration rules decide what a device does about it.
+/// a stopped note kept its last good state, and a device that boots from
+/// the note's state shows the same text: integration refuses an item that
+/// would land elsewhere there (§22).
 fn check(sandbox: &Sandbox, note: &mut Note, events: &[Event], changes: &[Op]) {
     let text = note.text().expect("the note's text reads");
     assert_eq!(
@@ -193,6 +189,10 @@ fn check(sandbox: &Sandbox, note: &mut Note, events: &[Event], changes: &[Op]) {
     };
     let booted_text = booted.text().expect("the booted text reads");
     assert_eq!(booted_text.encode_utf16().count(), booted.len() as usize);
+    assert_eq!(
+        booted_text, text,
+        "a booted device shows the note: {events:?}"
+    );
 }
 
 /// `changes` applied to `text` as the editor applies them, splice by

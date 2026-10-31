@@ -235,6 +235,22 @@ pub fn fixture() -> Fixture {
         "next": op(note, a, 3, 3, &[(a, 2)], false),
         "expect": "state",
     }));
+    // A snapshot covers each device's patches up to the one its document
+    // hasn't integrated (§22): b2 waits on its writer's allowance, so it
+    // stays live and still applies.
+    f.case(json!({
+        "kind": "live_set",
+        "name": "a_snapshot_leaves_a_deferred_patch_live",
+        "ops": [
+            op(note, a, 1, 1, &[], false),
+            op(note, b, 1, 2, &[], false),
+            op(note, b, 2, 3, &[], false),
+            op(note, c, 1, 4, &[(a, 1), (b, 1)], false),
+        ],
+        "classes": ["state", "patch", "patch", "state"],
+        "floors": [],
+        "expect": {id(note).to_hex(): live(&[(b, 2), (c, 1)])},
+    }));
     journal_less(&mut f);
     f
 }

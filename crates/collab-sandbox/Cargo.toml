@@ -22,11 +22,15 @@ editor-core = { version = "0.2.0", path = "../editor-core" }
 plugin-host = { version = "0.2.0", path = "../plugin-host" }
 # Builds the Wasmtime operator cost table from the costs the fixture records.
 serde_json.workspace = true
+# Diffs an outside edit of a text-mode note on code points.
+similar.workspace = true
 sync-protocol = { version = "0.2.0", path = "../sync-protocol" }
 thiserror.workspace = true
 wasmtime.workspace = true
 
 [dev-dependencies]
+# The fixtures' first snapshots start from a note's parts.
+workspace-format = { version = "0.2.0", path = "../workspace-format" }
 # The sandbox itself with its test hooks, for the integration tests.
 collab-sandbox = { version = "0.2.0", path = ".", features = ["test-support"] }
 # The Yjs and yrs interop fixtures hold their updates in base64.

@@ -21,6 +21,7 @@ use ropey::Rope;
 
 use crate::buffer::{self, TextChange};
 use crate::doc::MdDoc;
+use crate::offset_types::{Byte, Grapheme};
 
 /// A change to a text in UTF-16 units: `removed` units at `start` give way
 /// to `inserted`.
@@ -98,6 +99,30 @@ impl MdDoc {
             document,
             mirror: self.buffer.current.rope().clone(),
         });
+    }
+
+    /// Your selection as UTF-16 offsets of the note's text: anchor, then
+    /// caret.
+    pub fn selection_utf16(&self) -> (usize, usize) {
+        let rope = self.buffer.current.rope();
+        let (anchor, caret) = self.buffer.current.selection;
+        let segs = &self.buffer.current.segs;
+        let offset = |at: Grapheme| {
+            let byte = segs.offset_to_byte(at).0.min(rope.len_bytes());
+            rope.char_to_utf16_cu(rope.byte_to_char(byte))
+        };
+        (offset(anchor), offset(caret))
+    }
+
+    /// The grapheme offset of a UTF-16 offset of the note's text, for a
+    /// collaborator's cursor.
+    pub fn offset_of_utf16(&self, units: usize) -> Grapheme {
+        let rope = self.buffer.current.rope();
+        let char_at = rope.utf16_cu_to_char(units.min(rope.len_utf16_cu()));
+        self.buffer
+            .current
+            .segs
+            .byte_to_char_floor(Byte(rope.char_to_byte(char_at)))
     }
 
     /// Takes the note out of text mode, handing back its document.

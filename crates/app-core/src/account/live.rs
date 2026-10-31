@@ -42,6 +42,8 @@ pub const ACCOUNT_FILE: &str = "sync-account.json";
 /// How often the backend looks for offers, codes and new requests, and
 /// how long it rests between sync rounds whose pull didn't wait.
 const TICK: Duration = Duration::from_secs(2);
+/// How long the thread rests between rounds while a note is open.
+const TEXT_WAIT: Duration = Duration::from_millis(50);
 
 #[derive(Default, Serialize, Deserialize)]
 struct Remembered {
@@ -59,6 +61,8 @@ struct Shared {
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// Ends a round's waiting pull when a message arrives.
     interrupt: tokio::sync::Notify,
+    /// Where the windows reach text-mode notes.
+    text: Arc<crate::text_bridge::TextBridge>,
 }
 
 /// What the backend's thread hears from the windows.
@@ -157,7 +161,15 @@ impl LiveAccount {
             members: Mutex::new(MembersScreen::default()),
             wake: Mutex::new(None),
             interrupt: tokio::sync::Notify::new(),
+            text: Arc::default(),
         });
+        // A window that needs a note's document ends the waiting pull.
+        let interrupted = Arc::downgrade(&shared);
+        shared.text.set_wake(Arc::new(move || {
+            if let Some(shared) = interrupted.upgrade() {
+                shared.interrupt.notify_one();
+            }
+        }));
         let (sender, receiver) = channel();
         let driver = Driver {
             shared: shared.clone(),
@@ -251,6 +263,10 @@ impl FolderSyncBackend for LiveAccount {
 
     fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
         AccountBackend::set_wake(self, wake);
+    }
+
+    fn text_bridge(&self) -> Option<Arc<crate::text_bridge::TextBridge>> {
+        Some(self.shared.text.clone())
     }
 
     fn attach(&self, engine: Option<Arc<local_core::WorkspaceEngine>>) {
@@ -525,7 +541,13 @@ impl Driver {
         };
         runtime.block_on(self.resume());
         loop {
-            match actions.recv_timeout(TICK) {
+            // While a note is open, its edits and cursors can't wait a tick.
+            let wait = if self.folder.text_active() || self.shared.text.has_work() {
+                TEXT_WAIT
+            } else {
+                TICK
+            };
+            match actions.recv_timeout(wait) {
                 Ok(Message::Account(action)) => runtime.block_on(self.handle(action)),
                 Ok(Message::Folder(action)) => runtime.block_on(self.folder.act(
                     action,
@@ -577,6 +599,7 @@ impl Driver {
                         &self.app_data,
                         long,
                         &self.shared.interrupt,
+                        &self.shared.text,
                     ));
                 }
                 Err(RecvTimeoutError::Disconnected) => return,

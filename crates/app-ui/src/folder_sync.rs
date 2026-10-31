@@ -154,6 +154,33 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
                     });
                 }
             });
+            if !screen.stopped_notes.is_empty() {
+                group(ui, "Notes waiting for you", |ui| {
+                    for note in &screen.stopped_notes {
+                        ui.label(if note.outside {
+                            format!(
+                                "A rename took {} outside its shared folder, so its file stays where it is.",
+                                note.path
+                            )
+                        } else {
+                            format!(
+                                "A collaborator's edit stopped {} from merging on this computer.",
+                                note.path
+                            )
+                        });
+                        if ui.button("Keep the last good version").clicked() {
+                            actions.push(FolderSyncAction::KeepLastGood(note.rid));
+                        }
+                    }
+                });
+            }
+            if !screen.text_reviews.is_empty() {
+                group(ui, "Edits left out of notes", |ui| {
+                    for line in &screen.text_reviews {
+                        ui.label(line);
+                    }
+                });
+            }
             if !screen.held.is_empty() {
                 group(ui, "Versions to check", |ui| {
                     for held in &screen.held {

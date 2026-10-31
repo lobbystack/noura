@@ -207,7 +207,13 @@ impl WorkspaceSync {
             Ok::<_, SyncError>(())
         })?;
         self.in_domain(source, |sync| {
-            let covers = sync.edit_covers(&rid);
+            // A text-mode note's patches go with it, which ends its lineage.
+            let covers = if sync.in_text_mode(&rid) {
+                let view = sync.live_ops(&rid).into_iter().collect();
+                sync.covers_of(&rid, &view)
+            } else {
+                sync.edit_covers(&rid)
+            };
             sync.sign_removal(rid, covers, DeleteReason::Moved, Some(moved_to))?;
             sync.mark_pair(pair);
             Ok::<_, SyncError>(())

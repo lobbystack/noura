@@ -54,6 +54,12 @@ pub mod status {
     pub const TEXT_TOO_LARGE: u32 = 2;
     /// The encoded document passed [`super::MAX_DOCUMENT_BYTES`].
     pub const DOCUMENT_TOO_LARGE: u32 = 4;
+    /// The record holds an item that sits where its writer couldn't have
+    /// put it, so the host goes back to the document before the record.
+    pub const MISPLACED: u32 = 8;
+    /// The record holds structs at clocks the document already held, which
+    /// yrs skips, so the host compares the two copies.
+    pub const OVERLAP: u32 = 16;
 }
 
 /// Why a call on the document failed without trapping.
@@ -178,16 +184,45 @@ impl Note {
     /// transaction. Returns the text change and the status bits.
     pub fn integrate(&mut self, bytes: &[u8]) -> Result<(Op, u32), DocError> {
         let update = Update::decode_v1(bytes).map_err(|_| DocError::Update)?;
+        let items = crate::lib0::read_items(bytes).map_err(|_| DocError::Update)?;
+        let before = self.doc.transact().state_vector();
+        let overlap = items.clients.iter().any(|(client, items)| {
+            items
+                .first()
+                .is_some_and(|item| item.clock < u64::from(before.get(&ClientID::new(*client))))
+        });
         {
             let mut txn = self.doc.transact_mut_with(REMOTE);
             txn.apply_update(update).map_err(|_| DocError::Update)?;
         }
+        let misplaced = self.doc.transact().store().misplaced_since(&before);
         self.size_bound = self
             .size_bound
             .saturating_add(GROWTH_PER_BYTE.saturating_mul(bytes.len() as u64));
         let op = self.take_op();
         self.bound_text(&op);
-        Ok((op, self.status()))
+        let mut status = self.status();
+        if misplaced {
+            status |= status::MISPLACED;
+        }
+        if overlap {
+            status |= status::OVERLAP;
+        }
+        Ok((op, status))
+    }
+
+    /// The clients whose structs wait in yrs for elements that haven't
+    /// arrived.
+    pub fn pending_clients(&self) -> Vec<u64> {
+        let store = self.doc.transact();
+        let mut clients: Vec<u64> = store
+            .store()
+            .pending_clients()
+            .into_iter()
+            .map(|client| client.get())
+            .collect();
+        clients.sort_unstable();
+        clients
     }
 
     fn status(&mut self) -> u32 {

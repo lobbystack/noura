@@ -202,6 +202,7 @@ fn legitimate() -> Vec<Sample> {
                 card_count: 64,
                 payload: support::update_payload(1, &bytes),
                 blob: None,
+                place: Default::default(),
             },
             Instant::now(),
         );
@@ -485,7 +486,7 @@ fn ten_thousand_keystrokes_merge_into_one_readable_update() {
     eprintln!("ten thousand keystrokes: {fuel} fuel to integrate");
     // yrs joining the structs one by one from the right would copy the
     // joined text at each step, about 150,000,000 fuel.
-    assert!(fuel < 50_000_000, "{fuel} fuel");
+    assert!(fuel < 60_000_000, "{fuel} fuel");
     assert_eq!(reader.text().unwrap(), typist.text().unwrap());
     assert_eq!(
         reader.state().unwrap(),

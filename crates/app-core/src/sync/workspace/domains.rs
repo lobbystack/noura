@@ -716,6 +716,7 @@ impl WorkspaceSync {
                         object_id: String::new(),
                         kept: None,
                         blob: None,
+                        text: None,
                     }),
                     epoch: 1,
                     policy_revision: change.body.revision,

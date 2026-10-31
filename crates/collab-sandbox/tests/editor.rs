@@ -476,6 +476,7 @@ fn client_ids_past_32_bits_round_trip_through_the_editor() {
             card_count: card,
             payload,
             blob: None,
+            place: Default::default(),
         });
         reader.settle();
         assert_eq!(reader.doc.text(), "wide");
@@ -495,6 +496,7 @@ fn client_ids_past_32_bits_round_trip_through_the_editor() {
             card_count: card,
             payload: hex(&case["payload"]),
             blob: None,
+            place: Default::default(),
         });
         reader.settle();
         assert_eq!(reader.doc.text(), case["text"]);
@@ -542,6 +544,7 @@ fn an_unreadable_record_leaves_text_selection_and_file_as_they_were() {
             card_count: case["card_count"].as_u64().unwrap() as u32,
             payload: hex(&case["payload"]),
             blob,
+            place: Default::default(),
         });
     }
     editor.settle();
@@ -580,6 +583,7 @@ fn an_update_that_depends_on_an_unreadable_record_waits_for_a_rewrite() {
                 card_count: receive["card_count"].as_u64().unwrap() as u32,
                 payload: hex(&receive["payload"]),
                 blob: None,
+                place: Default::default(),
             });
             editor.settle();
             assert_eq!(editor.doc.text(), step["text"], "{name}");
@@ -611,6 +615,7 @@ fn a_trap_during_integration_stops_the_lineage_at_its_last_good_state() {
                 card_count: receive["card_count"].as_u64().unwrap() as u32,
                 payload: hex(&receive["payload"]),
                 blob: None,
+                place: Default::default(),
             });
             editor.settle();
         }
@@ -660,6 +665,7 @@ fn an_overdrawn_writer_waits_while_others_keep_merging() {
                     card_count: receive["card_count"].as_u64().unwrap() as u32,
                     payload: hex(&receive["payload"]),
                     blob: None,
+                    place: Default::default(),
                 });
                 editor.settle();
                 let events = editor.events();
@@ -820,6 +826,7 @@ fn surrogate_splits_reach_the_editor_as_they_reach_the_document() {
             card_count: case["card_count"].as_u64().unwrap() as u32,
             payload: hex(&case["payload"]),
             blob: None,
+            place: Default::default(),
         });
         editor.settle();
         assert_eq!(editor.doc.text(), expected, "{name}");
@@ -934,4 +941,59 @@ fn closing_the_note_waits_for_no_record() {
     note.hold(false);
     assert_eq!(note.settle(), Err(HandleError::Closed));
     assert_eq!(note.take_updates(), Err(HandleError::Closed));
+}
+
+#[test]
+fn a_collaborators_cursor_stays_on_its_character_as_text_changes_around_it() {
+    let mut editor = open(vec![support::insert(0, 0, "a😀b")]);
+    // The UTF-16 offset after the emoji, as a relative position.
+    let position = editor.note.encode_position(3, false).unwrap();
+    assert_eq!(editor.doc.offset_of_utf16(3).0, 2, "two graphemes in");
+
+    // Text arrives ahead of the cursor, and the cursor moves with its
+    // character.
+    let theirs = insert_between(support::client(2, 1), 0, None, Some((0, 0)), "xy");
+    editor.receive(update_record(1, 2, 3, 1, &theirs));
+    editor.settle();
+    assert_eq!(editor.doc.text(), "xya😀b");
+    let index = editor.note.decode_position(position).unwrap();
+    assert_eq!(index, 5);
+    assert_eq!(editor.doc.offset_of_utf16(index as usize).0, 4);
+
+    // Your own selection reads the same way.
+    editor.caret(4);
+    assert_eq!(editor.doc.selection_utf16(), (5, 5));
+}
+
+#[test]
+fn an_outside_edit_applies_on_top_of_what_the_document_merged_since_its_base() {
+    let mut editor = open(vec![sandbox().first_document("base\n").unwrap()]);
+    // You type in the editor while the file holds an older body.
+    editor.caret(0);
+    editor.type_text("typed ");
+    editor.settle();
+    editor
+        .note
+        .merge_text("base\n".into(), "base\nfile\n".into(), 0)
+        .unwrap();
+    editor.settle();
+    assert_eq!(editor.merged(), "typed base\nfile\n");
+    assert_eq!(editor.doc.text(), "typed base\nfile\n");
+}
+
+#[test]
+fn a_document_outlives_its_editor_for_the_sync_client() {
+    let (mut handle, text) = NoteHandle::open(
+        sandbox(),
+        vec![sandbox().first_document("base\n").unwrap()],
+        device(3, MemoryReservation::default()),
+    )
+    .unwrap();
+    assert_eq!(text, "base\n");
+    handle.outlive();
+    let note = handle.shared();
+    let mut doc = MdDoc::new(&text);
+    doc.enter_text_mode(Box::new(SandboxDocument::new(handle)));
+    drop(doc);
+    assert_eq!(note.merged_text().unwrap(), "base\n", "the thread stays");
 }

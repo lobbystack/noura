@@ -8,6 +8,7 @@
 //! both insert at one place, the sandbox's text goes first.
 
 use std::fmt;
+use std::time::Duration;
 
 /// One component of an [`Op`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,6 +54,53 @@ pub struct Mismatch;
 
 fn utf16_len(text: &str) -> u32 {
     text.encode_utf16().count() as u32
+}
+
+/// How long a diff of an outside edit may look for a small change before it
+/// settles for a larger one.
+const DIFF_DEADLINE: Duration = Duration::from_millis(250);
+
+/// The change that turns `from` into `to`, diffed on code points, so it
+/// never splits a surrogate pair, even between two characters that share a
+/// high surrogate.
+pub fn difference(from: &str, to: &str) -> Op {
+    let prefix: usize = from
+        .chars()
+        .zip(to.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .sum();
+    let (from_tail, to_tail) = (&from[prefix..], &to[prefix..]);
+    let suffix: usize = from_tail
+        .chars()
+        .rev()
+        .zip(to_tail.chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .sum();
+    let old = &from_tail[..from_tail.len() - suffix];
+    let new = &to_tail[..to_tail.len() - suffix];
+    let mut op = Op::default();
+    op.retain(utf16_len(&from[..prefix]));
+    if old.is_empty() || new.is_empty() {
+        op.delete(utf16_len(old));
+        op.insert(new);
+    } else {
+        let diff = similar::TextDiff::configure()
+            .algorithm(similar::Algorithm::Myers)
+            .deadline(std::time::Instant::now() + DIFF_DEADLINE)
+            .diff_chars(old, new);
+        for change in diff.iter_all_changes() {
+            let text = change.value();
+            match change.tag() {
+                similar::ChangeTag::Equal => op.retain(utf16_len(text)),
+                similar::ChangeTag::Delete => op.delete(utf16_len(text)),
+                similar::ChangeTag::Insert => op.insert(text),
+            }
+        }
+    }
+    op.retain(utf16_len(&from_tail[from_tail.len() - suffix..]));
+    op
 }
 
 impl Op {
@@ -359,6 +407,16 @@ pub fn transform(server: &Op, client: &Op) -> Result<(Op, Op), Mismatch> {
     Ok((server_out, client_out))
 }
 
+/// Two edits made from the text `base`, one that led to `mine` and one that
+/// led to `theirs`: returns `mine`'s edit as it applies to `theirs`, then
+/// `theirs`' edit as it applies to `mine`. Both orders end on one text, and
+/// neither side loses what it changed.
+pub fn three_way(base: &str, mine: &str, theirs: &str) -> Result<(Op, Op), Mismatch> {
+    let (theirs_on_mine, mine_on_theirs) =
+        transform(&difference(base, theirs), &difference(base, mine))?;
+    Ok((mine_on_theirs, theirs_on_mine))
+}
+
 /// The change `first` then `second` make together.
 pub fn compose(first: &Op, second: &Op) -> Result<Op, Mismatch> {
     if first.target_len != second.base_len {
@@ -404,6 +462,20 @@ pub fn compose(first: &Op, second: &Op) -> Result<Op, Mismatch> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_edits_from_one_text_keep_both_sides() {
+        let (mine, theirs) = three_way("# Plan\n", "# Plan!\n", "# Monday Plan\n").unwrap();
+        assert_eq!(mine.apply("# Monday Plan\n").unwrap(), "# Monday Plan!\n");
+        assert_eq!(theirs.apply("# Plan!\n").unwrap(), "# Monday Plan!\n");
+    }
+
+    #[test]
+    fn an_edit_with_nothing_else_applies_as_it_is() {
+        let (mine, theirs) = three_way("abc", "abXc", "abc").unwrap();
+        assert_eq!(mine.apply("abc").unwrap(), "abXc");
+        assert!(theirs.is_identity());
+    }
     use proptest::prelude::*;
 
     /// Changes to `text` made of splices at code-point boundaries, as the

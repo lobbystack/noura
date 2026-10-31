@@ -8,7 +8,7 @@
 //! than a string or a deletion, a parent other than the root `content`, and a
 //! map key.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Unreadable;
 
@@ -156,6 +156,82 @@ pub fn read_update(bytes: &[u8]) -> Result<Shape, Unreadable> {
         return Err(Unreadable::YrsParse);
     }
     Ok(shape)
+}
+
+/// A run of elements of one item, as an update carries it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Item<'a> {
+    /// Its first clock.
+    pub clock: u64,
+    /// How many clocks it takes.
+    pub len: u64,
+    /// The element on its left when it was written.
+    pub origin: Option<(u64, u64)>,
+    /// The element on its right when it was written.
+    pub right: Option<(u64, u64)>,
+    /// Its text, or `None` for a deleted item.
+    pub text: Option<&'a str>,
+}
+
+/// The items and delete ranges of an update, by client.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Items<'a> {
+    /// Each client's items, by rising clock.
+    pub clients: BTreeMap<u64, Vec<Item<'a>>>,
+    /// Each client's delete ranges, as clock and length.
+    pub deletes: BTreeMap<u64, Vec<(u64, u64)>>,
+}
+
+/// Reads the items of an update that passed the verdict. Skips leave no
+/// item.
+pub fn read_items(bytes: &[u8]) -> Result<Items<'_>, Unreadable> {
+    let mut r = Reader { bytes, at: 0 };
+    let mut items = Items::default();
+    for _ in 0..r.var(U32_LIMIT)? {
+        let structs = r.var(U32_LIMIT)?;
+        let client = r.var(CLIENT_LIMIT)?;
+        let mut clock = r.var(U32_LIMIT)?;
+        let list = items.clients.entry(client).or_default();
+        for _ in 0..structs {
+            let info = r.u8()?;
+            if info & REF_MASK == SKIP {
+                clock += r.var(U32_LIMIT)?;
+                continue;
+            }
+            let origin = (info & HAS_ORIGIN != 0).then(|| r.id()).transpose()?;
+            let right = (info & HAS_RIGHT_ORIGIN != 0).then(|| r.id()).transpose()?;
+            if info & (HAS_ORIGIN | HAS_RIGHT_ORIGIN) == 0 {
+                r.var(U32_LIMIT)?;
+                r.string()?;
+            }
+            let (len, text) = match info & REF_MASK {
+                DELETED => (r.var(U32_LIMIT)?, None),
+                STRING => {
+                    let text = r.string()?;
+                    (text.encode_utf16().count() as u64, Some(text))
+                }
+                _ => return Err(Unreadable::Content),
+            };
+            list.push(Item {
+                clock,
+                len,
+                origin,
+                right,
+                text,
+            });
+            clock += len;
+        }
+    }
+    for _ in 0..r.var(U32_LIMIT)? {
+        let client = r.var(CLIENT_LIMIT)?;
+        let list = items.deletes.entry(client).or_default();
+        for _ in 0..r.var(U32_LIMIT)? {
+            let clock = r.var(U32_LIMIT)?;
+            let len = r.var(U32_LIMIT)?;
+            list.push((clock, len));
+        }
+    }
+    Ok(items)
 }
 
 /// Reads one struct of `client`'s run, starting at `clock`, and returns the

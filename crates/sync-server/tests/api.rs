@@ -7,18 +7,23 @@ mod support;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use futures::{SinkExt, StreamExt};
 use reqwest::StatusCode;
 use support::{Client, push_body};
-use sync_protocol::codec::{Bytes, Encode, List, Sorted};
+use sync_protocol::codec::{Bytes, Decode, Encode, List, Sorted};
 use sync_protocol::messages::{
-    EntryRecord, EpochsResponse, HeadResponse, KeyRecord, KeysResponse, LimitsResponse,
+    EntryRecord, EpochsResponse, Frame, HeadResponse, KeyRecord, KeysResponse, LimitsResponse,
     PolicyResponse, PullCursor, PullRequest, PullResponse, PushResponse, WorkspacesResponse,
 };
-use sync_protocol::records::{Cover, LinkKind, MAX_OPERATION_CIPHERTEXT, PolicyKind};
-use sync_protocol::types::{Digest, Id};
+use sync_protocol::records::{
+    Cover, LinkKind, MAX_OPERATION_CIPHERTEXT, PolicyKind, Presence, Signed,
+};
+use sync_protocol::types::{Digest, Id, Nonce};
 use sync_store::conformance::World;
 use sync_store::{INITIAL_RESTORE_GENERATION, Store};
 use sync_store_sqlite::{DATABASE_FILE, SqliteBackend};
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 async fn world(devices: usize) -> (World<SqliteBackend>, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("temporary directory");
@@ -39,6 +44,53 @@ async fn world(devices: usize) -> (World<SqliteBackend>, String, tempfile::TempD
 
 fn client(world: &World<SqliteBackend>, base: &str, device: usize) -> Client {
     Client::new(base.to_owned(), Some(world.devices[device].bearer()))
+}
+
+/// The code the realtime channel answers a presence record of the first
+/// device with.
+async fn presence_answer(world: &World<SqliteBackend>, base: &str) -> String {
+    let url = format!(
+        "{}/v2/workspaces/{}/realtime",
+        base.replace("http://", "ws://"),
+        world.workspace.to_base64url()
+    );
+    let mut request = url.into_client_request().expect("a request");
+    request.headers_mut().insert(
+        "authorization",
+        format!("Bearer {}", world.devices[0].bearer())
+            .parse()
+            .expect("a header"),
+    );
+    let (mut socket, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("the channel opens");
+    let record = Presence {
+        workspace: world.workspace,
+        domain: world.domain,
+        epoch: 1,
+        device: world.devices[0].id(),
+        session: Id([5; 16]),
+        sequence: 1,
+        minute: 1,
+        channel: Id([6; 16]),
+        nonce: Nonce::ZERO,
+        ciphertext: Bytes(vec![0x5a; 272]),
+    };
+    let frame = Frame::Presence {
+        record: Signed::sign(record, world.devices[0].keys.signing()),
+    };
+    socket
+        .send(Message::Binary(frame.to_bytes().into()))
+        .await
+        .expect("sent");
+    while let Some(message) = socket.next().await {
+        if let Message::Binary(bytes) = message.expect("the channel stays open")
+            && let Ok(Frame::Error { code, .. }) = Frame::from_bytes(&bytes)
+        {
+            return code.0;
+        }
+    }
+    panic!("no error frame");
 }
 
 fn encoding_fixture() -> serde_json::Value {
@@ -365,6 +417,8 @@ async fn operation_refusals_carry_the_status_the_fixture_pins() {
     let reply = owner.post(&ops, push_body(&[next(&world, &|_| {})])).await;
     assert_eq!(reply.push_failure(), ("rotation_pending".to_owned(), 0));
     assert_eq!(reply.status.as_u16(), statuses["rotation_pending"]);
+    // A domain that waits for its rotation takes no presence either.
+    assert_eq!(presence_answer(&world, &base).await, "rotation_pending");
     // The link that removed the second device ended its session (§7).
     let reply = client(&world, &base, 1)
         .post(&ops, push_body(&[world.op(1, |_| {})]))

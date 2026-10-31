@@ -10,6 +10,8 @@ use app_core::sync::SyncError;
 use app_core::sync::invitations::InvitationBook;
 use app_core::sync::realtime::Channel;
 use app_core::sync::workspace::WorkspaceSync;
+use app_core::sync::workspace::text::{Entered, LeftWhy, TextReviewKind};
+use editor_core::text_mode::{CollabDocument, Utf16Splice};
 use sync_protocol::matching::MARKER;
 use sync_protocol::records::{Access, Level, Role, marker_content};
 use sync_store::Backend;
@@ -307,6 +309,68 @@ async fn outside_member_receives_nothing<B: Backend>(server: Server<B>) {
         assert!(
             !contains(body, &team.domain.0),
             "{path} carries the restricted domain's ID"
+        );
+    }
+}
+
+/// The note in the restricted folder opens on the grantee's and owner's
+/// desktops, and presence reaches only the grantee, whatever channels the
+/// outside member subscribes to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_member_outside_a_restricted_domain_receives_no_presence_for_it() {
+    let server = Server::start().await;
+    let mut team = team(&server).await;
+    const NOTE: &str = "Pay/Salaries.md";
+    for _ in 0..3 {
+        settle(&mut team.grantee_sync, &mut team.grantee).await;
+        settle(&mut team.sync, &mut team.owner).await;
+    }
+    let (_, ours) = team.sync.open_text(NOTE).expect("the note opens");
+    settle(&mut team.sync, &mut team.owner).await;
+    settle(&mut team.grantee_sync, &mut team.grantee).await;
+    let (_, theirs) = team.grantee_sync.open_text(NOTE).expect("the note opens");
+    assert!(ours.is_some() && theirs.is_some());
+    team.grantee_sync.presence_connected().unwrap();
+    team.sync.presence_connected().unwrap();
+
+    let mut owner = Channel::open(team.owner.service.client(), team.sync.workspace())
+        .await
+        .unwrap();
+    let mut grantee = Channel::open(team.grantee.service.client(), team.sync.workspace())
+        .await
+        .unwrap();
+    let mut outsider = Channel::open(team.outsider.service.client(), team.sync.workspace())
+        .await
+        .unwrap();
+    let subscribe = team.sync.presence_frames().unwrap();
+    for frame in &subscribe {
+        owner.send(frame).await.unwrap();
+    }
+    for frame in team.grantee_sync.presence_frames().unwrap() {
+        grantee.send(&frame).await.unwrap();
+    }
+    // The outside member names the same channel.
+    outsider.send(&subscribe[0]).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    team.sync.set_selections(
+        NOTE,
+        vec![app_core::sync::workspace::presence::SelectionRange { anchor: 1, head: 1 }],
+        true,
+    );
+    let frames = team.sync.presence_frames().unwrap();
+    let record = frames.last().expect("a record");
+    owner.send(record).await.unwrap();
+    let wait = std::time::Duration::from_millis(600);
+    let mut reached = false;
+    while let Ok(Ok(frame)) = tokio::time::timeout(wait, grantee.next()).await {
+        reached |= matches!(frame, sync_protocol::messages::Frame::Presence { .. });
+    }
+    assert!(reached, "the grantee hears it");
+    while let Ok(Ok(frame)) = tokio::time::timeout(wait, outsider.next()).await {
+        assert!(
+            !matches!(frame, sync_protocol::messages::Frame::Presence { .. }),
+            "the outside member heard it"
         );
     }
 }
@@ -860,4 +924,125 @@ async fn a_placeholder_of_a_valid_marker_holds_nothing_after_a_lost_journal() {
     assert_eq!(held, ["Other"]);
     assert!(rebuilt.rid_at("Pay/Salaries.md").is_some());
     assert_eq!(rebuilt.rid_at("Other/Note.md"), None);
+}
+
+#[tokio::test]
+async fn a_text_mode_note_that_moves_to_another_domain_leaves_text_mode_and_enters_again() {
+    let server = Server::start().await;
+    let (mut desktop, mut sync, folder) = owner(&server).await;
+    sync.restrict_folder(&mut desktop.service, "Pay", &[])
+        .await
+        .expect("restricted");
+    settle(&mut sync, &mut desktop).await;
+    let (_, document) = sync.open_text("Plan.md").expect("the note opens");
+    let mut document = document.expect("the document");
+    let rid = sync.rid_at("Plan.md").unwrap();
+    document.edit(
+        vec![Utf16Splice {
+            start: 6,
+            removed: 0,
+            inserted: " kept".into(),
+        }],
+        true,
+    );
+    settle(&mut sync, &mut desktop).await;
+    assert_eq!(folder.files()["Plan.md"], b"# Plan kept\n");
+
+    std::fs::create_dir_all(folder.path("Pay")).unwrap();
+    std::fs::rename(folder.path("Plan.md"), folder.path("Pay/Plan.md")).unwrap();
+    settle(&mut sync, &mut desktop).await;
+    assert!(!sync.in_text_mode(&rid), "the old object left text mode");
+    assert_eq!(sync.status().pending, 0, "the server took the move");
+    let moved = sync.rid_at("Pay/Plan.md").expect("the new object");
+    assert_ne!(moved, rid);
+    assert!(!sync.in_text_mode(&moved));
+    let left = sync.take_left_notes();
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert_eq!(left[0].why, LeftWhy::Ended);
+
+    let (entered, document) = sync.open_text("Pay/Plan.md").expect("the note opens");
+    assert_eq!(
+        entered,
+        Entered::Yes,
+        "the next edit enters text mode again"
+    );
+    let mut document = document.expect("the document");
+    assert!(sync.in_text_mode(&moved));
+    document.edit(
+        vec![Utf16Splice {
+            start: 0,
+            removed: 0,
+            inserted: "A ".into(),
+        }],
+        true,
+    );
+    settle(&mut sync, &mut desktop).await;
+    assert_eq!(folder.files()["Pay/Plan.md"], b"A # Plan kept\n");
+    assert_eq!(sync.status().pending, 0);
+}
+
+#[tokio::test]
+async fn a_move_that_waits_for_review_keeps_a_notes_text_mode() {
+    let server = Server::start().await;
+    let mut team = team(&server).await;
+    let (_, document) = team
+        .sync
+        .open_text("Pay/Salaries.md")
+        .expect("the note opens");
+    let document = document.expect("the document");
+    let rid = team.sync.rid_at("Pay/Salaries.md").unwrap();
+    settle(&mut team.sync, &mut team.owner).await;
+
+    // Moving it out reaches more people, so it waits for your word, while
+    // another change in the same walk signs a record.
+    team.folder.write("Elsewhere/Note.md", b"other\n");
+    team.folder.write("Open.md", b"open\n");
+    std::fs::rename(
+        team.folder.path("Pay/Salaries.md"),
+        team.folder.path("Salaries.md"),
+    )
+    .unwrap();
+    team.sync
+        .round(&mut team.owner.service, 0)
+        .await
+        .expect("a round");
+    assert!(team.sync.in_text_mode(&rid), "the lineage stays");
+    assert!(team.sync.text_file(&rid).unwrap().is_some());
+    assert_eq!(team.sync.moves_for_review().len(), 1);
+    drop(document);
+}
+
+#[tokio::test]
+async fn a_merged_path_outside_the_root_goes_to_review_until_you_keep_the_note() {
+    let server = Server::start().await;
+    let mut team = team(&server).await;
+    settle(&mut team.grantee_sync, &mut team.grantee).await;
+    let path = "Pay/Salaries.md";
+    let (_, document) = team.sync.open_text(path).expect("the note opens");
+    assert!(document.is_some());
+    settle(&mut team.sync, &mut team.owner).await;
+    settle(&mut team.grantee_sync, &mut team.grantee).await;
+    let (_, second) = team.grantee_sync.open_text(path).expect("the note opens");
+    assert!(second.is_some());
+    let rid = team.sync.rid_at(path).unwrap();
+
+    team.grantee_sync
+        .sign_text_path(path, "Elsewhere/Salaries.md")
+        .expect("signed");
+    settle(&mut team.grantee_sync, &mut team.grantee).await;
+    settle(&mut team.sync, &mut team.owner).await;
+    let reviews = team.sync.text_reviews();
+    assert!(
+        reviews
+            .iter()
+            .any(|review| review.kind == TextReviewKind::OutsideRoot),
+        "{reviews:?}"
+    );
+    assert_eq!(team.sync.outside_notes(), [(rid, path.to_owned())]);
+    assert_eq!(team.folder.files()[path], b"secret\n", "the file stays");
+
+    team.sync.keep_last_good(rid).expect("kept");
+    settle(&mut team.sync, &mut team.owner).await;
+    assert!(!team.sync.in_text_mode(&rid));
+    assert!(team.sync.outside_notes().is_empty());
 }

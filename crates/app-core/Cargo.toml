@@ -12,6 +12,10 @@ rust-version.workspace = true
 test-hooks = ["local-core/test-hooks", "plugin-host/test-hooks"]
 
 [dependencies]
+# Text mode: each note's document, its verdicts and its writers' allowances.
+collab-sandbox = { version = "0.2.0", path = "../collab-sandbox" }
+# The editor's side of a text-mode note's document.
+editor-core = { version = "0.2.0", path = "../editor-core" }
 # Finds the workspace's names in log lines for Copy diagnostics.
 aho-corasick.workspace = true
 atomic-write-file.workspace = true

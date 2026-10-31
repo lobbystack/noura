@@ -41,8 +41,9 @@ use std::sync::Arc;
 pub use allowance::{ALLOWANCE_FUEL, REFILL_PERIOD};
 pub use editor::SandboxDocument;
 pub use note::{
-    ClientIds, DocumentError, Effects, Event, INTEGRATION_FUEL_LIMIT, INTEGRATION_MEMORY_BYTES,
-    LineageStatus, LocalUpdate, Note, RemoteRecord, StopReason,
+    ClientIds, DEFERRED_MEMORY_BYTES, DocumentError, Effects, Event, INTEGRATION_FUEL_LIMIT,
+    INTEGRATION_MEMORY_BYTES, JournalRecord, LineageStatus, Loader, LocalUpdate, Note, Opened,
+    Place, RemoteRecord, StopReason,
 };
 pub use plugin_host::Backend;
 pub use reservation::{
@@ -62,7 +63,7 @@ pub static GUEST_MODULE: &[u8] = include_bytes!("../guest/collab_sandbox_guest.w
 /// The BLAKE3 hash of [`GUEST_MODULE`], as `sync-v2-collaboration.json`
 /// records it. The sandbox refuses to run any other module.
 pub const GUEST_MODULE_HASH: &str =
-    "15fad030d53a85ef0ccc5bcea2fdc54636fbd44993197a2e6489d715b42fb450";
+    "f8fae55f330f97eb0d08cd6d90a002564c6aa7095f38ac9124b3057abd0c4b6e";
 
 /// The operators that cost no fuel. Every other operator costs one unit,
 /// as `sync-v2-collaboration.json` records.

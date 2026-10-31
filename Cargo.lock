@@ -405,7 +405,9 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "blake3",
+ "collab-sandbox",
  "directories",
+ "editor-core",
  "futures",
  "hayro",
  "jiff",
@@ -2251,9 +2253,11 @@ dependencies = [
  "plugin-host",
  "proptest",
  "serde_json",
+ "similar",
  "sync-protocol",
  "thiserror 2.0.20",
  "wasmtime",
+ "workspace-format",
  "yrs",
 ]
 
@@ -10868,6 +10872,7 @@ dependencies = [
 name = "sync-store-postgres"
 version = "0.2.0"
 dependencies = [
+ "base64 0.22.1",
  "sqlx",
  "sync-protocol",
  "sync-store",

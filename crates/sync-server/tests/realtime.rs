@@ -14,13 +14,13 @@ use std::time::Duration;
 use futures::{SinkExt, StreamExt};
 use support::{Account, Created, push_body, seed_store};
 use sync_key_envelope::v2::{DeviceKeys, next_link};
-use sync_protocol::codec::{Decode, Encode, List, Nested};
+use sync_protocol::codec::{Bytes, Decode, Encode, List, Nested};
 use sync_protocol::messages::{
     EntryRecord, Frame, FrameAction, PullCursor, PullRequest, PullResponse, PushResponse,
     RewrapBody, records_frame_action,
 };
-use sync_protocol::records::{LinkKind, Operation, Signed};
-use sync_protocol::types::{Digest, Id};
+use sync_protocol::records::{LinkKind, Operation, Presence, Signed};
+use sync_protocol::types::{Digest, Id, Nonce};
 use sync_store::conformance::head_of;
 use sync_store::{Backend, Store};
 use sync_store_postgres::PgBackend;
@@ -54,6 +54,13 @@ impl Channel {
         self.next(Duration::from_secs(10))
             .await
             .expect("a frame arrives")
+    }
+
+    async fn send(&mut self, frame: &Frame) {
+        self.0
+            .send(Message::Binary(frame.to_bytes().into()))
+            .await
+            .expect("the channel takes the frame");
     }
 
     /// Asserts that no frame arrives for a while.
@@ -407,12 +414,15 @@ async fn a_client_frame_gets_an_error_frame() {
     let (store, _dir) = sqlite().await;
     let world = World::new(store).await;
     let mut channel = world.channel(0).await;
-    let subscribe = Frame::Subscribe {
-        channels: List(vec![Id::random().unwrap()]),
-    };
+    // A subscribe within the limit takes no answer; one past it is refused.
+    channel.send(&subscribe(&[Id::random().unwrap()])).await;
+    channel.quiet().await;
+    let mut past_the_limit = vec![7];
+    past_the_limit.extend_from_slice(&257u32.to_le_bytes());
+    past_the_limit.extend_from_slice(&[1; 257 * 16]);
     channel
         .0
-        .send(Message::Binary(subscribe.to_bytes().into()))
+        .send(Message::Binary(past_the_limit.into()))
         .await
         .unwrap();
     let Frame::Error {
@@ -440,6 +450,157 @@ async fn a_client_frame_gets_an_error_frame() {
         };
         assert_eq!(rejected_type, rejected);
     }
+}
+
+fn subscribe(channels: &[Id]) -> Frame {
+    Frame::Subscribe {
+        channels: List(channels.to_vec()),
+    }
+}
+
+/// A presence record of `device` in the world's workspace, with a padded
+/// ciphertext the server can't read.
+fn presence<B: Backend>(
+    world: &World<B>,
+    device: usize,
+    session: Id,
+    sequence: u64,
+    channel: Id,
+    edit: impl FnOnce(&mut Presence),
+) -> Frame {
+    let keys = &world.account.keys[device];
+    let mut body = Presence {
+        workspace: world.created.workspace,
+        domain: world.created.domain,
+        epoch: 1,
+        device: keys.device(),
+        session,
+        sequence,
+        minute: 29_000_000,
+        channel,
+        nonce: Nonce::ZERO,
+        ciphertext: Bytes(vec![0x5a; 272]),
+    };
+    edit(&mut body);
+    Frame::Presence {
+        record: Signed::sign(body, keys.signing()),
+    }
+}
+
+/// The server's error code for a presence record, read from `channel`.
+async fn refused_with(channel: &mut Channel, frame: &Frame) -> String {
+    channel.send(frame).await;
+    let Frame::Error {
+        rejected_type,
+        code,
+        ..
+    } = channel.expect().await
+    else {
+        panic!("an error frame");
+    };
+    assert_eq!(rejected_type, 2);
+    code.0
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn presence_reaches_subscribers_and_goes_when_the_connection_ends() {
+    let (store, _dir) = sqlite().await;
+    let world = World::new(store).await;
+    presence_flow(world, None).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn presence_crosses_postgres_instances_with_notify() {
+    let (_database, config) = postgres_database().await;
+    let first = sync_server::postgres::open_store(&config).await.unwrap();
+    let second = Arc::new(sync_server::postgres::open_store(&config).await.unwrap());
+    let world = World::new(first).await;
+    let second_base = format!(
+        "http://localhost:{}",
+        sync_server::spawn(second.clone(), "127.0.0.1:0")
+            .await
+            .unwrap()
+            .port()
+    );
+    presence_flow(world, Some(second_base)).await;
+}
+
+/// Device 0 sends presence on `world`'s server, and device 1 listens on
+/// `other`, or on the same server.
+async fn presence_flow<B: Backend>(world: World<B>, other: Option<String>) {
+    let note = Id::random().unwrap();
+    let mut sender = world.channel(0).await;
+    let base = other.as_ref().unwrap_or(&world.base);
+    let mut listener = open(base, world.created.workspace, Some(&world.account.token(1)))
+        .await
+        .unwrap();
+    assert!(matches!(listener.expect().await, Frame::Restored { .. }));
+    listener.send(&subscribe(&[note])).await;
+    // The subscribe reaches the other instance's connection first.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let session = Id::random().unwrap();
+    let first = presence(&world, 0, session, 1, note, |_| {});
+    sender.send(&first).await;
+    assert_eq!(listener.expect().await, first, "the record arrives whole");
+    // The sender doesn't hear itself, and another channel stays silent.
+    sender.quiet().await;
+    let other_note = presence(&world, 0, session, 2, Id::random().unwrap(), |_| {});
+    sender.send(&other_note).await;
+    listener.quiet().await;
+
+    // The largest record fits one notification.
+    let largest = presence(&world, 0, session, 3, note, |body| {
+        body.ciphertext = Bytes(vec![0x5a; 4_096 + 16]);
+    });
+    sender.send(&largest).await;
+    assert_eq!(listener.expect().await, largest);
+
+    drop(sender);
+    assert_eq!(
+        listener.expect().await,
+        Frame::PresenceGone {
+            device: world.account.keys[0].device(),
+            session,
+        }
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_server_refuses_presence_it_may_not_carry() {
+    let (store, _dir) = sqlite().await;
+    let world = World::new(store).await;
+    let note = Id::random().unwrap();
+    let session = Id::random().unwrap();
+    let mut channel = world.channel(0).await;
+    let stale = presence(&world, 0, session, 1, note, |body| body.epoch = 2);
+    assert_eq!(refused_with(&mut channel, &stale).await, "epoch_stale");
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    let elsewhere = presence(&world, 0, session, 2, note, |body| {
+        body.domain = Id([9; 16]);
+    });
+    assert_eq!(refused_with(&mut channel, &elsewhere).await, "forbidden");
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    let someone_else = presence(&world, 1, session, 3, note, |_| {});
+    assert_eq!(refused_with(&mut channel, &someone_else).await, "forbidden");
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    let unpadded = presence(&world, 0, session, 4, note, |body| {
+        body.ciphertext = Bytes(vec![0x5a; 273]);
+    });
+    assert_eq!(
+        refused_with(&mut channel, &unpadded).await,
+        "padding_invalid"
+    );
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    // Two records a second pass, and the third doesn't.
+    channel
+        .send(&presence(&world, 0, session, 5, note, |_| {}))
+        .await;
+    channel
+        .send(&presence(&world, 0, session, 6, note, |_| {}))
+        .await;
+    let third = presence(&world, 0, session, 7, note, |_| {});
+    assert_eq!(refused_with(&mut channel, &third).await, "rate_limited");
 }
 
 /// What a client that follows the channel holds of a domain's log: it

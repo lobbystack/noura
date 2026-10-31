@@ -188,6 +188,18 @@ pub enum ScrollTarget {
     Preview,
 }
 
+/// A collaborator's cursor or selection, in grapheme offsets of the note's
+/// text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemoteCursor {
+    /// Where the selection starts from.
+    pub anchor: Grapheme,
+    /// Where the cursor sits.
+    pub head: Grapheme,
+    /// The collaborator's color.
+    pub color: egui::Color32,
+}
+
 /// Editing primitive — an [`MdRender`] plus the interactive state needed to
 /// mutate it. Self-contained so it can be used standalone without needing an
 /// [`Editor`]'s surrounding widgets.
@@ -208,6 +220,9 @@ pub struct MdEdit {
     /// follows the moving handle rather than always the selection end. `None`
     /// outside a handle drag — scroll then falls back to the selection end.
     pub in_progress_handle: Option<Grapheme>,
+
+    /// Collaborators' cursors and selections in a text-mode note.
+    pub remote_cursors: Vec<RemoteCursor>,
 
     /// Active list-item drag-to-reorder — `Some` from grab until release.
     /// Mirrored onto the renderer each frame for the dim/indicator paint.
@@ -272,6 +287,7 @@ impl MdEdit {
             phone_mode,
             in_progress_selection: None,
             in_progress_handle: None,
+            remote_cursors: Vec::new(),
             in_progress_block_drag: None,
             touch_reorder: Default::default(),
             pending_block_move: None,

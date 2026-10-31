@@ -236,6 +236,7 @@ fn surrogate_splits_reach_one_text_arriving_or_from_a_snapshot() {
                 card_count: 1,
                 payload: hex(&case["payload"]),
                 blob: None,
+                place: Default::default(),
             },
             Instant::now(),
         );
@@ -286,6 +287,7 @@ fn client_ids_past_32_bits_round_trip_through_an_update() {
                 card_count: card,
                 payload: hex(&case["payload"]),
                 blob: None,
+                place: Default::default(),
             },
             Instant::now(),
         );
@@ -352,6 +354,7 @@ fn a_document_writes_under_the_largest_client_id() {
             card_count: 16_777_215,
             payload,
             blob: None,
+            place: Default::default(),
         },
         Instant::now(),
     );
@@ -380,6 +383,7 @@ fn allowance_base_states_defer_an_overdrawn_writer_alone() {
                         card_count: receive["card_count"].as_u64().unwrap() as u32,
                         payload: hex(&receive["payload"]),
                         blob: None,
+                        place: Default::default(),
                     },
                     start,
                 );
@@ -433,6 +437,7 @@ fn a_trap_during_integration_stops_the_lineage_and_rebuilds_the_last_good_state(
                     card_count: receive["card_count"].as_u64().unwrap() as u32,
                     payload: hex(&receive["payload"]),
                     blob: None,
+                    place: Default::default(),
                 },
                 Instant::now(),
             );

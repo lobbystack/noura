@@ -85,6 +85,19 @@ pub struct ArchivedEntry {
     pub path: String,
 }
 
+/// A note whose edits stopped merging on this computer, waiting for you
+/// (§22).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoppedNoteEntry {
+    /// The object.
+    pub rid: Id,
+    /// The note's path.
+    pub path: String,
+    /// Whether a rename took the note outside its folder, rather than a
+    /// collaborator's edit stopping it from merging.
+    pub outside: bool,
+}
+
 /// What the Workspace sync section shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FolderSyncScreen {
@@ -94,6 +107,11 @@ pub struct FolderSyncScreen {
     pub pending: usize,
     /// The conflicts waiting for you.
     pub conflicts: Vec<ConflictEntry>,
+    /// The notes whose edits stopped merging.
+    pub stopped_notes: Vec<StoppedNoteEntry>,
+    /// Collaborators' edits that didn't reach a note, one line each,
+    /// naming the device that signed each (§22).
+    pub text_reviews: Vec<String>,
     /// The local versions held for review.
     pub held: Vec<HeldEntry>,
     /// The folders whose files wait for you.
@@ -141,6 +159,8 @@ impl FolderSyncScreen {
             } else {
                 FolderSyncPhase::On
             },
+            stopped_notes: Vec::new(),
+            text_reviews: Vec::new(),
             pending: status.pending,
             conflicts: Vec::new(),
             held: Vec::new(),
@@ -256,6 +276,9 @@ pub enum FolderSyncAction {
         /// The version.
         key: OpKey,
     },
+    /// Keep a stopped note's last good state, which ends its live editing
+    /// on every computer.
+    KeepLastGood(Id),
     /// Decide about a held local version.
     KeepHeld {
         /// The object.
@@ -291,6 +314,11 @@ pub trait FolderSyncBackend: Send + Sync {
     fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>);
     /// The workspace the windows show, or `None` once none is open.
     fn attach(&self, engine: Option<Arc<WorkspaceEngine>>);
+    /// Where the windows reach text-mode notes, when the workspace can
+    /// sync.
+    fn text_bridge(&self) -> Option<Arc<crate::text_bridge::TextBridge>> {
+        None
+    }
 }
 
 /// The backend of an app that runs without sync: the workspace never

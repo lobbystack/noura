@@ -1139,6 +1139,16 @@ fn pending(f: &mut Fixture) {
     };
     let abc = insert_between(OTHER, 0, Some((0, 0)), None, "abc");
     let d = insert_between(OTHER, 3, Some((OTHER, 2)), None, "d");
+    let rewrite = json!({
+        "id": 3,
+        "card_index": 2,
+        "card_count": 2,
+        "payload": to_hex(&snapshot_payload(
+            "",
+            vec![meta("path", 0, Some("Notes/Plan.md"))],
+            inline(abc.clone()),
+        )),
+    });
     f.case(json!({
         "kind": "pending",
         "name": "an_update_waits_for_the_rewrite_of_an_unreadable_one",
@@ -1149,8 +1159,9 @@ fn pending(f: &mut Fixture) {
             {"receive": record(1, "../Plan.md", abc.clone()), "text": "x", "status": "merging"},
             // Depends on the unreadable record's clocks: yrs holds it.
             {"receive": record(2, "Notes/Plan.md", d), "text": "x", "status": "pending"},
-            // The rewrite supplies them, and the held update merges.
-            {"receive": record(3, "Notes/Plan.md", abc), "text": "xabcd", "status": "merging"},
+            // The rewrite, a snapshot, supplies them, and the held update
+            // merges.
+            {"receive": rewrite, "text": "xabcd", "status": "merging"},
         ],
     }));
 }
@@ -1405,7 +1416,7 @@ fn limits(f: &mut Fixture) {
 pub fn fixture() -> Fixture {
     let mut f = Fixture::new(
         "sync-v2-collaboration.json",
-        "Text mode (sync-v2.md §22): the text lineage ID derived from the rid, the base operation's digest and the first document's bytes; yrs client IDs from a card index and a load number; and the collaboration sandbox: the guest module's hash, the verdict budget and the Wasmtime operator costs it assumes, the raw lib0 checks and the verdict on each record's yrs bytes and meta entries, surrogate pairs split into U+FFFD, client IDs past 32 bits, and writer allowances.",
+        "Text mode (sync-v2.md §22): the text lineage ID derived from the rid, the base operation's digest and the first document's bytes; yrs client IDs from a card index and a load number; and the collaboration sandbox: the guest module's hash, the verdict budget and the Wasmtime operator costs it assumes, the raw lib0 checks and the verdict on each record's yrs bytes and meta entries, surrogate pairs split into U+FFFD, client IDs past 32 bits, writer allowances, the first snapshot of a note, where integration lets an item land, the snapshot check, the canonical order and the merge of meta entries.",
     );
     let rid = id("note rid");
     let base = hash(b"base operation");
@@ -1454,6 +1465,14 @@ pub fn fixture() -> Fixture {
             "expect": expect,
         }));
         assert_eq!(yrs_client_id(index, load), expect);
+    }
+
+    // Cases `crates/collab-sandbox/tests/lineage.rs` built from the sandbox
+    // itself, which this crate doesn't depend on.
+    let text_mode: Vec<Value> =
+        serde_json::from_str(include_str!("text_mode_cases.json")).expect("the cases parse");
+    for case in text_mode {
+        f.case(case);
     }
 
     let module = std::fs::read(

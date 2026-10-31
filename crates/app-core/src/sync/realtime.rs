@@ -25,6 +25,7 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::tungstenite::{Message, handshake::derive_accept_key};
 
+use super::workspace::text::TICK;
 use super::workspace::{PULL_WAIT_SECONDS, WorkspaceSync};
 use super::{SyncClient, SyncError, SyncService, network, random};
 
@@ -202,6 +203,9 @@ pub struct Live {
     pull_due: Instant,
     pull_every: Duration,
     ping_every: Duration,
+    /// When the next 500 ms tick falls due, while a note is open. Frames
+    /// and rounds don't move it, so a busy channel can't hold ticks off.
+    next_tick: Option<Instant>,
 }
 
 impl Default for Live {
@@ -222,6 +226,7 @@ impl Live {
             pull_due: now,
             pull_every,
             ping_every,
+            next_tick: None,
         }
     }
 
@@ -239,6 +244,27 @@ impl Live {
     fn lost(&mut self) {
         self.channel = None;
         self.retry_at = Instant::now() + self.backoff.next_wait();
+    }
+
+    /// The tick's work: the edits that wait, then the presence frames.
+    /// Returns whether the channel stayed up.
+    async fn tick(
+        &mut self,
+        sync: &mut WorkspaceSync,
+        service: &mut SyncService,
+    ) -> Result<bool, SyncError> {
+        self.next_tick = Some(Instant::now() + TICK);
+        sync.text_step(service).await?;
+        let Some(channel) = self.channel.as_mut() else {
+            return Ok(false);
+        };
+        for frame in sync.presence_frames()? {
+            if channel.send(&frame).await.is_err() {
+                self.lost();
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// One step of a folder's sync. With the channel down it tries to
@@ -259,11 +285,12 @@ impl Live {
                     self.channel = Some(channel);
                     self.backoff.reset();
                     self.pull_due = Instant::now();
+                    sync.presence_connected()?;
                 }
                 Err(_) => self.retry_at = Instant::now() + self.backoff.next_wait(),
             }
         }
-        let Some(channel) = self.channel.as_mut() else {
+        if self.channel.is_none() {
             // Down: the pull long-polls, and ends early for a reconnect.
             let wait = self
                 .retry_at
@@ -276,7 +303,7 @@ impl Live {
                 pulled: true,
                 applied: round.applied,
             });
-        };
+        }
         if Instant::now() >= self.pull_due {
             self.pull_due = Instant::now() + self.pull_every;
             let round = sync.round(service, 0).await?;
@@ -286,10 +313,37 @@ impl Live {
                 applied: round.applied,
             });
         }
+        // While a note is open, its edits and cursors go out on the 500 ms
+        // tick (§22, §23).
+        let tick = if sync.text_active() {
+            *self.next_tick.get_or_insert_with(|| Instant::now() + TICK)
+        } else {
+            self.next_tick = None;
+            self.pull_due
+        };
+        if self.next_tick.is_some() && Instant::now() >= tick {
+            let connected = self.tick(sync, service).await?;
+            return Ok(Step {
+                connected,
+                pulled: false,
+                applied: 0,
+            });
+        }
+        let Some(channel) = self.channel.as_mut() else {
+            return Ok(Step::default());
+        };
         let frame = tokio::select! {
             frame = channel.next() => Some(frame),
             () = wake.notified() => None,
             () = tokio::time::sleep_until(self.pull_due) => None,
+            () = tokio::time::sleep_until(tick), if self.next_tick.is_some() => {
+                let connected = self.tick(sync, service).await?;
+                return Ok(Step {
+                    connected,
+                    pulled: false,
+                    applied: 0,
+                });
+            }
         };
         match frame {
             Some(Ok(frame)) => {
