@@ -181,6 +181,41 @@ async fn backup_takes_a_bare_file_name_and_leaves_nothing_when_it_fails() {
     assert!(!root.path().join("b.sqlite3.partial").exists());
     assert!(!copy.exists());
 
+/// A database too damaged to read holds no lease anyone can see, so
+/// `restore` keeps it under a side name and takes the backup in its place.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restore_sets_a_damaged_database_aside() {
+    let (root, data) = fresh();
+    let copy = root.path().join("copy.sqlite3");
+    let output = command(&["backup", "--to", text(&copy)], &data);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let before = generation(&db_file(&data)).await;
+    std::fs::write(db_file(&data), vec![0x5a; 8192]).expect("damaged");
+
+    let output = command(&["restore", "--from", text(&copy)], &data);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(generation(&db_file(&data)).await > before);
+    let side: Vec<_> = std::fs::read_dir(&data)
+        .expect("listed")
+        .map(|entry| entry.expect("an entry").file_name())
+        .filter(|name| name.to_string_lossy().contains(".damaged-"))
+        .collect();
+    assert_eq!(side.len(), 1, "{side:?}");
+    assert_eq!(
+        std::fs::read(data.join(&side[0])).expect("kept"),
+        vec![0x5a; 8192]
+    );
+    assert!(stderr(&output).contains(".damaged-"), "{}", stderr(&output));
+    let server = Server::start(&data);
+    assert!(
+        Client::new(server.base(), None)
+            .get("/v2/limits")
+            .await
+            .status
+            .is_success()
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn migrate_starts_the_generation_at_the_current_time() {
     let before = unix_now();

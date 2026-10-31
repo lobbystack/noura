@@ -292,6 +292,12 @@ fn raised(generation: u64) {
 }
 
 fn report(restored: sync_server::restore::Restored) {
+    if let Some(side) = &restored.set_aside {
+        eprintln!(
+            "sync-server: the old database couldn't be read; it stays at {}",
+            side.display()
+        );
+    }
     let blobs = restored.blobs;
     eprintln!(
         "sync-server: the blob store check finished; quarantined {} object(s), returned {}, gave \

@@ -154,6 +154,8 @@ sync-server restore --from /backups/noura-2026-10-31.sqlite3 --data /var/lib/nou
 
 `serve` may start as soon as the command prints the new restore generation, while the blob store check finishes.
 
+If the old database is too damaged to read, `restore` can't see a lease in it, so make sure `serve` has stopped. The command keeps the damaged file beside the new database as `sync.sqlite3.damaged-` plus the time, and prints the name. Delete it once you no longer need it.
+
 ### Restore PostgreSQL or fail over
 
 Restore the database with its own tools, or promote the standby, then run `mark-restored` before `serve`:

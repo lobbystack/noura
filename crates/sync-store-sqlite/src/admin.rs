@@ -210,9 +210,29 @@ pub async fn backup_into(database: &Path, target: &Path) -> Result<(), sqlx::Err
     connection.close().await
 }
 
-/// Raises the restore generation to the larger of the stored one plus 1
-/// and `floor`, clears the stamp and returns the new generation.
-pub async fn raise_generation(path: &Path, floor: u64) -> Result<u64, sqlx::Error> {
+/// Whether `error` says the database file itself is damaged, as a file
+/// that isn't a database or a corrupt page does, rather than that a read
+/// failed for another reason.
+pub fn is_damaged(error: &sqlx::Error) -> bool {
+    const SQLITE_CORRUPT: i32 = 11;
+    const SQLITE_NOTADB: i32 = 26;
+    error
+        .as_database_error()
+        .and_then(|error| error.code())
+        .and_then(|code| code.parse::<i32>().ok())
+        .is_some_and(|code| matches!(code & 0xff, SQLITE_CORRUPT | SQLITE_NOTADB))
+}
+
+/// In one transaction, raises the restore generation to the larger of the
+/// stored one plus 1 and `floor`, clears the stamp, gives every completed
+/// blob that no operation lists until `blobs_until`, so no collector takes
+/// one before the check against the blob store reaches it, and returns the
+/// new generation.
+pub async fn raise_generation(
+    path: &Path,
+    floor: u64,
+    blobs_until: u64,
+) -> Result<u64, sqlx::Error> {
     let floor = i64::try_from(floor)
         .map_err(|_| sqlx::Error::Protocol("the restore generation exceeds an INTEGER".into()))?;
     let mut connection = connect(path, false).await?;

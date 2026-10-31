@@ -31,8 +31,8 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 pub use admin::{
-    DatabaseState, MIGRATOR, backup_into, clear_stamp, fold_log, inspect, live_instances, migrate,
-    raise_generation, store_secret_check,
+    DatabaseState, MIGRATOR, backup_into, clear_stamp, fold_log, inspect, is_damaged,
+    live_instances, migrate, raise_generation, store_secret_check,
 };
 pub use txn::SqliteTxn;
 

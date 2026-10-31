@@ -90,6 +90,8 @@ pub struct Restored {
     pub generation: u64,
     /// The result of the check against the blob store.
     pub blobs: BlobCheck,
+    /// Where `restore` kept an old database it couldn't read.
+    pub set_aside: Option<PathBuf>,
 }
 
 /// What the check against the blob store did.
@@ -165,6 +167,45 @@ fn secret_file(path: &Path) -> Result<SecretKey, CommandError> {
         .ok_or_else(|| fail("the server secret file holds no 32-byte secret"))
 }
 
+/// Moves a database `restore` can't read, with its write-ahead log files,
+/// to a side name, and returns that name.
+fn set_aside(database: &Path) -> Result<PathBuf, CommandError> {
+    let named = |suffix: &str| {
+        let mut name = database.as_os_str().to_owned();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    let side = named(&format!(".damaged-{}", unix_now()));
+    fs::rename(database, &side)
+        .map_err(|e| fail(format!("can't set the damaged database aside: {e}")))?;
+    for suffix in ["-wal", "-shm"] {
+        let mut kept = side.as_os_str().to_owned();
+        kept.push(suffix);
+        match fs::rename(named(suffix), PathBuf::from(kept)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(fail(format!("can't set the write-ahead log aside: {e}"))),
+        }
+    }
+    Ok(side)
+}
+
+/// The restore generation of the database `restore` replaces, after
+/// refusing one a server holds. `None` in the second place says that the
+/// file can't be read at all, so it shows no lease and names no generation.
+async fn old_database(database: &Path) -> Result<(Option<u64>, bool), CommandError> {
+    match sync_store_sqlite::live_instances(database, unix_now()).await {
+        Ok(live) => refuse_serving(live)?,
+        Err(error) if sync_store_sqlite::is_damaged(&error) => return Ok((None, true)),
+        Err(error) => return Err(fail(format!("can't read the database: {error}"))),
+    }
+    match sync_store_sqlite::inspect(database).await {
+        Ok(state) => Ok((state.restore_generation, false)),
+        Err(error) if sync_store_sqlite::is_damaged(&error) => Ok((None, true)),
+        Err(error) => Err(fail(format!("can't read the old database: {error}"))),
+    }
+}
+
 async fn refuse_serving_sqlite(database: &Path) -> Result<(), CommandError> {
     let live = sync_store_sqlite::live_instances(database, unix_now())
         .await
@@ -221,11 +262,7 @@ pub async fn restore(
         ));
     }
     let database = database_path(data);
-    refuse_serving_sqlite(&database).await?;
-    let previous = sync_store_sqlite::inspect(&database)
-        .await
-        .map_err(|e| fail(format!("can't read the old database: {e}")))?
-        .restore_generation;
+    let (previous, mut damaged) = old_database(&database).await?;
 
     let blobs = blob_store.open(data)?;
     let keys = blobs
@@ -247,9 +284,20 @@ pub async fn restore(
     fs::File::open(&incoming)
         .and_then(|file| file.sync_all())
         .map_err(|e| fail(format!("can't flush the copy: {e}")))?;
-    sync_store_sqlite::fold_log(&database)
-        .await
-        .map_err(|e| fail(format!("can't fold the old write-ahead log: {e}")))?;
+    if !damaged {
+        match sync_store_sqlite::fold_log(&database).await {
+            Ok(()) => {}
+            Err(error) if sync_store_sqlite::is_damaged(&error) => damaged = true,
+            Err(error) => {
+                return Err(fail(format!("can't fold the old write-ahead log: {error}")));
+            }
+        }
+    }
+    let set_aside = if damaged {
+        Some(set_aside(&database)?)
+    } else {
+        None
+    };
     for suffix in ["-wal", "-shm"] {
         let mut name = database.as_os_str().to_owned();
         name.push(suffix);
@@ -278,6 +326,7 @@ pub async fn restore(
     Ok(Restored {
         generation,
         blobs: checked?,
+        set_aside,
     })
 }
 
@@ -327,6 +376,7 @@ pub async fn mark_restored(
     Ok(Restored {
         generation,
         blobs: checked?,
+        set_aside: None,
     })
 }
 
@@ -377,6 +427,7 @@ pub async fn mark_restored_postgres(
     Ok(Restored {
         generation,
         blobs: checked?,
+        set_aside: None,
     })
 }
 
