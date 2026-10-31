@@ -348,3 +348,31 @@ async fn a_generation_claim_shows_an_alert_and_changes_no_file() {
     pair.sync_a.dismiss_restore_alert().expect("dismissed");
     assert_eq!(pair.sync_a.restore_alert(), None);
 }
+
+/// A blob store that lost objects a live operation lists: a device that
+/// holds the file uploads it again under the same ID.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_uploads_a_lost_blob_again_under_its_id() {
+    let mut pair = pair().await;
+    let bytes: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+    pair.a.write("photo.png", &bytes);
+    rounds(&mut pair).await;
+    assert_eq!(pair.b.files().get("photo.png"), Some(&bytes));
+    let copy = pair.server.backup("before.sqlite3").await;
+    let stored = pair.server.blob_files();
+    assert!(!stored.is_empty());
+    for file in &stored {
+        std::fs::remove_file(file).expect("lost");
+    }
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    rounds(&mut pair).await;
+    assert_eq!(pair.sync_a.restore_lost(), None);
+    assert_eq!(
+        pair.server.blob_files().len(),
+        stored.len(),
+        "the same objects came back"
+    );
+    assert!(stored.iter().all(|file| file.exists()));
+    assert_eq!(pair.a.files(), pair.b.files());
+}

@@ -1149,6 +1149,9 @@ impl WorkspaceSync {
             self.capture()?
         };
         let mut pushed = self.push_everything(service).await?;
+        if self.state.restore.alerted.is_some() {
+            self.upload_missing(service).await?;
+        }
         if self.state.profile_recheck && unix_now() >= self.state.rewrite_due {
             self.state.profile_recheck = false;
             self.follow_profile(service).await?;

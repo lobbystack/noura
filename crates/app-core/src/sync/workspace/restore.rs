@@ -401,6 +401,8 @@ impl WorkspaceSync {
     /// checkpoint the device reached that the server still serves.
     async fn rewind(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
         let (workspace, domain) = (self.state.workspace, self.state.domain);
+        // Before the pull below, which needs those blobs.
+        self.upload_missing(service).await?;
         let reached: Vec<_> = self
             .state
             .log
@@ -880,5 +882,62 @@ impl WorkspaceSync {
                 self.state.log.final_heads.push(kept);
             }
         }
+    }
+
+    /// Uploads again, byte for byte under the same ID, each blob the
+    /// restore left missing whose file this device holds at the listing's
+    /// revision (§19, §21). The blob's key and ID fix its ciphertext.
+    pub(super) async fn upload_missing(
+        &mut self,
+        service: &mut SyncService,
+    ) -> Result<usize, SyncError> {
+        let workspace = self.state.workspace;
+        let missing = service.client().missing_blobs(workspace).await?.blobs.0;
+        let mut uploaded = 0;
+        for blob in missing {
+            let found = self.state.objects.values().find_map(|object| {
+                let local = object.local.as_ref()?;
+                object.states.values().find_map(|state| {
+                    let content = state.content.as_ref()?;
+                    let blob_ref = content.blob.as_ref()?;
+                    (blob_ref.blob == blob && content.revision == local.revision)
+                        .then(|| (local.path.clone(), blob_ref.clone()))
+                })
+            });
+            let Some((path, blob_ref)) = found else {
+                continue;
+            };
+            let Some(file) = self.engine.open_synced(&path).map_err(super::core)? else {
+                continue;
+            };
+            let len = file
+                .metadata()
+                .map_err(|e| SyncError::Invalid(format!("can't read the file: {e}")))?
+                .len();
+            let upload = super::state::upload_path(&blob);
+            let key = blob_ref.blob_key.clone();
+            let encrypted = self.journal.keep_with(&upload, |out| {
+                sync_protocol::blob::encrypt_blob_to(
+                    std::io::BufReader::with_capacity(1 << 16, file),
+                    len,
+                    blob,
+                    key,
+                    out,
+                )
+                .map_err(|e| SyncError::Invalid(e.to_string()))
+            });
+            let same = matches!(&encrypted, Ok((rebuilt, _))
+                if rebuilt.ciphertext_digest == blob_ref.ciphertext_digest);
+            if same {
+                let path = self.journal.dir().join(&upload);
+                service
+                    .client()
+                    .upload_blob(workspace, self.state.domain, &blob_ref, &path)
+                    .await?;
+                uploaded += 1;
+            }
+            self.journal.forget(&upload);
+        }
+        Ok(uploaded)
     }
 }
