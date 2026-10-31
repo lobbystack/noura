@@ -65,10 +65,11 @@ pub use invitations::{INVITATION_TTL, InvitationCreation, MAX_INVITATIONS};
 pub use shares::{MAX_SHARE_DAYS, MAX_SHARES, ShareCreation};
 use sync_protocol::types::{Digest, Id, SecretKey};
 
-pub use hub::{EventHub, Relayed};
+pub use hub::{EventHub, Relayed, Subscription};
 pub use limiter::{Limit, Limiter, MemoryLimiter, Taken};
 pub use policy::PolicyCache;
 pub use realtime::Watch;
+pub use restore::READY_FOR;
 pub use retention::{BlobToCollect, Maintenance, Retention, UPLOAD_TTL};
 
 /// The restore generation a new database starts at (§14). Restores raise it
@@ -928,6 +929,14 @@ pub trait ReadTxn: Send {
         workspace: Id,
         after: u64,
     ) -> impl Future<Output = Result<Vec<Vec<u8>>>> + Send;
+    /// Whether the workspace's row stands closed. [`Self::workspace`] hides
+    /// such a row.
+    fn workspace_closed(&mut self, workspace: Id) -> impl Future<Output = Result<bool>> + Send;
+    /// Closed workspaces with no domain left whose policy rows still stand.
+    fn drained_closed_workspaces(
+        &mut self,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<Id>>> + Send;
     /// The latest profile record.
     fn latest_profile(
         &mut self,
@@ -1525,6 +1534,17 @@ pub trait WriteTxn: ReadTxn {
         row: &DeviceGrantRow,
     ) -> impl Future<Output = Result<()>> + Send;
     /// Replaces a device grant's state.
+    fn locked_device_grant(
+        &mut self,
+        code_hash: Digest,
+    ) -> impl Future<Output = Result<Option<DeviceGrantRow>>> + Send;
+    /// [`ReadTxn::device_grant_by_user_code`], and it holds the row against
+    /// other writers until the transaction ends.
+    fn locked_device_grant_by_user_code(
+        &mut self,
+        user_code_hash: Digest,
+    ) -> impl Future<Output = Result<Option<DeviceGrantRow>>> + Send;
+    /// Stores a grant's new state.
     fn update_device_grant(
         &mut self,
         row: &DeviceGrantRow,
@@ -1543,6 +1563,16 @@ pub trait WriteTxn: ReadTxn {
         &mut self,
         account: Id,
         devices: &[Id],
+        link: RemovedBy,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Marks every session that proved one of `cards` removed by `link`,
+    /// except those of `keep`, which only lose the proof: a reset retires
+    /// the identities those sessions read as (§7).
+    fn retire_proven_sessions(
+        &mut self,
+        account: Id,
+        cards: &[Id],
+        keep: Id,
         link: RemovedBy,
     ) -> impl Future<Output = Result<()>> + Send;
     /// Deletes every session of one device of the account and returns how
@@ -1704,8 +1734,15 @@ pub trait WriteTxn: ReadTxn {
     ) -> impl Future<Output = Result<()>> + Send;
     /// Deletes the account's reset code.
     fn take_reset_code(&mut self, account: Id) -> impl Future<Output = Result<()>> + Send;
-    /// Marks a workspace closed and drops its members.
+    /// Marks a workspace closed and drops its members and invitations.
     fn close_workspace(&mut self, workspace: Id) -> impl Future<Output = Result<()>> + Send;
+    /// Deletes what a closed workspace with no domain left still names: its
+    /// policy chain, profiles, key stream, recorded accounts and approval
+    /// requests. Its closed row stays, so nothing takes the ID again.
+    fn delete_closed_workspace_rows(
+        &mut self,
+        workspace: Id,
+    ) -> impl Future<Output = Result<()>> + Send;
     /// Starts or extends an instance's lease.
     fn hold_lease(&mut self, instance: Id, until: u64) -> impl Future<Output = Result<()>> + Send;
     /// Ends an instance's lease.
@@ -1779,6 +1816,13 @@ pub trait Backend: Send + Sync + 'static {
         self.write(job)
     }
 
+    /// Resolves once the store can't take a write again until the process
+    /// restarts, as when SQLite's one writer task ended. A backend that
+    /// recovers on its own never resolves.
+    fn failed(&self) -> BoxFut<'_, ()> {
+        Box::pin(std::future::pending())
+    }
+
     /// Starts feeding `hub` the commits that other instances on the same
     /// database announce. A database that one instance serves needs
     /// nothing.
@@ -1846,6 +1890,8 @@ impl Clock {
 /// and the reads of §26, each checked as the spec sets.
 pub struct Store<B: Backend> {
     backend: B,
+    /// The last readiness answer and when it came.
+    readiness: tokio::sync::Mutex<Option<(std::time::Instant, bool)>>,
     policies: PolicyCache,
     chains: policy::ChainCache,
     hub: EventHub,
@@ -1870,6 +1916,7 @@ impl<B: Backend> Store<B> {
         backend.attach(hub.clone()).await?;
         Ok(Self {
             backend,
+            readiness: tokio::sync::Mutex::new(None),
             policies: PolicyCache::default(),
             chains: policy::ChainCache::default(),
             hub,
@@ -2017,11 +2064,12 @@ impl<B: Backend> Store<B> {
         request: ChainsRequest,
     ) -> Result<ChainsResponse> {
         let cache = self.policies.clone();
+        let verified = self.chains.clone();
         let now = self.clock.now();
         self.backend
             .read(Box::new(move |txn: &mut B::Read| {
                 Box::pin(async move {
-                    chains::read(txn, &cache, session, &request.cursors.0, now).await
+                    chains::read(txn, &cache, &verified, session, &request.cursors.0, now).await
                 })
             }))
             .await

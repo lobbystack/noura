@@ -475,7 +475,37 @@ impl<B: Backend> Store<B> {
                 report.note(result);
             }
         }
+        let drained = self
+            .backend
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move { txn.drained_closed_workspaces(PASS_LIMIT).await })
+            }))
+            .await?;
+        for workspace in drained {
+            let result = self.finish_closing(workspace).await;
+            report.note(result);
+        }
         Ok(report)
+    }
+
+    /// Deletes the workspace-level rows of a closed workspace whose last
+    /// domain went (§14).
+    async fn finish_closing(&self, workspace: Id) -> Result<()> {
+        self.backend
+            .write(Box::new(move |txn: &mut B::Write| {
+                Box::pin(async move {
+                    txn.lock(&LockPlan {
+                        workspace: Some(workspace),
+                        policy_exclusive: true,
+                        key_sequence: true,
+                        domains: Vec::new(),
+                        blobs: Vec::new(),
+                    })
+                    .await?;
+                    txn.delete_closed_workspace_rows(workspace).await
+                })
+            }))
+            .await
     }
 
     /// Reclaims a deleted domain, or raises another's floor and prunes it.

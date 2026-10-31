@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM recorded_accounts WHERE workspace = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "87152a4666f4648e27bf5e69957f045f9d84114e8a24c02be4eee010e84a7fdf"
+}

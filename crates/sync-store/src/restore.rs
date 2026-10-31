@@ -2,6 +2,8 @@
 //! rows the check against the blob store walks, and the changes it makes to
 //! them, each under the locks the collector takes.
 
+use std::time::{Duration, Instant};
+
 use sync_protocol::codec::List;
 use sync_protocol::messages::MissingBlobsResponse;
 use sync_protocol::types::{Digest, Id};
@@ -11,6 +13,13 @@ use crate::retention::UPLOAD_TTL;
 use crate::{
     Backend, BlobRow, LockPlan, ReadTxn, Result, Session, Store, WriteTxn, policy, refuse,
 };
+
+/// How long one answer of [`Store::ready`] holds.
+pub const READY_FOR: Duration = Duration::from_secs(2);
+/// How long [`Store::ready`] waits for its write.
+const PROBE_WAIT: Duration = Duration::from_secs(4);
+/// The lease row a readiness probe writes and deletes in one transaction.
+const PROBE_INSTANCE: Id = Id([0xff; 16]);
 
 /// How many rows one page of [`Store::blob_rows`] holds.
 pub const BLOB_PAGE: u32 = 1_024;
@@ -26,13 +35,39 @@ fn plan(workspace: Id, domain: Id, blob: Id) -> LockPlan {
 }
 
 impl<B: Backend> Store<B> {
-    /// Starts or extends this instance's lease.
-    pub async fn hold_lease(&self, instance: Id, until: u64) -> Result<()> {
+    /// Starts or extends this instance's lease, and returns the restore
+    /// generation the database holds now, which a `mark-restored` during a
+    /// lost connection may have raised past [`Store::restore_generation`].
+    pub async fn hold_lease(&self, instance: Id, until: u64) -> Result<u64> {
         self.backend
             .write(Box::new(move |txn: &mut B::Write| {
-                Box::pin(async move { txn.hold_lease(instance, until).await })
+                Box::pin(async move {
+                    txn.hold_lease(instance, until).await?;
+                    txn.restore_generation().await
+                })
             }))
             .await
+    }
+
+    /// Whether the store takes a write: a real one through the same path as
+    /// any other, that leaves nothing behind. The answer holds for
+    /// [`READY_FOR`], so probes cost the store at most one write that often.
+    pub async fn ready(&self) -> bool {
+        let mut last = self.readiness.lock().await;
+        if let Some((at, ready)) = *last
+            && at.elapsed() < READY_FOR
+        {
+            return ready;
+        }
+        let probe = self.backend.write(Box::new(move |txn: &mut B::Write| {
+            Box::pin(async move {
+                txn.hold_lease(PROBE_INSTANCE, 0).await?;
+                txn.drop_lease(PROBE_INSTANCE).await
+            })
+        }));
+        let ready = matches!(tokio::time::timeout(PROBE_WAIT, probe).await, Ok(Ok(())));
+        *last = Some((Instant::now(), ready));
+        ready
     }
 
     /// Ends this instance's lease.

@@ -23,7 +23,7 @@ use sync_protocol::messages::{
     EntryRecord, LimitsResponse, PullCursor, PullRequest, PullResponse, PushResponse,
 };
 use sync_protocol::records::{Operation, Signed};
-use sync_protocol::types::{Digest, SecretKey, to_hex};
+use sync_protocol::types::{Digest, Id, SecretKey, to_hex};
 use sync_store_postgres::testing::{Cluster, TestDatabase};
 
 fn tmp() -> &'static Path {
@@ -811,4 +811,36 @@ async fn mark_restored_on_postgres_refuses_a_running_instance_and_a_bad_secret()
         .expect("a header")
         .into();
     assert!(after.parse::<u64>().expect("a number") > before.parse::<u64>().expect("a number"));
+}
+
+/// An instance that outlived a failover stops once the restore generation
+/// it serves is no longer the database's (§14).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lease_refresh_reports_a_generation_that_moved() {
+    let secret = SecretKey::random().expect("random");
+    let (database, _dir) = migrated(&secret).await;
+    let postgres = sync_server::Postgres {
+        url: database.url.clone(),
+        secret: Some(secret),
+    };
+    let store = Arc::new(
+        sync_server::postgres::open_store(&postgres)
+            .await
+            .expect("the store"),
+    );
+    let (moved, generation_moved) = tokio::sync::oneshot::channel();
+    let _lease = sync_server::restore::spawn_lease(
+        store.clone(),
+        Id::random().expect("random"),
+        Duration::from_millis(50),
+        moved,
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    sync_store_postgres::raise_generation(&database.url, 1, 0)
+        .await
+        .expect("raised");
+    tokio::time::timeout(Duration::from_secs(5), generation_moved)
+        .await
+        .expect("the lease sees it")
+        .expect("it fires");
 }

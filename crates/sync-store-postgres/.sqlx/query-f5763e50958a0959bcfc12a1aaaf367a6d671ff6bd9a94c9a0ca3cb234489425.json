@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT w.workspace AS \"workspace!\" FROM workspaces w\n               WHERE w.closed = 1\n                 AND NOT EXISTS (SELECT 1 FROM domains d WHERE d.workspace = w.workspace)\n                 AND EXISTS (SELECT 1 FROM policy_changes p WHERE p.workspace = w.workspace)\n               LIMIT $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "workspace!",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "workspace"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f5763e50958a0959bcfc12a1aaaf367a6d671ff6bd9a94c9a0ca3cb234489425"
+}

@@ -2,7 +2,9 @@
 //! authority checks, reading the chains a session may read, enrolled cards,
 //! enrollment challenges and recovery proofs (§12).
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use sync_key_envelope::v2::{RecoveryContext, verify_recovery_proof};
 use sync_protocol::account::{AccountChain, AccountError};
@@ -13,7 +15,7 @@ use sync_protocol::messages::{
 use sync_protocol::records::{AccountLink, Card, LinkKind, RecoveryProof, Signed};
 use sync_protocol::types::{Digest, Id, Key};
 
-use crate::policy::{self, PolicyCache};
+use crate::policy::{self, ChainCache, PolicyCache};
 use crate::{
     ApprovalRequestRow, Error, LinkRow, ReadTxn, RemovedBy, Result, Session, WriteTxn, refuse,
 };
@@ -21,6 +23,9 @@ use crate::{
 /// How long an enrollment challenge, a magic link, a passkey ceremony or a
 /// sign-up waiting for its email stays usable (§27).
 pub const SIGN_IN_TTL: u64 = 600;
+
+/// The most cursors one `POST /v2/accounts/chains` lists (§27).
+pub const MAX_CHAIN_CURSORS: usize = 256;
 
 fn refusal(error: AccountError) -> Error {
     refuse(error.server_code(), error.to_string())
@@ -247,40 +252,58 @@ async fn readable_seqno(
 pub(crate) async fn read(
     txn: &mut impl ReadTxn,
     cache: &PolicyCache,
+    verified: &ChainCache,
     session: Session,
     cursors: &[ChainCursor],
     now: u64,
 ) -> Result<ChainsResponse> {
     // Each page's fixed fields take 16 + 32 + 1 + 8 + 4 bytes, and every
-    // cursor gets a page, so the pages' fixed fields must fit 1 MiB.
+    // cursor gets a page, so the pages' fixed fields fit 1 MiB.
     const PAGE_FIELDS: usize = 61;
-    let fixed = 4 + PAGE_FIELDS * cursors.len();
-    if fixed > MAX_BODY {
+    if cursors.len() > MAX_CHAIN_CURSORS {
         return Err(refuse(
             "too_large",
-            "the cursors' pages can't fit one response",
+            "a chain read lists at most 256 cursors",
         ));
     }
-    let mut budget = MAX_BODY - fixed;
+    let named: BTreeSet<(Id, Option<Digest>)> =
+        cursors.iter().map(|c| (c.account, c.genesis)).collect();
+    if named.len() != cursors.len() {
+        return Err(refuse("bad_request", "a chain read names a chain twice"));
+    }
+    let mut budget = MAX_BODY - (4 + PAGE_FIELDS * cursors.len());
     let mut pages = Vec::with_capacity(cursors.len());
+    // Verifying a chain costs a signature per link, so a read verifies each
+    // account at most once, and its current chain only when the cache
+    // lacks that head.
+    let mut every_chain: BTreeMap<Id, BTreeMap<Digest, Arc<AccountChain>>> = BTreeMap::new();
     for cursor in cursors {
         let current = txn.current_genesis(cursor.account).await?;
         let genesis = cursor
             .genesis
             .or(current)
             .ok_or_else(|| refuse("not_found", "no such account chain"))?;
-        let chains = policy::chains_of(txn, cursor.account).await?;
-        let chain = chains
-            .get(&genesis)
-            .ok_or_else(|| refuse("not_found", "no such account chain"))?;
         let is_current = current == Some(genesis);
+        let chain = if is_current {
+            policy::cached_current_chain(txn, verified, cursor.account).await?
+        } else {
+            let chains = match every_chain.entry(cursor.account) {
+                Entry::Occupied(known) => known.into_mut(),
+                Entry::Vacant(unread) => {
+                    let chains = policy::chains_of(txn, cursor.account).await?;
+                    unread.insert(chains.into_iter().map(|(g, c)| (g, Arc::new(c))).collect())
+                }
+            };
+            chains.get(&genesis).cloned()
+        };
+        let chain = chain.ok_or_else(|| refuse("not_found", "no such account chain"))?;
         let bound = readable_seqno(
             txn,
             cache,
             session,
             cursor.account,
             genesis,
-            chain,
+            &chain,
             is_current,
             now,
         )

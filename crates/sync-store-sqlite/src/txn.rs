@@ -1130,6 +1130,34 @@ impl ReadTxn for SqliteTxn {
         .transpose()
     }
 
+    async fn workspace_closed(&mut self, workspace: Id) -> Result<bool> {
+        let workspace = &workspace.0[..];
+        let row = sqlx::query!(
+            "SELECT closed FROM workspaces WHERE workspace = ?1",
+            workspace
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        Ok(row.is_some_and(|r| r.closed != 0))
+    }
+
+    async fn drained_closed_workspaces(&mut self, limit: u32) -> Result<Vec<Id>> {
+        let limit = i64::from(limit);
+        let rows = sqlx::query!(
+            r#"SELECT w.workspace AS "workspace!" FROM workspaces w
+               WHERE w.closed = 1
+                 AND NOT EXISTS (SELECT 1 FROM domains d WHERE d.workspace = w.workspace)
+                 AND EXISTS (SELECT 1 FROM policy_changes p WHERE p.workspace = w.workspace)
+               LIMIT ?1"#,
+            limit
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter().map(|r| id(r.workspace)).collect()
+    }
+
     async fn owned_workspaces(&mut self, account: Id) -> Result<u64> {
         let account = &account.0[..];
         let row = sqlx::query!(
@@ -3426,6 +3454,18 @@ impl WriteTxn for SqliteTxn {
         Ok(())
     }
 
+    async fn locked_device_grant(&mut self, code_hash: Digest) -> Result<Option<DeviceGrantRow>> {
+        // The one writer holds the database for the whole transaction.
+        self.device_grant(code_hash).await
+    }
+
+    async fn locked_device_grant_by_user_code(
+        &mut self,
+        user_code_hash: Digest,
+    ) -> Result<Option<DeviceGrantRow>> {
+        self.device_grant_by_user_code(user_code_hash).await
+    }
+
     async fn update_device_grant(&mut self, row: &DeviceGrantRow) -> Result<()> {
         let code = &row.device_code_hash.0[..];
         let account = row.account.as_ref().map(|a| a.0.to_vec());
@@ -3498,6 +3538,45 @@ impl WriteTxn for SqliteTxn {
             .await
             .map_err(db)?;
         }
+        Ok(())
+    }
+
+    async fn retire_proven_sessions(
+        &mut self,
+        account: Id,
+        cards: &[Id],
+        keep: Id,
+        link: RemovedBy,
+    ) -> Result<()> {
+        let account = &account.0[..];
+        let keep = &keep.0[..];
+        let detail = DeviceRemovedDetail {
+            genesis: link.genesis,
+            seqno: link.seqno,
+        }
+        .to_bytes();
+        for card in cards {
+            let card = &card.0[..];
+            sqlx::query!(
+                "UPDATE sessions SET removed = ?4
+                 WHERE account = ?1 AND recovery = ?2 AND device <> ?3 AND removed IS NULL",
+                account,
+                card,
+                keep,
+                detail
+            )
+            .execute(self.c())
+            .await
+            .map_err(db)?;
+        }
+        sqlx::query!(
+            "UPDATE sessions SET recovery = NULL WHERE account = ?1 AND device = ?2",
+            account,
+            keep
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
         Ok(())
     }
 
@@ -4097,6 +4176,45 @@ impl WriteTxn for SqliteTxn {
             .execute(self.c())
             .await
             .map_err(db)?;
+        sqlx::query!("DELETE FROM invitations WHERE workspace = ?1", workspace)
+            .execute(self.c())
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    async fn delete_closed_workspace_rows(&mut self, workspace: Id) -> Result<()> {
+        let workspace = &workspace.0[..];
+        sqlx::query!("DELETE FROM policy_changes WHERE workspace = ?1", workspace)
+            .execute(self.c())
+            .await
+            .map_err(db)?;
+        sqlx::query!("DELETE FROM profiles WHERE workspace = ?1", workspace)
+            .execute(self.c())
+            .await
+            .map_err(db)?;
+        sqlx::query!("DELETE FROM key_entries WHERE workspace = ?1", workspace)
+            .execute(self.c())
+            .await
+            .map_err(db)?;
+        sqlx::query!("DELETE FROM key_sequences WHERE workspace = ?1", workspace)
+            .execute(self.c())
+            .await
+            .map_err(db)?;
+        sqlx::query!(
+            "DELETE FROM recorded_accounts WHERE workspace = ?1",
+            workspace
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        sqlx::query!(
+            "DELETE FROM approval_requests WHERE workspace = ?1",
+            workspace
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
         Ok(())
     }
 

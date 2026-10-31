@@ -12,6 +12,7 @@ pub mod accounts;
 pub mod blobs;
 pub mod data;
 pub mod http;
+pub mod listen;
 pub mod logs;
 pub mod maintenance;
 pub mod postgres;
@@ -33,8 +34,9 @@ use tokio::net::TcpListener;
 pub use accounts::{Accounts, Allowlist, MailTransport, PublicOrigin};
 pub use data::{CommandError, Migrated, check_ready, migrate};
 pub use http::AppState;
+pub use listen::ConnectionLimits;
 pub use postgres::Postgres;
-pub use rate::{RateGate, RateLimits};
+pub use rate::{ChannelLimits, RateGate, RateLimits};
 
 /// How `serve` sends mail.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -84,6 +86,8 @@ pub struct Config {
     /// The header a trusted proxy sets to the client's IP. Without one the
     /// server counts sign-in per connection and ignores such headers.
     pub trusted_proxy_header: Option<String>,
+    /// What one connection can hold.
+    pub connections: ConnectionLimits,
 }
 
 /// Where `serve` keeps blob segments (§21).
@@ -137,6 +141,7 @@ impl Config {
             retention: sync_store::Retention::default(),
             rate_limits: RateLimits::default(),
             trusted_proxy_header: None,
+            connections: ConnectionLimits::default(),
         }
     }
 }
@@ -200,11 +205,9 @@ pub async fn serve_on<B: Backend>(
     state: AppState<B>,
     listener: TcpListener,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
-) -> std::io::Result<()> {
-    let service = http::router(state).into_make_service_with_connect_info::<SocketAddr>();
-    axum::serve(listener, service)
-        .with_graceful_shutdown(shutdown)
-        .await
+    limits: ConnectionLimits,
+) {
+    listen::serve(http::router(state), listener, shutdown, limits).await;
 }
 
 /// Serves `store` on a new listener at `address` in the background, for
@@ -256,7 +259,8 @@ pub async fn spawn_limited<B: Backend>(
         blobs,
         rate: Arc::new(rate),
     };
-    tokio::spawn(serve_on(state, listener, std::future::pending()));
+    let limits = ConnectionLimits::default();
+    tokio::spawn(serve_on(state, listener, std::future::pending(), limits));
     Ok(bound)
 }
 
@@ -307,7 +311,11 @@ fn rate_gate(config: &Config) -> Result<RateGate, CommandError> {
     Ok(RateGate::new(config.rate_limits, header))
 }
 
-async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), CommandError> {
+/// Serves `store` until a signal, or until something only a restart cures
+/// happens: the database moved to another restore generation, or the store
+/// can't write again. Those end in an error, so the process exits non-zero
+/// and its supervisor starts a new one.
+pub async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), CommandError> {
     let listener = TcpListener::bind(config.listen)
         .await
         .map_err(|e| CommandError(format!("can't listen on {}: {e}", config.listen)))?;
@@ -336,7 +344,8 @@ async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), Co
         .hold_lease(instance, store.clock().now() + restore::LEASE_SECONDS)
         .await
         .map_err(|e| CommandError(format!("can't take a lease: {e}")))?;
-    let lease = restore::spawn_lease(store.clone(), instance);
+    let (moved, generation_moved) = tokio::sync::oneshot::channel();
+    let lease = restore::spawn_lease(store.clone(), instance, restore::LEASE_PERIOD, moved);
     tracing::info!("serving");
     eprintln!("sync-server listening on {bound}");
     let maintenance = maintenance::spawn(store.clone(), blobs.clone());
@@ -346,7 +355,18 @@ async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), Co
         blobs,
         rate: Arc::new(rate),
     };
-    let served = serve_on(state, listener, shutdown_signal()).await;
+    let (failure, failed) = tokio::sync::oneshot::channel();
+    let watched = store.clone();
+    let shutdown = async move {
+        let cause = tokio::select! {
+            () = shutdown_signal() => return,
+            Ok(()) = generation_moved => "the database moved to another restore generation",
+            () = watched.backend().failed() => "the store's writer stopped",
+        };
+        tracing::error!(cause, "stopping");
+        let _ = failure.send(cause);
+    };
+    serve_on(state, listener, shutdown, config.connections).await;
     maintenance.abort();
     lease.abort();
     if let Err(error) = store.drop_lease(instance).await {
@@ -357,7 +377,10 @@ async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<(), Co
     counters.abort();
     store.backend().close().await;
     tracing::info!("stopped");
-    served.map_err(|e| CommandError(format!("the server failed: {e}")))
+    match failed.await {
+        Ok(cause) => Err(CommandError(format!("{cause}; start the server again"))),
+        Err(_) => Ok(()),
+    }
 }
 
 /// `sync-server blobs migrate-to-s3`: moves every segment of the data
@@ -395,8 +418,9 @@ fn spawn_counter_pruning(limiter: Arc<dyn Limiter>) -> tokio::task::JoinHandle<(
 }
 
 /// `sync-server healthcheck`: whether a Noura sync server answers
-/// `GET /v2/limits` at `address` within five seconds. An unspecified
-/// address checks the loopback address on that port.
+/// `GET /v2/ready` at `address` within five seconds, which takes a write
+/// through its store. An unspecified address checks the loopback address on
+/// that port.
 pub fn healthcheck(mut address: SocketAddr) -> bool {
     if address.ip().is_unspecified() {
         address.set_ip(match address {
@@ -409,9 +433,8 @@ pub fn healthcheck(mut address: SocketAddr) -> bool {
         let mut stream = TcpStream::connect_timeout(&address, timeout)?;
         stream.set_read_timeout(Some(timeout))?;
         stream.set_write_timeout(Some(timeout))?;
-        stream.write_all(
-            b"GET /v2/limits HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
-        )?;
+        stream
+            .write_all(b"GET /v2/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")?;
         let mut response = Vec::new();
         stream.take(64 * 1024).read_to_end(&mut response)?;
         let text = String::from_utf8_lossy(&response).to_ascii_lowercase();

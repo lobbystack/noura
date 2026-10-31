@@ -10,6 +10,8 @@
 //! goes to the other connected devices that read its domain and subscribed
 //! to its channel, on any instance, and nothing stores it. When a
 //! connection ends, the same devices get `presence_gone` for its sessions.
+//! A device holds a bounded number of channels to a workspace, and a channel
+//! whose client stays silent, pings included, closes.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -25,11 +27,12 @@ use sync_protocol::codec::{Decode, Encode, Text};
 use sync_protocol::messages::{Frame, MAX_FRAME};
 use sync_protocol::records::{Presence, Signed};
 use sync_protocol::types::{Id, IdOrZero};
-use sync_store::{Backend, Relayed, Session, Store, Watch};
+use sync_store::{Backend, Relayed, Session, Store, Subscription, Watch};
 use tokio::sync::broadcast;
 use tokio::time::Instant;
 
 use crate::http::{ApiError, AppState, Segments, bearer, id, refused};
+use crate::rate::{ChannelSlot, RateGate};
 
 /// The shortest time between two notify frames for one domain on one
 /// connection (§23).
@@ -63,7 +66,7 @@ impl<B: Backend> FromRequestParts<AppState<B>> for Device {
 /// Opens the channel for a device active in the workspace, and refuses any
 /// other with the error body of §26 before the upgrade.
 pub(crate) async fn open<B: Backend>(
-    State(store): State<Arc<Store<B>>>,
+    State(state): State<AppState<B>>,
     device: Device,
     Segments(workspace): Segments<String>,
     upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
@@ -71,12 +74,15 @@ pub(crate) async fn open<B: Backend>(
     let workspace = id(&workspace)?;
     let upgrade =
         upgrade.map_err(|_| refused("bad_request", "the realtime route takes a WebSocket"))?;
+    let store = state.store.clone();
     // Subscribe before the first read, so no commit slips between them.
     let changes = store.hub().subscribe(workspace);
-    let relayed = store.hub().subscribe_presence(workspace);
     let watch = store.realtime_watch(device.session, workspace).await?;
+    let slot = state.rate.open_channel(device.session.device, workspace)?;
+    let relayed = store.hub().subscribe_presence(workspace);
     let limit = MAX_FRAME + 5;
     let presence_per_second = store.limits().presence_per_second;
+    let idle = state.rate.channel_idle();
     Ok(upgrade
         .max_message_size(limit)
         .max_frame_size(limit)
@@ -88,6 +94,8 @@ pub(crate) async fn open<B: Backend>(
                 watch,
                 notifies: Notifies::default(),
                 presence: PresenceState::new(presence_per_second),
+                idle,
+                _slot: slot,
             }
             .run(socket, changes, relayed)
         }))
@@ -207,6 +215,10 @@ struct Connection<B: Backend> {
     watch: Watch,
     notifies: Notifies,
     presence: PresenceState,
+    /// How long the client may stay silent.
+    idle: Duration,
+    /// The channel's place in its device's count.
+    _slot: ChannelSlot,
 }
 
 /// Why a connection ends.
@@ -216,8 +228,8 @@ impl<B: Backend> Connection<B> {
     async fn run(
         mut self,
         mut socket: WebSocket,
-        mut changes: tokio::sync::watch::Receiver<u64>,
-        mut relayed: broadcast::Receiver<Relayed>,
+        mut changes: Subscription<tokio::sync::watch::Receiver<u64>>,
+        mut relayed: Subscription<broadcast::Receiver<Relayed>>,
     ) {
         let mut generation = self.store.restore_generation();
         if send(
@@ -231,6 +243,7 @@ impl<B: Backend> Connection<B> {
         {
             return;
         }
+        let mut heard = Instant::now();
         loop {
             let next = self.notifies.next();
             let step = tokio::select! {
@@ -244,14 +257,18 @@ impl<B: Backend> Connection<B> {
                     Err(broadcast::error::RecvError::Lagged(_)) => Ok(()),
                     Err(broadcast::error::RecvError::Closed) => Err(Closed),
                 },
-                message = socket.recv() => match message {
-                    Some(Ok(Message::Binary(bytes))) => {
-                        self.client_frame(&mut socket, &bytes).await
+                () = tokio::time::sleep_until(heard + self.idle) => Err(Closed),
+                message = socket.recv() => {
+                    heard = Instant::now();
+                    match message {
+                        Some(Ok(Message::Binary(bytes))) => {
+                            self.client_frame(&mut socket, &bytes).await
+                        }
+                        Some(Ok(Message::Text(_))) => send(&mut socket, &refusal(&[])).await,
+                        Some(Ok(Message::Ping(_) | Message::Pong(_))) => Ok(()),
+                        Some(Ok(Message::Close(_)) | Err(_)) | None => Err(Closed),
                     }
-                    Some(Ok(Message::Text(_))) => send(&mut socket, &refusal(&[])).await,
-                    Some(Ok(Message::Ping(_) | Message::Pong(_))) => Ok(()),
-                    Some(Ok(Message::Close(_)) | Err(_)) | None => Err(Closed),
-                },
+                }
             };
             if step.is_err() {
                 self.say_gone();
@@ -281,6 +298,15 @@ impl<B: Backend> Connection<B> {
         if !self.presence.admit(Instant::now()) {
             return Err("rate_limited".to_owned());
         }
+        // The connection's own count keeps a flood from reaching the limiter,
+        // and the limiter counts the device across its channels.
+        let limiter = self.store.backend().limiter();
+        RateGate::take_presence(&*limiter, self.device.session.device, self.presence.limit)
+            .await
+            .map_err(|error| match error {
+                sync_store::Error::Refused(refusal) => refusal.code.to_owned(),
+                sync_store::Error::Internal(_) => "internal".to_owned(),
+            })?;
         let body = &record.body;
         let (domain, channel, device, session) =
             (body.domain, body.channel, body.device, body.session);

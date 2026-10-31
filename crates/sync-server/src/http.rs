@@ -260,7 +260,19 @@ async fn body(body: Body) -> Result<Vec<u8>, ApiError> {
     axum::body::to_bytes(body, MAX_BODY)
         .await
         .map(|bytes| bytes.to_vec())
-        .map_err(|_| refused("too_large", "the body exceeds 1 MiB"))
+        .map_err(|error| {
+            if crate::listen::is_late(&error) {
+                late_body()
+            } else {
+                refused("too_large", "the body exceeds 1 MiB")
+            }
+        })
+}
+
+/// A body that didn't arrive in time. The server committed nothing and the
+/// client sends it again later.
+pub(crate) fn late_body() -> ApiError {
+    ApiError(Error::internal("a request body took too long to arrive"))
 }
 
 fn decode<T: Decode>(bytes: &[u8]) -> Result<T, ApiError> {
@@ -297,6 +309,15 @@ fn query(raw: Option<&str>) -> Result<HashMap<&str, &str>, ApiError> {
 
 async fn limits<B: Backend>(State(store): State<Arc<Store<B>>>) -> Response {
     ok(&store.limits())
+}
+
+/// `GET /v2/ready`: whether this instance's store takes writes.
+async fn ready<B: Backend>(State(store): State<Arc<Store<B>>>) -> Result<StatusCode, ApiError> {
+    if store.ready().await {
+        Ok(StatusCode::OK)
+    } else {
+        Err(ApiError(Error::internal("the store takes no write")))
+    }
 }
 
 async fn list_workspaces<B: Backend>(
@@ -880,6 +901,8 @@ async fn not_found() -> ApiError {
     refused("not_found", "no such route")
 }
 
+const READY_ROUTE: &str = "/v2/ready";
+
 fn request_id() -> String {
     let bytes: [u8; 8] = sync_protocol::crypto::random_array().unwrap_or_default();
     sync_protocol::types::to_hex(&bytes)
@@ -901,7 +924,10 @@ async fn stamp_and_log(generation: u64, request: Request, next: Next) -> Respons
     if let Some(InternalCause(cause)) = response.extensions_mut().remove::<InternalCause>() {
         tracing::error!(request = %id, route = %route, cause = %cause, "store failure");
     }
-    tracing::info!(request = %id, route = %route, status = response.status().as_u16(), "request");
+    // A health check every few seconds would fill the log with nothing.
+    if route != READY_ROUTE || !response.status().is_success() {
+        tracing::info!(request = %id, route = %route, status = response.status().as_u16(), "request");
+    }
     response
 }
 
@@ -911,6 +937,7 @@ pub fn router<B: Backend>(state: AppState<B>) -> Router {
     let gate = state.clone();
     Router::new()
         .route("/v2/limits", get(limits::<B>))
+        .route("/v2/ready", get(ready::<B>))
         .route("/v2/accounts/chain", post(append_chain::<B>))
         .route("/v2/accounts/chains", post(read_chains::<B>))
         .route("/v2/devices/challenge", post(challenge::<B>))

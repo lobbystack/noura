@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE blobs SET delete_after = $1\n         WHERE complete AND NOT marked AND NOT EXISTS (\n           SELECT 1 FROM blob_listings l\n           WHERE l.workspace = blobs.workspace AND l.blob = blobs.blob\n         )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f35a2a992dea8cb9290c3ae18002522ae5a4fa0c50a12a0e670e6bc1fe2019a0"
+}

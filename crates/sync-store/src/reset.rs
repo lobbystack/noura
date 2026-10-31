@@ -60,8 +60,8 @@ impl<B: Backend> Store<B> {
     }
 
     /// `POST /v2/account/reset`: in one transaction, uses the code, retires
-    /// the account's chain, ends the sessions of every card on it and
-    /// starts the new chain from the session's enrolled card.
+    /// the account's chain, ends the sessions of every card on it and of
+    /// every card that proved one of them, and starts the new chain from the session's enrolled card.
     pub async fn reset_account(&self, session: Session, request: ResetRequest) -> Result<()> {
         let now = self.clock().now();
         let code = normalized_code(request.code.as_str()).ok_or_else(invalid_code)?;
@@ -136,6 +136,8 @@ async fn may_close(txn: &mut impl ReadTxn, snapshot: &Snapshot, session: Session
         return Ok(false);
     };
     if current == member.head.genesis {
+        // A recovery proof reads as the kit's card, and closes nothing. Nor
+        // does a recovery identity's own session.
         return Ok(snapshot
             .devices
             .get(&session.device)
@@ -219,15 +221,13 @@ async fn retire_chain(
         && let Some(old) = chains.get(&current)
     {
         let cards: Vec<Id> = old.listed_devices().into_iter().collect();
-        txn.remove_sessions(
-            account,
-            &cards,
-            RemovedBy {
-                genesis: current,
-                seqno: old.head_seqno(),
-            },
-        )
-        .await?;
+        let link = RemovedBy {
+            genesis: current,
+            seqno: old.head_seqno(),
+        };
+        txn.remove_sessions(account, &cards, link).await?;
+        txn.retire_proven_sessions(account, &cards, session.device, link)
+            .await?;
     }
     txn.insert_account_link(
         account,

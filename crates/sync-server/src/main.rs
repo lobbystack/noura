@@ -39,6 +39,9 @@
 //! - `NOURA_TRUSTED_PROXY_HEADER`: the header your reverse proxy sets to the
 //!   client's IP. Without it the server ignores such headers and counts
 //!   sign-in per connection address.
+//! - `NOURA_MAX_CONNECTIONS`: how many connections stay open at once,
+//!   realtime channels included, 1,024 by default. Keep the process's file
+//!   descriptor limit above it.
 //! - `NOURA_RATE_PUSHES_PER_SECOND`, `NOURA_RATE_PUSH_BYTES_PER_MINUTE`,
 //!   `NOURA_RATE_UPLOAD_BYTES_PER_MINUTE`, `NOURA_RATE_READ_BYTES_PER_MINUTE`,
 //!   `NOURA_RATE_BOOTSTRAP_BYTES_PER_MINUTE`,
@@ -188,6 +191,13 @@ fn serve(arguments: Arguments) -> Result<(), String> {
     config.retention = retention()?;
     config.rate_limits = rate_limits()?;
     config.trusted_proxy_header = env("NOURA_TRUSTED_PROXY_HEADER");
+    if let Some(value) = env("NOURA_MAX_CONNECTIONS") {
+        config.connections.connections = value
+            .parse()
+            .ok()
+            .filter(|count| *count > 0)
+            .ok_or("NOURA_MAX_CONNECTIONS isn't a positive whole number")?;
+    }
     runtime()
         .block_on(sync_server::serve(config))
         .map_err(|e| e.to_string())
@@ -292,6 +302,12 @@ fn raised(generation: u64) {
 }
 
 fn report(restored: sync_server::restore::Restored) {
+    if let Some(side) = &restored.set_aside {
+        eprintln!(
+            "sync-server: the old database couldn't be read; it stays at {}",
+            side.display()
+        );
+    }
     let blobs = restored.blobs;
     eprintln!(
         "sync-server: the blob store check finished; quarantined {} object(s), returned {}, gave \

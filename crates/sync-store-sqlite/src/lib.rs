@@ -27,12 +27,12 @@ use sqlx::sqlite::{
 };
 use sqlx::{ConnectOptions, Connection, SqliteConnection};
 use sync_store::{Backend, BoxFut, Error, Limiter, MemoryLimiter, ReadJob, Result, WriteJob};
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 pub use admin::{
-    DatabaseState, MIGRATOR, backup_into, clear_stamp, fold_log, inspect, live_instances, migrate,
-    raise_generation, store_secret_check,
+    DatabaseState, MIGRATOR, backup_into, clear_stamp, fold_log, inspect, is_damaged,
+    live_instances, migrate, raise_generation, store_secret_check,
 };
 pub use txn::SqliteTxn;
 
@@ -144,6 +144,8 @@ pub struct SqliteBackend {
     reads: SqlitePool,
     writer: StdMutex<Option<mpsc::Sender<Box<dyn Queued>>>>,
     task: Mutex<Option<JoinHandle<()>>>,
+    /// Closes when the writer task ends, however it ended.
+    writer_alive: watch::Receiver<()>,
     stats: Arc<WriterStats>,
     // One instance serves the database, so its counters live in memory.
     limiter: Arc<MemoryLimiter>,
@@ -168,15 +170,17 @@ impl SqliteBackend {
             .map_err(Error::internal)?;
         let stats = Arc::new(WriterStats::default());
         let (sender, receiver) = mpsc::channel(1_024);
-        let task = tokio::spawn(write_loop(
-            SqliteTxn::writer(writer),
-            receiver,
-            stats.clone(),
-        ));
+        let (alive, writer_alive) = watch::channel(());
+        let writer_stats = stats.clone();
+        let task = tokio::spawn(async move {
+            let _alive = alive;
+            write_loop(SqliteTxn::writer(writer), receiver, writer_stats).await;
+        });
         Ok(Self {
             reads,
             writer: StdMutex::new(Some(sender)),
             task: Mutex::new(Some(task)),
+            writer_alive,
             stats,
             limiter: Arc::new(MemoryLimiter::default()),
         })
@@ -276,6 +280,11 @@ impl Backend for SqliteBackend {
 
     fn close(&self) -> BoxFut<'_, ()> {
         Box::pin(SqliteBackend::close(self))
+    }
+
+    fn failed(&self) -> BoxFut<'_, ()> {
+        let mut alive = self.writer_alive.clone();
+        Box::pin(async move { while alive.changed().await.is_ok() {} })
     }
 }
 

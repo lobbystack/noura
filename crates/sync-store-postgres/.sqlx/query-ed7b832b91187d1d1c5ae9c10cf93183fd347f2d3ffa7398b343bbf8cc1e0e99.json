@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT device_code_hash, user_code_hash, account, denied, poll_interval, next_poll,\n                    expires_at\n             FROM device_grants WHERE device_code_hash = $1 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "device_code_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "device_grants",
+            "name": "device_code_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "user_code_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "device_grants",
+            "name": "user_code_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "account",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "device_grants",
+            "name": "account"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "denied",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "device_grants",
+            "name": "denied"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "poll_interval",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "device_grants",
+            "name": "poll_interval"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "next_poll",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "device_grants",
+            "name": "next_poll"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "expires_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "device_grants",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ed7b832b91187d1d1c5ae9c10cf93183fd347f2d3ffa7398b343bbf8cc1e0e99"
+}

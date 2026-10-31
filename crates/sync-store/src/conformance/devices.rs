@@ -3,6 +3,7 @@
 //! active device ends for a card no chain lists, and approval requests,
 //! offers and reveals.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use sync_key_envelope::v2::{DeviceKeys, enroll, genesis_link, next_link};
@@ -736,4 +737,62 @@ pub async fn approval_requests_offers_and_reveals<B: Backend>(store: Store<B>) {
         "not_found"
     );
     let _: AccountHead = head_of(&links);
+}
+
+/// A poll that read a grant before the device page approved it never wipes
+/// the approval: the device signs in on a later poll (§7).
+pub async fn device_polls_race_their_decision<B: Backend>(
+    first: Arc<Store<B>>,
+    second: Arc<Store<B>>,
+) {
+    let grant = first
+        .authorize_device("https://sync.example.com/device")
+        .await
+        .expect("a grant");
+    let user = grant.user_code.as_str().to_owned();
+    let code = grant.device_code.as_str().to_owned();
+    second.clock().advance(Duration::from_secs(6));
+    let account = Id::random().expect("random");
+    let decide = {
+        let first = first.clone();
+        let user = user.clone();
+        tokio::spawn(async move { first.decide_device_grant(account, &user, true).await })
+    };
+    // The poll reads while the approval waits for its commit.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let polled = second.poll_device_token(&code).await;
+    assert!(decide.await.expect("joined").expect("decided"));
+    if polled.is_ok() {
+        return;
+    }
+    second.clock().advance(Duration::from_secs(16));
+    let signed_in = second
+        .poll_device_token(&code)
+        .await
+        .expect("the approval stands");
+    assert_eq!(signed_in.account, account);
+}
+
+/// An approved grant starts one session, however many polls race for it.
+pub async fn device_polls_race_each_other<B: Backend>(first: Arc<Store<B>>, second: Arc<Store<B>>) {
+    let grant = first
+        .authorize_device("https://sync.example.com/device")
+        .await
+        .expect("a grant");
+    let code = grant.device_code.as_str().to_owned();
+    let account = Id::random().expect("random");
+    assert!(
+        first
+            .decide_device_grant(account, grant.user_code.as_str(), true)
+            .await
+            .expect("decided")
+    );
+    let (one, two) = tokio::join!(
+        first.poll_device_token(&code),
+        second.poll_device_token(&code)
+    );
+    let won = [&one, &two].iter().filter(|poll| poll.is_ok()).count();
+    assert_eq!(won, 1, "one poll takes the grant: {one:?} {two:?}");
+    let lost = if one.is_ok() { two } else { one };
+    assert_eq!(code_of(lost), "expired_token");
 }

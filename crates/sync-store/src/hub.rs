@@ -5,6 +5,7 @@
 //! passes through and nothing keeps it.
 
 use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use sync_protocol::types::Id;
@@ -53,6 +54,37 @@ impl Relayed {
     }
 }
 
+/// A receiver that keeps its workspace's entry in the hub. Dropping the last
+/// one of a workspace removes the entry, so the hub holds only workspaces
+/// someone waits on, whatever IDs requests name.
+pub struct Subscription<R> {
+    receiver: Option<R>,
+    hub: EventHub,
+    workspace: Id,
+    release: fn(&EventHub, Id),
+}
+
+impl<R> Deref for Subscription<R> {
+    type Target = R;
+
+    fn deref(&self) -> &R {
+        self.receiver.as_ref().expect("held until drop")
+    }
+}
+
+impl<R> DerefMut for Subscription<R> {
+    fn deref_mut(&mut self) -> &mut R {
+        self.receiver.as_mut().expect("held until drop")
+    }
+}
+
+impl<R> Drop for Subscription<R> {
+    fn drop(&mut self) {
+        drop(self.receiver.take());
+        (self.release)(&self.hub, self.workspace);
+    }
+}
+
 /// Wakes the pulls waiting on a workspace and carries its presence.
 #[derive(Clone, Default)]
 pub struct EventHub {
@@ -64,51 +96,97 @@ impl EventHub {
     /// A receiver that sees every change to `workspace` notified after this
     /// call. Subscribe before reading, so no commit slips between the read
     /// and the wait.
-    pub fn subscribe(&self, workspace: Id) -> watch::Receiver<u64> {
+    pub fn subscribe(&self, workspace: Id) -> Subscription<watch::Receiver<u64>> {
         let mut workspaces = self
             .workspaces
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        workspaces
+        let receiver = workspaces
             .entry(workspace)
             .or_insert_with(|| watch::channel(0).0)
-            .subscribe()
+            .subscribe();
+        Subscription {
+            receiver: Some(receiver),
+            hub: self.clone(),
+            workspace,
+            release: Self::release_changes,
+        }
+    }
+
+    fn release_changes(&self, workspace: Id) {
+        let mut workspaces = self
+            .workspaces
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if workspaces
+            .get(&workspace)
+            .is_some_and(|sender| sender.receiver_count() == 0)
+        {
+            workspaces.remove(&workspace);
+        }
     }
 
     /// Wakes every pull waiting on `workspace`. Call it only after the
     /// change commits.
     pub fn notify(&self, workspace: Id) {
-        let mut workspaces = self
+        let workspaces = self
             .workspaces
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if let Some(sender) = workspaces.get(&workspace) {
             sender.send_modify(|version| *version = version.wrapping_add(1));
-            if sender.receiver_count() == 0 {
-                workspaces.remove(&workspace);
-            }
         }
     }
 
     /// A receiver of the presence frames relayed in `workspace` after this
     /// call.
-    pub fn subscribe_presence(&self, workspace: Id) -> broadcast::Receiver<Relayed> {
+    pub fn subscribe_presence(&self, workspace: Id) -> Subscription<broadcast::Receiver<Relayed>> {
         let mut presence = self.presence.lock().unwrap_or_else(PoisonError::into_inner);
-        presence
+        let receiver = presence
             .entry(workspace)
             .or_insert_with(|| broadcast::channel(RELAY_BACKLOG).0)
-            .subscribe()
+            .subscribe();
+        Subscription {
+            receiver: Some(receiver),
+            hub: self.clone(),
+            workspace,
+            release: Self::release_presence,
+        }
+    }
+
+    fn release_presence(&self, workspace: Id) {
+        let mut presence = self.presence.lock().unwrap_or_else(PoisonError::into_inner);
+        if presence
+            .get(&workspace)
+            .is_some_and(|sender| sender.receiver_count() == 0)
+        {
+            presence.remove(&workspace);
+        }
     }
 
     /// Hands a presence frame to `workspace`'s connections on this
     /// instance.
     pub fn relay(&self, workspace: Id, relayed: Relayed) {
-        let mut presence = self.presence.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(sender) = presence.get(&workspace)
-            && sender.send(relayed).is_err()
-        {
-            presence.remove(&workspace);
+        let presence = self.presence.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(sender) = presence.get(&workspace) {
+            let _ = sender.send(relayed);
         }
+    }
+
+    /// How many workspaces the hub holds an entry for, as change channels
+    /// and presence channels.
+    pub fn entries(&self) -> (usize, usize) {
+        let workspaces = self
+            .workspaces
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len();
+        let presence = self
+            .presence
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len();
+        (workspaces, presence)
     }
 }
 

@@ -257,7 +257,13 @@ async fn patch<B: Backend>(
             let mut body = bytes::BytesMut::with_capacity(usize::try_from(next).unwrap_or(0));
             let mut frames = request.into_data_stream();
             while let Some(frame) = futures::StreamExt::next(&mut frames).await {
-                let frame = frame.map_err(|_| refused("bad_request", "the body broke off"))?;
+                let frame = frame.map_err(|error| {
+                    if crate::listen::is_late(&error) {
+                        crate::http::late_body()
+                    } else {
+                        refused("bad_request", "the body broke off")
+                    }
+                })?;
                 if body.len() + frame.len() > SEGMENT_LEN {
                     return Err(too_large());
                 }

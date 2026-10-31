@@ -154,6 +154,180 @@ fn disk(data: &Path) -> DiskStore {
     DiskStore::open(&data.join("blobs")).expect("the blob store")
 }
 
+/// `backup --to` with a bare file name writes into the working directory,
+/// and a secret already there stops it before the copy, with nothing left
+/// behind, so the rerun works.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn backup_takes_a_bare_file_name_and_leaves_nothing_when_it_fails() {
+    let (root, data) = fresh();
+    let backup = || {
+        Command::new(BIN)
+            .args(["backup", "--to", "b.sqlite3", "--data"])
+            .arg(&data)
+            .current_dir(root.path())
+            .output()
+            .expect("runs")
+    };
+    let secret = root.path().join("b.sqlite3.secret");
+    let copy = root.path().join("b.sqlite3");
+    std::fs::write(&secret, b"in the way").expect("written");
+    let refused = backup();
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("b.sqlite3.secret"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(!root.path().join("b.sqlite3.partial").exists());
+    assert!(!copy.exists());
+
+    std::fs::remove_file(&secret).expect("removed");
+    let done = backup();
+    assert!(done.status.success(), "{}", stderr(&done));
+    assert!(copy.exists() && secret.exists());
+    assert!(!root.path().join("b.sqlite3.partial").exists());
+}
+
+/// A database too damaged to read holds no lease anyone can see, so
+/// `restore` keeps it under a side name and takes the backup in its place.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restore_sets_a_damaged_database_aside() {
+    let (root, data) = fresh();
+    let copy = root.path().join("copy.sqlite3");
+    let output = command(&["backup", "--to", text(&copy)], &data);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let before = generation(&db_file(&data)).await;
+    std::fs::write(db_file(&data), vec![0x5a; 8192]).expect("damaged");
+
+    let output = command(&["restore", "--from", text(&copy)], &data);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(generation(&db_file(&data)).await > before);
+    let side: Vec<_> = std::fs::read_dir(&data)
+        .expect("listed")
+        .map(|entry| entry.expect("an entry").file_name())
+        .filter(|name| name.to_string_lossy().contains(".damaged-"))
+        .collect();
+    assert_eq!(side.len(), 1, "{side:?}");
+    assert_eq!(
+        std::fs::read(data.join(&side[0])).expect("kept"),
+        vec![0x5a; 8192]
+    );
+    assert!(stderr(&output).contains(".damaged-"), "{}", stderr(&output));
+    let server = Server::start(&data);
+    assert!(
+        Client::new(server.base(), None)
+            .get("/v2/limits")
+            .await
+            .status
+            .is_success()
+    );
+}
+
+/// By the time a restore reports its generation, a blob no operation lists
+/// has its fresh 24 hours, so a `serve` started at that moment collects
+/// nothing the check would have kept (§19).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unlisted_blobs_are_safe_when_the_generation_rises() {
+    let (root, data) = fresh();
+    let path = db_file(&data);
+    let row = Row::new(5);
+    row.store(&disk(&data)).await;
+    row.insert(&path, false).await;
+    let stale = unix_now() as i64 - 3_600;
+    set_delete_after(&path, row.blob, stale).await;
+    let copy = root.path().join("copy.sqlite3");
+    let output = command(&["backup", "--to", text(&copy)], &data);
+    assert!(output.status.success(), "{}", stderr(&output));
+
+    let at_raise = |data: &Path, blob| {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(blob_state(data, blob))
+        })
+    };
+    let store = sync_server::BlobStoreConfig::Disk;
+    let mut seen = None;
+    sync_server::restore::restore(&data, &copy, None, &store, |_| {
+        seen = Some(at_raise(&data, row.blob));
+    })
+    .await
+    .expect("restored");
+    let after = |state: Option<(i64, i64, Option<i64>)>| {
+        state.expect("reported").2.expect("a time") > unix_now() as i64
+    };
+    assert!(after(seen), "restore");
+
+    set_delete_after(&path, row.blob, stale).await;
+    let mut seen = None;
+    sync_server::restore::mark_restored(&data, &store, |_| {
+        seen = Some(at_raise(&data, row.blob));
+    })
+    .await
+    .expect("marked");
+    assert!(after(seen), "mark-restored");
+}
+
+/// An instance that stayed up while another generation reached its database
+/// stops, because it would go on reporting the old one (§14).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_lease_reports_a_generation_that_moved() {
+    let (_root, data) = fresh();
+    let config = sync_server::Config::new(data.clone(), "127.0.0.1:0".parse().expect("an address"));
+    let store = std::sync::Arc::new(sync_server::open_store(&config).await.expect("the store"));
+    let (moved, generation_moved) = tokio::sync::oneshot::channel();
+    let lease = sync_server::restore::spawn_lease(
+        store.clone(),
+        Id::random().expect("random"),
+        std::time::Duration::from_millis(20),
+        moved,
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(!lease.is_finished(), "the same generation holds the lease");
+    raise_behind_the_server(&db_file(&data)).await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), generation_moved)
+        .await
+        .expect("the lease sees it")
+        .expect("it fires");
+    store.backend().close().await;
+}
+
+/// The change `mark-restored` makes on another machine.
+async fn raise_behind_the_server(path: &Path) {
+    let mut connection = database(path).await;
+    sqlx::query("UPDATE server SET restore_generation = restore_generation + 1")
+        .execute(&mut connection)
+        .await
+        .expect("raised");
+    connection.close().await.expect("closed");
+}
+
+/// `serve` itself stops with an error at its next lease refresh.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serve_exits_when_the_generation_moves() {
+    let (_root, data) = fresh();
+    let mut server = Server::start(&data);
+    raise_behind_the_server(&db_file(&data)).await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
+    let status = loop {
+        if let Some(status) = server.child.try_wait().expect("a status") {
+            break status;
+        }
+        assert!(std::time::Instant::now() < deadline, "serve stays up");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
+    assert!(!status.success());
+}
+
+async fn set_delete_after(path: &Path, blob: Id, at: i64) {
+    let mut connection = database(path).await;
+    sqlx::query("UPDATE blobs SET delete_after = ?1 WHERE blob = ?2")
+        .bind(at)
+        .bind(&blob.0[..])
+        .execute(&mut connection)
+        .await
+        .expect("updated");
+    connection.close().await.expect("closed");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn migrate_starts_the_generation_at_the_current_time() {
     let before = unix_now();

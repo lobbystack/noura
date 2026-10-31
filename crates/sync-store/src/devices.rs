@@ -209,8 +209,9 @@ impl<B: Backend> Store<B> {
         self.backend()
             .write(Box::new(move |txn: &mut B::Write| {
                 Box::pin(async move {
-                    let Some(mut grant) =
-                        txn.device_grant_by_user_code(user_code_hash(&code)).await?
+                    let Some(mut grant) = txn
+                        .locked_device_grant_by_user_code(user_code_hash(&code))
+                        .await?
                     else {
                         return Ok(false);
                     };
@@ -251,7 +252,7 @@ impl<B: Backend> Store<B> {
             .backend()
             .write(Box::new(move |txn: &mut B::Write| {
                 Box::pin(async move {
-                    let Some(mut grant) = txn.device_grant(code_hash).await? else {
+                    let Some(mut grant) = txn.locked_device_grant(code_hash).await? else {
                         return Ok(Err((
                             "expired_token",
                             "the code expired or was used; sign in again",

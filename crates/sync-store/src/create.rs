@@ -174,6 +174,9 @@ pub(crate) async fn commit(
             Err(refuse("id_conflict", "a workspace with this ID exists"))
         };
     }
+    if txn.workspace_closed(workspace).await? {
+        return Err(refuse("id_conflict", "a closed workspace held this ID"));
+    }
     // The creator's chain row makes creations by one account count its
     // workspaces one at a time. Only a chain append, which takes no other
     // lock, also locks that row, so no lock cycle forms (§15).
