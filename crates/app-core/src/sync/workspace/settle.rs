@@ -173,17 +173,21 @@ impl WorkspaceSync {
         let on_disk = branches.iter().any(|b| b.on_disk && b.path.is_some());
         if !edited && !on_disk {
             // The device holds neither: it shows the lowest digest, or the
-            // edit when the other branch deletes.
-            let show = if edit_against_delete {
-                branches
-                    .iter()
-                    .find(|b| b.path.is_some())
-                    .expect("one edit")
+            // edit when the other branch deletes. A branch whose bytes it
+            // can't build yet gives way to the next, and the conflict stands
+            // either way.
+            let first = if edit_against_delete {
+                branches.iter().find(|b| b.path.is_some())
             } else {
-                &branches[0]
+                branches.first()
             };
-            let show = show.key;
-            self.adopt_state(rid, show, false, contents)?;
+            let order = first.into_iter().chain(&branches).map(|b| b.key);
+            for key in order.collect::<Vec<_>>() {
+                if self.can_show(&rid, &key, contents) {
+                    self.adopt_state(rid, key, false, contents)?;
+                    break;
+                }
+            }
         }
         for branch in &branches {
             self.keep_for_review(&rid, &branch.key, contents)?;
@@ -280,7 +284,7 @@ impl WorkspaceSync {
             // change goes to review (§9).
             Placement::Outside(_) => return self.keep_for_review(&rid, &target, contents),
         };
-        let body = self.content_body(&rid, &target, contents)?;
+        let (body, revision) = self.state_body(&rid, &target, contents)?;
         let (path, displaced) = self.destination(&rid, &target, &synced);
         for other in displaced {
             if let Err(error) = self.move_aside(&other) {
@@ -288,7 +292,7 @@ impl WorkspaceSync {
                 return self.keep_for_review(&rid, &target, contents);
             }
         }
-        match self.place(&rid, &path, &body, content.revision) {
+        match self.place(&rid, &path, &body, revision) {
             Ok(()) => {
                 self.state.objects.get_mut(&rid).expect("present").base = Some(target);
                 Ok(())
@@ -298,6 +302,39 @@ impl WorkspaceSync {
             }
             Err(error) => Err(error),
         }
+    }
+
+    /// The bytes the file takes for the state at `key`, with their
+    /// revision: a text-mode state's come from the note's document, which
+    /// its record alone doesn't hold (§22).
+    fn state_body(
+        &mut self,
+        rid: &Id,
+        key: &OpKey,
+        contents: &Bodies,
+    ) -> Result<(Body, Digest), SyncError> {
+        let content = self.state.objects[rid]
+            .states
+            .get(key)
+            .and_then(|s| s.content.clone())
+            .ok_or_else(|| SyncError::Invalid("that version didn't open".into()))?;
+        if content.text.is_some()
+            && let Some(bytes) = self.text_body_of(rid)?
+        {
+            let revision = sync_protocol::crypto::hash(&bytes);
+            return Ok((Body::Bytes(bytes), revision));
+        }
+        Ok((self.content_body(rid, key, contents)?, content.revision))
+    }
+
+    /// Whether the device can write the file of the state at `key`.
+    fn can_show(&mut self, rid: &Id, key: &OpKey, contents: &Bodies) -> bool {
+        let deletes = self.state.objects[rid]
+            .states
+            .get(key)
+            .and_then(|s| s.content.as_ref())
+            .is_some_and(|content| content.delete);
+        deletes || self.state_body(rid, key, contents).is_ok()
     }
 
     /// Puts `body`, whose bytes hash to `revision`, at `path` as `rid`'s

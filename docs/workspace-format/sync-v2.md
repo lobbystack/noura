@@ -971,7 +971,7 @@ Sync keeps both versions:
 
 - The device whose local file matches a branch, or has local edits, keeps its file untouched.
 - Every other branch goes to the local review store under `.noura/sync/<device-id>/conflicts/`, which never uploads.
-- A device that holds neither materializes the branch with the lowest operation digest and stores the rest for review.
+- A device that holds neither materializes the branch with the lowest operation digest and stores the rest for review. A text snapshot branch materializes from the note's document ([§22](#22-live-collaboration)). A branch whose bytes the device can't build gives way to the next one, and the conflict stands either way.
 - Status counts the conflict until you choose.
 
 Choosing writes a state operation that covers every branch. Any other edit you make to a conflicted object covers only the branch your file matched and its identical copies ([§13](#supersession-and-live-operations)), so the conflict stays, with your edit as that branch's new state, until you choose.

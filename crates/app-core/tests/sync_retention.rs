@@ -11,6 +11,7 @@ use app_core::sync::SyncError;
 use app_core::sync::recovery::{Recovery, open_kit};
 use app_core::sync::workspace::WorkspaceSync;
 use app_core::sync::workspace::rebuild::HeldChoice;
+use app_core::sync::workspace::text::Entered;
 use sync_protocol::codec::{Bytes, Decode, Encode, Sorted, Text};
 use sync_protocol::messages::{CursorCompactedDetail, ErrorBody, Page, PageStatus, PullResponse};
 use sync_store::{Backend, Retention};
@@ -552,6 +553,58 @@ async fn an_edit_refused_again_and_again_overwrites_no_other_version() {
     assert_eq!(pair.b.files()["Plan.md"], b"# Plan from the desktop\n");
     assert_eq!(pair.sync_a.status().conflicts, 1);
     assert_eq!(pair.sync_b.status().conflicts, 1);
+}
+
+/// A new device that bootstraps past a conflict between a text snapshot and
+/// a file holds neither side, and the snapshot's record alone holds no file
+/// bytes. It shows a version and the bucket finishes (§16, §18). Eight notes
+/// make it near certain that some snapshot has the lowest digest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bootstrap_shows_a_conflict_of_a_snapshot_and_a_file() {
+    let mut pair = ready(Server::start_with_retention(ENTRIES, keep_little()).await).await;
+    let notes: Vec<String> = (0..8).map(|i| format!("Note{i}.md")).collect();
+    for note in &notes {
+        pair.a.write(note, format!("# {note}\n").as_bytes());
+    }
+    both_rounds(&mut pair).await;
+    for note in &notes {
+        let (entered, document) = pair.sync_a.open_text(note).expect("the note opens");
+        assert_eq!(entered, Entered::Yes);
+        drop(document);
+        pair.b
+            .write(note, format!("# {note} from the desktop\n").as_bytes());
+    }
+    both_rounds(&mut pair).await;
+    assert_eq!(pair.sync_b.status().conflicts, notes.len());
+    walk_the_floor(&mut pair, "after", 16).await;
+    assert!(floor_of(&pair).await > 0, "the floor moved");
+
+    let mut third = approve(
+        &pair.server,
+        &mut pair.laptop,
+        std::slice::from_mut(pair.sync_a.remote_mut().expect("connected")),
+    )
+    .await;
+    let mut c = Folder::new("Third");
+    let mut sync_c = WorkspaceSync::download(
+        &mut third.service,
+        c.engine.clone(),
+        pair.sync_a.workspace(),
+        &mut c.registry,
+    )
+    .await
+    .expect("the download starts");
+    for _ in 0..2 {
+        sync_c
+            .round(&mut third.service, 0)
+            .await
+            .expect("the conflict doesn't stop the device");
+    }
+    assert_eq!(sync_c.status().conflicts, notes.len());
+    let files = c.files();
+    for note in &notes {
+        assert!(files.contains_key(note), "{note} shows a version");
+    }
 }
 
 async fn a_reader_keeps_up_with_old_cursors<B: Backend>(server: Server<B>) {
