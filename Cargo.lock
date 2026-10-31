@@ -412,6 +412,7 @@ dependencies = [
  "hayro",
  "jiff",
  "jsonschema",
+ "libc",
  "local-core",
  "nucleo-matcher",
  "plugin-host",

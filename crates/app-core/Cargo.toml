@@ -77,6 +77,7 @@ proptest.workspace = true
 # The tests stop the index from accepting writes.
 rusqlite.workspace = true
 sqlx = { workspace = true, features = ["postgres"] }
+libc.workspace = true
 serde_yaml_ng.workspace = true
 # The sync tests run the real server in-process, on SQLite and on a
 # throwaway PostgreSQL cluster.

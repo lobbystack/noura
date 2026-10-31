@@ -789,6 +789,7 @@ async fn drive<B: Backend, D: Database<B>>(store: &str, config: Config, server: 
     let measured = warmed.map(|at| at.elapsed());
     let pushes_held = shared.pushes.load(Ordering::Relaxed) - pushes_at_warmup;
     let rate = measured.map_or(0.0, |length| pushes_held as f64 / length.as_secs_f64());
+    println!("{rate:.1} pushes a second after the warmup");
     report.set("pushes", shared.pushes.load(Ordering::Relaxed));
     report.set("pushes_per_second", (rate * 10.0).round() / 10.0);
     report.set("wal_peak_bytes", wal_peak);

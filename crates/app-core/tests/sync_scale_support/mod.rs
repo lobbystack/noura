@@ -4,9 +4,10 @@
 //! size on either store.
 //!
 //! The server runs on a runtime of its own, whose threads count as the
-//! server's. Nothing crosses between the two sides but sockets, so each
-//! side frees what it allocated. The counts cover Rust's heap: SQLite's page
-//! cache and PostgreSQL's processes stay outside them.
+//! server's, as do the threads its SQLite driver starts. Nothing crosses
+//! between the two sides but sockets, so each side frees what it allocated.
+//! The counts cover Rust's heap: SQLite's page cache and PostgreSQL's
+//! processes stay outside them.
 
 #![allow(dead_code)]
 
@@ -20,6 +21,8 @@ use sync_protocol::types::Digest;
 
 const CLIENT: usize = 0;
 const SERVER: usize = 1;
+/// A thread that hasn't allocated yet.
+const UNKNOWN: usize = 2;
 
 static CURRENT: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
 static PEAK: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
@@ -27,20 +30,44 @@ static PEAK: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
 thread_local! {
     /// The side this thread allocates for. It holds no destructor, so the
     /// allocator can read it at any point of a thread's life.
-    static SIDE: Cell<usize> = const { Cell::new(CLIENT) };
+    static SIDE: Cell<usize> = const { Cell::new(UNKNOWN) };
+}
+
+/// The side a thread belongs to by its name, which needs no allocation.
+fn side_by_name() -> usize {
+    let mut name = [0 as libc::c_char; 32];
+    // SAFETY: the buffer outlives the call and its length is right.
+    let read =
+        unsafe { libc::pthread_getname_np(libc::pthread_self(), name.as_mut_ptr(), name.len()) };
+    // SAFETY: on success the name ends in a NUL inside the buffer.
+    let bytes = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }.to_bytes();
+    if read == 0 && bytes.starts_with(b"sqlx-sqlite") {
+        SERVER
+    } else {
+        CLIENT
+    }
+}
+
+fn side() -> usize {
+    SIDE.with(|side| {
+        if side.get() == UNKNOWN {
+            side.set(side_by_name());
+        }
+        side.get()
+    })
 }
 
 /// Wraps the system allocator and counts each side's heap.
 pub struct Counting;
 
 fn grew(size: usize) {
-    let side = SIDE.with(Cell::get);
+    let side = side();
     let now = CURRENT[side].fetch_add(size as i64, Ordering::Relaxed) + size as i64;
     PEAK[side].fetch_max(now, Ordering::Relaxed);
 }
 
 fn shrank(size: usize) {
-    CURRENT[SIDE.with(Cell::get)].fetch_sub(size as i64, Ordering::Relaxed);
+    CURRENT[side()].fetch_sub(size as i64, Ordering::Relaxed);
 }
 
 // SAFETY: every call goes to the system allocator unchanged; the counters
@@ -89,14 +116,17 @@ pub fn as_server<T>(start: impl FnOnce() -> T) -> T {
     result
 }
 
-/// The runtime the test's clients run on.
+/// The runtime the test's clients run on. Each client's journal write waits
+/// for the disk on its worker, so a fleet needs far more workers than cores.
 pub fn client_runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4)
+        .worker_threads(CLIENT_WORKERS)
         .enable_all()
         .build()
         .expect("a runtime")
 }
+
+const CLIENT_WORKERS: usize = 64;
 
 /// The server's heap now, in bytes.
 pub fn server_heap() -> u64 {
