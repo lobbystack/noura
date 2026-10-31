@@ -15,7 +15,7 @@ use app_core::sync::recovery::KIT_WARNING;
 use egui::{Button, RichText, TextEdit, Ui, UiBuilder, accesskit::Role};
 
 use crate::FolderPicker;
-use crate::common::muted;
+use crate::common::{muted, primary_button};
 use crate::theme::{Palette, TITLE_SIZE};
 
 /// What the section remembers between frames.
@@ -160,6 +160,19 @@ pub(crate) fn section(
                         .clicked()
                     {
                         actions.push(AccountAction::ConfirmReset(typed.clone()));
+                    }
+                    if ui.button("Cancel").clicked() {
+                        actions.push(AccountAction::CancelSignIn);
+                    }
+                });
+            });
+        }
+        AccountPhase::KitLost => {
+            group(ui, "This kit can't recover your account", |ui| {
+                ui.label("The server's operator restored a backup that lacks the devices your kit names. Reset your devices to go on.");
+                ui.horizontal(|ui| {
+                    if primary_button(ui, "Reset devices", !screen.busy).clicked() {
+                        actions.push(AccountAction::StartReset);
                     }
                     if ui.button("Cancel").clicked() {
                         actions.push(AccountAction::CancelSignIn);
@@ -325,12 +338,12 @@ fn invitation_group(
                 if *downloading {
                     muted(ui, "Noura is downloading the workspace.");
                 } else {
-                    ui.label("You joined. Choose an empty folder for its files.");
+                    ui.label("You joined. Choose an empty folder for its files, or the folder you synced before the owner set this workspace up again.");
                     if ui
                         .add_enabled(!screen.busy, Button::new("Choose a folder"))
                         .clicked()
                     {
-                        chosen = picker.pick_folder("Choose an empty folder for the workspace");
+                        chosen = picker.pick_folder("Choose a folder for the workspace");
                     }
                 }
             }

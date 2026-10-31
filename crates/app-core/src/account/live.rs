@@ -534,11 +534,15 @@ pub(crate) fn recovery_view(account: Id, review: &RecoveryReview) -> RecoveryVie
         unverified: review
             .unverified
             .iter()
-            .map(|(workspace, code)| {
-                format!(
+            .map(|(workspace, code)| match *code {
+                "sync_restore_lost" => format!(
+                    "The server lost what your kit names in workspace {}, so the recovery leaves it out. An owner can set it up again.",
+                    short_id(workspace)
+                ),
+                code => format!(
                     "Noura couldn't verify workspace {} ({code}), so the recovery leaves it out.",
                     short_id(workspace)
-                )
+                ),
             })
             .collect(),
         devices: review
@@ -1775,6 +1779,13 @@ impl Driver {
         let state = self.app_data.join("sync").join("recovery");
         let recovery = match Recovery::begin(&signed_in, kit, self.store.clone(), &state).await {
             Ok(recovery) => recovery,
+            Err(SyncError::Check("sync_restore_lost")) => {
+                self.shared.update(|screen| {
+                    screen.busy = false;
+                    screen.phase = AccountPhase::KitLost;
+                });
+                return Ok(());
+            }
             Err(error) => {
                 self.shared
                     .update(|screen| screen.phase = AccountPhase::SignedOut);

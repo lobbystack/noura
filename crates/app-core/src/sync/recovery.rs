@@ -341,6 +341,16 @@ pub struct Recovery {
     stored: StoredDevice,
 }
 
+/// Whether reading a workspace the kit lists shows that a restore lost the
+/// head the kit names there.
+fn lost_kit_head(error: &SyncError) -> bool {
+    match error {
+        SyncError::Check(code) => matches!(*code, "sync_policy_rollback" | "sync_policy_forked"),
+        SyncError::Refused { code, .. } => code == "forbidden" || code == "not_found",
+        _ => false,
+    }
+}
+
 impl Recovery {
     /// What changed since the kit, for you to confirm, with the devices
     /// you may keep.
@@ -499,10 +509,10 @@ impl Recovery {
             let policy = match service.verified_policy(listed.workspace).await {
                 Ok(policy) => policy,
                 // A restore lost the head the kit lists: this workspace
-                // stops, and the recovery goes on for the others (§14).
-                Err(SyncError::Check("sync_policy_rollback" | "sync_policy_forked"))
-                    if generation > listed.generation =>
-                {
+                // stops, and the recovery goes on for the others (§14). The
+                // change that recorded the kit's identity may have gone with
+                // it, or the whole workspace, so the server refuses the read.
+                Err(error) if generation > listed.generation && lost_kit_head(&error) => {
                     service.heads.forget_workspace(listed.workspace)?;
                     review
                         .unverified

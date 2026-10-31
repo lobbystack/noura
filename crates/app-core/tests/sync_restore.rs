@@ -78,6 +78,114 @@ async fn a_restore_that_lost_only_content_writes_it_again() {
     assert!(pair.a.files().contains_key("After.md"));
 }
 
+/// The backup keeps a removal but not the checkpoint that followed it. The
+/// removal makes a checkpoint due again after the restore, and a rewound
+/// writer signs it, at the removed device's final head (§14, §17).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rewound_writer_signs_the_checkpoint_a_surviving_removal_made_due() {
+    let never = std::time::Duration::from_secs(1 << 40);
+    let mut pair = pair_on(Server::start_with_interval(6).await).await;
+    pair.sync_a.set_checkpoint_wait(NO_WAIT);
+    pair.sync_b.set_checkpoint_wait(NO_WAIT);
+    let (workspace, domain) = (pair.sync_a.workspace(), pair.sync_a.domain());
+
+    // A third device writes, and everyone reaches a first checkpoint.
+    let mut third = approve(
+        &pair.server,
+        &mut pair.laptop,
+        std::slice::from_mut(pair.sync_a.remote_mut().expect("connected")),
+    )
+    .await;
+    let mut remote = third.service.open_workspace(workspace).await.expect("opens");
+    third
+        .service
+        .push_file(&mut remote, "Third.md", b"# Third\n")
+        .await
+        .expect("written");
+    for i in 0..8 {
+        pair.a.write(&format!("First {i}.md"), b"# First\n");
+        rounds(&mut pair).await;
+    }
+    let first = pair.sync_a.latest_checkpoint().expect("a checkpoint").digest();
+    assert_eq!(
+        pair.sync_b.latest_checkpoint().map(|c| c.digest()),
+        Some(first)
+    );
+
+    // The removal lands and rotates; the backup holds no checkpoint after it.
+    pair.sync_a.set_checkpoint_wait(never);
+    pair.sync_b.set_checkpoint_wait(never);
+    pair.laptop
+        .service
+        .remove_device(third.id(), &[], &mut [])
+        .await
+        .expect("removed");
+    rounds(&mut pair).await;
+    pair.desktop
+        .service
+        .record_heads(pair.sync_b.remote_mut().expect("connected"), &[])
+        .await
+        .expect("recorded");
+    rounds(&mut pair).await;
+    assert!(!pair.sync_a.removal_hold() && !pair.sync_b.removal_hold());
+    let copy = pair.server.backup("before.sqlite3").await;
+
+    // The checkpoint after the removal, then content, both lost.
+    pair.sync_a.set_checkpoint_wait(NO_WAIT);
+    pair.sync_b.set_checkpoint_wait(NO_WAIT);
+    rounds(&mut pair).await;
+    let signed = pair.sync_a.latest_checkpoint().expect("signed").clone();
+    assert!(signed.digest() != first, "a checkpoint followed the removal");
+    let head_of_third = |heads: &[sync_protocol::records::Ref]| {
+        heads
+            .iter()
+            .find(|h| h.device == third.id())
+            .map(|h| (h.counter, h.op_digest))
+    };
+    let lost = pair
+        .service
+        .client()
+        .checkpoint(workspace, domain)
+        .await
+        .expect("answered")
+        .expect("the server holds it");
+    write_after_backup(&mut pair).await;
+
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    pair.sync_a.set_checkpoint_wait(NO_WAIT);
+    pair.sync_b.set_checkpoint_wait(NO_WAIT);
+    for _ in 0..3 {
+        rounds(&mut pair).await;
+    }
+
+    let again = pair.sync_a.latest_checkpoint().expect("signed again").clone();
+    assert_eq!(again.body.number, signed.body.number);
+    assert!(again.digest() != signed.digest());
+    assert_eq!(
+        pair.sync_b.latest_checkpoint().map(|c| c.digest()),
+        Some(again.digest())
+    );
+    assert!(pair.sync_a.checkpoint_failures().is_empty());
+    assert!(pair.sync_b.checkpoint_failures().is_empty());
+    assert_eq!(pair.sync_a.restore_lost(), None);
+    assert_eq!(pair.a.files(), pair.b.files());
+    let served = pair
+        .service
+        .client()
+        .checkpoint(workspace, domain)
+        .await
+        .expect("answered")
+        .expect("the server holds it");
+    // The first checkpoint after a removal still lists the device's final
+    // head (§17), which the lost one listed too.
+    assert!(head_of_third(&served.bundle.heads).is_some());
+    assert_eq!(
+        head_of_third(&served.bundle.heads),
+        head_of_third(&lost.bundle.heads)
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_file_copy_of_the_database_is_a_rollback_until_the_generation_changes() {
     let mut pair = pair().await;

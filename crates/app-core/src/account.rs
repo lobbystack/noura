@@ -113,6 +113,9 @@ pub enum AccountPhase {
     SignedIn(Box<SignedInView>),
     /// Reset devices: the emailed code starts a new chain (§7).
     ResetCode,
+    /// A restore lost the account head your kit names, so the kit can't
+    /// recover your account and Reset devices is the way back (§14).
+    KitLost,
     /// A device of your account removed this one (§7).
     Removed {
         /// The fingerprint of the device that removed it.

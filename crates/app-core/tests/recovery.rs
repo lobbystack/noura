@@ -359,6 +359,77 @@ async fn a_kit_whose_head_a_restore_lost_says_so() {
     assert_eq!(error.code(), Some("sync_restore_lost"), "{error:?}");
 }
 
+/// The account head survives and one workspace's head doesn't: that
+/// workspace stops, named in the review, and the recovery goes on (§14).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kit_whose_workspace_head_a_restore_lost_leaves_that_workspace_out() {
+    let mut pair = sync_support::pair().await;
+    let account = pair.laptop.credentials.account;
+    let lost = pair.sync_a.workspace();
+    let mut other = pair
+        .service
+        .create_workspace("Kept")
+        .await
+        .expect("created");
+    let outside = tempfile::tempdir().unwrap();
+    let path = outside.path().join("kit");
+    let synced = pair.service.open_workspace(lost).await.expect("opens");
+    let mut remotes = vec![synced, other];
+    let export = pair
+        .service
+        .export_kit(&path, &[], &mut remotes)
+        .await
+        .expect("exported");
+    other = remotes.pop().expect("the kept workspace");
+    let mut kit = open_kit(&path, &export.secret).expect("it opens");
+    assert_eq!(kit.workspaces.len(), 2);
+
+    // The backup lacks the head the kit lists for one workspace.
+    let copy = pair.server.backup("before.sqlite3").await;
+    let listed = kit
+        .workspaces
+        .iter()
+        .find(|w| w.workspace == lost)
+        .expect("listed");
+    let connection = rusqlite::Connection::open(&copy).expect("the copy opens");
+    let workspace = format!("X'{}'", lost.to_hex());
+    let revision = listed.revision;
+    for sql in [
+        format!(
+            "DELETE FROM policy_changes WHERE workspace = {workspace} AND revision = {revision}"
+        ),
+        format!(
+            "UPDATE workspaces SET policy_revision = {revision} - 1, policy_head = \
+             (SELECT digest FROM policy_changes WHERE workspace = {workspace} \
+             AND revision = {revision} - 1) WHERE workspace = {workspace}"
+        ),
+    ] {
+        assert!(connection.execute(&sql, []).expect("the change") > 0, "{sql}");
+    }
+    drop(connection);
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let restored = pair.server.put_back(&copy, true).await;
+    let signed_in = restored.sign_in(account, &restored.base).await;
+    let client = SyncClient::connect(&restored.base, &signed_in.session_token)
+        .await
+        .expect("connects");
+    kit.origin = sync_protocol::codec::Text::new(client.origin().expect("an origin")).unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let store = Arc::new(MemorySecrets::default());
+    let secrets: app_core::sync::Secrets = store.clone();
+    let recovery = match Recovery::begin(&signed_in, kit, secrets, state.path()).await {
+        Ok(recovery) => recovery,
+        Err(error) => panic!("the recovery goes on: {error:?}"),
+    };
+    assert_eq!(
+        recovery.review().unverified,
+        vec![(lost, "sync_restore_lost")]
+    );
+    let (_, workspaces, _) = recovery.finish(&[], &*store).await.expect("recovered");
+    let open: Vec<Id> = workspaces.iter().map(|w| w.workspace).collect();
+    assert_eq!(open, [other.workspace]);
+}
+
 async fn recovered_by<B: Backend>(server: &Server<B>, kit: &KitPayload) -> Id {
     let account = kit.account;
     let signed_in = server.sign_in(account, &server.base).await;

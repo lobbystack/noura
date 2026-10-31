@@ -24,7 +24,7 @@ use super::settle::{Bodies, Body, free_name};
 use super::state::{Held, OpKey, State};
 use super::{SyncError, SyncService, WorkspaceSync, core, profile_of};
 use crate::sync::journal::{self, Journal, STATE_FILE};
-use crate::sync::registry::Registry;
+use crate::sync::registry::{Registry, SyncedFolder};
 
 use sync_protocol::matching::HeldRoot;
 pub use sync_protocol::matching::MARKER;
@@ -120,6 +120,53 @@ impl WorkspaceSync {
             .of_folder(engine.root())
             .cloned()
             .ok_or_else(|| SyncError::Invalid("this folder doesn't sync".into()))?;
+        let workspace = entry.workspace;
+        Self::match_folder(service, engine, registry, entry, workspace).await
+    }
+
+    /// Connects the folder a member synced before to `workspace`, which an
+    /// owner set up after closing the folder's old workspace (§14). Its
+    /// files match as after a lost journal: the device holds every file
+    /// under a marker of the old workspace's restricted domains and every
+    /// file that differs from the new workspace's live state. A folder of
+    /// a workspace that's still open stays with it.
+    pub async fn rejoin(
+        service: &mut SyncService,
+        engine: Arc<WorkspaceEngine>,
+        workspace: Id,
+        registry: &mut Registry,
+    ) -> Result<Self, SyncError> {
+        let entry = registry
+            .of_folder(engine.root())
+            .cloned()
+            .ok_or_else(|| SyncError::Invalid("this folder doesn't sync".into()))?;
+        match service.client().policy(entry.workspace, 0).await {
+            Err(SyncError::Refused { code, .. }) if code == "not_found" => {}
+            Err(error) => return Err(error),
+            Ok(_) => {
+                return Err(SyncError::Invalid(
+                    "This folder syncs a workspace that's still open. Choose an empty folder."
+                        .into(),
+                ));
+            }
+        }
+        // The new workspace verifies before the old journal moves aside.
+        service.open_workspace(workspace).await?;
+        let old = entry.workspace;
+        let sync = Self::match_folder(service, engine, registry, entry, workspace).await?;
+        service.kept_heads_mut().forget_workspace(old)?;
+        Ok(sync)
+    }
+
+    /// Syncs the folder of `entry` with `workspace` without this device's
+    /// journal, whose review store moves aside.
+    async fn match_folder(
+        service: &mut SyncService,
+        engine: Arc<WorkspaceEngine>,
+        registry: &mut Registry,
+        entry: SyncedFolder,
+        workspace: Id,
+    ) -> Result<Self, SyncError> {
         let device = service.credentials().keys.device();
         let secrets = service.secrets();
         let journal = Journal::open(engine.root(), &device, &*secrets)?;
@@ -128,13 +175,11 @@ impl WorkspaceSync {
         let mut archived = Self::archive(&journal, old.as_ref(), &old_replica)?;
         drop(journal);
         let server = service.client().base().to_owned();
-        let replica = registry.connect(&server, entry.account, entry.workspace, engine.root())?;
+        let replica = registry.connect(&server, entry.account, workspace, engine.root())?;
         if entry.paused {
-            registry.update(&server, &entry.account, &entry.workspace, |e| {
-                e.paused = true
-            })?;
+            registry.update(&server, &entry.account, &workspace, |e| e.paused = true)?;
         }
-        let mut remote = service.open_workspace(entry.workspace).await?;
+        let mut remote = service.open_workspace(workspace).await?;
         let (name, profile) = profile_of(service, &mut remote).await?;
         let generation = service.client().restore_generation();
         let mut sync = Self::start(
@@ -143,23 +188,7 @@ impl WorkspaceSync {
         sync.paused = entry.paused;
         archived.extend(old.map(|s| s.archived).unwrap_or_default());
         sync.state.archived = archived;
-        // Every local marker holds the files beneath it until a valid
-        // marker of the domain it names covers them (§9).
-        sync.state.held_roots = local_markers(sync.engine.root())
-            .into_iter()
-            .map(|folder| {
-                let named = sync
-                    .engine
-                    .read_synced(&format!("{folder}/{MARKER}"))
-                    .ok()
-                    .flatten()
-                    .and_then(|bytes| sync_protocol::records::parse_marker(&bytes));
-                HeldRoot {
-                    folder,
-                    domain: named,
-                }
-            })
-            .collect();
+        sync.hold_local_markers();
         sync.compare_own_chain(service).await?;
         // The client bootstraps again and matches its files (§15).
         sync.state.bootstrap = true;
@@ -185,6 +214,26 @@ impl WorkspaceSync {
         sync.match_local()?;
         sync.save()?;
         Ok(sync)
+    }
+
+    /// Holds the files beneath every local marker until a valid marker of
+    /// the domain it names covers them (§9).
+    pub(super) fn hold_local_markers(&mut self) {
+        self.state.held_roots = local_markers(self.engine.root())
+            .into_iter()
+            .map(|folder| {
+                let named = self
+                    .engine
+                    .read_synced(&format!("{folder}/{MARKER}"))
+                    .ok()
+                    .flatten()
+                    .and_then(|bytes| sync_protocol::records::parse_marker(&bytes));
+                HeldRoot {
+                    folder,
+                    domain: named,
+                }
+            })
+            .collect();
     }
 
     /// Moves an old journal's review store aside and lists what it kept.

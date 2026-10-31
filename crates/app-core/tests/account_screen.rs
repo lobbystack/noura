@@ -904,6 +904,66 @@ fn a_waiting_pull_doesnt_hold_up_what_you_do() {
 
 /// Reset devices through the real backend: a wrong code stays put, the
 /// right one starts a new chain and shows the new fingerprint.
+/// A recovery with a kit whose account head a restore lost offers Reset
+/// devices, through the real backend (§14).
+#[test]
+fn a_kit_the_server_lost_offers_reset_devices() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let path = outside.path().join("kit");
+    let (server, proxy) = runtime.block_on(Proxy::in_front());
+    let (restored, account_id, secret) = runtime.block_on(async {
+        let mut laptop = first_desktop(&server, "dee@example.com").await;
+        let mut workspace = laptop.service.create_workspace("Notes").await.unwrap();
+        let copy = server.backup("before.sqlite3").await;
+        let export = laptop
+            .service
+            .export_kit(&path, &[], std::slice::from_mut(&mut workspace))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        (
+            server.restore_behind(&copy, &proxy).await,
+            laptop.credentials.account,
+            export.secret.to_string(),
+        )
+    });
+
+    let app_data = tempfile::tempdir().unwrap();
+    let account = LiveAccount::start(
+        app_data.path().to_owned(),
+        Arc::new(MemorySecrets::default()),
+        Arc::new(|_| Ok(())),
+    );
+    account.act(AccountAction::SetServer(proxy.base.clone()));
+    wait_for(&account, "the address", |s| s.server == proxy.base);
+    let grant = |account: &LiveAccount| {
+        let screen = wait_for(account, "the sign-in code", |s| {
+            matches!(s.phase, AccountPhase::SigningIn { .. })
+        });
+        let AccountPhase::SigningIn { user_code } = screen.phase else {
+            unreachable!()
+        };
+        runtime
+            .block_on(
+                restored
+                    .store
+                    .decide_device_grant(account_id, &user_code, true),
+            )
+            .unwrap();
+    };
+    account.act(AccountAction::Recover { path, secret });
+    grant(&account);
+    wait_for(&account, "the way back", |s| {
+        matches!(s.phase, AccountPhase::KitLost)
+    });
+    account.act(AccountAction::StartReset);
+    grant(&account);
+    wait_for(&account, "the code field", |s| {
+        matches!(s.phase, AccountPhase::ResetCode)
+    });
+}
+
 #[test]
 fn reset_devices_starts_a_new_chain_from_the_emailed_code() {
     use app_core::sync::device::{Joined, join};

@@ -157,6 +157,46 @@ impl Server<SqliteBackend> {
     /// `recorded` false, as a database put back by hand, which keeps its
     /// generation. Blobs stay in the one store. Returns the new server.
     pub async fn put_back(&self, copy: &Path, recorded: bool) -> Server {
+        let (store, dir) = self.put_back_store(copy, recorded).await;
+        Self::serve(store, dir, None).await
+    }
+
+    /// A server in front of which `proxy` sits, restored from `copy` under
+    /// the proxy's address, as [`Proxy::in_front`] serves one.
+    pub async fn restore_behind(&self, copy: &Path, proxy: &Proxy) -> Server {
+        std::fs::create_dir_all(self.dir.path().join("blobs")).expect("a directory");
+        let (store, dir) = self.put_back_store(copy, true).await;
+        let store = Arc::new(store);
+        let origin = sync_server::PublicOrigin::parse(&proxy.base).expect("an origin");
+        let mail: Arc<Mutex<Vec<String>>> = Arc::default();
+        let outbox = mail.clone();
+        let address = sync_server::spawn_with(store.clone(), "127.0.0.1:0", move |_| {
+            sync_server::Accounts::new(
+                origin,
+                Default::default(),
+                "Noura <noura@localhost>".into(),
+                Box::new(Outbox(outbox)),
+                None,
+            )
+        })
+        .await
+        .expect("serving");
+        proxy.retarget(&format!("http://localhost:{}", address.port()));
+        Server {
+            base: proxy.base.clone(),
+            store,
+            dir,
+            postgres: None,
+            instance: None,
+            mail,
+        }
+    }
+
+    async fn put_back_store(
+        &self,
+        copy: &Path,
+        recorded: bool,
+    ) -> (Store<SqliteBackend>, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temporary directory");
         let data = dir.path().join("data");
         std::fs::create_dir_all(&data).expect("a directory");
@@ -191,7 +231,7 @@ impl Server<SqliteBackend> {
         ))
         .await
         .expect("the store opens");
-        Self::serve(store, dir, None).await
+        (store, dir)
     }
 }
 
@@ -1513,6 +1553,45 @@ pub async fn invite_and_join(
     member: &mut Desktop,
     role: sync_protocol::records::Role,
 ) -> (app_core::sync::workspace::WorkspaceSync, Folder) {
+    let workspace = invite(inviter, inviter_sync, book, member, role).await;
+    let mut folder = Folder::new("Member's copy");
+    let mut sync = app_core::sync::workspace::WorkspaceSync::download(
+        &mut member.service,
+        folder.engine.clone(),
+        workspace,
+        &mut folder.registry,
+    )
+    .await
+    .expect("the download starts");
+    sync.round(&mut member.service, 0).await.expect("a round");
+    let remote = sync.remote_mut().expect("connected");
+    let own = member
+        .service
+        .pending_heads(remote)
+        .await
+        .expect("pending")
+        .into_iter()
+        .find(|p| p.own);
+    if let Some(own) = own {
+        member
+            .service
+            .push_pending_head(remote, &own)
+            .await
+            .expect("recorded");
+    }
+    sync.round(&mut member.service, 0).await.expect("a round");
+    (sync, folder)
+}
+
+/// Invites `member` into `inviter_sync`'s workspace and approves it, up to
+/// the point where it picks a folder. Returns the workspace.
+pub async fn invite(
+    inviter: &mut Desktop,
+    inviter_sync: &mut app_core::sync::workspace::WorkspaceSync,
+    book: &mut app_core::sync::invitations::InvitationBook,
+    member: &mut Desktop,
+    role: sync_protocol::records::Role,
+) -> Id {
     use app_core::sync::approval::CandidateStep;
     use app_core::sync::invitations::{InvitationLink, NewInvitation};
 
@@ -1584,31 +1663,5 @@ pub async fn invite_and_join(
             .await
             .expect("joined")
     );
-    let mut folder = Folder::new("Member's copy");
-    let mut sync = app_core::sync::workspace::WorkspaceSync::download(
-        &mut member.service,
-        folder.engine.clone(),
-        workspace,
-        &mut folder.registry,
-    )
-    .await
-    .expect("the download starts");
-    sync.round(&mut member.service, 0).await.expect("a round");
-    let remote = sync.remote_mut().expect("connected");
-    let own = member
-        .service
-        .pending_heads(remote)
-        .await
-        .expect("pending")
-        .into_iter()
-        .find(|p| p.own);
-    if let Some(own) = own {
-        member
-            .service
-            .push_pending_head(remote, &own)
-            .await
-            .expect("recorded");
-    }
-    sync.round(&mut member.service, 0).await.expect("a round");
-    (sync, folder)
+    workspace
 }

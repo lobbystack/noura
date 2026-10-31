@@ -1399,6 +1399,7 @@ impl WorkspaceSync {
             service, engine, remote, server, replica, generation, &name, profile,
         )?;
         fresh.state.archived = archived;
+        fresh.hold_local_markers();
         fresh.save()?;
         Ok(fresh)
     }
@@ -1456,6 +1457,10 @@ impl WorkspaceSync {
             profile,
         )?;
         fresh.state.archived = archived;
+        // Restricted domains start over, and their files stay held until
+        // you decide: a folder that held a marker keeps its content out
+        // of the new workspace domain.
+        fresh.hold_local_markers();
         fresh.save()?;
         Ok(fresh)
     }

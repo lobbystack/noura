@@ -328,7 +328,19 @@ impl Folder {
             .clone()
             .ok_or_else(|| SyncError::Invalid("Choose a folder first.".into()))?;
         let mut registry = Registry::open(app_data)?;
-        let sync = WorkspaceSync::download(service, engine, workspace, &mut registry).await?;
+        // The folder you synced before connects to the workspace an owner
+        // set up again (§14); it matches rather than downloads.
+        let rejoining = registry
+            .of_folder(engine.root())
+            .is_some_and(|entry| entry.workspace != workspace);
+        let sync = if rejoining {
+            // The old workspace's sync lets go of the folder's journal; the
+            // next tick opens it again after a failure.
+            self.sync = None;
+            WorkspaceSync::rejoin(service, engine, workspace, &mut registry).await?
+        } else {
+            WorkspaceSync::download(service, engine, workspace, &mut registry).await?
+        };
         self.sync = Some(sync);
         self.last_error = None;
         self.not_connected = false;

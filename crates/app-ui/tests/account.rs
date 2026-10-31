@@ -112,6 +112,29 @@ fn devices() -> Vec<DeviceEntry> {
     ]
 }
 
+/// A kit whose head a restore lost leads to Reset devices (§14).
+#[test]
+fn a_kit_the_server_lost_offers_reset_devices() {
+    let app_data = tempfile::tempdir().unwrap();
+    let account = Arc::new(FakeAccount::default());
+    account.show(AccountScreen {
+        server: "https://sync.example.com".into(),
+        phase: AccountPhase::KitLost,
+        ..AccountScreen::default()
+    });
+    let mut harness = harness(app_data.path(), account.clone());
+    harness.run();
+    harness.get_by_role_and_label(Role::Group, "This kit can't recover your account");
+    harness
+        .get_by_role_and_label(Role::Button, "Reset devices")
+        .click();
+    harness.run();
+    assert!(matches!(
+        account.taken().last(),
+        Some(AccountAction::StartReset)
+    ));
+}
+
 #[test]
 fn signed_out_shows_the_server_address_sign_in_and_recovery() {
     let app_data = tempfile::tempdir().unwrap();
