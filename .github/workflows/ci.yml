@@ -306,7 +306,7 @@ jobs:
           echo "::error::The server on PostgreSQL never passed its health check."
           exit 1
 
-  # The image the self-hosting guide and the Railway configuration run.
+  # The image the self-hosting guide and the Dokploy compose file run.
   server-image:
     runs-on: ubuntu-latest
     steps:

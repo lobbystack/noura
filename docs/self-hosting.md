@@ -24,6 +24,19 @@ The image holds the static binary and the account-web module that the account pa
 
 The entrypoint runs `migrate` before `serve`, so an empty volume starts on its own. On a platform that mounts volumes as root, start the container as root: the entrypoint hands `/data` to `noura` and drops root before the server starts.
 
+### Deploy on Dokploy
+
+`.dokploy/docker-compose.sync-v2.yml` runs the image with its health check and a named volume for `/data`. The file holds no secret and no hostname, so you set those in Dokploy.
+
+1. Create a Compose service from this repository, and set the compose path to `.dokploy/docker-compose.sync-v2.yml`.
+2. In the service's environment, set `NOURA_PUBLIC_ORIGIN`, `NOURA_ALLOWED_EMAILS`, `NOURA_MAIL_FROM` and either `NOURA_SMTP_URL` or `NOURA_RESEND_API_KEY`.
+3. Add your domain to the `sync-server` service on container port 8080, with HTTPS on.
+4. Deploy.
+
+The server keeps SQLite, the server secret, blob segments and logs in the volume, so back up that volume or run `backup` on a schedule. To use PostgreSQL, also set `NOURA_DATABASE_URL` and `NOURA_SERVER_SECRET`, and keep the same secret across deployments.
+
+The file sets `NOURA_TRUSTED_PROXY_HEADER` to `x-real-ip`, which Traefik overwrites on every request, and publishes no port, so only Traefik reaches the server. If you put another proxy in front of Traefik, set this variable to the header that proxy controls. The file also gives the server 40 seconds to stop and restarts it after it exits.
+
 ### Run the binary
 
 Build `sync-server` with `cargo build -p sync-server --release`, and `scripts/build-account-web.sh` for the pages' module. CI builds the binary for `x86_64-unknown-linux-musl`, which links nothing at run time.
