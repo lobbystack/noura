@@ -2048,6 +2048,72 @@ async fn a_lost_policy_change_stops_the_workspace_on_postgres() {
         .expect("the member keeps syncing");
     assert_eq!(pair.sync_b.restore_lost(), None);
     link.revoked_again(&mut pair).await;
+
+    // Set up sync again closes the old workspace for its members too.
+    let old = pair.sync_a.workspace();
+    let mut fresh = pair
+        .sync_a
+        .set_up_again(&mut pair.service, &mut pair.a.registry)
+        .await
+        .expect("set up again");
+    assert_ne!(fresh.workspace(), old);
+    fresh.round(&mut pair.service, 0).await.expect("a round");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("a stopped round");
+    assert_eq!(pair.sync_b.restore_lost(), Some(&Lost::Closed));
+}
+
+/// A restore that lost a link of a member's chain, on PostgreSQL: the
+/// member resets, the owner compares the code and accepts, and both resume.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_member_resets_and_the_owner_accepts_on_postgres() {
+    use std::sync::Arc;
+
+    let mut pair = pair_of_accounts_on(Server::start_postgres_alone().await).await;
+    rounds(&mut pair).await;
+    let mut link = LinkToRevoke::make(&mut pair).await;
+    let standby = pair.server.standby();
+    link.revoke(&mut pair).await;
+    let workspace = pair.sync_a.workspace();
+    let account = pair.desktop.credentials.account;
+    let _third = approve(&pair.server, &mut pair.desktop, &mut []).await;
+    let genesis = pair.desktop.credentials.reference_head.genesis;
+    pair.service
+        .follow_account(account, genesis)
+        .await
+        .expect("the owner keeps the new head");
+    rounds(&mut pair).await;
+
+    let restored = pair.server.fail_over(&standby, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("laptop");
+    assert_eq!(
+        pair.sync_a.restore_lost(),
+        Some(&Lost::MemberAccount(account))
+    );
+    let secrets = Arc::new(MemorySecrets::default());
+    let (mut member, _) = reset_devices(&restored, account, secrets).await;
+    let (candidate, _) = accept_the_reset(&mut pair, &mut member, workspace).await;
+    for _ in 0..2 {
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("laptop");
+    }
+    assert_eq!(pair.sync_a.restore_lost(), None);
+    assert!(
+        member
+            .service
+            .join_invited(&candidate)
+            .await
+            .expect("the change verifies")
+    );
+    link.revoked_again(&mut pair).await;
 }
 
 /// A snapshot blob a restore lost: no file holds it, so a writer that holds
