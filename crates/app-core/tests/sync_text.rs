@@ -19,7 +19,7 @@ use sync_protocol::codec::{Bytes, Decode, Encode, ExactBytes, Text};
 use sync_protocol::messages::{ErrorBody, Frame, KeyRecord, KeysResponse, PushFailureDetail};
 use sync_protocol::types::{Id, IdOrZero};
 use sync_store::Backend;
-use sync_support::{Pair, Server, approve, pair, pair_on};
+use sync_support::{Pair, Server, approve, pair, pair_of_accounts_on, pair_on};
 
 const PLAN: &str = "Plan.md";
 
@@ -895,18 +895,19 @@ async fn a_patch_the_server_has_no_space_for_waits_and_goes_out_as_a_snapshot() 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_snapshot_writes_again_a_devices_records_under_a_skipped_epoch() {
-    let mut pair = pair().await;
+    // A device replaces only an epoch another account rotated (§9).
+    let mut pair = pair_of_accounts_on(Server::start().await).await;
     let (_a, mut b) = open_both(&mut pair).await;
     let rid = pair.sync_b.rid_at(PLAN).unwrap();
     // The desktop rotates to epoch 2 and writes under it.
     let third = approve(
         &pair.server,
-        &mut pair.laptop,
-        std::slice::from_mut(pair.sync_a.remote_mut().unwrap()),
+        &mut pair.desktop,
+        std::slice::from_mut(pair.sync_b.remote_mut().unwrap()),
     )
     .await;
     both_rounds(&mut pair).await;
-    pair.laptop
+    pair.desktop
         .service
         .remove_device(third.id(), &[], &mut [])
         .await
