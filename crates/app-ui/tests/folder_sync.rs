@@ -397,7 +397,12 @@ fn a_restore_notice_offers_the_way_back() {
     });
     let app_data = tempfile::tempdir().expect("a folder");
     let mut harness = harness(app_data.path(), fake.clone());
-    harness.get_by_label("Sync stopped here.");
+    assert!(
+        harness
+            .query_all_by_label("Sync stopped here.")
+            .next()
+            .is_some()
+    );
     harness
         .get_by_role_and_label(Role::Button, "Set up sync again")
         .click();
