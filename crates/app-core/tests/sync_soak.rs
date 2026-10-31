@@ -22,7 +22,7 @@
 //! A plain test run takes seconds with a few devices. The scheduled job sets
 //! `NOURA_SOAK_DEVICES=200`, `NOURA_SOAK_SECONDS=86400`,
 //! `NOURA_SOAK_RETAINED_BYTES=67108864`, `NOURA_SOAK_WARMUP_SECONDS=600`,
-//! `NOURA_SOAK_VERIFIED_WRITERS=16` and `NOURA_SOAK_HOLD_RATE=1`.
+//! `NOURA_SOAK_VERIFIED_WRITERS=8` and `NOURA_SOAK_HOLD_RATE=1`.
 //! `NOURA_SOAK_SEED` repeats a run's choices, and `NOURA_SCALE_REPORT` names
 //! the file the numbers go to.
 
@@ -174,6 +174,8 @@ struct Watched {
     /// The heaviest entry the samples saw: a checkpoint's weight counts its
     /// bucket hashes.
     largest_entry: u64,
+    /// The most log the samples saw above the floor.
+    largest_log: u64,
 }
 
 /// Checks the bound of §19 in the form given there.
@@ -714,6 +716,7 @@ async fn drive<B: Backend, D: Database<B>>(
             floor_after_warmup: None,
             floor: 0,
             largest_entry: 0,
+            largest_log: 0,
         })
         .collect();
     let threshold = config.interval().weight;
@@ -783,6 +786,7 @@ async fn drive<B: Backend, D: Database<B>>(
             let (below, above, longest) =
                 D::log_bytes(&server, workspace, domain.id, row.retention_floor).await;
             domain.largest_entry = domain.largest_entry.max(longest + CHECKPOINT_WEIGHT);
+            domain.largest_log = domain.largest_log.max(above);
             let (taken, servable) =
                 D::checkpoints(&server, workspace, domain.id, row.retention_floor).await;
             let checked = within_the_bound(
@@ -802,7 +806,13 @@ async fn drive<B: Backend, D: Database<B>>(
     shared.stop.store(true, Ordering::SeqCst);
     let measured = warmed.map_or(Duration::ZERO, |at| at.elapsed());
     let pushes_held = shared.pushes.load(Ordering::Relaxed) - pushes_at_warmup;
-    let per_second = |count: u64| count as f64 / measured.as_secs_f64().max(0.001);
+    let per_second = |count: u64| {
+        if measured.is_zero() {
+            0.0
+        } else {
+            count as f64 / measured.as_secs_f64()
+        }
+    };
     let rate = per_second(pushes_held);
     let entries = heads(&watched).await.saturating_sub(entries_at_warmup);
     println!("{rate:.1} pushes a second after the warmup");
@@ -991,11 +1001,14 @@ async fn drive<B: Backend, D: Database<B>>(
     };
     report.set("largest_live_records_per_note", head);
 
-    // The floors moved, and server memory came back.
+    // The floors moved wherever the log outgrew what the domain keeps, and
+    // server memory came back.
     for domain in &watched {
         let after_warmup = domain.floor_after_warmup.unwrap_or(0);
         assert!(
-            domain.floor > after_warmup || (config.editors <= domain_index(domain)),
+            domain.floor > after_warmup
+                || config.editors <= domain_index(domain)
+                || domain.largest_log <= config.retained + 2 * threshold,
             "{}: the floor stayed at {after_warmup}",
             domain.root
         );
@@ -1129,6 +1142,26 @@ fn a_read_held_across_a_wait_fails_the_check() {
         .expect("written");
     assert!(reader_stayed_open(&file, window), "the snapshot is open");
 
+    // Writes go on around it, as they do under load.
+    let done = Arc::new(AtomicBool::new(false));
+    let writing = {
+        let (file, done) = (file.clone(), done.clone());
+        std::thread::spawn(move || {
+            let writer = rusqlite::Connection::open(file).expect("the database");
+            while !done.load(Ordering::SeqCst) {
+                writer
+                    .execute_batch("INSERT INTO t VALUES (4);")
+                    .expect("written");
+            }
+        })
+    };
+    assert!(reader_stayed_open(&file, window), "still open under load");
+
+    // Once it ends, the copy moves on with the writes still going.
     reader.execute_batch("COMMIT").expect("ended");
     assert!(!reader_stayed_open(&file, window), "the snapshot ended");
+    done.store(true, Ordering::SeqCst);
+    writing.join().expect("the writer");
+
+    assert!(!reader_stayed_open(&file, window), "nothing reads now");
 }

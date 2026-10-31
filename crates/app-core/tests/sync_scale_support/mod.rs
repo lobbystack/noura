@@ -375,33 +375,52 @@ pub async fn postgres_size(url: &str) -> u64 {
     row.get::<i64, _>(0).max(0) as u64
 }
 
-/// Whether something kept the write-ahead log of the SQLite database at
-/// `file` from truncating for all of `window`. A snapshot held open blocks a
-/// `TRUNCATE` until it ends, so a connection that waited for it would report
-/// success afterwards; this one never waits, and tries again until one try
-/// finds no reader and no writer. A short read or a commit only costs a try.
+/// One checkpoint of the write-ahead log that waits for nothing: the frames
+/// in the log and those copied back, or `None` when another checkpoint ran.
+fn checkpoint(connection: &rusqlite::Connection, mode: &str) -> Option<(i64, i64, i64)> {
+    connection
+        .query_row(&format!("PRAGMA wal_checkpoint({mode})"), [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .ok()
+}
+
+/// Whether a read that began before this call stayed open for all of
+/// `window` in the SQLite database at `file`.
 ///
-/// A reader that started on an empty log blocks nothing, so the log must
-/// hold frames when the read starts, as it does under load.
+/// A held snapshot stops the copy back to the database at its own frame. So
+/// once the copy passes the frame the log ended at when this call began, or
+/// the log restarts, every read from before is over. That holds under load,
+/// when a `TRUNCATE` that needs a moment with no reader may never find one.
+/// With no new frames to copy, a `TRUNCATE` tells instead: this connection
+/// never waits for it, since one that waited for the snapshot would report
+/// success afterwards.
+///
+/// A reader that began on an empty log blocks nothing, so the log must hold
+/// frames when the read starts, as it does under load.
 pub fn reader_stayed_open(file: &Path, window: Duration) -> bool {
     let connection = rusqlite::Connection::open(file).expect("the database");
     connection
         .busy_timeout(Duration::ZERO)
         .expect("no busy timeout");
     let started = Instant::now();
+    let mut began = None;
     loop {
-        let busy = connection
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .unwrap_or(1);
-        if busy == 0 {
-            return false;
+        if let Some((_, log, copied)) = checkpoint(&connection, "PASSIVE") {
+            let start = *began.get_or_insert(log);
+            if log < start || copied > start {
+                return false;
+            }
+            if log == start
+                && checkpoint(&connection, "TRUNCATE").is_some_and(|(busy, _, _)| busy == 0)
+            {
+                return false;
+            }
         }
         if started.elapsed() >= window {
             return true;
         }
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
