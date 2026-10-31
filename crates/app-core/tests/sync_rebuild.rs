@@ -360,3 +360,72 @@ fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
         }
     }
 }
+
+/// A held version stays in its file while other devices keep editing: what
+/// arrives waits for review, and each choice still works on your version.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_change_that_arrives_leaves_a_held_version_in_place() {
+    for (choice, ending, copy) in [
+        (HeldChoice::KeepMine, &b"# Mine\n"[..], false),
+        (HeldChoice::KeepLive, &b"# Theirs\n"[..], false),
+        (HeldChoice::KeepBoth, &b"# Theirs\n"[..], true),
+    ] {
+        let Pair {
+            server: _server,
+            proxy: _proxy,
+            laptop: _laptop,
+            mut service,
+            a,
+            mut sync_a,
+            mut desktop,
+            mut b,
+            sync_b,
+        } = pair().await;
+        drop(sync_b);
+        lose_journal(&b, desktop.id());
+        b.write("Plan.md", b"# Mine\n");
+        b.reopen();
+        let mut sync_b =
+            WorkspaceSync::rebuild(&mut desktop.service, b.engine.clone(), &mut b.registry)
+                .await
+                .expect("the folder syncs again");
+        sync_b
+            .round(&mut desktop.service, 0)
+            .await
+            .expect("a round");
+        let (rid, path) = sync_b.held().pop().expect("the file is held");
+        assert_eq!(path, "Plan.md");
+        let store = b
+            .path(".noura/sync")
+            .join(desktop.id().to_hex())
+            .join("held")
+            .join(rid.to_hex());
+        let kept = sync_protocol::crypto::hash(b"# Mine\n").to_hex();
+        assert_eq!(std::fs::read(store.join(&kept)).unwrap(), b"# Mine\n");
+
+        a.write("Plan.md", b"# Theirs\n");
+        sync_a.round(&mut service, 0).await.expect("a round");
+        sync_b
+            .round(&mut desktop.service, 0)
+            .await
+            .expect("a round");
+        assert_eq!(b.files()["Plan.md"], b"# Mine\n", "your version stays");
+        assert_eq!(sync_b.status().held, 1);
+
+        sync_b.resolve_held(rid, choice).expect("you choose");
+        assert_eq!(b.files()["Plan.md"], ending);
+        assert!(!store.join(&kept).exists(), "the copy goes once you chose");
+        if copy {
+            assert_eq!(b.files()["Plan (2).md"], b"# Mine\n");
+        }
+        for _ in 0..2 {
+            sync_b
+                .round(&mut desktop.service, 0)
+                .await
+                .expect("a round");
+            sync_a.round(&mut service, 0).await.expect("a round");
+        }
+        assert_eq!(a.files(), b.files());
+        assert_eq!(a.files()["Plan.md"], ending);
+    }
+}

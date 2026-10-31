@@ -387,6 +387,13 @@ impl WorkspaceSync {
             return Ok(());
         }
         object.base = None;
+        // The file stays the version you hold, and the review store keeps
+        // a copy of it. A file that changed meanwhile keeps the hold.
+        let copy = held_copy(&rid, &local.revision);
+        let source = self.engine.root().join(&local.path);
+        if let Err(error) = self.journal.keep_file(&copy, &source, &local.revision) {
+            tracing::warn!(%error, "a held version stays in its file alone");
+        }
         self.state.held.insert(
             rid,
             Held {
@@ -416,10 +423,12 @@ impl WorkspaceSync {
                 let found = self.found_on_disk(&held.path)?;
                 self.state.held.remove(&rid);
                 self.sign_file(rid, &found, covers)?;
+                self.journal.forget(&held_copy(&rid, &held.revision));
             }
             HeldChoice::KeepLive => {
                 self.state.held.remove(&rid);
                 self.adopt_live(rid, &live)?;
+                self.journal.forget(&held_copy(&rid, &held.revision));
             }
             HeldChoice::KeepBoth => {
                 let root = self.engine.root().to_owned();
@@ -453,6 +462,7 @@ impl WorkspaceSync {
                 }
                 self.state.held.remove(&rid);
                 self.adopt_live(rid, &live)?;
+                self.journal.forget(&held_copy(&rid, &held.revision));
             }
         }
         self.save()
@@ -598,6 +608,11 @@ impl WorkspaceSync {
             .map(|(rid, held)| (*rid, held.path.clone()))
             .collect()
     }
+}
+
+/// Where the review store keeps a copy of `rid`'s held version.
+fn held_copy(rid: &Id, revision: &Digest) -> String {
+    format!("{}/{}/{}", journal::HELD, rid.to_hex(), revision.to_hex())
 }
 
 /// `bytes` with a new frontmatter ID when they hold a managed file, as a

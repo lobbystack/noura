@@ -151,7 +151,8 @@ impl WorkspaceSync {
         if branches.is_empty() {
             return Ok(());
         }
-        let edited = self.local_edit(&rid);
+        // A held version stays in its file until you choose (§15).
+        let edited = self.local_edit(&rid) || self.state.held.contains_key(&rid);
         if branches.len() == 1 {
             // A text-mode note's file follows its document (§22).
             let text = object
