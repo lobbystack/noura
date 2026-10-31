@@ -4,20 +4,26 @@
 //! size on either store.
 //!
 //! The server runs on a runtime of its own, whose threads count as the
-//! server's, as do the threads its SQLite driver starts. Nothing crosses
-//! between the two sides but sockets, so each side frees what it allocated.
-//! The counts cover Rust's heap: SQLite's page cache and PostgreSQL's
-//! processes stay outside them.
+//! server's, as do the threads its SQLite driver starts where a thread's
+//! name can be read without allocating. Once the run starts its load, the
+//! test reaches the store only from that runtime ([`on_server`]), so each
+//! side frees what it allocated. The counts cover Rust's heap: SQLite's page
+//! cache and PostgreSQL's processes stay outside them.
 
 #![allow(dead_code)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::{Duration, Instant};
 
-use sync_protocol::types::Digest;
+use sync_protocol::types::{Digest, Id};
+use sync_store::Backend;
+
+use crate::sync_support::{DATABASE, Server};
 
 const CLIENT: usize = 0;
 const SERVER: usize = 1;
@@ -34,6 +40,7 @@ thread_local! {
 }
 
 /// The side a thread belongs to by its name, which needs no allocation.
+#[cfg(unix)]
 fn side_by_name() -> usize {
     let mut name = [0 as libc::c_char; 32];
     // SAFETY: the buffer outlives the call and its length is right.
@@ -46,6 +53,13 @@ fn side_by_name() -> usize {
     } else {
         CLIENT
     }
+}
+
+/// A platform with no name that reads without allocating counts every
+/// thread it can't place as the client's.
+#[cfg(not(unix))]
+fn side_by_name() -> usize {
+    CLIENT
 }
 
 fn side() -> usize {
@@ -127,6 +141,15 @@ pub fn client_runtime() -> tokio::runtime::Runtime {
 }
 
 const CLIENT_WORKERS: usize = 64;
+
+/// Runs `work` on the server's runtime, so what the store allocates for it
+/// counts as the server's and is freed there.
+pub async fn on_server<T: Send + 'static>(
+    runtime: &tokio::runtime::Handle,
+    work: impl Future<Output = T> + Send + 'static,
+) -> T {
+    runtime.spawn(work).await.expect("the server's task")
+}
 
 /// The server's heap now, in bytes.
 pub fn server_heap() -> u64 {
@@ -269,7 +292,8 @@ pub fn difference(
 }
 
 /// One run's numbers, which go to the file `NOURA_SCALE_REPORT` names, as
-/// one JSON object per line, and to the test's output.
+/// one JSON object per line, and to the test's output. A run that fails
+/// still writes what it measured, marked `failed`.
 #[derive(Default)]
 pub struct Report(serde_json::Map<String, serde_json::Value>);
 
@@ -290,12 +314,22 @@ impl Report {
         self.set(key, (since.elapsed().as_secs_f64() * 10.0).round() / 10.0);
     }
 
-    /// Adds the peak heaps and writes the report out.
+    /// Ends the run: dropping the report adds the peak heaps and writes it
+    /// out. Only a run that got here counts as passed.
     pub fn finish(mut self) {
+        self.set("passed", true);
+    }
+}
+
+impl Drop for Report {
+    fn drop(&mut self) {
         let (client, server) = peaks();
         self.set("peak_client_heap_bytes", client);
         self.set("peak_server_heap_bytes", server);
-        let line = serde_json::Value::Object(self.0).to_string();
+        let passed = self.0.contains_key("passed");
+        self.set("failed", !passed);
+        self.0.remove("passed");
+        let line = serde_json::Value::Object(std::mem::take(&mut self.0)).to_string();
         println!("{line}");
         if let Ok(path) = std::env::var("NOURA_SCALE_REPORT") {
             use std::io::Write;
@@ -307,23 +341,6 @@ impl Report {
             writeln!(file, "{line}").expect("written");
         }
     }
-}
-
-/// A domain's head row in the server's store.
-pub async fn domain_row<B: sync_store::Backend>(
-    store: &sync_store::Store<B>,
-    workspace: sync_protocol::types::Id,
-    domain: sync_protocol::types::Id,
-) -> sync_store::DomainRow {
-    use sync_store::ReadTxn as _;
-    store
-        .backend()
-        .read(Box::new(move |txn: &mut B::Read| {
-            Box::pin(async move { txn.domain(workspace, domain).await })
-        }))
-        .await
-        .expect("a read")
-        .expect("the domain")
 }
 
 /// A number from the environment, or `default`.
@@ -356,4 +373,216 @@ pub async fn postgres_size(url: &str) -> u64 {
         .await
         .expect("the size");
     row.get::<i64, _>(0).max(0) as u64
+}
+
+/// Whether something kept the write-ahead log of the SQLite database at
+/// `file` from truncating for all of `window`. A snapshot held open blocks a
+/// `TRUNCATE` until it ends, so a connection that waited for it would report
+/// success afterwards; this one never waits, and tries again until one try
+/// finds no reader and no writer. A short read or a commit only costs a try.
+///
+/// A reader that started on an empty log blocks nothing, so the log must
+/// hold frames when the read starts, as it does under load.
+pub fn reader_stayed_open(file: &Path, window: Duration) -> bool {
+    let connection = rusqlite::Connection::open(file).expect("the database");
+    connection
+        .busy_timeout(Duration::ZERO)
+        .expect("no busy timeout");
+    let started = Instant::now();
+    loop {
+        let busy = connection
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap_or(1);
+        if busy == 0 {
+            return false;
+        }
+        if started.elapsed() >= window {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// What the store-specific part of the run does.
+pub trait Database<B: Backend>: 'static {
+    /// Forgets answered approval requests, which count against a cap until
+    /// they expire.
+    fn clear_requests(server: &Server<B>) -> impl Future<Output = ()>;
+    /// The database's size.
+    fn size(server: &Server<B>) -> impl Future<Output = u64>;
+    /// The bytes of `domain`'s log entries at or below `floor`, the bytes
+    /// above it, and the longest entry.
+    fn log_bytes(
+        server: &Server<B>,
+        workspace: Id,
+        domain: Id,
+        floor: u64,
+    ) -> impl Future<Output = (u64, u64, u64)>;
+    /// The checkpoints the domain ever took, and those still servable.
+    fn checkpoints(
+        server: &Server<B>,
+        workspace: Id,
+        domain: Id,
+        floor: u64,
+    ) -> impl Future<Output = (u64, u64)>;
+    /// Whether a read transaction stayed open for all of `window`.
+    fn reader_stayed_open(server: &Server<B>, window: Duration) -> bool;
+    /// The write-ahead log's size now, for the numbers.
+    fn wal_bytes(server: &Server<B>) -> u64;
+}
+
+pub struct Sqlite;
+
+impl Sqlite {
+    pub fn file(server: &Server<sync_store_sqlite::SqliteBackend>) -> std::path::PathBuf {
+        server.dir.path().join("data").join(DATABASE)
+    }
+
+    fn connection(server: &Server<sync_store_sqlite::SqliteBackend>) -> rusqlite::Connection {
+        rusqlite::Connection::open(Self::file(server)).expect("the database")
+    }
+}
+
+impl Database<sync_store_sqlite::SqliteBackend> for Sqlite {
+    async fn clear_requests(server: &Server<sync_store_sqlite::SqliteBackend>) {
+        Self::connection(server)
+            .execute("DELETE FROM approval_requests", [])
+            .expect("cleared");
+    }
+
+    async fn size(server: &Server<sync_store_sqlite::SqliteBackend>) -> u64 {
+        sqlite_size(&Self::file(server))
+    }
+
+    async fn log_bytes(
+        server: &Server<sync_store_sqlite::SqliteBackend>,
+        workspace: Id,
+        domain: Id,
+        floor: u64,
+    ) -> (u64, u64, u64) {
+        Self::connection(server)
+            .query_row(
+                "SELECT COALESCE(SUM(CASE WHEN seq <= ?3 THEN LENGTH(record) END), 0),
+                        COALESCE(SUM(CASE WHEN seq > ?3 THEN LENGTH(record) END), 0),
+                        COALESCE(MAX(LENGTH(record)), 0)
+                 FROM entries WHERE workspace = ?1 AND domain = ?2",
+                rusqlite::params![workspace.0.as_slice(), domain.0.as_slice(), floor as i64],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)? as u64,
+                        row.get::<_, i64>(1)? as u64,
+                        row.get::<_, i64>(2)? as u64,
+                    ))
+                },
+            )
+            .expect("the log's size")
+    }
+
+    async fn checkpoints(
+        server: &Server<sync_store_sqlite::SqliteBackend>,
+        workspace: Id,
+        domain: Id,
+        floor: u64,
+    ) -> (u64, u64) {
+        Self::connection(server)
+            .query_row(
+                "SELECT COUNT(*), COUNT(CASE WHEN covered_seq >= ?3 THEN 1 END)
+                 FROM checkpoints WHERE workspace = ?1 AND domain = ?2",
+                rusqlite::params![workspace.0.as_slice(), domain.0.as_slice(), floor as i64],
+                |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)? as u64)),
+            )
+            .expect("the checkpoints")
+    }
+
+    fn reader_stayed_open(
+        server: &Server<sync_store_sqlite::SqliteBackend>,
+        window: Duration,
+    ) -> bool {
+        reader_stayed_open(&Self::file(server), window)
+    }
+
+    fn wal_bytes(server: &Server<sync_store_sqlite::SqliteBackend>) -> u64 {
+        let mut name = Self::file(server).into_os_string();
+        name.push("-wal");
+        std::fs::metadata(name).map_or(0, |metadata| metadata.len())
+    }
+}
+
+pub struct Postgres;
+
+impl Postgres {
+    async fn connection(server: &Server<sync_store_postgres::PgBackend>) -> sqlx::PgConnection {
+        use sqlx::Connection;
+        let url = &server.postgres.as_ref().expect("a database").url;
+        sqlx::PgConnection::connect(url).await.expect("connected")
+    }
+}
+
+impl Database<sync_store_postgres::PgBackend> for Postgres {
+    async fn clear_requests(server: &Server<sync_store_postgres::PgBackend>) {
+        sqlx::raw_sql("DELETE FROM approval_requests")
+            .execute(&mut Self::connection(server).await)
+            .await
+            .expect("cleared");
+    }
+
+    async fn size(server: &Server<sync_store_postgres::PgBackend>) -> u64 {
+        postgres_size(&server.postgres.as_ref().expect("a database").url).await
+    }
+
+    async fn log_bytes(
+        server: &Server<sync_store_postgres::PgBackend>,
+        workspace: Id,
+        domain: Id,
+        floor: u64,
+    ) -> (u64, u64, u64) {
+        use sqlx::Row;
+        let row = sqlx::query(
+            "SELECT COALESCE(SUM(CASE WHEN seq <= $3 THEN LENGTH(record) END), 0)::BIGINT,
+                    COALESCE(SUM(CASE WHEN seq > $3 THEN LENGTH(record) END), 0)::BIGINT,
+                    COALESCE(MAX(LENGTH(record)), 0)::BIGINT
+             FROM entries WHERE workspace = $1 AND domain = $2",
+        )
+        .bind(workspace.0.as_slice())
+        .bind(domain.0.as_slice())
+        .bind(floor as i64)
+        .fetch_one(&mut Self::connection(server).await)
+        .await
+        .expect("the log's size");
+        (
+            row.get::<i64, _>(0) as u64,
+            row.get::<i64, _>(1) as u64,
+            row.get::<i64, _>(2) as u64,
+        )
+    }
+
+    async fn checkpoints(
+        server: &Server<sync_store_postgres::PgBackend>,
+        workspace: Id,
+        domain: Id,
+        floor: u64,
+    ) -> (u64, u64) {
+        use sqlx::Row;
+        let row = sqlx::query(
+            "SELECT COUNT(*)::BIGINT, COUNT(CASE WHEN covered_seq >= $3 THEN 1 END)::BIGINT
+             FROM checkpoints WHERE workspace = $1 AND domain = $2",
+        )
+        .bind(workspace.0.as_slice())
+        .bind(domain.0.as_slice())
+        .bind(floor as i64)
+        .fetch_one(&mut Self::connection(server).await)
+        .await
+        .expect("the checkpoints");
+        (row.get::<i64, _>(0) as u64, row.get::<i64, _>(1) as u64)
+    }
+
+    fn reader_stayed_open(_: &Server<sync_store_postgres::PgBackend>, _: Duration) -> bool {
+        false
+    }
+
+    fn wal_bytes(_: &Server<sync_store_postgres::PgBackend>) -> u64 {
+        0
+    }
 }

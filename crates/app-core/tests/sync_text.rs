@@ -1,7 +1,6 @@
 //! Text mode at seam 4 (sync-v2.md §22): two desktops co-edit a note over
 //! the real server, and both end with identical bytes on disk.
 
-mod sync_scale_support;
 mod sync_support;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -131,7 +130,7 @@ async fn a_device_back_from_away_repeats_no_snapshot() {
     both_rounds(&mut pair).await;
 
     let (workspace, domain) = (pair.sync_a.workspace(), pair.sync_a.domain());
-    let head = sync_scale_support::domain_row(&pair.server.store, workspace, domain)
+    let head = sync_support::domain_row(&pair.server.store, workspace, domain)
         .await
         .head_seq;
     let live = pair
@@ -197,7 +196,7 @@ async fn a_device_still_catching_up_writes_no_snapshot() {
     both_rounds(&mut pair).await;
     let rid = pair.sync_a.text_rid(PLAN).expect("the note");
     let (workspace, domain) = (pair.sync_a.workspace(), pair.sync_a.domain());
-    let head = sync_scale_support::domain_row(&pair.server.store, workspace, domain)
+    let head = sync_support::domain_row(&pair.server.store, workspace, domain)
         .await
         .head_seq;
     let live = pair

@@ -13,11 +13,18 @@
 //! not the server. Each edit carries a token that must end up in the note
 //! once on every editor.
 //!
+//! The run ends with a bounded catch-up. The editors and a sample of writers
+//! catch up and are compared in full. The other writers would each cost a
+//! bootstrap, so their part is checked instead by what they signed: the
+//! server's chain head counts every record they pushed, and the verified
+//! devices hold each one's last edit. An overrun fails the run with its seed.
+//!
 //! A plain test run takes seconds with a few devices. The scheduled job sets
 //! `NOURA_SOAK_DEVICES=200`, `NOURA_SOAK_SECONDS=86400`,
-//! `NOURA_SOAK_RETAINED_BYTES=67108864`, `NOURA_SOAK_WARMUP_SECONDS=600` and
-//! `NOURA_SOAK_HOLD_RATE=1`. `NOURA_SOAK_SEED` repeats a run's choices, and
-//! `NOURA_SCALE_REPORT` names the file the numbers go to.
+//! `NOURA_SOAK_RETAINED_BYTES=67108864`, `NOURA_SOAK_WARMUP_SECONDS=600`,
+//! `NOURA_SOAK_VERIFIED_WRITERS=16` and `NOURA_SOAK_HOLD_RATE=1`.
+//! `NOURA_SOAK_SEED` repeats a run's choices, and `NOURA_SCALE_REPORT` names
+//! the file the numbers go to.
 
 mod sync_scale_support;
 mod sync_support;
@@ -36,11 +43,13 @@ use editor_core::text_mode::{CollabDocument, Utf16Splice};
 use sync_protocol::records::OpClass;
 use sync_protocol::types::Id;
 use sync_scale_support::{
-    Counting, Random, Report, Seed, as_server, client_runtime, difference, digests, domain_row,
-    number, postgres_size, server_heap, server_runtime, sqlite_size,
+    Counting, Database, Postgres, Random, Report, Seed, Sqlite, as_server, client_runtime,
+    difference, digests, number, on_server, reader_stayed_open, server_heap, server_runtime,
 };
 use sync_store::{Backend, CheckpointInterval, Retention};
-use sync_support::{DATABASE, Desktop, Folder, Proxy, Server, approve, cut_off, first_desktop};
+use sync_support::{
+    Desktop, Folder, Proxy, Server, approve, chain_head, cut_off, domain_row, first_desktop,
+};
 
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
@@ -57,6 +66,17 @@ const CHECKPOINT_WEIGHT: u64 = 131_072;
 /// keeps a day's edits under the note size limit.
 const EDITS_PER_NOTE: usize = 64;
 const ROOTS: [&str; 3] = ["Shared", "Pay", "Legal"];
+/// How long the quiet device's pull waits, in seconds.
+const QUIET_WAIT: u32 = 10;
+/// How often the run looks for a read held across that wait.
+const READ_CHECK_EVERY: Duration = Duration::from_secs(13);
+/// How long one look lasts: under the wait, and short enough that most
+/// looks fall inside one wait.
+const READ_CHECK_WINDOW: Duration = Duration::from_secs(3);
+/// How many devices catch up at once at the end.
+const CATCH_UP_WORKERS: usize = 8;
+/// How many heap samples stand for the run's start and its end.
+const HEAP_SAMPLES: usize = 5;
 
 #[derive(Clone, Copy, Debug)]
 struct Config {
@@ -67,6 +87,10 @@ struct Config {
     retained: u64,
     /// Whether the run must hold 400 pushes a second.
     hold_rate: bool,
+    /// Writers that catch up at the end and are compared in full.
+    verified_writers: usize,
+    /// What the end of the run may take before it counts as failed.
+    catch_up_limit: Duration,
 }
 
 impl Config {
@@ -79,6 +103,8 @@ impl Config {
             warmup: Duration::from_secs(number("NOURA_SOAK_WARMUP_SECONDS", 3)),
             retained: number("NOURA_SOAK_RETAINED_BYTES", 1 << 10),
             hold_rate: number("NOURA_SOAK_HOLD_RATE", 0) == 1,
+            verified_writers: number("NOURA_SOAK_VERIFIED_WRITERS", devices as u64) as usize,
+            catch_up_limit: Duration::from_secs(number("NOURA_SOAK_CATCH_UP_SECONDS", 3600)),
         }
     }
 
@@ -109,190 +135,6 @@ struct Member {
     desktop: Desktop,
     folder: Folder,
     sync: WorkspaceSync,
-}
-
-/// What the store-specific part of the run does.
-trait Database<B: Backend> {
-    /// Forgets answered approval requests, which count against a cap until
-    /// they expire.
-    fn clear_requests(server: &Server<B>) -> impl Future<Output = ()>;
-    /// The database's size.
-    fn size(server: &Server<B>) -> impl Future<Output = u64>;
-    /// The bytes of `domain`'s log entries at or below `floor`, the bytes
-    /// above it, and the longest entry.
-    fn log_bytes(
-        server: &Server<B>,
-        workspace: Id,
-        domain: Id,
-        floor: u64,
-    ) -> impl Future<Output = (u64, u64, u64)>;
-    /// The checkpoints the domain ever took, and those still servable.
-    fn checkpoints(
-        server: &Server<B>,
-        workspace: Id,
-        domain: Id,
-        floor: u64,
-    ) -> impl Future<Output = (u64, u64)>;
-    /// Checks that no read transaction stays open while pulls wait, and
-    /// returns the bytes of the write-ahead log when it reports one.
-    fn no_reader_across_a_wait(server: &Server<B>) -> impl Future<Output = ()>;
-    /// The write-ahead log's size now, for the numbers.
-    fn wal_bytes(server: &Server<B>) -> u64;
-}
-
-struct Sqlite;
-
-impl Sqlite {
-    fn file(server: &Server<sync_store_sqlite::SqliteBackend>) -> std::path::PathBuf {
-        server.dir.path().join("data").join(DATABASE)
-    }
-
-    fn connection(server: &Server<sync_store_sqlite::SqliteBackend>) -> rusqlite::Connection {
-        rusqlite::Connection::open(Self::file(server)).expect("the database")
-    }
-}
-
-impl Database<sync_store_sqlite::SqliteBackend> for Sqlite {
-    async fn clear_requests(server: &Server<sync_store_sqlite::SqliteBackend>) {
-        Self::connection(server)
-            .execute("DELETE FROM approval_requests", [])
-            .expect("cleared");
-    }
-
-    async fn size(server: &Server<sync_store_sqlite::SqliteBackend>) -> u64 {
-        sqlite_size(&Self::file(server))
-    }
-
-    async fn log_bytes(
-        server: &Server<sync_store_sqlite::SqliteBackend>,
-        workspace: Id,
-        domain: Id,
-        floor: u64,
-    ) -> (u64, u64, u64) {
-        Self::connection(server)
-            .query_row(
-                "SELECT COALESCE(SUM(CASE WHEN seq <= ?3 THEN LENGTH(record) END), 0),
-                        COALESCE(SUM(CASE WHEN seq > ?3 THEN LENGTH(record) END), 0),
-                        COALESCE(MAX(LENGTH(record)), 0)
-                 FROM entries WHERE workspace = ?1 AND domain = ?2",
-                rusqlite::params![workspace.0.as_slice(), domain.0.as_slice(), floor as i64],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)? as u64,
-                        row.get::<_, i64>(1)? as u64,
-                        row.get::<_, i64>(2)? as u64,
-                    ))
-                },
-            )
-            .expect("the log's size")
-    }
-
-    async fn checkpoints(
-        server: &Server<sync_store_sqlite::SqliteBackend>,
-        workspace: Id,
-        domain: Id,
-        floor: u64,
-    ) -> (u64, u64) {
-        Self::connection(server)
-            .query_row(
-                "SELECT COUNT(*), COUNT(CASE WHEN covered_seq >= ?3 THEN 1 END)
-                 FROM checkpoints WHERE workspace = ?1 AND domain = ?2",
-                rusqlite::params![workspace.0.as_slice(), domain.0.as_slice(), floor as i64],
-                |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)? as u64)),
-            )
-            .expect("the checkpoints")
-    }
-
-    async fn no_reader_across_a_wait(server: &Server<sync_store_sqlite::SqliteBackend>) {
-        // A reader holding a snapshot keeps the log from truncating.
-        let (busy, frames): (i64, i64) = Self::connection(server)
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
-            .expect("a checkpoint of the log");
-        assert_eq!((busy, frames), (0, 0), "a read stayed open across a wait");
-    }
-
-    fn wal_bytes(server: &Server<sync_store_sqlite::SqliteBackend>) -> u64 {
-        let mut name = Self::file(server).into_os_string();
-        name.push("-wal");
-        std::fs::metadata(name).map_or(0, |metadata| metadata.len())
-    }
-}
-
-struct Postgres;
-
-impl Postgres {
-    async fn connection(server: &Server<sync_store_postgres::PgBackend>) -> sqlx::PgConnection {
-        use sqlx::Connection;
-        let url = &server.postgres.as_ref().expect("a database").url;
-        sqlx::PgConnection::connect(url).await.expect("connected")
-    }
-}
-
-impl Database<sync_store_postgres::PgBackend> for Postgres {
-    async fn clear_requests(server: &Server<sync_store_postgres::PgBackend>) {
-        sqlx::raw_sql("DELETE FROM approval_requests")
-            .execute(&mut Self::connection(server).await)
-            .await
-            .expect("cleared");
-    }
-
-    async fn size(server: &Server<sync_store_postgres::PgBackend>) -> u64 {
-        postgres_size(&server.postgres.as_ref().expect("a database").url).await
-    }
-
-    async fn log_bytes(
-        server: &Server<sync_store_postgres::PgBackend>,
-        workspace: Id,
-        domain: Id,
-        floor: u64,
-    ) -> (u64, u64, u64) {
-        use sqlx::Row;
-        let row = sqlx::query(
-            "SELECT COALESCE(SUM(CASE WHEN seq <= $3 THEN LENGTH(record) END), 0)::BIGINT,
-                    COALESCE(SUM(CASE WHEN seq > $3 THEN LENGTH(record) END), 0)::BIGINT,
-                    COALESCE(MAX(LENGTH(record)), 0)::BIGINT
-             FROM entries WHERE workspace = $1 AND domain = $2",
-        )
-        .bind(workspace.0.as_slice())
-        .bind(domain.0.as_slice())
-        .bind(floor as i64)
-        .fetch_one(&mut Self::connection(server).await)
-        .await
-        .expect("the log's size");
-        (
-            row.get::<i64, _>(0) as u64,
-            row.get::<i64, _>(1) as u64,
-            row.get::<i64, _>(2) as u64,
-        )
-    }
-
-    async fn checkpoints(
-        server: &Server<sync_store_postgres::PgBackend>,
-        workspace: Id,
-        domain: Id,
-        floor: u64,
-    ) -> (u64, u64) {
-        use sqlx::Row;
-        let row = sqlx::query(
-            "SELECT COUNT(*)::BIGINT, COUNT(CASE WHEN covered_seq >= $3 THEN 1 END)::BIGINT
-             FROM checkpoints WHERE workspace = $1 AND domain = $2",
-        )
-        .bind(workspace.0.as_slice())
-        .bind(domain.0.as_slice())
-        .bind(floor as i64)
-        .fetch_one(&mut Self::connection(server).await)
-        .await
-        .expect("the checkpoints");
-        (row.get::<i64, _>(0) as u64, row.get::<i64, _>(1) as u64)
-    }
-
-    async fn no_reader_across_a_wait(_: &Server<sync_store_postgres::PgBackend>) {}
-
-    fn wal_bytes(_: &Server<sync_store_postgres::PgBackend>) -> u64 {
-        0
-    }
 }
 
 /// What the sampler tracks of one domain's checkpoint intervals.
@@ -382,6 +224,7 @@ fn within_the_bound(
 #[derive(Default)]
 struct Shared {
     stop: AtomicBool,
+    /// Pushes that carried records.
     pushes: AtomicU64,
     failures: Mutex<Vec<String>>,
 }
@@ -470,8 +313,10 @@ async fn run_editor(
         current.edits += 1;
         written.entry(current.path.clone()).or_default().push(token);
         match member.sync.text_step(&mut member.desktop.service).await {
-            Ok(_) => {
-                shared.pushes.fetch_add(1, Ordering::Relaxed);
+            Ok(signed) => {
+                shared
+                    .pushes
+                    .fetch_add(u64::from(signed > 0), Ordering::Relaxed);
             }
             Err(_) if offline.load(Ordering::SeqCst) => {}
             Err(error) => {
@@ -516,26 +361,33 @@ async fn run_editor(
     (member, written)
 }
 
-/// Runs an editor on a thread of its own, since a document stays with the
-/// thread that holds it.
-fn on_a_thread(
-    member: Member,
-    index: usize,
-    shared: Arc<Shared>,
-    offline: Arc<AtomicBool>,
-    seed: u64,
-) -> tokio::task::JoinHandle<(Member, Written)> {
+/// Runs `work` on a thread of its own: a device's rounds aren't `Send`, and
+/// a document stays with the thread that holds it.
+fn on_a_thread<T, F>(work: impl FnOnce() -> F + Send + 'static) -> tokio::task::JoinHandle<T>
+where
+    T: Send + 'static,
+    F: Future<Output = T>,
+{
     tokio::task::spawn_blocking(move || {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("a runtime")
-            .block_on(run_editor(member, index, shared, offline, seed))
+            .block_on(work())
     })
 }
 
+/// A writer at the end of the run: the device, its note, the domain's root
+/// and the records the server acknowledged.
+struct Finished {
+    member: Member,
+    path: String,
+    root: &'static str,
+    acknowledged: u64,
+}
+
 /// Runs one writer until the fleet stops.
-async fn run_writer(mut member: Member, index: usize, shared: Arc<Shared>, seed: u64) -> Member {
+async fn run_writer(mut member: Member, index: usize, shared: Arc<Shared>, seed: u64) -> Finished {
     let mut random = Random::new(seed ^ (index as u64 + 1) << 16);
     let root = ROOTS[index % ROOTS.len()];
     let path = format!("{root}/Writer {index}.md");
@@ -543,6 +395,7 @@ async fn run_writer(mut member: Member, index: usize, shared: Arc<Shared>, seed:
     // The fleet spreads over the tick.
     tokio::time::sleep(Duration::from_millis(random.below(500) as u64)).await;
     let mut count = 0u64;
+    let mut acknowledged = 0u64;
     while !shared.stop.load(Ordering::SeqCst) {
         tick.tick().await;
         count += 1;
@@ -555,8 +408,11 @@ async fn run_writer(mut member: Member, index: usize, shared: Arc<Shared>, seed:
             Err(error) => Err(error),
         };
         match pushed {
-            Ok(_) => {
-                shared.pushes.fetch_add(1, Ordering::Relaxed);
+            Ok(pushed) => {
+                acknowledged += pushed as u64;
+                shared
+                    .pushes
+                    .fetch_add(u64::from(pushed > 0), Ordering::Relaxed);
             }
             Err(error) => {
                 shared.failed(format!("writer {index}: {error:?}"));
@@ -564,7 +420,12 @@ async fn run_writer(mut member: Member, index: usize, shared: Arc<Shared>, seed:
             }
         }
     }
-    member
+    Finished {
+        member,
+        path,
+        root,
+        acknowledged,
+    }
 }
 
 /// Rounds until the device has nothing left to apply or send.
@@ -585,6 +446,119 @@ async fn settle(member: &mut Member, what: &str) {
     panic!("{what}: never settled");
 }
 
+/// Lets every one of `members` settle, a few at a time on threads of their
+/// own, and gives them back in order.
+async fn settle_all<R: Send + 'static>(
+    members: Vec<(Member, R)>,
+    what: &'static str,
+) -> Vec<(Member, R)> {
+    let room = Arc::new(tokio::sync::Semaphore::new(CATCH_UP_WORKERS));
+    let mut settling = Vec::new();
+    for (mut member, role) in members {
+        let room = room.clone();
+        settling.push(tokio::spawn(async move {
+            let _turn = room.acquire_owned().await.expect("open");
+            on_a_thread(move || async move {
+                settle(&mut member, what).await;
+                (member, role)
+            })
+            .await
+            .expect("a device settled")
+        }));
+    }
+    let mut settled = Vec::new();
+    for member in settling {
+        settled.push(member.await.expect("a device settled"));
+    }
+    settled
+}
+
+/// A device of another account in a workspace nothing writes to, so its
+/// pulls really wait while the fleet loads the same database.
+struct Quiet {
+    desktop: Desktop,
+    _folder: Folder,
+    sync: WorkspaceSync,
+}
+
+async fn quiet_device<B: Backend>(server: &Server<B>) -> Quiet {
+    let mut desktop = first_desktop(server, "bo@example.com").await;
+    let mut folder = Folder::new("Quiet");
+    let mut sync = WorkspaceSync::turn_on(
+        &mut desktop.service,
+        folder.engine.clone(),
+        "Quiet",
+        &mut folder.registry,
+    )
+    .await
+    .expect("sync turns on");
+    sync.round(&mut desktop.service, 0).await.expect("a round");
+    sync.round(&mut desktop.service, 0).await.expect("a round");
+    Quiet {
+        desktop,
+        _folder: folder,
+        sync,
+    }
+}
+
+/// The quiet device's pulls until the fleet stops, with how many of them
+/// waited.
+async fn wait_quietly(mut quiet: Quiet, shared: Arc<Shared>) -> (Quiet, u64) {
+    let mut waited = 0;
+    while !shared.stop.load(Ordering::SeqCst) {
+        let started = Instant::now();
+        let round = quiet
+            .sync
+            .round(&mut quiet.desktop.service, QUIET_WAIT)
+            .await;
+        match round {
+            Ok(_) => waited += u64::from(started.elapsed().as_secs() >= u64::from(QUIET_WAIT)),
+            Err(error) => {
+                shared.failed(format!("the quiet device: {error:?}"));
+                break;
+            }
+        }
+    }
+    (quiet, waited)
+}
+
+/// Looks for a read held across the quiet device's wait while the fleet
+/// runs. A look can land between two waits, so one that finds nothing proves
+/// little; one that finds a read held for all of its window fails the run.
+async fn watch_reads<B: Backend, D: Database<B>>(
+    server: Arc<Server<B>>,
+    shared: Arc<Shared>,
+) -> u64 {
+    let mut looks = 0;
+    loop {
+        for _ in 0..READ_CHECK_EVERY.as_secs() {
+            if shared.stop.load(Ordering::SeqCst) {
+                return looks;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        let held = {
+            let server = server.clone();
+            tokio::task::spawn_blocking(move || D::reader_stayed_open(&server, READ_CHECK_WINDOW))
+                .await
+                .expect("a look at the log")
+        };
+        looks += 1;
+        if held {
+            shared.failed(format!(
+                "a read stayed open for {READ_CHECK_WINDOW:?} during a pull's wait"
+            ));
+        }
+    }
+}
+
+/// The middle value of `samples`, which a stray sample leaves alone.
+fn middle(samples: &[u64]) -> u64 {
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    sorted.get(sorted.len() / 2).copied().unwrap_or(0)
+}
+
 fn soak<B, D, S, F>(store: &str, start: S)
 where
     B: Backend,
@@ -599,11 +573,17 @@ where
     };
     let server_side = server_runtime();
     let server = as_server(|| server_side.block_on(start(config.interval(), retention)));
-    client_runtime().block_on(drive::<B, D>(store, config, server));
+    let server_handle = server_side.handle().clone();
+    client_runtime().block_on(drive::<B, D>(store, config, server, server_handle));
     server_side.shutdown_background();
 }
 
-async fn drive<B: Backend, D: Database<B>>(store: &str, config: Config, server: Server<B>) {
+async fn drive<B: Backend, D: Database<B>>(
+    store: &str,
+    config: Config,
+    server: Server<B>,
+    server_side: tokio::runtime::Handle,
+) {
     let seed = Seed::take("NOURA_SOAK_SEED");
     let mut report = Report::new("soak", store, seed.value);
     report.set("devices", config.devices);
@@ -674,23 +654,29 @@ async fn drive<B: Backend, D: Database<B>>(store: &str, config: Config, server: 
     }
     report.seconds("join_seconds", started);
 
-    // The fleet writes.
+    // The fleet writes, while a device elsewhere waits on the same database.
     let shared = Arc::new(Shared::default());
+    let quiet = {
+        let (quiet, shared) = (quiet_device(&server).await, shared.clone());
+        on_a_thread(move || wait_quietly(quiet, shared))
+    };
+    let read_checks = tokio::spawn(watch_reads::<B, D>(server.clone(), shared.clone()));
     let offline = Arc::new(AtomicBool::new(false));
     let cut_device = config.editors > 1;
     let mut editors = Vec::new();
     let mut writers = Vec::new();
-    editors.push(on_a_thread(
-        Member {
-            desktop: first,
-            folder,
-            sync,
-        },
-        0,
-        shared.clone(),
-        Arc::new(AtomicBool::new(false)),
-        seed.value,
-    ));
+    let first_editor = Member {
+        desktop: first,
+        folder,
+        sync,
+    };
+    {
+        let (shared, seed) = (shared.clone(), seed.value);
+        let offline = Arc::new(AtomicBool::new(false));
+        editors.push(on_a_thread(move || {
+            run_editor(first_editor, 0, shared, offline, seed)
+        }));
+    }
     for (position, member) in others.into_iter().enumerate() {
         let index = position + 1;
         if index < config.editors {
@@ -699,13 +685,10 @@ async fn drive<B: Backend, D: Database<B>>(store: &str, config: Config, server: 
             } else {
                 Arc::new(AtomicBool::new(false))
             };
-            editors.push(on_a_thread(
-                member,
-                index,
-                shared.clone(),
-                offline,
-                seed.value,
-            ));
+            let (shared, seed) = (shared.clone(), seed.value);
+            editors.push(on_a_thread(move || {
+                run_editor(member, index, shared, offline, seed)
+            }));
         } else {
             writers.push(tokio::spawn(run_writer(
                 member,
@@ -732,10 +715,26 @@ async fn drive<B: Backend, D: Database<B>>(store: &str, config: Config, server: 
     let cut_at = config.length.mul_f64(0.5);
     let back_at = cut_at + Duration::from_secs(number("NOURA_SOAK_CUT_SECONDS", 2));
     let mut cut_state = 0;
-    let mut heap_after_warmup = None;
     let mut wal_peak = 0;
     let mut pushes_at_warmup = 0;
     let mut warmed = None;
+    let mut heaps = Vec::new();
+    let heads = |watched: &[Watched]| {
+        let store = server.store.clone();
+        let ids: Vec<Id> = watched.iter().map(|domain| domain.id).collect();
+        let server_side = server_side.clone();
+        async move {
+            on_server(&server_side, async move {
+                let mut sum = 0;
+                for id in ids {
+                    sum += domain_row(&store, workspace, id).await.head_seq;
+                }
+                sum
+            })
+            .await
+        }
+    };
+    let mut entries_at_warmup = 0;
     let every = Duration::from_secs(number("NOURA_SOAK_SAMPLE_SECONDS", 1));
     let mut bound_failure = None;
     while load.elapsed() < config.length && shared.failures.lock().unwrap().is_empty() {
@@ -752,18 +751,28 @@ async fn drive<B: Backend, D: Database<B>>(store: &str, config: Config, server: 
             offline.store(false, Ordering::SeqCst);
             cut_state = 2;
         }
-        server.store.maintain().await.expect("a background pass");
+        maintain(&server, &server_side).await;
         wal_peak = wal_peak.max(D::wal_bytes(&server));
-        if heap_after_warmup.is_none() && load.elapsed() >= config.warmup {
-            heap_after_warmup = Some(server_heap());
+        if warmed.is_none() && load.elapsed() >= config.warmup {
             pushes_at_warmup = shared.pushes.load(Ordering::Relaxed);
+            entries_at_warmup = heads(&watched).await;
             warmed = Some(Instant::now());
         }
+        if warmed.is_some() {
+            heaps.push(server_heap());
+        }
         for domain in &mut watched {
-            let row = domain_row(&server.store, workspace, domain.id).await;
+            let row = {
+                let store = server.store.clone();
+                let id = domain.id;
+                on_server(&server_side, async move {
+                    domain_row(&store, workspace, id).await
+                })
+                .await
+            };
             domain.interval.sample(&row);
             domain.floor = row.retention_floor;
-            if heap_after_warmup.is_some() {
+            if warmed.is_some() {
                 domain.floor_after_warmup.get_or_insert(row.retention_floor);
             }
             let (below, above, longest) =
@@ -786,12 +795,18 @@ async fn drive<B: Backend, D: Database<B>>(store: &str, config: Config, server: 
         }
     }
     shared.stop.store(true, Ordering::SeqCst);
-    let measured = warmed.map(|at| at.elapsed());
+    let measured = warmed.map_or(Duration::ZERO, |at| at.elapsed());
     let pushes_held = shared.pushes.load(Ordering::Relaxed) - pushes_at_warmup;
-    let rate = measured.map_or(0.0, |length| pushes_held as f64 / length.as_secs_f64());
+    let per_second = |count: u64| count as f64 / measured.as_secs_f64().max(0.001);
+    let rate = per_second(pushes_held);
+    let entries = heads(&watched).await.saturating_sub(entries_at_warmup);
     println!("{rate:.1} pushes a second after the warmup");
     report.set("pushes", shared.pushes.load(Ordering::Relaxed));
     report.set("pushes_per_second", (rate * 10.0).round() / 10.0);
+    report.set(
+        "log_entries_per_second",
+        (per_second(entries) * 10.0).round() / 10.0,
+    );
     report.set("wal_peak_bytes", wal_peak);
     proxy.honest();
     offline.store(false, Ordering::SeqCst);
@@ -808,73 +823,70 @@ async fn drive<B: Backend, D: Database<B>>(store: &str, config: Config, server: 
         members.push((member, role));
         written.extend(wrote);
     }
-    for writer in writers {
-        members.push((writer.await.expect("a writer"), Role::Writer));
+    let mut unverified = Vec::new();
+    let mut writer_notes = Vec::new();
+    for (position, writer) in writers.into_iter().enumerate() {
+        let writer = writer.await.expect("a writer");
+        writer_notes.push(writer.path.clone());
+        if position < config.verified_writers {
+            members.push((writer.member, Role::Writer));
+        } else {
+            unverified.push(writer);
+        }
     }
+    let (quiet, quiet_waits) = quiet.await.expect("the quiet device");
+    report.set("quiet_waits", quiet_waits);
+    report.set("reads_checked", read_checks.await.expect("the read checks"));
     let failures = shared.failures.lock().unwrap().clone();
     assert!(failures.is_empty(), "{failures:?}");
-    if let Some(problem) = bound_failure {
-        panic!("{problem}");
-    }
-    if config.hold_rate {
-        assert!(
-            rate >= 2.0 * config.devices as f64 * 0.98,
-            "{rate} pushes a second"
-        );
-    }
 
-    // No read stays open while pulls wait.
+    // No read stays open across a wait on a quiet database either. A write
+    // first gives the log frames, since a read on an empty log blocks
+    // nothing.
+    let mut quiet = quiet;
+    let writer = members
+        .iter_mut()
+        .map(|(member, _)| member)
+        .next()
+        .expect("a device");
+    writer.folder.write("Before the wait.md", b"# Wait\n");
+    settle(writer, "before the wait").await;
     let pulling = {
-        let waiter = members
-            .iter_mut()
-            .find(|(_, role)| *role == Role::Editor)
-            .expect("one");
-        settle(&mut waiter.0, "before the wait").await;
-        let round = waiter.0.sync.round(&mut waiter.0.desktop.service, 2);
+        let round = quiet.sync.round(&mut quiet.desktop.service, 3);
         let check = async {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            D::no_reader_across_a_wait(&server).await;
+            let server = server.clone();
+            tokio::task::spawn_blocking(move || {
+                D::reader_stayed_open(&server, Duration::from_secs(2))
+            })
+            .await
+            .expect("a look at the log")
         };
-        tokio::join!(round, check).0
+        let (round, held) = tokio::join!(round, check);
+        assert!(!held, "a read stayed open across a wait");
+        round
     };
     pulling.expect("the pull ends");
 
-    // Everyone but the editors that went away catches up, the writers from
-    // a checkpoint if the floor passed them. Any writer then takes over the
-    // notes those editors left, one device at a time, as the 5-minute rule
-    // does when one device's snapshot reaches the others first.
+    // Everyone verified but the editors that went away catches up, the
+    // writers from a checkpoint if the floor passed them. Any writer then
+    // takes over the notes those editors left, one device at a time, as the
+    // 5-minute rule does when one device's snapshot reaches the others
+    // first.
     let catch_up = Instant::now();
-    let (away, mut here): (Vec<_>, Vec<_>) = members
-        .into_iter()
-        .partition(|(_, role)| *role == Role::GoneEditor);
-    for _ in 0..3 {
-        for (member, _) in &mut here {
-            settle(member, "catching up").await;
-        }
-        server.store.maintain().await.expect("a background pass");
-    }
-    let later = Instant::now() + IDLE_ANY_WRITER + Duration::from_secs(1);
-    for (member, _) in &mut here {
-        settle(member, "before the idle rule").await;
-        member.sync.text_tick(later).expect("the idle rule");
-        settle(member, "after the idle rule").await;
-    }
-    let mut members = here;
-    members.extend(away);
-    // The run skipped the 5 minutes those editors stayed away, so their last
-    // pull counts as that old.
-    for (member, role) in &mut members {
-        if *role == Role::GoneEditor {
-            member.sync.set_pulled_within(Duration::ZERO);
-        }
-    }
-    for (member, _) in &mut members {
-        settle(member, "after the idle rule").await;
-    }
-    for (member, _) in &mut members {
-        settle(member, "after the idle rule").await;
-    }
+    let members = tokio::time::timeout(
+        config.catch_up_limit,
+        catch_up_fleet::<B>(members, &server, &server_side),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "catching up took more than {:?}: the seed above reruns it",
+            config.catch_up_limit
+        )
+    });
     report.seconds("catch_up_seconds", catch_up);
+    report.set("devices_verified", members.len());
 
     // Every device holds every operation, once, and the same files.
     let expected = digests(members[0].0.folder.dir.path());
@@ -899,6 +911,41 @@ async fn drive<B: Backend, D: Database<B>>(store: &str, config: Config, server: 
     }
     report.set("edits_checked", tokens);
 
+    // A writer that didn't catch up lost nothing: the server's chain head
+    // counts each record it pushed, and its last edit reached the others.
+    let mut records = 0;
+    let domain_of = |root: &str| {
+        domains
+            .iter()
+            .find(|(name, _)| *name == root)
+            .map(|(_, id)| *id)
+            .expect("a domain")
+    };
+    for writer in &unverified {
+        let device = writer.member.desktop.id();
+        let store = server.store.clone();
+        let domain = domain_of(writer.root);
+        let head = on_server(&server_side, async move {
+            chain_head(&store, workspace, domain, device).await
+        })
+        .await;
+        assert_eq!(
+            head.map(|head| head.counter),
+            Some(writer.acknowledged),
+            "{}: the chain head against what it pushed",
+            writer.path
+        );
+        records += writer.acknowledged;
+    }
+    report.set("unverified_writers", unverified.len());
+    report.set("unverified_records", records);
+    for writer in &unverified {
+        let here = std::fs::read(writer.member.folder.path(&writer.path)).expect("its note");
+        let there = std::fs::read(members[0].0.folder.path(&writer.path)).expect("its copy");
+        assert_eq!(here, there, "{}: the last edit crossed", writer.path);
+    }
+    report.set("writer_notes", writer_notes.len());
+
     // A note editing left holds one snapshot and at most 8 live updates.
     let head = {
         let (member, _) = &members[0];
@@ -912,12 +959,15 @@ async fn drive<B: Backend, D: Database<B>>(store: &str, config: Config, server: 
                 .sync
                 .object_domain(&rid)
                 .unwrap_or_else(|| member.sync.domain());
-            let row = domain_row(&server.store, workspace, domain).await;
-            let live = server
-                .store
-                .live_at(workspace, rid, row.head_seq)
-                .await
-                .expect("the live set");
+            let store = server.store.clone();
+            let live = on_server(&server_side, async move {
+                let row = domain_row(&store, workspace, domain).await;
+                store
+                    .live_at(workspace, rid, row.head_seq)
+                    .await
+                    .expect("the live set")
+            })
+            .await;
             let patches = live
                 .iter()
                 .filter(|(_, class)| *class == OpClass::Patch)
@@ -953,23 +1003,85 @@ async fn drive<B: Backend, D: Database<B>>(store: &str, config: Config, server: 
             domain.interval.largest,
         );
     }
-    let end_heap = server_heap();
-    report.set("server_heap_end_bytes", end_heap);
-    if let Some(warm) = heap_after_warmup {
-        report.set("server_heap_after_warmup_bytes", warm);
-        // A plain run ends before the caches settle.
-        if config.length >= Duration::from_secs(600) {
-            assert!(
-                end_heap as f64 <= warm as f64 * 1.1,
-                "the server's heap went from {warm} to {end_heap}"
-            );
-        }
-    }
+    // The same sample at either end, under load: the first after the warmup
+    // against the last before the fleet stopped.
+    let warm = middle(&heaps[..heaps.len().min(HEAP_SAMPLES)]);
+    let end = middle(&heaps[heaps.len().saturating_sub(HEAP_SAMPLES)..]);
+    report.set("server_heap_after_warmup_bytes", warm);
+    report.set("server_heap_end_bytes", end);
+    report.set("server_heap_after_catch_up_bytes", server_heap());
     report.set("database_bytes", D::size(&server).await);
     report.seconds("duration_seconds", started);
+
+    // A run that missed a bar still verified everything above, and its
+    // numbers go out with it.
+    if let Some(problem) = bound_failure {
+        panic!("{problem}");
+    }
+    if config.hold_rate {
+        // One tick's pushes can fall outside the measured time.
+        let seconds = measured.as_secs();
+        let devices = config.devices as u64;
+        assert!(
+            pushes_held + devices >= 2 * devices * seconds,
+            "{pushes_held} pushes in {seconds} seconds, under 2 for each of {devices} devices"
+        );
+    }
+    // A plain run ends before the caches settle.
+    if config.length >= Duration::from_secs(600) {
+        assert!(
+            end as f64 <= warm as f64 * 1.1,
+            "the server's heap went from {warm} to {end}"
+        );
+    }
     report.finish();
     drop(members);
+    drop(unverified);
     drop(seed);
+}
+
+/// A background pass, on the server's own runtime.
+async fn maintain<B: Backend>(server: &Server<B>, server_side: &tokio::runtime::Handle) {
+    let store = server.store.clone();
+    on_server(server_side, async move {
+        store.maintain().await.expect("a background pass");
+    })
+    .await;
+}
+
+/// Catches `members` up, and has the writers among them take over what the
+/// editors that went away left.
+async fn catch_up_fleet<B: Backend>(
+    members: Vec<(Member, Role)>,
+    server: &Server<B>,
+    server_side: &tokio::runtime::Handle,
+) -> Vec<(Member, Role)> {
+    let (away, mut here): (Vec<_>, Vec<_>) = members
+        .into_iter()
+        .partition(|(_, role)| *role == Role::GoneEditor);
+    for _ in 0..3 {
+        here = settle_all(here, "catching up").await;
+        maintain(server, server_side).await;
+    }
+    let later = Instant::now() + IDLE_ANY_WRITER + Duration::from_secs(1);
+    for (member, _) in &mut here {
+        settle(member, "before the idle rule").await;
+        member.sync.text_tick(later).expect("the idle rule");
+        settle(member, "after the idle rule").await;
+    }
+    let mut members = here;
+    members.extend(away);
+    // The run skipped the 5 minutes those editors stayed away, so their last
+    // pull counts as that old.
+    for (member, role) in &mut members {
+        if *role == Role::GoneEditor {
+            member.sync.set_pulled_within(Duration::ZERO);
+        }
+    }
+    for _ in 0..2 {
+        members = settle_all(members, "after the idle rule").await;
+    }
+    members
 }
 
 /// The domain's place in the fleet's order, which says who writes there.
@@ -988,4 +1100,33 @@ fn the_fleet_soaks_on_sqlite() {
 #[test]
 fn the_fleet_soaks_on_postgres() {
     soak::<_, Postgres, _, _>("postgres", Server::start_postgres_with);
+}
+
+/// The wait check finds a read held open, which a checkpoint that waits for
+/// it wouldn't, and passes once the read ends.
+#[test]
+fn a_read_held_across_a_wait_fails_the_check() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let file = dir.path().join("wait.sqlite3");
+    let writer = rusqlite::Connection::open(&file).expect("the database");
+    writer
+        .execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE t (n); INSERT INTO t VALUES (1);")
+        .expect("written");
+    let window = Duration::from_millis(300);
+    assert!(!reader_stayed_open(&file, window), "nothing reads yet");
+
+    writer
+        .execute_batch("INSERT INTO t VALUES (2);")
+        .expect("written");
+    let reader = rusqlite::Connection::open(&file).expect("the database");
+    reader
+        .execute_batch("BEGIN; SELECT COUNT(*) FROM t;")
+        .expect("a snapshot");
+    writer
+        .execute_batch("INSERT INTO t VALUES (3);")
+        .expect("written");
+    assert!(reader_stayed_open(&file, window), "the snapshot is open");
+
+    reader.execute_batch("COMMIT").expect("ended");
+    assert!(!reader_stayed_open(&file, window), "the snapshot ended");
 }

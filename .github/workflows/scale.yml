@@ -8,7 +8,9 @@ name: Scale
 #
 # GitHub's hosted runners end a job after 6 hours. The 24-hour soak needs a
 # self-hosted runner named by the repository variable SOAK_RUNNER; without
-# one the soak runs for 5 hours.
+# one the soak runs for 4 hours, which leaves the rest of the job for the
+# build, the fleet's join and the end of the run. That end has a limit of its
+# own, so an overrun fails with the seed printed instead of a killed job.
 on:
   schedule:
     - cron: '41 3 * * 6'
@@ -22,8 +24,12 @@ concurrency:
 
 env:
   CARGO_INCREMENTAL: '0'
-  DEV_DEPENDENCIES: profile.dev.package."*".opt-level=2
-  TEST_DEPENDENCIES: profile.test.package."*".opt-level=2
+  # Debug assertions stay on. The client's journal is generic code that
+  # compiles into the workspace's crates, so they need optimizing too.
+  CARGO_PROFILE_DEV_OPT_LEVEL: '2'
+  CARGO_PROFILE_TEST_OPT_LEVEL: '2'
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
   NOURA_SCALE_REPORT: ${{ github.workspace }}/numbers.jsonl
 
 jobs:
@@ -39,6 +45,7 @@ jobs:
     env:
       NOURA_SCALE_NOTES: '95000'
       NOURA_SCALE_ATTACHMENTS: '5000'
+      NOURA_SCALE_DEVICES: '197'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -54,7 +61,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with: { key: scale }
       - name: Sync the workspace of §28
-        run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p app-core --test sync_scale "on_${{ matrix.store }}" -- --nocapture
+        run: cargo test --locked -p app-core --test sync_scale "on_${{ matrix.store }}" -- --nocapture
       - name: Publish the numbers
         if: always()
         run: scripts/scale-numbers.sh
@@ -77,7 +84,9 @@ jobs:
     env:
       NOURA_SOAK_DEVICES: '200'
       NOURA_SOAK_EDITORS: '8'
-      NOURA_SOAK_SECONDS: ${{ vars.SOAK_RUNNER && '86400' || '18000' }}
+      NOURA_SOAK_SECONDS: ${{ vars.SOAK_RUNNER && '86400' || '14400' }}
+      NOURA_SOAK_VERIFIED_WRITERS: '16'
+      NOURA_SOAK_CATCH_UP_SECONDS: '5400'
       NOURA_SOAK_WARMUP_SECONDS: '600'
       NOURA_SOAK_RETAINED_BYTES: '67108864'
       NOURA_SOAK_SAMPLE_SECONDS: '60'
@@ -96,7 +105,7 @@ jobs:
       - name: Soak
         run: |
           ulimit -n 65536
-          cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p app-core --test sync_soak "on_${{ matrix.store }}" -- --nocapture
+          cargo test --locked -p app-core --test sync_soak "on_${{ matrix.store }}" -- --nocapture
       - name: Publish the numbers
         if: always()
         run: scripts/scale-numbers.sh

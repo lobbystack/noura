@@ -127,6 +127,15 @@ impl Server<SqliteBackend> {
         interval: sync_store::CheckpointInterval,
         retention: sync_store::Retention,
     ) -> Self {
+        Self::start_at(interval, retention, sync_server::RateGate::unlimited()).await
+    }
+
+    /// [`start_with`](Self::start_with) behind the rate limits of `rate`.
+    pub async fn start_at(
+        interval: sync_store::CheckpointInterval,
+        retention: sync_store::Retention,
+        rate: sync_server::RateGate,
+    ) -> Self {
         let dir = tempfile::tempdir().expect("temporary directory");
         let data = dir.path().join("data");
         sync_server::migrate(&data).await.expect("migrated");
@@ -138,7 +147,7 @@ impl Server<SqliteBackend> {
         .expect("the store opens")
         .with_checkpoint_interval(interval)
         .with_retention(retention);
-        Self::serve(store, dir, None).await
+        Self::serve_at(store, dir, None, rate).await
     }
 }
 
@@ -348,6 +357,16 @@ impl Server<PgBackend> {
         interval: sync_store::CheckpointInterval,
         retention: sync_store::Retention,
     ) -> Self {
+        Self::start_postgres_at(interval, retention, sync_server::RateGate::unlimited()).await
+    }
+
+    /// [`start_postgres_with`](Self::start_postgres_with) behind the rate
+    /// limits of `rate`.
+    pub async fn start_postgres_at(
+        interval: sync_store::CheckpointInterval,
+        retention: sync_store::Retention,
+        rate: sync_server::RateGate,
+    ) -> Self {
         let database = Cluster::shared(Path::new(env!("CARGO_TARGET_TMPDIR")))
             .database()
             .await;
@@ -364,7 +383,7 @@ impl Server<PgBackend> {
             .with_checkpoint_interval(interval)
             .with_retention(retention);
         let dir = tempfile::tempdir().expect("temporary directory");
-        let mut server = Self::serve(store, dir, Some(database)).await;
+        let mut server = Self::serve_at(store, dir, Some(database), rate).await;
         server.instance = Some(postgres);
         server
     }
@@ -488,12 +507,22 @@ impl<B: Backend> Server<B> {
         dir: tempfile::TempDir,
         postgres: Option<TestDatabase>,
     ) -> Self {
+        Self::serve_at(store, dir, postgres, sync_server::RateGate::unlimited()).await
+    }
+
+    /// [`serve`](Self::serve) behind the rate limits of `rate`.
+    async fn serve_at(
+        store: Store<B>,
+        dir: tempfile::TempDir,
+        postgres: Option<TestDatabase>,
+        rate: sync_server::RateGate,
+    ) -> Self {
         let store = Arc::new(store);
         let blobs = sync_server::blobs::DiskStore::open(&dir.path().join("blobs"))
             .expect("the blob store opens");
         let mail: Arc<Mutex<Vec<String>>> = Arc::default();
         let outbox = mail.clone();
-        let address = sync_server::spawn_with_blobs(
+        let address = sync_server::spawn_limited(
             store.clone(),
             "127.0.0.1:0",
             move |origin| {
@@ -506,6 +535,7 @@ impl<B: Backend> Server<B> {
                 )
             },
             Arc::new(blobs),
+            rate,
         )
         .await
         .expect("serving");
@@ -797,6 +827,40 @@ pub struct Proxy {
     traffic: Arc<Traffic>,
 }
 
+/// A domain's head row in the server's store.
+pub async fn domain_row<B: sync_store::Backend>(
+    store: &sync_store::Store<B>,
+    workspace: sync_protocol::types::Id,
+    domain: sync_protocol::types::Id,
+) -> sync_store::DomainRow {
+    use sync_store::ReadTxn as _;
+    store
+        .backend()
+        .read(Box::new(move |txn: &mut B::Read| {
+            Box::pin(async move { txn.domain(workspace, domain).await })
+        }))
+        .await
+        .expect("a read")
+        .expect("the domain")
+}
+
+/// A device's chain head in a domain, on the server's store.
+pub async fn chain_head<B: sync_store::Backend>(
+    store: &sync_store::Store<B>,
+    workspace: sync_protocol::types::Id,
+    domain: sync_protocol::types::Id,
+    device: sync_protocol::types::Id,
+) -> Option<sync_store::ChainHeadRow> {
+    use sync_store::ReadTxn as _;
+    store
+        .backend()
+        .read(Box::new(move |txn: &mut B::Read| {
+            Box::pin(async move { txn.chain_head(workspace, domain, device).await })
+        }))
+        .await
+        .expect("a read")
+}
+
 /// What a proxy counted of the bodies it passed. It keeps no bodies itself,
 /// so a long run can measure without holding them.
 #[derive(Default)]
@@ -819,10 +883,12 @@ pub struct RouteTraffic {
     pub requests: u64,
     pub sent: u64,
     pub received: u64,
+    /// Requests the server answered `429`.
+    pub limited: u64,
 }
 
 impl Traffic {
-    fn note(&self, method: &str, path: &str, sent: usize, received: usize) {
+    fn note(&self, method: &str, path: &str, sent: usize, received: usize, limited: bool) {
         self.largest_request.fetch_max(sent, Ordering::SeqCst);
         self.largest_response.fetch_max(received, Ordering::SeqCst);
         let name = path
@@ -843,6 +909,7 @@ impl Traffic {
         route.requests += 1;
         route.sent += sent as u64;
         route.received += received as u64;
+        route.limited += u64::from(limited);
     }
 
     /// The counts so far by route.
@@ -1127,6 +1194,7 @@ impl Proxy {
                     parts.uri.path(),
                     body.len(),
                     bytes.len(),
+                    status.as_u16() == 429,
                 );
                 if !quiet {
                     recording
