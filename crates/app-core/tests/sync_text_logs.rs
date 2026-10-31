@@ -13,6 +13,10 @@ use app_core::sync::workspace::presence::SelectionRange;
 use base64::Engine;
 use sync_protocol::messages::Frame;
 use sync_support::pair;
+use tracing_subscriber::Layer;
+use tracing_subscriber::filter::Targets;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[derive(Clone, Default)]
 struct Logs(Arc<Mutex<Vec<u8>>>);
@@ -32,11 +36,20 @@ impl Write for Logs {
 async fn the_servers_logs_hold_nothing_of_a_presence_record() {
     let logs = Logs::default();
     let writer = logs.clone();
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_ansi(false)
-        .with_writer(move || writer.clone())
+    // The server's crates at every level. The WebSocket library traces the
+    // bytes it handles in this process, on the client's side too.
+    let server: Targets = "sync_server=trace,sync_store=trace,sync_store_sqlite=trace"
+        .parse()
+        .expect("targets");
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(move || writer.clone())
+                .with_filter(server),
+        )
         .init();
+    tracing::info!(target: "sync_server", "the logs start");
 
     let mut pair = pair().await;
     pair.sync_a

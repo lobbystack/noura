@@ -2024,7 +2024,8 @@ impl WorkspaceSync {
         self.settle_text()?;
         let rids: Vec<Id> = self.text.sessions.keys().copied().collect();
         for rid in rids {
-            signed += self.send_text(rid)?;
+            let sent = self.send_text(rid)?;
+            signed += sent;
             let Some(mut file) = self.text_file(&rid)? else {
                 self.text.sessions.remove(&rid);
                 continue;
@@ -2053,7 +2054,10 @@ impl WorkspaceSync {
                 }
             }
             self.absorb(rid, &mut file)?;
-            if let Some(session) = self.text.sessions.get(&rid)
+            // Only your own edit ends text mode at the limit, so a
+            // collaborator's flood can't end the lineage.
+            if sent > 0
+                && let Some(session) = self.text.sessions.get(&rid)
                 && session.body.len() > TEXT_LIMIT
                 && let Some(path) = self.state.objects[&rid]
                     .local
