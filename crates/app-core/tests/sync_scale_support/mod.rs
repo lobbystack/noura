@@ -80,6 +80,15 @@ pub fn server_runtime() -> tokio::runtime::Runtime {
         .expect("a runtime")
 }
 
+/// Runs `start` with this thread counting as the server's, for what the
+/// server allocates as it starts and frees on its own threads later.
+pub fn as_server<T>(start: impl FnOnce() -> T) -> T {
+    SIDE.with(|side| side.set(SERVER));
+    let result = start();
+    SIDE.with(|side| side.set(CLIENT));
+    result
+}
+
 /// The runtime the test's clients run on.
 pub fn client_runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread()

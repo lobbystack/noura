@@ -23,8 +23,8 @@ use app_core::sync::workspace::WorkspaceSync;
 use sync_protocol::codec::Decode;
 use sync_protocol::messages::{MAX_BODY, PushRequest, RecordRef};
 use sync_scale_support::{
-    Counting, Random, Report, Seed, client_runtime, difference, digests, domain_row, number,
-    postgres_size, server_runtime, sqlite_size,
+    Counting, Random, Report, Seed, as_server, client_runtime, difference, digests, domain_row,
+    number, postgres_size, server_runtime, sqlite_size,
 };
 use sync_store::{Backend, CheckpointInterval, Retention};
 use sync_support::{DATABASE, Desktop, Folder, Proxy, Server, approve, first_desktop};
@@ -260,7 +260,7 @@ where
         ..CheckpointInterval::default()
     };
     let server_side = server_runtime();
-    let server = server_side.block_on(start(interval));
+    let server = as_server(|| server_side.block_on(start(interval)));
     client_runtime().block_on(drive(store, sizes, server, size_of));
     server_side.shutdown_background();
 }

@@ -41,6 +41,9 @@ pub const TICK: Duration = Duration::from_millis(500);
 pub const IDLE: Duration = Duration::from_secs(30);
 /// How long a note rests before any writer device snapshots it.
 pub const IDLE_ANY_WRITER: Duration = Duration::from_secs(300);
+/// How old a device's last pull may be for it to write a snapshot on its own
+/// judgement (§22), above the time between two rounds on a live channel.
+const PULLED_WITHIN: Duration = Duration::from_secs(120);
 /// The shortest time between two snapshots of a note from one device, unless
 /// the server requires one.
 pub const SNAPSHOT_EVERY: Duration = Duration::from_secs(10);
@@ -496,6 +499,11 @@ pub struct TextRuntime {
     unsettled: BTreeSet<Id>,
     /// Notes the server required a snapshot of.
     required: BTreeSet<Id>,
+    /// When this device last finished a pull.
+    pulled: Option<Instant>,
+    /// How old that pull may be for a snapshot rule to run, when a test
+    /// sets it.
+    pulled_within: Option<Duration>,
     /// Codes reported to the app since it last asked, such as
     /// `sync_text_conflict`.
     reported: Vec<&'static str>,
@@ -2031,6 +2039,16 @@ impl WorkspaceSync {
         Ok(signed + usize::from(waiting))
     }
 
+    /// Notes that this device finished a pull.
+    pub(super) fn text_pulled(&mut self) {
+        self.text.pulled = Some(Instant::now());
+    }
+
+    /// Sets how old the last pull may be for a snapshot rule to run.
+    pub fn set_pulled_within(&mut self, within: Duration) {
+        self.text.pulled_within = Some(within);
+    }
+
     /// One tick of text mode: takes the documents' merged changes to the
     /// files, signs the edits that wait, and runs the snapshot rules.
     pub fn text_tick(&mut self, now: Instant) -> Result<usize, SyncError> {
@@ -2307,6 +2325,13 @@ impl WorkspaceSync {
             return Ok(false);
         }
         let required = self.text.required.contains(&rid);
+        // A device back from away pulls first, or it would repeat what the
+        // others did meanwhile (§22).
+        let within = self.text.pulled_within.unwrap_or(PULLED_WITHIN);
+        let current = self.text.pulled.is_some_and(|at| at.elapsed() < within);
+        if !required && !current {
+            return Ok(false);
+        }
         let own = self.credentials.keys.device();
         let activity = *self.text.activity.entry(rid).or_insert(Activity {
             last_edit: now,

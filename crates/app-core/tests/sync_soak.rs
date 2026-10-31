@@ -36,8 +36,8 @@ use editor_core::text_mode::{CollabDocument, Utf16Splice};
 use sync_protocol::records::OpClass;
 use sync_protocol::types::Id;
 use sync_scale_support::{
-    Counting, Random, Report, Seed, client_runtime, difference, digests, domain_row, number,
-    postgres_size, server_heap, server_runtime, sqlite_size,
+    Counting, Random, Report, Seed, as_server, client_runtime, difference, digests, domain_row,
+    number, postgres_size, server_heap, server_runtime, sqlite_size,
 };
 use sync_store::{Backend, CheckpointInterval, Retention};
 use sync_support::{DATABASE, Desktop, Folder, Proxy, Server, approve, cut_off, first_desktop};
@@ -511,6 +511,8 @@ async fn run_editor(
             let _ = member.sync.close_text(&path);
         }
     }
+    // Nothing it signed stays behind on the way out.
+    let _ = member.sync.push(&mut member.desktop.service).await;
     (member, written)
 }
 
@@ -596,7 +598,7 @@ where
         ..Retention::default()
     };
     let server_side = server_runtime();
-    let server = server_side.block_on(start(config.interval(), retention));
+    let server = as_server(|| server_side.block_on(start(config.interval(), retention)));
     client_runtime().block_on(drive::<B, D>(store, config, server));
     server_side.shutdown_background();
 }
@@ -858,6 +860,13 @@ async fn drive<B: Backend, D: Database<B>>(store: &str, config: Config, server: 
     }
     let mut members = here;
     members.extend(away);
+    // The run skipped the 5 minutes those editors stayed away, so their last
+    // pull counts as that old.
+    for (member, role) in &mut members {
+        if *role == Role::GoneEditor {
+            member.sync.set_pulled_within(Duration::ZERO);
+        }
+    }
     for (member, _) in &mut members {
         settle(member, "after the idle rule").await;
     }
@@ -914,7 +923,13 @@ async fn drive<B: Backend, D: Database<B>>(store: &str, config: Config, server: 
                 .count();
             let states = live.len() - patches;
             assert!(patches <= IDLE_PATCHES, "{path}: {patches} live updates");
-            assert!(states <= 1, "{path}: {states} snapshots");
+            assert!(
+                states <= 1,
+                "{path}: {states} snapshots: {:?}",
+                live.iter()
+                    .map(|(op, class)| (op.device, op.counter, op.seq, *class))
+                    .collect::<Vec<_>>()
+            );
             largest = largest.max(live.len());
             checked += 1;
         }

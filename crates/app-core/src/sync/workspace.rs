@@ -1202,6 +1202,7 @@ impl WorkspaceSync {
             self.follow_profile(service).await?;
         }
         let (applied, waiting_for_key) = self.pull_until(service, wait_seconds, wake).await?;
+        self.text_pulled();
         captured += self.settle_rewrite_race()?;
         self.settle_moved_away()?;
         self.rotate_domains(service, false).await?;
