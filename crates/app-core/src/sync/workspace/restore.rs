@@ -1500,7 +1500,7 @@ impl WorkspaceSync {
             archived = Self::archive(journal, Some(state), &state.replica)?;
             archived.extend(state.archived.clone());
         }
-        drop(old);
+        let old = old.map(|(_, state)| state);
         service.kept_heads_mut().forget_workspace(entry.workspace)?;
         registry.remove(&entry.server, &entry.account, &entry.workspace)?;
         let server = service.client().base().to_owned();
@@ -1516,6 +1516,9 @@ impl WorkspaceSync {
         )?;
         fresh.state.archived = archived;
         fresh.hold_local_markers();
+        if let Some(old) = &old {
+            fresh.hold_old_roots(old);
+        }
         fresh.save()?;
         Ok(fresh)
     }
@@ -1577,6 +1580,7 @@ impl WorkspaceSync {
         // you decide: a folder that held a marker keeps its content out
         // of the new workspace domain.
         fresh.hold_local_markers();
+        fresh.hold_old_roots(&self.state);
         fresh.save()?;
         Ok(fresh)
     }

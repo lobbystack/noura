@@ -186,9 +186,12 @@ impl WorkspaceSync {
             service, engine, remote, server, replica, generation, &name, profile,
         )?;
         sync.paused = entry.paused;
-        archived.extend(old.map(|s| s.archived).unwrap_or_default());
-        sync.state.archived = archived;
         sync.hold_local_markers();
+        if let Some(old) = old {
+            sync.hold_old_roots(&old);
+            archived.extend(old.archived);
+        }
+        sync.state.archived = archived;
         sync.compare_own_chain(service).await?;
         // The client bootstraps again and matches its files (§15).
         sync.state.bootstrap = true;
@@ -234,6 +237,26 @@ impl WorkspaceSync {
                 }
             })
             .collect();
+    }
+
+    /// Holds what the old journal held or recorded as a root too: a folder
+    /// whose marker you deleted meanwhile still keeps its files out of the
+    /// new workspace domain until you decide (§14).
+    pub(super) fn hold_old_roots(&mut self, old: &State) {
+        let recorded = old.roots.iter().map(|root| HeldRoot {
+            folder: root.folder.clone(),
+            domain: Some(root.domain),
+        });
+        for root in old.held_roots.iter().cloned().chain(recorded) {
+            if !self
+                .state
+                .held_roots
+                .iter()
+                .any(|held| held.folder == root.folder)
+            {
+                self.state.held_roots.push(root);
+            }
+        }
     }
 
     /// Moves an old journal's review store aside and lists what it kept.

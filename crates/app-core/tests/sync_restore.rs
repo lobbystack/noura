@@ -2147,6 +2147,29 @@ async fn set_up_sync_again_carries_the_review_store() {
     assert_eq!(fresh.archived()[0].path, "Plan.md");
 }
 
+/// A root whose marker went while sync was stopped stays held, so its files
+/// don't reach the new workspace domain (§14).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn set_up_sync_again_holds_a_root_whose_marker_went() {
+    let mut pair = pair().await;
+    pair.sync_a
+        .restrict_folder(&mut pair.service, "Pay", &[])
+        .await
+        .expect("restricted");
+    pair.a.write("Pay/March.md", b"# March\n");
+    rounds(&mut pair).await;
+    std::fs::remove_file(pair.a.path("Pay/.noura-domain")).unwrap();
+    let mut fresh = pair
+        .sync_a
+        .set_up_again(&mut pair.service, &mut pair.a.registry)
+        .await
+        .expect("set up");
+    let held: Vec<String> = fresh.held_roots().into_iter().map(|root| root.0).collect();
+    assert_eq!(held, vec!["Pay".to_owned()]);
+    fresh.round(&mut pair.service, 0).await.expect("a round");
+    assert_eq!(fresh.rid_at("Pay/March.md"), None, "nothing uploaded");
+}
+
 /// After a generation change a stopped workspace still owes its revoked
 /// links, whatever you dismissed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
