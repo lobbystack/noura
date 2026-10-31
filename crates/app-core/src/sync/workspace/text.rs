@@ -58,6 +58,11 @@ pub const REBASE_AT: usize = 16 << 20;
 /// A device's own records carry IDs above every log sequence until the log
 /// gives them one.
 const OWN_RECORDS: u64 = 1 << 62;
+/// How many review entries the journal keeps for one note. A note whose
+/// lineage stopped keeps that entry past the limit.
+const MAX_REVIEWS: usize = 64;
+/// How often an open note's writer balances reach the journal.
+const BALANCES_EVERY: Duration = Duration::from_secs(60);
 /// An update that carries no change to the document.
 const EMPTY_UPDATE: [u8; 2] = [0, 0];
 /// The payload's fields around a text record's bytes and `meta` entries.
@@ -87,8 +92,11 @@ pub enum Judgement {
     Unreadable,
     /// It holds an item that would land elsewhere on a booted device (§22).
     Refused,
-    /// A snapshot that made the device rebuild the document.
+    /// A snapshot that made the device rebuild the document. It stays one
+    /// of the lineage's live records, so a later rebuild starts from it.
     Disagrees,
+    /// An update of a lineage the note left: it went to review as text.
+    Ended,
 }
 
 /// A `meta` entry of a record.
@@ -185,6 +193,18 @@ pub struct TextReview {
     pub seq: Option<u64>,
 }
 
+/// What the note's file held when this device last wrote or read it: the
+/// base an outside edit diffs from, so that a change the document merged
+/// meanwhile survives the edit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileBase {
+    /// The hash of the file's bytes, which name their copy in the journal.
+    pub bytes: Digest,
+    /// The hash of the canonical form of those bytes, when the file may keep
+    /// its own form while the note's merged state matches it.
+    pub form: Option<Digest>,
+}
+
 /// What the journal keeps of one text-mode note.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TextFile {
@@ -204,6 +224,76 @@ pub struct TextFile {
     pub pending_since: Option<u64>,
     /// The note's entries in the review store.
     pub reviews: Vec<TextReview>,
+    /// What the note's file last held.
+    #[serde(default)]
+    pub base: Option<FileBase>,
+}
+
+impl TextFile {
+    fn new(lineage: Id) -> Self {
+        Self {
+            lineage,
+            records: Vec::new(),
+            balances: Vec::new(),
+            balances_at: 0,
+            stopped: false,
+            pending_since: None,
+            reviews: Vec::new(),
+            base: None,
+        }
+    }
+
+    /// Lists an entry in the review store, once. The list stays bounded,
+    /// so a hostile writer can't grow it without limit.
+    fn review(&mut self, entry: TextReview) {
+        if self.reviews.contains(&entry) {
+            return;
+        }
+        self.reviews.push(entry);
+        if self.reviews.len() > MAX_REVIEWS
+            && let Some(oldest) = self
+                .reviews
+                .iter()
+                .position(|r| r.kind != TextReviewKind::Stopped)
+        {
+            self.reviews.remove(oldest);
+        }
+    }
+
+    /// Whether a readable snapshot of the lineage holds the note's start,
+    /// so that its document holds the note.
+    fn holds_a_snapshot(&self) -> bool {
+        self.records.iter().any(|r| {
+            r.snapshot
+                && r.lineage == self.lineage
+                && matches!(r.judgement, Judgement::Readable | Judgement::Disagrees)
+        })
+    }
+}
+
+/// Why an editor's hold on a note's document ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeftWhy {
+    /// A file operation ended text mode: the note saves as a plain file.
+    Ended,
+    /// The lineage stopped on this device, so the note waits for your
+    /// choice and its file keeps its last good state.
+    Stopped,
+    /// The note's document moved on to another lineage, or the editor and
+    /// the document went apart: the editor attaches to the note's document
+    /// again.
+    Moved,
+}
+
+/// An editor's document that no longer takes the note's edits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeftNote {
+    /// The note.
+    pub rid: Id,
+    /// Why.
+    pub why: LeftWhy,
+    /// The text the document last merged, which the file followed.
+    pub body: String,
 }
 
 /// One merged `meta` key: its latest write.
@@ -353,8 +443,9 @@ struct Loads {
 
 /// A note whose document is open.
 struct Session {
-    /// The editor's side, until the editor takes it.
-    handle: Option<NoteHandle>,
+    /// The editor's side and the text it opened with, until the editor
+    /// takes it.
+    handle: Option<(NoteHandle, String)>,
     shared: SharedNote,
     /// The text the document last merged, which the file follows.
     body: String,
@@ -368,6 +459,8 @@ struct Session {
     editing: bool,
     /// `path` and property writes that wait for the next update.
     meta: Vec<MetaEntry>,
+    /// When the journal last took each writer's balance.
+    balances_saved: Instant,
 }
 
 /// What the sandbox's loader needs to read a deferred record back.
@@ -402,6 +495,10 @@ pub struct TextRuntime {
     /// Codes reported to the app since it last asked, such as
     /// `sync_text_conflict`.
     reported: Vec<&'static str>,
+    /// Documents editors still hold that stopped taking the notes' edits.
+    left: Vec<LeftNote>,
+    /// The encoded size at which a note rebases, when a test lowers it.
+    rebase_at: Option<usize>,
 }
 
 impl std::fmt::Debug for TextRuntime {
@@ -421,6 +518,17 @@ fn refilled(balances: &[(u32, i64)], at: u64) -> Vec<(u32, i64)> {
         .iter()
         .map(|(writer, balance)| (*writer, balance.saturating_add(added).min(ALLOWANCE_FUEL)))
         .collect()
+}
+
+/// The hash of the canonical form of a note's file bytes.
+fn note_form(path: &str, bytes: &[u8]) -> Option<Digest> {
+    let (properties, body) = match note_parts(path, bytes) {
+        NoteParts::Managed { properties, body } => (properties, body),
+        NoteParts::Unmanaged { body } => (BTreeMap::new(), body),
+        NoteParts::Outside => return None,
+    };
+    let composed = compose_note(&properties, &body).ok()?;
+    Some(hash(composed.as_bytes()))
 }
 
 fn text_name(rid: &Id) -> String {
@@ -480,6 +588,83 @@ impl WorkspaceSync {
     /// `sync_text_conflict`.
     pub fn take_text_reports(&mut self) -> Vec<&'static str> {
         std::mem::take(&mut self.text.reported)
+    }
+
+    /// The documents editors hold that stopped taking the notes' edits
+    /// since the last call.
+    pub fn take_left_notes(&mut self) -> Vec<LeftNote> {
+        std::mem::take(&mut self.text.left)
+    }
+
+    /// Tells the note's editor, if one holds its document, that the
+    /// document takes no more of its edits.
+    fn editor_left(&mut self, rid: Id, why: LeftWhy) {
+        if let Some(session) = self.text.sessions.get(&rid)
+            && session.editing
+        {
+            self.text.left.push(LeftNote {
+                rid,
+                why,
+                body: session.body.clone(),
+            });
+        }
+    }
+
+    /// Lowers the encoded size at which a note rebases, because no test
+    /// builds a real 16 MiB document.
+    #[cfg(feature = "test-hooks")]
+    pub fn set_rebase_at(&mut self, bytes: usize) {
+        self.text.rebase_at = Some(bytes);
+    }
+
+    /// Keeps `bytes`, what the note's file holds now, as the base the next
+    /// outside edit diffs from. `form` says the file may keep its form
+    /// while the merged state matches it.
+    fn set_base(
+        &mut self,
+        rid: Id,
+        file: &mut TextFile,
+        bytes: &[u8],
+        form: Option<Digest>,
+    ) -> Result<(), SyncError> {
+        let digest = hash(bytes);
+        let old = file.base.map(|base| base.bytes);
+        file.base = Some(FileBase {
+            bytes: digest,
+            form,
+        });
+        if old == Some(digest) {
+            return Ok(());
+        }
+        self.journal.keep(&record_path(&rid, &digest), bytes)?;
+        if let Some(old) = old
+            && !file
+                .records
+                .iter()
+                .any(|r| r.payload == old || r.blob == Some(old))
+        {
+            self.journal.forget(&record_path(&rid, &old));
+        }
+        Ok(())
+    }
+
+    /// What the note's file last held, as a note's parts.
+    fn base_parts(
+        &self,
+        rid: &Id,
+        file: &TextFile,
+        path: &str,
+    ) -> Option<(BTreeMap<String, String>, String)> {
+        let base = file.base?;
+        let bytes = self
+            .journal
+            .kept(&record_path(rid, &base.bytes), &base.bytes)
+            .ok()?;
+        match note_parts(path, &bytes) {
+            NoteParts::Managed { properties, body } => Some((properties, body)),
+            NoteParts::Unmanaged { body } => Some((BTreeMap::new(), body)),
+            NoteParts::Outside => None,
+        }
     }
 
     /// Reserves load numbers when few are left, so the note threads, which
@@ -581,7 +766,10 @@ impl WorkspaceSync {
         let mut records: Vec<&TextRecord> = file
             .records
             .iter()
-            .filter(|r| r.lineage == file.lineage && r.judgement == Judgement::Readable)
+            .filter(|r| {
+                r.lineage == file.lineage
+                    && matches!(r.judgement, Judgement::Readable | Judgement::Disagrees)
+            })
             .collect();
         records.sort_by_key(|r| (!r.snapshot, r.id()));
         let mut out = Vec::with_capacity(records.len());
@@ -665,13 +853,14 @@ impl WorkspaceSync {
         let (handle, body) = opening.wait().map_err(handle_error)?;
         let session = Session {
             shared: handle.shared(),
-            handle: Some(handle),
+            handle: Some((handle, body.clone())),
             body,
             load,
             sent: BTreeSet::new(),
             records: stored,
             editing: false,
             meta: Vec::new(),
+            balances_saved: Instant::now(),
         };
         self.text.sessions.insert(*rid, session);
         Ok(())
@@ -705,6 +894,17 @@ impl WorkspaceSync {
         &mut self,
         path: &str,
     ) -> Result<(Entered, Option<SandboxDocument>), SyncError> {
+        let (entered, document) = self.open_text_at(path)?;
+        Ok((entered, document.map(|(document, _)| document)))
+    }
+
+    /// [`Self::open_text`], with the text the editor's side of the document
+    /// starts from: the changes it holds apply to that text, whatever the
+    /// document merged since.
+    pub(crate) fn open_text_at(
+        &mut self,
+        path: &str,
+    ) -> Result<(Entered, Option<(SandboxDocument, String)>), SyncError> {
         let Some(rid) = self.rid_at(path) else {
             return Ok((Entered::NotYet, None));
         };
@@ -713,8 +913,18 @@ impl WorkspaceSync {
             if entered != Entered::Yes {
                 return Ok((entered, None));
             }
+        } else if self.local_edit(&rid) {
+            // The file holds an edit sync hasn't captured yet.
+            return Ok((Entered::NotYet, None));
         }
         self.text_settle(rid)?;
+        if !self.in_text_mode(&rid) {
+            return Ok((Entered::NotYet, None));
+        }
+        if self.text_file(&rid)?.is_some_and(|file| file.stopped) {
+            // The note waits for your choice.
+            return Ok((Entered::Never, None));
+        }
         self.open_session(&rid)?;
         let session = self
             .text
@@ -724,7 +934,13 @@ impl WorkspaceSync {
         session.editing = true;
         let handle = session.handle.take();
         self.touch(&rid);
-        Ok((Entered::Yes, handle.map(SandboxDocument::new)))
+        Ok((
+            Entered::Yes,
+            handle.map(|(mut handle, text)| {
+                handle.outlive();
+                (SandboxDocument::new(handle), text)
+            }),
+        ))
     }
 
     /// The editor let go of the note at `path`: see
@@ -742,11 +958,13 @@ impl WorkspaceSync {
         if let Some(session) = self.text.sessions.get_mut(&rid) {
             session.editing = false;
         }
+        // Sending your last edits counts as an edit, so the close comes
+        // after them.
+        self.send_text(rid)?;
         self.text
             .activity
             .entry(rid)
             .and_modify(|a| a.closed = true);
-        self.send_text(rid)?;
         self.text_upkeep_note(rid, Instant::now())?;
         self.close_session(&rid)
     }
@@ -826,15 +1044,8 @@ impl WorkspaceSync {
         let composed = compose_note(&properties, &body)
             .map_err(|_| SyncError::Invalid("the note's frontmatter".into()))?;
         let revision = hash(composed.as_bytes());
-        let mut file = TextFile {
-            lineage,
-            records: Vec::new(),
-            balances: Vec::new(),
-            balances_at: 0,
-            stopped: false,
-            pending_since: None,
-            reviews: Vec::new(),
-        };
+        let mut file = TextFile::new(lineage);
+        self.set_base(rid, &mut file, &bytes, None)?;
         self.in_domain(domain, |sync| {
             let view: BTreeSet<OpKey> = sync.live_ops(&rid).into_iter().collect();
             let covers = sync.covers_of(&rid, &view);
@@ -940,7 +1151,7 @@ impl WorkspaceSync {
             writer,
             card_count,
             covers: signed.body.supersedes.to_vec(),
-            weight: signed.body.ciphertext.len() as u64,
+            weight: LiveWeight::of(signed),
             epoch: signed.body.epoch,
             meta: meta.to_vec(),
             payload: digest,
@@ -1085,24 +1296,32 @@ impl WorkspaceSync {
     }
 
     fn send_text_here(&mut self, rid: Id) -> Result<usize, SyncError> {
-        let Some(session) = self.text.sessions.get(&rid) else {
+        if !self.text.sessions.contains_key(&rid) {
             return Ok(0);
-        };
+        }
         if self.state.removal_hold || self.state.ended.is_some() {
             return Ok(0);
         }
-        let updates = session.shared.take_updates().map_err(handle_error)?;
-        let load = session.load;
-        let meta = session.meta.clone();
-        if updates.is_empty() && meta.is_empty() {
-            return Ok(0);
-        }
+        // The document keeps what it can't send yet, and writes it once it
+        // can.
         if !self.can_write_note(&rid) {
             return Ok(0);
         }
         let Some(mut file) = self.text_file(&rid)? else {
             return Ok(0);
         };
+        if file.stopped {
+            return Ok(0);
+        }
+        let Some(session) = self.text.sessions.get(&rid) else {
+            return Ok(0);
+        };
+        let updates = session.shared.take_updates().map_err(handle_error)?;
+        let load = session.load;
+        let meta = session.meta.clone();
+        if updates.is_empty() && meta.is_empty() {
+            return Ok(0);
+        }
         let mut signed = 0;
         let mut meta = Some(meta);
         for update in updates {
@@ -1154,15 +1373,9 @@ impl WorkspaceSync {
             } => (false, *text_lineage, meta, object_id, None),
             _ => return Ok(()),
         };
-        let mut file = self.text_file(&rid)?.unwrap_or(TextFile {
-            lineage,
-            records: Vec::new(),
-            balances: Vec::new(),
-            balances_at: 0,
-            stopped: false,
-            pending_since: None,
-            reviews: Vec::new(),
-        });
+        let mut file = self
+            .text_file(&rid)?
+            .unwrap_or_else(|| TextFile::new(lineage));
         if let Some(own) = file.records.iter_mut().find(|r| r.key == key) {
             own.seq = Some(record.seq);
             own.digest = op.digest();
@@ -1297,28 +1510,41 @@ impl WorkspaceSync {
             return Ok(());
         };
         if file.lineage != lineage {
-            // A rebase: the note starts again from the new lineage, and
-            // updates of the old one go to review as text.
-            for record in &file.records {
-                if !record.snapshot && record.lineage != lineage {
-                    let review = TextReview {
-                        rid,
-                        kind: TextReviewKind::EndedLineage,
-                        signer: Some(record.key.device),
-                        seq: record.seq,
-                    };
-                    if !file.reviews.contains(&review) {
-                        file.reviews.push(review);
-                    }
-                }
-            }
+            // A rebase: the note starts again from the new lineage.
             file.lineage = lineage;
             file.stopped = false;
             file.pending_since = None;
             self.store_text(&rid, &file)?;
+            self.editor_left(rid, LeftWhy::Moved);
             self.text.sessions.remove(&rid);
         }
         self.state.objects.entry(rid).or_default().text = Some(lineage);
+        // Updates of a lineage the note left go to review as text, whenever
+        // they arrive. The ones the rebase covered aren't live, so they
+        // merged into it.
+        // This device's own rebase covers its records once the log has it.
+        if !own_snapshot {
+            let live: BTreeSet<OpKey> = self.live_ops(&rid).into_iter().collect();
+            let mut late = Vec::new();
+            for record in &mut file.records {
+                if !record.snapshot
+                    && record.lineage != lineage
+                    && matches!(record.judgement, Judgement::Waiting | Judgement::Readable)
+                    && live.contains(&record.key)
+                {
+                    record.judgement = Judgement::Ended;
+                    late.push(TextReview {
+                        rid,
+                        kind: TextReviewKind::EndedLineage,
+                        signer: Some(record.key.device),
+                        seq: record.seq,
+                    });
+                }
+            }
+            for review in late {
+                file.review(review);
+            }
+        }
         if file.stopped {
             return Ok(());
         }
@@ -1412,20 +1638,18 @@ impl WorkspaceSync {
                 .map(|r| (r.key.device, r.seq))
         };
         let mut reports = Vec::new();
+        let stopped_before = file.stopped;
         let events = session.shared.take_events();
         let status = session.shared.status();
         for event in events {
             let review = |kind, id: u64, file: &mut TextFile| {
                 let (signer, seq) = device_of(file, id).map_or((None, None), |(d, s)| (Some(d), s));
-                let entry = TextReview {
+                file.review(TextReview {
                     rid,
                     kind,
                     signer,
                     seq,
-                };
-                if !file.reviews.contains(&entry) {
-                    file.reviews.push(entry);
-                }
+                });
             };
             let set = |id: u64, judgement: Judgement, file: &mut TextFile| {
                 if let Some(record) = file.records.iter_mut().find(|r| r.id() == id) {
@@ -1465,17 +1689,12 @@ impl WorkspaceSync {
                     file.stopped = true;
                     review(TextReviewKind::Stopped, id, file);
                 }
-                Event::Pending(true) => {
-                    let entry = TextReview {
-                        rid,
-                        kind: TextReviewKind::Pending,
-                        signer: None,
-                        seq: None,
-                    };
-                    if !file.reviews.contains(&entry) {
-                        file.reviews.push(entry);
-                    }
-                }
+                Event::Pending(true) => file.review(TextReview {
+                    rid,
+                    kind: TextReviewKind::Pending,
+                    signer: None,
+                    seq: None,
+                }),
                 Event::Pending(false) => {
                     file.pending_since = None;
                     file.reviews.retain(|r| r.kind != TextReviewKind::Pending);
@@ -1483,6 +1702,7 @@ impl WorkspaceSync {
                 _ => {}
             }
         }
+        let stopped_now = file.stopped && !stopped_before;
         let shared = session.shared.clone();
         for op in shared.take_merged_changes() {
             session.body = match op.apply(&session.body) {
@@ -1491,6 +1711,9 @@ impl WorkspaceSync {
             };
         }
         self.text.reported.extend(reports);
+        if stopped_now {
+            self.editor_left(rid, LeftWhy::Stopped);
+        }
         Ok(())
     }
 
@@ -1501,7 +1724,10 @@ impl WorkspaceSync {
         let Some(session) = self.text.sessions.get(&rid) else {
             return Ok(());
         };
-        if file.stopped || self.local_edit(&rid) {
+        // A document with no snapshot yet holds nothing of the note: one
+        // that waits on its writer's allowance, or a lineage's start that
+        // was refused.
+        if file.stopped || !file.holds_a_snapshot() || self.local_edit(&rid) {
             return Ok(());
         }
         let merged = merged_meta(&file.records);
@@ -1519,21 +1745,24 @@ impl WorkspaceSync {
             // A path that left the object's root: the file stays, and the
             // change goes to review (§9).
             Placement::Outside(_) => {
-                let entry = TextReview {
+                file.review(TextReview {
                     rid,
                     kind: TextReviewKind::OutsideRoot,
                     signer: None,
                     seq: None,
-                };
-                if !file.reviews.contains(&entry) {
-                    file.reviews.push(entry);
-                }
+                });
                 return Ok(());
             }
         };
         let object = &self.state.objects[&rid];
         let local = object.local.as_ref();
-        if local.is_some_and(|l| l.path == synced && l.revision == revision) {
+        let in_place = local.is_some_and(|l| l.path == synced);
+        if in_place && local.is_some_and(|l| l.revision == revision) {
+            return self.set_base(rid, file, &bytes, Some(revision));
+        }
+        // A note whose file holds its merged state in its own form keeps
+        // those bytes until another change rewrites them.
+        if in_place && file.base.is_some_and(|base| base.form == Some(revision)) {
             return Ok(());
         }
         let Some(base) = self.latest_snapshot(&rid) else {
@@ -1546,10 +1775,10 @@ impl WorkspaceSync {
                 return Ok(());
             }
         }
-        match self.place(&rid, &target, &Body::Bytes(bytes), revision) {
+        match self.place(&rid, &target, &Body::Bytes(bytes.clone()), revision) {
             Ok(()) => {
                 self.state.objects.get_mut(&rid).expect("present").base = Some(base);
-                Ok(())
+                self.set_base(rid, file, &bytes, Some(revision))
             }
             Err(SyncError::Invalid(message)) if message.starts_with("revision_conflict") => Ok(()),
             Err(error) => Err(error),
@@ -1606,9 +1835,13 @@ impl WorkspaceSync {
     /// Ends text mode on this device: the note's file is what it holds now,
     /// and a `file` operation covers the lineage.
     pub(super) fn end_text(&mut self, rid: Id) -> Result<(), SyncError> {
+        self.editor_left(rid, LeftWhy::Ended);
         self.text.sessions.remove(&rid);
         self.text.activity.remove(&rid);
         if let Some(file) = self.text_file(&rid)? {
+            if let Some(base) = file.base {
+                self.journal.forget(&record_path(&rid, &base.bytes));
+            }
             for record in &file.records {
                 self.journal.forget(&record_path(&rid, &record.payload));
                 if let Some(blob) = &record.blob {
@@ -1654,7 +1887,18 @@ impl WorkspaceSync {
     /// a `text_update` computed from the difference, nothing for a change
     /// that only reformats the frontmatter, or a `file` operation that ends
     /// text mode. Returns how many records it signed.
-    pub(super) fn capture_text(&mut self, rid: Id, found: &Found) -> Result<usize, SyncError> {
+    ///
+    /// The difference runs from what the file last held to what it holds
+    /// now, and then applies to the document as an edit made from that base,
+    /// so a change the document merged meanwhile stays. `yielded` says the
+    /// note moved to a name that yields its path to another object, which
+    /// its file already has.
+    pub(super) fn capture_text(
+        &mut self,
+        rid: Id,
+        found: &Found,
+        yielded: bool,
+    ) -> Result<usize, SyncError> {
         let Some(mut file) = self.text_file(&rid)? else {
             return Ok(0);
         };
@@ -1684,13 +1928,23 @@ impl WorkspaceSync {
             self.end_with_file(rid, found)?;
             return Ok(1);
         }
+        let old_path = self.state.objects[&rid]
+            .local
+            .as_ref()
+            .map(|l| l.path.clone());
         self.open_session(&rid)?;
         self.absorb(rid, &mut file)?;
         self.store_text(&rid, &file)?;
-        let session = self.text.sessions.get_mut(&rid).expect("just opened");
-        let body_changed = session.body != body;
+        let current = self.text.sessions[&rid].body.clone();
+        let (base_properties, base_body) = self
+            .base_parts(&rid, &file, old_path.as_deref().unwrap_or(path))
+            .unwrap_or_else(|| (merged_properties.clone(), current.clone()));
+        let body_changed = body != base_body && body != current;
         let mut meta = Vec::new();
-        if merged_path.as_deref() != Some(path)
+        // The file moved here, or took a name that yields its path. A note
+        // that only hasn't reached a merged path yet writes nothing.
+        if (yielded || old_path.as_deref() != Some(path))
+            && merged_path.as_deref() != Some(path)
             && let synced = sync_protocol::matching::synced_path(path, &self.state.roots)
             && merged_path.as_deref() != Some(synced.as_str())
         {
@@ -1701,7 +1955,9 @@ impl WorkspaceSync {
             });
         }
         for (name, value) in &properties {
-            if merged_properties.get(name) != Some(value) {
+            if base_properties.get(name) != Some(value)
+                && merged_properties.get(name) != Some(value)
+            {
                 meta.push(MetaEntry {
                     key: format!("p:{name}"),
                     seq: 0,
@@ -1709,8 +1965,8 @@ impl WorkspaceSync {
                 });
             }
         }
-        for name in merged_properties.keys() {
-            if !properties.contains_key(name) {
+        for name in base_properties.keys() {
+            if !properties.contains_key(name) && merged_properties.contains_key(name) {
                 meta.push(MetaEntry {
                     key: format!("p:{name}"),
                     seq: 0,
@@ -1721,13 +1977,10 @@ impl WorkspaceSync {
         meta.sort_by(|a, b| a.key.cmp(&b.key));
         let session = self.text.sessions.get_mut(&rid).expect("just opened");
         if body_changed {
-            let at = 0;
             session
                 .shared
-                .replace_text(body.clone(), at)
+                .merge_text(base_body, body, 0)
                 .map_err(handle_error)?;
-            session.body = body;
-            session.shared.take_merged_changes();
         }
         session.meta.extend(meta);
         let changed = body_changed || !session.meta.is_empty();
@@ -1735,9 +1988,21 @@ impl WorkspaceSync {
         if let Some(object) = self.state.objects.get_mut(&rid) {
             object.local = Some(found.local());
         }
+        let mut file = self
+            .text_file(&rid)?
+            .ok_or_else(|| SyncError::Invalid("the note left text mode".into()))?;
+        self.absorb(rid, &mut file)?;
+        // Only the frontmatter's form changed: your bytes stay until another
+        // change rewrites them.
+        let form = (!changed).then(|| note_form(path, &bytes)).flatten();
+        self.set_base(rid, &mut file, &bytes, form)?;
+        if changed {
+            // A change the document merged while the file held this edit
+            // reaches the file now.
+            self.write_note(rid, &mut file)?;
+        }
+        self.store_text(&rid, &file)?;
         if !changed {
-            // Only the frontmatter's form changed: your bytes stay until
-            // another change rewrites them.
             return Ok(0);
         }
         self.touch(&rid);
@@ -1756,6 +2021,7 @@ impl WorkspaceSync {
     /// files, signs the edits that wait, and runs the snapshot rules.
     pub fn text_tick(&mut self, now: Instant) -> Result<usize, SyncError> {
         let mut signed = 0;
+        self.settle_text()?;
         let rids: Vec<Id> = self.text.sessions.keys().copied().collect();
         for rid in rids {
             signed += self.send_text(rid)?;
@@ -1763,8 +2029,29 @@ impl WorkspaceSync {
                 self.text.sessions.remove(&rid);
                 continue;
             };
-            let session = &self.text.sessions[&rid];
+            let Some(session) = self.text.sessions.get(&rid) else {
+                continue;
+            };
             let closed = !session.shared.is_alive();
+            // An edit that failed sits in the editor and not in the
+            // document, so the editor comes back from the file.
+            if session.editing && !session.shared.take_errors().is_empty() {
+                self.absorb(rid, &mut file)?;
+                self.write_note(rid, &mut file)?;
+                self.store_text(&rid, &file)?;
+                self.editor_left(rid, LeftWhy::Moved);
+                self.text.sessions.remove(&rid);
+                continue;
+            }
+            if session.balances_saved.elapsed() >= BALANCES_EVERY
+                && let Ok(balances) = session.shared.balances()
+            {
+                file.balances = balances;
+                file.balances_at = super::unix_now();
+                if let Some(session) = self.text.sessions.get_mut(&rid) {
+                    session.balances_saved = Instant::now();
+                }
+            }
             self.absorb(rid, &mut file)?;
             if let Some(session) = self.text.sessions.get(&rid)
                 && session.body.len() > TEXT_LIMIT
@@ -1834,16 +2121,88 @@ impl WorkspaceSync {
         path: &str,
         yrs: impl FnOnce(u64) -> Vec<u8>,
     ) -> Result<(), SyncError> {
+        self.sign_hostile_update_at(path, 536_870_911, yrs)
+    }
+
+    /// [`Self::sign_hostile_update`] under the load number `load`.
+    #[cfg(feature = "test-hooks")]
+    pub fn sign_hostile_update_at(
+        &mut self,
+        path: &str,
+        load: u32,
+        yrs: impl FnOnce(u64) -> Vec<u8>,
+    ) -> Result<(), SyncError> {
         let rid = self
             .rid_at(path)
             .ok_or_else(|| SyncError::Invalid("no such note".into()))?;
-        let load = 536_870_911;
         let client = yrs_client_id(self.card_index()?, load)
             .ok_or_else(|| SyncError::Invalid("no client ID".into()))?;
         let mut file = self
             .text_file(&rid)?
             .ok_or_else(|| SyncError::Invalid("not in text mode".into()))?;
         self.sign_update(rid, &mut file, load, yrs(client), &[])?;
+        self.store_text(&rid, &file)
+    }
+
+    /// Signs an update that writes `path` and nothing else, whatever the
+    /// note's root says.
+    #[cfg(feature = "test-hooks")]
+    pub fn sign_text_path(&mut self, path: &str, new_path: &str) -> Result<(), SyncError> {
+        let rid = self
+            .rid_at(path)
+            .ok_or_else(|| SyncError::Invalid("no such note".into()))?;
+        let mut file = self
+            .text_file(&rid)?
+            .ok_or_else(|| SyncError::Invalid("not in text mode".into()))?;
+        let meta = [MetaEntry {
+            key: "path".into(),
+            seq: 0,
+            value: Some(new_path.as_bytes().to_vec()),
+        }];
+        let domain = self.object_domain(&rid);
+        self.in_domain(domain, |sync| {
+            sync.sign_update(rid, &mut file, 1, EMPTY_UPDATE.to_vec(), &meta)?;
+            sync.store_text(&rid, &file)
+        })
+    }
+
+    /// Signs a snapshot of the note holding the first document of `text`,
+    /// which covers every live record, whatever they hold, as a hostile
+    /// writer would.
+    #[cfg(feature = "test-hooks")]
+    pub fn sign_hostile_snapshot(&mut self, path: &str, text: &str) -> Result<(), SyncError> {
+        let rid = self
+            .rid_at(path)
+            .ok_or_else(|| SyncError::Invalid("no such note".into()))?;
+        let mut file = self
+            .text_file(&rid)?
+            .ok_or_else(|| SyncError::Invalid("not in text mode".into()))?;
+        let document = sandbox()?
+            .first_document(text)
+            .map_err(|error| SyncError::Invalid(error.to_string()))?;
+        let merged = merged_meta(&file.records);
+        let meta: Vec<MetaEntry> = merged
+            .iter()
+            .map(|(key, write)| MetaEntry {
+                key: key.clone(),
+                seq: if write.effective == u64::MAX {
+                    0
+                } else {
+                    write.effective
+                },
+                value: write.value.clone(),
+            })
+            .collect();
+        let view: BTreeSet<OpKey> = self.live_ops(&rid).into_iter().collect();
+        let covers = self.covers_of(&rid, &view);
+        self.sign_snapshot(
+            rid,
+            &mut file,
+            covers,
+            hash(text.as_bytes()),
+            &meta,
+            document,
+        )?;
         self.store_text(&rid, &file)
     }
 
@@ -1865,6 +2224,54 @@ impl WorkspaceSync {
                 (*rid, path.unwrap_or_default())
             })
             .collect()
+    }
+
+    /// Runs the snapshot writer on the note now.
+    #[cfg(feature = "test-hooks")]
+    pub fn write_snapshot_for_testing(&mut self, rid: Id) -> Result<(), SyncError> {
+        self.write_snapshot(rid, false)
+    }
+
+    /// Signs what the note's document holds, as a tick does.
+    #[cfg(feature = "test-hooks")]
+    pub fn send_text_for_testing(&mut self, rid: Id) -> Result<usize, SyncError> {
+        self.send_text(rid)
+    }
+
+    /// Notes whose merged path left their domain root, which wait for your
+    /// choice.
+    pub fn outside_notes(&self) -> Vec<(Id, String)> {
+        self.text_reviews()
+            .into_iter()
+            .filter(|review| review.kind == TextReviewKind::OutsideRoot)
+            .map(|review| {
+                let path = self.local_path(&review.rid).unwrap_or_default();
+                (review.rid, path)
+            })
+            .collect()
+    }
+
+    /// Lists the notes with records that wait for the sandbox, which a
+    /// restart left unjudged.
+    pub(super) fn find_unsettled(&mut self) -> Result<(), SyncError> {
+        let notes: Vec<Id> = self
+            .state
+            .objects
+            .iter()
+            .filter(|(_, object)| object.text.is_some())
+            .map(|(rid, _)| *rid)
+            .collect();
+        for rid in notes {
+            let waits = self.text_file(&rid)?.is_some_and(|file| {
+                file.records
+                    .iter()
+                    .any(|r| r.judgement == Judgement::Waiting)
+            });
+            if waits {
+                self.text.unsettled.insert(rid);
+            }
+        }
+        Ok(())
     }
 
     /// Whether the client ticks: a note's document is open.
@@ -1959,7 +2366,16 @@ impl WorkspaceSync {
                 value: write.value.clone(),
             })
             .collect();
-        let rebase = document.len() >= REBASE_AT && !rewrite;
+        let live: BTreeSet<OpKey> = self.live_ops(&rid).into_iter().collect();
+        let designated = file
+            .records
+            .iter()
+            .filter(|r| !r.snapshot && live.contains(&r.key))
+            .map(|r| r.key.device)
+            .min()
+            == Some(self.credentials.keys.device());
+        let rebase_at = self.text.rebase_at.unwrap_or(REBASE_AT);
+        let rebase = document.len() >= rebase_at && designated && !rewrite;
         let covers = self.snapshot_covers(&rid, &file);
         let before = self.state.outbox.len();
         if rebase {
@@ -1976,6 +2392,7 @@ impl WorkspaceSync {
             })?;
             self.state.objects.entry(rid).or_default().text = Some(file.lineage);
             self.store_text(&rid, &file)?;
+            self.editor_left(rid, LeftWhy::Moved);
             self.text.sessions.remove(&rid);
         } else {
             self.in_domain(domain, |sync| {

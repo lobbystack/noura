@@ -33,7 +33,7 @@ use crate::note::{
     ClientIds, DocumentError, Effects, Event, LineageStatus, LocalUpdate, Note, Opened,
     RemoteRecord,
 };
-use crate::op::{Mismatch, Op, difference, transform};
+use crate::op::{Mismatch, Op, three_way, transform};
 
 /// An edit, undo or redo from the editor.
 struct ClientMessage {
@@ -69,8 +69,10 @@ enum Request {
         at: u64,
     },
     EndUndoStep,
-    /// Moves the document to this text as an outside edit of the file.
-    Replace {
+    /// Applies an outside edit made from `base`, which moved the file to
+    /// `text`, on top of what the document merged since `base`.
+    Merge {
+        base: String,
         text: String,
         at: u64,
         answer: Answer<()>,
@@ -197,6 +199,9 @@ pub struct NoteHandle {
     /// gone: the editor and the document went apart, so no more changes
     /// apply.
     broken: bool,
+    /// Whether the thread outlives this side, for the sync client to take
+    /// what the editor left in the document.
+    outlived: bool,
     started: Instant,
 }
 
@@ -281,6 +286,7 @@ impl NoteHandle {
             outgoing: VecDeque::new(),
             len,
             broken: false,
+            outlived: false,
             started: Instant::now(),
         }
     }
@@ -288,6 +294,13 @@ impl NoteHandle {
     /// The sync client's side of the note.
     pub fn shared(&self) -> SharedNote {
         self.shared.clone()
+    }
+
+    /// Lets the thread run on after this side drops, until the last
+    /// [`SharedNote`] goes, so that closing a note's tab leaves the edits
+    /// that wait in the document for the sync client to send.
+    pub fn outlive(&mut self) {
+        self.outlived = true;
     }
 
     fn now(&self) -> u64 {
@@ -460,7 +473,9 @@ impl Drop for NoteHandle {
     /// Ends the thread once it finishes the work ahead of it, without
     /// waiting for that work.
     fn drop(&mut self) {
-        let _ = self.shared.send(Request::Close);
+        if !self.outlived {
+            let _ = self.shared.send(Request::Close);
+        }
     }
 }
 
@@ -554,12 +569,18 @@ impl SharedNote {
         self.send(Request::Record(Box::new(record)))
     }
 
-    /// Moves the document to `text` as an outside edit of the file: a
-    /// change computed from the difference, which undo never takes back and
-    /// which reaches the editor like a collaborator's. Waits for the
+    /// Applies an outside edit of the file: the change from `base`, what
+    /// the file held, to `text`, what it holds now, on top of what the
+    /// document merged since `base`, which stays. Undo never takes it back,
+    /// and it reaches the editor like a collaborator's. Waits for the
     /// requests ahead of it.
-    pub fn replace_text(&self, text: String, at: u64) -> Result<(), HandleError> {
-        self.ask(|answer| Request::Replace { text, at, answer })
+    pub fn merge_text(&self, base: String, text: String, at: u64) -> Result<(), HandleError> {
+        self.ask(|answer| Request::Merge {
+            base,
+            text,
+            at,
+            answer,
+        })
     }
 
     /// Each writer's balance, which the journal keeps.
@@ -790,13 +811,14 @@ fn serve(mut note: Note, inbox: &Receiver<Request>, outbox: &Sender<Reply>, shar
                 }
             }
             Some(Request::EndUndoStep) => failed = note.end_undo_step().err(),
-            Some(Request::Replace {
+            Some(Request::Merge {
+                base,
                 text,
                 at,
                 answer: to,
             }) => {
                 let result = note.text().and_then(|current| {
-                    let op = difference(&current, &text);
+                    let (op, _) = three_way(&base, &text, &current)?;
                     note.local(&op, false, at).map(|()| op)
                 });
                 reply = match result {
@@ -886,6 +908,7 @@ mod tests {
             outgoing: VecDeque::new(),
             len,
             broken: false,
+            outlived: false,
             started: Instant::now(),
         };
         (handle, outbox, inbox)

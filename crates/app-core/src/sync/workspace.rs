@@ -563,6 +563,7 @@ impl WorkspaceSync {
             sync.swap_domain(domain);
             keys?;
         }
+        sync.find_unsettled()?;
         sync.save()?;
         Ok(sync)
     }
@@ -1536,14 +1537,15 @@ impl WorkspaceSync {
                     if target != domain {
                         // A note that moves to another domain leaves text
                         // mode as a `file` operation (§22).
-                        signed += self.crossing(rid, &found, domain, target)?;
-                        if signed > 0 {
+                        let moved = self.crossing(rid, &found, domain, target)?;
+                        signed += moved;
+                        if moved > 0 {
                             self.end_text(rid)?;
                         }
                         continue;
                     }
                     if self.in_text_mode(&rid) {
-                        signed += self.capture_text(rid, &found)?;
+                        signed += self.capture_text(rid, &found, false)?;
                         continue;
                     }
                     self.in_domain(domain, |sync| {
@@ -1580,7 +1582,7 @@ impl WorkspaceSync {
             // A text-mode note moves by a text update that writes `path`
             // (§22).
             if self.in_text_mode(&rid) {
-                signed += self.capture_text(rid, &found)?;
+                signed += self.capture_text(rid, &found, true)?;
                 continue;
             }
             let domain = self.object_domain(&rid);

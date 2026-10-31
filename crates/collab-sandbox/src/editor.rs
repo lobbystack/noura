@@ -26,6 +26,12 @@ impl SandboxDocument {
         self.handle.shared()
     }
 
+    /// The document's changes since the last call, each against the text
+    /// the one before it left.
+    pub fn take_changes(&mut self) -> Vec<Op> {
+        self.handle.poll()
+    }
+
     fn record(&self, result: Result<(), HandleError>) {
         if let Err(error) = result {
             self.handle.record(error);

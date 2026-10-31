@@ -27,7 +27,60 @@ use crate::folder_sync::{
 use crate::sync::realtime::Live;
 use crate::sync::registry::Registry;
 use crate::sync::workspace::WorkspaceSync;
+use crate::sync::workspace::text::{TextReview, TextReviewKind};
 use crate::sync::{Secrets, SyncError, SyncService};
+
+/// How many text review lines Settings lists.
+const TEXT_REVIEW_LINES: usize = 32;
+/// What Settings says after a device reports `sync_text_conflict`.
+const TEXT_CONFLICT: &str = "A collaborator's version of a note disagreed with this computer's records, so Noura rebuilt the note. Check it below.";
+
+/// One line of Settings for a text review entry, unless the note has its
+/// own entry with a choice.
+fn text_review_line(sync: &WorkspaceSync, review: &TextReview) -> Option<String> {
+    let path = sync
+        .local_path(&review.rid)
+        .unwrap_or_else(|| "A note".into());
+    let device = review.signer.as_ref().map_or_else(
+        || "another device".into(),
+        |d| format!("device {}", short(d)),
+    );
+    Some(match review.kind {
+        TextReviewKind::Unreadable => {
+            format!(
+                "{path}: this computer couldn't read an edit from {device}, so it left the edit out."
+            )
+        }
+        TextReviewKind::Refused => format!(
+            "{path}: this computer left out an edit from {device}, because it would land in different places on different computers."
+        ),
+        TextReviewKind::Disagrees => format!(
+            "{path}: a version from {device} disagreed with this computer's records, and Noura rebuilt the note."
+        ),
+        TextReviewKind::Pending => {
+            format!("{path}: some edits wait for an earlier edit this computer couldn't read.")
+        }
+        TextReviewKind::EndedLineage => format!(
+            "{path}: an edit from {device} arrived after the note started over, so Noura didn't merge it."
+        ),
+        TextReviewKind::Stopped | TextReviewKind::OutsideRoot => return None,
+    })
+}
+
+/// The review entries of text-mode notes, within what Settings lists.
+fn text_review_lines(sync: &WorkspaceSync) -> Vec<String> {
+    let mut lines: Vec<String> = sync
+        .text_reviews()
+        .iter()
+        .filter_map(|review| text_review_line(sync, review))
+        .collect();
+    let more = lines.len().saturating_sub(TEXT_REVIEW_LINES);
+    if more > 0 {
+        lines.truncate(TEXT_REVIEW_LINES);
+        lines.push(format!("And {more} more."));
+    }
+    lines
+}
 
 /// The open workspace and its sync.
 #[derive(Default)]
@@ -35,6 +88,8 @@ pub(super) struct Folder {
     engine: Option<Arc<WorkspaceEngine>>,
     sync: Option<WorkspaceSync>,
     last_error: Option<String>,
+    /// What a note's records reported, until its review entry goes.
+    text_problem: Option<String>,
     /// The folder lost or refused its journal, so it syncs again from the
     /// server and matches its files at the next round (§15).
     rebuild: bool,
@@ -117,11 +172,23 @@ impl Folder {
                             .collect(),
                     })
                     .collect();
-                screen.stopped_notes = sync
-                    .stopped_notes()
-                    .into_iter()
-                    .map(|(rid, path)| StoppedNoteEntry { rid, path })
-                    .collect();
+                screen.stopped_notes =
+                    sync.stopped_notes()
+                        .into_iter()
+                        .map(|(rid, path)| StoppedNoteEntry {
+                            rid,
+                            path,
+                            outside: false,
+                        })
+                        .chain(sync.outside_notes().into_iter().map(|(rid, path)| {
+                            StoppedNoteEntry {
+                                rid,
+                                path,
+                                outside: true,
+                            }
+                        }))
+                        .collect();
+                screen.text_reviews = text_review_lines(sync);
                 screen.held = sync
                     .held()
                     .into_iter()
@@ -173,7 +240,7 @@ impl Folder {
             },
             None => FolderSyncScreen::default(),
         };
-        screen.last_error = self.last_error.clone();
+        screen.last_error = self.last_error.clone().or(self.text_problem.clone());
         screen
     }
 
@@ -354,6 +421,17 @@ impl Folder {
             Err(error) => {
                 tracing::warn!(kind = ?error.code(), "a sync round failed");
                 self.last_error = Some(folder_message(&error));
+            }
+        }
+        if let Some(sync) = self.sync.as_mut() {
+            if sync.take_text_reports().contains(&"sync_text_conflict") {
+                self.text_problem = Some(TEXT_CONFLICT.into());
+            } else if !sync
+                .text_reviews()
+                .iter()
+                .any(|review| review.kind == TextReviewKind::Disagrees)
+            {
+                self.text_problem = None;
             }
         }
     }

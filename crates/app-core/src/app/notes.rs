@@ -141,9 +141,42 @@ impl App {
         if session.text_mode().is_some() {
             return None;
         }
+        if session.take_attach() {
+            bridge.attach(session.relative_path());
+        }
+        // A save on its way already writes your edits to the file.
+        if session.is_saving() {
+            return None;
+        }
         let document = bridge.take_document(session.relative_path())?;
+        if !session.may_enter_text_mode() {
+            bridge.close(document.rid);
+            return None;
+        }
+        let base = session.loaded_text().to_owned();
         session.enter_text_mode(document.rid);
-        Some(document.catch_up(shown))
+        Some(document.catch_up(&base, shown))
+    }
+
+    /// Whether the note in `tab` just stopped living in its document, so
+    /// the editor leaves text mode. What the file holds reaches the editor
+    /// as an outside edit, and text past what the document merged saves as
+    /// an ordinary edit.
+    pub fn take_note_left(&mut self, tab: TabId) -> bool {
+        let Some(bridge) = self.text_bridge() else {
+            return false;
+        };
+        let Some(session) = self.notes.sessions.get_mut(&tab) else {
+            return false;
+        };
+        let Some(left) = session.text_mode().and_then(|rid| bridge.take_left(&rid)) else {
+            return false;
+        };
+        let rejoin = left.why == crate::sync::workspace::text::LeftWhy::Moved;
+        session.leave_text_mode(&left.body, rejoin, Instant::now());
+        self.check_note_files(&[tab]);
+        self.listeners.emit(Change::Note);
+        true
     }
 
     /// Tells the sync client where your cursors are in the note in `tab`.
@@ -929,6 +962,11 @@ impl App {
     }
 
     fn finish_note_write(&mut self, finished: Finished) {
+        if let (Some(bridge), Some(session)) =
+            (self.text_bridge(), self.notes.sessions.get(&finished.tab))
+        {
+            bridge.ask_again(session.relative_path());
+        }
         let merged = self
             .notes
             .sessions

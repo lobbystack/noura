@@ -796,3 +796,30 @@ async fn a_new_member_reads_nothing_below_its_history_floor() {
         b"Written while Ben was away.\n"
     );
 }
+
+#[tokio::test]
+async fn a_rotation_refused_on_the_channel_rotates_the_domain() {
+    let server = Server::start().await;
+    let mut ana = owner(&server).await;
+    let mut ben = first_desktop(&server, "ben@example.com").await;
+    let (mut ben_sync, _folder) = ana.invite(&mut ben, Role::Editor).await;
+    let before = ana.remote().epoch();
+    let own = account(&ben);
+    ben_sync
+        .change_member(&mut ben.service, MemberChange::Remove(own))
+        .await
+        .expect("Ben leaves");
+    let refusal = sync_protocol::messages::Frame::Error {
+        rejected_type: 2,
+        domain: sync_protocol::types::IdOrZero::ZERO,
+        session: sync_protocol::types::IdOrZero::ZERO,
+        sequence: 1,
+        code: sync_protocol::codec::Text::new("rotation_pending").unwrap(),
+        detail: None,
+    };
+    ana.sync
+        .on_frame(&mut ana.desktop.service, &refusal)
+        .await
+        .expect("the frame");
+    assert_eq!(ana.remote().epoch(), before + 1);
+}

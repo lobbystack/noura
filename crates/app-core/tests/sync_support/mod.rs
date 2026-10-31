@@ -67,6 +67,8 @@ pub struct Server<B: Backend = SqliteBackend> {
     pub dir: tempfile::TempDir,
     /// The PostgreSQL database, kept alive for the test.
     pub postgres: Option<TestDatabase>,
+    /// How to reach that database, for a second server instance.
+    pub instance: Option<sync_server::Postgres>,
 }
 
 /// The database file in a SQLite server's data directory.
@@ -135,7 +137,29 @@ impl Server<PgBackend> {
             .expect("the store opens")
             .with_checkpoint_interval(interval);
         let dir = tempfile::tempdir().expect("temporary directory");
-        Self::serve(store, dir, Some(database)).await
+        let mut server = Self::serve(store, dir, Some(database)).await;
+        server.instance = Some(postgres);
+        server
+    }
+
+    /// A second server instance on the same database and blobs: its base
+    /// URL.
+    pub async fn second_instance(&self) -> String {
+        let config = self.instance.as_ref().expect("a PostgreSQL server");
+        let store = sync_server::postgres::open_store(config)
+            .await
+            .expect("the store opens");
+        let blobs = sync_server::blobs::DiskStore::open(&self.dir.path().join("blobs"))
+            .expect("the blob store opens");
+        let address = sync_server::spawn_with_blobs(
+            Arc::new(store),
+            "127.0.0.1:0",
+            sync_server::Accounts::local,
+            Arc::new(blobs),
+        )
+        .await
+        .expect("serving");
+        format!("http://localhost:{}", address.port())
     }
 }
 
@@ -161,6 +185,7 @@ impl<B: Backend> Server<B> {
             store,
             dir,
             postgres,
+            instance: None,
         }
     }
 
@@ -522,6 +547,7 @@ impl Proxy {
             store,
             dir,
             postgres: None,
+            instance: None,
         };
         (server, proxy)
     }

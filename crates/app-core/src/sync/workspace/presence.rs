@@ -38,7 +38,9 @@ pub struct SelectionRange {
 pub struct Cursor {
     /// The collaborator's device.
     pub device: Id,
-    /// A number that stays the same for that device, for its color.
+    /// Which of the eight cursor colors they show in: the same for each of
+    /// a person's devices, and different from everyone else's in the note
+    /// while eight people or fewer are in it.
     pub color: u8,
     /// Whether they're typing.
     pub active: bool,
@@ -69,6 +71,8 @@ pub struct PresenceRuntime {
     subscribed: BTreeSet<Id>,
     /// What each collaborator's session last said.
     heard: BTreeMap<(Id, Id), Heard>,
+    /// The note the last presence record told of.
+    last_sent: Option<Id>,
     /// The highest sequence seen for each device and session during an
     /// epoch.
     sequences: BTreeMap<(Id, Id, Id, u64), u64>,
@@ -154,8 +158,14 @@ impl WorkspaceSync {
             .filter(|(rid, current)| self.presence.sent.get(rid) != Some(current))
             .map(|(rid, current)| (*rid, current.clone()))
             .collect();
-        // At most two records a second, on the 500 ms tick (§23).
-        if let Some((rid, (ranges, active))) = changed.into_iter().next() {
+        // At most two records a second, on the 500 ms tick (§23), taking
+        // the changed notes in turn so a busy one can't starve the others.
+        let next = self
+            .presence
+            .last_sent
+            .and_then(|last| changed.iter().position(|(rid, _)| *rid > last));
+        if let Some((rid, (ranges, active))) = changed.into_iter().nth(next.unwrap_or(0)) {
+            self.presence.last_sent = Some(rid);
             if let Some(frame) = self.presence_record(session, rid, &ranges, active)? {
                 frames.push(frame);
             }
@@ -302,6 +312,20 @@ impl WorkspaceSync {
         let Some(note) = self.text_shared(&rid) else {
             return Vec::new();
         };
+        let account_of = |device: &Id| {
+            self.remote
+                .as_ref()
+                .and_then(|remote| remote.policy.head_snapshot().devices.get(device))
+                .map_or(*device, |device| device.card.account)
+        };
+        let people: BTreeSet<Id> = self
+            .presence
+            .heard
+            .iter()
+            .filter(|(_, heard)| heard.rid == rid)
+            .map(|((device, _), _)| account_of(device))
+            .collect();
+        let colors = person_colors(&people);
         let mut cursors = Vec::new();
         for ((device, _), heard) in &self.presence.heard {
             if heard.rid != rid {
@@ -319,7 +343,7 @@ impl WorkspaceSync {
                 .collect();
             cursors.push(Cursor {
                 device: *device,
-                color: color_of(device),
+                color: colors[&account_of(device)],
                 active: heard.state == PresenceState::Active,
                 selections,
             });
@@ -356,8 +380,44 @@ impl WorkspaceSync {
     }
 }
 
-/// A number from a device's ID, the same on every device, that picks its
-/// color.
-fn color_of(device: &Id) -> u8 {
-    device.0[0]
+/// How many colors cursors show in.
+pub const CURSOR_COLORS: u8 = 8;
+
+/// A color for each person in a note: the one their account ID picks, or
+/// the next free one. Colors repeat only past [`CURSOR_COLORS`] people.
+fn person_colors(people: &BTreeSet<Id>) -> BTreeMap<Id, u8> {
+    let mut taken = [false; CURSOR_COLORS as usize];
+    let mut colors = BTreeMap::new();
+    for person in people {
+        let picked = person.0[0] % CURSOR_COLORS;
+        let free = (0..CURSOR_COLORS)
+            .map(|step| (picked + step) % CURSOR_COLORS)
+            .find(|color| !taken[usize::from(*color)]);
+        let color = free.unwrap_or(picked);
+        taken[usize::from(color)] = true;
+        colors.insert(*person, color);
+    }
+    colors
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn people_whose_ids_pick_one_color_still_differ() {
+        let people: BTreeSet<Id> = [Id([8; 16]), Id([16; 16]), Id([0; 16])].into();
+        let colors = person_colors(&people);
+        let distinct: BTreeSet<u8> = colors.values().copied().collect();
+        assert_eq!(distinct.len(), 3, "{colors:?}");
+    }
+
+    #[test]
+    fn colors_repeat_only_past_eight_people() {
+        let people: BTreeSet<Id> = (0..8).map(|n| Id([n * 8; 16])).collect();
+        let distinct: BTreeSet<u8> = person_colors(&people).values().copied().collect();
+        assert_eq!(distinct.len(), 8);
+        let more: BTreeSet<Id> = (0..12).map(|n| Id([n; 16])).collect();
+        assert_eq!(person_colors(&more).len(), 12);
+    }
 }

@@ -339,6 +339,12 @@ pub(crate) fn show(
         note.editor.record_disk_save(version, shown);
         note.editor.apply_disk_version(text);
     }
+    // The note's document ended or moved on: what the editor holds goes
+    // back to the file, which the document stopped following.
+    if note.editor.edit.renderer.in_text_mode() && app.take_note_left(tab) {
+        note.editor.edit.renderer.leave_text_mode();
+        note.editor.edit.remote_cursors.clear();
+    }
     // The note's document arrived: the editor sends it your edits from
     // here on, and shows what it merges as it arrives.
     if !note.editor.edit.renderer.in_text_mode()

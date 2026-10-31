@@ -407,6 +407,16 @@ pub fn transform(server: &Op, client: &Op) -> Result<(Op, Op), Mismatch> {
     Ok((server_out, client_out))
 }
 
+/// Two edits made from the text `base`, one that led to `mine` and one that
+/// led to `theirs`: returns `mine`'s edit as it applies to `theirs`, then
+/// `theirs`' edit as it applies to `mine`. Both orders end on one text, and
+/// neither side loses what it changed.
+pub fn three_way(base: &str, mine: &str, theirs: &str) -> Result<(Op, Op), Mismatch> {
+    let (theirs_on_mine, mine_on_theirs) =
+        transform(&difference(base, theirs), &difference(base, mine))?;
+    Ok((mine_on_theirs, theirs_on_mine))
+}
+
 /// The change `first` then `second` make together.
 pub fn compose(first: &Op, second: &Op) -> Result<Op, Mismatch> {
     if first.target_len != second.base_len {
@@ -452,6 +462,20 @@ pub fn compose(first: &Op, second: &Op) -> Result<Op, Mismatch> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_edits_from_one_text_keep_both_sides() {
+        let (mine, theirs) = three_way("# Plan\n", "# Plan!\n", "# Monday Plan\n").unwrap();
+        assert_eq!(mine.apply("# Monday Plan\n").unwrap(), "# Monday Plan!\n");
+        assert_eq!(theirs.apply("# Plan!\n").unwrap(), "# Monday Plan!\n");
+    }
+
+    #[test]
+    fn an_edit_with_nothing_else_applies_as_it_is() {
+        let (mine, theirs) = three_way("abc", "abXc", "abc").unwrap();
+        assert_eq!(mine.apply("abc").unwrap(), "abXc");
+        assert!(theirs.is_identity());
+    }
     use proptest::prelude::*;
 
     /// Changes to `text` made of splices at code-point boundaries, as the

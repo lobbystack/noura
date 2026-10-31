@@ -93,6 +93,9 @@ pub struct StoppedNoteEntry {
     pub rid: Id,
     /// The note's path.
     pub path: String,
+    /// Whether a rename took the note outside its folder, rather than a
+    /// collaborator's edit stopping it from merging.
+    pub outside: bool,
 }
 
 /// What the Workspace sync section shows.
@@ -106,6 +109,9 @@ pub struct FolderSyncScreen {
     pub conflicts: Vec<ConflictEntry>,
     /// The notes whose edits stopped merging.
     pub stopped_notes: Vec<StoppedNoteEntry>,
+    /// Collaborators' edits that didn't reach a note, one line each,
+    /// naming the device that signed each (§22).
+    pub text_reviews: Vec<String>,
     /// The local versions held for review.
     pub held: Vec<HeldEntry>,
     /// The folders whose files wait for you.
@@ -144,6 +150,7 @@ impl FolderSyncScreen {
                 FolderSyncPhase::On
             },
             stopped_notes: Vec::new(),
+            text_reviews: Vec::new(),
             pending: status.pending,
             conflicts: Vec::new(),
             held: Vec::new(),

@@ -290,6 +290,8 @@ pub struct NoteSession {
     /// The note's text lives in a document in the collaboration sandbox,
     /// and its file follows the document, so nothing here saves it.
     text_mode: Option<sync_protocol::types::Id>,
+    /// Ask once for the note's document, in case the note is in text mode.
+    attach: bool,
     /// Another program deleted the file while the note had unsaved edits:
     /// saves wait, and Restore writes the note back.
     deleted: bool,
@@ -333,6 +335,7 @@ impl NoteSession {
             look_again: false,
             conflict: None,
             text_mode: None,
+            attach: true,
             deleted: false,
             restore_problem: None,
             uses_crlf: read.uses_crlf,
@@ -519,6 +522,36 @@ impl NoteSession {
         self.text_mode = Some(rid);
         self.first_unsaved = None;
         self.last_edit = None;
+    }
+
+    /// The note's text stopped living in its document, which last held
+    /// `merged`. Text you typed past that is unsaved, and the next save
+    /// meets whatever the file holds now. With `rejoin`, the note goes back
+    /// to its document once that's done.
+    pub(crate) fn leave_text_mode(&mut self, merged: &str, rejoin: bool, now: Instant) {
+        self.text_mode = None;
+        self.attach = rejoin;
+        self.base.truncate(self.body_start);
+        self.base.push_str(merged);
+        if self.text != merged {
+            self.first_unsaved = Some(now);
+            self.last_edit = Some(now);
+            self.save_soon();
+        }
+    }
+
+    /// Whether the window should ask for the note's document, once.
+    pub(crate) fn take_attach(&mut self) -> bool {
+        let attach = self.attach && self.may_enter_text_mode() && !self.is_unsaved();
+        if attach {
+            self.attach = false;
+        }
+        attach
+    }
+
+    /// The text the editor last loaded: what your unsaved edits changed.
+    pub(crate) fn loaded_text(&self) -> &str {
+        self.body()
     }
 
     /// Whether a change in the editor could put this note in text mode: a

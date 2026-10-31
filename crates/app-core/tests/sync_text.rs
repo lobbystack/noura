@@ -17,7 +17,7 @@ use collab_sandbox::{LineageStatus, SandboxDocument};
 use editor_core::text_mode::{CollabDocument, Utf16Splice};
 use sync_protocol::codec::{Bytes, Decode, Encode, ExactBytes, Text};
 use sync_protocol::messages::{ErrorBody, Frame, KeyRecord, KeysResponse, PushFailureDetail};
-use sync_protocol::types::Id;
+use sync_protocol::types::{Id, IdOrZero};
 use sync_store::Backend;
 use sync_support::{Pair, Server, approve, pair, pair_on};
 
@@ -332,7 +332,7 @@ async fn the_windows_get_a_document_that_holds_the_edit_that_asked_for_it() {
     bridge.serve(&mut pair.sync_a);
     let document = bridge.take_document(PLAN).expect("the document");
     let rid = document.rid;
-    let _editor = document.catch_up("# Plan typed\n");
+    let _editor = document.catch_up("# Plan\n", "# Plan typed\n");
     both_rounds(&mut pair).await;
     assert_eq!(read(&pair.b, PLAN), "# Plan typed\n");
 
@@ -353,8 +353,8 @@ async fn drain(channel: &mut Channel, sync: &mut WorkspaceSync, service: &mut Sy
 }
 
 /// Both desktops hold the note open, each on its realtime channel.
-async fn cursors_ready(
-    pair: &mut Pair<sync_store_sqlite::SqliteBackend>,
+async fn cursors_ready<B: Backend>(
+    pair: &mut Pair<B>,
 ) -> (SandboxDocument, SandboxDocument, Channel, Channel) {
     let (a, b) = open_both(pair).await;
     let mut channel_a = Channel::open(pair.service.client(), pair.sync_a.workspace())
@@ -371,15 +371,11 @@ async fn cursors_ready(
     for frame in pair.sync_b.presence_frames().unwrap() {
         channel_b.send(&frame).await.unwrap();
     }
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
     (a, b, channel_a, channel_b)
 }
 
-async fn send_selection(
-    pair: &mut Pair<sync_store_sqlite::SqliteBackend>,
-    channel: &mut Channel,
-    at: u32,
-) {
+async fn send_selection<B: Backend>(pair: &mut Pair<B>, channel: &mut Channel, at: u32) {
     pair.sync_a.set_selections(
         PLAN,
         vec![SelectionRange {
@@ -460,7 +456,48 @@ async fn a_receiver_rejects_an_old_presence_record() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_server_stores_no_presence() {
-    let server = Server::start().await;
+    no_presence_stored(Server::start().await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn postgres_stores_no_presence() {
+    no_presence_stored(Server::start_postgres().await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn desktops_on_two_postgres_instances_co_edit_and_see_cursors() {
+    let server = Server::start_postgres().await;
+    let second = server.second_instance().await;
+    let mut pair = pair_on(server).await;
+    pair.desktop.service = pair.desktop.connect_through(&second).await;
+    let (mut a, mut b, mut channel_a, mut channel_b) = cursors_ready(&mut pair).await;
+
+    // Each hears of the other's records on its own instance, with no pull.
+    type_at(&mut a, 6, " laptop");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    drain(&mut channel_b, &mut pair.sync_b, &mut pair.desktop.service).await;
+    assert_eq!(read(&pair.b, PLAN), "# Plan laptop\n");
+    drain(&mut channel_a, &mut pair.sync_a, &mut pair.service).await;
+    assert_eq!(b.poll().len(), 1);
+    type_at(&mut b, 13, " desktop");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("a round");
+    drain(&mut channel_a, &mut pair.sync_a, &mut pair.service).await;
+    assert_eq!(read(&pair.a, PLAN), "# Plan laptop desktop\n");
+
+    send_selection(&mut pair, &mut channel_a, 3).await;
+    drain(&mut channel_b, &mut pair.sync_b, &mut pair.desktop.service).await;
+    let cursors = pair.sync_b.cursors(PLAN, Instant::now());
+    assert_eq!(cursors.len(), 1, "the record crossed instances");
+    assert_eq!(cursors[0].selections[0].head, 3);
+}
+
+async fn no_presence_stored<B: Backend>(server: Server<B>) {
     let mut pair = pair_on(server).await;
     let (_a, _b, mut channel_a, mut channel_b) = cursors_ready(&mut pair).await;
     pair.sync_a
@@ -662,14 +699,32 @@ async fn a_remote_edit_reaches_disk_before_the_round_that_applies_it_ends() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_text_mode_note_that_yields_its_path_moves_by_a_text_update() {
-    let mut pair = pair().await;
-    let (_a, _b) = open_both(&mut pair).await;
-    // Another object takes a colliding name: the digests decide who moves.
-    pair.b.write("plan.md", b"# Other\n");
-    both_rounds(&mut pair).await;
-    both_rounds(&mut pair).await;
-    assert_eq!(pair.a.files(), pair.b.files());
-    assert_eq!(pair.a.files().len(), pair.b.files().len());
+    // The digests decide which object yields, so the test retries until
+    // the note is the one.
+    for _ in 0..12 {
+        let mut pair = pair().await;
+        let (_a, _b) = open_both(&mut pair).await;
+        let rid = pair.sync_a.rid_at(PLAN).unwrap();
+        // The note takes a name another object takes at once.
+        let root = pair.a.dir.path();
+        std::fs::rename(root.join(PLAN), root.join("Shared.md")).unwrap();
+        pair.b.write("Shared.md", b"# Other\n");
+        both_rounds(&mut pair).await;
+        both_rounds(&mut pair).await;
+        assert_eq!(pair.a.files(), pair.b.files());
+        if pair.sync_a.local_path(&rid).as_deref() == Some("Shared.md") {
+            continue;
+        }
+        let file = pair.sync_a.text_file(&rid).unwrap().unwrap();
+        let carried = file
+            .records
+            .iter()
+            .any(|r| !r.snapshot && r.meta.iter().any(|entry| entry.key == "path"));
+        assert!(carried, "{:?}", file.records);
+        assert!(pair.sync_a.in_text_mode(&rid));
+        return;
+    }
+    panic!("the note never yielded");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -827,11 +882,44 @@ async fn a_snapshot_writes_again_a_devices_records_under_a_skipped_epoch() {
         "# Plan\n",
         "epoch 2 is unreadable here"
     );
+    // The fixture's rotator case: the rotator's record of the skipped epoch
+    // is unreadable, and its signer writes it again.
+    let keys: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/workspace-format/fixtures/sync-v2-keys.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let case = keys["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["name"] == "record_of_the_skipped_epochs_rotator")
+        .unwrap();
+    assert_eq!(case["expect"], "unreadable");
+    assert!(
+        pair.sync_a
+            .unreadable()
+            .iter()
+            .any(|(_, device, _)| *device == pair.sync_b.device()),
+        "the record under the skipped epoch waits for its rewrite"
+    );
 
-    // The desktop accepts the replacement and writes a snapshot that
-    // covers its record, under the same lineage.
+    // The desktop accepts the replacement. An update that depends on the
+    // unreadable record goes out first and stays pending, and a snapshot
+    // that covers the record supplies it, under the same lineage.
+    type_at(&mut b, 16, " more");
     both_rounds(&mut pair).await;
-    assert_eq!(read(&pair.a, PLAN), "# Plan under two\n");
+    assert_eq!(read(&pair.a, PLAN), "# Plan under two more\n");
+    assert!(
+        !pair
+            .sync_a
+            .text_reviews()
+            .iter()
+            .any(|review| review.kind == TextReviewKind::Pending)
+    );
     let lineage = pair.sync_b.text_file(&rid).unwrap().unwrap().lineage;
     let file = pair.sync_a.text_file(&rid).unwrap().unwrap();
     assert_eq!(file.lineage, lineage);
@@ -920,4 +1008,795 @@ async fn a_restarted_client_keeps_a_notes_journal_and_rebuilds_from_it() {
     assert_eq!(entered, Entered::Yes);
     assert!(document.is_some());
     assert_eq!(pair.sync_b.text_body(&rid), Some("# Plan kept\n"));
+}
+
+/// One item of `client` at `clock`, after the first document's first
+/// element, which holds until the clocks before it arrive.
+fn item_at(client: u64, clock: u64, text: &str) -> Vec<u8> {
+    let mut out = vec![1, 1];
+    varint(client, &mut out);
+    varint(clock, &mut out);
+    out.push(0x84);
+    out.push(0);
+    out.push(0);
+    varint(text.len() as u64, &mut out);
+    out.extend_from_slice(text.as_bytes());
+    out.push(0);
+    out
+}
+
+/// A third desktop's copy of the workspace, downloaded now.
+async fn third_desktop<B: Backend>(
+    pair: &mut Pair<B>,
+) -> (sync_support::Desktop, sync_support::Folder, WorkspaceSync) {
+    let mut desktop = approve(
+        &pair.server,
+        &mut pair.laptop,
+        std::slice::from_mut(pair.sync_a.remote_mut().unwrap()),
+    )
+    .await;
+    let mut folder = sync_support::Folder::new("Third");
+    let mut sync = WorkspaceSync::download(
+        &mut desktop.service,
+        folder.engine.clone(),
+        pair.sync_a.workspace(),
+        &mut folder.registry,
+    )
+    .await
+    .expect("the download starts");
+    for _ in 0..3 {
+        sync.round(&mut desktop.service, 0).await.expect("a round");
+    }
+    (desktop, folder, sync)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_snapshot_that_disagrees_keeps_the_note_through_a_close_and_a_restart() {
+    let mut pair = pair().await;
+    let (mut a, b) = open_both(&mut pair).await;
+    drop(b);
+    pair.sync_b.close_text(PLAN).expect("closed");
+    type_at(&mut a, 6, " kept");
+    both_rounds(&mut pair).await;
+    drop(a);
+    pair.sync_a.close_text(PLAN).expect("closed");
+    both_rounds(&mut pair).await;
+    assert_eq!(read(&pair.a, PLAN), "# Plan kept\n");
+
+    // The desktop covers the update with a snapshot that lacks its text.
+    let rid = pair.sync_a.rid_at(PLAN).unwrap();
+    pair.sync_b
+        .sign_hostile_snapshot(PLAN, "# Plan\n")
+        .expect("signed");
+    both_rounds(&mut pair).await;
+    assert_eq!(pair.sync_a.take_text_reports(), ["sync_text_conflict"]);
+    let review = pair
+        .sync_a
+        .text_reviews()
+        .into_iter()
+        .find(|review| review.kind == TextReviewKind::Disagrees)
+        .expect("a review entry");
+    assert_eq!(review.signer, Some(pair.sync_b.device()));
+    let file = pair.sync_a.text_file(&rid).unwrap().unwrap();
+    assert!(
+        file.records
+            .iter()
+            .any(|r| r.snapshot && r.judgement == Judgement::Disagrees)
+    );
+    // The canonical rebuild starts from the live snapshot.
+    let rebuilt = read(&pair.a, PLAN);
+    assert_eq!(rebuilt, "# Plan\n");
+
+    // Nobody edits the note, so nothing keeps its document open: the next
+    // load comes from the journal.
+    assert_eq!(pair.sync_a.text_body(&rid), None);
+    both_rounds(&mut pair).await;
+    let (_, document) = pair.sync_a.open_text(PLAN).expect("opens");
+    assert!(document.is_some());
+    assert_eq!(pair.sync_a.text_body(&rid), Some(rebuilt.as_str()));
+    both_rounds(&mut pair).await;
+    assert_eq!(read(&pair.a, PLAN), rebuilt, "the body survived the close");
+
+    drop(document);
+    pair.sync_a.close_text(PLAN).expect("closed");
+    drop(pair.sync_a);
+    let reopened = WorkspaceSync::open(
+        pair.a.engine.clone(),
+        pair.laptop.credentials.clone(),
+        pair.laptop.secrets(),
+        &pair.a.registry,
+    )
+    .expect("the client reopens");
+    pair.sync_a = reopened;
+    both_rounds(&mut pair).await;
+    assert_eq!(read(&pair.a, PLAN), rebuilt, "and the restart");
+    assert!(pair.sync_a.in_text_mode(&rid));
+    assert!(
+        pair.sync_a
+            .text_reviews()
+            .iter()
+            .any(|review| review.kind == TextReviewKind::Disagrees)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rebase_starts_a_new_lineage_and_late_updates_go_to_review() {
+    let mut pair = pair().await;
+    let (mut a, mut b) = open_both(&mut pair).await;
+    let rid = pair.sync_a.rid_at(PLAN).unwrap();
+    let first = pair.sync_a.text_file(&rid).unwrap().unwrap().lineage;
+    pair.sync_a.set_rebase_at(1);
+    pair.sync_b.set_rebase_at(1);
+    let a_is_lower = pair.sync_a.device() < pair.sync_b.device();
+    let edit = |pair: &mut Pair<_>, a: &mut SandboxDocument, b: &mut SandboxDocument| {
+        type_at(a, 0, "a");
+        type_at(b, 0, "b");
+        pair.sync_a.send_text_for_testing(rid).unwrap();
+        pair.sync_b.send_text_for_testing(rid).unwrap();
+    };
+
+    // Both hold live patches, and a device the volume rule doesn't name
+    // keeps the lineage.
+    edit(&mut pair, &mut a, &mut b);
+    both_rounds(&mut pair).await;
+    if a_is_lower {
+        pair.sync_b.write_snapshot_for_testing(rid).unwrap();
+        assert_eq!(pair.sync_b.text_file(&rid).unwrap().unwrap().lineage, first);
+    } else {
+        pair.sync_a.write_snapshot_for_testing(rid).unwrap();
+        assert_eq!(pair.sync_a.text_file(&rid).unwrap().unwrap().lineage, first);
+    }
+    both_rounds(&mut pair).await;
+    edit(&mut pair, &mut a, &mut b);
+    both_rounds(&mut pair).await;
+
+    // The lowest device rebases, and the other device writes an update of
+    // the old lineage before it hears of it.
+    let writer = if a_is_lower {
+        pair.sync_a.write_snapshot_for_testing(rid).unwrap();
+        type_at(&mut b, 0, "late ");
+        pair.sync_b.send_text_for_testing(rid).unwrap();
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("a round");
+        pair.sync_b.device()
+    } else {
+        pair.sync_b.write_snapshot_for_testing(rid).unwrap();
+        type_at(&mut a, 0, "late ");
+        pair.sync_a.send_text_for_testing(rid).unwrap();
+        pair.sync_b
+            .round(&mut pair.desktop.service, 0)
+            .await
+            .expect("a round");
+        pair.sync_a.device()
+    };
+    both_rounds(&mut pair).await;
+    both_rounds(&mut pair).await;
+
+    let rebased = pair.sync_a.text_file(&rid).unwrap().unwrap().lineage;
+    assert_ne!(rebased, first);
+    for sync in [&pair.sync_a, &pair.sync_b] {
+        let file = sync.text_file(&rid).unwrap().unwrap();
+        assert_eq!(file.lineage, rebased);
+        let reviews: Vec<_> = file
+            .reviews
+            .iter()
+            .filter(|r| r.kind == TextReviewKind::EndedLineage)
+            .collect();
+        assert_eq!(reviews.len(), 1, "only the late update: {reviews:?}");
+        assert_eq!(reviews[0].signer, Some(writer));
+        assert!(
+            !file
+                .records
+                .iter()
+                .any(|r| r.judgement == Judgement::Waiting)
+        );
+    }
+    assert_eq!(read(&pair.a, PLAN), read(&pair.b, PLAN));
+    assert!(pair.sync_a.conflicts().is_empty());
+    assert!(!read(&pair.a, PLAN).contains("late"));
+    // Whoever held the old document hears that it moved on.
+    let moved = |notes: Vec<app_core::sync::workspace::text::LeftNote>| {
+        notes
+            .iter()
+            .any(|note| note.why == app_core::sync::workspace::text::LeftWhy::Moved)
+    };
+    assert!(moved(pair.sync_a.take_left_notes()));
+    assert!(moved(pair.sync_b.take_left_notes()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_lowest_device_snapshots_past_the_volume_rule() {
+    let mut pair = pair().await;
+    let (mut a, mut b) = open_both(&mut pair).await;
+    let rid = pair.sync_a.rid_at(PLAN).unwrap();
+    for index in 0..257 {
+        type_at(&mut a, 6 + index, "a");
+        pair.sync_a.send_text_for_testing(rid).unwrap();
+        type_at(&mut b, index, "b");
+        pair.sync_b.send_text_for_testing(rid).unwrap();
+    }
+    let lower = pair.sync_a.device() < pair.sync_b.device();
+    both_rounds(&mut pair).await;
+    both_rounds(&mut pair).await;
+    let snapshots_by = |file: &app_core::sync::workspace::text::TextFile, device| {
+        file.records
+            .iter()
+            .filter(|r| r.snapshot && r.key.device == device)
+            .count()
+    };
+    let file = pair.sync_a.text_file(&rid).unwrap().unwrap();
+    let designated = if lower {
+        pair.sync_a.device()
+    } else {
+        pair.sync_b.device()
+    };
+    assert_eq!(
+        snapshots_by(&file, designated),
+        1,
+        "the lowest device wrote one"
+    );
+    let patches = file.records.iter().filter(|r| !r.snapshot).count();
+    assert!(patches < 512, "{patches}");
+    assert_eq!(read(&pair.a, PLAN), read(&pair.b, PLAN));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn closing_a_note_right_after_typing_writes_its_snapshot() {
+    let mut pair = pair().await;
+    let (mut a, _b) = open_both(&mut pair).await;
+    let rid = pair.sync_a.rid_at(PLAN).unwrap();
+    for index in 0..12 {
+        type_at(&mut a, 6 + index, "x");
+        both_rounds(&mut pair).await;
+    }
+    type_at(&mut a, 18, "y");
+    let before = pair.sync_a.text_file(&rid).unwrap().unwrap();
+    let snapshots = before.records.iter().filter(|r| r.snapshot).count();
+    drop(a);
+    pair.sync_a.close_text(PLAN).expect("closed");
+    let file = pair.sync_a.text_file(&rid).unwrap().unwrap();
+    assert_eq!(
+        file.records.iter().filter(|r| r.snapshot).count(),
+        snapshots + 1,
+        "the close wrote it"
+    );
+    both_rounds(&mut pair).await;
+    for sync in [&pair.sync_a, &pair.sync_b] {
+        let file = sync.text_file(&rid).unwrap().unwrap();
+        let updates = file.records.iter().filter(|r| !r.snapshot).count();
+        assert!(updates <= 8, "{updates}");
+    }
+    assert_eq!(read(&pair.a, PLAN), "# Planxxxxxxxxxxxxy\n");
+    assert_eq!(read(&pair.b, PLAN), "# Planxxxxxxxxxxxxy\n");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_document_catches_up_with_an_editor_that_fell_behind_it() {
+    let mut pair = pair().await;
+    let (mut a, _b) = open_both(&mut pair).await;
+    let bridge = TextBridge::default();
+    drop(_b);
+    pair.sync_b.close_text(PLAN).expect("closed");
+    // The desktop's window opens the note, and a remote update merges
+    // between the first keystroke and the document's arrival.
+    bridge.open(PLAN);
+    bridge.serve(&mut pair.sync_b);
+    let document = bridge.take_document(PLAN).expect("the document");
+    type_at(&mut a, 2, "Monday ");
+    both_rounds(&mut pair).await;
+    assert_eq!(read(&pair.b, PLAN), "# Monday Plan\n");
+
+    let mut editor = document.catch_up("# Plan\n", "# Plan!\n");
+    pair.sync_b.text_tick(Instant::now()).expect("a tick");
+    both_rounds(&mut pair).await;
+    assert_eq!(read(&pair.a, PLAN), "# Monday Plan!\n", "both kept");
+    assert_eq!(read(&pair.b, PLAN), "# Monday Plan!\n", "both kept");
+    // The editor takes the collaborator's text on its first poll.
+    let splices = editor.poll();
+    assert_eq!(splices.len(), 1, "{splices:?}");
+    assert_eq!(splices[0].inserted, "Monday ");
+    assert_eq!(splices[0].start, 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_note_refused_before_its_file_operation_is_live_enters_on_a_later_edit() {
+    let mut pair = pair().await;
+    let bridge = TextBridge::default();
+    pair.a.write(PLAN, b"# Plan edited\n");
+    bridge.open(PLAN);
+    bridge.serve(&mut pair.sync_a);
+    assert!(bridge.take_document(PLAN).is_none());
+    bridge.open(PLAN);
+    assert!(!bridge.has_work(), "too soon to ask again");
+
+    // The save's file operation goes out, and the next edit asks again.
+    both_rounds(&mut pair).await;
+    bridge.ask_again(PLAN);
+    bridge.open(PLAN);
+    bridge.serve(&mut pair.sync_a);
+    let document = bridge.take_document(PLAN).expect("the note entered");
+    let rid = pair.sync_a.rid_at(PLAN).unwrap();
+    assert!(pair.sync_a.in_text_mode(&rid));
+    assert_eq!(document.rid, rid);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_outside_edit_and_a_remote_update_in_one_round_both_stay() {
+    let mut pair = pair().await;
+    let (mut a, b) = open_both(&mut pair).await;
+    let rid = pair.sync_b.rid_at(PLAN).unwrap();
+    drop(b);
+    pair.sync_b.close_text(PLAN).expect("closed");
+    both_rounds(&mut pair).await;
+    let mut channel = Channel::open(pair.desktop.service.client(), pair.sync_b.workspace())
+        .await
+        .expect("the channel");
+    drain(&mut channel, &mut pair.sync_b, &mut pair.desktop.service).await;
+
+    // An outside edit sits in the file, not captured, when a collaborator's
+    // update arrives on the realtime channel.
+    pair.b.write(PLAN, b"# Plan outside\n");
+    type_at(&mut a, 0, "Remote ");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    for _ in 0..50 {
+        drain(&mut channel, &mut pair.sync_b, &mut pair.desktop.service).await;
+        let file = pair.sync_b.text_file(&rid).unwrap().unwrap();
+        if file.records.iter().filter(|r| !r.snapshot).count() > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(read(&pair.b, PLAN), "# Plan outside\n", "the file waits");
+
+    both_rounds(&mut pair).await;
+    assert_eq!(read(&pair.a, PLAN), "Remote # Plan outside\n");
+    assert_eq!(read(&pair.b, PLAN), "Remote # Plan outside\n");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_property_a_collaborator_changed_survives_an_outside_edit_of_the_body() {
+    let mut pair = pair().await;
+    let (a, b) = managed_note(&mut pair).await;
+    drop((a, b));
+    pair.sync_a.close_text(PLAN).expect("closed");
+    pair.sync_b.close_text(PLAN).expect("closed");
+    both_rounds(&mut pair).await;
+    let original = read(&pair.a, PLAN);
+    let body_at = original.rfind("---\n").unwrap() + 4;
+    let mut channel = Channel::open(pair.desktop.service.client(), pair.sync_b.workspace())
+        .await
+        .expect("the channel");
+    drain(&mut channel, &mut pair.sync_b, &mut pair.desktop.service).await;
+
+    let mut edited = original.clone();
+    edited.push_str("outside\n");
+    pair.b.write(PLAN, edited.as_bytes());
+    let renamed = original.replace("- a\n", "- b\n");
+    assert_ne!(renamed, original);
+    pair.a.write(PLAN, renamed.as_bytes());
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    let rid = pair.sync_b.rid_at(PLAN).unwrap();
+    for _ in 0..50 {
+        drain(&mut channel, &mut pair.sync_b, &mut pair.desktop.service).await;
+        let file = pair.sync_b.text_file(&rid).unwrap().unwrap();
+        if file.records.iter().any(|r| !r.snapshot) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    both_rounds(&mut pair).await;
+    let text = read(&pair.a, PLAN);
+    assert_eq!(text, read(&pair.b, PLAN));
+    assert!(text.contains("- b\n"), "{text}");
+    assert!(text[body_at..].contains("outside"), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_window_hears_when_its_documents_lineage_stops() {
+    let mut pair = pair().await;
+    let (_a, _b) = open_both(&mut pair).await;
+    let rid = pair.sync_a.rid_at(PLAN).unwrap();
+    let huge = "x".repeat(9 << 20);
+    pair.sync_b
+        .sign_hostile_update(PLAN, |client| item(client, &huge))
+        .expect("signed");
+    both_rounds(&mut pair).await;
+    let left = pair.sync_a.take_left_notes();
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert_eq!(left[0].rid, rid);
+    assert_eq!(
+        left[0].why,
+        app_core::sync::workspace::text::LeftWhy::Stopped
+    );
+    assert_eq!(left[0].body, "# Plan\n");
+    let (entered, document) = pair.sync_a.open_text(PLAN).expect("asked");
+    assert_eq!(entered, Entered::Never, "the note waits for your choice");
+    assert!(document.is_none());
+
+    pair.sync_a.keep_last_good(rid).expect("kept");
+    let left = pair.sync_a.take_left_notes();
+    assert_eq!(left[0].why, app_core::sync::workspace::text::LeftWhy::Ended);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_window_hears_when_a_file_operation_ends_its_document() {
+    let mut pair = pair().await;
+    let (_a, _b) = open_both(&mut pair).await;
+    pair.a.write(PLAN, &[0xff, 0xfe, 0x00]);
+    both_rounds(&mut pair).await;
+    for notes in [pair.sync_a.take_left_notes(), pair.sync_b.take_left_notes()] {
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(
+            notes[0].why,
+            app_core::sync::workspace::text::LeftWhy::Ended
+        );
+        assert_eq!(notes[0].body, "# Plan\n");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn updates_that_wait_on_a_missing_record_go_to_review_and_a_snapshot_supplies_them() {
+    let mut pair = pair().await;
+    let (_a, _b) = open_both(&mut pair).await;
+    let rid = pair.sync_a.rid_at(PLAN).unwrap();
+    // Clock 4 of a load whose earlier clocks nobody wrote.
+    pair.sync_b
+        .sign_hostile_update(PLAN, |client| item_at(client, 4, "gap"))
+        .expect("signed");
+    both_rounds(&mut pair).await;
+    assert_eq!(pair.sync_a.text_status(&rid), Some(LineageStatus::Pending));
+    assert!(
+        pair.sync_a
+            .text_reviews()
+            .iter()
+            .any(|review| review.kind == TextReviewKind::Pending)
+    );
+    assert_eq!(read(&pair.a, PLAN), "# Plan\n");
+    // The note stays writable.
+    let mut a = _a;
+    type_at(&mut a, 6, "!");
+    both_rounds(&mut pair).await;
+    assert_eq!(read(&pair.a, PLAN), "# Plan!\n");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_writer_who_floods_a_note_every_tick_slows_only_their_own_edits() {
+    let mut pair = pair().await;
+    let (mut a, _b) = open_both(&mut pair).await;
+    let rid = pair.sync_a.rid_at(PLAN).unwrap();
+    let mut typed = String::new();
+    for round in 0..5u32 {
+        pair.sync_b
+            .sign_hostile_update_at(PLAN, 1_000 + round, |client| keystrokes(client, 180_000))
+            .expect("signed");
+        type_at(&mut a, typed.len(), "a");
+        typed.push('a');
+        both_rounds(&mut pair).await;
+        assert_eq!(pair.sync_a.text_status(&rid), Some(LineageStatus::Merging));
+        assert!(
+            read(&pair.a, PLAN).starts_with(&format!("{typed}#")),
+            "round {round}"
+        );
+        assert!(pair.sync_a.in_text_mode(&rid));
+    }
+    let file = pair.sync_a.text_file(&rid).unwrap().unwrap();
+    assert!(
+        file.records
+            .iter()
+            .any(|r| r.judgement == Judgement::Waiting),
+        "the writer's last records wait on the allowance"
+    );
+    assert!(file.reviews.is_empty(), "{:?}", file.reviews);
+
+    // A snapshot leaves them live, as the fixture's case says.
+    let live: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/workspace-format/fixtures/sync-v2-live.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        live["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|case| case["name"] == "a_snapshot_leaves_a_deferred_patch_live")
+    );
+    let waiting: Vec<_> = file
+        .records
+        .iter()
+        .filter(|r| r.judgement == Judgement::Waiting)
+        .map(|r| r.key)
+        .collect();
+    let lowest = waiting.iter().map(|key| key.counter).min().unwrap();
+    pair.sync_a.write_snapshot_for_testing(rid).unwrap();
+    both_rounds(&mut pair).await;
+    let file = pair.sync_a.text_file(&rid).unwrap().unwrap();
+    for key in waiting {
+        assert!(file.records.iter().any(|r| r.key == key), "{key:?} stays");
+    }
+    let snapshot = file
+        .records
+        .iter()
+        .rfind(|r| r.snapshot && r.key.device == pair.sync_a.device())
+        .unwrap();
+    assert!(
+        snapshot
+            .covers
+            .iter()
+            .all(|cover| cover.device != pair.sync_b.device() || cover.counter < lowest),
+        "{:?}",
+        snapshot.covers
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_that_boots_reaches_the_body_of_one_that_merged_as_records_arrived() {
+    let mut pair = pair().await;
+    let (mut a, mut b) = open_both(&mut pair).await;
+    let rid = pair.sync_a.rid_at(PLAN).unwrap();
+    // Two signers type at one place at once, and each integrates the other
+    // later, in a different order.
+    type_at(&mut a, 2, "one ");
+    type_at(&mut b, 2, "two ");
+    both_rounds(&mut pair).await;
+    type_at(&mut a, 0, "x");
+    both_rounds(&mut pair).await;
+    assert_eq!(read(&pair.a, PLAN), read(&pair.b, PLAN));
+    let arrived = read(&pair.a, PLAN);
+
+    let (mut desktop, folder, mut sync) = third_desktop(&mut pair).await;
+    for _ in 0..3 {
+        sync.round(&mut desktop.service, 0).await.expect("a round");
+    }
+    assert_eq!(read(&folder, PLAN), arrived);
+    let records = sync.text_file(&rid).unwrap().unwrap().records;
+    let order: Vec<u64> = records.iter().filter_map(|r| r.seq).collect();
+    let mut sorted = order.clone();
+    sorted.sort_unstable();
+    assert_eq!(order, sorted, "the journal keeps log order");
+    let (_, document) = sync.open_text(PLAN).expect("opens");
+    assert!(document.is_some());
+    assert_eq!(sync.text_body(&rid), Some(arrived.as_str()));
+}
+
+async fn error_frame<B: Backend>(pair: &mut Pair<B>, code: &str) -> Vec<String> {
+    let before = pair.proxy.requests().len();
+    let frame = Frame::Error {
+        rejected_type: 2,
+        domain: IdOrZero::ZERO,
+        session: IdOrZero::ZERO,
+        sequence: 1,
+        code: Text::new(code).unwrap(),
+        detail: None,
+    };
+    pair.sync_a
+        .on_frame(&mut pair.service, &frame)
+        .await
+        .expect("the frame");
+    pair.proxy.requests()[before..]
+        .iter()
+        .map(|request| request.path.clone())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_presence_record_fetches_policy_and_keys() {
+    let mut pair = pair().await;
+    let _ = open_both(&mut pair).await;
+    for code in ["epoch_stale", "forbidden", "rotation_pending"] {
+        let asked = error_frame(&mut pair, code).await;
+        assert!(
+            asked.iter().any(|path| path.contains("/policy"))
+                && asked.iter().any(|path| path.contains("/keys")),
+            "{code}: {asked:?}"
+        );
+    }
+    let asked = error_frame(&mut pair, "too_many").await;
+    assert!(asked.is_empty(), "{asked:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn presence_goes_out_on_the_tick_while_frames_keep_arriving() {
+    let mut pair = pair().await;
+    let (_a, mut b) = open_both(&mut pair).await;
+    let wake = tokio::sync::Notify::new();
+    let mut live = app_core::sync::realtime::Live::default();
+    pair.sync_a
+        .set_selections(PLAN, vec![SelectionRange { anchor: 1, head: 1 }], true);
+    // The channel comes up, and the first pull passes.
+    for _ in 0..2 {
+        live.step(&mut pair.sync_a, &mut pair.service, &wake)
+            .await
+            .expect("a step");
+    }
+    let mut listener = Channel::open(pair.desktop.service.client(), pair.sync_b.workspace())
+        .await
+        .expect("the channel");
+    pair.sync_b.presence_connected().unwrap();
+    for frame in pair.sync_b.presence_frames().unwrap() {
+        listener.send(&frame).await.unwrap();
+    }
+
+    // Records frames arrive every 100 ms, faster than the tick.
+    let started = Instant::now();
+    let mut presence = 0;
+    let mut steps = 0;
+    while started.elapsed() < Duration::from_millis(1_600) {
+        type_at(&mut b, 0, "b");
+        pair.sync_b
+            .round(&mut pair.desktop.service, 0)
+            .await
+            .expect("a round");
+        let step = tokio::time::timeout(
+            Duration::from_millis(100),
+            live.step(&mut pair.sync_a, &mut pair.service, &wake),
+        )
+        .await;
+        if let Ok(step) = step {
+            step.expect("a step");
+            steps += 1;
+        }
+        while let Ok(frame) = tokio::time::timeout(Duration::from_millis(1), listener.next()).await
+        {
+            if matches!(frame, Ok(Frame::Presence { .. })) {
+                presence += 1;
+            }
+        }
+        pair.sync_a.set_selections(
+            PLAN,
+            vec![SelectionRange {
+                anchor: 1 + steps,
+                head: 1 + steps,
+            }],
+            true,
+        );
+    }
+    assert!(presence >= 1, "the tick ran under {steps} steps");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_persons_two_devices_share_a_cursor_color() {
+    let mut pair = pair().await;
+    let (_a, _b, mut channel_a, mut channel_b) = cursors_ready(&mut pair).await;
+    send_selection(&mut pair, &mut channel_a, 1).await;
+    drain(&mut channel_b, &mut pair.sync_b, &mut pair.desktop.service).await;
+    let cursors = pair.sync_b.cursors(PLAN, Instant::now());
+    assert_eq!(cursors.len(), 1);
+    assert!(cursors[0].color < app_core::sync::workspace::presence::CURSOR_COLORS);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_note_gets_its_turn_of_presence_records() {
+    let mut pair = pair().await;
+    let (_a, _b) = open_both(&mut pair).await;
+    pair.a.write("Second.md", b"# Second\n");
+    both_rounds(&mut pair).await;
+    let (_, second) = pair.sync_a.open_text("Second.md").expect("opens");
+    assert!(second.is_some());
+    pair.sync_a.presence_connected().unwrap();
+    pair.sync_a.presence_frames().unwrap();
+    let mut told = std::collections::BTreeSet::new();
+    for turn in 0..4 {
+        for path in [PLAN, "Second.md"] {
+            pair.sync_a.set_selections(
+                path,
+                vec![SelectionRange {
+                    anchor: turn,
+                    head: turn,
+                }],
+                true,
+            );
+        }
+        for frame in pair.sync_a.presence_frames().unwrap() {
+            if let Frame::Presence { record } = frame {
+                told.insert(record.body.channel);
+            }
+        }
+    }
+    assert_eq!(told.len(), 2, "both notes went out");
+}
+
+async fn search_for(engine: &local_core::WorkspaceEngine, text: &str) -> usize {
+    engine
+        .search(&local_core::SearchInput {
+            query: text.to_owned(),
+            ..Default::default()
+        })
+        .map_or(0, |results| results.len())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stale_index_gives_way_to_a_text_mode_notes_file() {
+    let mut pair = pair().await;
+    let (mut a, b) = managed_note(&mut pair).await;
+    both_rounds(&mut pair).await;
+    let index = pair.b.engine.index_path().to_path_buf();
+    let stale = index.with_extension("old");
+    std::fs::copy(&index, &stale).unwrap();
+    let rid = pair.sync_b.rid_at(PLAN).unwrap();
+    type_at(&mut a, 0, "zebrafish ");
+    both_rounds(&mut pair).await;
+    assert!(read(&pair.b, PLAN).contains("zebrafish"));
+    drop(b);
+    drop(a);
+
+    // An old copy of the index comes back, as a restored backup would.
+    pair.sync_b.close_text(PLAN).expect("closed");
+    drop(pair.sync_b);
+    std::fs::copy(&stale, &index).unwrap();
+    pair.b.reopen();
+    pair.sync_b = WorkspaceSync::open(
+        pair.b.engine.clone(),
+        pair.desktop.credentials.clone(),
+        pair.desktop.secrets(),
+        &pair.b.registry,
+    )
+    .expect("the client reopens");
+    assert!(
+        search_for(&pair.b.engine, "zebrafish").await > 0,
+        "files win"
+    );
+    both_rounds(&mut pair).await;
+    assert!(pair.sync_b.in_text_mode(&rid));
+    assert_eq!(read(&pair.a, PLAN), read(&pair.b, PLAN));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_index_update_that_fails_leaves_a_remote_edit_on_disk() {
+    let mut pair = pair().await;
+    let (mut a, _b) = managed_note(&mut pair).await;
+    both_rounds(&mut pair).await;
+    // The index can't take the change.
+    let index = pair.b.engine.index_path().to_path_buf();
+    let blocker = rusqlite::Connection::open(&index).unwrap();
+    blocker.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    type_at(&mut a, 0, "platypus ");
+    both_rounds(&mut pair).await;
+    assert!(
+        read(&pair.b, PLAN).contains("platypus"),
+        "the file is canonical"
+    );
+    blocker.execute_batch("ROLLBACK").unwrap();
+    drop(blocker);
+    // The interrupted index catches up from the file on its next walk.
+    pair.b.engine.reconcile().expect("the index catches up");
+    assert!(search_for(&pair.b.engine, "platypus").await > 0);
+    assert_eq!(read(&pair.a, PLAN), read(&pair.b, PLAN));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_file_with_a_text_mode_notes_id_stays_out_until_you_resolve_it() {
+    let mut pair = pair().await;
+    let (mut a, _b) = managed_note(&mut pair).await;
+    both_rounds(&mut pair).await;
+    let rid = pair.sync_b.rid_at(PLAN).unwrap();
+    let copy = read(&pair.b, PLAN);
+    pair.b.write("Copy.md", copy.as_bytes());
+    both_rounds(&mut pair).await;
+    assert_eq!(pair.sync_b.rid_at("Copy.md"), None);
+    assert!(
+        pair.sync_b.status().skipped.iter().any(|skipped| {
+            skipped.path == "Copy.md"
+                && skipped.why == app_core::sync::workspace::SkipWhy::IdentityConflict
+        }),
+        "{:?}",
+        pair.sync_b.status().skipped
+    );
+    assert!(!pair.a.files().contains_key("Copy.md"));
+    // The note keeps merging.
+    type_at(&mut a, 0, "still ");
+    both_rounds(&mut pair).await;
+    assert!(pair.sync_b.in_text_mode(&rid));
+    assert!(read(&pair.b, PLAN).contains("still"));
 }

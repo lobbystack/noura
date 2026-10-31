@@ -964,3 +964,36 @@ fn a_collaborators_cursor_stays_on_its_character_as_text_changes_around_it() {
     editor.caret(4);
     assert_eq!(editor.doc.selection_utf16(), (5, 5));
 }
+
+#[test]
+fn an_outside_edit_applies_on_top_of_what_the_document_merged_since_its_base() {
+    let mut editor = open(vec![sandbox().first_document("base\n").unwrap()]);
+    // You type in the editor while the file holds an older body.
+    editor.caret(0);
+    editor.type_text("typed ");
+    editor.settle();
+    editor
+        .note
+        .merge_text("base\n".into(), "base\nfile\n".into(), 0)
+        .unwrap();
+    editor.settle();
+    assert_eq!(editor.merged(), "typed base\nfile\n");
+    assert_eq!(editor.doc.text(), "typed base\nfile\n");
+}
+
+#[test]
+fn a_document_outlives_its_editor_for_the_sync_client() {
+    let (mut handle, text) = NoteHandle::open(
+        sandbox(),
+        vec![sandbox().first_document("base\n").unwrap()],
+        device(3, MemoryReservation::default()),
+    )
+    .unwrap();
+    assert_eq!(text, "base\n");
+    handle.outlive();
+    let note = handle.shared();
+    let mut doc = MdDoc::new(&text);
+    doc.enter_text_mode(Box::new(SandboxDocument::new(handle)));
+    drop(doc);
+    assert_eq!(note.merged_text().unwrap(), "base\n", "the thread stays");
+}
