@@ -2,6 +2,7 @@
 //! authority checks, reading the chains a session may read, enrolled cards,
 //! enrollment challenges and recovery proofs (§12).
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -286,15 +287,14 @@ pub(crate) async fn read(
         let chain = if is_current {
             policy::cached_current_chain(txn, verified, cursor.account).await?
         } else {
-            if !every_chain.contains_key(&cursor.account) {
-                let chains = policy::chains_of(txn, cursor.account).await?;
-                let chains = chains.into_iter().map(|(g, c)| (g, Arc::new(c))).collect();
-                every_chain.insert(cursor.account, chains);
-            }
-            every_chain
-                .get(&cursor.account)
-                .and_then(|chains| chains.get(&genesis))
-                .cloned()
+            let chains = match every_chain.entry(cursor.account) {
+                Entry::Occupied(known) => known.into_mut(),
+                Entry::Vacant(unread) => {
+                    let chains = policy::chains_of(txn, cursor.account).await?;
+                    unread.insert(chains.into_iter().map(|(g, c)| (g, Arc::new(c))).collect())
+                }
+            };
+            chains.get(&genesis).cloned()
         };
         let chain = chain.ok_or_else(|| refuse("not_found", "no such account chain"))?;
         let bound = readable_seqno(

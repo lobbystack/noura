@@ -14,7 +14,6 @@ use sync_protocol::messages::{MissingBlobsResponse, PushResponse};
 use sync_protocol::types::{Digest, Id, to_base64url};
 use sync_server::blobs::{DiskStore, SegmentStore, segment_key};
 use sync_server::restore::{QUARANTINE, check_blobs, collect_quarantine, secret_beside, unix_now};
-use sync_store::Backend;
 
 fn stderr(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()

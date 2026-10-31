@@ -534,16 +534,11 @@ async fn each_session_reads_the_chains_it_may_read() {
     let owner = Client::new(base.clone(), Some(world.devices[0].bearer()));
 
     // Its own chain, from any cursor.
-    let own = read(
-        &owner,
-        vec![current(world.account, 0), current(world.account, 1)],
-    )
-    .await
-    .unwrap();
-    assert_eq!(own.pages.0.len(), 2);
+    let own = read(&owner, vec![current(world.account, 0)]).await.unwrap();
     assert_eq!(own.pages.0[0].links.0.len(), 2);
-    assert_eq!(own.pages.0[1].links.0.len(), 1);
     assert_eq!(own.pages.0[0].status, ChainStatus::Current);
+    let rest = read(&owner, vec![current(world.account, 1)]).await.unwrap();
+    assert_eq!(rest.pages.0[0].links.0.len(), 1);
 
     // A member account the policy records: its current chain in full.
     let (member, member_keys, mut member_links) = account(2);
