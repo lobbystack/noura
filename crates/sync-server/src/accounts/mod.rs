@@ -192,9 +192,58 @@ impl Accounts {
     }
 }
 
+/// How many reset codes, and how many reset attempts, an account gets each
+/// 10 minutes.
+pub const RESET_ATTEMPTS: sync_store::Limit = sync_store::Limit {
+    allowance: 10,
+    window: std::time::Duration::from_secs(600),
+};
+
+/// The refusal once an account used up [`RESET_ATTEMPTS`].
+pub(crate) fn too_many_resets(retry_after: std::time::Duration) -> crate::http::ApiError {
+    sync_store::Error::Refused(
+        sync_store::Refusal::new("rate_limited", "too many reset attempts")
+            .retry_after(retry_after.as_secs().max(1)),
+    )
+    .into()
+}
+
+/// `POST /v2/account/reset-code`: emails a reset code to the account's
+/// address (§7).
+async fn reset_code<B: Backend>(
+    State(state): State<AppState<B>>,
+    crate::http::Auth(session): crate::http::Auth,
+) -> Result<Response, crate::http::ApiError> {
+    let mut key = b"reset-code:".to_vec();
+    key.extend_from_slice(&session.account.0);
+    let limiter = state.store.backend().limiter();
+    if let sync_store::Taken::Refused { retry_after } =
+        sync_store::Limiter::take(&*limiter, &key, 1, RESET_ATTEMPTS).await?
+    {
+        return Err(too_many_resets(retry_after));
+    }
+    let (code, email) = state.store.issue_reset_code(session).await?;
+    let text = format!(
+        "Your Noura reset code is {}. It works once, for 10 minutes. If you didn't ask for it, \
+         ignore this email.",
+        sync_store::devices::user_code_text(&code)
+    );
+    if state
+        .accounts
+        .send(&email, "Your Noura reset code", text)
+        .await
+        .is_err()
+    {
+        state.store.revoke_reset_code(session).await?;
+        return Err(sync_store::Error::internal("the reset code's email failed").into());
+    }
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 /// The account routes.
 pub fn routes<B: Backend>() -> Router<AppState<B>> {
     Router::new()
+        .route("/v2/account/reset-code", post(reset_code::<B>))
         .route("/account", get(account_page::<B>))
         .route("/account/sign-in", get(sign_in_page))
         .route("/account/sign-up", get(sign_up_page))

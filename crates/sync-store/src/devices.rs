@@ -65,6 +65,21 @@ pub fn user_code_text(code: &str) -> String {
     }
 }
 
+/// A reset code as the app takes it, in the form the store hashes.
+pub(crate) fn normalized_code(text: &str) -> Option<String> {
+    normalize_user_code(text)
+}
+
+/// The hash the store keeps of a reset code.
+pub(crate) fn reset_code_hash(code: &str) -> Digest {
+    user_code_hash(code)
+}
+
+/// A new reset code: 8 characters from the device grant's alphabet.
+pub(crate) fn reset_code_new() -> Result<String> {
+    new_user_code()
+}
+
 fn user_code_hash(code: &str) -> Digest {
     hash(code.as_bytes())
 }
@@ -601,8 +616,17 @@ impl<B: Backend> Store<B> {
                     if let Some(invitation) = request.invitation {
                         crate::invitations::invited_offer(txn, &cache, session, invitation, now)
                             .await?;
-                    } else if request.workspace.is_some() || request.account != session.account {
-                        // Ticket 60 answers resets.
+                    } else if let Some(workspace) = request.workspace {
+                        // An owner or admin of another account answers a
+                        // reset (§7).
+                        if request.account == session.account {
+                            return Err(refuse(
+                                "forbidden",
+                                "the reset account can't accept its own reset",
+                            ));
+                        }
+                        crate::invitations::manager(txn, &cache, session, workspace).await?;
+                    } else if request.account != session.account {
                         return Err(refuse(
                             "forbidden",
                             "the request isn't one of this account's own devices",

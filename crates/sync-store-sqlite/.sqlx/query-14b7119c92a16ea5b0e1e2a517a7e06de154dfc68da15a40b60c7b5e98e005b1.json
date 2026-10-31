@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM reset_codes WHERE account = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "14b7119c92a16ea5b0e1e2a517a7e06de154dfc68da15a40b60c7b5e98e005b1"
+}

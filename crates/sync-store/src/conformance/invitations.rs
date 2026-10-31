@@ -140,7 +140,7 @@ impl Invitee {
 
 /// A member account with one device, added to the world's workspace with
 /// `role`.
-async fn member<B: Backend>(world: &mut World<B>, role: Role) -> Invitee {
+pub(super) async fn member<B: Backend>(world: &mut World<B>, role: Role) -> Invitee {
     let invitee = Invitee::new(&world.store).await;
     let add = world.change(
         0,

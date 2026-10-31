@@ -1092,6 +1092,19 @@ impl ReadTxn for PgTxn {
         rows.into_iter().map(|r| id(r.blob)).collect()
     }
 
+    async fn reset_code(&mut self, account: Id) -> Result<Option<(Digest, u64)>> {
+        let account = &account.0[..];
+        let row = sqlx::query!(
+            "SELECT code_hash, expires_at FROM reset_codes WHERE account = $1",
+            account
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| Ok((digest(r.code_hash)?, uint(r.expires_at)?)))
+            .transpose()
+    }
+
     async fn live_instances(&mut self, now: u64) -> Result<Vec<Id>> {
         let now = at_most(now);
         let rows = sqlx::query!(
@@ -1135,7 +1148,7 @@ impl ReadTxn for PgTxn {
     async fn owned_workspaces(&mut self, account: Id) -> Result<u64> {
         let account = &account.0[..];
         let row = sqlx::query!(
-            r#"SELECT COUNT(*) AS "count!" FROM workspaces WHERE owner = $1"#,
+            r#"SELECT COUNT(*) AS "count!" FROM workspaces WHERE owner = $1 AND closed = 0"#,
             account
         )
         .fetch_one(self.c())
@@ -3993,6 +4006,11 @@ impl WriteTxn for PgTxn {
     async fn delete_expired(&mut self, now: u64) -> Result<u64> {
         let now = at_most(now);
         let mut deleted = 0;
+        deleted += sqlx::query!("DELETE FROM reset_codes WHERE expires_at <= $1", now)
+            .execute(self.c())
+            .await
+            .map_err(db)?
+            .rows_affected();
         deleted += sqlx::query!("DELETE FROM magic_links WHERE expires_at <= $1", now)
             .execute(self.c())
             .await
@@ -4133,6 +4151,49 @@ impl WriteTxn for PgTxn {
         .execute(self.c())
         .await
         .map_err(db)?;
+        Ok(())
+    }
+
+    async fn put_reset_code(&mut self, account: Id, hash: Digest, expires_at: u64) -> Result<()> {
+        let account = &account.0[..];
+        let hash = &hash.0[..];
+        let expires_at = at_most(expires_at);
+        sqlx::query!(
+            "INSERT INTO reset_codes (account, code_hash, expires_at) VALUES ($1, $2, $3)
+             ON CONFLICT (account) DO UPDATE
+             SET code_hash = excluded.code_hash, expires_at = excluded.expires_at",
+            account,
+            hash,
+            expires_at
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn take_reset_code(&mut self, account: Id) -> Result<()> {
+        let account = &account.0[..];
+        sqlx::query!("DELETE FROM reset_codes WHERE account = $1", account)
+            .execute(self.c())
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    async fn close_workspace(&mut self, workspace: Id) -> Result<()> {
+        let workspace = &workspace.0[..];
+        sqlx::query!(
+            "UPDATE workspaces SET closed = 1 WHERE workspace = $1",
+            workspace
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        sqlx::query!("DELETE FROM members WHERE workspace = $1", workspace)
+            .execute(self.c())
+            .await
+            .map_err(db)?;
         Ok(())
     }
 

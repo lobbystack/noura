@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT COUNT(*) AS \"count!: i64\" FROM workspaces WHERE owner = ?1",
+  "query": "SELECT COUNT(*) AS \"count!: i64\" FROM workspaces WHERE owner = ?1 AND closed = 0",
   "describe": {
     "columns": [
       {
@@ -17,5 +17,5 @@
       false
     ]
   },
-  "hash": "741ec03a5b2b0a669359180bece847096711eb7454e5944c0b70124b7b7a5eff"
+  "hash": "eb938a591784c807db309a62ada4fef668fd17e022a97b5f4f2dcf91b64d622d"
 }

@@ -33,6 +33,7 @@ mod devices;
 mod domains;
 mod invitations;
 mod keys;
+mod resets;
 mod retention;
 mod shares;
 pub use blobs::*;
@@ -41,6 +42,7 @@ pub use devices::*;
 pub use domains::*;
 pub use invitations::*;
 pub use keys::*;
+pub use resets::*;
 pub use retention::*;
 pub use shares::*;
 
@@ -140,6 +142,9 @@ macro_rules! conformance_tests {
             usage_alone_over_quota_moves_no_floor,
             replacements_stop_at_honest_rotations,
             a_closed_workspace_is_reclaimed_domain_by_domain,
+            reset_codes_retire_the_chain,
+            accept_reset_commits_an_approval,
+            closing_a_workspace_answers_not_found,
             an_account_belongs_to_at_most_a_thousand_workspaces,
             an_account_in_a_thousand_workspaces_joins_no_more,
         );
