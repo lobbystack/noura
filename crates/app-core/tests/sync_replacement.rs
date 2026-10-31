@@ -19,8 +19,12 @@ use sync_protocol::messages::{
     EntryRecord, ErrorBody, KeyRecord, KeysResponse, PullResponse, PushFailureDetail,
 };
 use sync_protocol::types::Id;
+use app_core::sync::upkeep::Task;
 use app_core::sync::workspace::WorkspaceSync;
-use sync_support::{Folder, Pair, Proxy, Server, approve, pair, pair_of_accounts_on};
+use sync_protocol::records::{Access, Level, Role};
+use sync_support::{
+    Folder, Pair, Proxy, Server, approve, pair, pair_of_accounts_on, pair_of_accounts_with,
+};
 
 /// A laptop and a desktop of two accounts: a device doesn't replace an epoch
 /// its own account rotated (§9).
@@ -155,6 +159,70 @@ async fn a_failed_envelope_is_replaced_and_the_rotator_writes_again() {
     assert_eq!(pair.a.files()["Plan.md"], b"# Plan, under epoch 2\n");
     assert_eq!(pair.sync_a.status().conflicts, 0);
     assert_eq!(pair.sync_b.status().conflicts, 0);
+}
+
+/// A reader of a restricted domain whose envelope fails stops only there.
+/// A key holder that reaches the upkeep answers its re-wrap request (§9).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rewrap_in_a_restricted_domain_is_answered() {
+    let mut pair = pair_of_accounts_with(Server::start().await, Role::Admin).await;
+    let grant = Access {
+        account: pair.laptop.credentials.account,
+        level: Level::Read,
+    };
+    let domain = pair
+        .sync_b
+        .restrict_folder(&mut pair.desktop.service, "Pay", &[grant])
+        .await
+        .expect("restricted");
+    pair.b.write("Pay/March.md", b"# March\n");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("a round");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("a round");
+
+    damage_envelopes(&pair.proxy, pair.laptop.id(), pair.desktop.id());
+    pair.a.write("Open.md", b"# Open\n");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("the workspace domain goes on");
+    assert!(pair.sync_a.key_stopped());
+    assert!(!pair.a.files().contains_key("Pay/March.md"));
+
+    // The key upkeep of a device that holds the domain's key sees the
+    // request and answers it.
+    let remote = pair.sync_b.remote_mut().unwrap();
+    let waiting = pair
+        .desktop
+        .service
+        .upkeep_waiting(remote)
+        .await
+        .expect("the upkeep reads");
+    let task = waiting
+        .iter()
+        .map(|(task, _)| *task)
+        .find(|task| matches!(task, Task::Rewrap { domain: d, .. } if *d == domain))
+        .expect("the request");
+    pair.desktop
+        .service
+        .run_upkeep(remote, &task)
+        .await
+        .expect("answered");
+
+    pair.proxy.honest();
+    for _ in 0..3 {
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("a round");
+    }
+    assert!(!pair.sync_a.key_stopped());
+    assert_eq!(pair.a.files()["Pay/March.md"], b"# March\n");
 }
 
 /// A device that quits with a record under an epoch a replacement just

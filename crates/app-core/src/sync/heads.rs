@@ -728,11 +728,10 @@ impl SyncService {
             .await
     }
 
-    /// Answers the open re-wrap requests of the workspace domain's current
-    /// epoch that other devices posted (§9): this device wraps the key it
-    /// verified for each requester its own verified policy lets read the
-    /// domain, and pushes the envelope alone. The server takes the first
-    /// few answers.
+    /// Answers the open re-wrap requests of the current epochs that other
+    /// devices posted (§9): this device wraps the key it verified for each
+    /// requester its own verified policy lets read the domain, and pushes
+    /// the envelope alone. The server takes the first few answers.
     pub async fn answer_rewraps(
         &mut self,
         remote: &mut RemoteWorkspace,
@@ -744,16 +743,24 @@ impl SyncService {
         Ok(answers)
     }
 
-    /// The open re-wrap requests of the workspace domain's current epoch
-    /// that this device may answer: another device's, which its verified
-    /// policy lets read the domain (§9).
+    /// The open re-wrap requests of the current epochs that this device
+    /// may answer: another device's, of a domain both read under the
+    /// device's verified policy, the workspace domain or a restricted one
+    /// (§9).
     pub async fn open_rewraps(
         &mut self,
         remote: &RemoteWorkspace,
     ) -> Result<Vec<RewrapRequest>, SyncError> {
         let device = self.credentials.keys.device();
         let current = self.client.current_keys(remote.workspace, device).await?;
-        let epoch = remote.epoch();
+        let mut epochs = BTreeMap::from([(remote.domain, remote.epoch())]);
+        for entry in &current.entries.0 {
+            if let KeyRecord::Epoch(epoch) = &entry.record
+                && epoch.body.domain != remote.domain
+            {
+                epochs.insert(epoch.body.domain, epoch.body.epoch);
+            }
+        }
         let snapshot = remote.policy.head_snapshot();
         Ok(current
             .entries
@@ -761,10 +768,10 @@ impl SyncService {
             .into_iter()
             .filter_map(|entry| match entry.record {
                 KeyRecord::Rewrap(request)
-                    if request.domain == remote.domain
-                        && request.device != device
-                        && request.epoch == epoch
-                        && snapshot.can_read(&request.device, &remote.domain) =>
+                    if request.device != device
+                        && epochs.get(&request.domain) == Some(&request.epoch)
+                        && snapshot.can_read(&device, &request.domain)
+                        && snapshot.can_read(&request.device, &request.domain) =>
                 {
                     Some(request)
                 }
@@ -782,9 +789,9 @@ impl SyncService {
     ) -> Result<RewrapAnswer, SyncError> {
         // The device holds the verified key of the current epoch alone; an
         // older request closed when the next epoch committed.
-        if request.domain != remote.domain || request.epoch != remote.epoch() {
+        let Some(key) = self.rewrap_key(remote, request).await? else {
             return Ok(RewrapAnswer::Refused(request.device));
-        }
+        };
         let snapshot = remote.policy.head_snapshot();
         let card = &snapshot
             .devices
@@ -794,11 +801,11 @@ impl SyncService {
         let envelope = wrap(
             &EnvelopeHeader {
                 workspace: remote.workspace,
-                domain: remote.domain,
+                domain: request.domain,
                 epoch: request.epoch,
                 wrapping_device: self.credentials.keys.device(),
             },
-            &remote.key,
+            &key,
             card,
             &self.credentials.keys,
         )
@@ -814,6 +821,36 @@ impl SyncService {
             }
             Err(error) => Err(error),
         }
+    }
+}
+
+impl SyncService {
+    /// The verified key `request` asks for, when it names the current epoch
+    /// of a domain this device reads. A restricted domain's keys load here,
+    /// since the key upkeep's view of a workspace holds the workspace
+    /// domain's alone.
+    async fn rewrap_key(
+        &mut self,
+        remote: &RemoteWorkspace,
+        request: &RewrapRequest,
+    ) -> Result<Option<SecretKey>, SyncError> {
+        if request.domain == remote.domain {
+            return Ok((request.epoch == remote.epoch()).then(|| remote.key.clone()));
+        }
+        let keys = self.credentials.keys.clone();
+        let loaded = self
+            .load_keys(remote.workspace, request.domain, &remote.policy, &keys, true)
+            .await;
+        let (epochs, keys, _) = match loaded {
+            Ok(loaded) => loaded,
+            // This device holds no key to give.
+            Err(SyncError::KeyMissing | SyncError::Check("sync_key_mismatch")) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let current = epochs.latest().map(|e| e.record.body.epoch);
+        Ok((current == Some(request.epoch))
+            .then(|| keys.get(&request.epoch).cloned())
+            .flatten())
     }
 }
 

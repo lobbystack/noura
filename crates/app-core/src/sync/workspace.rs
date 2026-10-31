@@ -257,6 +257,9 @@ pub struct WorkspaceSync {
     /// The longest wait before the device writes lost objects again (§14).
     restore_wait: std::time::Duration,
     /// The `blob_ref` a rewrite reuses for the bytes it signs now.
+    /// The restricted domains whose envelope failed on this device, which
+    /// wait for a re-wrap (§9).
+    key_stops: BTreeSet<Id>,
     lent_blob: Option<sync_protocol::records::BlobRef>,
     /// The domains whose page may have written files the state file
     /// doesn't map yet, each with the sequence the page reaches (§15).
@@ -535,6 +538,7 @@ impl WorkspaceSync {
             move_wait: MOVE_WAIT,
             rotation_wait: super::upkeep::KEY_HOLDER_WAIT.end,
             rotation_due: BTreeMap::new(),
+            key_stops: BTreeSet::new(),
             text: text::TextRuntime::default(),
             presence: presence::PresenceRuntime::default(),
         };
@@ -676,6 +680,7 @@ impl WorkspaceSync {
             move_wait: MOVE_WAIT,
             rotation_wait: super::upkeep::KEY_HOLDER_WAIT.end,
             rotation_due: BTreeMap::new(),
+            key_stops: BTreeSet::new(),
             text: text::TextRuntime::default(),
             presence: presence::PresenceRuntime::default(),
             state,

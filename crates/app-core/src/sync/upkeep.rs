@@ -43,6 +43,8 @@ pub enum Task {
     Rewrap {
         /// The workspace.
         workspace: Id,
+        /// The domain, the workspace domain or a restricted one.
+        domain: Id,
         /// The requesting device.
         device: Id,
         /// The epoch it asks for.
@@ -135,6 +137,7 @@ impl SyncService {
             waiting.push((
                 Task::Rewrap {
                     workspace,
+                    domain: request.domain,
                     device: request.device,
                     epoch: request.epoch,
                 },
@@ -166,9 +169,14 @@ impl SyncService {
             Task::Rotate { .. } => {
                 self.rotate_if_pending(remote).await?;
             }
-            Task::Rewrap { device, epoch, .. } => {
+            Task::Rewrap {
+                domain,
+                device,
+                epoch,
+                ..
+            } => {
                 let request = RewrapRequest {
-                    domain: remote.domain,
+                    domain: *domain,
                     device: *device,
                     epoch: *epoch,
                 };
@@ -193,6 +201,7 @@ mod tests {
     fn rewrap() -> Task {
         Task::Rewrap {
             workspace: Id([1; 16]),
+            domain: Id([4; 16]),
             device: Id([3; 16]),
             epoch: 2,
         }

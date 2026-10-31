@@ -35,6 +35,9 @@ const TEXT_REVIEW_LINES: usize = 32;
 /// What Settings says after a device reports `sync_text_conflict`.
 const TEXT_CONFLICT: &str = "A collaborator's version of a note disagreed with this computer's records, so Noura rebuilt the note. Check it below.";
 
+/// What Settings says while a restricted folder waits for a new key.
+const KEY_STOP: &str = "This computer can't open the key of a restricted folder, so that folder waits for another device to send a new one. Everything else keeps syncing.";
+
 /// One line of Settings for a text review entry, unless the note has its
 /// own entry with a choice.
 fn text_review_line(sync: &WorkspaceSync, review: &TextReview) -> Option<String> {
@@ -510,7 +513,13 @@ impl Folder {
             }
         };
         match result {
-            Ok(()) => self.last_error = None,
+            Ok(()) => {
+                self.last_error = self
+                    .sync
+                    .as_ref()
+                    .is_some_and(WorkspaceSync::key_stopped)
+                    .then(|| KEY_STOP.to_owned());
+            }
             Err(error) => {
                 tracing::warn!(kind = ?error.code(), "a sync round failed");
                 self.last_error = Some(folder_message(&error));

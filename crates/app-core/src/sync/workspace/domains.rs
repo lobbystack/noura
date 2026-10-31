@@ -161,8 +161,18 @@ impl WorkspaceSync {
                 .load_keys(workspace, domain, &policy, &recipient, known)
                 .await;
             let (epochs, keys, envelope) = match loaded {
-                Ok(loaded) => loaded,
+                Ok(loaded) => {
+                    self.key_stops.remove(&domain);
+                    loaded
+                }
                 Err(SyncError::KeyMissing) => continue,
+                // An envelope that fails stops this domain alone: it waits
+                // for a re-wrap, and the rest of the workspace goes on (§9).
+                Err(SyncError::Check("sync_key_mismatch")) => {
+                    tracing::warn!("a restricted domain's envelope failed");
+                    self.key_stops.insert(domain);
+                    continue;
+                }
                 Err(error) => return Err(error),
             };
             let remote = RemoteWorkspace::from_parts(
@@ -192,6 +202,12 @@ impl WorkspaceSync {
         self.update_roots()?;
         self.share_domain_keys();
         self.save()
+    }
+
+    /// Whether a restricted domain's envelope failed here, so that domain
+    /// waits for a re-wrap while the others sync.
+    pub fn key_stopped(&self) -> bool {
+        !self.key_stops.is_empty()
     }
 
     /// Writes the mark to the credential store, as every raised reservation

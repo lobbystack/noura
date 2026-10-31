@@ -116,6 +116,7 @@ async fn upkeep_waits_its_turn_then_records_heads_and_answers_rewraps() {
             (
                 Task::Rewrap {
                     workspace: id,
+                    domain: remote.domain,
                     device: phone.id(),
                     epoch,
                 },
