@@ -5841,6 +5841,10 @@ pub async fn synced_workspaces(service: &mut SyncService) -> Result<Vec<(Id, Str
     let list = service.client().workspaces().await?;
     let mut named = Vec::new();
     for info in list.workspaces.0 {
+        // Nothing judges a chain here until its folder has compared (§14).
+        if service.workspace_held(info.workspace) {
+            continue;
+        }
         let Ok(remote) = service.open_workspace(info.workspace).await else {
             continue;
         };

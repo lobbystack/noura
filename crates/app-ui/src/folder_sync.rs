@@ -146,7 +146,23 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
         }
         FolderSyncPhase::Off => {
             ui.label("This workspace doesn't sync. Its files stay on this computer.");
-            if primary_button(ui, "Turn on sync", !screen.busy).clicked() {
+            if !screen.on_account.is_empty() {
+                group(ui, "Download a workspace here", |ui| {
+                    ui.label("This folder is empty, and your account has these workspaces:");
+                    for (workspace, name) in &screen.on_account {
+                        let button = format!("Download {name}");
+                        if primary_button(ui, &button, !screen.busy).clicked() {
+                            actions.push(FolderSyncAction::DownloadHere(*workspace));
+                        }
+                    }
+                });
+            }
+            let turn_on = if screen.on_account.is_empty() {
+                "Turn on sync"
+            } else {
+                "Start a new workspace"
+            };
+            if primary_button(ui, turn_on, !screen.busy).clicked() {
                 actions.push(FolderSyncAction::TurnOn);
             }
         }

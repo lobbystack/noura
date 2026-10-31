@@ -159,6 +159,9 @@ pub struct FolderSyncScreen {
     /// Whether this device's account owns the workspace, so you can set
     /// it up again even when this device found nothing lost (§14).
     pub can_set_up_again: bool,
+    /// The workspaces of your account that this empty folder can download
+    /// instead of starting a new one.
+    pub on_account: Vec<(Id, String)>,
     /// What went wrong last, for you to read.
     pub last_error: Option<String>,
     /// When the last round finished without an error, as local time.
@@ -197,6 +200,7 @@ impl FolderSyncScreen {
             deleted_away: Vec::new(),
             restore: restore_notice(status),
             can_set_up_again: status.owner,
+            on_account: Vec::new(),
             last_error: None,
             last_success: status.last_success.map(local_time),
             busy: false,
@@ -388,6 +392,8 @@ pub fn local_time(seconds: u64) -> String {
 pub enum FolderSyncAction {
     /// Sync the open workspace, as a new remote workspace or again.
     TurnOn,
+    /// Download this workspace of your account into the open empty folder.
+    DownloadHere(Id),
     /// Stop syncing it; the files stay.
     TurnOff,
     /// Hold changes on this computer.

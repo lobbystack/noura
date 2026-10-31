@@ -1106,6 +1106,8 @@ A checkpoint whose signer was only demoted after its `policy_revision` still ser
 
 ## 18. Bootstrap
 
+The Sync account screen lists your account's workspaces by the names in their profiles ([§25](#25-workspace-profile)), and you download one you don't keep on this computer into an empty folder of your choice. An empty workspace folder offers the same list in its Sync section. Turn on sync never creates a workspace your account already has under the folder's name, compared without case: an empty folder downloads it, and a folder with files stops and asks you to choose an empty folder or rename the workspace. A computer keeps a workspace in one folder.
+
 A new device, or one whose cursor fell below the retention floor, loads current state from the latest checkpoint instead of history:
 
 1. Fetch and verify the policy chain from its anchor ([§8](#verifying-the-chain)) and the account chains its changes record ([§7](#account-chain)), and through `GET .../keys/current` the current epoch record and envelope of each domain it reads, then follow the key stream from the key sequence that route returns. Fetch older epoch records only when a live operation, the checkpoint it bootstraps from or the workspace profile ([§25](#25-workspace-profile)) names an older epoch, and walk back to them through `previous` digests and lineage; `GET .../epochs/{epoch}` returns as many earlier records as fit one response.

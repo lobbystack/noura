@@ -1889,3 +1889,141 @@ fn a_start_without_a_network_connects_once_the_server_answers() {
     drop(account);
     std::thread::sleep(Duration::from_millis(300));
 }
+
+/// The desktop of `pair` as a second computer runs it: its device, in an
+/// app with data of its own, so no folder here keeps the workspace yet.
+fn second_computer(desktop: &Desktop, base: &str, app_data: &std::path::Path) -> LiveAccount {
+    let state = app_data.join("sync").join(desktop.id().to_hex());
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::copy(
+        desktop
+            .state
+            .path()
+            .join(app_core::sync::account_heads::KEPT_HEADS_FILE),
+        state.join(app_core::sync::account_heads::KEPT_HEADS_FILE),
+    )
+    .unwrap();
+    std::fs::write(
+        app_data.join(app_core::account::live::ACCOUNT_FILE),
+        serde_json::json!({"server": base}).to_string(),
+    )
+    .unwrap();
+    LiveAccount::start(
+        app_data.to_owned(),
+        desktop.secrets.clone(),
+        Arc::new(|_| Ok(())),
+    )
+}
+
+fn workspace_rows(screen: &AccountScreen) -> Vec<app_core::account::AccountWorkspace> {
+    match &screen.phase {
+        AccountPhase::SignedIn(view) => view.workspaces.clone(),
+        _ => Vec::new(),
+    }
+}
+
+/// A second computer signs in and finds the workspace on the account
+/// screen: it downloads into an empty folder, and the server keeps one
+/// workspace.
+#[test]
+fn a_second_computer_downloads_from_the_account_screen() {
+    use app_core::folder_sync::{FolderSyncBackend, FolderSyncPhase};
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let pair = runtime.block_on(sync_support::pair());
+    let workspace = pair.sync_a.workspace();
+    let app_data = tempfile::tempdir().unwrap();
+    let account = second_computer(&pair.desktop, &pair.server.base, app_data.path());
+    let screen = wait_for(&account, "the workspace's row", |s| {
+        !workspace_rows(s).is_empty()
+    });
+    let rows = workspace_rows(&screen);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].name, "Field notes");
+    assert_eq!(rows[0].workspace, workspace);
+    assert_eq!(rows[0].folder, None);
+
+    let folder = sync_support::Folder::new("Anything");
+    AccountBackend::act(
+        &account,
+        AccountAction::Download {
+            workspace,
+            folder: folder.engine.root().to_owned(),
+        },
+    );
+    wait_for(&account, "the download", |s| s.download_pending());
+    FolderSyncBackend::attach(&account, Some(folder.engine.clone()));
+    wait_for(&account, "the download's end", |s| !s.download_pending());
+    wait_for_folder(&account, "sync on", |s| s.phase == FolderSyncPhase::On);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !folder.files().contains_key("Plan.md") {
+        assert!(Instant::now() < deadline, "the file never arrived");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    wait_for(&account, "the folder on the row", |s| {
+        workspace_rows(s).iter().any(|row| row.folder.is_some())
+    });
+    drop(account);
+    std::thread::sleep(Duration::from_millis(300));
+}
+
+/// Turn on sync finds the workspace the account already has: an empty
+/// folder of that name downloads it, a folder with files stops and says
+/// so, and an empty folder of another name offers it beside a new one.
+#[test]
+fn turn_on_sync_makes_no_duplicate_of_a_workspace_the_account_has() {
+    use app_core::folder_sync::{FolderSyncAction, FolderSyncBackend, FolderSyncPhase};
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let mut pair = runtime.block_on(sync_support::pair());
+    let workspace = pair.sync_a.workspace();
+    let app_data = tempfile::tempdir().unwrap();
+    let account = second_computer(&pair.desktop, &pair.server.base, app_data.path());
+    wait_for(&account, "the workspace's row", |s| {
+        !workspace_rows(s).is_empty()
+    });
+
+    // Its files make this another workspace, or a copy: you decide.
+    let full = sync_support::Folder::new("field notes");
+    full.write("Other.md", b"# Other\n");
+    FolderSyncBackend::attach(&account, Some(full.engine.clone()));
+    wait_for_folder(&account, "the off screen", |s| {
+        s.phase == FolderSyncPhase::Off
+    });
+    FolderSyncBackend::act(&account, FolderSyncAction::TurnOn);
+    let screen = wait_for_folder(&account, "the refusal", |s| s.last_error.is_some());
+    assert!(
+        screen
+            .last_error
+            .unwrap()
+            .contains("already has a workspace named Field notes"),
+    );
+
+    // Another name in an empty folder: the choice waits for you.
+    let other = sync_support::Folder::new("Something else");
+    FolderSyncBackend::attach(&account, Some(other.engine.clone()));
+    let screen = wait_for_folder(&account, "the offer", |s| !s.on_account.is_empty());
+    assert_eq!(
+        screen.on_account,
+        vec![(workspace, "Field notes".to_owned())]
+    );
+    assert_eq!(screen.phase, FolderSyncPhase::Off);
+
+    // The same name in an empty folder is that workspace.
+    let empty = sync_support::Folder::new("Field notes");
+    FolderSyncBackend::attach(&account, Some(empty.engine.clone()));
+    wait_for_folder(&account, "the off screen", |s| {
+        s.phase == FolderSyncPhase::Off
+    });
+    FolderSyncBackend::act(&account, FolderSyncAction::TurnOn);
+    wait_for_folder(&account, "sync on", |s| s.phase == FolderSyncPhase::On);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !empty.files().contains_key("Plan.md") {
+        assert!(Instant::now() < deadline, "the file never arrived");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let listed = runtime
+        .block_on(pair.desktop.service.client().workspaces())
+        .unwrap();
+    assert_eq!(listed.workspaces.0.len(), 1, "one workspace on the server");
+    drop(account);
+    std::thread::sleep(Duration::from_millis(300));
+}

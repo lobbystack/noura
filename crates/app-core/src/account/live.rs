@@ -20,9 +20,9 @@ use super::folder::Folder;
 use super::members::Membership;
 use super::share::Sharing;
 use super::{
-    AccountAction, AccountBackend, AccountPhase, AccountScreen, AlertEntry, ApprovalView,
-    DeviceEntry, InvitationStage, InvitationView, KitReplacementView, KitView, RecoveryView,
-    RemovalView, RequestEntry, SignOutView, SignedInView, fingerprint, link_words,
+    AccountAction, AccountBackend, AccountPhase, AccountScreen, AccountWorkspace, AlertEntry,
+    ApprovalView, DeviceEntry, InvitationStage, InvitationView, KitReplacementView, KitView,
+    RecoveryView, RemovalView, RequestEntry, SignOutView, SignedInView, fingerprint, link_words,
     policy_change_words, problem_text,
 };
 use crate::folder_sync::{FolderSyncAction, FolderSyncBackend, FolderSyncScreen};
@@ -34,7 +34,9 @@ use crate::sync::device_list::{AddedBy, DeviceAlert};
 use crate::sync::invitations::{InvitationLink, OpenedInvitation, open_signed_out};
 use crate::sync::joining::InvitedCandidate;
 use crate::sync::recovery::{Recovery, RecoveryReview, open_kit};
+use crate::sync::registry::Registry;
 use crate::sync::upkeep::Upkeep;
+use crate::sync::workspace::check_profile;
 use crate::sync::{DeviceCredentials, KeptHeads, RemoteWorkspace, Secrets, SyncError, SyncService};
 
 /// The file in the app's data folder that remembers the server address.
@@ -197,7 +199,8 @@ impl LiveAccount {
             membership: Membership::default(),
             invited: None,
             joined: None,
-            download_into: None,
+            download: None,
+            unopened: BTreeSet::new(),
             reconnect: None,
             reset: None,
             retired: None,
@@ -446,8 +449,12 @@ struct Driver {
     owned: BTreeSet<Id>,
     /// The workspace you joined, which waits for a folder.
     joined: Option<Id>,
-    /// The folder that workspace downloads into, once the windows show it.
-    download_into: Option<PathBuf>,
+    /// The workspace that downloads and its folder, once the windows show
+    /// that folder.
+    download: Option<(Id, PathBuf)>,
+    /// Workspaces of the account that didn't open, which no list tries
+    /// again until the next connect.
+    unopened: BTreeSet<Id>,
     /// While the stored device waits for its server, the next try.
     reconnect: Option<Reconnect>,
 }
@@ -675,7 +682,7 @@ impl Driver {
                         && self.reset_waits.is_empty()
                         && self.recovery.is_none()
                         && self.invited.is_none()
-                        && self.download_into.is_none()
+                        && self.download.is_none()
                         && !self.membership.waits();
                     runtime.block_on(self.folder.round(
                         self.service.as_mut(),
@@ -708,6 +715,8 @@ impl Driver {
         self.reset_requests.clear();
         self.offer = None;
         self.accepting = None;
+        self.download = None;
+        self.unopened.clear();
         self.membership = Membership::default();
         self.folder.after_reset(&[], &self.app_data);
     }
@@ -851,6 +860,7 @@ impl Driver {
         let listed = service.client().workspaces().await?;
         let mut workspaces = Vec::new();
         let mut held = BTreeSet::new();
+        let mut unopened = BTreeSet::new();
         self.owned.clear();
         for workspace in listed.workspaces.iter() {
             if workspace.role == sync_protocol::records::Role::Owner {
@@ -861,11 +871,64 @@ impl Driver {
                 held.insert(workspace.workspace);
             } else if let Ok(remote) = service.open_workspace(workspace.workspace).await {
                 workspaces.push(remote);
+            } else {
+                unopened.insert(workspace.workspace);
             }
         }
         self.workspaces = workspaces;
         self.held_out = held;
+        self.unopened = unopened;
         Ok(())
+    }
+
+    /// Lists the account's workspaces again, opening any that another
+    /// device added, for the account screen and for an empty folder.
+    async fn list_workspaces(&mut self) -> Vec<AccountWorkspace> {
+        let Some(service) = self.service.as_mut() else {
+            return Vec::new();
+        };
+        let Ok(listed) = service.client().workspaces().await else {
+            return Vec::new();
+        };
+        let registry = Registry::open(&self.app_data).ok();
+        let (server, account) = (
+            service.client().base().to_owned(),
+            service.credentials().account,
+        );
+        let mut rows = Vec::new();
+        for info in listed.workspaces.0 {
+            let workspace = info.workspace;
+            let known = self.workspaces.iter().any(|r| r.workspace == workspace)
+                || self.held_out.contains(&workspace)
+                || self.unopened.contains(&workspace)
+                || self.reset_waits.iter().any(|c| c.workspace() == workspace);
+            if !known {
+                match service.open_workspace(workspace).await {
+                    Ok(remote) => self.workspaces.push(remote),
+                    Err(_) => {
+                        self.unopened.insert(workspace);
+                    }
+                }
+            }
+            let Some(remote) = self.workspaces.iter().find(|r| r.workspace == workspace) else {
+                continue;
+            };
+            let name = info
+                .profile
+                .and_then(|profile| check_profile(remote, &profile.0, None).ok())
+                .unwrap_or_else(|| format!("Workspace {}", short_id(&workspace)));
+            let folder = registry
+                .as_ref()
+                .and_then(|registry| registry.of_workspace(&server, &account, &workspace))
+                .map(|entry| entry.folder.clone())
+                .filter(|folder| folder.exists());
+            rows.push(AccountWorkspace {
+                workspace,
+                name,
+                folder,
+            });
+        }
+        rows
     }
 
     /// Takes out each workspace a hold reached, and opens each whose hold
@@ -1003,6 +1066,17 @@ impl Driver {
             Err(error) => return Err(error),
         };
         self.requests = service.pending_devices().await.unwrap_or_default();
+        let account_workspaces = self.list_workspaces().await;
+        self.folder.set_on_account(
+            account_workspaces
+                .iter()
+                .filter(|row| row.folder.is_none())
+                .map(|row| (row.workspace, row.name.clone()))
+                .collect(),
+        );
+        let Some(service) = self.service.as_mut() else {
+            return Ok(());
+        };
         let attached = self.folder.sync_mut().map(|sync| sync.workspace());
         self.reset_requests = match attached {
             Some(workspace) => service.reset_requests(workspace).await.unwrap_or_default(),
@@ -1132,6 +1206,7 @@ impl Driver {
             view.account_fingerprint = account_fingerprint;
             view.devices = devices;
             view.alerts = alerts;
+            view.workspaces = account_workspaces;
             view.requests = requests;
             view.reset_requests = reset_requests;
             screen.phase = AccountPhase::SignedIn(view);
@@ -1476,17 +1551,28 @@ impl Driver {
             AccountAction::CancelInvitation => {
                 self.invited = None;
                 self.joined = None;
-                self.download_into = None;
+                self.download = None;
+                self.signed_in(|view| view.downloading = None);
                 self.shared.update(|screen| screen.invitation = None);
             }
             AccountAction::DownloadInvited(folder) => {
-                if self.joined.is_none() {
+                let Some(workspace) = self.joined else {
                     return Err(SyncError::Invalid("You haven't joined a workspace.".into()));
-                }
-                self.download_into = Some(folder);
+                };
+                self.download = Some((workspace, folder));
                 self.invitation_stage(|stage| {
                     *stage = InvitationStage::Joined { downloading: true };
                 });
+            }
+            AccountAction::Download { workspace, folder } => {
+                self.download = Some((workspace, folder));
+                self.signed_in(|view| view.downloading = Some(workspace));
+            }
+            AccountAction::CancelDownload => self.end_download(),
+            AccountAction::FolderNotEmpty => {
+                return Err(SyncError::Invalid(
+                    "Choose an empty folder for the workspace.".into(),
+                ));
             }
             AccountAction::StartReset => {
                 let typed = self
@@ -1883,34 +1969,40 @@ impl Driver {
 
     /// Starts the download once the windows show the folder you chose.
     async fn poll_download(&mut self) -> Result<(), SyncError> {
-        let (Some(folder), Some(workspace), Some(service)) = (
-            self.download_into.as_ref(),
-            self.joined,
-            self.service.as_mut(),
-        ) else {
+        let (Some((workspace, folder)), Some(service)) =
+            (self.download.as_ref(), self.service.as_mut())
+        else {
             return Ok(());
         };
         if !self.folder.shows(folder) {
             return Ok(());
         }
-        self.download_into = None;
-        match self
+        let workspace = *workspace;
+        let done = self
             .folder
             .download(service, workspace, &self.app_data)
-            .await
-        {
-            Ok(()) => {
-                self.joined = None;
-                self.shared.update(|screen| screen.invitation = None);
-                Ok(())
-            }
-            Err(error) => {
-                self.invitation_stage(|stage| {
-                    *stage = InvitationStage::Joined { downloading: false };
-                });
-                Err(error)
-            }
+            .await;
+        self.end_download();
+        done?;
+        if self.joined == Some(workspace) {
+            self.joined = None;
+            self.shared.update(|screen| screen.invitation = None);
         }
+        // The row shows the folder without waiting for the next refresh.
+        self.last_refresh = None;
+        Ok(())
+    }
+
+    /// Stops waiting for a download's folder. A workspace you joined stays
+    /// joined, so you can choose another.
+    fn end_download(&mut self) {
+        self.download = None;
+        self.signed_in(|view| view.downloading = None);
+        self.invitation_stage(|stage| {
+            if matches!(stage, InvitationStage::Joined { .. }) {
+                *stage = InvitationStage::Joined { downloading: false };
+            }
+        });
     }
 
     /// The key upkeep that waits its turn (§8, §9): later heads of member

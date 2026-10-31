@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use app_core::App;
 use app_core::account::{
-    AccountAction, AccountPhase, AccountScreen, InvitationStage, InvitationView, RecoveryView,
+    AccountAction, AccountPhase, AccountScreen, Id, InvitationStage, InvitationView, RecoveryView,
     SignedInView,
 };
 use app_core::sync::recovery::KIT_WARNING;
@@ -100,6 +100,7 @@ pub(crate) fn section(
         });
     }
     let mut download = None;
+    let mut download_listed = None;
     if let Some(invitation) = &screen.invitation {
         download = invitation_group(ui, &screen, invitation, &mut actions, picker);
     }
@@ -198,6 +199,7 @@ pub(crate) fn section(
         }
         AccountPhase::Recovering(review) => recovering(ui, review, &mut actions),
         AccountPhase::SignedIn(signed_in) => {
+            download_listed = workspaces_group(ui, &screen, signed_in, &mut actions, picker);
             signed_in_section(ui, &screen, signed_in, &mut actions, picker);
         }
         AccountPhase::Retired { fingerprint } => {
@@ -251,6 +253,49 @@ pub(crate) fn section(
     if let (Some(folder), Some(invitation)) = (download, &screen.invitation) {
         app.download_invited(&invitation.workspace, folder);
     }
+    if let Some((workspace, name, folder)) = download_listed {
+        app.download_workspace(workspace, &name, folder);
+    }
+}
+
+/// Draws the account's workspaces. Returns the one you chose to download,
+/// with its folder.
+fn workspaces_group(
+    ui: &mut Ui,
+    screen: &AccountScreen,
+    view: &SignedInView,
+    actions: &mut Vec<AccountAction>,
+    picker: &mut dyn FolderPicker,
+) -> Option<(Id, String, PathBuf)> {
+    if view.workspaces.is_empty() {
+        return None;
+    }
+    let mut chosen = None;
+    group(ui, "Your workspaces", |ui| {
+        for row in &view.workspaces {
+            ui.horizontal(|ui| {
+                ui.label(&row.name);
+                if view.downloading == Some(row.workspace) {
+                    muted(ui, "Noura is downloading the workspace.");
+                    if ui.button("Cancel").clicked() {
+                        actions.push(AccountAction::CancelDownload);
+                    }
+                } else if let Some(folder) = &row.folder {
+                    muted(ui, &format!("In {}", folder.display()));
+                } else if ui
+                    .add_enabled(
+                        !screen.busy && view.downloading.is_none(),
+                        Button::new(format!("Download {}", row.name)),
+                    )
+                    .clicked()
+                    && let Some(folder) = picker.pick_folder("Choose an empty folder")
+                {
+                    chosen = Some((row.workspace, row.name.clone(), folder));
+                }
+            });
+        }
+    });
+    chosen
 }
 
 fn paste_invitation(
@@ -353,6 +398,9 @@ fn invitation_group(
             InvitationStage::Joined { downloading } => {
                 if *downloading {
                     muted(ui, "Noura is downloading the workspace.");
+                    if ui.button("Cancel").clicked() {
+                        actions.push(AccountAction::CancelDownload);
+                    }
                 } else {
                     ui.label("You joined. Choose an empty folder for its files, or the folder you synced before the owner set this workspace up again.");
                     if ui

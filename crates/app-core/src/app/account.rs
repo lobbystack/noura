@@ -4,10 +4,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::App;
-use crate::account::{AccountAction, AccountBackend, AccountScreen};
+use crate::account::{AccountAction, AccountBackend, AccountScreen, Id};
 use crate::folder_sync::{FolderSyncAction, FolderSyncBackend, FolderSyncScreen};
 use crate::members::{MembersAction, MembersBackend, MembersScreen};
 use crate::shares::{ShareAction, ShareBackend, ShareScreen};
+use crate::sync::workspace::is_empty_folder;
 
 impl App {
     /// What the account screens show.
@@ -20,11 +21,44 @@ impl App {
         self.session.account().act(action);
     }
 
-    /// Makes `folder` a new workspace named `name` and downloads the
-    /// workspace you joined into it, once the windows show it (§11).
+    /// Downloads the workspace you joined into `folder` once the windows
+    /// show it (§11).
     pub fn download_invited(&mut self, name: &str, folder: PathBuf) {
-        self.create_workspace(name, folder.clone());
-        self.account_action(AccountAction::DownloadInvited(folder));
+        let action = AccountAction::DownloadInvited(folder.clone());
+        self.download_into(action, name, folder);
+    }
+
+    /// Downloads `workspace` of your account into `folder` once the windows
+    /// show it (§15, §18).
+    pub fn download_workspace(&mut self, workspace: Id, name: &str, folder: PathBuf) {
+        let action = AccountAction::Download {
+            workspace,
+            folder: folder.clone(),
+        };
+        self.download_into(action, name, folder);
+    }
+
+    /// Starts `action` and shows `folder`: an empty folder becomes a new
+    /// workspace named `name`, and a folder that holds a workspace opens,
+    /// as the folder you synced before an owner set this workspace up again
+    /// does (§14). A plain folder with files stays as it is.
+    fn download_into(&mut self, action: AccountAction, name: &str, folder: PathBuf) {
+        if folder.join(local_core::WORKSPACE_MANIFEST_PATH).exists() {
+            self.account_action(action);
+            self.open_folder(folder);
+        } else if is_empty_folder(&folder).unwrap_or(false) {
+            self.account_action(action);
+            self.create_workspace(name, folder);
+        } else {
+            self.account_action(AccountAction::FolderNotEmpty);
+        }
+    }
+
+    /// Ends a download whose folder didn't open, which would wait forever.
+    pub(super) fn folder_failed_to_open(&self) {
+        if self.account().download_pending() {
+            self.account_action(AccountAction::CancelDownload);
+        }
     }
 
     /// Runs the account screens with `backend`, such as the desktop's

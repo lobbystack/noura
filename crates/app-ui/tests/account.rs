@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::collections::BTreeSet;
 
 use app_core::account::{
-    AccountAction, AccountBackend, AccountPhase, AccountScreen, AlertEntry, ApprovalView,
-    DeviceEntry, Id, InvitationStage, InvitationView, KitReplacementView, KitView, RecoveryView,
-    RequestEntry, SignOutView, SignedInView,
+    AccountAction, AccountBackend, AccountPhase, AccountScreen, AccountWorkspace, AlertEntry,
+    ApprovalView, DeviceEntry, Id, InvitationStage, InvitationView, KitReplacementView, KitView,
+    RecoveryView, RequestEntry, SignOutView, SignedInView,
 };
 use app_core::sync::recovery::KIT_WARNING;
 use app_core::{App, settings_section};
@@ -160,6 +160,102 @@ fn a_stopped_chain_offers_reset_devices_and_a_retry() {
         .click();
     harness.run();
     assert!(matches!(account.taken().last(), Some(AccountAction::Retry)));
+}
+
+#[test]
+fn the_account_lists_its_workspaces_with_a_download_for_each_it_lacks() {
+    let app_data = tempfile::tempdir().unwrap();
+    let account = Arc::new(FakeAccount::default());
+    let there = Id([1; 16]);
+    let here = Id([2; 16]);
+    let view = SignedInView {
+        workspaces: vec![
+            AccountWorkspace {
+                workspace: there,
+                name: "Field notes".into(),
+                folder: None,
+            },
+            AccountWorkspace {
+                workspace: here,
+                name: "Garden".into(),
+                folder: Some("/Users/ana/Garden".into()),
+            },
+        ],
+        ..SignedInView::default()
+    };
+    account.show(AccountScreen {
+        phase: AccountPhase::SignedIn(Box::new(view)),
+        ..AccountScreen::default()
+    });
+    let picker = FakePicker::default();
+    let empty = tempfile::tempdir().unwrap();
+    picker.answer(Some(empty.path()));
+    let mut harness = harness_with(app_data.path(), account.clone(), picker);
+    harness.get_by_role_and_label(Role::Group, "Your workspaces");
+    harness.get_by_label("In /Users/ana/Garden");
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, "Download Garden")
+            .is_none()
+    );
+    harness
+        .get_by_role_and_label(Role::Button, "Download Field notes")
+        .click_accesskit();
+    harness.run_steps(2);
+    assert_eq!(
+        account.taken().first(),
+        Some(&AccountAction::Download {
+            workspace: there,
+            folder: empty.path().to_owned()
+        })
+    );
+}
+
+#[test]
+fn a_listed_download_can_be_cancelled() {
+    let app_data = tempfile::tempdir().unwrap();
+    let account = Arc::new(FakeAccount::default());
+    let there = Id([1; 16]);
+    account.show(AccountScreen {
+        phase: AccountPhase::SignedIn(Box::new(SignedInView {
+            workspaces: vec![AccountWorkspace {
+                workspace: there,
+                name: "Field notes".into(),
+                folder: None,
+            }],
+            downloading: Some(there),
+            ..SignedInView::default()
+        })),
+        ..AccountScreen::default()
+    });
+    let mut harness = harness(app_data.path(), account.clone());
+    harness.get_by_label("Noura is downloading the workspace.");
+    harness
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    harness.run();
+    assert_eq!(account.taken(), vec![AccountAction::CancelDownload]);
+}
+
+#[test]
+fn a_joined_download_can_be_cancelled() {
+    let app_data = tempfile::tempdir().unwrap();
+    let account = Arc::new(FakeAccount::default());
+    account.show(AccountScreen {
+        invitation: Some(InvitationView {
+            workspace: "Field notes".into(),
+            inviter: "Ana".into(),
+            role: "editor".into(),
+            stage: InvitationStage::Joined { downloading: true },
+        }),
+        ..AccountScreen::default()
+    });
+    let mut harness = harness(app_data.path(), account.clone());
+    harness
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    harness.run();
+    assert_eq!(account.taken(), vec![AccountAction::CancelDownload]);
 }
 
 #[test]

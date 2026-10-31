@@ -305,3 +305,126 @@ fn a_last_workspace_that_lost_its_manifest_says_why_and_stays_as_it_was() {
     );
     assert!(!folder.join(".noura/workspace.yaml").exists());
 }
+
+/// An account backend that records what you do and shows the download an
+/// invitation started.
+#[derive(Default)]
+struct JoinedAccount {
+    actions: std::sync::Mutex<Vec<app_core::account::AccountAction>>,
+}
+
+impl JoinedAccount {
+    fn taken(&self) -> Vec<app_core::account::AccountAction> {
+        self.actions.lock().unwrap().clone()
+    }
+}
+
+impl app_core::account::AccountBackend for JoinedAccount {
+    fn screen(&self) -> app_core::account::AccountScreen {
+        use app_core::account::{AccountAction, InvitationStage, InvitationView};
+        let started = self
+            .taken()
+            .iter()
+            .any(|action| matches!(action, AccountAction::DownloadInvited(_)));
+        app_core::account::AccountScreen {
+            invitation: Some(InvitationView {
+                workspace: "Field notes".into(),
+                inviter: "Ana".into(),
+                role: "editor".into(),
+                stage: InvitationStage::Joined {
+                    downloading: started,
+                },
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn act(&self, action: app_core::account::AccountAction) {
+        self.actions.lock().unwrap().push(action);
+    }
+
+    fn set_wake(&self, _wake: std::sync::Arc<dyn Fn() + Send + Sync>) {}
+}
+
+/// The folder you synced before holds a workspace: it opens, where creating
+/// one there would fail and leave the download waiting (§14).
+#[test]
+fn a_joined_workspace_opens_a_folder_that_holds_a_workspace() {
+    use app_core::account::AccountAction;
+    let app_data = tempfile::tempdir().unwrap();
+    let mut app = App::launch(app_data.path());
+    settle(&mut app);
+    let earlier = tempfile::tempdir().unwrap();
+    create(app_data.path(), "Earlier", earlier.path());
+    let account = std::sync::Arc::new(JoinedAccount::default());
+    app.set_account_backend(account.clone());
+
+    app.download_invited("Field notes", earlier.path().to_owned());
+    settle(&mut app);
+    assert_eq!(
+        app.workspace().map(|w| std::path::PathBuf::from(w.root())),
+        Some(earlier.path().canonicalize().unwrap())
+    );
+    assert!(app.notice().is_none());
+    assert_eq!(
+        account.taken(),
+        vec![AccountAction::DownloadInvited(earlier.path().to_owned())]
+    );
+}
+
+/// A folder that won't open ends the wait, which nothing else would.
+#[test]
+fn a_folder_that_wont_open_ends_the_download() {
+    use app_core::account::AccountAction;
+    let app_data = tempfile::tempdir().unwrap();
+    let mut app = App::launch(app_data.path());
+    settle(&mut app);
+    let broken = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(broken.path().join(".noura")).unwrap();
+    std::fs::write(
+        broken.path().join(".noura/workspace.yaml"),
+        b"not: [a manifest",
+    )
+    .unwrap();
+    let account = std::sync::Arc::new(JoinedAccount::default());
+    app.set_account_backend(account.clone());
+
+    app.download_invited("Field notes", broken.path().to_owned());
+    settle(&mut app);
+    assert_eq!(
+        account.taken(),
+        vec![
+            AccountAction::DownloadInvited(broken.path().to_owned()),
+            AccountAction::CancelDownload
+        ]
+    );
+}
+
+/// A plain folder with files stays as it is: a download needs an empty one.
+#[test]
+fn a_folder_with_files_takes_no_download() {
+    use app_core::account::AccountAction;
+    let app_data = tempfile::tempdir().unwrap();
+    let mut app = App::launch(app_data.path());
+    settle(&mut app);
+    let full = tempfile::tempdir().unwrap();
+    std::fs::write(full.path().join("Notes.txt"), b"mine").unwrap();
+    let account = std::sync::Arc::new(JoinedAccount::default());
+    app.set_account_backend(account.clone());
+
+    app.download_invited("Field notes", full.path().to_owned());
+    app.download_workspace(
+        app_core::account::Id([1; 16]),
+        "Field notes",
+        full.path().to_owned(),
+    );
+    settle(&mut app);
+    assert_eq!(
+        account.taken(),
+        vec![AccountAction::FolderNotEmpty, AccountAction::FolderNotEmpty]
+    );
+    assert!(
+        !full.path().join(".noura").exists(),
+        "the folder stays plain"
+    );
+}

@@ -206,6 +206,17 @@ pub enum AccountPhase {
     },
 }
 
+/// One workspace of your account (§15, §18).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccountWorkspace {
+    /// The workspace.
+    pub workspace: Id,
+    /// Its name, from its encrypted profile.
+    pub name: String,
+    /// Where this computer keeps it, when it does.
+    pub folder: Option<PathBuf>,
+}
+
 /// The signed-in account.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SignedInView {
@@ -215,6 +226,11 @@ pub struct SignedInView {
     pub devices: Vec<DeviceEntry>,
     /// What the device list warns you about.
     pub alerts: Vec<AlertEntry>,
+    /// The workspaces of your account, which a computer that doesn't keep
+    /// one can download.
+    pub workspaces: Vec<AccountWorkspace>,
+    /// The workspace downloading into a folder you chose.
+    pub downloading: Option<Id>,
     /// New devices of your account that wait for approval.
     pub requests: Vec<RequestEntry>,
     /// The approval in progress on this device.
@@ -342,6 +358,19 @@ pub struct KitView {
     pub secret: Zeroizing<String>,
 }
 
+impl AccountScreen {
+    /// Whether a download waits for the windows to show its folder.
+    pub fn download_pending(&self) -> bool {
+        let invited = matches!(
+            self.invitation.as_ref().map(|view| &view.stage),
+            Some(InvitationStage::Joined { downloading: true })
+        );
+        let listed =
+            matches!(&self.phase, AccountPhase::SignedIn(view) if view.downloading.is_some());
+        invited || listed
+    }
+}
+
 impl std::fmt::Debug for KitView {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KitView")
@@ -433,6 +462,18 @@ pub enum AccountAction {
     CancelInvitation,
     /// Download the workspace you joined into this new workspace folder.
     DownloadInvited(PathBuf),
+    /// Download a workspace of your account into this new workspace folder,
+    /// once the windows show it.
+    Download {
+        /// The workspace.
+        workspace: Id,
+        /// The folder.
+        folder: PathBuf,
+    },
+    /// Stop waiting for a download's folder.
+    CancelDownload,
+    /// The folder you chose for a download isn't empty.
+    FolderNotEmpty,
     /// Judge this account's refused chain again (§7).
     CheckChainAgain(Id),
     /// Reset your devices: sign in again and ask for an emailed code (§7).
@@ -493,6 +534,13 @@ impl std::fmt::Debug for AccountAction {
             AccountAction::DownloadInvited(path) => {
                 f.debug_tuple("DownloadInvited").field(path).finish()
             }
+            AccountAction::Download { workspace, folder } => f
+                .debug_struct("Download")
+                .field("workspace", workspace)
+                .field("folder", folder)
+                .finish(),
+            AccountAction::CancelDownload => f.write_str("CancelDownload"),
+            AccountAction::FolderNotEmpty => f.write_str("FolderNotEmpty"),
             AccountAction::StartReset => f.write_str("StartReset"),
             AccountAction::ConfirmReset(_) => f.write_str("ConfirmReset"),
             AccountAction::ConfirmResetWait(index) => {

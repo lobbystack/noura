@@ -79,6 +79,37 @@ fn a_workspace_that_doesnt_sync_offers_to_turn_it_on() {
 }
 
 #[test]
+fn an_empty_folder_offers_the_accounts_workspaces_beside_a_new_one() {
+    let app_data = tempfile::tempdir().unwrap();
+    let sync = Arc::new(FakeSync::default());
+    let workspace = Id([7; 16]);
+    sync.show(FolderSyncScreen {
+        phase: FolderSyncPhase::Off,
+        on_account: vec![(workspace, "Field notes".into())],
+        ..FolderSyncScreen::default()
+    });
+    let mut harness = harness(app_data.path(), sync.clone());
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, "Turn on sync")
+            .is_none()
+    );
+    harness
+        .get_by_role_and_label(Role::Button, "Download Field notes")
+        .click();
+    harness.run();
+    assert_eq!(
+        sync.taken(),
+        vec![FolderSyncAction::DownloadHere(workspace)]
+    );
+    harness
+        .get_by_role_and_label(Role::Button, "Start a new workspace")
+        .click();
+    harness.run();
+    assert_eq!(sync.taken(), vec![FolderSyncAction::TurnOn]);
+}
+
+#[test]
 fn a_server_out_of_reach_says_so_and_asks_for_no_sign_in() {
     let app_data = tempfile::tempdir().unwrap();
     let sync = Arc::new(FakeSync::default());

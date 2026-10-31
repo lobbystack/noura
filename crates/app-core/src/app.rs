@@ -884,9 +884,11 @@ impl App {
                 self.show_notice(&title, error, Some(workspace_id));
             }
             (Err(error), Job::OpenFolder(_)) => {
+                self.folder_failed_to_open();
                 self.show_notice("Couldn't open the folder", error, None);
             }
             (Err(error), Job::Create { .. }) => {
+                self.folder_failed_to_open();
                 self.show_notice("Couldn't create the workspace", error, None);
             }
         }

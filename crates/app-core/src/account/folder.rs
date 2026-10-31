@@ -111,6 +111,8 @@ pub(super) struct Folder {
     live: Live,
     /// A round met the server's `unauthorized`, which the backend answers.
     session_ended: bool,
+    /// The workspaces of your account that this computer doesn't keep.
+    on_account: Vec<(sync_protocol::types::Id, String)>,
 }
 
 /// What a failed round or action tells you in the Workspace sync section.
@@ -145,6 +147,11 @@ fn attention(waiting: usize, moved_in: usize) -> Option<String> {
             "Files wait for you before they reach more people. Open Settings > Members to decide.".into(),
         ),
     }
+}
+
+/// Whether two workspace names read as one to you.
+fn same_name(left: &str, right: &str) -> bool {
+    left.trim().to_lowercase() == right.trim().to_lowercase()
 }
 
 fn short(id: &sync_protocol::types::Id) -> String {
@@ -259,6 +266,11 @@ impl Folder {
             },
             None if signed_in => FolderSyncScreen {
                 phase: FolderSyncPhase::Off,
+                on_account: if self.holds_no_files() {
+                    self.on_account.clone()
+                } else {
+                    Vec::new()
+                },
                 ..FolderSyncScreen::default()
             },
             None if reaching => FolderSyncScreen {
@@ -269,6 +281,21 @@ impl Folder {
         };
         screen.last_error = self.last_error.clone().or(self.text_problem.clone());
         screen
+    }
+
+    /// Whether the open workspace has no synced file yet.
+    fn holds_no_files(&self) -> bool {
+        self.engine.as_ref().is_some_and(|engine| {
+            engine
+                .synced_listing()
+                .is_ok_and(|listing| listing.files.is_empty())
+        })
+    }
+
+    /// Takes the workspaces of your account that this computer doesn't
+    /// keep, which an empty folder offers.
+    pub(super) fn set_on_account(&mut self, workspaces: Vec<(sync_protocol::types::Id, String)>) {
+        self.on_account = workspaces;
     }
 
     /// Takes the workspace the windows show, and opens its journal when
@@ -369,6 +396,18 @@ impl Folder {
             return Ok(());
         }
         let mut registry = Registry::open(app_data)?;
+        // Each workspace has one folder on a computer (§15).
+        let server = service.client().base().to_owned();
+        if let Some(entry) =
+            registry.of_workspace(&server, &service.credentials().account, &workspace)
+            && entry.folder.exists()
+            && !self.shows(&entry.folder)
+        {
+            return Err(SyncError::Invalid(format!(
+                "This computer keeps that workspace in {}. Open that folder.",
+                entry.folder.display()
+            )));
+        }
         // The folder you synced before connects to the workspace an owner
         // set up again (§14); it matches rather than downloads.
         let rejoining = registry
@@ -398,6 +437,7 @@ impl Folder {
         self.not_connected = false;
         self.account_lost = None;
         self.last_error = None;
+        self.on_account.clear();
         self.reset_held = self
             .workspace_of_folder(app_data)
             .is_some_and(|w| waits.contains(&w));
@@ -639,11 +679,32 @@ impl Folder {
                     }
                     _ => {
                         let name = engine.manifest().name;
+                        // A workspace your account has isn't made twice.
+                        let same = crate::sync::workspace::synced_workspaces(service)
+                            .await?
+                            .into_iter()
+                            .find(|(_, other)| same_name(other, &name));
+                        if let Some((workspace, other)) = same {
+                            if !self.holds_no_files() {
+                                return Err(SyncError::Invalid(format!(
+                                    "Your account already has a workspace named {other}. Download it into an empty folder from Settings > Sync account, or rename this workspace to keep both."
+                                )));
+                            }
+                            return self.download(service, workspace, app_data).await;
+                        }
                         WorkspaceSync::turn_on(service, engine, &name, &mut registry).await?
                     }
                 };
                 self.sync = Some(sync);
                 self.last_error = None;
+            }
+            FolderSyncAction::DownloadHere(workspace) => {
+                let Some(service) = service else {
+                    return Err(SyncError::Invalid(
+                        "Sign in to a sync account to download a workspace.".into(),
+                    ));
+                };
+                self.download(service, workspace, app_data).await?;
             }
             FolderSyncAction::TurnOff => {
                 if let Some(sync) = self.sync.take() {
