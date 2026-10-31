@@ -166,23 +166,40 @@ pub async fn track_commit_timestamp(url: &str) -> Result<bool, sqlx::Error> {
     Ok(row.setting == "on")
 }
 
-/// Raises the restore generation to the larger of the stored one plus 1
-/// and `floor` and returns the new generation.
-pub async fn raise_generation(url: &str, floor: u64) -> Result<u64, sqlx::Error> {
+/// In one transaction, raises the restore generation to the larger of the
+/// stored one plus 1 and `floor`, gives every completed blob that no
+/// operation lists until `blobs_until`, so no collector takes one before
+/// the check against the blob store reaches it, and returns the new
+/// generation.
+pub async fn raise_generation(url: &str, floor: u64, blobs_until: u64) -> Result<u64, sqlx::Error> {
     let floor = i64::try_from(floor)
         .map_err(|_| sqlx::Error::Protocol("the restore generation exceeds a BIGINT".into()))?;
+    let blobs_until = i64::try_from(blobs_until)
+        .map_err(|_| sqlx::Error::Protocol("the blob expiry exceeds a BIGINT".into()))?;
     let mut connection = connect(url).await?;
+    let mut transaction = connection.begin().await?;
     let row = sqlx::query!(
         "UPDATE server SET restore_generation = GREATEST(restore_generation + 1, $1)
          WHERE id = 1 RETURNING restore_generation",
         floor
     )
-    .fetch_one(&mut connection)
+    .fetch_one(&mut *transaction)
+    .await?;
+    sqlx::query!(
+        "UPDATE blobs SET delete_after = $1
+         WHERE complete AND NOT marked AND NOT EXISTS (
+           SELECT 1 FROM blob_listings l
+           WHERE l.workspace = blobs.workspace AND l.blob = blobs.blob
+         )",
+        blobs_until
+    )
+    .execute(&mut *transaction)
     .await?;
     // The caller checked that no lease is live.
     sqlx::query("DELETE FROM instances")
-        .execute(&mut connection)
+        .execute(&mut *transaction)
         .await?;
+    transaction.commit().await?;
     connection.close().await?;
     u64::try_from(row.restore_generation)
         .map_err(|_| sqlx::Error::Protocol("the stored restore generation is negative".into()))

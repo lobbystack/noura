@@ -235,19 +235,33 @@ pub async fn raise_generation(
 ) -> Result<u64, sqlx::Error> {
     let floor = i64::try_from(floor)
         .map_err(|_| sqlx::Error::Protocol("the restore generation exceeds an INTEGER".into()))?;
+    let blobs_until = i64::try_from(blobs_until)
+        .map_err(|_| sqlx::Error::Protocol("the blob expiry exceeds an INTEGER".into()))?;
     let mut connection = connect(path, false).await?;
+    let mut transaction = connection.begin().await?;
     let row = sqlx::query!(
         "UPDATE server SET restore_generation = MAX(restore_generation + 1, ?1), backup_stamp = 0
          WHERE id = 1 RETURNING restore_generation",
         floor
     )
-    .fetch_one(&mut connection)
+    .fetch_one(&mut *transaction)
+    .await?;
+    sqlx::query!(
+        "UPDATE blobs SET delete_after = ?1
+         WHERE complete = 1 AND marked = 0 AND NOT EXISTS (
+           SELECT 1 FROM blob_listings l
+           WHERE l.workspace = blobs.workspace AND l.blob = blobs.blob
+         )",
+        blobs_until
+    )
+    .execute(&mut *transaction)
     .await?;
     // The caller checked that no lease is live: what remains came with a
     // copy, and a crashed instance's lease ended.
     sqlx::query("DELETE FROM instances")
-        .execute(&mut connection)
+        .execute(&mut *transaction)
         .await?;
+    transaction.commit().await?;
     connection.close().await?;
     u64::try_from(row.restore_generation)
         .map_err(|_| sqlx::Error::Protocol("the stored restore generation is negative".into()))

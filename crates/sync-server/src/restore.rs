@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use sync_protocol::ids::secret_check;
 use sync_protocol::types::{Id, SecretKey, from_hex};
-use sync_store::{Backend, Store};
+use sync_store::{Backend, Store, UPLOAD_TTL};
 use sync_store_postgres::PgBackend;
 use sync_store_sqlite::SqliteBackend;
 
@@ -84,7 +84,7 @@ fn sync_parent(path: &Path) -> Result<(), CommandError> {
 }
 
 /// What `restore` and `mark-restored` did.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Restored {
     /// The new restore generation.
     pub generation: u64,
@@ -278,7 +278,7 @@ pub async fn restore(
     let _ = fs::remove_file(&incoming);
     fs::copy(from, &incoming).map_err(|e| fail(format!("can't copy the backup: {e}")))?;
     let floor = unix_now().max(previous.map_or(0, |g| g.saturating_add(1)));
-    let generation = sync_store_sqlite::raise_generation(&incoming, floor)
+    let generation = sync_store_sqlite::raise_generation(&incoming, floor, unix_now() + UPLOAD_TTL)
         .await
         .map_err(|e| fail(format!("can't raise the restore generation: {e}")))?;
     fs::File::open(&incoming)
@@ -361,9 +361,10 @@ pub async fn mark_restored(
         .list()
         .await
         .map_err(|e| fail(format!("can't list the blob store: {e}")))?;
-    let generation = sync_store_sqlite::raise_generation(&database, unix_now())
-        .await
-        .map_err(|e| fail(format!("can't raise the restore generation: {e}")))?;
+    let generation =
+        sync_store_sqlite::raise_generation(&database, unix_now(), unix_now() + UPLOAD_TTL)
+            .await
+            .map_err(|e| fail(format!("can't raise the restore generation: {e}")))?;
     raised(generation);
     let backend = SqliteBackend::open(&database)
         .await
@@ -412,9 +413,10 @@ pub async fn mark_restored_postgres(
         .list()
         .await
         .map_err(|e| fail(format!("can't list the blob store: {e}")))?;
-    let generation = sync_store_postgres::raise_generation(&postgres.url, unix_now())
-        .await
-        .map_err(|e| fail(format!("can't raise the restore generation: {e}")))?;
+    let generation =
+        sync_store_postgres::raise_generation(&postgres.url, unix_now(), unix_now() + UPLOAD_TTL)
+            .await
+            .map_err(|e| fail(format!("can't raise the restore generation: {e}")))?;
     raised(generation);
     let backend = PgBackend::open(&postgres.url)
         .await

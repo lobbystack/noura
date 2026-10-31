@@ -576,3 +576,53 @@ async fn a_pull_on_one_instance_wakes_when_another_commits_and_only_then() {
     assert_eq!(entries.len(), 1);
     assert!(matches!(&entries[0].record, EntryRecord::Operation(op) if *op == good));
 }
+
+/// Raising the restore generation gives each completed blob no operation
+/// lists its fresh time in the same transaction, and leaves listed, marked
+/// and incomplete blobs alone (§19).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn raising_the_generation_refreshes_unlisted_blobs() {
+    let cluster = Cluster::shared(tmp());
+    let database = migrated(&cluster).await;
+    let mut connection = PgConnection::connect(&database.url)
+        .await
+        .expect("connected");
+    let workspace = &[7u8; 16][..];
+    for (blob, complete, marked) in [
+        (1u8, true, false),
+        (2, true, false),
+        (3, true, true),
+        (4, false, false),
+    ] {
+        sqlx::query(
+            "INSERT INTO blobs (workspace, blob, domain, device, length, digest, upload_offset,
+                                complete, delete_after, marked, live_listings)
+             VALUES ($1, $2, $1, $1, 4096, $1, 0, $3, 5, $4, 0)",
+        )
+        .bind(workspace)
+        .bind(&[blob; 16][..])
+        .bind(complete)
+        .bind(marked)
+        .execute(&mut connection)
+        .await
+        .expect("a blob");
+    }
+    sqlx::query("INSERT INTO blob_listings (workspace, blob, domain, seq) VALUES ($1, $2, $1, 1)")
+        .bind(workspace)
+        .bind(&[2u8; 16][..])
+        .execute(&mut connection)
+        .await
+        .expect("a listing");
+
+    sync_store_postgres::raise_generation(&database.url, 1, 900)
+        .await
+        .expect("raised");
+
+    let rows: Vec<(Vec<u8>, Option<i64>)> =
+        sqlx::query_as("SELECT blob, delete_after FROM blobs ORDER BY blob")
+            .fetch_all(&mut connection)
+            .await
+            .expect("read");
+    let times: Vec<_> = rows.into_iter().map(|(_, at)| at).collect();
+    assert_eq!(times, vec![Some(900), Some(5), Some(5), Some(5)]);
+}

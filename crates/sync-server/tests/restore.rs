@@ -181,6 +181,13 @@ async fn backup_takes_a_bare_file_name_and_leaves_nothing_when_it_fails() {
     assert!(!root.path().join("b.sqlite3.partial").exists());
     assert!(!copy.exists());
 
+    std::fs::remove_file(&secret).expect("removed");
+    let done = backup();
+    assert!(done.status.success(), "{}", stderr(&done));
+    assert!(copy.exists() && secret.exists());
+    assert!(!root.path().join("b.sqlite3.partial").exists());
+}
+
 /// A database too damaged to read holds no lease anyone can see, so
 /// `restore` keeps it under a side name and takes the backup in its place.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -214,6 +221,60 @@ async fn restore_sets_a_damaged_database_aside() {
             .status
             .is_success()
     );
+}
+
+/// By the time a restore reports its generation, a blob no operation lists
+/// has its fresh 24 hours, so a `serve` started at that moment collects
+/// nothing the check would have kept (§19).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unlisted_blobs_are_safe_when_the_generation_rises() {
+    let (root, data) = fresh();
+    let path = db_file(&data);
+    let row = Row::new(5);
+    row.store(&disk(&data)).await;
+    row.insert(&path, false).await;
+    let stale = unix_now() as i64 - 3_600;
+    set_delete_after(&path, row.blob, stale).await;
+    let copy = root.path().join("copy.sqlite3");
+    let output = command(&["backup", "--to", text(&copy)], &data);
+    assert!(output.status.success(), "{}", stderr(&output));
+
+    let at_raise = |data: &Path, blob| {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(blob_state(data, blob))
+        })
+    };
+    let store = sync_server::BlobStoreConfig::Disk;
+    let mut seen = None;
+    sync_server::restore::restore(&data, &copy, None, &store, |_| {
+        seen = Some(at_raise(&data, row.blob));
+    })
+    .await
+    .expect("restored");
+    let after = |state: Option<(i64, i64, Option<i64>)>| {
+        state.expect("reported").2.expect("a time") > unix_now() as i64
+    };
+    assert!(after(seen), "restore");
+
+    set_delete_after(&path, row.blob, stale).await;
+    let mut seen = None;
+    sync_server::restore::mark_restored(&data, &store, |_| {
+        seen = Some(at_raise(&data, row.blob));
+    })
+    .await
+    .expect("marked");
+    assert!(after(seen), "mark-restored");
+}
+
+async fn set_delete_after(path: &Path, blob: Id, at: i64) {
+    let mut connection = database(path).await;
+    sqlx::query("UPDATE blobs SET delete_after = ?1 WHERE blob = ?2")
+        .bind(at)
+        .bind(&blob.0[..])
+        .execute(&mut connection)
+        .await
+        .expect("updated");
+    connection.close().await.expect("closed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
