@@ -31,7 +31,7 @@ pub enum SkipWhy {
     NotDownloaded,
     /// Another file shares its frontmatter ID (`identity_conflict`).
     IdentityConflict,
-    /// The file is above 256 KiB, which attachments sync (ticket 49).
+    /// The file is above the 2 GiB limit of a blob (§21).
     TooLarge,
     /// The file sits beneath a local `.noura-domain` file found without a
     /// journal, and waits until you confirm where it goes (§9).

@@ -343,7 +343,7 @@ pub fn skipped_line(skipped: &crate::sync::workspace::Skipped) -> String {
         SkipWhy::Unreadable => "Noura can't read it",
         SkipWhy::NotDownloaded => "it isn't downloaded from the cloud yet",
         SkipWhy::IdentityConflict => "another file has the same ID",
-        SkipWhy::TooLarge => "files above 256 KB sync once attachments arrive",
+        SkipWhy::TooLarge => "it's above the limit of 2 GiB for one file",
         SkipWhy::HeldRoot => "it waits until you confirm who may see this folder",
         SkipWhy::CrossesRoot => "it moved into or out of a restricted folder",
         SkipWhy::CantWrite => "your role can't edit here, so your change stays on this computer",
@@ -354,6 +354,21 @@ pub fn skipped_line(skipped: &crate::sync::workspace::Skipped) -> String {
         skipped.path.as_str()
     };
     format!("{path}: {why}")
+}
+
+#[cfg(test)]
+mod skipped_tests {
+    use super::*;
+    use crate::sync::workspace::Skipped;
+
+    #[test]
+    fn a_file_above_the_limit_names_the_limit() {
+        let line = skipped_line(&Skipped {
+            path: "Film.mov".into(),
+            why: SkipWhy::TooLarge,
+        });
+        assert_eq!(line, "Film.mov: it's above the limit of 2 GiB for one file");
+    }
 }
 
 /// Unix seconds as local date and time, such as `2026-10-24 14:05`.
