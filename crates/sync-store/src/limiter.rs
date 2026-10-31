@@ -1,8 +1,8 @@
 //! The limiter behind the rate limits of §26: a fixed-window counter per
 //! key and window length, so two limits on one key count apart. SQLite mode runs one instance, so [`MemoryLimiter`] keeps its
 //! counters in memory; PostgreSQL mode keeps them in the database, so a
-//! limit used up through one instance also holds on the others. Ticket 52
-//! applies limits to sign-in and sync.
+//! limit used up through one instance also holds on the others. The sync
+//! server's `rate` module applies them to sign-in and sync.
 //!
 //! Windows start at multiples of their length since the Unix epoch, so every
 //! instance that shares a clock agrees on them.

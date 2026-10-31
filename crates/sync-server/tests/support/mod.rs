@@ -39,7 +39,14 @@ pub struct Server {
 impl Server {
     /// Starts `serve` on a free loopback port and waits until it listens.
     pub fn start(data: &Path) -> Self {
-        Self::start_with(Command::new(BIN).arg("serve").arg("--data").arg(data))
+        // Tests push faster than one device may.
+        Self::start_with(
+            Command::new(BIN)
+                .arg("serve")
+                .arg("--data")
+                .arg(data)
+                .env("NOURA_RATE_PUSHES_PER_SECOND", "100000"),
+        )
     }
 
     /// Starts a prepared `serve` command.

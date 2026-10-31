@@ -10,6 +10,7 @@ Use these guides to run Noura, understand its file-backed workspace, and contrib
 - **Understand AI access**: read about [provider consent, tool approval, and chat persistence](architecture/ai-runtime.md)
 - **Publish a release**: follow the [release guide](releasing.md) to ship signed installers and updates
 - **Run the sync service**: follow [server setup](../apps/server/README.md), then the [operations guide](../apps/server/OPERATIONS.md)
+- **Host the Rust sync server**: follow the [self-hosting guide](self-hosting.md)
 
 ## Workspace format references
 

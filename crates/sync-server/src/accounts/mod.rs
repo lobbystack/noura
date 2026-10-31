@@ -495,7 +495,10 @@ async fn device_decide<B: Backend>(
 /// Sets the content security policy and the other page headers on every
 /// account response.
 async fn page_headers(request: Request, next: Next) -> Response {
-    let mut response = next.run(request).await;
+    with_page_headers(next.run(request).await)
+}
+
+fn with_page_headers(mut response: Response) -> Response {
     let headers = response.headers_mut();
     headers.insert(
         CONTENT_SECURITY_POLICY,
@@ -511,6 +514,33 @@ async fn page_headers(request: Request, next: Next) -> Response {
         .entry(CACHE_CONTROL)
         .or_insert(HeaderValue::from_static("no-store"));
     response
+}
+
+/// The refusal of a sign-in request on an account route: JSON for a passkey
+/// ceremony, and a page for a form.
+pub(crate) fn too_many_sign_ins(route: &str, retry_after: std::time::Duration) -> Response {
+    let seconds = retry_after.as_secs().max(1);
+    let status = StatusCode::TOO_MANY_REQUESTS;
+    let mut response = if route.starts_with("/account/passkeys/") {
+        json_reply(
+            status,
+            json!({
+                "error": "rate_limited",
+                "message": "Too many sign-in attempts. Wait a minute, then try again.",
+                "retry_after_seconds": seconds,
+            }),
+        )
+    } else {
+        message(
+            status,
+            "Too many sign-in attempts",
+            "Wait a minute, then try again.",
+        )
+    };
+    response
+        .headers_mut()
+        .insert(axum::http::header::RETRY_AFTER, HeaderValue::from(seconds));
+    with_page_headers(response)
 }
 
 fn html(status: StatusCode, page: &impl Template) -> Response {

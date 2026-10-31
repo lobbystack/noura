@@ -266,6 +266,11 @@ async fn patch<B: Backend>(
             let bytes = body.freeze();
             let len = bytes.len() as u64;
             Store::<B>::check_segment(&upload.row, offset, len)?;
+            let limiter = state.store.backend().limiter();
+            state
+                .rate
+                .take_upload(&*limiter, session.device, len)
+                .await?;
             let hash = sync_protocol::crypto::hash(&bytes);
             let index = offset / SEGMENT;
             // The segment reaches durable storage before the store records

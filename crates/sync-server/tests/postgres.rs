@@ -449,6 +449,9 @@ async fn serve_reaches_a_postgres_that_requires_tls() {
 
 /// Two `serve` instances on one migrated database, and an account of
 /// `devices` devices written through a third.
+/// The tests of two instances push far faster than one device may.
+const PUSHES: &str = "NOURA_RATE_PUSHES_PER_SECOND";
+
 async fn two_instances(
     devices: usize,
 ) -> (Server, Server, Account, TestDatabase, tempfile::TempDir) {
@@ -462,18 +465,24 @@ async fn two_instances(
     .expect("the store opens");
     let account = seed_store(&store, devices).await;
     sync_store::Backend::close(store.backend()).await;
-    let first = Server::start_with(&mut postgres(
-        &["serve"],
-        &root.path().join("first"),
-        &database.url,
-        Some(&secret),
-    ));
-    let second = Server::start_with(&mut postgres(
-        &["serve"],
-        &root.path().join("second"),
-        &database.url,
-        Some(&secret),
-    ));
+    let first = Server::start_with(
+        postgres(
+            &["serve"],
+            &root.path().join("first"),
+            &database.url,
+            Some(&secret),
+        )
+        .env(PUSHES, "100000"),
+    );
+    let second = Server::start_with(
+        postgres(
+            &["serve"],
+            &root.path().join("second"),
+            &database.url,
+            Some(&secret),
+        )
+        .env(PUSHES, "100000"),
+    );
     (first, second, account, database, root)
 }
 
