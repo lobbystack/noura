@@ -2770,7 +2770,7 @@ impl WorkspaceSync {
                     // pulls, and a file's version waits for review (§14).
                     let rejected = self.state.outbox.remove(index);
                     self.forget_own(&rejected.record);
-                    self.keep_local(&rejected.record, false);
+                    self.hold_uncovered_edit(&rejected.record);
                     return self.reseal_replacing_or_end(index, &rejected.record);
                 }
                 self.recover(index, kept)
@@ -2903,6 +2903,30 @@ impl WorkspaceSync {
                 .max_by_key(|key| object.states.get(key).and_then(|s| s.seq).unwrap_or(0));
         }
         object.cover_all |= cover_all;
+    }
+
+    /// Keeps a refused record's change in its file, for review when the
+    /// state it started from is gone from the server.
+    fn hold_uncovered_edit(&mut self, record: &Signed<Operation>) {
+        let rid = record.body.rid;
+        let file = self
+            .state
+            .objects
+            .get(&rid)
+            .filter(|object| object.text.is_none())
+            .and_then(|object| object.local.clone());
+        match file {
+            Some(local) => {
+                self.state.held.insert(
+                    rid,
+                    Held {
+                        path: local.path,
+                        revision: local.revision,
+                    },
+                );
+            }
+            None => self.keep_local(record, false),
+        }
     }
 
     /// The server has no space for the outbox's record at `index`: the
@@ -3163,10 +3187,13 @@ impl WorkspaceSync {
             device: record.body.device,
             counter: record.body.counter,
         };
+        // The file goes back to the state the record started from, so a
+        // version that arrived meanwhile stays a version of its own (§16).
+        let started = self.base_of(&record.body.rid, &key);
         if let Some(object) = self.state.objects.get_mut(&record.body.rid) {
             object.states.remove(&key);
             if object.base == Some(key) {
-                object.base = None;
+                object.base = started;
             }
         }
         self.recount_own(&record.body.rid);

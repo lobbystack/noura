@@ -10,6 +10,7 @@ use std::time::Duration;
 use app_core::sync::SyncError;
 use app_core::sync::recovery::{Recovery, open_kit};
 use app_core::sync::workspace::WorkspaceSync;
+use app_core::sync::workspace::rebuild::HeldChoice;
 use sync_protocol::codec::{Bytes, Decode, Encode, Sorted, Text};
 use sync_protocol::messages::{CursorCompactedDetail, ErrorBody, Page, PageStatus, PullResponse};
 use sync_store::{Backend, Retention};
@@ -470,9 +471,9 @@ async fn a_false_compaction_is_caught<B: Backend>(server: Server<B>) {
     assert_eq!(pair.a.files(), pair.b.files());
 }
 
-/// A writer whose cover names a pruned operation drops that cover on
-/// `supersedes_unknown` (§19): its edit still lands, as a conflict with the
-/// version it never saw.
+/// A writer whose every cover names a pruned operation can't sign an edit
+/// that leaves the version it never saw live (§14, §19), so its edit waits
+/// for your choice and overwrites nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cover_of_a_pruned_operation_goes_on_supersedes_unknown() {
     let mut pair = ready(Server::start_with_retention(ENTRIES, keep_little()).await).await;
@@ -500,11 +501,57 @@ async fn a_cover_of_a_pruned_operation_goes_on_supersedes_unknown() {
     for _ in 0..3 {
         both_rounds(&mut pair).await;
     }
-    assert_eq!(pair.sync_a.status().pending, 0, "the edit went out");
-    assert!(
-        pair.sync_b.status().conflicts >= 1 || pair.a.files() == pair.b.files(),
-        "the two versions meet"
-    );
+    assert_eq!(pair.sync_a.status().pending, 0, "nothing waits to go out");
+    assert_eq!(pair.a.files()["Note.md"], b"# Note from the laptop\n");
+    assert_eq!(pair.b.files()["Note.md"], b"# Desktop 23\n");
+    let (rid, path) = pair.sync_a.held().pop().expect("the edit waits for you");
+    assert_eq!(path, "Note.md");
+
+    pair.sync_a
+        .resolve_held(rid, HeldChoice::KeepMine)
+        .expect("you keep this computer's version");
+    both_rounds(&mut pair).await;
+    assert_eq!(pair.b.files()["Note.md"], b"# Note from the laptop\n");
+    assert_eq!(pair.sync_a.status().held, 0);
+}
+
+/// An edit the server keeps refusing for space keeps the version it started
+/// from. A version that arrived meanwhile stays a conflict, however many
+/// times the edit goes back, and neither replaces the other (§16, §20).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_edit_refused_again_and_again_overwrites_no_other_version() {
+    let mut pair = ready(Server::start_with_retention(1_000_000, quota(64 * 1024)).await).await;
+    let big = noise(40 * 1024);
+    pair.a.write("Filler.md", &big);
+    pair.a.write("Plan.md", b"# Plan\n");
+    both_rounds(&mut pair).await;
+
+    pair.a.write("Plan.md", &big);
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a refused record doesn't fail the round");
+    pair.b.write("Plan.md", b"# Plan from the desktop\n");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("a round on the desktop");
+    for _ in 0..3 {
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("a refused record doesn't fail the round");
+    }
+    assert_eq!(pair.sync_a.status().waiting_for_space, 1);
+
+    std::fs::remove_file(pair.a.path("Filler.md")).expect("removed");
+    for _ in 0..3 {
+        both_rounds(&mut pair).await;
+    }
+    assert_eq!(pair.a.files()["Plan.md"], big);
+    assert_eq!(pair.b.files()["Plan.md"], b"# Plan from the desktop\n");
+    assert_eq!(pair.sync_a.status().conflicts, 1);
+    assert_eq!(pair.sync_b.status().conflicts, 1);
 }
 
 async fn a_reader_keeps_up_with_old_cursors<B: Backend>(server: Server<B>) {

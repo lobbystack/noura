@@ -489,8 +489,8 @@ impl WorkspaceSync {
 
     /// The state operation `key` started from: the latest one in the
     /// journal that its covers name.
-    fn base_of(&self, rid: &Id, key: &OpKey) -> Option<OpKey> {
-        let object = &self.state.objects[rid];
+    pub(super) fn base_of(&self, rid: &Id, key: &OpKey) -> Option<OpKey> {
+        let object = self.state.objects.get(rid)?;
         let covers = &object.states.get(key)?.covers;
         object
             .states
@@ -501,7 +501,9 @@ impl WorkspaceSync {
                     .iter()
                     .any(|c| c.device == other.device && other.counter <= c.counter)
             })
-            .max_by_key(|(_, info)| info.seq.unwrap_or(0))
+            // A record of this device on its way has no sequence yet and
+            // comes after what the log holds.
+            .max_by_key(|(_, info)| info.seq.unwrap_or(u64::MAX))
             .map(|(other, _)| *other)
     }
 
