@@ -1030,12 +1030,99 @@ impl ReadTxn for PgTxn {
         .transpose()
     }
 
+    async fn blob_rows(
+        &mut self,
+        after: Option<(Id, Id)>,
+        limit: u32,
+    ) -> Result<Vec<(Id, BlobRow)>> {
+        let (workspace, blob) = after.unwrap_or((Id([0; 16]), Id([0; 16])));
+        let started = after.is_some();
+        let workspace = &workspace.0[..];
+        let blob = &blob.0[..];
+        let limit = i64::from(limit);
+        let rows = sqlx::query!(
+            r#"SELECT workspace AS "workspace!", blob AS "blob!", domain, device, length, digest,
+                      upload_offset, complete, delete_after, marked, live_listings
+               FROM blobs
+               WHERE NOT $1 OR (workspace, blob) > ($2, $3)
+               ORDER BY workspace, blob LIMIT $4"#,
+            started,
+            workspace,
+            blob,
+            limit
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|r| {
+                Ok((
+                    id(r.workspace)?,
+                    BlobRow {
+                        blob: id(r.blob)?,
+                        domain: id(r.domain)?,
+                        device: id(r.device)?,
+                        length: uint(r.length)?,
+                        digest: digest(r.digest)?,
+                        offset: uint(r.upload_offset)?,
+                        complete: r.complete,
+                        delete_after: r.delete_after.map(uint).transpose()?,
+                        marked: r.marked,
+                        live_listings: uint(r.live_listings)?,
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    async fn missing_blobs(&mut self, workspace: Id) -> Result<Vec<Id>> {
+        let workspace = &workspace.0[..];
+        let rows = sqlx::query!(
+            r#"SELECT blob AS "blob!" FROM blobs AS b
+               WHERE b.workspace = $1 AND NOT b.complete AND NOT b.marked AND EXISTS (
+                 SELECT 1 FROM blob_listings AS l
+                 WHERE l.workspace = b.workspace AND l.blob = b.blob
+               )
+               ORDER BY blob"#,
+            workspace
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter().map(|r| id(r.blob)).collect()
+    }
+
+    async fn reset_code(&mut self, account: Id) -> Result<Option<(Digest, u64)>> {
+        let account = &account.0[..];
+        let row = sqlx::query!(
+            "SELECT code_hash, expires_at FROM reset_codes WHERE account = $1",
+            account
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| Ok((digest(r.code_hash)?, uint(r.expires_at)?)))
+            .transpose()
+    }
+
+    async fn live_instances(&mut self, now: u64) -> Result<Vec<Id>> {
+        let now = at_most(now);
+        let rows = sqlx::query!(
+            r#"SELECT instance AS "instance!" FROM instances WHERE lease_until > $1"#,
+            now
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter().map(|r| id(r.instance)).collect()
+    }
+
     async fn workspace(&mut self, workspace: Id) -> Result<Option<WorkspaceRow>> {
         let workspace = &workspace.0[..];
         let row = sqlx::query!(
             "SELECT owner, creation_digest, creation_response, policy_revision, policy_head,
                     quota_pressure, quota_crossings
-             FROM workspaces WHERE workspace = $1",
+             FROM workspaces WHERE workspace = $1 AND closed = 0",
             workspace
         )
         .fetch_optional(self.c())
@@ -1061,7 +1148,7 @@ impl ReadTxn for PgTxn {
     async fn owned_workspaces(&mut self, account: Id) -> Result<u64> {
         let account = &account.0[..];
         let row = sqlx::query!(
-            r#"SELECT COUNT(*) AS "count!" FROM workspaces WHERE owner = $1"#,
+            r#"SELECT COUNT(*) AS "count!" FROM workspaces WHERE owner = $1 AND closed = 0"#,
             account
         )
         .fetch_one(self.c())
@@ -3919,6 +4006,11 @@ impl WriteTxn for PgTxn {
     async fn delete_expired(&mut self, now: u64) -> Result<u64> {
         let now = at_most(now);
         let mut deleted = 0;
+        deleted += sqlx::query!("DELETE FROM reset_codes WHERE expires_at <= $1", now)
+            .execute(self.c())
+            .await
+            .map_err(db)?
+            .rows_affected();
         deleted += sqlx::query!("DELETE FROM magic_links WHERE expires_at <= $1", now)
             .execute(self.c())
             .await
@@ -4029,6 +4121,103 @@ impl WriteTxn for PgTxn {
         .execute(self.c())
         .await
         .map_err(db)?;
+        Ok(())
+    }
+
+    async fn reset_blob(
+        &mut self,
+        workspace: Id,
+        blob: Id,
+        delete_after: Option<u64>,
+    ) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let blob = &blob.0[..];
+        let delete_after = delete_after.map(at_most);
+        sqlx::query!(
+            "DELETE FROM blob_segments WHERE workspace = $1 AND blob = $2",
+            workspace,
+            blob
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        sqlx::query!(
+            "UPDATE blobs SET upload_offset = 0, complete = FALSE, delete_after = $3
+             WHERE workspace = $1 AND blob = $2",
+            workspace,
+            blob,
+            delete_after
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn put_reset_code(&mut self, account: Id, hash: Digest, expires_at: u64) -> Result<()> {
+        let account = &account.0[..];
+        let hash = &hash.0[..];
+        let expires_at = at_most(expires_at);
+        sqlx::query!(
+            "INSERT INTO reset_codes (account, code_hash, expires_at) VALUES ($1, $2, $3)
+             ON CONFLICT (account) DO UPDATE
+             SET code_hash = excluded.code_hash, expires_at = excluded.expires_at",
+            account,
+            hash,
+            expires_at
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn take_reset_code(&mut self, account: Id) -> Result<()> {
+        let account = &account.0[..];
+        sqlx::query!("DELETE FROM reset_codes WHERE account = $1", account)
+            .execute(self.c())
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    async fn close_workspace(&mut self, workspace: Id) -> Result<()> {
+        let workspace = &workspace.0[..];
+        sqlx::query!(
+            "UPDATE workspaces SET closed = 1 WHERE workspace = $1",
+            workspace
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        sqlx::query!("DELETE FROM members WHERE workspace = $1", workspace)
+            .execute(self.c())
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    async fn hold_lease(&mut self, instance: Id, until: u64) -> Result<()> {
+        let instance = &instance.0[..];
+        let until = at_most(until);
+        sqlx::query!(
+            "INSERT INTO instances (instance, lease_until) VALUES ($1, $2)
+             ON CONFLICT (instance) DO UPDATE SET lease_until = excluded.lease_until",
+            instance,
+            until
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn drop_lease(&mut self, instance: Id) -> Result<()> {
+        let instance = &instance.0[..];
+        sqlx::query!("DELETE FROM instances WHERE instance = $1", instance)
+            .execute(self.c())
+            .await
+            .map_err(db)?;
         Ok(())
     }
 

@@ -222,6 +222,21 @@ pub fn fixture() -> Fixture {
         "mismatch",
     ));
     let _ = floor_falls;
+    // A rewind (§14): the restore lost the fourth checkpoint, and a rewound
+    // writer signs another at its number, over what the log holds now. A
+    // device that kept the lost one in its chain can't take it.
+    let mut rewound = chain[3].body.clone();
+    rewound.covered_seq += 7;
+    let rewound = Signed::sign(rewound, w.alice_laptop.keys.signing());
+    f.case(check(
+        "a_rewound_writers_checkpoint_takes_a_lost_ones_number",
+        &rewound,
+        "ok",
+    ));
+    let kept_lost: Vec<String> = chain[..4].iter().map(|c| to_hex(&c.to_bytes())).collect();
+    let mut kept = check("a_chain_that_kept_the_lost_checkpoint", &rewound, "link");
+    kept["accepted"] = json!(kept_lost);
+    f.case(kept);
 
     server_checks(&mut f);
     server_heads(&mut f);

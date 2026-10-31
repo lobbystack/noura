@@ -113,6 +113,46 @@
 			"name": "local_markers_other_than_applied_ones_hold_their_folders"
 		},
 		{
+			"applied": [],
+			"expect": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Pay"
+				},
+				{
+					"domain": "d1d8472de6d496006f2eccf0b34d283d",
+					"folder": "Pay/Deep"
+				}
+			],
+			"kind": "held_roots",
+			"locals": [
+				{
+					"domain": "94ea3d5bad51f59ef16d365a29005a42",
+					"folder": "Pay"
+				},
+				{
+					"domain": "d1d8472de6d496006f2eccf0b34d283d",
+					"folder": "Pay/Deep"
+				}
+			],
+			"name": "set_up_sync_again_holds_every_folder_under_an_old_marker"
+		},
+		{
+			"expect": false,
+			"held": {
+				"domain": "94ea3d5bad51f59ef16d365a29005a42",
+				"folder": "Pay"
+			},
+			"kind": "hold_ends",
+			"name": "a_new_workspaces_domain_at_the_folder_doesnt_end_an_old_domains_hold",
+			"roots": [
+				{
+					"domain": "d1d8472de6d496006f2eccf0b34d283d",
+					"folder": "Pay"
+				}
+			]
+		},
+		{
 			"expect": false,
 			"held": {
 				"domain": "d1d8472de6d496006f2eccf0b34d283d",

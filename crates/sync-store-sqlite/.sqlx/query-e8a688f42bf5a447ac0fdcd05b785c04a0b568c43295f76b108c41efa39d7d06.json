@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE server SET restore_generation = MAX(restore_generation + 1, ?1), backup_stamp = 0\n         WHERE id = 1 RETURNING restore_generation",
+  "describe": {
+    "columns": [
+      {
+        "name": "restore_generation",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "server",
+            "name": "restore_generation"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e8a688f42bf5a447ac0fdcd05b785c04a0b568c43295f76b108c41efa39d7d06"
+}

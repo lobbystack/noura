@@ -19,7 +19,7 @@
 //! other devices trust the workspace too (§8).
 
 use sync_protocol::codec::{Encode, Nested, Sorted};
-use sync_protocol::messages::ApprovalRequest;
+use sync_protocol::messages::{ApprovalRequest, Pending};
 use sync_protocol::policy::PolicyChain;
 use sync_protocol::records::{
     AccountHead, Anchor, Card, Offer, PolicyKind, Role, Signed, approval_code, approval_code_text,
@@ -101,6 +101,17 @@ pub struct InvitedRequest {
     pub role: Role,
 }
 
+/// The invitation ID that marks an approval as a reset's, whose commit is
+/// an `accept_reset` rather than an `add_member`.
+pub const RESET: Id = Id([0; 16]);
+
+impl InvitedCandidate {
+    /// Whether you confirmed the code.
+    pub fn confirmed(&self) -> bool {
+        self.confirmed
+    }
+}
+
 impl SyncService {
     /// Posts this device's approval request for the invitation `opened`
     /// (§10, §11): a commitment to a fresh nonce and to the head of its
@@ -134,6 +145,54 @@ impl SyncService {
             offer: None,
             confirmed: false,
         })
+    }
+
+    /// Posts the approval request of a reset account's device for
+    /// `workspace` (§7, §10), which carries its new account head. It
+    /// answers like an invited request, with an owner or admin as the
+    /// approver.
+    pub async fn request_reset_approval(
+        &mut self,
+        workspace: Id,
+    ) -> Result<InvitedCandidate, SyncError> {
+        let head = self.own_chain().await?.head();
+        let card = self.credentials.card();
+        let nc = random_key()?;
+        let commit = approval_commit(&card.fingerprint(), Some(&head), &nc);
+        self.client
+            .post_approval_request(&ApprovalRequest {
+                commit,
+                account: Some(head.clone()),
+                invitation: None,
+                invite_proof: None,
+                workspace: Some(workspace),
+            })
+            .await?;
+        Ok(InvitedCandidate {
+            workspace,
+            invitation: RESET,
+            inviter_fingerprint: Digest::ZERO,
+            head,
+            nc,
+            commit,
+            offer: None,
+            confirmed: false,
+        })
+    }
+
+    /// The reset requests pending in `workspace`, for an owner or admin
+    /// device (§7). They answer through [`Self::offer_invited`].
+    pub async fn reset_requests(
+        &mut self,
+        workspace: Id,
+    ) -> Result<Vec<InvitedRequest>, SyncError> {
+        let pending = self.client.workspace_pending_devices(workspace).await?;
+        Ok(pending
+            .pending
+            .0
+            .into_iter()
+            .filter_map(|entry| reset_request(entry, workspace))
+            .collect())
     }
 
     /// Looks for offers that name `candidate`'s commitment. The first one
@@ -171,8 +230,10 @@ impl SyncService {
                         &candidate.nc,
                     )
                     .map_err(|_| mismatch())?;
-                    let from_inviter =
-                        body.approver_card.0.fingerprint() == candidate.inviter_fingerprint;
+                    // A reset takes any owner or admin; the code you
+                    // compare and the commit's check decide.
+                    let from_inviter = candidate.invitation == RESET
+                        || body.approver_card.0.fingerprint() == candidate.inviter_fingerprint;
                     let anchors_one = body.anchors.len() == 1
                         && body
                             .anchors
@@ -237,7 +298,13 @@ impl SyncService {
         if policy.workspace() != workspace {
             return Err(SyncError::Check("sync_workspace_unverified"));
         }
-        if !check_add_member(&policy, &anchor, &offer.body, candidate)? {
+        if !check_add_member(
+            &policy,
+            &anchor,
+            &offer.body,
+            &candidate.head,
+            candidate.invitation,
+        )? {
             return Ok(false);
         }
         self.heads
@@ -352,6 +419,41 @@ impl SyncService {
     }
 }
 
+/// The reset request in a pending entry for `workspace`: it names the
+/// workspace, carries the account's new head and no invitation, and its
+/// card belongs to that account (§7). The app shows the new card's
+/// fingerprint in the alert that the account's devices changed.
+pub fn reset_request(entry: Pending, workspace: Id) -> Option<InvitedRequest> {
+    let (None, Some(head), Some(named)) = (entry.invitation, entry.account, entry.workspace) else {
+        return None;
+    };
+    let card = entry.card.0;
+    if named != workspace || card.account != head.account {
+        return None;
+    }
+    Some(InvitedRequest {
+        fingerprint: card.fingerprint(),
+        card,
+        commit: entry.commit,
+        head,
+        invitation: RESET,
+        role: sync_protocol::records::Role::Viewer,
+    })
+}
+
+/// Whether `policy` holds the `accept_reset` that answers `offer` for a
+/// reset request at `head`, as the reset device checks it before it trusts
+/// the workspace (§7, §10). `false` while no later change records the
+/// account; `sync_approval_mismatch` for any change that doesn't answer it.
+pub fn reset_committed(
+    policy: &PolicyChain,
+    offer: &Offer,
+    head: &AccountHead,
+) -> Result<bool, SyncError> {
+    let anchor = offer.anchors.iter().next().ok_or_else(mismatch)?;
+    check_add_member(policy, anchor, offer, head, RESET)
+}
+
 /// The candidate's checks on a verified policy (§8, §10): the anchor's
 /// change, the approver's authority there, and the first later change
 /// that records this account. `false` while no such change exists.
@@ -359,7 +461,8 @@ fn check_add_member(
     policy: &PolicyChain,
     anchor: &Anchor,
     offer: &Offer,
-    candidate: &InvitedCandidate,
+    head: &AccountHead,
+    invitation: Id,
 ) -> Result<bool, SyncError> {
     let at = policy
         .at(anchor.revision)
@@ -379,7 +482,7 @@ fn check_add_member(
     if !manages {
         return Err(mismatch());
     }
-    let account = candidate.head.account;
+    let account = head.account;
     let (head_revision, _) = policy.head();
     for revision in anchor.revision + 1..=head_revision {
         let change = policy
@@ -389,9 +492,18 @@ fn check_add_member(
             continue;
         };
         let answers = change.body.signer == approver.device
-            && *recorded == candidate.head
-            && matches!(change.body.kind, PolicyKind::AddMember { account: added, invitation, .. }
-                if added == account && invitation == candidate.invitation);
+            && recorded == head
+            && match change.body.kind {
+                PolicyKind::AddMember {
+                    account: added,
+                    invitation: named,
+                    ..
+                } => added == account && named == invitation,
+                PolicyKind::AcceptReset { account: accepted } => {
+                    accepted == account && invitation == RESET
+                }
+                _ => false,
+            };
         return if answers { Ok(true) } else { Err(mismatch()) };
     }
     Ok(false)

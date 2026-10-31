@@ -581,14 +581,22 @@ pub async fn a_checkpoint_goes_alone_or_last_in_an_approval<B: Backend>(store: S
     assert_eq!(latest.seq, head + 2);
 }
 
-/// History floors (§9): an approval sets the new member's floor in the
-/// workspace domain to the `covered_seq` of the fresh checkpoint its push
-/// carries. The member's pulls below it get status 3, a chain fetch of a
-/// record at or below it and `live` or `manifest` at an earlier checkpoint
-/// get `before_history_floor`, and from the floor on everything serves.
-pub async fn history_floors_follow_section_9<B: Backend>(store: Store<B>) {
-    use sync_protocol::messages::{PageStatus, PullCursor, PullRequest};
+/// A member's floor: what [`history_floors_follow_section_9`] and the run
+/// after a reset both check.
+pub(super) struct Floor<B: Backend> {
+    pub(super) world: World<B>,
+    track: Track,
+    pub(super) invitee: super::invitations::Invitee,
+    early: u64,
+    floor: u64,
+    gone: Id,
+    kept: Id,
+}
 
+/// A world whose workspace domain holds history below a member's floor: one
+/// blob whose listing a later state supersedes before the floor, and one
+/// whose listing stays live there.
+pub(super) async fn world_with_a_floor<B: Backend>(store: Store<B>) -> Floor<B> {
     let mut world = World::new(store.with_checkpoint_interval(interval(2)), 1).await;
     let mut track = Track::new(&world).await;
     track.write(&world, 0).await;
@@ -656,8 +664,33 @@ pub async fn history_floors_follow_section_9<B: Backend>(store: Store<B>) {
         .await
         .expect("the approval commits");
     world.head = (pushed.policy_revision, add.digest());
-    let floor = head;
-    let member = invitee.session;
+    Floor {
+        world,
+        track,
+        invitee,
+        early,
+        floor: head,
+        gone: gone.blob,
+        kept: kept.blob,
+    }
+}
+
+/// `member`'s reads around its floor: pulls answer status 3 below it, the
+/// other routes `before_history_floor`, and `live`, `manifest` and blobs
+/// serve only under §9.
+pub(super) async fn check_the_floor<B: Backend>(run: &Floor<B>, member: crate::Session) {
+    use sync_protocol::messages::{PageStatus, PullCursor, PullRequest};
+
+    let Floor {
+        world,
+        early,
+        floor,
+        gone,
+        kept,
+        ..
+    } = run;
+    let (early, floor) = (*early, *floor);
+    let (gone, kept) = (*gone, *kept);
     let pull = |after| PullRequest {
         cursors: sync_protocol::codec::List(vec![PullCursor {
             domain: world.domain,
@@ -767,7 +800,7 @@ pub async fn history_floors_follow_section_9<B: Backend>(store: Store<B>) {
         refusal(
             world
                 .store
-                .blob_download(member, world.workspace, gone.blob)
+                .blob_download(member, world.workspace, gone)
                 .await
         )
         .code,
@@ -775,14 +808,37 @@ pub async fn history_floors_follow_section_9<B: Backend>(store: Store<B>) {
     );
     world
         .store
-        .blob_download(owner_session, world.workspace, gone.blob)
+        .blob_download(world.devices[0].session, world.workspace, gone)
         .await
         .expect("the owner has no floor");
     world
         .store
-        .blob_download(member, world.workspace, kept.blob)
+        .blob_download(member, world.workspace, kept)
         .await
         .expect("its listing is live at the checkpoint");
+}
+
+/// History floors (§9): an approval sets the new member's floor in the
+/// workspace domain to the `covered_seq` of the fresh checkpoint its push
+/// carries. The member's pulls below it get status 3, a chain fetch of a
+/// record at or below it and `live` or `manifest` at an earlier checkpoint
+/// get `before_history_floor`, and from the floor on everything serves.
+pub async fn history_floors_follow_section_9<B: Backend>(store: Store<B>) {
+    let run = world_with_a_floor(store).await;
+    let member = run.invitee.session;
+    check_the_floor(&run, member).await;
+    let Floor {
+        world,
+        mut track,
+        floor,
+        ..
+    } = run;
+    let owner_session = world.devices[0].session;
+    let listed = |blob: Id| {
+        move |op: &mut sync_protocol::records::Operation| {
+            op.blobs = Sorted::new(vec![blob]).expect("sorted");
+        }
+    };
     let (new_bytes, new_blob) = super::blobs::blob_for(1_000, world.domain);
     world
         .store

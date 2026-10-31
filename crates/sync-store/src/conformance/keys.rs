@@ -196,8 +196,10 @@ pub async fn account_heads_changes_carry_their_envelopes<B: Backend>(store: Stor
             world
                 .push_records(0, vec![RecordRef::Policy(other_kind)])
                 .await
-        ),
-        ("bad_request", 0)
+        )
+        .1,
+        0,
+        "an accept_reset for an account that isn't a member"
     );
 
     let envelope = world.envelope(0, &card, 1, &world.epoch_key);

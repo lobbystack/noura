@@ -57,6 +57,39 @@ fn people_text(people: usize) -> String {
     }
 }
 
+/// Set up sync again for an owner of a running workspace, behind a
+/// confirmation: a member's device may be the only one that found a loss,
+/// so the owner's own device can start over without a stop of its own
+/// (§14).
+fn set_up_again(ui: &mut Ui, busy: bool, actions: &mut Vec<FolderSyncAction>) {
+    let id = ui.scope_id().with("set_up_again_confirm");
+    let asked = ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
+    group(ui, "Start this workspace over", |ui| {
+        ui.label(
+            "If a member says the server lost part of this workspace, you can start it over from this folder. You invite the members again. Restricted folders, share links and history start over.",
+        );
+        if !asked {
+            if primary_button(ui, "Set up sync again", !busy).clicked() {
+                ui.data_mut(|data| data.insert_temp(id, true));
+            }
+            return;
+        }
+        alert(
+            ui,
+            "This closes the workspace on the server for every member. Their files stay on their computers.",
+        );
+        ui.horizontal(|ui| {
+            if primary_button(ui, "Close it and set up again", !busy).clicked() {
+                actions.push(FolderSyncAction::SetUpAgain);
+                ui.data_mut(|data| data.remove_temp::<bool>(id));
+            }
+            if ui.button("Keep this workspace").clicked() {
+                ui.data_mut(|data| data.remove_temp::<bool>(id));
+            }
+        });
+    });
+}
+
 /// Draws the Sync section.
 pub(crate) fn section(ui: &mut Ui, app: &mut App) {
     let screen = app.folder_sync();
@@ -68,6 +101,36 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
         ui.horizontal(|ui| {
             ui.spinner();
             muted(ui, "Working on it.");
+        });
+    }
+    if let Some(notice) = &screen.restore {
+        alert(ui, &notice.line);
+        if !notice.written_again.is_empty() {
+            group(ui, "Files this computer wrote again", |ui| {
+                for path in &notice.written_again {
+                    ui.label(path);
+                }
+            });
+        }
+        if !notice.to_review.is_empty() {
+            group(ui, "Files to review after the restore", |ui| {
+                for path in &notice.to_review {
+                    ui.label(path);
+                }
+            });
+        }
+        ui.horizontal(|ui| {
+            if notice.reset_devices && primary_button(ui, "Reset devices", !screen.busy).clicked() {
+                actions.push(FolderSyncAction::ResetDevices);
+            }
+            if notice.set_up_again
+                && primary_button(ui, "Set up sync again", !screen.busy).clicked()
+            {
+                actions.push(FolderSyncAction::SetUpAgain);
+            }
+            if !notice.reset_devices && !notice.set_up_again && ui.button("Dismiss").clicked() {
+                actions.push(FolderSyncAction::DismissRestore);
+            }
         });
     }
     match screen.phase {
@@ -275,7 +338,12 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
                     }
                 });
             }
+            if screen.can_set_up_again {
+                set_up_again(ui, screen.busy, &mut actions);
+            }
         }
+        // The restore notice above offers the way back.
+        FolderSyncPhase::AccountLost => {}
         FolderSyncPhase::NotConnected => {
             ui.label(
                 "This folder is a copy of a synced folder. Connect it to sync it, and Noura checks each file against the synced workspace before it uploads anything.",

@@ -471,6 +471,7 @@ impl WorkspaceSync {
         folder: &str,
         grants: &[Access],
     ) -> Result<Id, SyncError> {
+        self.refuse_halted()?;
         if self.remote.is_none() {
             self.connect(service).await?;
         }

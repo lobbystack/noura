@@ -53,6 +53,8 @@ pub trait SegmentStore: Send + Sync + 'static {
     fn delete(&self, key: &str) -> BoxFuture<'_, io::Result<()>>;
     /// Every key the store holds.
     fn list(&self) -> BoxFuture<'_, io::Result<Vec<String>>>;
+    /// Every key under the directory-like `prefix`.
+    fn list_under(&self, prefix: &str) -> BoxFuture<'_, io::Result<Vec<String>>>;
 }
 
 /// Segments as files under a directory. Each `put` writes a temporary file,
@@ -71,8 +73,10 @@ impl DiskStore {
     }
 
     fn path(&self, key: &str) -> io::Result<PathBuf> {
-        // Keys come from segment_key alone; refuse anything else.
-        let valid = key.split('/').count() == 3
+        // Keys come from segment_key alone, or sit under the quarantine
+        // prefix with a date; refuse anything else.
+        let parts = if key.starts_with("quarantine/") { 5 } else { 3 };
+        let valid = key.split('/').count() == parts
             && key.split('/').all(|part| {
                 !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
             });
@@ -163,24 +167,34 @@ impl SegmentStore for DiskStore {
     }
 
     fn list(&self) -> BoxFuture<'_, io::Result<Vec<String>>> {
+        self.list_under("")
+    }
+
+    fn list_under(&self, prefix: &str) -> BoxFuture<'_, io::Result<Vec<String>>> {
         let root = self.root.clone();
+        let prefix = prefix.to_owned();
         blocking(move || {
             let mut keys = Vec::new();
-            for workspace in std::fs::read_dir(&root)? {
-                let workspace = workspace?;
-                let name = workspace.file_name().to_string_lossy().into_owned();
-                if name.starts_with('.') || !workspace.file_type()?.is_dir() {
-                    continue;
-                }
-                for blob in std::fs::read_dir(workspace.path())? {
-                    let blob = blob?;
-                    if !blob.file_type()?.is_dir() {
+            let mut stack = vec![root.join(&prefix)];
+            while let Some(dir) = stack.pop() {
+                let entries = match std::fs::read_dir(&dir) {
+                    Ok(entries) => entries,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(e),
+                };
+                for entry in entries {
+                    let entry = entry?;
+                    if entry.file_name().to_string_lossy().starts_with('.') {
                         continue;
                     }
-                    let blob_name = blob.file_name().to_string_lossy().into_owned();
-                    for segment in std::fs::read_dir(blob.path())? {
-                        let segment = segment?.file_name().to_string_lossy().into_owned();
-                        keys.push(format!("{name}/{blob_name}/{segment}"));
+                    if entry.file_type()?.is_dir() {
+                        stack.push(entry.path());
+                    } else if let Ok(key) = entry.path().strip_prefix(&root) {
+                        let parts: Vec<_> = key
+                            .components()
+                            .map(|c| c.as_os_str().to_string_lossy())
+                            .collect();
+                        keys.push(parts.join("/"));
                     }
                 }
             }
@@ -276,10 +290,15 @@ impl SegmentStore for Objects {
     }
 
     fn list(&self) -> BoxFuture<'_, io::Result<Vec<String>>> {
+        self.list_under("")
+    }
+
+    fn list_under(&self, prefix: &str) -> BoxFuture<'_, io::Result<Vec<String>>> {
+        let prefix = (!prefix.is_empty()).then(|| ObjectPath::from(prefix));
         Box::pin(async move {
             let mut keys: Vec<String> = self
                 .store
-                .list(None)
+                .list(prefix.as_ref())
                 .map_ok(|meta| meta.location.to_string())
                 .try_collect()
                 .await

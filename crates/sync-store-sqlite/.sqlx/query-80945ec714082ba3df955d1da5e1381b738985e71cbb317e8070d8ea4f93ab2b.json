@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT instance AS \"instance!\" FROM instances WHERE lease_until > ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "instance!",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "instances",
+            "name": "instance"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "80945ec714082ba3df955d1da5e1381b738985e71cbb317e8070d8ea4f93ab2b"
+}

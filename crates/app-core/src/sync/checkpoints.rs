@@ -88,7 +88,21 @@ pub struct Checkpoints {
     pub sign_at: Option<u64>,
 }
 
+/// Whether a device signs the checkpoint due at `due`, with its cursor at
+/// `cursor`: a writer past the due point that no unrecorded removal holds
+/// (§17). A rewound writer passes the same test, so it signs a checkpoint
+/// that a surviving removal made due when a restore lost the one after it.
+pub fn may_sign(due: u64, cursor: u64, writes: bool, held: bool) -> bool {
+    due != 0 && cursor >= due && writes && !held
+}
+
 impl Checkpoints {
+    /// Forgets the checkpoints above a rewind's start at `covered`, so the
+    /// next one signed takes the number of the first the restore lost.
+    pub fn forget_above(&mut self, covered: u64) {
+        self.reached.retain(|_, r| r.covered_seq <= covered);
+    }
+
     /// The last checkpoint reached in the log, with its number.
     pub fn last_reached(&self) -> Option<(u64, &Reached)> {
         self.reached.iter().next_back().map(|(n, r)| (*n, r))

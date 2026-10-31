@@ -334,6 +334,85 @@ impl Cluster {
     }
 }
 
+impl Cluster {
+    /// A physical copy of this running cluster, as a standby holds it at
+    /// this moment. [`Cluster::promoted`] starts it.
+    pub fn base_backup(&self) -> PathBuf {
+        let local = self.local.as_ref().expect("a throwaway cluster");
+        let target = local.root.with_file_name(format!(
+            "backup-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let port = self.base.rsplit(':').next().expect("a port");
+        let backup = Command::new(executable(&local.bin, "pg_basebackup"))
+            .arg("-D")
+            .arg(&target)
+            .args(["-h", "127.0.0.1", "-p", port, "-U", "postgres"])
+            .args(["-X", "stream", "-c", "fast", "--no-sync"])
+            .env("LC_ALL", "C")
+            .stdin(Stdio::null())
+            .output()
+            .expect("pg_basebackup runs");
+        assert!(
+            backup.status.success(),
+            "pg_basebackup failed: {}",
+            String::from_utf8_lossy(&backup.stderr)
+        );
+        target
+    }
+
+    /// Fails over to `backup`: starts it as a standby that replays what it
+    /// holds and reaches no primary, as an asynchronous standby that lacks
+    /// the latest commits, then promotes it.
+    pub fn promoted(&self, backup: &Path) -> Cluster {
+        let local = self.local.as_ref().expect("a throwaway cluster");
+        let root = local.root.with_file_name(format!(
+            "{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).expect("the cluster's directory");
+        let data = root.join("data");
+        std::fs::rename(backup, &data).expect("the copy moves in");
+        std::fs::write(data.join("standby.signal"), b"").expect("the standby signal");
+        let port = free_port();
+        let conf = format!(
+            "\n# Added by the failover.\nport = {port}\nlisten_addresses = '127.0.0.1'\n\
+             unix_socket_directories = ''\nmax_connections = 500\n"
+        );
+        let path = data.join("postgresql.conf");
+        let original = std::fs::read_to_string(&path).expect("postgresql.conf");
+        std::fs::write(&path, original + &conf).expect("postgresql.conf written");
+        let log = root.join("postgres.log");
+        let started = pg_ctl(
+            &local.bin,
+            &["start", "-w", "-t", "60", "-l", &log.to_string_lossy()],
+            &data,
+        );
+        assert!(
+            started.status.success(),
+            "the standby didn't start: {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+        let promoted = pg_ctl(&local.bin, &["promote", "-w", "-t", "60"], &data);
+        assert!(
+            promoted.status.success(),
+            "the standby didn't take over: {}",
+            String::from_utf8_lossy(&promoted.stderr)
+        );
+        Cluster {
+            base: format!("postgres://postgres@127.0.0.1:{port}"),
+            options: String::new(),
+            local: Some(Local {
+                bin: local.bin.clone(),
+                root,
+                data,
+            }),
+        }
+    }
+}
+
 impl Drop for Cluster {
     fn drop(&mut self) {
         if let Some(local) = &self.local {
@@ -371,6 +450,27 @@ pub struct StoredColumn {
 }
 
 impl TestDatabase {
+    /// This database as `cluster`, a copy of its cluster, holds it.
+    pub fn on(&self, cluster: Arc<Cluster>) -> TestDatabase {
+        TestDatabase {
+            url: cluster.url(&self.name),
+            name: self.name.clone(),
+            cluster,
+        }
+    }
+
+    /// Runs `sql` in this database.
+    pub async fn execute(&self, sql: &str) {
+        let mut connection = PgConnection::connect(&self.url)
+            .await
+            .expect("the database answers");
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.to_owned()))
+            .execute(&mut connection)
+            .await
+            .expect("the statement runs");
+        connection.close().await.expect("closed");
+    }
+
     /// Every column of every table the database holds, with its values.
     pub async fn columns(&self) -> Vec<StoredColumn> {
         use sqlx::Row;

@@ -69,6 +69,27 @@ pub struct Server<B: Backend = SqliteBackend> {
     pub postgres: Option<TestDatabase>,
     /// How to reach that database, for a second server instance.
     pub instance: Option<sync_server::Postgres>,
+    /// The text of every mail the server sent.
+    pub mail: Arc<Mutex<Vec<String>>>,
+}
+
+/// A mail transport that keeps each message's text.
+struct Outbox(Arc<Mutex<Vec<String>>>);
+
+impl sync_server::accounts::MailTransport for Outbox {
+    fn send<'a>(
+        &'a self,
+        mail: &'a sync_server::accounts::Mail,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), sync_server::accounts::MailError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        self.0.lock().unwrap().push(mail.text.clone());
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// The database file in a SQLite server's data directory.
@@ -118,6 +139,175 @@ impl Server<SqliteBackend> {
         .with_checkpoint_interval(interval)
         .with_retention(retention);
         Self::serve(store, dir, None).await
+    }
+}
+
+/// A server that goes back to a copy of itself, on either store: `backup`
+/// and `restore` on SQLite, a standby and `mark-restored` on PostgreSQL.
+pub trait Restores: Sized {
+    /// A copy of the database as it stands now.
+    fn snapshot(&self, name: &str) -> impl std::future::Future<Output = PathBuf>;
+    /// A new server on `copy`, after a recorded restore, with `sql` run on
+    /// the copy first.
+    fn restored(&self, copy: &Path, sql: Option<&str>) -> impl std::future::Future<Output = Self>;
+}
+
+impl Restores for Server<SqliteBackend> {
+    async fn snapshot(&self, name: &str) -> PathBuf {
+        self.backup(name).await
+    }
+
+    async fn restored(&self, copy: &Path, sql: Option<&str>) -> Self {
+        if let Some(sql) = sql {
+            let connection = rusqlite::Connection::open(copy).expect("the copy opens");
+            connection.execute(sql, []).expect("the change");
+        }
+        self.put_back(copy, true).await
+    }
+}
+
+impl Restores for Server<PgBackend> {
+    async fn snapshot(&self, _name: &str) -> PathBuf {
+        self.standby()
+    }
+
+    async fn restored(&self, copy: &Path, sql: Option<&str>) -> Self {
+        self.fail_over_edited(copy, true, sql).await
+    }
+}
+
+impl Server<SqliteBackend> {
+    /// A new server under the proxy's address, on a fresh database and a
+    /// new secret, as after an operator lost the old secret and ran a
+    /// fresh `migrate`.
+    pub async fn fresh_behind(proxy: &Proxy) -> Self {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let data = dir.path().join("data");
+        sync_server::migrate(&data).await.expect("migrated");
+        let store = Arc::new(
+            sync_server::open_store(&sync_server::Config::new(
+                data,
+                "127.0.0.1:0".parse().expect("an address"),
+            ))
+            .await
+            .expect("the store opens"),
+        );
+        let origin = sync_server::PublicOrigin::parse(&proxy.base).expect("an origin");
+        let mail: Arc<Mutex<Vec<String>>> = Arc::default();
+        let outbox = mail.clone();
+        let address = sync_server::spawn_with(store.clone(), "127.0.0.1:0", move |_| {
+            sync_server::Accounts::new(
+                origin,
+                Default::default(),
+                "Noura <noura@localhost>".into(),
+                Box::new(Outbox(outbox)),
+                None,
+            )
+        })
+        .await
+        .expect("serving");
+        proxy.retarget(&format!("http://localhost:{}", address.port()));
+        Server {
+            base: proxy.base.clone(),
+            store,
+            dir,
+            postgres: None,
+            instance: None,
+            mail,
+        }
+    }
+}
+
+impl Server<SqliteBackend> {
+    /// Copies the running database with `backup`, into the server's
+    /// temporary directory.
+    pub async fn backup(&self, name: &str) -> PathBuf {
+        let copy = self.dir.path().join(name);
+        sync_server::restore::backup(&self.dir.path().join("data"), &copy)
+            .await
+            .expect("the backup");
+        copy
+    }
+
+    /// Serves `copy` from a new data directory after `restore`, or, with
+    /// `recorded` false, as a database put back by hand, which keeps its
+    /// generation. Blobs stay in the one store. Returns the new server.
+    pub async fn put_back(&self, copy: &Path, recorded: bool) -> Server {
+        let (store, dir) = self.put_back_store(copy, recorded).await;
+        Self::serve(store, dir, None).await
+    }
+
+    /// A server in front of which `proxy` sits, restored from `copy` under
+    /// the proxy's address, as [`Proxy::in_front`] serves one.
+    pub async fn restore_behind(&self, copy: &Path, proxy: &Proxy) -> Server {
+        std::fs::create_dir_all(self.dir.path().join("blobs")).expect("a directory");
+        let (store, dir) = self.put_back_store(copy, true).await;
+        let store = Arc::new(store);
+        let origin = sync_server::PublicOrigin::parse(&proxy.base).expect("an origin");
+        let mail: Arc<Mutex<Vec<String>>> = Arc::default();
+        let outbox = mail.clone();
+        let address = sync_server::spawn_with(store.clone(), "127.0.0.1:0", move |_| {
+            sync_server::Accounts::new(
+                origin,
+                Default::default(),
+                "Noura <noura@localhost>".into(),
+                Box::new(Outbox(outbox)),
+                None,
+            )
+        })
+        .await
+        .expect("serving");
+        proxy.retarget(&format!("http://localhost:{}", address.port()));
+        Server {
+            base: proxy.base.clone(),
+            store,
+            dir,
+            postgres: None,
+            instance: None,
+            mail,
+        }
+    }
+
+    async fn put_back_store(
+        &self,
+        copy: &Path,
+        recorded: bool,
+    ) -> (Store<SqliteBackend>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let data = dir.path().join("data");
+        std::fs::create_dir_all(&data).expect("a directory");
+        std::os::unix::fs::symlink(self.dir.path().join("blobs"), data.join("blobs"))
+            .expect("the shared blob store");
+        std::os::unix::fs::symlink(self.dir.path().join("blobs"), dir.path().join("blobs"))
+            .expect("the shared blob store");
+        if recorded {
+            sync_server::restore::restore(
+                &data,
+                copy,
+                None,
+                &sync_server::BlobStoreConfig::Disk,
+                |_| {},
+            )
+            .await
+            .expect("the restore");
+        } else {
+            std::fs::copy(copy, data.join(DATABASE)).expect("a file copy");
+            std::fs::copy(
+                sync_server::restore::secret_beside(copy),
+                data.join("server-secret"),
+            )
+            .expect("the secret");
+            sync_store_sqlite::clear_stamp(&data.join(DATABASE))
+                .await
+                .expect("a file copy carries no stamp");
+        }
+        let store = sync_server::open_store(&sync_server::Config::new(
+            data,
+            "127.0.0.1:0".parse().expect("an address"),
+        ))
+        .await
+        .expect("the store opens");
+        (store, dir)
     }
 }
 
@@ -200,6 +390,98 @@ impl Server<PgBackend> {
     }
 }
 
+impl Server<PgBackend> {
+    /// The server on a PostgreSQL cluster of its own, which
+    /// [`Self::fail_over`] can copy.
+    pub async fn start_postgres_alone() -> Self {
+        Self::start_postgres_alone_with(sync_store::CheckpointInterval::default()).await
+    }
+
+    /// [`Self::start_postgres_alone`], with checkpoints falling due every
+    /// `entries` log entries (§17).
+    pub async fn start_postgres_alone_with_interval(entries: u64) -> Self {
+        Self::start_postgres_alone_with(sync_store::CheckpointInterval {
+            entries,
+            weight: u64::MAX,
+        })
+        .await
+    }
+
+    async fn start_postgres_alone_with(interval: sync_store::CheckpointInterval) -> Self {
+        let cluster = Arc::new(Cluster::start(Path::new(env!("CARGO_TARGET_TMPDIR")), &[]));
+        let database = cluster.database().await;
+        let postgres = sync_server::Postgres {
+            url: database.url.clone(),
+            secret: Some(sync_protocol::types::SecretKey::random().expect("random")),
+        };
+        sync_server::postgres::migrate(&postgres)
+            .await
+            .expect("migrated");
+        let store = sync_server::postgres::open_store(&postgres)
+            .await
+            .expect("the store opens")
+            .with_checkpoint_interval(interval);
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let mut server = Self::serve(store, dir, Some(database)).await;
+        server.instance = Some(postgres);
+        server
+    }
+
+    /// A copy of the database as an asynchronous standby holds it now.
+    pub fn standby(&self) -> PathBuf {
+        self.postgres
+            .as_ref()
+            .expect("a PostgreSQL server")
+            .cluster
+            .base_backup()
+    }
+
+    /// Serves the copy `standby` after a failover, on the same secret and
+    /// blobs. With `recorded`, the operator ran `mark-restored` first.
+    pub async fn fail_over(&self, standby: &Path, recorded: bool) -> Self {
+        self.fail_over_edited(standby, recorded, None).await
+    }
+
+    /// [`Self::fail_over`], with `sql` run on the promoted database first,
+    /// for a restore that loses exactly one kind of signed state.
+    pub async fn fail_over_edited(
+        &self,
+        standby: &Path,
+        recorded: bool,
+        sql: Option<&str>,
+    ) -> Self {
+        let database = self.postgres.as_ref().expect("a PostgreSQL server");
+        let cluster = Arc::new(database.cluster.promoted(standby));
+        let database = database.on(cluster);
+        if let Some(sql) = sql {
+            database.execute(sql).await;
+        }
+        let config = sync_server::Postgres {
+            url: database.url.clone(),
+            secret: self.instance.as_ref().expect("a config").secret.clone(),
+        };
+        let dir = tempfile::tempdir().expect("temporary directory");
+        std::os::unix::fs::symlink(self.dir.path().join("blobs"), dir.path().join("blobs"))
+            .expect("the shared blob store");
+        if recorded {
+            sync_server::restore::mark_restored_postgres(
+                &config,
+                dir.path(),
+                &sync_server::BlobStoreConfig::Disk,
+                |_| {},
+            )
+            .await
+            .expect("marked");
+        }
+        let store = sync_server::postgres::open_store(&config)
+            .await
+            .expect("the store opens");
+        let mut server = Self::serve(store, dir, Some(database)).await;
+        server.instance = Some(config);
+        server
+    }
+}
+
 impl<B: Backend> Server<B> {
     async fn serve(
         store: Store<B>,
@@ -209,10 +491,20 @@ impl<B: Backend> Server<B> {
         let store = Arc::new(store);
         let blobs = sync_server::blobs::DiskStore::open(&dir.path().join("blobs"))
             .expect("the blob store opens");
+        let mail: Arc<Mutex<Vec<String>>> = Arc::default();
+        let outbox = mail.clone();
         let address = sync_server::spawn_with_blobs(
             store.clone(),
             "127.0.0.1:0",
-            sync_server::Accounts::local,
+            move |origin| {
+                sync_server::Accounts::new(
+                    origin,
+                    Default::default(),
+                    "Noura <noura@localhost>".into(),
+                    Box::new(Outbox(outbox)),
+                    None,
+                )
+            },
             Arc::new(blobs),
         )
         .await
@@ -223,6 +515,7 @@ impl<B: Backend> Server<B> {
             dir,
             postgres,
             instance: None,
+            mail,
         }
     }
 
@@ -232,6 +525,28 @@ impl<B: Backend> Server<B> {
             .into_iter()
             .filter(|f| !f.to_string_lossy().contains(".partial"))
             .collect()
+    }
+
+    /// The objects under the blob store's quarantine prefix.
+    pub fn quarantined(&self) -> Vec<PathBuf> {
+        self.blob_files()
+            .into_iter()
+            .filter(|f| f.to_string_lossy().contains("/quarantine/"))
+            .collect()
+    }
+
+    /// Runs the quarantine collector as of `days` days from now and returns
+    /// what it deleted.
+    pub async fn collect_quarantine(&self, days: u64) -> u64 {
+        let blobs =
+            sync_server::blobs::DiskStore::open(&self.dir.path().join("blobs")).expect("a store");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after 1970")
+            .as_secs();
+        sync_server::restore::collect_quarantine(&blobs, now + days * 24 * 3600)
+            .await
+            .expect("collected")
     }
 
     /// The files that hold what the server stored, blob segments included.
@@ -585,6 +900,7 @@ impl Proxy {
             dir,
             postgres: None,
             instance: None,
+            mail: Arc::default(),
         };
         (server, proxy)
     }
@@ -839,6 +1155,11 @@ impl Proxy {
     }
 
     /// Forwards every later request and response unchanged.
+    /// Sends every later request to `upstream`.
+    pub fn retarget(&self, upstream: &str) {
+        *self.upstream.lock().unwrap() = upstream.to_owned();
+    }
+
     pub fn honest(&self) {
         *self.frames.lock().unwrap() = None;
         *self.tamper.lock().unwrap() = None;
@@ -1004,8 +1325,19 @@ pub struct NewDesktop {
 /// Signs a new device of `account` in, then posts its approval request and
 /// polls for offers through `base`, such as a tampering proxy.
 pub async fn new_desktop<B: Backend>(server: &Server<B>, account: Id, base: &str) -> NewDesktop {
-    let signed_in = server.sign_in(account, &server.base).await;
     let secrets = Arc::new(MemorySecrets::default());
+    new_desktop_in(server, account, base, secrets).await
+}
+
+/// [`new_desktop`] on a computer whose credential store is `secrets`, such
+/// as one that held a card a reset retired.
+pub async fn new_desktop_in<B: Backend>(
+    server: &Server<B>,
+    account: Id,
+    base: &str,
+    secrets: Arc<MemorySecrets>,
+) -> NewDesktop {
+    let signed_in = server.sign_in(account, &server.base).await;
     let (keys, client) = match app_core::sync::device::join(&signed_in, &*secrets)
         .await
         .expect("enrolled")
@@ -1034,6 +1366,42 @@ pub async fn new_desktop<B: Backend>(server: &Server<B>, account: Id, base: &str
     }
 }
 
+/// Reset devices the way the app runs it (§7): a new sign-in, a new card
+/// that enrolls, the emailed code and a genesis, in the credential store
+/// `secrets`. Returns the new device with what the reset reported.
+pub async fn reset_devices<B: Backend>(
+    server: &Server<B>,
+    account: Id,
+    secrets: Arc<MemorySecrets>,
+) -> (Desktop, app_core::sync::reset::ResetDone) {
+    let signed_in = server.sign_in(account, &server.base).await;
+    let keys = sync_key_envelope::v2::DeviceKeys::generate().expect("random");
+    let mut client = app_core::sync::SyncClient::connect(&server.base, &signed_in.session_token)
+        .await
+        .expect("connects");
+    app_core::sync::device::enroll_card(&mut client, &keys, account)
+        .await
+        .expect("enrolled");
+    let (code, _) = server
+        .store
+        .issue_reset_code(sync_store::Session::new(account, keys.device()))
+        .await
+        .expect("a code");
+    let done = app_core::sync::reset::reset(
+        &mut client,
+        &*secrets,
+        account,
+        &keys,
+        &signed_in.session_token,
+        &code,
+    )
+    .await
+    .expect("the reset");
+    let state = tempfile::tempdir().expect("a folder");
+    let desktop = Desktop::connect(&server.base, done.credentials.clone(), secrets, state).await;
+    (desktop, done)
+}
+
 /// Approves a new device of `approver`'s account through the whole flow of
 /// §10, recording its head in `workspaces`, and returns its service.
 pub async fn approve<B: Backend>(
@@ -1042,7 +1410,17 @@ pub async fn approve<B: Backend>(
     workspaces: &mut [app_core::sync::RemoteWorkspace],
 ) -> Desktop {
     let account = approver.credentials.account;
-    let mut new = new_desktop(server, account, &server.base).await;
+    let new = new_desktop(server, account, &server.base).await;
+    approve_new(server, approver, new, workspaces).await
+}
+
+/// Approves `new` from `approver` and returns its service.
+pub async fn approve_new<B: Backend>(
+    server: &Server<B>,
+    approver: &mut Desktop,
+    mut new: NewDesktop,
+    workspaces: &mut [app_core::sync::RemoteWorkspace],
+) -> Desktop {
     let fingerprint = new.candidate.fingerprint();
     let pending = approver
         .service
@@ -1226,7 +1604,114 @@ pub async fn pair_on<B: Backend>(server: Server<B>) -> Pair<B> {
 
 /// A [`Pair`] on `server` whose desktop belongs to another account, a
 /// member the laptop's account invited as an admin.
+/// A share link the laptop made before a backup, to revoke after it.
+pub struct LinkToRevoke {
+    book: app_core::sync::shares::ShareBook,
+    token_hash: sync_protocol::types::Digest,
+    address: String,
+    workspace: Id,
+    _dir: tempfile::TempDir,
+}
+
+impl LinkToRevoke {
+    /// Makes a link to `Plan.md`.
+    pub async fn make<B: Backend>(pair: &mut Pair<B>) -> Self {
+        use app_core::sync::shares::{NewShare, ShareBook, snapshot_of};
+
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let mut book = ShareBook::open(dir.path(), pair.laptop.id()).expect("the book");
+        let (title, markdown) = snapshot_of("Plan", "# Plan\n");
+        let workspace = pair.sync_a.workspace();
+        let created = pair
+            .service
+            .create_share(
+                &mut book,
+                NewShare {
+                    workspace,
+                    domain: pair.sync_a.domain(),
+                    note: pair.sync_a.rid_at("Plan.md").expect("Plan.md syncs"),
+                    title: &title,
+                    markdown: markdown.as_bytes(),
+                    days: 7,
+                },
+            )
+            .await
+            .expect("the link");
+        let (address, _) = created.url.split_once('#').expect("a fragment");
+        let (origin, token) = address.split_once("/s/").expect("a share path");
+        Self {
+            address: format!("{origin}/v2/shares/{token}"),
+            token_hash: created.link.token_hash,
+            book,
+            workspace,
+            _dir: dir,
+        }
+    }
+
+    async fn status(&self) -> u16 {
+        reqwest::get(&self.address)
+            .await
+            .expect("the server answers")
+            .status()
+            .as_u16()
+    }
+
+    /// Revokes the link.
+    pub async fn revoke<B: Backend>(&mut self, pair: &mut Pair<B>) {
+        pair.service
+            .revoke_share(&mut self.book, self.workspace, self.token_hash, 0)
+            .await
+            .expect("revoked");
+        assert_eq!(self.status().await, 404, "the link ended");
+    }
+
+    /// The restore brought the link back, and the laptop, which saw the new
+    /// generation, ends it again.
+    pub async fn revoked_again<B: Backend>(&self, pair: &mut Pair<B>) {
+        assert_eq!(self.status().await, 200, "the restore brought it back");
+        assert!(pair.sync_a.revoke_due());
+        pair.service
+            .revoke_shares_again(&self.book)
+            .await
+            .expect("revoked again");
+        pair.sync_a.revoked_again().expect("recorded");
+        assert_eq!(self.status().await, 404, "the link ended again");
+    }
+}
+
+/// Both devices through the proxy, which now reaches `base`.
+pub async fn reconnect<B: Backend>(pair: &mut Pair<B>, base: &str) {
+    pair.proxy.retarget(base);
+    pair.service = pair.laptop.connect_through(&pair.proxy.base).await;
+    pair.desktop.service = pair.desktop.connect_through(&pair.proxy.base).await;
+    pair.sync_a.set_restore_wait(std::time::Duration::ZERO);
+    pair.sync_b.set_restore_wait(std::time::Duration::ZERO);
+}
+
+/// Three rounds of each device in turn.
+pub async fn rounds<B: Backend>(pair: &mut Pair<B>) {
+    for _ in 0..3 {
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("laptop");
+        pair.sync_b
+            .round(&mut pair.desktop.service, 0)
+            .await
+            .expect("desktop");
+    }
+}
+
 pub async fn pair_of_accounts_on<B: Backend>(server: Server<B>) -> Pair<B> {
+    pair_of_accounts_with(server, sync_protocol::records::Role::Admin).await
+}
+
+/// A [`Pair`] on `server` whose desktop belongs to another account, a
+/// member the laptop's account invited with `role`.
+pub async fn pair_of_accounts_with<B: Backend>(
+    server: Server<B>,
+    role: sync_protocol::records::Role,
+) -> Pair<B> {
     let proxy = Proxy::start(&server.base).await;
     let mut laptop = first_desktop(&server, "ana@example.com").await;
     let mut service = laptop.connect_through(&proxy.base).await;
@@ -1245,14 +1730,8 @@ pub async fn pair_of_accounts_on<B: Backend>(server: Server<B>) -> Pair<B> {
         app_core::sync::invitations::InvitationBook::open(laptop.state.path(), laptop.id())
             .expect("the book opens");
     let mut desktop = first_desktop(&server, "ben@example.com").await;
-    let (mut sync_b, b) = invite_and_join(
-        &mut laptop,
-        &mut sync_a,
-        &mut book,
-        &mut desktop,
-        sync_protocol::records::Role::Admin,
-    )
-    .await;
+    let (mut sync_b, b) =
+        invite_and_join(&mut laptop, &mut sync_a, &mut book, &mut desktop, role).await;
     sync_b
         .round(&mut desktop.service, 0)
         .await
@@ -1302,6 +1781,45 @@ pub async fn invite_and_join(
     member: &mut Desktop,
     role: sync_protocol::records::Role,
 ) -> (app_core::sync::workspace::WorkspaceSync, Folder) {
+    let workspace = invite(inviter, inviter_sync, book, member, role).await;
+    let mut folder = Folder::new("Member's copy");
+    let mut sync = app_core::sync::workspace::WorkspaceSync::download(
+        &mut member.service,
+        folder.engine.clone(),
+        workspace,
+        &mut folder.registry,
+    )
+    .await
+    .expect("the download starts");
+    sync.round(&mut member.service, 0).await.expect("a round");
+    let remote = sync.remote_mut().expect("connected");
+    let own = member
+        .service
+        .pending_heads(remote)
+        .await
+        .expect("pending")
+        .into_iter()
+        .find(|p| p.own);
+    if let Some(own) = own {
+        member
+            .service
+            .push_pending_head(remote, &own)
+            .await
+            .expect("recorded");
+    }
+    sync.round(&mut member.service, 0).await.expect("a round");
+    (sync, folder)
+}
+
+/// Invites `member` into `inviter_sync`'s workspace and approves it, up to
+/// the point where it picks a folder. Returns the workspace.
+pub async fn invite(
+    inviter: &mut Desktop,
+    inviter_sync: &mut app_core::sync::workspace::WorkspaceSync,
+    book: &mut app_core::sync::invitations::InvitationBook,
+    member: &mut Desktop,
+    role: sync_protocol::records::Role,
+) -> Id {
     use app_core::sync::approval::CandidateStep;
     use app_core::sync::invitations::{InvitationLink, NewInvitation};
 
@@ -1373,31 +1891,5 @@ pub async fn invite_and_join(
             .await
             .expect("joined")
     );
-    let mut folder = Folder::new("Member's copy");
-    let mut sync = app_core::sync::workspace::WorkspaceSync::download(
-        &mut member.service,
-        folder.engine.clone(),
-        workspace,
-        &mut folder.registry,
-    )
-    .await
-    .expect("the download starts");
-    sync.round(&mut member.service, 0).await.expect("a round");
-    let remote = sync.remote_mut().expect("connected");
-    let own = member
-        .service
-        .pending_heads(remote)
-        .await
-        .expect("pending")
-        .into_iter()
-        .find(|p| p.own);
-    if let Some(own) = own {
-        member
-            .service
-            .push_pending_head(remote, &own)
-            .await
-            .expect("recorded");
-    }
-    sync.round(&mut member.service, 0).await.expect("a round");
-    (sync, folder)
+    workspace
 }

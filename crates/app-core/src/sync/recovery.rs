@@ -341,6 +341,27 @@ pub struct Recovery {
     stored: StoredDevice,
 }
 
+/// What a recovery reports for the kit's account head (§12, §14): `None`
+/// when the server holds it. Under a new restore generation the server lost
+/// it and the way back is Reset devices; otherwise the chain forked.
+pub fn kit_account_head(held: bool, restored: bool) -> Option<&'static str> {
+    match (held, restored) {
+        (true, _) => None,
+        (false, true) => Some("sync_restore_lost"),
+        (false, false) => Some("sync_account_forked"),
+    }
+}
+
+/// Whether reading a workspace the kit lists shows that a restore lost the
+/// head the kit names there, so that workspace stops (§14).
+pub fn lost_kit_head(error: &SyncError) -> bool {
+    match error {
+        SyncError::Check(code) => matches!(*code, "sync_policy_rollback" | "sync_policy_forked"),
+        SyncError::Refused { code, .. } => code == "forbidden" || code == "not_found",
+        _ => false,
+    }
+}
+
 impl Recovery {
     /// What changed since the kit, for you to confirm, with the devices
     /// you may keep.
@@ -402,6 +423,20 @@ impl Recovery {
         {
             Ok(()) => {}
             Err(SyncError::Refused { code, .. }) if code == "forbidden" => {
+                // A restore that lost the kit's head lost its identity too.
+                let generation = client.restore_generation();
+                if kit.workspaces.iter().any(|w| generation > w.generation) {
+                    let holds = match client.whole_chain(signed_in.account, None).await {
+                        Ok((links, _)) => links.iter().any(|l| {
+                            l.body.seqno == kit.account_head.seqno
+                                && l.digest() == kit.account_head.head
+                        }),
+                        Err(_) => false,
+                    };
+                    if !holds {
+                        return Err(SyncError::Check("sync_restore_lost"));
+                    }
+                }
                 return Err(SyncError::KitRevoked);
             }
             Err(error) => return Err(error),
@@ -416,10 +451,21 @@ impl Recovery {
         let mut service =
             SyncService::connect(&signed_in.server, credentials, heads, store.clone()).await?;
         service.recovery = Some(identity.clone());
-        let chain = service.own_chain().await?;
+        // The kit's heads count like any state a device accepted (§14): a
+        // server whose restore generation moved past the kit's and that
+        // lacks one lost it, and the way back is Reset devices.
+        let generation = service.client.restore_generation();
+        let restored = kit.workspaces.iter().any(|w| generation > w.generation);
+        let chain = match service.own_chain().await {
+            Ok(chain) => chain,
+            Err(SyncError::Check("sync_account_forked")) if restored => {
+                return Err(SyncError::Check("sync_restore_lost"));
+            }
+            Err(error) => return Err(error),
+        };
         let confirmed = chain.head_seqno();
-        if !chain.contains(&kit.account_head) {
-            return Err(SyncError::Check("sync_account_forked"));
+        if let Some(code) = kit_account_head(chain.contains(&kit.account_head), restored) {
+            return Err(SyncError::Check(code));
         }
         if !chain.is_active_at(&identity.device(), confirmed) {
             return Err(SyncError::KitRevoked);
@@ -467,7 +513,21 @@ impl Recovery {
                     },
                 )?;
             }
-            let policy = service.verified_policy(listed.workspace).await?;
+            let policy = match service.verified_policy(listed.workspace).await {
+                Ok(policy) => policy,
+                // A restore lost the head the kit lists: this workspace
+                // stops, and the recovery goes on for the others (§14). The
+                // change that recorded the kit's identity may have gone with
+                // it, or the whole workspace, so the server refuses the read.
+                Err(error) if generation > listed.generation && lost_kit_head(&error) => {
+                    service.heads.forget_workspace(listed.workspace)?;
+                    review
+                        .unverified
+                        .push((listed.workspace, "sync_restore_lost"));
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             if policy.change(1).map(|c| c.digest()) != Some(listed.genesis) {
                 return Err(SyncError::Check("sync_policy_forked"));
             }
@@ -482,6 +542,7 @@ impl Recovery {
             }
             workspaces.push(service.open_as_identity(listed.workspace, policy).await?);
         }
+        let stopped: BTreeSet<Id> = review.unverified.iter().map(|(w, _)| *w).collect();
         let known: BTreeSet<Id> = kit.workspaces.iter().map(|w| w.workspace).collect();
         let others: Vec<Id> = service
             .client
@@ -490,7 +551,7 @@ impl Recovery {
             .workspaces
             .iter()
             .map(|w| w.workspace)
-            .filter(|w| !known.contains(w))
+            .filter(|w| !known.contains(w) && !stopped.contains(w))
             .collect();
         for workspace in others {
             match service.verified_policy(workspace).await {

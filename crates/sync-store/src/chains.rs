@@ -220,6 +220,11 @@ async fn readable_seqno(
             .into_iter()
             .flatten()
             .collect();
+        // Until the workspace accepts a reset, its devices read the new
+        // chain to show the new fingerprint (§7).
+        if current && policy.reads_reset_chain(&reader, &account, &genesis) {
+            return Ok(Some(chain.head_seqno()));
+        }
         let Some(bound) = policy.chain_read_bound(
             &reader,
             &session.account,

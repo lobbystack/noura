@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO reset_codes (account, code_hash, expires_at) VALUES (?1, ?2, ?3)\n             ON CONFLICT (account) DO UPDATE\n             SET code_hash = excluded.code_hash, expires_at = excluded.expires_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "fa77a1e8b487f8e9bd0adadf1afacafa0b7cee32312a2e5dd8ea09976de12313"
+}

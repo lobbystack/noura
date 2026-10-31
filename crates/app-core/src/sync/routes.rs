@@ -16,6 +16,10 @@ use sync_protocol::types::{Digest, Id, Key};
 
 use super::{SyncClient, SyncError};
 
+fn id_text(id: &Id) -> String {
+    sync_protocol::types::to_base64url(&id.0)
+}
+
 impl SyncClient {
     /// A client without a session, for the device authorization grant.
     pub async fn anonymous(base: &str) -> Result<Self, SyncError> {
@@ -82,6 +86,43 @@ impl SyncClient {
         .to_bytes();
         self.call_empty(reqwest::Method::POST, "/v2/devices", Some(body))
             .await
+    }
+
+    /// `POST /v2/account/reset-code`.
+    pub async fn reset_code(&mut self) -> Result<(), SyncError> {
+        self.call_empty(reqwest::Method::POST, "/v2/account/reset-code", None)
+            .await
+    }
+
+    /// `POST /v2/account/reset`: starts a new account chain (§7).
+    pub async fn account_reset(
+        &mut self,
+        code: &str,
+        genesis: Signed<sync_protocol::records::AccountLink>,
+    ) -> Result<(), SyncError> {
+        let body = sync_protocol::messages::ResetRequest {
+            code: sync_protocol::codec::Text::new(code.to_owned())
+                .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
+            genesis: sync_protocol::codec::Nested(genesis),
+        }
+        .to_bytes();
+        self.call_empty(reqwest::Method::POST, "/v2/account/reset", Some(body))
+            .await
+    }
+
+    /// `DELETE /v2/workspaces/{w}`: closes a workspace (§14).
+    pub async fn close_workspace(&mut self, workspace: Id) -> Result<(), SyncError> {
+        let path = format!("/v2/workspaces/{}", id_text(&workspace));
+        self.call_empty(reqwest::Method::DELETE, &path, None).await
+    }
+
+    /// `GET .../missing-blobs`: the blobs a restore left missing (§19).
+    pub async fn missing_blobs(
+        &mut self,
+        workspace: Id,
+    ) -> Result<sync_protocol::messages::MissingBlobsResponse, SyncError> {
+        let path = format!("/v2/workspaces/{}/missing-blobs", id_text(&workspace));
+        self.call(reqwest::Method::GET, &path, None).await
     }
 
     /// `GET /v2/devices`.

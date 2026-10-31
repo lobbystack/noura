@@ -388,6 +388,29 @@ jobs:
         env:
           NOURA_SOAK_SECONDS: '300'
 
+  # Review item M7: 200 real devices apply a state a restore lost, and each
+  # waits by its rank for that object, so one writes it again and none gets
+  # conflict_limit. The job builds dependencies optimized, as the soak does.
+  restore-fleet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DEV_DEPENDENCIES: profile.dev.package."*".opt-level=2
+      TEST_DEPENDENCIES: profile.test.package."*".opt-level=2
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - run: rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: restore-fleet }
+      - name: Restore with 200 devices
+        run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p app-core --test sync_restore many_devices_pick_one_writer_for_a_lost_object -- --nocapture
+        env:
+          NOURA_RESTORE_DEVICES: '200'
+
   editor-dependencies:
     runs-on: ubuntu-latest
     steps:

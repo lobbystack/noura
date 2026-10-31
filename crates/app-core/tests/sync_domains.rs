@@ -15,7 +15,7 @@ use editor_core::text_mode::{CollabDocument, Utf16Splice};
 use sync_protocol::matching::MARKER;
 use sync_protocol::records::{Access, Level, Role, marker_content};
 use sync_store::Backend;
-use sync_support::{Desktop, Folder, Proxy, Server, first_desktop, invite_and_join};
+use sync_support::{Desktop, Folder, Proxy, Server, first_desktop, invite, invite_and_join};
 
 /// The owner's desktop with a synced folder holding `Plan.md`.
 async fn owner<B: Backend>(server: &Server<B>) -> (Desktop, WorkspaceSync, Folder) {
@@ -1045,4 +1045,138 @@ async fn a_merged_path_outside_the_root_goes_to_review_until_you_keep_the_note()
     settle(&mut team.sync, &mut team.owner).await;
     assert!(!team.sync.in_text_mode(&rid));
     assert!(team.sync.outside_notes().is_empty());
+}
+
+/// Set up sync again starts the workspace over (§14). The owner's folder
+/// holds what an old marker covers, so nothing restricted lands in the new
+/// workspace domain, and each member connects the folder it synced before:
+/// it holds the files under an old marker and the ones that differ from the
+/// new workspace's live state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn members_connect_their_folders_to_a_workspace_set_up_again() {
+    members_connect_their_folders(Server::start().await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn members_connect_their_folders_on_postgres() {
+    members_connect_their_folders(Server::start_postgres().await).await;
+}
+
+async fn members_connect_their_folders<B: Backend>(server: Server<B>) {
+    let mut team = team(&server).await;
+    settle(&mut team.grantee_sync, &mut team.grantee).await;
+    settle(&mut team.outsider_sync, &mut team.outsider).await;
+    assert!(team.grantee_folder.path("Pay/Salaries.md").exists());
+    let old = team.sync.workspace();
+
+    // The grantee edits a file that never reaches the old workspace.
+    team.grantee_folder.write("Plan.md", b"# Edited offline\n");
+
+    let mut fresh = team
+        .sync
+        .set_up_again(&mut team.owner.service, &mut team.folder.registry)
+        .await
+        .expect("set up");
+    settle(&mut fresh, &mut team.owner).await;
+    let held: Vec<String> = fresh.held_roots().into_iter().map(|h| h.0).collect();
+    assert_eq!(held, ["Pay"], "the owner's old root holds its files");
+    assert_eq!(fresh.rid_at("Pay/Salaries.md"), None);
+    assert!(fresh.rid_at("Plan.md").is_some());
+
+    let mut book = InvitationBook::open(team.owner.state.path(), team.owner.id()).unwrap();
+    let workspace = invite(
+        &mut team.owner,
+        &mut fresh,
+        &mut book,
+        &mut team.grantee,
+        Role::Editor,
+    )
+    .await;
+    assert_ne!(workspace, old);
+    settle(&mut team.grantee_sync, &mut team.grantee).await;
+    assert_eq!(
+        team.grantee_sync.restore_lost(),
+        Some(&app_core::sync::workspace::restore::Lost::Closed)
+    );
+    drop(team.grantee_sync);
+    let mut grantee = WorkspaceSync::rejoin(
+        &mut team.grantee.service,
+        team.grantee_folder.engine.clone(),
+        workspace,
+        &mut team.grantee_folder.registry,
+    )
+    .await
+    .expect("the folder connects");
+    settle(&mut grantee, &mut team.grantee).await;
+    assert_eq!(grantee.workspace(), workspace);
+    let held: Vec<String> = grantee.held_roots().into_iter().map(|h| h.0).collect();
+    assert_eq!(held, ["Pay"]);
+    assert_eq!(grantee.rid_at("Pay/Salaries.md"), None);
+    assert_eq!(grantee.status().held, 1, "the edited plan waits for review");
+    assert_eq!(
+        std::fs::read(team.grantee_folder.path("Plan.md")).unwrap(),
+        b"# Edited offline\n"
+    );
+    assert_eq!(
+        std::fs::read(team.grantee_folder.path("Pay/Salaries.md")).unwrap(),
+        b"secret\n"
+    );
+    assert_eq!(grantee.status().pending, 0);
+
+    // The other member's files match, so it holds nothing.
+    let workspace = invite(
+        &mut team.owner,
+        &mut fresh,
+        &mut book,
+        &mut team.outsider,
+        Role::Editor,
+    )
+    .await;
+    drop(team.outsider_sync);
+    let mut outsider = WorkspaceSync::rejoin(
+        &mut team.outsider.service,
+        team.outsider_folder.engine.clone(),
+        workspace,
+        &mut team.outsider_folder.registry,
+    )
+    .await
+    .expect("the folder connects");
+    settle(&mut outsider, &mut team.outsider).await;
+    assert_eq!(outsider.status().held, 0);
+    assert_eq!(outsider.status().held_roots, 0);
+    assert!(outsider.rid_at("Plan.md").is_some());
+
+    // Nothing held reached the owner.
+    settle(&mut fresh, &mut team.owner).await;
+    assert_eq!(
+        std::fs::read(team.folder.path("Plan.md")).unwrap(),
+        b"# Plan\n"
+    );
+}
+
+/// A member can't move a folder off a workspace that's still open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_folder_of_an_open_workspace_stays_with_it() {
+    let server = Server::start().await;
+    let mut team = team(&server).await;
+    let other = team
+        .owner
+        .service
+        .create_workspace("Another")
+        .await
+        .expect("created");
+    let refused = WorkspaceSync::rejoin(
+        &mut team.owner.service,
+        team.folder.engine.clone(),
+        other.workspace,
+        &mut team.folder.registry,
+    )
+    .await;
+    assert!(matches!(refused, Err(SyncError::Invalid(_))));
+    assert!(
+        team.folder
+            .registry
+            .of_folder(team.folder.engine.root())
+            .is_some_and(|entry| entry.workspace == team.sync.workspace())
+    );
 }

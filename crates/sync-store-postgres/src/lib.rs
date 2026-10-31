@@ -51,7 +51,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 pub use admin::{
-    DatabaseState, MIGRATOR, inspect, migrate, store_secret_check, track_commit_timestamp,
+    DatabaseState, MIGRATOR, inspect, live_instances, migrate, raise_generation,
+    store_secret_check, track_commit_timestamp,
 };
 pub use limiter::PgLimiter;
 pub use txn::PgTxn;

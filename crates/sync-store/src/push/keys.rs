@@ -107,23 +107,6 @@ pub(crate) async fn apply_change(
     index: usize,
     change: &Signed<PolicyChange>,
 ) -> Result<Vec<Receipt>> {
-    if !matches!(
-        change.body.kind,
-        PolicyKind::AccountHeads
-            | PolicyKind::AddMember { .. }
-            | PolicyKind::SetRole { .. }
-            | PolicyKind::RemoveMember { .. }
-            | PolicyKind::TransferOwner { .. }
-            | PolicyKind::CreateDomain { .. }
-            | PolicyKind::SetAccess { .. }
-            | PolicyKind::DeleteDomain { .. }
-    ) {
-        // accept_reset arrives with ticket 60.
-        return Err(refuse(
-            "bad_request",
-            "this server takes no accept_reset in a push yet",
-        ));
-    }
     let current = state.policy.clone();
     let prev = current.head_snapshot();
     let accounts: BTreeSet<Id> = prev
@@ -138,6 +121,7 @@ pub(crate) async fn apply_change(
         .check(change, &chains)
         .map_err(|e| refuse(e.server_code(), e.to_string()))?;
     let raises = adds_someone(change, prev, &next);
+    crate::reset::check_accept_reset(txn, &current, workspace, change, state.now).await?;
     if let PolicyKind::AddMember {
         account,
         role,

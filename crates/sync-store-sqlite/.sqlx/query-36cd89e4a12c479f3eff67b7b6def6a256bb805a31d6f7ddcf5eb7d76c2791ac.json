@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM reset_codes WHERE expires_at <= ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "36cd89e4a12c479f3eff67b7b6def6a256bb805a31d6f7ddcf5eb7d76c2791ac"
+}

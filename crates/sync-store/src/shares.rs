@@ -334,7 +334,14 @@ impl<B: Backend> Store<B> {
         let row = self
             .backend
             .read(Box::new(move |txn: &mut B::Read| {
-                Box::pin(async move { txn.share(token_hash).await })
+                Box::pin(async move {
+                    let Some(row) = txn.share(token_hash).await? else {
+                        return Ok(None);
+                    };
+                    // A closed workspace's links stop with it (§14).
+                    let open = txn.workspace(row.workspace).await?.is_some();
+                    Ok(open.then_some(row))
+                })
             }))
             .await?
             .filter(|row| row.expires_at > now)

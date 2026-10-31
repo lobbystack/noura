@@ -85,6 +85,11 @@ fn text_review_lines(sync: &WorkspaceSync) -> Vec<String> {
 /// The open workspace and its sync.
 #[derive(Default)]
 pub(super) struct Folder {
+    /// You asked to reset your devices from the restore notice.
+    reset_wanted: bool,
+    /// This folder's workspace has yet to accept a reset, so it stays out
+    /// of sync until then.
+    reset_held: bool,
     engine: Option<Arc<WorkspaceEngine>>,
     sync: Option<WorkspaceSync>,
     last_error: Option<String>,
@@ -96,6 +101,9 @@ pub(super) struct Folder {
     /// The folder's journal holds another replica ID: it waits for you to
     /// connect it.
     not_connected: bool,
+    /// The server lost the account this folder synced under, with the
+    /// device this computer held there (§14).
+    account_lost: Option<sync_protocol::types::Id>,
     /// The workspace's realtime channel and its pull schedule.
     live: Live,
 }
@@ -231,6 +239,14 @@ impl Folder {
                     .collect();
                 screen
             }
+            None if signed_in && self.account_lost.is_some() => FolderSyncScreen {
+                phase: FolderSyncPhase::AccountLost,
+                restore: Some(crate::folder_sync::lost_notice(
+                    &crate::sync::workspace::restore::Lost::Server,
+                    false,
+                )),
+                ..FolderSyncScreen::default()
+            },
             None if signed_in && self.not_connected => FolderSyncScreen {
                 phase: FolderSyncPhase::NotConnected,
                 ..FolderSyncScreen::default()
@@ -259,6 +275,7 @@ impl Folder {
         self.last_error = None;
         self.rebuild = false;
         self.not_connected = false;
+        self.account_lost = None;
         self.engine = engine;
         self.open(service, store, app_data);
     }
@@ -294,6 +311,15 @@ impl Folder {
             &registry,
         ) {
             Ok(sync) => self.sync = Some(sync),
+            Err(SyncError::Check("sync_restore_lost")) => {
+                self.account_lost = crate::sync::workspace::restore::lost_with_its_server(
+                    entry,
+                    service.credentials(),
+                    &**store,
+                )
+                .ok()
+                .flatten();
+            }
             Err(SyncError::Check("sync_journal_lost" | "sync_journal_rollback")) => {
                 self.rebuild = true;
             }
@@ -323,14 +349,74 @@ impl Folder {
             .clone()
             .ok_or_else(|| SyncError::Invalid("Choose a folder first.".into()))?;
         let mut registry = Registry::open(app_data)?;
-        let sync = WorkspaceSync::download(service, engine, workspace, &mut registry).await?;
+        // The folder you synced before connects to the workspace an owner
+        // set up again (§14); it matches rather than downloads.
+        let rejoining = registry
+            .of_folder(engine.root())
+            .is_some_and(|entry| entry.workspace != workspace);
+        let sync = if rejoining {
+            // The old workspace's sync lets go of the folder's journal; the
+            // next tick opens it again after a failure.
+            self.sync = None;
+            WorkspaceSync::rejoin(service, engine, workspace, &mut registry).await?
+        } else {
+            WorkspaceSync::download(service, engine, workspace, &mut registry).await?
+        };
         self.sync = Some(sync);
         self.last_error = None;
         self.not_connected = false;
         Ok(())
     }
 
+    /// Lets go of the device a reset retired. While `waits` names the
+    /// workspace of this folder, it stays out of sync until that workspace
+    /// accepts the reset (§7) and the folder connects again.
+    pub(super) fn after_reset(&mut self, waits: &[sync_protocol::types::Id], app_data: &Path) {
+        self.sync = None;
+        self.live = Live::default();
+        self.rebuild = false;
+        self.account_lost = None;
+        self.reset_held = self
+            .workspace_of_folder(app_data)
+            .is_some_and(|w| waits.contains(&w));
+    }
+
+    /// The workspace the registry maps this folder to.
+    pub(super) fn workspace_of_folder(&self, app_data: &Path) -> Option<sync_protocol::types::Id> {
+        let engine = self.engine.as_ref()?;
+        let registry = Registry::open(app_data).ok()?;
+        registry
+            .of_folder(engine.root())
+            .map(|entry| entry.workspace)
+    }
+
+    /// Set up sync again from a reset owner's new card (§14).
+    pub(super) async fn set_up_after_reset(
+        &mut self,
+        service: &mut SyncService,
+        retired: Option<sync_protocol::types::Id>,
+        app_data: &Path,
+    ) -> Result<(), SyncError> {
+        let engine = self
+            .engine
+            .clone()
+            .ok_or_else(|| SyncError::Invalid("Open the workspace's folder first.".into()))?;
+        let mut registry = Registry::open(app_data)?;
+        let sync =
+            WorkspaceSync::set_up_after_reset(service, engine, &mut registry, retired).await?;
+        self.sync = Some(sync);
+        self.reset_held = false;
+        self.not_connected = false;
+        self.account_lost = None;
+        self.last_error = None;
+        Ok(())
+    }
+
     /// The open workspace's sync, when it syncs.
+    pub(super) fn take_reset_wanted(&mut self) -> bool {
+        std::mem::take(&mut self.reset_wanted)
+    }
+
     pub(super) fn sync_mut(&mut self) -> Option<&mut WorkspaceSync> {
         self.sync.as_mut()
     }
@@ -365,6 +451,9 @@ impl Folder {
         let Some(service) = service else {
             return;
         };
+        if self.reset_held {
+            return;
+        }
         self.open(Some(service), store, app_data);
         if self.rebuild
             && let Some(engine) = self.engine.clone()
@@ -422,6 +511,22 @@ impl Folder {
             Err(error) => {
                 tracing::warn!(kind = ?error.code(), "a sync round failed");
                 self.last_error = Some(folder_message(&error));
+            }
+        }
+        if self.sync.as_ref().is_some_and(|sync| sync.revoke_due()) {
+            let device = service.credentials().keys.device();
+            let revoked = match crate::sync::shares::ShareBook::open(app_data, device) {
+                Ok(book) => service.revoke_shares_again(&book).await,
+                Err(error) => Err(error),
+            };
+            match revoked {
+                Ok(()) => {
+                    let saved = self.sync.as_mut().map(|sync| sync.revoked_again());
+                    if let Some(Err(error)) = saved {
+                        tracing::warn!(kind = ?error.code(), "keeping the revocation failed");
+                    }
+                }
+                Err(error) => tracing::warn!(kind = ?error.code(), "revoking links again failed"),
             }
         }
         if let Some(sync) = self.sync.as_mut() {
@@ -548,6 +653,32 @@ impl Folder {
                     sync.keep_deleted_away(&path)?;
                 }
             }
+            FolderSyncAction::DismissRestore => {
+                if let Some(sync) = self.sync.as_mut() {
+                    sync.dismiss_restore_alert()?;
+                }
+            }
+            // The account screens take it from here: a new sign-in, then
+            // the emailed code.
+            FolderSyncAction::ResetDevices => self.reset_wanted = true,
+            FolderSyncAction::SetUpAgain if self.account_lost.is_some() => {
+                let Some(service) = service else {
+                    return Err(SyncError::Invalid(
+                        "Sign in to a sync account to set this workspace up again.".into(),
+                    ));
+                };
+                self.set_up_after_reset(service, self.account_lost, app_data)
+                    .await?;
+            }
+            FolderSyncAction::SetUpAgain => {
+                let (Some(sync), Some(service)) = (self.sync.as_mut(), service) else {
+                    return Err(SyncError::Invalid(
+                        "Sign in to a sync account to set this workspace up again.".into(),
+                    ));
+                };
+                let fresh = sync.set_up_again(service, &mut registry).await?;
+                self.sync = Some(fresh);
+            }
             FolderSyncAction::Connect => {
                 let (Some(engine), Some(service)) = (self.engine.clone(), service) else {
                     return Err(SyncError::Invalid(
@@ -567,6 +698,7 @@ impl Folder {
                 };
                 registry.connect(&server, account, workspace, engine.root())?;
                 self.sync = Some(WorkspaceSync::rebuild(service, engine, &mut registry).await?);
+                self.reset_held = false;
                 self.not_connected = false;
                 self.last_error = None;
             }

@@ -121,7 +121,7 @@ async fn migrate_then_serve_on_an_empty_postgres_database() {
     ));
     assert!(first.status.success(), "{}", stderr(&first));
     assert!(
-        stderr(&first).contains("ran 8 migration(s)"),
+        stderr(&first).contains("ran 9 migration(s)"),
         "{}",
         stderr(&first)
     );
@@ -141,7 +141,10 @@ async fn migrate_then_serve_on_an_empty_postgres_database() {
             .expect("the server row");
     assert_eq!(check, secret_check(&secret).expose().to_vec());
     assert_ne!(check, secret.expose().to_vec());
-    assert_eq!(generation, 1);
+    assert!(
+        generation > 1_000_000_000,
+        "the generation starts at the Unix time"
+    );
     let applied: Vec<(i64, Vec<u8>)> =
         sqlx::query_as("SELECT version, checksum FROM _sqlx_migrations ORDER BY version")
             .fetch_all(&mut connection)
@@ -730,4 +733,73 @@ async fn an_upload_across_two_instances_completes_on_postgres_and_s3() {
             plaintext
         );
     }
+}
+
+/// `mark-restored` refuses a database a running instance holds a lease on,
+/// a missing or different secret, and otherwise raises the generation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mark_restored_on_postgres_refuses_a_running_instance_and_a_bad_secret() {
+    let secret = random_secret();
+    let (database, root) = migrated(&secret).await;
+    let data = root.path().join("data");
+    let mark = |secret: Option<&SecretKey>| {
+        output(&mut postgres(
+            &["mark-restored"],
+            &data,
+            &database.url,
+            secret,
+        ))
+    };
+    let missing = mark(None);
+    assert!(!missing.status.success());
+    let different = mark(Some(&random_secret()));
+    assert!(!different.status.success());
+    assert!(stderr(&different).contains("doesn't match"));
+
+    let server = Server::start_with(&mut postgres(
+        &["serve"],
+        &data,
+        &database.url,
+        Some(&secret),
+    ));
+    let running = mark(Some(&secret));
+    assert!(!running.status.success());
+    assert!(
+        stderr(&running).contains("stop `serve`"),
+        "{}",
+        stderr(&running)
+    );
+    let client = Client::new(server.base(), None);
+    let before: String = client
+        .get("/v2/limits")
+        .await
+        .generation()
+        .expect("a header")
+        .into();
+    server.kill();
+    let mut connection = sqlx::postgres::PgConnection::connect(&database.url)
+        .await
+        .expect("connects");
+    sqlx::query("DELETE FROM instances")
+        .execute(&mut connection)
+        .await
+        .expect("the killed server's lease goes");
+    connection.close().await.expect("closed");
+    let marked = mark(Some(&secret));
+    assert!(marked.status.success(), "{}", stderr(&marked));
+
+    let server = Server::start_with(&mut postgres(
+        &["serve"],
+        &data,
+        &database.url,
+        Some(&secret),
+    ));
+    let client = Client::new(server.base(), None);
+    let after: String = client
+        .get("/v2/limits")
+        .await
+        .generation()
+        .expect("a header")
+        .into();
+    assert!(after.parse::<u64>().expect("a number") > before.parse::<u64>().expect("a number"));
 }

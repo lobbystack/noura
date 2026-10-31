@@ -338,4 +338,79 @@ fn recovery_cases(f: &mut Fixture) {
             "expect": expect,
         }));
     }
+
+    // After a restore (§14): the kit's heads compare like any state a
+    // device accepted. `served` is the chain the server holds, and the kit
+    // names `kit_head`. The app's recovery runs these.
+    let account = |name: &str, served: &Chain, kit_head, restored, expect: Option<&str>| {
+        json!({
+            "kind": "kit_account_head",
+            "name": name,
+            "served": links(served),
+            "kit_head": kit_head,
+            "restored": restored,
+            "expect": expect,
+        })
+    };
+    let workspace = |name: &str, answer: &str, restored, expect: &str| {
+        json!({
+            "kind": "kit_workspace_head",
+            "name": name,
+            "answer": answer,
+            "restored": restored,
+            "expect": expect,
+        })
+    };
+    f.set(
+        "restore_cases",
+        json!([
+            account(
+                "the_server_holds_the_kits_account_head",
+                &recovery,
+                chain.head(),
+                true,
+                None,
+            ),
+            account(
+                "a_restore_lost_the_kits_account_head_so_reset_devices",
+                &chain,
+                recovery.head(),
+                true,
+                Some("sync_restore_lost"),
+            ),
+            account(
+                "the_same_chain_without_a_new_generation_forked",
+                &chain,
+                recovery.head(),
+                false,
+                Some("sync_account_forked"),
+            ),
+            workspace(
+                "a_policy_below_the_kits_head",
+                "sync_policy_rollback",
+                true,
+                "stops"
+            ),
+            workspace(
+                "a_policy_beside_the_kits_head",
+                "sync_policy_forked",
+                true,
+                "stops"
+            ),
+            workspace(
+                "the_change_naming_the_identity_went",
+                "forbidden",
+                true,
+                "stops"
+            ),
+            workspace("the_whole_workspace_went", "not_found", true, "stops"),
+            workspace(
+                "a_lower_policy_without_a_new_generation_fails",
+                "sync_policy_rollback",
+                false,
+                "fails",
+            ),
+            workspace("a_network_error_fails", "network", true, "fails"),
+        ]),
+    );
 }

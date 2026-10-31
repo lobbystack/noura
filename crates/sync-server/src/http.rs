@@ -793,6 +793,41 @@ async fn pending_devices<B: Backend>(
     Ok(ok(&store.pending_devices(session, id(&workspace)?).await?))
 }
 
+async fn missing_blobs<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments(workspace): Segments<String>,
+) -> Result<Response, ApiError> {
+    Ok(ok(&store.missing_blobs(session, id(&workspace)?).await?))
+}
+
+async fn close_workspace<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    Segments(workspace): Segments<String>,
+) -> Result<Response, ApiError> {
+    store.close_workspace(session, id(&workspace)?).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn account_reset<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let mut key = b"account-reset:".to_vec();
+    key.extend_from_slice(&session.account.0);
+    let limiter = store.backend().limiter();
+    if let sync_store::Taken::Refused { retry_after } =
+        sync_store::Limiter::take(&*limiter, &key, 1, crate::accounts::RESET_ATTEMPTS).await?
+    {
+        return Err(crate::accounts::too_many_resets(retry_after));
+    }
+    let request = decode(&body(request).await?)?;
+    store.reset_account(session, request).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 async fn not_found() -> ApiError {
     refused("not_found", "no such route")
 }
@@ -853,6 +888,11 @@ pub fn router<B: Backend>(state: AppState<B>) -> Router {
             "/v2/workspaces",
             get(list_workspaces::<B>).post(create_workspace::<B>),
         )
+        .route(
+            "/v2/workspaces/{w}",
+            axum::routing::delete(close_workspace::<B>),
+        )
+        .route("/v2/account/reset", post(account_reset::<B>))
         .route("/v2/workspaces/{w}/policy", get(policy::<B>))
         .route("/v2/workspaces/{w}/keys", get(keys::<B>))
         .route("/v2/workspaces/{w}/keys/current", get(current_keys::<B>))
@@ -884,6 +924,7 @@ pub fn router<B: Backend>(state: AppState<B>) -> Router {
             "/v2/workspaces/{w}/pending-devices",
             get(pending_devices::<B>),
         )
+        .route("/v2/workspaces/{w}/missing-blobs", get(missing_blobs::<B>))
         .route("/v2/workspaces/{w}/pull", post(pull::<B>))
         .route(
             "/v2/workspaces/{w}/realtime",

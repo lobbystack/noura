@@ -64,10 +64,54 @@ impl WorkspaceSync {
         }
         let mut remote = self.remote.take().ok_or(SyncError::KeyMissing)?;
         let pushed = self
-            .push_add_member(service, &mut remote, candidate, invitation, role)
+            .push_add_member(service, &mut remote, candidate, Some((invitation, role)))
             .await;
         self.state.policy = policy_changes(&remote.policy);
         self.remote = Some(remote);
+        let revision = pushed?;
+        self.save()?;
+        Ok(revision)
+    }
+
+    /// Commits a reset you confirmed after comparing the approval code
+    /// (§7, §8): one `accept_reset` recording the account's new head, with
+    /// the new cards' workspace-domain envelopes. An owner or admin device
+    /// may sign it while the workspace is stopped for that account's chain.
+    /// Returns the new policy revision.
+    pub async fn accept_reset(
+        &mut self,
+        service: &mut SyncService,
+        mut offer: OutstandingOffer,
+    ) -> Result<u64, SyncError> {
+        let candidate = offer
+            .offer
+            .body
+            .candidate_head
+            .clone()
+            .ok_or(SyncError::Check("sync_approval_mismatch"))?;
+        let code = service.approval_code(&mut offer).await;
+        service.outstanding = None;
+        if code?.is_none() {
+            return Err(SyncError::Invalid(
+                "the other device hasn't shown its code yet".into(),
+            ));
+        }
+        if let Some(super::restore::Lost::MemberAccount(account)) = self.state.restore.lost {
+            service.kept_heads_mut().excuse_short(account);
+        }
+        let mut remote = match self.remote.take() {
+            Some(remote) => remote,
+            None => self.open_for_reset(service).await?,
+        };
+        let pushed = self
+            .push_add_member(service, &mut remote, candidate, None)
+            .await;
+        // A stopped device accepts the change only by verifying it from the
+        // server, which is what ends the stop (§14).
+        if !self.halted() {
+            self.state.policy = policy_changes(&remote.policy);
+            self.remote = Some(remote);
+        }
         let revision = pushed?;
         self.save()?;
         Ok(revision)
@@ -78,8 +122,7 @@ impl WorkspaceSync {
         service: &mut SyncService,
         remote: &mut super::super::RemoteWorkspace,
         candidate: sync_protocol::records::AccountHead,
-        invitation: sync_protocol::types::Id,
-        role: sync_protocol::records::Role,
+        invited: Option<(sync_protocol::types::Id, sync_protocol::records::Role)>,
     ) -> Result<u64, SyncError> {
         service.refresh_policy(remote).await?;
         let mut chains = service.chains_of(remote).await?;
@@ -117,10 +160,15 @@ impl WorkspaceSync {
                 signer: keys.device(),
                 heads: Sorted::new(heads.into_values().collect())
                     .map_err(|e| SyncError::Invalid(e.name().to_owned()))?,
-                kind: PolicyKind::AddMember {
-                    account: candidate.account,
-                    role,
-                    invitation,
+                kind: match invited {
+                    Some((invitation, role)) => PolicyKind::AddMember {
+                        account: candidate.account,
+                        role,
+                        invitation,
+                    },
+                    None => PolicyKind::AcceptReset {
+                        account: candidate.account,
+                    },
                 },
             },
             keys.signing(),
@@ -130,26 +178,30 @@ impl WorkspaceSync {
             .check(&change, &chains)
             .map_err(|e| SyncError::Check(e.client_code()))?;
         let envelopes = service.envelopes_for(remote, &before, &next)?;
-        let bundle = self
-            .state
-            .log
-            .checkpoints
-            .sign(
-                self.state.workspace,
-                self.state.domain,
-                self.state.log.cursor,
-                self.state.log.retention_floor,
-                &self.state.log.live,
-                &remote.policy,
-                keys.device(),
-                keys.signing(),
-            )
-            .ok_or_else(|| {
-                SyncError::Invalid("the workspace domain has nothing to checkpoint yet".into())
-            })?;
         let mut records = vec![RecordRef::Policy(change.clone())];
         records.extend(envelopes.into_iter().map(RecordRef::Envelope));
-        records.push(RecordRef::CheckpointBundle(bundle));
+        // A new member's history floor needs a checkpoint to bootstrap
+        // from; an accepted reset keeps the floor it has.
+        if invited.is_some() {
+            let bundle = self
+                .state
+                .log
+                .checkpoints
+                .sign(
+                    self.state.workspace,
+                    self.state.domain,
+                    self.state.log.cursor,
+                    self.state.log.retention_floor,
+                    &self.state.log.live,
+                    &remote.policy,
+                    keys.device(),
+                    keys.signing(),
+                )
+                .ok_or_else(|| {
+                    SyncError::Invalid("the workspace domain has nothing to checkpoint yet".into())
+                })?;
+            records.push(RecordRef::CheckpointBundle(bundle));
+        }
         service.client.push(remote.workspace, records).await?;
         remote
             .policy

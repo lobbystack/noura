@@ -33,6 +33,7 @@ mod devices;
 mod domains;
 mod invitations;
 mod keys;
+mod resets;
 mod retention;
 mod shares;
 pub use blobs::*;
@@ -41,6 +42,7 @@ pub use devices::*;
 pub use domains::*;
 pub use invitations::*;
 pub use keys::*;
+pub use resets::*;
 pub use retention::*;
 pub use shares::*;
 
@@ -140,6 +142,14 @@ macro_rules! conformance_tests {
             usage_alone_over_quota_moves_no_floor,
             replacements_stop_at_honest_rotations,
             a_closed_workspace_is_reclaimed_domain_by_domain,
+            reset_codes_retire_the_chain,
+            accept_reset_commits_an_approval,
+            an_accepted_account_keeps_its_history_floor,
+            closing_a_workspace_answers_not_found,
+            a_reset_owner_closes_a_workspace_nobody_else_can_accept,
+            an_accept_reset_without_a_request_is_forbidden,
+            a_reset_owner_with_another_admin_can_not_close,
+            an_accepted_reset_leaves_the_ordinary_closing_rule,
             an_account_belongs_to_at_most_a_thousand_workspaces,
             an_account_in_a_thousand_workspaces_joins_no_more,
         );
@@ -3161,9 +3171,9 @@ pub async fn chain_reads_follow_the_policy<B: Backend>(store: Store<B>) {
 
 /// A chain that a reset retired while a workspace still names it for a
 /// current member reaches that workspace's devices in full, as it did while
-/// it was current, until the workspace accepts the reset (§7). The new
-/// chain, which the workspace doesn't record yet, reads not at all through
-/// it.
+/// it was current, until the workspace accepts the reset (§7). Its devices
+/// also read the new chain, for the fingerprint their alert shows; an
+/// account outside the workspace doesn't.
 pub async fn a_retired_chain_the_workspace_names_reads_in_full<B: Backend>(store: Store<B>) {
     let mut world = World::new(store, 1).await;
     let (member, _, member_links) = account(2);
@@ -3233,7 +3243,27 @@ pub async fn a_retired_chain_the_workspace_names_reads_in_full<B: Backend>(store
             .expect("in full while the workspace names it"),
         (sync_protocol::messages::ChainStatus::Retired, 2)
     );
-    assert_eq!(refusal(read(new).await).code, "not_found");
+    // Until the workspace accepts the reset, its devices read the new chain
+    // to show the new fingerprint (§7). An account outside it doesn't.
+    assert_eq!(
+        read(new).await.expect("the new fingerprint"),
+        (sync_protocol::messages::ChainStatus::Current, 1)
+    );
+    let outsider = invitations::Invitee::new(&world.store).await;
+    let hidden = world
+        .store
+        .read_chains(
+            outsider.session,
+            sync_protocol::messages::ChainsRequest {
+                cursors: List(vec![sync_protocol::messages::ChainCursor {
+                    account: member,
+                    genesis: Some(new),
+                    after: 0,
+                }]),
+            },
+        )
+        .await;
+    assert_eq!(refusal(hidden).code, "not_found");
 }
 
 /// `POST /v2/recovery` (§12): a proof from the active recovery identity for

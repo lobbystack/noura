@@ -135,6 +135,9 @@ pub struct State {
     /// saved with the files of each bucket it installed.
     #[serde(default)]
     pub bootstrap_progress: Option<BootstrapProgress>,
+    /// What the device keeps of a server restore (§14).
+    #[serde(default)]
+    pub restore: super::restore::Restore,
     /// The objects whose changes the server last refused with
     /// `quota_exceeded`, which wait on this device for space (§20).
     #[serde(default)]
@@ -325,6 +328,10 @@ pub struct Log {
     /// revision: a workspace-domain object below it awaits its move (§9).
     #[serde(default)]
     pub domain_entries: BTreeMap<u64, u64>,
+    /// The final head of each device a change took write access from
+    /// (§14), which no rewind or generation change alters.
+    #[serde(default)]
+    pub final_heads: Vec<super::restore::FinalHead>,
 }
 
 impl Log {
@@ -345,7 +352,109 @@ impl Log {
             checkpoints: Default::default(),
             forked: BTreeMap::new(),
             domain_entries: BTreeMap::new(),
+            final_heads: Vec::new(),
         }
+    }
+
+    /// Notes each device whose write access to `domain` the change at
+    /// `revision`, whose entry sits at `seq`, ended: its chain head there
+    /// now is its final head (§14). A later change that gives the access
+    /// back closes the head's window, and a generation change alters
+    /// neither.
+    pub fn note_write_access(
+        &mut self,
+        domain: &Id,
+        revision: u64,
+        seq: u64,
+        prev: &sync_protocol::policy::Snapshot,
+        next: &sync_protocol::policy::Snapshot,
+    ) -> Result<(), super::SyncError> {
+        for kept in self.final_heads.iter_mut() {
+            if kept.until.is_none()
+                && kept.revision < revision
+                && next.can_write(&kept.device, domain)
+            {
+                kept.until = Some(seq);
+            }
+        }
+        for device in prev.devices.keys() {
+            if prev.can_write(device, domain) && !next.can_write(device, domain) {
+                let head = self.verifier.head(device);
+                let kept = self
+                    .final_heads
+                    .iter_mut()
+                    .find(|k| k.device == *device && k.revision == revision);
+                match kept {
+                    // A rewind reached the change's entry again: the head
+                    // there must be the one the device kept.
+                    Some(kept) => {
+                        if (kept.counter, kept.digest) != (head.counter, head.digest) {
+                            return Err(super::SyncError::Check("sync_restore_lost"));
+                        }
+                        kept.entry = seq;
+                    }
+                    None => self.final_heads.push(super::restore::FinalHead {
+                        device: *device,
+                        revision,
+                        entry: seq,
+                        counter: head.counter,
+                        digest: head.digest,
+                        until: None,
+                        records: Vec::new(),
+                    }),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuses a record that disagrees with a final head during the pull
+    /// (§14): at or below its counter, one other than those the device
+    /// fetched by position, and above it, one before the change's entry.
+    pub fn check_final_record(
+        &self,
+        device: &Id,
+        counter: u64,
+        digest: &Digest,
+        seq: u64,
+    ) -> Result<(), super::SyncError> {
+        for kept in self.final_heads.iter().filter(|k| k.device == *device) {
+            if kept.until.is_some_and(|until| until <= seq) {
+                continue;
+            }
+            let refused = if counter <= kept.counter {
+                !kept.records.is_empty() && !kept.records.contains(&(counter, *digest))
+            } else {
+                seq < kept.entry
+            };
+            if refused {
+                return Err(super::SyncError::Check("sync_restore_lost"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuses a checkpoint that covers a change's entry and lists another
+    /// head than the final head kept for it (§14).
+    pub fn check_final_heads(
+        &self,
+        covered: u64,
+        heads: &[sync_protocol::records::Ref],
+        may_leave: impl Fn(&Id) -> bool,
+    ) -> Result<(), super::SyncError> {
+        for kept in &self.final_heads {
+            if kept.entry > covered || kept.until.is_some_and(|until| until <= covered) {
+                continue;
+            }
+            let agrees = match heads.iter().find(|h| h.device == kept.device) {
+                Some(head) => (head.counter, head.op_digest) == (kept.counter, kept.digest),
+                None => kept.counter == 0 || may_leave(&kept.device),
+            };
+            if !agrees {
+                return Err(super::SyncError::Check("sync_restore_lost"));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -540,4 +649,114 @@ pub struct Held {
     pub path: String,
     /// Its revision.
     pub revision: Digest,
+}
+
+#[cfg(test)]
+mod final_head_tests {
+    use super::*;
+    use crate::sync::workspace::restore::FinalHead;
+    use sync_protocol::records::Ref;
+
+    fn kept(until: Option<u64>) -> FinalHead {
+        FinalHead {
+            device: Id([1; 16]),
+            revision: 2,
+            entry: 10,
+            counter: 3,
+            digest: Digest([7; 32]),
+            until,
+            records: Vec::new(),
+        }
+    }
+
+    fn head(counter: u64, digest: u8) -> Ref {
+        Ref {
+            device: Id([1; 16]),
+            counter,
+            seq: 9,
+            op_digest: Digest([digest; 32]),
+        }
+    }
+
+    #[test]
+    fn a_checkpoint_past_the_entry_lists_exactly_the_final_head() {
+        let mut log = Log::new(Id([2; 16]));
+        log.final_heads.push(kept(None));
+        let stays = |_: &Id| false;
+        assert!(log.check_final_heads(12, &[head(3, 7)], stays).is_ok());
+        assert!(
+            log.check_final_heads(12, &[], |_| true).is_ok(),
+            "a head leaves under §17's rule"
+        );
+        let dropped = log.check_final_heads(12, &[], stays);
+        assert_eq!(
+            dropped
+                .err()
+                .and_then(|e| e.code().map(str::to_owned))
+                .as_deref(),
+            Some("sync_restore_lost"),
+            "a demoted device stays listed"
+        );
+        assert_eq!(
+            log.check_final_heads(12, &[head(4, 8)], stays)
+                .err()
+                .and_then(|e| e.code().map(str::to_owned))
+                .as_deref(),
+            Some("sync_restore_lost")
+        );
+        assert!(
+            log.check_final_heads(9, &[head(4, 8)], stays).is_ok(),
+            "a checkpoint below the entry doesn't cover it"
+        );
+    }
+
+    #[test]
+    fn a_change_that_gives_access_back_ends_the_window() {
+        let mut log = Log::new(Id([2; 16]));
+        log.final_heads.push(kept(Some(11)));
+        assert!(log.check_final_heads(12, &[head(4, 8)], |_| false).is_ok());
+    }
+
+    #[test]
+    fn the_pull_takes_no_other_record_at_or_below_a_final_head() {
+        let mut log = Log::new(Id([2; 16]));
+        log.final_heads.push(FinalHead {
+            records: vec![(2, Digest([5; 32])), (3, Digest([7; 32]))],
+            ..kept(None)
+        });
+        let device = Id([1; 16]);
+        assert!(
+            log.check_final_record(&device, 3, &Digest([7; 32]), 8)
+                .is_ok()
+        );
+        assert!(
+            log.check_final_record(&device, 3, &Digest([8; 32]), 8)
+                .is_err(),
+            "a record signed again"
+        );
+        assert!(
+            log.check_final_record(&device, 4, &Digest([8; 32]), 9)
+                .is_err(),
+            "above the final head, before the entry"
+        );
+        assert!(
+            log.check_final_record(&device, 4, &Digest([8; 32]), 11)
+                .is_ok()
+        );
+        assert!(
+            log.check_final_record(&Id([3; 16]), 4, &Digest([8; 32]), 9)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_zero_final_head_needs_no_listed_head() {
+        let mut log = Log::new(Id([2; 16]));
+        log.final_heads.push(FinalHead {
+            counter: 0,
+            digest: Digest::ZERO,
+            ..kept(None)
+        });
+        assert!(log.check_final_heads(12, &[], |_| false).is_ok());
+    }
 }

@@ -113,6 +113,152 @@ fn resign(
     Signed::sign(body, signer.keys.signing())
 }
 
+fn hex_links(chain: &Chain) -> Vec<String> {
+    chain.links.iter().map(|l| to_hex(&l.to_bytes())).collect()
+}
+
+/// The reset cases of §7 and §14, beside `cases`: the app's kept heads and
+/// alerts run them, not the chain verifier alone.
+fn reset_cases(f: &mut Fixture) {
+    use super::policy::{Person, add_member, chains, changes, genesis};
+    use sync_protocol::messages::{DeviceRemovedDetail, Pending};
+    use sync_protocol::records::{PolicyKind, Role};
+
+    let owner = Person::new("rhea");
+    let mut member = Person::new("sam");
+    let phone = member.add("sam phone");
+    let old_short = Chain {
+        links: member.chain.links[..1].to_vec(),
+    };
+    let new_laptop = Actor::new("sam", "sam reset laptop");
+    let new = Person {
+        chain: Chain::genesis(&new_laptop),
+        devices: vec![new_laptop.clone()],
+    };
+    for actor in [owner.first(), member.first(), &phone, &new_laptop] {
+        f.actor(actor);
+    }
+    let fingerprint = new.chain.links[0].digest().to_hex();
+    let all = [&owner.chain, &member.chain, &new.chain];
+
+    let mut unnamed = genesis(&owner);
+    add_member(&mut unnamed, &owner, &member, Role::Editor);
+    let mut accepted = unnamed.clone();
+    accepted.push(
+        owner.first(),
+        vec![owner.head(), new.head()],
+        PolicyKind::AcceptReset {
+            account: member.account(),
+        },
+    );
+    let mut invited = genesis(&owner);
+    add_member(&mut invited, &owner, &new, Role::Editor);
+    let started = genesis(&new);
+    let mut cases = Vec::new();
+    for (name, policy, expect) in [
+        (
+            "a_new_genesis_no_workspace_names",
+            &unnamed,
+            "sync_account_unauthorized",
+        ),
+        ("a_new_genesis_an_accept_reset_names", &accepted, "ok"),
+        ("a_new_genesis_an_add_member_names", &invited, "ok"),
+        ("a_new_genesis_a_workspace_genesis_names", &started, "ok"),
+    ] {
+        cases.push(json!({
+            "kind": "new_genesis",
+            "name": name,
+            "kept": member.head(),
+            "account_chains": chains(&all),
+            "changes": changes(policy),
+            "new_chain": hex_links(&new.chain),
+            "expect": {"outcome": expect, "fingerprint": fingerprint},
+        }));
+    }
+
+    let detail = DeviceRemovedDetail {
+        genesis: member.chain.links[0].digest(),
+        seqno: member.head().seqno,
+    };
+    cases.push(json!({
+        "kind": "retired_device",
+        "name": "your_device_on_the_retired_chain_shows_the_new_fingerprint",
+        "detail": to_hex(&detail.to_bytes()),
+        "own_genesis": detail.genesis.to_hex(),
+        "served": hex_links(&new.chain),
+        "expect": fingerprint,
+    }));
+    cases.push(json!({
+        "kind": "retired_device",
+        "name": "a_current_chain_under_your_genesis_is_no_reset",
+        "detail": to_hex(&detail.to_bytes()),
+        "own_genesis": detail.genesis.to_hex(),
+        "served": hex_links(&member.chain),
+        "expect": null,
+    }));
+    let other_workspace = super::common::id("reset other workspace");
+    let request = |workspace: Id| Pending {
+        card: Nested(new_laptop.card()),
+        commit: Digest([7; 32]),
+        account: Some(new.head()),
+        invitation: None,
+        invite_proof: None,
+        workspace: Some(workspace),
+    };
+    let workspace = super::policy::workspace();
+    cases.push(json!({
+        "kind": "changed_devices",
+        "name": "a_member_sees_the_reset_with_the_new_card",
+        "workspace": workspace.to_hex(),
+        "pending": to_hex(&request(workspace).to_bytes()),
+        "expect": new_laptop.card().fingerprint().to_hex(),
+    }));
+    cases.push(json!({
+        "kind": "changed_devices",
+        "name": "a_request_for_another_workspace_shows_nothing_here",
+        "workspace": workspace.to_hex(),
+        "pending": to_hex(&request(other_workspace).to_bytes()),
+        "expect": null,
+    }));
+    cases.push(json!({
+        "kind": "two_chains",
+        "name": "two_workspaces_name_different_chains_of_one_account",
+        "account": member.account().to_hex(),
+        "first": member.chain.links[0].digest().to_hex(),
+        "second": new.chain.links[0].digest().to_hex(),
+        "expect": true,
+    }));
+    cases.push(json!({
+        "kind": "two_chains",
+        "name": "two_workspaces_name_one_chain",
+        "account": member.account().to_hex(),
+        "first": new.chain.links[0].digest().to_hex(),
+        "second": new.chain.links[0].digest().to_hex(),
+        "expect": false,
+    }));
+    // A restore cut the member's chain to one link, the member reset, and
+    // an owner accepted: the head devices kept lies past the retired copy.
+    cases.push(json!({
+        "kind": "retired_chain",
+        "name": "a_restore_cut_the_retired_chain_and_a_member_device_resumes",
+        "kept": member.head(),
+        "served": hex_links(&old_short),
+        "own_account": false,
+        "new_genesis": new.chain.links[0].digest().to_hex(),
+        "expect": {"before": "sync_account_forked", "after": "resumes"},
+    }));
+    cases.push(json!({
+        "kind": "retired_chain",
+        "name": "a_restore_cut_the_retired_chain_and_the_reset_account_resumes",
+        "kept": member.head(),
+        "served": hex_links(&old_short),
+        "own_account": true,
+        "new_genesis": new.chain.links[0].digest().to_hex(),
+        "expect": {"before": "sync_account_forked", "after": "resumes"},
+    }));
+    f.set("reset_cases", json!(cases));
+}
+
 pub fn fixture() -> Fixture {
     let c = family();
     let mut f = Fixture::new(
@@ -523,6 +669,7 @@ pub fn fixture() -> Fixture {
         None,
     );
     let _ = id_offer();
+    reset_cases(&mut f);
     f
 }
 

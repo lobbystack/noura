@@ -380,3 +380,103 @@ fn a_file_deleted_while_away_offers_delete_and_keep() {
         vec![FolderSyncAction::KeepDeletedAway("Notes/Old.md".into())]
     );
 }
+
+/// A stop after a restore names the way back, and the buttons take it.
+#[test]
+fn a_restore_notice_offers_the_way_back() {
+    use app_core::folder_sync::RestoreNotice;
+    let fake = Arc::new(FakeSync::default());
+    fake.show(FolderSyncScreen {
+        phase: FolderSyncPhase::On,
+        restore: Some(RestoreNotice {
+            line: "Sync stopped here.".into(),
+            set_up_again: true,
+            ..RestoreNotice::default()
+        }),
+        ..FolderSyncScreen::default()
+    });
+    let app_data = tempfile::tempdir().expect("a folder");
+    let mut harness = harness(app_data.path(), fake.clone());
+    assert!(
+        harness
+            .query_all_by_label("Sync stopped here.")
+            .next()
+            .is_some()
+    );
+    harness
+        .get_by_role_and_label(Role::Button, "Set up sync again")
+        .click();
+    harness.run();
+    assert_eq!(fake.taken(), vec![FolderSyncAction::SetUpAgain]);
+}
+
+#[test]
+fn an_owner_sets_up_sync_again_from_a_running_workspace() {
+    let fake = Arc::new(FakeSync::default());
+    fake.show(FolderSyncScreen {
+        phase: FolderSyncPhase::On,
+        can_set_up_again: true,
+        ..FolderSyncScreen::default()
+    });
+    let app_data = tempfile::tempdir().expect("a folder");
+    let mut harness = harness(app_data.path(), fake.clone());
+
+    // The first click only asks, and you can back out.
+    harness
+        .get_by_role_and_label(Role::Button, "Set up sync again")
+        .click();
+    harness.run();
+    assert!(fake.taken().is_empty());
+    harness
+        .get_by_role_and_label(Role::Button, "Keep this workspace")
+        .click();
+    harness.run();
+    assert!(fake.taken().is_empty());
+
+    harness
+        .get_by_role_and_label(Role::Button, "Set up sync again")
+        .click();
+    harness.run();
+    harness
+        .get_by_role_and_label(Role::Button, "Close it and set up again")
+        .click();
+    harness.run();
+    assert_eq!(fake.taken(), vec![FolderSyncAction::SetUpAgain]);
+}
+
+#[test]
+fn a_member_gets_no_control_to_set_a_workspace_up_again() {
+    let fake = Arc::new(FakeSync::default());
+    fake.show(FolderSyncScreen {
+        phase: FolderSyncPhase::On,
+        ..FolderSyncScreen::default()
+    });
+    let app_data = tempfile::tempdir().expect("a folder");
+    let harness = harness(app_data.path(), fake);
+    assert!(
+        harness
+            .query_all_by_label("Set up sync again")
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
+fn a_folder_whose_account_the_server_lost_offers_a_new_workspace() {
+    use app_core::folder_sync::lost_notice;
+    use app_core::sync::workspace::restore::Lost;
+
+    let fake = Arc::new(FakeSync::default());
+    fake.show(FolderSyncScreen {
+        phase: FolderSyncPhase::AccountLost,
+        restore: Some(lost_notice(&Lost::Server, false)),
+        ..FolderSyncScreen::default()
+    });
+    let app_data = tempfile::tempdir().expect("a folder");
+    let mut harness = harness(app_data.path(), fake.clone());
+    harness
+        .get_by_role_and_label(Role::Button, "Set up sync again")
+        .click();
+    harness.run();
+    assert_eq!(fake.taken(), vec![FolderSyncAction::SetUpAgain]);
+}

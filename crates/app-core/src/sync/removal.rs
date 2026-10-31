@@ -103,6 +103,25 @@ pub fn removed_card_changes(
         .collect()
 }
 
+/// The account's new fingerprint when `detail`, a `device_removed` answer's
+/// detail, names the chain `own` and the server serves `links` of another
+/// chain as the account's current one, which must verify from its genesis
+/// (§7). Any other answer isn't a reset.
+pub fn reset_fingerprint(
+    detail: &[u8],
+    own: &Digest,
+    account: Id,
+    genesis: Digest,
+    links: &[sync_protocol::records::Signed<sync_protocol::records::AccountLink>],
+) -> Result<Option<Digest>, SyncError> {
+    let names_own = DeviceRemovedDetail::from_bytes(detail).is_ok_and(|d| d.genesis == *own);
+    if !names_own || genesis == *own {
+        return Ok(None);
+    }
+    let chain = super::verify_served(account, genesis, links, &BTreeSet::new())?;
+    Ok(Some(chain.genesis()))
+}
+
 impl SyncService {
     /// What removing `target` from the account would take down (§7).
     pub async fn removal_preview(&mut self, target: Id) -> Result<RemovalPreview, SyncError> {
@@ -214,6 +233,28 @@ impl SyncService {
             signer_fingerprint,
             seqno: detail.seqno,
         })
+    }
+
+    /// Whether a `device_removed` answer means that a reset retired this
+    /// device's chain (§7): the answer names that chain and the server's
+    /// current chain, which verifies from its own genesis, is another one.
+    /// Returns the account's new fingerprint. No link of the old chain can
+    /// say so, which is why the app only tells you and ends nothing else:
+    /// coming back takes a new sign-in and an approval code you compare.
+    pub async fn retired_by_reset(
+        &mut self,
+        detail: Option<&[u8]>,
+    ) -> Result<Option<Digest>, SyncError> {
+        let Some(detail) = detail else {
+            return Ok(None);
+        };
+        let account = self.credentials.account;
+        let own = self.credentials.reference_head.genesis;
+        if DeviceRemovedDetail::from_bytes(detail).map(|d| d.genesis) != Ok(own) {
+            return Ok(None);
+        }
+        let (links, genesis) = self.client.whole_chain(account, None).await?;
+        reset_fingerprint(detail, &own, account, genesis, &links)
     }
 
     /// Whether this device is the account's last active device, so signing

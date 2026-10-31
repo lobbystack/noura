@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use sync_protocol::ids::secret_check;
 use sync_protocol::types::{SecretKey, from_hex};
-use sync_store::{INITIAL_RESTORE_GENERATION, Store};
+use sync_store::Store;
 use sync_store_postgres::PgBackend;
 
 use crate::data::{CommandError, Migrated};
@@ -128,7 +128,7 @@ pub async fn migrate(postgres: &Postgres) -> Result<Migrated, CommandError> {
         sync_store_postgres::store_secret_check(
             &postgres.url,
             *secret_check(secret).expose(),
-            INITIAL_RESTORE_GENERATION,
+            crate::restore::unix_now(),
         )
         .await
         .map_err(|e| fail(format!("can't store the secret's key check: {e}")))?;

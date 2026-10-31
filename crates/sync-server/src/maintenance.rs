@@ -63,6 +63,9 @@ pub async fn run_once<B: Backend>(
     if collect_blobs(store, blobs).await? > 0 {
         store.maintain().await?;
     }
+    if let Err(error) = crate::restore::collect_quarantine(blobs, store.clock().now()).await {
+        tracing::warn!("can't collect the blob quarantine: {error}");
+    }
     Ok(report)
 }
 

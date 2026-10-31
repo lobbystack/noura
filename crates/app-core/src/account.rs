@@ -111,10 +111,21 @@ pub enum AccountPhase {
     Recovering(RecoveryView),
     /// The account on this computer.
     SignedIn(Box<SignedInView>),
+    /// Reset devices: the emailed code starts a new chain (§7).
+    ResetCode,
+    /// A restore lost the account head your kit names, so the kit can't
+    /// recover your account and Reset devices is the way back (§14).
+    KitLost,
     /// A device of your account removed this one (§7).
     Removed {
         /// The fingerprint of the device that removed it.
         by: String,
+    },
+    /// A reset retired this device's chain (§7): it signs in as a new
+    /// device, and a device on the new chain approves it.
+    Retired {
+        /// The account's new fingerprint.
+        fingerprint: String,
     },
 }
 
@@ -149,6 +160,28 @@ pub struct SignedInView {
     pub offer_kit: bool,
     /// The sign-out you're about to confirm.
     pub sign_out: Option<SignOutView>,
+    /// The account's new fingerprint, after you reset your devices (§7).
+    pub reset_fingerprint: Option<String>,
+    /// Each workspace that still has to accept your reset (§7, §10).
+    pub reset_waits: Vec<ResetWait>,
+    /// Members whose reset you can accept in this workspace.
+    pub reset_requests: Vec<RequestEntry>,
+    /// The acceptance in progress on this device.
+    pub reset_approval: Option<ApprovalView>,
+}
+
+/// A workspace that has to accept your reset, as the reset device sees it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResetWait {
+    /// The workspace, by its short ID.
+    pub workspace: String,
+    /// The approval code once an owner or admin answered.
+    pub code: Option<String>,
+    /// Whether you confirmed the code here.
+    pub confirmed: bool,
+    /// Whether this folder may start over instead: your account owns the
+    /// workspace and the folder syncs it (§14).
+    pub set_up_again: bool,
 }
 
 /// One device of your account.
@@ -320,6 +353,21 @@ pub enum AccountAction {
     CancelInvitation,
     /// Download the workspace you joined into this new workspace folder.
     DownloadInvited(PathBuf),
+    /// Reset your devices: sign in again and ask for an emailed code (§7).
+    StartReset,
+    /// Start the new chain with the emailed code.
+    ConfirmReset(String),
+    /// Your approval code matches the one on the accepting device.
+    ConfirmResetWait(usize),
+    /// Set up sync again for this reset wait's workspace, because nobody
+    /// else can accept the reset (§14).
+    SetUpAfterReset(usize),
+    /// Answer a member's reset request here.
+    AcceptReset(usize),
+    /// You compared the code: this device commits the `accept_reset`.
+    ConfirmAcceptReset,
+    /// Leave the acceptance.
+    CancelAcceptReset,
     /// Start signing out.
     SignOut,
     /// Sign out.
@@ -360,6 +408,17 @@ impl std::fmt::Debug for AccountAction {
             AccountAction::DownloadInvited(path) => {
                 f.debug_tuple("DownloadInvited").field(path).finish()
             }
+            AccountAction::StartReset => f.write_str("StartReset"),
+            AccountAction::ConfirmReset(_) => f.write_str("ConfirmReset"),
+            AccountAction::ConfirmResetWait(index) => {
+                f.debug_tuple("ConfirmResetWait").field(index).finish()
+            }
+            AccountAction::SetUpAfterReset(index) => {
+                f.debug_tuple("SetUpAfterReset").field(index).finish()
+            }
+            AccountAction::AcceptReset(index) => f.debug_tuple("AcceptReset").field(index).finish(),
+            AccountAction::ConfirmAcceptReset => f.write_str("ConfirmAcceptReset"),
+            AccountAction::CancelAcceptReset => f.write_str("CancelAcceptReset"),
             AccountAction::SignOut => f.write_str("SignOut"),
             AccountAction::ConfirmSignOut => f.write_str("ConfirmSignOut"),
             AccountAction::CancelSignOut => f.write_str("CancelSignOut"),

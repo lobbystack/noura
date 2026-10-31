@@ -29,6 +29,7 @@ pub mod realtime;
 pub mod recovery;
 pub mod registry;
 pub mod removal;
+pub mod reset;
 mod routes;
 pub mod shares;
 pub mod upkeep;
@@ -110,6 +111,14 @@ pub enum SyncError {
 }
 
 impl SyncError {
+    /// This error's check code as a new error, or a copy of what it says.
+    pub(crate) fn clone_check(&self) -> Self {
+        match self {
+            Self::Check(code) => Self::Check(code),
+            other => Self::Invalid(other.to_string()),
+        }
+    }
+
     /// The server's error code, for a refusal.
     pub fn code(&self) -> Option<&str> {
         match self {
@@ -181,6 +190,14 @@ impl SyncClient {
     /// The restore generation the server reported last.
     pub fn restore_generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Asks for the server's restore generation, for a device that sends
+    /// nothing else while a rollback holds it.
+    pub async fn ask_generation(&mut self) -> Result<u64, SyncError> {
+        let limits: LimitsResponse = self.call(reqwest::Method::GET, "/v2/limits", None).await?;
+        self.generation = limits.restore_generation;
+        Ok(limits.restore_generation)
     }
 
     async fn call<T: Decode>(
@@ -335,11 +352,15 @@ impl SyncClient {
 
     /// Every link of one chain, page by page: the account's current chain
     /// when `genesis` is absent. Returns the links and the chain's genesis.
+    /// A read that met a new restore generation reports
+    /// `sync_restore_generation`, because the device compares what it kept
+    /// after a restore rather than judging a chain as forked (§14).
     pub async fn whole_chain(
         &mut self,
         account: Id,
         genesis: Option<Digest>,
     ) -> Result<(Vec<Signed<AccountLink>>, Digest), SyncError> {
+        let seen = self.generation;
         let mut links: Vec<Signed<AccountLink>> = Vec::new();
         let mut genesis = genesis;
         loop {
@@ -361,6 +382,9 @@ impl SyncClient {
             genesis = Some(page.genesis);
             let more = !page.links.0.is_empty();
             links.extend(page.links.0.into_iter().map(|l| l.0));
+            if self.generation > seen {
+                return Err(SyncError::Check("sync_restore_generation"));
+            }
             if links.len() as u64 >= page.head_seqno || !more {
                 return Ok((links, page.genesis));
             }
@@ -629,6 +653,39 @@ impl SyncService {
         Ok(chain)
     }
 
+    /// The accounts sharing a workspace with this device whose current
+    /// chain isn't one it keeps, each with the chain's genesis digest, the
+    /// new fingerprint: a reset no workspace of this device accepted yet
+    /// (§7). It reads what every member device may read, so every role
+    /// shows it, and it trusts nothing: no key goes to the new cards.
+    pub async fn changed_chains(&mut self) -> Vec<(Id, Digest)> {
+        let mut changed = Vec::new();
+        for account in self.heads.other_accounts() {
+            let cursor = ChainCursor {
+                account,
+                genesis: None,
+                after: u64::MAX,
+            };
+            let Ok(response) = self.client.read_chains(vec![cursor]).await else {
+                continue;
+            };
+            let Some(page) = response.pages.0.into_iter().next() else {
+                continue;
+            };
+            let kept = self.heads.kept_of(&account);
+            if page.account != account || kept.iter().any(|h| h.genesis == page.genesis) {
+                continue;
+            }
+            // The new fingerprint is that of a chain that verifies.
+            if let Ok((links, genesis)) = self.client.whole_chain(account, Some(page.genesis)).await
+                && AccountChain::verify(&links, &BTreeSet::new()).is_ok()
+            {
+                changed.push((account, genesis));
+            }
+        }
+        changed
+    }
+
     /// Reads `account`'s chain under `genesis` after the realtime channel
     /// said it moved (§7, §23), and keeps its later head, which the
     /// device then records in the workspaces it shares with the account
@@ -775,10 +832,11 @@ impl SyncService {
             return Ok(());
         }
         let Some((account, _)) = short.iter().find(|(account, genesis)| {
-            snapshot
-                .members
-                .get(account)
-                .is_some_and(|member| member.head.genesis == *genesis)
+            !self.heads.excused(account)
+                && snapshot
+                    .members
+                    .get(account)
+                    .is_some_and(|member| member.head.genesis == *genesis)
         }) else {
             return Ok(());
         };

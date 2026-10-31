@@ -649,7 +649,9 @@ pub fn frontmatter_block(entries: &[(&str, serde_json::Value)]) -> Result<String
 fn frontmatter_yaml(entries: &[(&str, serde_json::Value)]) -> Result<String, FormatError> {
     let mut mapping = serde_yaml_ng::Mapping::with_capacity(entries.len());
     for (key, value) in entries {
-        let value = serde_yaml_ng::to_value(value).map_err(|_| FormatError::ObjectSerialization)?;
+        let mut value =
+            serde_yaml_ng::to_value(value).map_err(|_| FormatError::ObjectSerialization)?;
+        sort_nested_keys(&mut value);
         mapping.insert(serde_yaml_ng::Value::String((*key).to_owned()), value);
     }
     let mut mapping = serde_yaml_ng::Value::Mapping(mapping);
@@ -664,6 +666,24 @@ fn frontmatter_yaml(entries: &[(&str, serde_json::Value)]) -> Result<String, For
         .strip_suffix("''\n")
         .ok_or(FormatError::ObjectSerialization)?;
     Ok(format!("{before}{}\n", double_quoted(&text)))
+}
+
+/// Sorts every mapping inside `value` by key, so a nested mapping's bytes
+/// don't depend on how `serde_json` keeps its maps. A dependency that turns
+/// on `preserve_order` would otherwise change them for the whole program.
+fn sort_nested_keys(value: &mut serde_yaml_ng::Value) {
+    match value {
+        serde_yaml_ng::Value::Sequence(items) => items.iter_mut().for_each(sort_nested_keys),
+        serde_yaml_ng::Value::Mapping(map) => {
+            let mut entries: Vec<_> = std::mem::take(map).into_iter().collect();
+            entries.sort_by(|(a, _), (b, _)| a.as_str().cmp(&b.as_str()));
+            for (key, mut value) in entries {
+                sort_nested_keys(&mut value);
+                map.insert(key, value);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The last scalar libyaml writes for `value`, when it's a string. A mapping

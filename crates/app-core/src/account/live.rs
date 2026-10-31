@@ -192,6 +192,12 @@ impl LiveAccount {
             invited: None,
             joined: None,
             download_into: None,
+            reset: None,
+            retired: None,
+            reset_waits: Vec::new(),
+            reset_requests: Vec::new(),
+            changed_chains: Vec::new(),
+            accepting: None,
         };
         let spawned = std::thread::Builder::new()
             .name("noura-sync-account".into())
@@ -330,6 +336,20 @@ enum Purpose {
     Join,
     /// Recovering your account with this kit (§12).
     Recover(Box<KitPayload>),
+    /// Starting a new chain after an email check (§7).
+    Reset,
+}
+
+/// Why a reset owner's Set up sync again stops at the server (§14).
+const ANOTHER_MANAGER: &str = "Another owner or admin of this workspace can accept your reset, so it stays open. Ask them to accept it.";
+
+/// A reset under way: a new card, enrolled, that waits for the emailed
+/// code.
+struct Resetting {
+    client: crate::sync::SyncClient,
+    keys: sync_key_envelope::v2::DeviceKeys,
+    token: String,
+    account: Id,
 }
 
 struct PendingSignIn {
@@ -376,6 +396,19 @@ struct Driver {
     membership: Membership,
     /// The invitation you opened.
     invited: Option<Invited>,
+    /// The reset that waits for its emailed code.
+    reset: Option<Resetting>,
+    /// The device a reset on this computer retired.
+    retired: Option<Id>,
+    /// The workspaces that have yet to accept your reset.
+    reset_waits: Vec<InvitedCandidate>,
+    /// Members' reset requests in the attached workspace.
+    reset_requests: Vec<crate::sync::joining::InvitedRequest>,
+    /// Accounts whose current chain isn't one this device keeps, each with
+    /// the new fingerprint (§7).
+    changed_chains: Vec<(Id, sync_protocol::types::Digest)>,
+    /// The offer of the acceptance in progress.
+    accepting: Option<OutstandingOffer>,
     /// The workspace you joined, which waits for a folder.
     joined: Option<Id>,
     /// The folder that workspace downloads into, once the windows show it.
@@ -391,6 +424,14 @@ fn message(error: &SyncError) -> String {
     match error {
         SyncError::SignIn(end) => end.to_string(),
         SyncError::KitRevoked => error.to_string(),
+        SyncError::Check("sync_restore_lost") => {
+            "The server's operator restored a backup that lacks what this kit names. Reset your devices to go on."
+                .into()
+        }
+        SyncError::Refused { code, .. } if code == "reset_code_invalid" => {
+            "That code didn't work. It works once, for 10 minutes. Check it, or ask for a new one."
+                .into()
+        }
         SyncError::Check("sync_recovery_kit_invalid") => {
             "The secret doesn't open this kit, or the kit file changed. Check both and try again."
                 .into()
@@ -497,11 +538,15 @@ pub(crate) fn recovery_view(account: Id, review: &RecoveryReview) -> RecoveryVie
         unverified: review
             .unverified
             .iter()
-            .map(|(workspace, code)| {
-                format!(
+            .map(|(workspace, code)| match *code {
+                "sync_restore_lost" => format!(
+                    "The server lost what your kit names in workspace {}, so the recovery leaves it out. An owner can set it up again.",
+                    short_id(workspace)
+                ),
+                code => format!(
                     "Noura couldn't verify workspace {} ({code}), so the recovery leaves it out.",
                     short_id(workspace)
-                )
+                ),
             })
             .collect(),
         devices: review
@@ -549,11 +594,14 @@ impl Driver {
             };
             match actions.recv_timeout(wait) {
                 Ok(Message::Account(action)) => runtime.block_on(self.handle(action)),
-                Ok(Message::Folder(action)) => runtime.block_on(self.folder.act(
-                    action,
-                    self.service.as_mut(),
-                    &self.app_data,
-                )),
+                Ok(Message::Folder(action)) => runtime.block_on(async {
+                    self.folder
+                        .act(action, self.service.as_mut(), &self.app_data)
+                        .await;
+                    if self.folder.take_reset_wanted() {
+                        self.handle(AccountAction::StartReset).await;
+                    }
+                }),
                 Ok(Message::Share(action)) => {
                     runtime.block_on(self.sharing.act(
                         action,
@@ -589,6 +637,8 @@ impl Driver {
                         && self.sign_in.is_none()
                         && self.candidate.is_none()
                         && self.offer.is_none()
+                        && self.accepting.is_none()
+                        && self.reset_waits.is_empty()
                         && self.recovery.is_none()
                         && self.invited.is_none()
                         && self.download_into.is_none()
@@ -728,6 +778,19 @@ impl Driver {
         let Some(service) = self.service.as_mut() else {
             return Ok(());
         };
+        if let Some(new) = service.retired_by_reset(detail.as_deref()).await? {
+            self.service = None;
+            self.workspaces.clear();
+            self.folder.after_reset(&[], &self.app_data);
+            self.shared.update(|screen| {
+                screen.busy = false;
+                screen.can_retry = false;
+                screen.phase = AccountPhase::Retired {
+                    fingerprint: fingerprint(&new),
+                };
+            });
+            return Ok(());
+        }
         let by = match service.verify_removal(detail.as_deref()).await {
             Ok(by) => fingerprint(&by.signer_fingerprint),
             Err(error @ SyncError::Check(_)) => {
@@ -760,6 +823,13 @@ impl Driver {
             Err(error) => return Err(error),
         };
         self.requests = service.pending_devices().await.unwrap_or_default();
+        let attached = self.folder.sync_mut().map(|sync| sync.workspace());
+        self.reset_requests = match attached {
+            Some(workspace) => service.reset_requests(workspace).await.unwrap_or_default(),
+            None => Vec::new(),
+        };
+        self.changed_chains = service.changed_chains().await;
+        let two_chains = service.kept_heads().two_current_chains();
         let this = service.credentials().keys.device();
         let fingerprints: std::collections::BTreeMap<Id, String> = list
             .active
@@ -794,6 +864,35 @@ impl Driver {
                 removed: row.removed.is_some(),
             });
         }
+        let changed: Vec<AlertEntry> = self
+            .reset_requests
+            .iter()
+            .map(|request| AlertEntry {
+                text: format!(
+                    "The devices of account {} changed. Its new device's fingerprint is {}. Compare the approval code with that person before you accept.",
+                    short_id(&request.head.account),
+                    fingerprint(&request.fingerprint)
+                ),
+                end_sessions: None,
+            })
+            .chain(self.changed_chains.iter().map(|(account, genesis)| {
+                AlertEntry {
+                    text: format!(
+                        "The devices of account {} changed. Its new fingerprint is {}. An owner or admin accepts the reset after comparing an approval code with that person.",
+                        short_id(account),
+                        fingerprint(genesis)
+                    ),
+                    end_sessions: None,
+                }
+            }))
+            .chain(two_chains.iter().map(|account| AlertEntry {
+                text: format!(
+                    "Your workspaces name two different device lists for account {}. Ask that person whether they reset their devices.",
+                    short_id(account)
+                ),
+                end_sessions: None,
+            }))
+            .collect();
         let alerts = list
             .alerts
             .iter()
@@ -807,6 +906,14 @@ impl Driver {
                     _ => None,
                 };
                 AlertEntry { text, end_sessions }
+            })
+            .chain(changed)
+            .collect();
+        let reset_requests = self
+            .reset_requests
+            .iter()
+            .map(|request| RequestEntry {
+                fingerprint: fingerprint(&request.fingerprint),
             })
             .collect();
         let account_fingerprint = fingerprint(&list.account_fingerprint);
@@ -827,6 +934,7 @@ impl Driver {
             view.devices = devices;
             view.alerts = alerts;
             view.requests = requests;
+            view.reset_requests = reset_requests;
             screen.phase = AccountPhase::SignedIn(view);
         });
         Ok(())
@@ -1169,6 +1277,140 @@ impl Driver {
                     *stage = InvitationStage::Joined { downloading: true };
                 });
             }
+            AccountAction::StartReset => {
+                let typed = self
+                    .shared
+                    .screen
+                    .lock()
+                    .map(|s| s.server.clone())
+                    .unwrap_or_default();
+                self.server = server_address(&typed).map_err(|e| SyncError::Invalid(e.into()))?;
+                self.shared.update(|screen| screen.busy = true);
+                self.start_sign_in(Purpose::Reset).await?;
+            }
+            AccountAction::ConfirmReset(code) => {
+                let store = self.store.clone();
+                let Some(resetting) = self.reset.as_mut() else {
+                    return Err(SyncError::Invalid("Ask for a new code first.".into()));
+                };
+                let done = crate::sync::reset::reset(
+                    &mut resetting.client,
+                    &*store,
+                    resetting.account,
+                    &resetting.keys,
+                    &resetting.token,
+                    code.trim(),
+                )
+                .await?;
+                self.reset = None;
+                self.service = None;
+                self.workspaces.clear();
+                self.retired = done.retired;
+                if let Some(device) = done.retired {
+                    KeptHeads::forget_retired(&self.state_dir(&device), &device, &*self.store)?;
+                }
+                self.folder.after_reset(&[], &self.app_data);
+                self.connect(done.credentials.clone()).await?;
+                let mut waits = Vec::new();
+                let mut owned = BTreeSet::new();
+                if let Some(service) = self.service.as_mut() {
+                    let listed = service.client().workspaces().await?;
+                    for workspace in listed.workspaces.iter() {
+                        if workspace.role == sync_protocol::records::Role::Owner {
+                            owned.insert(workspace.workspace);
+                        }
+                        match service.request_reset_approval(workspace.workspace).await {
+                            Ok(candidate) => waits.push(candidate),
+                            Err(error) => {
+                                tracing::warn!(kind = ?error.code(), "a reset request failed");
+                            }
+                        }
+                    }
+                }
+                let shown = fingerprint(&done.fingerprint);
+                let held: Vec<Id> = waits.iter().map(|c| c.workspace()).collect();
+                self.folder.after_reset(&held, &self.app_data);
+                let here = self.folder.workspace_of_folder(&self.app_data);
+                let lines = waits
+                    .iter()
+                    .map(|c| crate::account::ResetWait {
+                        workspace: short_id(&c.workspace()),
+                        code: None,
+                        confirmed: false,
+                        set_up_again: owned.contains(&c.workspace()) && here == Some(c.workspace()),
+                    })
+                    .collect();
+                self.reset_waits = waits;
+                self.signed_in(|view| {
+                    view.reset_fingerprint = Some(shown);
+                    view.reset_waits = lines;
+                    view.offer_kit = true;
+                });
+            }
+            AccountAction::ConfirmResetWait(index) => {
+                if let Some(candidate) = self.reset_waits.get_mut(index) {
+                    candidate.confirm();
+                    self.signed_in(|view| {
+                        if let Some(line) = view.reset_waits.get_mut(index) {
+                            line.confirmed = true;
+                        }
+                    });
+                }
+            }
+            AccountAction::SetUpAfterReset(index) => {
+                if self.reset_waits.get(index).is_none() {
+                    return Err(SyncError::Invalid("That workspace no longer waits.".into()));
+                }
+                let service = self.service.as_mut().ok_or_else(not_signed_in)?;
+                self.folder
+                    .set_up_after_reset(service, self.retired, &self.app_data)
+                    .await
+                    .map_err(|error| match error {
+                        SyncError::Refused { code, .. } if code == "forbidden" => {
+                            SyncError::Invalid(ANOTHER_MANAGER.into())
+                        }
+                        other => other,
+                    })?;
+                self.reset_waits.remove(index);
+                self.signed_in(|view| {
+                    view.reset_waits.remove(index);
+                });
+            }
+            AccountAction::AcceptReset(index) => {
+                let request = self
+                    .reset_requests
+                    .get(index)
+                    .cloned()
+                    .ok_or_else(|| SyncError::Invalid("That request ended.".into()))?;
+                let service = self.service.as_mut().ok_or_else(not_signed_in)?;
+                let sync = self.folder.sync_mut().ok_or_else(not_signed_in)?;
+                let mut remote = sync.open_for_reset(service).await?;
+                let offer = service.offer_invited(&request, &mut remote).await?;
+                let view = ApprovalView {
+                    fingerprint: fingerprint(&request.fingerprint),
+                    code: None,
+                };
+                self.accepting = Some(offer);
+                self.signed_in(|signed_in| signed_in.reset_approval = Some(view));
+            }
+            AccountAction::ConfirmAcceptReset => {
+                let offer = self
+                    .accepting
+                    .take()
+                    .ok_or_else(|| SyncError::Invalid("That acceptance ended.".into()))?;
+                let service = self.service.as_mut().ok_or_else(not_signed_in)?;
+                let sync = self.folder.sync_mut().ok_or_else(not_signed_in)?;
+                sync.accept_reset(service, offer).await?;
+                self.signed_in(|signed_in| signed_in.reset_approval = None);
+                self.refresh().await?;
+            }
+            AccountAction::CancelAcceptReset => {
+                if let (Some(offer), Some(service)) = (self.accepting.take(), self.service.as_mut())
+                {
+                    service.cancel_approval(offer);
+                }
+                self.signed_in(|signed_in| signed_in.reset_approval = None);
+            }
             AccountAction::SignOut => {
                 let service = self.service.as_mut().ok_or_else(not_signed_in)?;
                 let last_device = service.is_last_device().await?;
@@ -1210,6 +1452,7 @@ impl Driver {
                     let purpose = self.sign_in.take().map(|p| p.purpose);
                     match purpose {
                         Some(Purpose::Recover(kit)) => self.begin_recovery(signed_in, *kit).await?,
+                        Some(Purpose::Reset) => self.begin_reset(signed_in).await?,
                         _ => self.joined(signed_in).await?,
                     }
                 }
@@ -1233,6 +1476,7 @@ impl Driver {
                 }
             }
         }
+        self.poll_resets().await?;
         if let Some(waiting) = self.candidate.as_mut() {
             match waiting.candidate.poll().await {
                 Ok(CandidateStep::Code(code)) => self.shared.update(|screen| {
@@ -1550,6 +1794,13 @@ impl Driver {
         let state = self.app_data.join("sync").join("recovery");
         let recovery = match Recovery::begin(&signed_in, kit, self.store.clone(), &state).await {
             Ok(recovery) => recovery,
+            Err(SyncError::Check("sync_restore_lost")) => {
+                self.shared.update(|screen| {
+                    screen.busy = false;
+                    screen.phase = AccountPhase::KitLost;
+                });
+                return Ok(());
+            }
             Err(error) => {
                 self.shared
                     .update(|screen| screen.phase = AccountPhase::SignedOut);
@@ -1565,16 +1816,107 @@ impl Driver {
         Ok(())
     }
 
+    /// After the browser sign-in for a reset: a new card, enrolled, and the
+    /// emailed code (§7).
+    async fn begin_reset(&mut self, signed_in: SignedIn) -> Result<(), SyncError> {
+        let keys = sync_key_envelope::v2::DeviceKeys::generate()
+            .map_err(|e| SyncError::Invalid(format!("no randomness: {e}")))?;
+        let mut client =
+            crate::sync::SyncClient::connect(&signed_in.server, &signed_in.session_token).await?;
+        crate::sync::device::enroll_card(&mut client, &keys, signed_in.account).await?;
+        crate::sync::reset::request_code(&mut client).await?;
+        self.reset = Some(Resetting {
+            client,
+            keys,
+            token: signed_in.session_token.clone(),
+            account: signed_in.account,
+        });
+        self.shared.update(|screen| {
+            screen.busy = false;
+            screen.phase = AccountPhase::ResetCode;
+        });
+        Ok(())
+    }
+
+    /// The reset's progress on both sides: the reset device's codes and
+    /// each workspace that accepted it, and the accepting device's code.
+    async fn poll_resets(&mut self) -> Result<(), SyncError> {
+        let Some(service) = self.service.as_mut() else {
+            return Ok(());
+        };
+        if let Some(offer) = self.accepting.as_mut()
+            && let Some(code) = service.approval_code(offer).await?
+        {
+            self.shared.update(|screen| {
+                if let AccountPhase::SignedIn(view) = &mut screen.phase
+                    && let Some(approval) = view.reset_approval.as_mut()
+                {
+                    approval.code = Some(code);
+                }
+            });
+        }
+        let mut accepted = Vec::new();
+        for (index, candidate) in self.reset_waits.iter_mut().enumerate() {
+            if candidate.confirmed() {
+                if service.join_invited(candidate).await.unwrap_or(false) {
+                    accepted.push(index);
+                }
+                continue;
+            }
+            if let Ok(CandidateStep::Code(code)) = service.poll_invited(candidate).await {
+                self.shared.update(|screen| {
+                    if let AccountPhase::SignedIn(view) = &mut screen.phase
+                        && let Some(line) = view.reset_waits.get_mut(index)
+                    {
+                        line.code = Some(code);
+                    }
+                });
+            }
+        }
+        for index in accepted.into_iter().rev() {
+            self.reset_waits.remove(index);
+            self.shared.update(|screen| {
+                if let AccountPhase::SignedIn(view) = &mut screen.phase {
+                    view.reset_waits.remove(index);
+                }
+            });
+            // The folder bootstraps and matches its files (§7).
+            self.folder
+                .act(
+                    FolderSyncAction::Connect,
+                    self.service.as_mut(),
+                    &self.app_data,
+                )
+                .await;
+        }
+        Ok(())
+    }
+
     /// After the browser sign-in: the first device of an account starts its
     /// chain, a device whose session ended takes the new one, and a later
     /// one waits for approval.
     async fn joined(&mut self, signed_in: SignedIn) -> Result<(), SyncError> {
+        let before = StoredDevice::load(&*self.store, &signed_in.server)?
+            .filter(|stored| stored.account == signed_in.account)
+            .map(|stored| stored.keys().map(|keys| keys.device()))
+            .transpose()?;
         match join(&signed_in, &*self.store).await? {
-            Joined::First(credentials) | Joined::Again(credentials) => {
+            // A first device starts a new chain, so a sync of the account
+            // this computer held before ends here (§14).
+            Joined::First(credentials) => {
+                self.service = None;
+                self.workspaces.clear();
+                self.folder.after_reset(&[], &self.app_data);
                 self.connect(credentials).await
             }
+            Joined::Again(credentials) => self.connect(credentials).await,
             Joined::NeedsApproval { keys, client } => {
                 let device = keys.device();
+                // The card this computer held can't enroll any more.
+                if let Some(old) = before.filter(|old| *old != device) {
+                    KeptHeads::forget_retired(&self.state_dir(&old), &old, &*self.store)?;
+                    self.retired = Some(old);
+                }
                 let state = self.state_dir(&device);
                 let heads = KeptHeads::open(&state, signed_in.account, device, &*self.store)?;
                 let candidate = Candidate::request(client, keys, signed_in.account).await?;

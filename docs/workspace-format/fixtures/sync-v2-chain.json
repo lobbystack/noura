@@ -2352,5 +2352,214 @@
 	"description": "Device chains (sync-v2.md §14): schedules of served records and what the chain verifier reports for each. `server` lists what `GET .../chain/{device}/{counter}` serves (the record at that counter or the device's next one above it), `start_heads` the heads a bootstrap checkpoint gave, and `expect` either the verdict of each record of each page or the error and the page and index where it occurs. A `checkpoint_walk` case (§17, Checkpoint chain) gives the checkpoints a client `reached`, its `floor` and restore `generation`, the checkpoints `GET .../checkpoints/{digest}` serves, and a page's `entries`, and `expect` lists the checkpoints the client fetches before each entry, oldest first, or the index of the entry where the walk reports `sync_chain_gap`. A `fork_resolution` case gives the pages a reader `applied`, the page that `forked`, the head the first checkpoint covering the change that ends the device's write access `kept`, and the log's `records` from the reader's cursor through that checkpoint's `covered_seq`, with `accepted_covered_seq` when the reader accepted a checkpoint after the applied pages; `expect` holds the verdicts of the forked page judged again once the fork settles, with the digests of the applied records settling `reverted` when the fork point lies below the reader's head, or the error settling reports.",
 	"fixture_keys_are_public_test_values": true,
 	"keys": {},
-	"records": []
+	"records": [],
+	"restore_cases": [
+		{
+			"covered": 12,
+			"expect": "pass",
+			"final": {
+				"counter": 3,
+				"digest": 7,
+				"entry": 10
+			},
+			"heads": [
+				[
+					3,
+					7
+				]
+			],
+			"kind": "final_checkpoint",
+			"name": "checkpoint_lists_the_final_head"
+		},
+		{
+			"covered": 12,
+			"expect": "sync_restore_lost",
+			"final": {
+				"counter": 3,
+				"digest": 7,
+				"entry": 10
+			},
+			"heads": [
+				[
+					4,
+					8
+				]
+			],
+			"kind": "final_checkpoint",
+			"name": "checkpoint_lists_another_head"
+		},
+		{
+			"covered": 12,
+			"expect": "sync_restore_lost",
+			"final": {
+				"counter": 3,
+				"digest": 7,
+				"entry": 10
+			},
+			"heads": [],
+			"kind": "final_checkpoint",
+			"name": "checkpoint_drops_a_demoted_device"
+		},
+		{
+			"covered": 12,
+			"expect": "pass",
+			"final": {
+				"counter": 3,
+				"digest": 7,
+				"entry": 10
+			},
+			"heads": [],
+			"kind": "final_checkpoint",
+			"may_leave": true,
+			"name": "removed_card_leaves_the_checkpoint"
+		},
+		{
+			"covered": 12,
+			"expect": "pass",
+			"final": {
+				"counter": 0,
+				"digest": 0,
+				"entry": 10
+			},
+			"heads": [],
+			"kind": "final_checkpoint",
+			"name": "zero_final_head_needs_no_listed_head"
+		},
+		{
+			"covered": 9,
+			"expect": "pass",
+			"final": {
+				"counter": 3,
+				"digest": 7,
+				"entry": 10
+			},
+			"heads": [
+				[
+					2,
+					9
+				]
+			],
+			"kind": "final_checkpoint",
+			"name": "own_entry_after_the_change_covered_seq_before_it"
+		},
+		{
+			"covered": 12,
+			"expect": "pass",
+			"final": {
+				"counter": 3,
+				"digest": 7,
+				"entry": 10,
+				"until": 11
+			},
+			"heads": [
+				[
+					5,
+					9
+				]
+			],
+			"kind": "final_checkpoint",
+			"name": "access_given_back_ends_the_window"
+		},
+		{
+			"expect": "pass",
+			"final": {
+				"counter": 3,
+				"digest": 7,
+				"entry": 10,
+				"records": [
+					[
+						2,
+						5
+					],
+					[
+						3,
+						7
+					]
+				]
+			},
+			"kind": "final_record",
+			"name": "fetched_record_passes",
+			"record": [
+				3,
+				7
+			],
+			"seq": 8
+		},
+		{
+			"expect": "sync_restore_lost",
+			"final": {
+				"counter": 3,
+				"digest": 7,
+				"entry": 10,
+				"records": [
+					[
+						2,
+						5
+					],
+					[
+						3,
+						7
+					]
+				]
+			},
+			"kind": "final_record",
+			"name": "re_signed_record_is_refused",
+			"record": [
+				3,
+				8
+			],
+			"seq": 8
+		},
+		{
+			"expect": "sync_restore_lost",
+			"final": {
+				"counter": 3,
+				"digest": 7,
+				"entry": 10
+			},
+			"kind": "final_record",
+			"name": "record_above_the_head_before_the_entry",
+			"record": [
+				4,
+				8
+			],
+			"seq": 9
+		},
+		{
+			"expect": "pass",
+			"final": {
+				"counter": 3,
+				"digest": 7,
+				"entry": 10
+			},
+			"kind": "final_record",
+			"name": "record_above_the_head_after_the_entry_on_another_page",
+			"record": [
+				4,
+				8
+			],
+			"seq": 11
+		},
+		{
+			"expect": false,
+			"kind": "bootstrap_final",
+			"listed": true,
+			"name": "bootstrapped_past_a_demotion_and_a_promotion",
+			"regained": true
+		},
+		{
+			"expect": false,
+			"kind": "bootstrap_final",
+			"listed": false,
+			"name": "removed_card_dropped_from_the_bootstrap_checkpoint",
+			"regained": false
+		},
+		{
+			"expect": true,
+			"kind": "bootstrap_final",
+			"listed": true,
+			"name": "bootstrapped_past_a_demotion_that_stands",
+			"regained": false
+		}
+	]
 }

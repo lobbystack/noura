@@ -991,6 +991,18 @@ impl PolicyChain {
         self.head_snapshot().role(reader_account).is_some()
     }
 
+    /// Whether the workspace's devices read `account`'s current chain
+    /// `genesis`, because the policy still names another chain for that
+    /// member: a reset the workspace hasn't accepted (§7).
+    pub fn reads_reset_chain(&self, reader: &[Id], account: &Id, genesis: &Digest) -> bool {
+        let head = self.head_snapshot();
+        reader.iter().any(|device| head.is_device(device))
+            && head
+                .members
+                .get(account)
+                .is_some_and(|member| member.head.genesis != *genesis)
+    }
+
     /// The highest seqno of `account`'s chain under `genesis` that a
     /// session reads through this workspace (§7), or none. `reader` holds
     /// the session's device and any recovery identity it proved, of the

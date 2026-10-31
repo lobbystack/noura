@@ -10,15 +10,17 @@
 
 mod sync_support;
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use app_core::sync::device::enroll_card;
-use app_core::sync::recovery::{Recovery, open_kit};
+use app_core::sync::recovery::{Recovery, kit_account_head, lost_kit_head, open_kit};
 use app_core::sync::{SyncClient, SyncError};
 use sync_key_envelope::v2::{DeviceKeys, next_link, recovery_proof};
-use sync_protocol::codec::Nested;
-use sync_protocol::records::{KitPayload, LinkKind};
-use sync_protocol::types::Id;
+use sync_protocol::account::AccountChain;
+use sync_protocol::codec::{Decode, Nested};
+use sync_protocol::records::{AccountHead, AccountLink, KitPayload, LinkKind, Signed};
+use sync_protocol::types::{Id, from_hex};
 use sync_store::Backend;
 use sync_support::{MemorySecrets, Server, approve, first_desktop, head_of};
 
@@ -323,6 +325,169 @@ async fn a_kit_that_cant_be_saved_leaves_the_old_kit_or_asks_again() {
 
 /// A device that `kit`'s recovery identity recovers on a new computer, as
 /// a recovery's step 4 appends it, while the account's other devices stay.
+/// A kit whose account head a restore lost: the device compares it like
+/// any state it accepted, and the app offers Reset devices.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kit_whose_head_a_restore_lost_says_so() {
+    let mut pair = sync_support::pair().await;
+    let account = pair.laptop.credentials.account;
+    let copy = pair.server.backup("before.sqlite3").await;
+    let outside = tempfile::tempdir().unwrap();
+    let path = outside.path().join("kit");
+    let export = pair
+        .service
+        .export_kit(
+            &path,
+            &[],
+            std::slice::from_mut(pair.sync_a.remote_mut().expect("connected")),
+        )
+        .await
+        .expect("exported");
+    let mut kit = open_kit(&path, &export.secret).expect("it opens");
+
+    // The restore lost the links the kit added, under a new generation.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let restored = pair.server.put_back(&copy, true).await;
+    let signed_in = restored.sign_in(account, &restored.base).await;
+    // The restored test server listens on another port than the kit names.
+    let client = SyncClient::connect(&restored.base, &signed_in.session_token)
+        .await
+        .expect("connects");
+    kit.origin = sync_protocol::codec::Text::new(client.origin().expect("an origin")).unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let secrets: app_core::sync::Secrets = Arc::new(MemorySecrets::default());
+    let refused = Recovery::begin(&signed_in, kit, secrets, state.path()).await;
+    let error = refused.err().expect("refused");
+    assert_eq!(error.code(), Some("sync_restore_lost"), "{error:?}");
+}
+
+/// The account head survives and one workspace's head doesn't: that
+/// workspace stops, named in the review, and the recovery goes on (§14).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kit_whose_workspace_head_a_restore_lost_leaves_that_workspace_out() {
+    let mut pair = sync_support::pair().await;
+    let account = pair.laptop.credentials.account;
+    let lost = pair.sync_a.workspace();
+    let mut other = pair
+        .service
+        .create_workspace("Kept")
+        .await
+        .expect("created");
+    let outside = tempfile::tempdir().unwrap();
+    let path = outside.path().join("kit");
+    let synced = pair.service.open_workspace(lost).await.expect("opens");
+    let mut remotes = vec![synced, other];
+    let export = pair
+        .service
+        .export_kit(&path, &[], &mut remotes)
+        .await
+        .expect("exported");
+    other = remotes.pop().expect("the kept workspace");
+    let mut kit = open_kit(&path, &export.secret).expect("it opens");
+    assert_eq!(kit.workspaces.len(), 2);
+
+    // The backup lacks the head the kit lists for one workspace.
+    let copy = pair.server.backup("before.sqlite3").await;
+    let listed = kit
+        .workspaces
+        .iter()
+        .find(|w| w.workspace == lost)
+        .expect("listed");
+    let connection = rusqlite::Connection::open(&copy).expect("the copy opens");
+    let workspace = format!("X'{}'", lost.to_hex());
+    let revision = listed.revision;
+    for sql in [
+        format!(
+            "DELETE FROM policy_changes WHERE workspace = {workspace} AND revision = {revision}"
+        ),
+        format!(
+            "UPDATE workspaces SET policy_revision = {revision} - 1, policy_head = \
+             (SELECT digest FROM policy_changes WHERE workspace = {workspace} \
+             AND revision = {revision} - 1) WHERE workspace = {workspace}"
+        ),
+    ] {
+        assert!(
+            connection.execute(&sql, []).expect("the change") > 0,
+            "{sql}"
+        );
+    }
+    drop(connection);
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let restored = pair.server.put_back(&copy, true).await;
+    let signed_in = restored.sign_in(account, &restored.base).await;
+    let client = SyncClient::connect(&restored.base, &signed_in.session_token)
+        .await
+        .expect("connects");
+    kit.origin = sync_protocol::codec::Text::new(client.origin().expect("an origin")).unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let store = Arc::new(MemorySecrets::default());
+    let secrets: app_core::sync::Secrets = store.clone();
+    let recovery = match Recovery::begin(&signed_in, kit, secrets, state.path()).await {
+        Ok(recovery) => recovery,
+        Err(error) => panic!("the recovery goes on: {error:?}"),
+    };
+    assert_eq!(
+        recovery.review().unverified,
+        vec![(lost, "sync_restore_lost")]
+    );
+    let (_, workspaces, _) = recovery.finish(&[], &*store).await.expect("recovered");
+    let open: Vec<Id> = workspaces.iter().map(|w| w.workspace).collect();
+    assert_eq!(open, [other.workspace]);
+}
+
+/// The restore cases of `sync-v2-recovery.json`: what the client's own
+/// checks make of a kit's heads after a restore (§14).
+#[test]
+fn the_kits_heads_compare_as_the_fixture_says() {
+    let path = format!(
+        "{}/../../docs/workspace-format/fixtures/sync-v2-recovery.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let fixture: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let cases = fixture["restore_cases"].as_array().unwrap();
+    assert!(!cases.is_empty());
+    for case in cases {
+        let name = case["name"].as_str().unwrap();
+        let restored = case["restored"].as_bool().unwrap();
+        match case["kind"].as_str().unwrap() {
+            "kit_account_head" => {
+                let links: Vec<Signed<AccountLink>> = case["served"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|link| {
+                        Signed::from_bytes(&from_hex(link.as_str().unwrap()).unwrap()).unwrap()
+                    })
+                    .collect();
+                let chain = AccountChain::verify(&links, &BTreeSet::new()).unwrap();
+                let kit: AccountHead = serde_json::from_value(case["kit_head"].clone()).unwrap();
+                assert_eq!(
+                    kit_account_head(chain.contains(&kit), restored),
+                    case["expect"].as_str(),
+                    "{name}"
+                );
+            }
+            "kit_workspace_head" => {
+                let answer = case["answer"].as_str().unwrap();
+                let error = match answer {
+                    "sync_policy_rollback" => SyncError::Check("sync_policy_rollback"),
+                    "sync_policy_forked" => SyncError::Check("sync_policy_forked"),
+                    "network" => SyncError::Network("down".into()),
+                    code => SyncError::Refused {
+                        code: code.to_owned(),
+                        status: 403,
+                        detail: None,
+                    },
+                };
+                let stops = restored && lost_kit_head(&error);
+                assert_eq!(stops, case["expect"] == "stops", "{name}");
+            }
+            other => panic!("{other}"),
+        }
+    }
+}
+
 async fn recovered_by<B: Backend>(server: &Server<B>, kit: &KitPayload) -> Id {
     let account = kit.account;
     let signed_in = server.sign_in(account, &server.base).await;

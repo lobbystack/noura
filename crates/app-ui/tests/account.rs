@@ -112,6 +112,29 @@ fn devices() -> Vec<DeviceEntry> {
     ]
 }
 
+/// A kit whose head a restore lost leads to Reset devices (§14).
+#[test]
+fn a_kit_the_server_lost_offers_reset_devices() {
+    let app_data = tempfile::tempdir().unwrap();
+    let account = Arc::new(FakeAccount::default());
+    account.show(AccountScreen {
+        server: "https://sync.example.com".into(),
+        phase: AccountPhase::KitLost,
+        ..AccountScreen::default()
+    });
+    let mut harness = harness(app_data.path(), account.clone());
+    harness.run();
+    harness.get_by_role_and_label(Role::Group, "This kit can't recover your account");
+    harness
+        .get_by_role_and_label(Role::Button, "Reset devices")
+        .click();
+    harness.run();
+    assert!(matches!(
+        account.taken().last(),
+        Some(AccountAction::StartReset)
+    ));
+}
+
 #[test]
 fn signed_out_shows_the_server_address_sign_in_and_recovery() {
     let app_data = tempfile::tempdir().unwrap();
@@ -657,5 +680,116 @@ fn an_invitee_pastes_a_link_accepts_and_compares_the_code() {
         names,
         vec![".noura"],
         "the folder stays empty for the download"
+    );
+}
+
+/// A computer whose chain a reset retired says so and offers to come back
+/// as a new device.
+#[test]
+fn a_retired_device_shows_the_new_fingerprint_and_signs_in_again() {
+    let app_data = tempfile::tempdir().unwrap();
+    let account = Arc::new(FakeAccount::default());
+    account.show(AccountScreen {
+        server: "https://sync.example.com".into(),
+        phase: AccountPhase::Retired {
+            fingerprint: ACCOUNT.into(),
+        },
+        ..AccountScreen::default()
+    });
+    let mut harness = harness(app_data.path(), account.clone());
+    harness.run();
+    assert!(
+        harness
+            .query_all_by_label("Your account's devices were reset")
+            .next()
+            .is_some()
+    );
+    harness.get_by_label(ACCOUNT);
+    harness
+        .get_by_role_and_label(Role::Button, "Sign in as a new device")
+        .click_accesskit();
+    harness.run();
+    assert_eq!(account.taken(), vec![AccountAction::SignIn]);
+}
+
+/// Reset devices: the code field, then the new fingerprint with each
+/// workspace that has to accept it, and the acceptance on another account's
+/// device.
+#[test]
+fn the_reset_screens_ask_for_the_code_and_show_what_comes_next() {
+    use app_core::account::ResetWait;
+
+    let app_data = tempfile::tempdir().unwrap();
+    let account = Arc::new(FakeAccount::default());
+    account.show(AccountScreen {
+        server: "https://sync.example.com".into(),
+        phase: AccountPhase::ResetCode,
+        ..AccountScreen::default()
+    });
+    let mut harness = harness(app_data.path(), account.clone());
+    harness.run();
+    assert!(
+        harness
+            .query_by_label("Start over with this code")
+            .is_some()
+    );
+
+    account.show(signed_in(SignedInView {
+        account_fingerprint: ACCOUNT.into(),
+        devices: devices(),
+        reset_fingerprint: Some(ACCOUNT.into()),
+        reset_waits: vec![ResetWait {
+            workspace: "66666666".into(),
+            code: Some("1234 5678".into()),
+            confirmed: false,
+            set_up_again: true,
+        }],
+        ..SignedInView::default()
+    }));
+    harness.run();
+    assert!(harness.query_by_label("Workspace 66666666").is_some());
+    harness.get_by_label("Codes match").click();
+    harness.run();
+    assert!(
+        account
+            .taken()
+            .iter()
+            .any(|action| matches!(action, AccountAction::ConfirmResetWait(0)))
+    );
+    harness.get_by_label("Set up sync again").click();
+    harness.run();
+    assert!(
+        account
+            .taken()
+            .iter()
+            .any(|action| matches!(action, AccountAction::SetUpAfterReset(0)))
+    );
+
+    account.show(signed_in(SignedInView {
+        account_fingerprint: ACCOUNT.into(),
+        devices: devices(),
+        reset_requests: vec![RequestEntry {
+            fingerprint: PHONE.into(),
+        }],
+        alerts: vec![AlertEntry {
+            text: "The devices of account 11111111 changed.".into(),
+            end_sessions: None,
+        }],
+        ..SignedInView::default()
+    }));
+    harness.run();
+    assert!(
+        harness
+            .query_all_by_label("The devices of account 11111111 changed.")
+            .next()
+            .is_some()
+    );
+    harness.get_by_label("Accept this reset").click();
+    harness.run();
+    assert!(
+        account
+            .taken()
+            .iter()
+            .any(|action| matches!(action, AccountAction::AcceptReset(0)))
     );
 }

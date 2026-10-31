@@ -1556,3 +1556,62 @@ async fn the_pages_are_plain_forms_under_a_policy_that_blocks_inline_scripts() {
         StatusCode::NOT_FOUND
     );
 }
+
+/// `POST /v2/account/reset-code` emails 8 characters of the device grant's
+/// alphabet to the account's address, and `POST /v2/account/reset` answers
+/// a wrong code with `reset_code_invalid` (§7).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reset_code_goes_to_the_accounts_address() {
+    use sync_protocol::codec::{Decode, Encode};
+
+    let outbox = Outbox::default();
+    let site = site("ana@example.com", Box::new(outbox.clone())).await;
+    let store = site.store.clone();
+    let link = store
+        .issue_magic_link("ana@example.com")
+        .await
+        .expect("a link");
+    let (account, _) = store
+        .sign_in_with_magic_link(&link)
+        .await
+        .expect("signed in")
+        .expect("a session");
+    let keys = sync_key_envelope::v2::DeviceKeys::generate().expect("random");
+    let session = sync_store::Session::new(account, keys.device());
+    let token: [u8; 32] = sync_protocol::crypto::random_array().expect("random");
+    store
+        .create_session(token, session)
+        .await
+        .expect("a session");
+    let bearer = sync_protocol::types::to_base64url(&token);
+
+    let http = reqwest::Client::new();
+    let sent = http
+        .post(format!("{}/v2/account/reset-code", site.base))
+        .bearer_auth(&bearer)
+        .send()
+        .await
+        .expect("answered");
+    assert!(sent.status().is_success(), "{}", sent.status());
+    let mail = outbox.0.lock().unwrap().last().cloned().expect("a mail");
+    assert_eq!(mail.to, "ana@example.com");
+    let code = between(&mail.text, "code is ", ".").replace('-', "");
+    assert_eq!(code.len(), 8);
+
+    let wrong = sync_protocol::messages::ResetRequest {
+        code: sync_protocol::codec::Text("BBBBBBBC".into()),
+        genesis: sync_protocol::codec::Nested(sync_key_envelope::v2::genesis_link(&keys, account)),
+    };
+    let reply = http
+        .post(format!("{}/v2/account/reset", site.base))
+        .bearer_auth(&bearer)
+        .header("content-type", sync_protocol::messages::MEDIA_TYPE)
+        .body(wrong.to_bytes())
+        .send()
+        .await
+        .expect("answered");
+    assert_eq!(reply.status().as_u16(), 400);
+    let body = reply.bytes().await.expect("a body");
+    let error = sync_protocol::messages::ErrorBody::from_bytes(&body).expect("an error");
+    assert_eq!(error.code.as_str(), "reset_code_invalid");
+}

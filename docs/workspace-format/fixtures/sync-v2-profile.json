@@ -149,5 +149,27 @@
 			"signer": "alice laptop",
 			"type": "profile"
 		}
+	],
+	"restore_cases": [
+		{
+			"accepted": {
+				"revision": 4
+			},
+			"expect": "accepted",
+			"forgets_after_comparison": true,
+			"kind": "profile_after_restore",
+			"name": "restore_lost_a_rename",
+			"server_revision": 3
+		},
+		{
+			"accepted": {
+				"revision": 4
+			},
+			"expect": "sync_profile_rollback",
+			"forgets_after_comparison": false,
+			"kind": "profile_after_restore",
+			"name": "no_generation_change_keeps_the_mark",
+			"server_revision": 3
+		}
 	]
 }

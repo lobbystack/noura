@@ -30,7 +30,10 @@ use sync_store::{Backend, BoxFut, Error, Limiter, MemoryLimiter, ReadJob, Result
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-pub use admin::{DatabaseState, MIGRATOR, inspect, migrate, store_secret_check};
+pub use admin::{
+    DatabaseState, MIGRATOR, backup_into, clear_stamp, fold_log, inspect, live_instances, migrate,
+    raise_generation, store_secret_check,
+};
 pub use txn::SqliteTxn;
 
 /// The database file's name in the server's data directory.

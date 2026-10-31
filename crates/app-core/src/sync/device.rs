@@ -88,6 +88,10 @@ pub struct StoredDevice {
     /// once it joined it: the genesis it signed, the approver's head of
     /// the offer that approved it, or its kit's account head (§8).
     pub reference_head: Option<AccountHead>,
+    /// The accounts a server that lost its secret no longer holds, each
+    /// with the device this computer held there (§14).
+    #[serde(default)]
+    lost_accounts: Vec<(Id, Id)>,
 }
 
 impl std::fmt::Debug for StoredDevice {
@@ -114,7 +118,23 @@ impl StoredDevice {
             hpke_seed: to_hex(keys.hpke_seed().expose()),
             session_token: token.to_owned(),
             reference_head: None,
+            lost_accounts: Vec::new(),
         }
+    }
+
+    /// The device this computer held under `account`, when a server that
+    /// lost its secret no longer holds that account (§14).
+    pub fn lost_device(&self, account: &Id) -> Option<Id> {
+        self.lost_accounts
+            .iter()
+            .find(|(lost, _)| lost == account)
+            .map(|(_, device)| *device)
+    }
+
+    /// Keeps what `old`, the device this one replaces, knew of lost
+    /// accounts.
+    pub(super) fn keep_lost_accounts(&mut self, old: &Self) {
+        self.lost_accounts.clone_from(&old.lost_accounts);
     }
 
     /// The device for `server` that `store` holds, if any.
@@ -345,6 +365,21 @@ pub fn retired_item(server: &str, device: &Id) -> String {
     format!("{}.retired.{}", device_item(server), device.to_hex())
 }
 
+/// Moves the secrets of `stored`, whose card a link removed or a reset
+/// retired, to [`retired_item`], and returns its device.
+pub(crate) fn keep_retired(
+    store: &dyn SyncCredentials,
+    server: &str,
+    stored: &StoredDevice,
+) -> Result<Id, SyncError> {
+    let device = stored.keys()?.device();
+    let text = Zeroizing::new(serde_json::to_string(stored).map_err(credential_error)?);
+    store
+        .write(&retired_item(server, &device), &text)
+        .map_err(credential_error)?;
+    Ok(device)
+}
+
 /// What a signed-in device enrolls with: the device the credential store
 /// already holds for this server and account, or fresh keys.
 enum Enrolled {
@@ -375,22 +410,39 @@ pub async fn join(signed_in: &SignedIn, store: &dyn SyncCredentials) -> Result<J
                     Enrolled::Existing(stored, keys)
                 }
                 Err(SyncError::Refused { code, .. }) if code == "id_conflict" => {
-                    let text =
-                        Zeroizing::new(serde_json::to_string(&stored).map_err(credential_error)?);
-                    store
-                        .write(&retired_item(&signed_in.server, &keys.device()), &text)
-                        .map_err(credential_error)?;
-                    fresh(&mut client, signed_in, store).await?
+                    keep_retired(store, &signed_in.server, &stored)?;
+                    fresh(&mut client, signed_in, store, Vec::new()).await?
                 }
                 Err(error) => return Err(error),
             }
         }
         Some(stored) if stored.reference_head.is_some() => {
-            return Err(SyncError::Invalid(
-                "This computer already holds a device of another account on this server. Sign out of that account first.".into(),
-            ));
+            // A server that holds no chain under the account this computer
+            // kept lost its secret: signing in gave a new account ID, and
+            // this device starts over with new keys (§14).
+            let new_account = client.whole_chain(signed_in.account, None).await.is_err();
+            let session_gone =
+                match SyncClient::connect(&signed_in.server, &stored.session_token).await {
+                    Ok(mut old) => matches!(
+                        old.whole_chain(stored.account, None).await,
+                        Err(SyncError::Refused { code, .. })
+                            if code == "unauthorized" || code == "not_found"
+                    ),
+                    Err(SyncError::Refused { code, .. }) => code == "unauthorized",
+                    Err(_) => false,
+                };
+            if !(new_account && session_gone) {
+                return Err(SyncError::Invalid(
+                    "This computer already holds a device of another account on this server. Sign out of that account first.".into(),
+                ));
+            }
+            // The folders of the old account stop with `sync_restore_lost`
+            // and offer to turn on as new workspaces.
+            let mut lost = stored.lost_accounts.clone();
+            lost.push((stored.account, stored.keys()?.device()));
+            fresh(&mut client, signed_in, store, lost).await?
         }
-        _ => fresh(&mut client, signed_in, store).await?,
+        _ => fresh(&mut client, signed_in, store, Vec::new()).await?,
     };
     let (mut stored, keys) = match enrolled {
         Enrolled::Existing(stored, keys) => {
@@ -423,15 +475,17 @@ async fn fresh(
     client: &mut SyncClient,
     signed_in: &SignedIn,
     store: &dyn SyncCredentials,
+    lost_accounts: Vec<(Id, Id)>,
 ) -> Result<Enrolled, SyncError> {
     let keys =
         DeviceKeys::generate().map_err(|e| SyncError::Invalid(format!("no randomness: {e}")))?;
-    let stored = StoredDevice::new(
+    let mut stored = StoredDevice::new(
         &signed_in.server,
         signed_in.account,
         &keys,
         &signed_in.session_token,
     );
+    stored.lost_accounts = lost_accounts;
     stored.save(store)?;
     enroll_card(client, &keys, signed_in.account).await?;
     Ok(Enrolled::Fresh(stored, keys))

@@ -1,0 +1,146 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT workspace AS \"workspace!\", blob AS \"blob!\", domain, device, length, digest,\n                      upload_offset, complete, delete_after, marked, live_listings\n               FROM blobs\n               WHERE ?1 = 0 OR (workspace, blob) > (?2, ?3)\n               ORDER BY workspace, blob LIMIT ?4",
+  "describe": {
+    "columns": [
+      {
+        "name": "workspace!",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "workspace"
+          }
+        }
+      },
+      {
+        "name": "blob!",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "blob"
+          }
+        }
+      },
+      {
+        "name": "domain",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "domain"
+          }
+        }
+      },
+      {
+        "name": "device",
+        "ordinal": 3,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "device"
+          }
+        }
+      },
+      {
+        "name": "length",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "length"
+          }
+        }
+      },
+      {
+        "name": "digest",
+        "ordinal": 5,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "digest"
+          }
+        }
+      },
+      {
+        "name": "upload_offset",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "upload_offset"
+          }
+        }
+      },
+      {
+        "name": "complete",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "complete"
+          }
+        }
+      },
+      {
+        "name": "delete_after",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "delete_after"
+          }
+        }
+      },
+      {
+        "name": "marked",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "marked"
+          }
+        }
+      },
+      {
+        "name": "live_listings",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "live_listings"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "693ef4dfcb6d928a918c7b2320b1ab0e7aeef757beec922b2c68bda640ba9c03"
+}

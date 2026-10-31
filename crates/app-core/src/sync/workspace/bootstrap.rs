@@ -414,6 +414,7 @@ impl WorkspaceSync {
 
         self.state.log = log;
         self.state.bootstrap_progress = None;
+        self.keep_bootstrap_finals(c.policy_revision, c.covered_seq, &bundle.heads);
         self.save()?;
         Ok(true)
     }
