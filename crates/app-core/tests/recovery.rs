@@ -347,7 +347,8 @@ async fn a_kit_whose_head_a_restore_lost_says_so() {
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let restored = pair.server.put_back(&copy, true).await;
     pair.proxy.retarget(&restored.base);
-    let signed_in = restored.sign_in(account, &pair.proxy.base).await;
+    let mut signed_in = restored.sign_in(account, &restored.base).await;
+    signed_in.server = pair.proxy.base.clone();
     let state = tempfile::tempdir().unwrap();
     let secrets: app_core::sync::Secrets = Arc::new(MemorySecrets::default());
     let refused = Recovery::begin(&signed_in, kit, secrets, state.path()).await;
