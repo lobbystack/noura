@@ -76,6 +76,39 @@ async fn share_plan(
         .expect("the link is created")
 }
 
+/// A server that changes a stored snapshot (§30): the link's verify key
+/// refuses it, so a browser shows nothing of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tampered_share_snapshot_is_refused() {
+    let mut pair = pair().await;
+    let device = pair.laptop.id();
+    let dir = tempfile::tempdir().expect("a folder");
+    let mut book = ShareBook::open(dir.path(), device).expect("the book");
+    let created = share_plan(&mut pair.service, &mut book, &pair.sync_a, 7).await;
+    let (address, fragment) = created.url.split_once('#').expect("a fragment");
+    let (origin, token) = address.split_once("/s/").expect("a share path");
+    let served = reqwest::get(format!("{origin}/v2/shares/{token}"))
+        .await
+        .expect("the server answers")
+        .bytes()
+        .await
+        .unwrap();
+    let body = ShareBody::from_bytes(&served).expect("a share body");
+    let (link_key, verify_key) = parse_share_fragment(fragment).expect("the fragment");
+    let mut bytes = body.share.0.to_bytes();
+    assert!(open_share(&bytes, &link_key, &verify_key).is_ok());
+
+    // Any changed byte fails: in the ciphertext, a field, or the signature.
+    for at in [bytes.len() / 2, bytes.len() - 1] {
+        bytes[at] ^= 1;
+        assert!(
+            open_share(&bytes, &link_key, &verify_key).is_err(),
+            "byte {at} changed"
+        );
+        bytes[at] ^= 1;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_link_shows_its_snapshot_until_someone_revokes_it() {
     let mut pair = pair().await;

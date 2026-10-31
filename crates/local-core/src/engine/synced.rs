@@ -61,6 +61,18 @@ pub struct SyncedListing {
     pub complete: bool,
 }
 
+/// What one path holds for sync, without a walk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SyncedEntry {
+    /// A regular file whose bytes are on this device.
+    File(SyncedFile),
+    /// Nothing.
+    Absent,
+    /// Something only a walk can judge: a folder, a link, a file that lives
+    /// only in the cloud, or a path that can't be resolved.
+    Other,
+}
+
 /// What a sync write expects to find where it writes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SyncedExpect {
@@ -175,6 +187,27 @@ impl WorkspaceEngine {
             .files
             .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
         Ok(listing)
+    }
+
+    /// What the path `relative` holds, as [`Self::synced_listing`] would
+    /// report it, for a caller that knows which path changed.
+    pub fn synced_entry(&self, relative: &str) -> SyncedEntry {
+        let Ok(path) = resolve_for_write(&self.root, relative, OPERATION) else {
+            return SyncedEntry::Other;
+        };
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() && !is_dataless(&metadata) => {
+                SyncedEntry::File(SyncedFile {
+                    relative_path: relative.to_owned(),
+                    size: metadata.len(),
+                    modified_ns: modified_ns(&metadata),
+                    file_id: file_id(&metadata),
+                })
+            }
+            Ok(_) => SyncedEntry::Other,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => SyncedEntry::Absent,
+            Err(_) => SyncedEntry::Other,
+        }
     }
 
     /// The bytes of the file at `relative`, or `None` when nothing is

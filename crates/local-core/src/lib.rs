@@ -43,8 +43,8 @@ pub use engine::{
     ManagedDraftResult, ManifestUpdateInput, MarkdownLinkTarget, ObjectPatch,
     RawConflictResolveInput, RawConflictResolveResult, RawMarkdownRead, RawReconcileInput,
     RawReconcileResult, RawRestoreInput, RawSaveInput, RawSaveResult, ResolveConflictInput,
-    SYNC_PLUGIN_ID, SkipReason, SkippedEntry, SyncedExpect, SyncedFile, SyncedListing, SystemTrash,
-    WatchPoll, WorkspaceEngine, is_online_only, os_trash,
+    SYNC_PLUGIN_ID, SkipReason, SkippedEntry, SyncedEntry, SyncedExpect, SyncedFile, SyncedListing,
+    SystemTrash, WatchPoll, WorkspaceEngine, is_online_only, os_trash,
 };
 pub use error::{CoreError, ErrorCategory, Result};
 pub use index::{

@@ -3,20 +3,28 @@
 //! the change that ended its write access reports
 //! `sync_writer_not_authorized`, and an epoch record the removed device
 //! signed at an older revision, committed after the removal, gives no
-//! reader a key; the remover rotates past it with a replacement.
+//! reader a key: recipients refuse its envelopes with `sync_key_mismatch`,
+//! and the remover rotates past it with a replacement. A checkpoint that
+//! lists another final head for the removed device fails with
+//! `sync_manifest_mismatch`.
 
 mod sync_support;
 
 use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use sync_protocol::codec::{Bytes, Encode, Sorted};
+use app_core::sync::SyncError;
+use app_core::sync::workspace::WorkspaceSync;
+use sync_protocol::codec::{Bytes, Decode, Encode, Nested, Sorted};
 use sync_protocol::crypto::random_nonce;
 use sync_protocol::keys::{EpochParams, build_epoch};
-use sync_protocol::messages::KeyRecord;
-use sync_protocol::records::{Operation, Signed};
+use sync_protocol::manifest::heads_digest;
+use sync_protocol::messages::{EntryRecord, KeyRecord, PullResponse};
+use sync_protocol::records::{CheckpointBundle, Operation, Ref, Signed};
 use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 use sync_store::{Backend as _, Session};
-use sync_support::{Desktop, Pair, approve, pair};
+use sync_support::{Desktop, Folder, Pair, Server, approve, pair, pair_on, rounds};
 
 /// The third device's key of epoch 1, which it unwraps from its envelope.
 async fn epoch_one_key(
@@ -264,6 +272,20 @@ async fn a_backdated_epoch_after_a_removal_is_replaced() {
         .await
         .unwrap();
 
+    // A recipient refuses its envelopes: the wrapper couldn't read the
+    // domain at the latest policy entry before the epoch's entry.
+    let policy = pair.sync_a.remote_mut().unwrap().policy().clone();
+    let refused = pair
+        .desktop
+        .service
+        .check_keys_after_entry(workspace, domain, &policy, policy.head().0)
+        .await
+        .expect_err("the removed device's envelope");
+    assert!(
+        matches!(refused, SyncError::Check("sync_key_mismatch")),
+        "{refused:?}"
+    );
+
     // The laptop takes no key from the removed device and rotates past its
     // epoch with a replacement.
     pair.sync_a
@@ -289,4 +311,207 @@ async fn a_backdated_epoch_after_a_removal_is_replaced() {
         pair.b.files()["Plan.md"],
         b"# Plan, after the replacement\n"
     );
+}
+
+/// A split view (§30): the server places the removed device's last record
+/// before the removal's entry for the laptop, and the first checkpoint that
+/// covers the entry comes from a side that never saw it, so it lists the
+/// head one record lower. The proxy stands in for that side, re-signing the
+/// desktop's checkpoint under the desktop's key with the lower head. The
+/// laptop reports `sync_manifest_mismatch`, accepts nothing and keeps going.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_checkpoint_listing_another_final_head_is_reported() {
+    let never = Duration::from_secs(1 << 40);
+    let mut pair = pair_on(Server::start_with_interval(6).await).await;
+    pair.sync_a.set_checkpoint_wait(never);
+    pair.sync_b.set_checkpoint_wait(never);
+    let (mut third, _, _) = third_device(&mut pair).await;
+    let (workspace, domain) = (pair.sync_b.workspace(), pair.sync_b.domain());
+
+    // The third device writes two records, which both desktops apply.
+    let mut folder = Folder::new("Third");
+    let mut sync = WorkspaceSync::download(
+        &mut third.service,
+        folder.engine.clone(),
+        workspace,
+        &mut folder.registry,
+    )
+    .await
+    .expect("the download starts");
+    sync.round(&mut third.service, 0).await.expect("a round");
+    for name in ["One.md", "Two.md"] {
+        folder.write(name, b"# Third\n");
+        sync.round(&mut third.service, 0).await.expect("a round");
+    }
+    rounds(&mut pair).await;
+
+    // The desktop removes it, then signs what falls due.
+    pair.desktop
+        .service
+        .remove_device(
+            third.id(),
+            &[],
+            std::slice::from_mut(pair.sync_b.remote_mut().unwrap()),
+        )
+        .await
+        .expect("removed");
+    let removal = pair.sync_b.remote_mut().unwrap().policy().head().0;
+    let client = pair.desktop.service.client();
+    let (one, two) = (
+        client
+            .chain_position(workspace, domain, third.id(), 1)
+            .await
+            .expect("a read")
+            .expect("its first record"),
+        client
+            .chain_position(workspace, domain, third.id(), 2)
+            .await
+            .expect("a read")
+            .expect("its second record"),
+    );
+    assert!(two.seq > one.seq);
+    let lower = Ref {
+        device: third.id(),
+        counter: 1,
+        seq: one.seq,
+        op_digest: match &one.record {
+            EntryRecord::Operation(op) => op.digest(),
+            other => panic!("not an operation: {other:?}"),
+        },
+    };
+    let signer = pair.desktop.credentials.keys.signing().clone();
+    let forged_digest = Arc::new(Mutex::new(None));
+    let noted = forged_digest.clone();
+    pair.proxy.tamper(Box::new(move |path, body| {
+        if !path.ends_with("/pull") {
+            return body;
+        }
+        let mut response = PullResponse::from_bytes(&body).expect("a pull response");
+        for page in response.pages.0.iter_mut() {
+            let entries: Vec<_> = page
+                .entries
+                .iter()
+                .cloned()
+                .map(|mut entry| {
+                    if let EntryRecord::Checkpoint(bundle) = &mut entry.record
+                        && bundle.checkpoint.0.body.policy_revision >= removal
+                    {
+                        let heads: Vec<Ref> = bundle
+                            .heads
+                            .iter()
+                            .map(|head| {
+                                if head.device == lower.device {
+                                    lower.clone()
+                                } else {
+                                    head.clone()
+                                }
+                            })
+                            .collect();
+                        let mut forged = bundle.checkpoint.0.body.clone();
+                        forged.heads_digest = heads_digest(&heads);
+                        let forged = Signed::sign(forged, &signer);
+                        noted.lock().unwrap().get_or_insert(forged.digest());
+                        *bundle = CheckpointBundle {
+                            checkpoint: Nested(forged),
+                            heads: Sorted::new(heads).expect("sorted"),
+                        };
+                    }
+                    entry
+                })
+                .collect();
+            page.entries = Sorted::new(entries).expect("sorted");
+        }
+        response.to_bytes()
+    }));
+
+    pair.sync_b.set_checkpoint_wait(Duration::ZERO);
+    let files = |pair: &Pair<_>| (pair.a.files(), pair.b.files());
+    for index in 0..40 {
+        if !pair.sync_a.checkpoint_failures().is_empty() {
+            break;
+        }
+        pair.b.write(&format!("Note {index}.md"), b"# Note\n");
+        rounds(&mut pair).await;
+    }
+    let failures = pair.sync_a.checkpoint_failures().to_vec();
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert_eq!(Some(failures[0].digest), *forged_digest.lock().unwrap());
+    assert_eq!(failures[0].code, "sync_manifest_mismatch");
+    assert_eq!(pair.sync_a.restore_lost(), None, "the workspace goes on");
+    assert!(
+        pair.sync_a.latest_checkpoint().is_none(),
+        "a failed checkpoint never becomes the latest accepted one"
+    );
+    assert!(pair.sync_b.checkpoint_failures().is_empty());
+    let (a, b) = files(&pair);
+    assert_eq!(a, b);
+}
+
+/// A writer that never learned of a removal keeps signing under the old
+/// epoch, and the server places its record after the rotation (§30): the
+/// device that accepted the removal reports the stale epoch and changes no
+/// file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_record_under_an_old_epoch_after_a_rotation_is_caught() {
+    let mut pair = pair().await;
+    let (third, revision, head) = third_device(&mut pair).await;
+    pair.laptop
+        .service
+        .remove_device(
+            third.id(),
+            &[],
+            std::slice::from_mut(pair.sync_b.remote_mut().unwrap()),
+        )
+        .await
+        .expect("removed");
+    let (workspace, domain) = (
+        pair.sync_b.workspace(),
+        pair.sync_b.remote_mut().unwrap().domain,
+    );
+    let op = Signed::sign(
+        Operation {
+            workspace,
+            domain,
+            device: pair.desktop.id(),
+            counter: 1,
+            previous: Digest::ZERO,
+            epoch: 1,
+            policy_revision: revision,
+            policy_head: head,
+            previous_attempt: Digest::ZERO,
+            generation: pair.server.store.restore_generation(),
+            checkpoint_seq: 0,
+            checkpoint: Digest::ZERO,
+            rid: Id::random().unwrap(),
+            delete: false,
+            supersedes: Sorted::default(),
+            blobs: Sorted::default(),
+            nonce: Nonce::ZERO,
+            ciphertext: Bytes(vec![0; 272]),
+        },
+        pair.desktop.credentials.keys.signing(),
+    );
+    let bytes = op.to_bytes();
+    pair.server
+        .store
+        .backend()
+        .write(Box::new(move |txn: &mut sync_store_sqlite::SqliteTxn| {
+            Box::pin(async move {
+                use sync_store::WriteTxn as _;
+                txn.append_entry(workspace, domain, 1, &bytes).await?;
+                Ok(())
+            })
+        }))
+        .await
+        .unwrap();
+    let before = pair.a.files();
+    let result = pair.sync_a.round(&mut pair.service, 0).await;
+    assert_eq!(
+        result
+            .err()
+            .and_then(|e| e.code().map(str::to_owned))
+            .as_deref(),
+        Some("sync_epoch_stale")
+    );
+    assert_eq!(pair.a.files(), before);
 }

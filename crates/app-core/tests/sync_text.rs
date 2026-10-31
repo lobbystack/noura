@@ -15,8 +15,10 @@ use app_core::sync::workspace::text::{Entered, IDLE, IDLE_ANY_WRITER, Judgement,
 use app_core::text_bridge::TextBridge;
 use collab_sandbox::{LineageStatus, SandboxDocument};
 use editor_core::text_mode::{CollabDocument, Utf16Splice};
-use sync_protocol::codec::{Bytes, Decode, Encode, ExactBytes, Text};
-use sync_protocol::messages::{ErrorBody, Frame, KeyRecord, KeysResponse, PushFailureDetail};
+use sync_protocol::codec::{Bytes, Decode, Encode, ExactBytes, Sorted, Text};
+use sync_protocol::messages::{
+    ErrorBody, Frame, KeyRecord, KeysResponse, PullResponse, PushFailureDetail,
+};
 use sync_protocol::types::{Id, IdOrZero};
 use sync_store::Backend;
 use sync_support::{Pair, Server, approve, pair, pair_of_accounts_on, pair_on};
@@ -89,6 +91,121 @@ async fn co_edit<B: Backend>(pair: &mut Pair<B>) {
     both_rounds(pair).await;
     assert_eq!(read(&pair.a, PLAN), read(&pair.b, PLAN));
     assert_eq!(read(&pair.a, PLAN), "A # Plan for Monday!\n");
+}
+
+/// A device comes back to a note another device took over (§22): it pulls
+/// before it decides, so it repeats no snapshot. The soak found this.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_back_from_away_repeats_no_snapshot() {
+    let mut pair = pair().await;
+    let (mut a, _b) = open_both(&mut pair).await;
+    for _ in 0..12 {
+        type_at(&mut a, 0, "x");
+        pair.sync_a.text_tick(Instant::now()).expect("a tick");
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("a round");
+    }
+    drop(a);
+    both_rounds(&mut pair).await;
+    let rid = pair.sync_b.text_rid(PLAN).expect("the note");
+
+    // The laptop goes away with its rule still to run, and the desktop
+    // takes the note over.
+    pair.sync_a.set_pulled_within(Duration::from_millis(1));
+    pair.sync_b
+        .text_tick(Instant::now() + IDLE_ANY_WRITER + Duration::from_secs(1))
+        .expect("the idle rule");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("the snapshot goes out");
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    pair.sync_a
+        .text_tick(Instant::now() + IDLE_ANY_WRITER + Duration::from_secs(1))
+        .expect("nothing to do yet");
+    pair.sync_a.set_pulled_within(Duration::from_secs(60));
+    both_rounds(&mut pair).await;
+
+    let (workspace, domain) = (pair.sync_a.workspace(), pair.sync_a.domain());
+    let head = sync_support::domain_row(&pair.server.store, workspace, domain)
+        .await
+        .head_seq;
+    let live = pair
+        .server
+        .store
+        .live_at(workspace, rid, head)
+        .await
+        .expect("the live set");
+    let states = live
+        .iter()
+        .filter(|(_, class)| *class == sync_protocol::records::OpClass::State)
+        .count();
+    assert_eq!(states, 1, "{live:?}");
+}
+
+/// A device partway through a long catch-up can't tell whether someone took
+/// the note over, so it waits for the log's head (§22). The soak found this.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_still_catching_up_writes_no_snapshot() {
+    let mut pair = pair().await;
+    let (mut a, _b) = open_both(&mut pair).await;
+    for _ in 0..12 {
+        type_at(&mut a, 0, "x");
+        pair.sync_a.text_tick(Instant::now()).expect("a tick");
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("a round");
+    }
+    drop(a);
+    pair.sync_a.close_text(PLAN).expect("closed");
+    pair.b.write("One.md", b"# One\n");
+    pair.b.write("Two.md", b"# Two\n");
+    pair.sync_b
+        .round(&mut pair.desktop.service, 0)
+        .await
+        .expect("a round");
+
+    // Each pull brings one entry of the two.
+    pair.proxy.tamper(Box::new(|path, body| {
+        if !path.ends_with("/pull") {
+            return body;
+        }
+        let mut response = PullResponse::from_bytes(&body).expect("a pull response");
+        for page in response.pages.0.iter_mut() {
+            let entries = page.entries.to_vec();
+            if entries.len() > 1 {
+                page.complete_through = entries[0].seq;
+                page.entries = Sorted::new(vec![entries[0].clone()]).expect("one entry");
+            }
+        }
+        response.to_bytes()
+    }));
+    pair.sync_a
+        .pull(&mut pair.service, 0)
+        .await
+        .expect("a partial pull");
+    let later = Instant::now() + IDLE_ANY_WRITER + Duration::from_secs(1);
+    assert_eq!(pair.sync_a.text_tick(later).expect("a tick"), 0);
+
+    // At the head, the rule runs: the snapshot takes the updates along.
+    pair.proxy.honest();
+    both_rounds(&mut pair).await;
+    let rid = pair.sync_a.text_rid(PLAN).expect("the note");
+    let (workspace, domain) = (pair.sync_a.workspace(), pair.sync_a.domain());
+    let head = sync_support::domain_row(&pair.server.store, workspace, domain)
+        .await
+        .head_seq;
+    let live = pair
+        .server
+        .store
+        .live_at(workspace, rid, head)
+        .await
+        .expect("the live set");
+    assert_eq!(live.len(), 1, "{live:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

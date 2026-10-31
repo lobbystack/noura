@@ -78,7 +78,7 @@ pub use raw_markdown::{
 pub use scan::is_online_only;
 pub(crate) use scan::{ensure_downloaded, not_downloaded};
 pub use sync::SYNC_PLUGIN_ID;
-pub use synced::{SkipReason, SkippedEntry, SyncedExpect, SyncedFile, SyncedListing};
+pub use synced::{SkipReason, SkippedEntry, SyncedEntry, SyncedExpect, SyncedFile, SyncedListing};
 pub use trash::{SystemTrash, os_trash};
 
 pub struct WorkspaceEngine {

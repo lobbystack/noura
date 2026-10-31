@@ -76,6 +76,7 @@ local-core = { version = "0.2.0", path = "../local-core", features = ["durabilit
 proptest.workspace = true
 # The tests stop the index from accepting writes.
 rusqlite.workspace = true
+sqlx = { workspace = true, features = ["postgres"] }
 serde_yaml_ng.workspace = true
 # The sync tests run the real server in-process, on SQLite and on a
 # throwaway PostgreSQL cluster.
@@ -90,6 +91,10 @@ tokio-tungstenite = { version = "0.29", default-features = false, features = ["c
 tracing-subscriber.workspace = true
 # Writes plugin release archives for the install tests.
 zip.workspace = true
+
+# The scale tests read a thread's name without allocating.
+[target.'cfg(unix)'.dev-dependencies]
+libc.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }

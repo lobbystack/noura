@@ -332,6 +332,12 @@ pub struct Log {
     /// (§14), which no rewind or generation change alters.
     #[serde(default)]
     pub final_heads: Vec<super::restore::FinalHead>,
+    /// Whether a rewind ever took the server's positions here. From then on
+    /// a checkpoint's heads answer to the final heads as well (§14). Before
+    /// that the client's own heads are the ones it verified, and comparing
+    /// with them reports a checkpoint that lists another head (§17).
+    #[serde(default)]
+    pub rewound: bool,
 }
 
 impl Log {
@@ -353,6 +359,7 @@ impl Log {
             forked: BTreeMap::new(),
             domain_entries: BTreeMap::new(),
             final_heads: Vec::new(),
+            rewound: false,
         }
     }
 

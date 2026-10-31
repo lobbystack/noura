@@ -1,0 +1,138 @@
+name: Scale
+
+# The runs of sync-v2.md §28 and §32 too long for every push, each on SQLite
+# and on PostgreSQL. A job fails on a lost, duplicated or diverged object and
+# prints the seed that reproduces it: run the same test with NOURA_SCALE_SEED
+# or NOURA_SOAK_SEED set. Each job adds its numbers to the run's summary and
+# keeps them as an artifact. The spec sets no time budgets yet.
+#
+# GitHub's hosted runners end a job after 6 hours. The 24-hour soak needs a
+# self-hosted runner named by the repository variable SOAK_RUNNER; without
+# one the soak runs for 4 hours, which leaves the rest of the job for the
+# build, the fleet's join and the end of the run. That end has a limit of its
+# own, so an overrun fails with the seed printed instead of a killed job.
+on:
+  schedule:
+    - cron: '41 3 * * 6'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: scale
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: '0'
+  # Debug assertions stay on. The client's journal is generic code that
+  # compiles into the workspace's crates, so they need optimizing too.
+  CARGO_PROFILE_DEV_OPT_LEVEL: '2'
+  CARGO_PROFILE_TEST_OPT_LEVEL: '2'
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  NOURA_SCALE_REPORT: ${{ github.workspace }}/numbers.jsonl
+
+jobs:
+  # 95,000 notes and 5,000 attachments up, and onto a fresh device from a
+  # checkpoint, then one edit and one device removed.
+  scale:
+    strategy:
+      fail-fast: false
+      matrix:
+        store: [sqlite, postgres]
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      NOURA_SCALE_NOTES: '95000'
+      NOURA_SCALE_ATTACHMENTS: '5000'
+      NOURA_SCALE_DEVICES: '197'
+      # What the build leaves of the job's timeout.
+      NOURA_SCALE_LIMIT_SECONDS: '18600'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # The run holds 10 GiB of attachments three times over.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+          df -h .
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - run: rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: scale }
+      - name: Sync the workspace of §28
+        run: cargo test --locked -p app-core --test sync_scale "on_${{ matrix.store }}" -- --nocapture
+      - name: Publish the numbers
+        if: always()
+        run: scripts/scale-numbers.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: scale-${{ matrix.store }}
+          path: numbers.jsonl
+          if-no-files-found: ignore
+
+  # 200 devices at the 500 ms tick, in the workspace domain and 2 restricted
+  # domains, with `retained_bytes` at 64 MiB.
+  soak:
+    strategy:
+      fail-fast: false
+      matrix:
+        store: [sqlite, postgres]
+    runs-on: ${{ vars.SOAK_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: ${{ vars.SOAK_RUNNER && 1560 || 355 }}
+    env:
+      NOURA_SOAK_DEVICES: '200'
+      NOURA_SOAK_EDITORS: '8'
+      NOURA_SOAK_SECONDS: ${{ vars.SOAK_RUNNER && '86400' || '14400' }}
+      NOURA_SOAK_VERIFIED_WRITERS: '8'
+      NOURA_SOAK_CATCH_UP_SECONDS: '4800'
+      NOURA_SOAK_WARMUP_SECONDS: '600'
+      NOURA_SOAK_RETAINED_BYTES: '67108864'
+      NOURA_SOAK_SAMPLE_SECONDS: '60'
+      NOURA_SOAK_CUT_SECONDS: '120'
+      # 400 pushes a second is the bar on SQLite (§32).
+      NOURA_SOAK_HOLD_RATE: ${{ matrix.store == 'sqlite' && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - run: rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: soak }
+      - name: Soak
+        run: |
+          ulimit -n 65536
+          cargo test --locked -p app-core --test sync_soak "on_${{ matrix.store }}" -- --nocapture
+      - name: Publish the numbers
+        if: always()
+        run: scripts/scale-numbers.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: soak-${{ matrix.store }}
+          path: numbers.jsonl
+          if-no-files-found: ignore
+
+  # Lists each detected row of §30 with its tests, fails on a row without
+  # one, then runs those tests.
+  threats:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - run: rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: threats }
+      - name: List every detected row with its tests
+        run: cargo test --locked -p app-core --test sync_threats -- --nocapture
+      - name: Run the named tests
+        run: scripts/threat-tests.sh

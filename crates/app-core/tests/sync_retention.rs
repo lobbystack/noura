@@ -204,6 +204,31 @@ async fn a_returning_device_downloads_only_what_it_lacks() {
 /// A returning device never deletes a file because the manifest lacks its
 /// object: it lists the file once and deletes it only when you confirm, and
 /// a changed copy uploads under a new `rid` (§18).
+/// The checkpoint a returning device lands on names a policy revision the
+/// device hasn't seen (§18), found by the soak.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_returning_device_catches_up_on_the_policy_its_checkpoint_names() {
+    let mut pair = ready(Server::start_with_retention(ENTRIES, keep_little()).await).await;
+    let _third = approve(
+        &pair.server,
+        &mut pair.desktop,
+        std::slice::from_mut(pair.sync_b.remote_mut().expect("connected")),
+    )
+    .await;
+    walk_the_floor(&mut pair, "Away ", 12).await;
+    let before = pair.sync_a.policy_revision();
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("the laptop returns");
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("the laptop settles");
+    assert!(pair.sync_a.policy_revision() > before);
+    assert_eq!(pair.a.files(), pair.b.files());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_file_deleted_while_away_waits_for_you() {
     let mut pair = ready(Server::start_with_retention(ENTRIES, keep_little()).await).await;
