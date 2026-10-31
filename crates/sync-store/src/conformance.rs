@@ -145,6 +145,9 @@ macro_rules! conformance_tests {
             reset_codes_retire_the_chain,
             accept_reset_commits_an_approval,
             closing_a_workspace_answers_not_found,
+            a_reset_owner_closes_a_workspace_nobody_else_can_accept,
+            a_reset_owner_with_another_admin_can_not_close,
+            an_accepted_reset_leaves_the_ordinary_closing_rule,
             an_account_belongs_to_at_most_a_thousand_workspaces,
             an_account_in_a_thousand_workspaces_joins_no_more,
         );

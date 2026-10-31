@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use sync_protocol::account::AccountChain;
 use sync_protocol::codec::Encode;
 use sync_protocol::messages::ResetRequest;
-use sync_protocol::policy::PolicyChain;
+use sync_protocol::policy::{PolicyChain, Snapshot};
 use sync_protocol::records::{AccountLink, LinkKind, PolicyChange, PolicyKind, Role, Signed};
 use sync_protocol::types::{Digest, Id};
 
@@ -81,8 +81,11 @@ impl<B: Backend> Store<B> {
     }
 
     /// `DELETE /v2/workspaces/{w}`: closes a workspace, for an active
-    /// device of its owner account. Every route answers `not_found` from
-    /// then on, and maintenance reclaims its domains in batches.
+    /// device of its owner account, or for an active card of that account's
+    /// new chain when it reset past the head the workspace records and
+    /// nobody else can accept the reset (§14). Every route answers
+    /// `not_found` from then on, and maintenance reclaims its domains in
+    /// batches.
     pub async fn close_workspace(&self, session: Session, workspace: Id) -> Result<()> {
         let cache = self.policies.clone();
         self.backend
@@ -100,11 +103,7 @@ impl<B: Backend> Store<B> {
                         .await?
                         .ok_or_else(|| refuse("not_found", "no such workspace"))?;
                     let snapshot = policy.head_snapshot();
-                    let owner = snapshot
-                        .members
-                        .get(&session.account)
-                        .is_some_and(|member| member.role == Role::Owner);
-                    if reader(snapshot, session).is_none() || !owner {
+                    if !may_close(txn, snapshot, session).await? {
                         return Err(refuse(
                             "forbidden",
                             "only an active device of the owner account closes a workspace",
@@ -119,6 +118,63 @@ impl<B: Backend> Store<B> {
             }))
             .await
     }
+}
+
+/// Whether `session` may close the workspace at `snapshot` (§14). An owner
+/// account on the chain the workspace records closes it from a card the
+/// workspace counts. One whose chain a reset moved past that head closes
+/// it from an active card of the new chain, while no other owner or admin
+/// is active there, because nobody could accept its reset. Whether the
+/// reset is the owner's own rests on the email check of §7.
+async fn may_close(txn: &mut impl ReadTxn, snapshot: &Snapshot, session: Session) -> Result<bool> {
+    let Some(member) = snapshot.members.get(&session.account) else {
+        return Ok(false);
+    };
+    if member.role != Role::Owner {
+        return Ok(false);
+    }
+    let Some(current) = txn.current_genesis(session.account).await? else {
+        return Ok(false);
+    };
+    if current == member.head.genesis {
+        return Ok(reader(snapshot, session).is_some());
+    }
+    let chains = policy::chains_of(txn, session.account).await?;
+    let on_new_chain = chains
+        .get(&current)
+        .is_some_and(|chain| chain.is_active_at(&session.device, chain.head_seqno()));
+    Ok(on_new_chain && !another_manager_is_active(txn, snapshot, session.account).await?)
+}
+
+/// Whether an owner or admin account other than `account` can still act in
+/// the workspace: it stands on the chain the workspace records, with a card
+/// of that head still active. A manager that reset too can't.
+async fn another_manager_is_active(
+    txn: &mut impl ReadTxn,
+    snapshot: &Snapshot,
+    account: Id,
+) -> Result<bool> {
+    for (other, member) in &snapshot.members {
+        if *other == account || !matches!(member.role, Role::Owner | Role::Admin) {
+            continue;
+        }
+        if txn.current_genesis(*other).await? != Some(member.head.genesis) {
+            continue;
+        }
+        let chains = policy::chains_of(txn, *other).await?;
+        let Some(chain) = chains.get(&member.head.genesis) else {
+            continue;
+        };
+        let active = snapshot.devices.iter().any(|(device, card)| {
+            card.account == *other
+                && !card.recovery
+                && chain.is_active_at(device, chain.head_seqno())
+        });
+        if active {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 async fn retire_chain(

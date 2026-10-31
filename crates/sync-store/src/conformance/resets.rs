@@ -318,3 +318,204 @@ pub async fn closing_a_workspace_answers_not_found<B: Backend>(store: Store<B>) 
     // Maintenance reclaims the domains.
     world.store.maintain().await.expect("a pass");
 }
+
+/// An owner who reset their devices reaches Set up sync again from the new
+/// card, when nobody else can accept the reset (§14): the account's chain
+/// moved past the head the workspace records, and no other owner or admin
+/// is active there.
+pub async fn a_reset_owner_closes_a_workspace_nobody_else_can_accept<B: Backend>(store: Store<B>) {
+    let mut world = World::new(store, 1).await;
+    let editor = super::invitations::member(&mut world, Role::Editor).await;
+    let owner = world.account;
+    sign_up(&world.store, owner).await;
+    let old = world.devices[0].session;
+    let (_, session, _) = reset_account(&world.store, owner).await;
+
+    // A card of the account that isn't on the new chain gets nothing.
+    let (_, waiting) = new_card(&world.store, owner).await;
+    assert_eq!(
+        refusal(world.store.close_workspace(waiting, world.workspace).await).code,
+        "forbidden"
+    );
+    // The retired card has no place on the account's current chain.
+    assert_eq!(
+        refusal(world.store.close_workspace(old, world.workspace).await).code,
+        "forbidden"
+    );
+    assert_eq!(
+        refusal(
+            world
+                .store
+                .close_workspace(editor.session, world.workspace)
+                .await
+        )
+        .code,
+        "forbidden"
+    );
+    // Nothing else opened: until a change accepts it, the new card reads
+    // nothing in the workspace.
+    assert!(
+        world
+            .store
+            .policy(session, world.workspace, 0)
+            .await
+            .is_err()
+    );
+    assert!(
+        world
+            .store
+            .keys(session, world.workspace, 0, session.device)
+            .await
+            .is_err()
+    );
+    assert!(
+        world
+            .store
+            .missing_blobs(session, world.workspace)
+            .await
+            .is_err()
+    );
+
+    world
+        .store
+        .close_workspace(session, world.workspace)
+        .await
+        .expect("closed");
+    assert_eq!(
+        refusal(world.store.policy(editor.session, world.workspace, 0).await).code,
+        "not_found"
+    );
+}
+
+/// The closing right of a reset owner stops at the rule of §14: another
+/// active owner or admin keeps the `accept_reset` path, another reset
+/// account doesn't, and neither does an owner whose workspace accepted the
+/// reset, whose new card is an ordinary device there.
+pub async fn a_reset_owner_with_another_admin_can_not_close<B: Backend>(store: Store<B>) {
+    let mut world = World::new(store, 1).await;
+    let admin = super::invitations::member(&mut world, Role::Admin).await;
+    let owner = world.account;
+    sign_up(&world.store, owner).await;
+    let (_, session, _) = reset_account(&world.store, owner).await;
+
+    assert_eq!(
+        refusal(world.store.close_workspace(session, world.workspace).await).code,
+        "forbidden",
+        "the admin can accept the reset"
+    );
+    // The admin isn't an owner: it never closes, reset or not.
+    assert_eq!(
+        refusal(
+            world
+                .store
+                .close_workspace(admin.session, world.workspace)
+                .await
+        )
+        .code,
+        "forbidden"
+    );
+
+    // The admin resets too: nobody is left to accept either reset, and the
+    // owner's new card closes the workspace, while the admin's doesn't.
+    sign_up(&world.store, admin.account).await;
+    let (_, admin_session, _) = reset_account(&world.store, admin.account).await;
+    assert_eq!(
+        refusal(
+            world
+                .store
+                .close_workspace(admin_session, world.workspace)
+                .await
+        )
+        .code,
+        "forbidden",
+        "a reset admin holds no closing right"
+    );
+    world
+        .store
+        .close_workspace(session, world.workspace)
+        .await
+        .expect("nobody else is active");
+
+    // An ordinary card of an account that never reset stays refused.
+    let mut world = World::on(world.store.clone(), 1).await;
+    let (card, unrecorded) = new_card(&world.store, world.account).await;
+    let link = super::add_device(
+        &world.devices[0].keys,
+        &world.links,
+        &card.card(world.account),
+    );
+    world
+        .store
+        .append_account_links(vec![link.clone()])
+        .await
+        .expect("the link");
+    world.links.push(link);
+    assert_eq!(
+        refusal(
+            world
+                .store
+                .close_workspace(unrecorded, world.workspace)
+                .await
+        )
+        .code,
+        "forbidden",
+        "a card the workspace doesn't record, on a chain that never reset"
+    );
+}
+
+/// Once an admin accepted the owner's reset, the new card is an ordinary
+/// device of the workspace and closes it as any owner device does; a later
+/// card the workspace doesn't record gets nothing (§14).
+pub async fn an_accepted_reset_leaves_the_ordinary_closing_rule<B: Backend>(store: Store<B>) {
+    let mut world = World::new(store, 1).await;
+    let admin = super::invitations::member(&mut world, Role::Admin).await;
+    let owner = world.account;
+    sign_up(&world.store, owner).await;
+    let (keys, session, genesis) = reset_account(&world.store, owner).await;
+    let new_head = head_of(std::slice::from_ref(&genesis));
+    let request = reset_request(&keys, owner, &new_head, world.workspace);
+    world
+        .store
+        .post_approval_request(session, request.to_bytes())
+        .await
+        .expect("the request");
+
+    world.devices.push(super::Device {
+        keys: admin.keys.clone(),
+        session: admin.session,
+        token: random_token(),
+    });
+    let mut heads = vec![admin.head(), new_head.clone()];
+    heads.sort_by_key(|head| head.account);
+    let change = world.change(1, heads, PolicyKind::AcceptReset { account: owner });
+    let envelope = world.envelope(1, &keys.card(owner), 1, &world.epoch_key);
+    world
+        .push_records(
+            1,
+            vec![RecordRef::Policy(change), RecordRef::Envelope(envelope)],
+        )
+        .await
+        .expect("accepted");
+
+    let (_, waiting) = new_card(&world.store, owner).await;
+    assert_eq!(
+        refusal(world.store.close_workspace(waiting, world.workspace).await).code,
+        "forbidden",
+        "a card that isn't on the chain"
+    );
+    assert_eq!(
+        refusal(
+            world
+                .store
+                .close_workspace(admin.session, world.workspace)
+                .await
+        )
+        .code,
+        "forbidden"
+    );
+    world
+        .store
+        .close_workspace(session, world.workspace)
+        .await
+        .expect("an owner device closes it");
+}
