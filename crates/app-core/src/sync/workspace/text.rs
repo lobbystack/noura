@@ -19,7 +19,7 @@ use collab_sandbox::{
     NoteHandle, Opened, Place, REFILL_PERIOD, RemoteRecord, Sandbox, SandboxDocument, SharedNote,
 };
 use serde::{Deserialize, Serialize};
-use sync_protocol::codec::{Bytes, Encode, Sorted, Text};
+use sync_protocol::codec::{Bytes, Decode, Encode, Sorted, Text};
 use sync_protocol::crypto::hash;
 use sync_protocol::ids::{text_lineage_id, yrs_client_id};
 use sync_protocol::matching::Placement;
@@ -499,6 +499,9 @@ pub struct TextRuntime {
     unsettled: BTreeSet<Id>,
     /// Notes the server required a snapshot of.
     required: BTreeSet<Id>,
+    /// Notes with updates of this device that a kill left in no outbox,
+    /// which it signs again.
+    lost: BTreeSet<Id>,
     /// When a pull last took this device to the log's head in every domain.
     pulled: Option<Instant>,
     /// How old that pull may be for a snapshot rule to run, when a test
@@ -554,11 +557,141 @@ fn record_path(rid: &Id, digest: &Digest) -> String {
 impl WorkspaceSync {
     /// What the journal keeps of the note, when it's in text mode.
     pub fn text_file(&self, rid: &Id) -> Result<Option<TextFile>, SyncError> {
+        if self.state.ended_text.contains(rid) {
+            return Ok(None);
+        }
         Ok(self.journal.read(&text_name(rid))?)
     }
 
-    fn store_text(&self, rid: &Id, file: &TextFile) -> Result<(), SyncError> {
+    fn store_text(&mut self, rid: &Id, file: &TextFile) -> Result<(), SyncError> {
+        self.state.ended_text.remove(rid);
         Ok(self.journal.write(&text_name(rid), file)?)
+    }
+
+    /// Removes the text journal files of the notes that left text mode, now
+    /// that a saved state no longer needs them.
+    pub(super) fn forget_ended_text(&mut self) {
+        for rid in std::mem::take(&mut self.state.ended_text) {
+            self.journal.forget(&text_name(&rid));
+            self.journal
+                .forget_folder(&format!("text/{}", rid.to_hex()));
+        }
+    }
+
+    /// Brings the text journal files in line with the state file after a
+    /// start: they commit separately, so a kill can leave them apart. A
+    /// note with no file left is a plain file. A record of this device in
+    /// no outbox never went out: a snapshot's document lives on in the
+    /// records it holds, and an update goes out again.
+    pub(super) fn reconcile_text(&mut self) -> Result<(), SyncError> {
+        self.forget_ended_text();
+        let mut rids = Vec::new();
+        for name in self.journal.names_with("text-") {
+            let hex = name
+                .strip_prefix("text-")
+                .and_then(|name| name.strip_suffix(".json"));
+            rids.extend(hex.and_then(Id::from_hex));
+        }
+        for (rid, object) in &mut self.state.objects {
+            if !rids.contains(rid) {
+                object.text = None;
+            }
+        }
+        for rid in rids {
+            let Some(mut file) = self.text_file(&rid)? else {
+                continue;
+            };
+            let domain = self.state.objects.get(&rid).and_then(|o| o.domain);
+            let lost = self.in_domain(domain, |sync| sync.lost_records(&file));
+            if lost
+                .iter()
+                .any(|key| file.records.iter().any(|r| r.key == *key && !r.snapshot))
+            {
+                self.text.lost.insert(rid);
+            }
+            let snapshot = |r: &TextRecord| r.snapshot && lost.contains(&r.key);
+            if file.records.iter().any(snapshot) {
+                let (gone, kept) = std::mem::take(&mut file.records)
+                    .into_iter()
+                    .partition(snapshot);
+                file.records = kept;
+                self.release_records(rid, &file, gone);
+                self.store_text(&rid, &file)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// This device's records in `file` that never left it and that no
+    /// outbox of the domain the device works in holds.
+    fn lost_records(&self, file: &TextFile) -> BTreeSet<OpKey> {
+        let own = self.credentials.keys.device();
+        let acked = self.state.own.acked.map_or(0, |(counter, _, _)| counter);
+        file.records
+            .iter()
+            .filter(|r| {
+                r.key.device == own
+                    && r.seq.is_none()
+                    && r.key.counter != HELD
+                    && r.key.counter > acked
+                    && !self
+                        .state
+                        .outbox
+                        .iter()
+                        .any(|o| o.record.body.counter == r.key.counter)
+            })
+            .map(|r| r.key)
+            .collect()
+    }
+
+    /// Signs again the updates a kill left out of every outbox. Returns how
+    /// many records it signed.
+    fn resend_lost_text(&mut self) -> Result<usize, SyncError> {
+        if self.state.removal_hold || self.state.ended.is_some() {
+            return Ok(0);
+        }
+        let mut signed = 0;
+        for rid in self.text.lost.clone() {
+            if !self.can_write_note(&rid) {
+                continue;
+            }
+            let domain = self.state.objects.get(&rid).and_then(|o| o.domain);
+            signed += self.in_domain(domain, |sync| sync.resend_note(rid))?;
+            self.text.lost.remove(&rid);
+        }
+        Ok(signed)
+    }
+
+    fn resend_note(&mut self, rid: Id) -> Result<usize, SyncError> {
+        let Some(mut file) = self.text_file(&rid)? else {
+            return Ok(0);
+        };
+        let lost = self.lost_records(&file);
+        let (mut resent, kept): (Vec<TextRecord>, Vec<TextRecord>) =
+            std::mem::take(&mut file.records)
+                .into_iter()
+                .partition(|r| lost.contains(&r.key));
+        file.records = kept;
+        resent.sort_by_key(|r| r.key.counter);
+        let signed = resent.len();
+        for record in resent {
+            let bytes = self
+                .journal
+                .kept(&record_path(&rid, &record.payload), &record.payload)?;
+            let payload = Payload::from_bytes(&bytes)
+                .map_err(|_| SyncError::Invalid("a kept text record didn't read".into()))?;
+            let PayloadKind::TextUpdate { load, content, .. } = payload.kind else {
+                continue;
+            };
+            let yrs = match (content, record.blob) {
+                (Content::Inline { bytes }, _) => bytes.0,
+                (_, Some(blob)) => self.journal.kept(&record_path(&rid, &blob), &blob)?,
+                (_, None) => continue,
+            };
+            self.sign_update(rid, &mut file, load, yrs, &record.meta)?;
+        }
+        self.store_text(&rid, &file)?;
+        Ok(signed)
     }
 
     /// The note at `path`, by its object.
@@ -1855,18 +1988,7 @@ impl WorkspaceSync {
         self.editor_left(rid, LeftWhy::Ended);
         self.text.sessions.remove(&rid);
         self.text.activity.remove(&rid);
-        if let Some(file) = self.text_file(&rid)? {
-            if let Some(base) = file.base {
-                self.journal.forget(&record_path(&rid, &base.bytes));
-            }
-            for record in &file.records {
-                self.journal.forget(&record_path(&rid, &record.payload));
-                if let Some(blob) = &record.blob {
-                    self.journal.forget(&record_path(&rid, blob));
-                }
-            }
-        }
-        self.journal.forget(&text_name(&rid));
+        self.state.ended_text.insert(rid);
         if let Some(object) = self.state.objects.get_mut(&rid) {
             object.text = None;
         }
@@ -2058,7 +2180,7 @@ impl WorkspaceSync {
     /// One tick of text mode: takes the documents' merged changes to the
     /// files, signs the edits that wait, and runs the snapshot rules.
     pub fn text_tick(&mut self, now: Instant) -> Result<usize, SyncError> {
-        let mut signed = 0;
+        let mut signed = self.resend_lost_text()?;
         self.settle_text()?;
         let rids: Vec<Id> = self.text.sessions.keys().copied().collect();
         for rid in rids {

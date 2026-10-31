@@ -7,6 +7,8 @@ mod sync_support;
 use std::os::unix::fs::PermissionsExt;
 
 use app_core::sync::workspace::WorkspaceSync;
+use app_core::sync::workspace::text::Entered;
+use editor_core::text_mode::{CollabDocument, Utf16Splice};
 use sync_store::Backend;
 use sync_support::{Folder, Pair, Proxy, Server, approve, cut_off, first_desktop, pair, rounds};
 
@@ -167,6 +169,108 @@ async fn a_download_that_stays_offline_uploads_no_local_file() {
     let names: Vec<String> = a.files().keys().cloned().collect();
     assert_eq!(names, ["Plan.md"]);
     assert_eq!(b.files(), a.files());
+}
+
+const MANAGED: &[u8] = b"---\nid: note_01j9z3y7q8r2s4t6v8w0x2y4z6\ntype: note\n---\n# Plan\n";
+
+/// A kill after an outside edit ended a note's text mode and before the
+/// journal saved it: the note keeps syncing, and the edit still goes out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kill_as_text_mode_ends_keeps_the_note_syncing() {
+    let mut pair = pair().await;
+    pair.a.write("Note.md", MANAGED);
+    rounds(&mut pair).await;
+    let (entered, document) = pair.sync_a.open_text("Note.md").expect("the note opens");
+    assert_eq!(entered, Entered::Yes);
+    drop(document);
+    let rid = pair.sync_a.text_rid("Note.md").expect("the note");
+    pair.sync_a.close_text_note(rid).expect("it closes");
+    rounds(&mut pair).await;
+
+    // With no frontmatter the file stops fitting the document.
+    pair.a.write("Note.md", b"# Plan without frontmatter\n");
+    pair.sync_a.lose_saves();
+    assert!(pair.sync_a.capture().is_err());
+
+    pair.sync_a = laptop_reopened(&pair);
+    rounds(&mut pair).await;
+    assert_eq!(pair.b.files()["Note.md"], b"# Plan without frontmatter\n");
+    assert!(!pair.sync_a.in_text_mode(&rid));
+
+    pair.a.write("Note.md", b"# Plan, later\n");
+    rounds(&mut pair).await;
+    assert_eq!(pair.b.files()["Note.md"], b"# Plan, later\n");
+    assert_eq!(pair.sync_a.status().conflicts, 0);
+}
+
+/// A kill after a text update reached the note's journal file and before
+/// the outbox saved it: the update still goes out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kill_after_a_text_update_still_sends_it() {
+    let mut pair = pair().await;
+    let (entered, document) = pair.sync_a.open_text("Plan.md").expect("the note opens");
+    assert_eq!(entered, Entered::Yes);
+    let mut document = document.expect("the document");
+    rounds(&mut pair).await;
+    document.edit(
+        vec![Utf16Splice {
+            start: 0,
+            removed: 0,
+            inserted: "Hello ".to_owned(),
+        }],
+        true,
+    );
+    let rid = pair.sync_a.text_rid("Plan.md").expect("the note");
+    pair.sync_a.send_text_for_testing(rid).expect("signed");
+    pair.sync_a.lose_saves();
+    drop(document);
+
+    pair.sync_a = laptop_reopened(&pair);
+    rounds(&mut pair).await;
+    let plan = String::from_utf8(pair.b.files()["Plan.md"].clone()).unwrap();
+    assert!(plan.contains("Hello "), "{plan}");
+    assert_eq!(pair.sync_a.status().pending, 0);
+}
+
+/// A kill after a snapshot reached the note's journal file and before the
+/// outbox saved it leaves no snapshot that seems on its way: a `file`
+/// operation still ends the note's text mode here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kill_after_a_text_snapshot_lets_the_lineage_end() {
+    let mut pair = pair().await;
+    pair.a.write("Note.md", MANAGED);
+    rounds(&mut pair).await;
+    let (entered, document) = pair.sync_a.open_text("Note.md").expect("the note opens");
+    assert_eq!(entered, Entered::Yes);
+    drop(document);
+    rounds(&mut pair).await;
+    let (entered, document) = pair.sync_b.open_text("Note.md").expect("the note opens");
+    assert_eq!(entered, Entered::Yes);
+    drop(document);
+    let rid = pair.sync_a.text_rid("Note.md").expect("the note");
+    pair.sync_b.close_text_note(rid).expect("it closes");
+    rounds(&mut pair).await;
+
+    pair.sync_a
+        .write_snapshot_for_testing(rid)
+        .expect("a snapshot");
+    pair.sync_a.lose_saves();
+    pair.sync_a = laptop_reopened(&pair);
+
+    pair.b.write("Note.md", b"# Plan without frontmatter\n");
+    rounds(&mut pair).await;
+    assert!(!pair.sync_a.in_text_mode(&rid));
+    assert_eq!(pair.a.files()["Note.md"], b"# Plan without frontmatter\n");
+}
+
+fn laptop_reopened<B: Backend>(pair: &Pair<B>) -> WorkspaceSync {
+    WorkspaceSync::open(
+        pair.a.engine.clone(),
+        pair.laptop.credentials.clone(),
+        pair.laptop.secrets(),
+        &pair.a.registry,
+    )
+    .expect("the journal opens")
 }
 
 fn reopened<B: Backend>(pair: &Pair<B>) -> WorkspaceSync {

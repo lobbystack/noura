@@ -435,6 +435,7 @@ impl WorkspaceSync {
             held: BTreeMap::new(),
             last_success: None,
             held_roots: Vec::new(),
+            ended_text: BTreeSet::new(),
             roots: Vec::new(),
             restricted: BTreeMap::new(),
             archived: Vec::new(),
@@ -674,6 +675,7 @@ impl WorkspaceSync {
             sync.swap_domain(domain);
             keys?;
         }
+        sync.reconcile_text()?;
         sync.find_unsettled()?;
         sync.save()?;
         Ok(sync)
@@ -1064,6 +1066,7 @@ impl WorkspaceSync {
             return Err(SyncError::Invalid("the app was killed".into()));
         }
         self.journal.write(STATE_FILE, &self.state)?;
+        self.forget_ended_text();
         // An approval offer anchors the latest accepted checkpoint (§10).
         let accepted = self
             .state

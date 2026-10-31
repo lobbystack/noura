@@ -295,6 +295,23 @@ impl Journal {
         }
     }
 
+    /// Removes the folder at `relative` and everything in it.
+    pub fn forget_folder(&self, relative: &str) {
+        let _ = std::fs::remove_dir_all(self.dir.join(relative));
+    }
+
+    /// The names of the journal's own files that start with `prefix`.
+    pub fn names_with(&self, prefix: &str) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name.starts_with(prefix))
+            .collect()
+    }
+
     /// Lets go of the journal's lock, for a folder that starts a new
     /// journal while this one's holder stays alive.
     pub fn release(&self) {

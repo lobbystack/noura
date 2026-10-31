@@ -73,6 +73,10 @@ pub struct State {
     /// part instead, and [`State::swap`] puts them back.
     #[serde(default)]
     pub restricted: BTreeMap<Id, Frame>,
+    /// Notes whose text journal files go once a save of this state reached
+    /// disk, because the state no longer names them as text-mode notes.
+    #[serde(default)]
+    pub ended_text: BTreeSet<Id>,
     /// Versions an earlier journal's review store kept (§15).
     #[serde(default)]
     pub archived: Vec<super::rebuild::Archived>,
