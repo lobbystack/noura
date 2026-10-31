@@ -18,6 +18,8 @@
 //! records its account's head in the workspace itself, so the account's
 //! other devices trust the workspace too (§8).
 
+use std::time::{Duration, Instant};
+
 use sync_protocol::codec::{Encode, Nested, Sorted};
 use sync_protocol::messages::{ApprovalRequest, Pending};
 use sync_protocol::policy::PolicyChain;
@@ -51,9 +53,29 @@ pub struct InvitedCandidate {
     commit: Digest,
     offer: Option<(Signed<Offer>, Digest)>,
     confirmed: bool,
+    /// When the request went out.
+    posted: Instant,
 }
 
+/// How long a reset request stays out before the device posts a fresh one:
+/// the server drops a request after 10 minutes (§27).
+pub const RESET_REQUEST_LIFE: Duration = Duration::from_secs(9 * 60);
+/// How long a reset request with an offer gets: the offer's own 10 minutes
+/// on top of the request's.
+pub const RESET_OFFER_LIFE: Duration = Duration::from_secs(20 * 60);
+
 impl InvitedCandidate {
+    /// Whether this request is about to lapse at `now` with nobody having
+    /// answered it, so the device posts a fresh one (§7).
+    pub fn lapses(&self, now: Instant) -> bool {
+        let life = if self.offer.is_some() {
+            RESET_OFFER_LIFE
+        } else {
+            RESET_REQUEST_LIFE
+        };
+        self.invitation == RESET && now.saturating_duration_since(self.posted) >= life
+    }
+
     /// The workspace the invitation is for.
     pub fn workspace(&self) -> Id {
         self.workspace
@@ -144,6 +166,7 @@ impl SyncService {
             commit,
             offer: None,
             confirmed: false,
+            posted: Instant::now(),
         })
     }
 
@@ -177,6 +200,7 @@ impl SyncService {
             commit,
             offer: None,
             confirmed: false,
+            posted: Instant::now(),
         })
     }
 
@@ -507,4 +531,58 @@ fn check_add_member(
         return if answers { Ok(true) } else { Err(mismatch()) };
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candidate(invitation: Id, offered: bool) -> InvitedCandidate {
+        let keys = sync_key_envelope::v2::DeviceKeys::generate().unwrap();
+        let head = AccountHead {
+            account: Id([1; 16]),
+            genesis: Digest([2; 32]),
+            seqno: 1,
+            head: Digest([2; 32]),
+        };
+        let offer = offered.then(|| {
+            let body = Offer {
+                approver_card: sync_protocol::codec::Nested(keys.card(Id([1; 16]))),
+                candidate_card_digest: Digest::ZERO,
+                candidate_commit: Digest::ZERO,
+                candidate_head: None,
+                approver_head: head.clone(),
+                nonce: Key([0; 32]),
+                anchors: sync_protocol::codec::Sorted::default(),
+            };
+            (Signed::sign(body, keys.signing()), Digest::ZERO)
+        });
+        InvitedCandidate {
+            workspace: Id([3; 16]),
+            invitation,
+            inviter_fingerprint: Digest::ZERO,
+            head,
+            nc: Key([0; 32]),
+            commit: Digest::ZERO,
+            offer,
+            confirmed: false,
+            posted: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn a_reset_request_lapses_before_the_server_drops_it() {
+        let posted = candidate(RESET, false);
+        let start = posted.posted;
+        assert!(!posted.lapses(start + Duration::from_secs(8 * 60)));
+        assert!(posted.lapses(start + RESET_REQUEST_LIFE));
+        let answered = candidate(RESET, true);
+        assert!(!answered.lapses(answered.posted + RESET_REQUEST_LIFE));
+        assert!(answered.lapses(answered.posted + RESET_OFFER_LIFE));
+        let invited = candidate(Id([9; 16]), false);
+        assert!(
+            !invited.lapses(invited.posted + RESET_OFFER_LIFE),
+            "only a reset posts itself again"
+        );
+    }
 }

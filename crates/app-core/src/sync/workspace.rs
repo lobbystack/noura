@@ -423,6 +423,9 @@ impl WorkspaceSync {
         let journal = Journal::open(engine.root(), &device, &*secrets)?;
         let mut mark = Mark::read(&*secrets, &device, &remote.workspace)?.unwrap_or_default();
         let next = mark.start().get(&remote.domain).copied().unwrap_or(1);
+        // A journal that starts here has nothing older to compare.
+        mark.compared_generation = generation;
+        mark.stopped = false;
         // The new block is on the store before anything signs in it (§14).
         mark.write(&*secrets, &device, &remote.workspace)?;
         let owner = remote

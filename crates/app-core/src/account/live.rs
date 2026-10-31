@@ -198,6 +198,8 @@ impl LiveAccount {
             reset_requests: Vec::new(),
             changed_chains: Vec::new(),
             accepting: None,
+            held_out: BTreeSet::new(),
+            owned: BTreeSet::new(),
         };
         let spawned = std::thread::Builder::new()
             .name("noura-sync-account".into())
@@ -409,6 +411,13 @@ struct Driver {
     changed_chains: Vec<(Id, sync_protocol::types::Digest)>,
     /// The offer of the acceptance in progress.
     accepting: Option<OutstandingOffer>,
+    /// Workspaces of the account that write and judge nothing for now: a
+    /// restore stopped them, or they have yet to compare (§14). The key
+    /// upkeep and the changes this backend signs leave them out.
+    held_out: BTreeSet<Id>,
+    /// The workspaces your account owns, as the server lists them, which
+    /// may offer Set up sync again after a reset (§14).
+    owned: BTreeSet<Id>,
     /// The workspace you joined, which waits for a folder.
     joined: Option<Id>,
     /// The folder that workspace downloads into, once the windows show it.
@@ -622,7 +631,8 @@ impl Driver {
                 }
                 Ok(Message::Attach(engine)) => {
                     self.folder
-                        .attach(engine, self.service.as_ref(), &self.store, &self.app_data)
+                        .attach(engine, self.service.as_ref(), &self.store, &self.app_data);
+                    self.show_reset_waits();
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     runtime.block_on(self.tick());
@@ -749,11 +759,28 @@ impl Driver {
             }
             Err(error) => Err(error),
         };
-        if connected.is_err() {
+        if let Err(error) = connected {
+            let own_stop = self
+                .service
+                .as_ref()
+                .is_some_and(|service| service.kept_heads().stopped([]).is_some());
             self.service = None;
             self.workspaces.clear();
+            if !own_stop {
+                return Err(error);
+            }
+            // Your own chain stops every workspace, so the way back can't
+            // wait for a folder (§14).
+            tracing::warn!(kind = ?error.code(), "this account's chain stopped sync");
+            self.shared.update(|screen| {
+                screen.busy = false;
+                screen.can_retry = true;
+                screen.phase = AccountPhase::ChainStopped;
+            });
+            return Ok(());
         }
-        connected
+        self.wait_for_resets().await;
+        Ok(())
     }
 
     async fn open_workspaces(&mut self) -> Result<(), SyncError> {
@@ -762,13 +789,108 @@ impl Driver {
         };
         let listed = service.client().workspaces().await?;
         let mut workspaces = Vec::new();
+        let mut held = BTreeSet::new();
+        self.owned.clear();
         for workspace in listed.workspaces.iter() {
-            if let Ok(remote) = service.open_workspace(workspace.workspace).await {
+            if workspace.role == sync_protocol::records::Role::Owner {
+                self.owned.insert(workspace.workspace);
+            }
+            // Nothing judges a chain here until the folder has compared.
+            if service.workspace_held(workspace.workspace) {
+                held.insert(workspace.workspace);
+            } else if let Ok(remote) = service.open_workspace(workspace.workspace).await {
                 workspaces.push(remote);
             }
         }
         self.workspaces = workspaces;
+        self.held_out = held;
         Ok(())
+    }
+
+    /// Takes out each workspace a hold reached, and opens each whose hold
+    /// ended, so nothing here writes in a stopped workspace (§14).
+    async fn settle_workspaces(&mut self) {
+        let Some(service) = self.service.as_mut() else {
+            return;
+        };
+        let (held, kept) = std::mem::take(&mut self.workspaces)
+            .into_iter()
+            .partition::<Vec<_>, _>(|remote| service.workspace_held(remote.workspace));
+        self.workspaces = kept;
+        self.held_out.extend(held.iter().map(|r| r.workspace));
+        for workspace in self.held_out.clone() {
+            if service.workspace_held(workspace) {
+                continue;
+            }
+            match service.open_workspace(workspace).await {
+                Ok(remote) => {
+                    self.held_out.remove(&workspace);
+                    self.workspaces.push(remote);
+                }
+                Err(error) => {
+                    tracing::warn!(kind = ?error.code(), "a workspace didn't open after its hold");
+                }
+            }
+        }
+    }
+
+    /// Finds the workspaces that have yet to accept your reset, as each
+    /// connect does, so the wait survives a restart and any device of the
+    /// new chain can carry it: a workspace that lists your account and
+    /// didn't open may take a reset request, and the server decides (§7).
+    async fn wait_for_resets(&mut self) {
+        let Some(service) = self.service.as_mut() else {
+            return;
+        };
+        let Ok(listed) = service.client().workspaces().await else {
+            return;
+        };
+        let mut waits = std::mem::take(&mut self.reset_waits);
+        for workspace in listed.workspaces.iter().map(|w| w.workspace) {
+            let opened = self.workspaces.iter().any(|r| r.workspace == workspace);
+            let waiting = waits.iter().any(|c| c.workspace() == workspace);
+            if opened || waiting || self.held_out.contains(&workspace) {
+                continue;
+            }
+            match service.request_reset_approval(workspace).await {
+                Ok(candidate) => waits.push(candidate),
+                Err(error) => {
+                    tracing::debug!(kind = ?error.code(), "no reset request for a workspace");
+                }
+            }
+        }
+        self.reset_waits = waits;
+        self.show_reset_waits();
+    }
+
+    /// Shows the workspaces that wait and holds the open folder when it's
+    /// one of them. A folder that opens later comes here too, so what it
+    /// offers doesn't depend on which folder was open at the reset.
+    fn show_reset_waits(&mut self) {
+        let waits: Vec<Id> = self.reset_waits.iter().map(|c| c.workspace()).collect();
+        self.folder.hold_for_reset(&waits, &self.app_data);
+        let here = self.folder.workspace_of_folder(&self.app_data);
+        let lines: Vec<_> = self
+            .reset_waits
+            .iter()
+            .map(|candidate| crate::account::ResetWait {
+                workspace: short_id(&candidate.workspace()),
+                code: candidate.code(),
+                confirmed: candidate.confirmed(),
+                set_up_again: self.owned.contains(&candidate.workspace())
+                    && here == Some(candidate.workspace()),
+            })
+            .collect();
+        let shown = self.service.as_ref().and_then(|service| {
+            (!lines.is_empty())
+                .then(|| fingerprint(&service.credentials().reference_head.genesis))
+        });
+        self.signed_in(|view| {
+            view.reset_waits = lines;
+            if shown.is_some() {
+                view.reset_fingerprint = shown;
+            }
+        });
     }
 
     /// Answers `device_removed` (§7): only a removal that the account
@@ -812,6 +934,7 @@ impl Driver {
     /// Reads the device list and the requests again and shows them.
     async fn refresh(&mut self) -> Result<(), SyncError> {
         self.last_refresh = Some(Instant::now());
+        self.settle_workspaces().await;
         let Some(service) = self.service.as_mut() else {
             return Ok(());
         };
@@ -830,6 +953,7 @@ impl Driver {
         };
         self.changed_chains = service.changed_chains().await;
         let two_chains = service.kept_heads().two_current_chains();
+        let refused = service.kept_heads().refused_accounts();
         let this = service.credentials().keys.device();
         let fingerprints: std::collections::BTreeMap<Id, String> = list
             .active
@@ -874,6 +998,7 @@ impl Driver {
                     fingerprint(&request.fingerprint)
                 ),
                 end_sessions: None,
+                check_again: None,
             })
             .chain(self.changed_chains.iter().map(|(account, genesis)| {
                 AlertEntry {
@@ -883,6 +1008,7 @@ impl Driver {
                         fingerprint(genesis)
                     ),
                     end_sessions: None,
+                    check_again: None,
                 }
             }))
             .chain(two_chains.iter().map(|account| AlertEntry {
@@ -891,6 +1017,15 @@ impl Driver {
                     short_id(account)
                 ),
                 end_sessions: None,
+                check_again: None,
+            }))
+            .chain(refused.iter().map(|(account, code)| AlertEntry {
+                text: format!(
+                    "Noura stopped trusting the device list of account {} ({code}), so the workspaces you share with it wait. Check again once the server is repaired or that person reset their devices.",
+                    short_id(account)
+                ),
+                end_sessions: None,
+                check_again: Some(*account),
             }))
             .collect();
         let alerts = list
@@ -905,7 +1040,11 @@ impl Driver {
                     }
                     _ => None,
                 };
-                AlertEntry { text, end_sessions }
+                AlertEntry {
+                    text,
+                    end_sessions,
+                    check_again: None,
+                }
             })
             .chain(changed)
             .collect();
@@ -950,6 +1089,7 @@ impl Driver {
 
     async fn handle(&mut self, action: AccountAction) {
         self.shared.update(|screen| screen.problem = None);
+        self.settle_workspaces().await;
         if let Err(error) = self.carry_out(action).await {
             self.fail(&error);
         }
@@ -977,7 +1117,17 @@ impl Driver {
                 self.shared.update(|screen| screen.busy = true);
                 self.start_sign_in(Purpose::Join).await?;
             }
-            AccountAction::Retry => self.resume().await,
+            AccountAction::Retry => {
+                self.judge_own_chain_again()?;
+                self.resume().await;
+            }
+            AccountAction::CheckChainAgain(account) => {
+                let store = self.store.clone();
+                let service = self.service.as_mut().ok_or_else(not_signed_in)?;
+                service.kept_heads_mut().clear_refusal(&account, &*store)?;
+                self.open_workspaces().await?;
+                self.refresh().await?;
+            }
             AccountAction::CancelSignIn => {
                 self.sign_in = None;
                 self.candidate = None;
@@ -1310,40 +1460,11 @@ impl Driver {
                     KeptHeads::forget_retired(&self.state_dir(&device), &device, &*self.store)?;
                 }
                 self.folder.after_reset(&[], &self.app_data);
+                self.reset_waits.clear();
                 self.connect(done.credentials.clone()).await?;
-                let mut waits = Vec::new();
-                let mut owned = BTreeSet::new();
-                if let Some(service) = self.service.as_mut() {
-                    let listed = service.client().workspaces().await?;
-                    for workspace in listed.workspaces.iter() {
-                        if workspace.role == sync_protocol::records::Role::Owner {
-                            owned.insert(workspace.workspace);
-                        }
-                        match service.request_reset_approval(workspace.workspace).await {
-                            Ok(candidate) => waits.push(candidate),
-                            Err(error) => {
-                                tracing::warn!(kind = ?error.code(), "a reset request failed");
-                            }
-                        }
-                    }
-                }
                 let shown = fingerprint(&done.fingerprint);
-                let held: Vec<Id> = waits.iter().map(|c| c.workspace()).collect();
-                self.folder.after_reset(&held, &self.app_data);
-                let here = self.folder.workspace_of_folder(&self.app_data);
-                let lines = waits
-                    .iter()
-                    .map(|c| crate::account::ResetWait {
-                        workspace: short_id(&c.workspace()),
-                        code: None,
-                        confirmed: false,
-                        set_up_again: owned.contains(&c.workspace()) && here == Some(c.workspace()),
-                    })
-                    .collect();
-                self.reset_waits = waits;
                 self.signed_in(|view| {
                     view.reset_fingerprint = Some(shown);
-                    view.reset_waits = lines;
                     view.offer_kit = true;
                 });
             }
@@ -1372,9 +1493,7 @@ impl Driver {
                         other => other,
                     })?;
                 self.reset_waits.remove(index);
-                self.signed_in(|view| {
-                    view.reset_waits.remove(index);
-                });
+                self.show_reset_waits();
             }
             AccountAction::AcceptReset(index) => {
                 let request = self
@@ -1724,6 +1843,9 @@ impl Driver {
         };
         let mut waiting = Vec::new();
         for remote in self.workspaces.iter_mut() {
+            if service.workspace_held(remote.workspace) {
+                continue;
+            }
             match service.upkeep_waiting(remote).await {
                 Ok(tasks) => waiting.extend(tasks),
                 Err(error) => {
@@ -1844,43 +1966,72 @@ impl Driver {
         let Some(service) = self.service.as_mut() else {
             return Ok(());
         };
-        if let Some(offer) = self.accepting.as_mut()
-            && let Some(code) = service.approval_code(offer).await?
-        {
-            self.shared.update(|screen| {
-                if let AccountPhase::SignedIn(view) = &mut screen.phase
-                    && let Some(approval) = view.reset_approval.as_mut()
-                {
-                    approval.code = Some(code);
+        if let Some(offer) = self.accepting.as_mut() {
+            match service.approval_code(offer).await {
+                Ok(Some(code)) => self.shared.update(|screen| {
+                    if let AccountPhase::SignedIn(view) = &mut screen.phase
+                        && let Some(approval) = view.reset_approval.as_mut()
+                    {
+                        approval.code = Some(code);
+                    }
+                }),
+                Ok(None) => {}
+                // A server it can't reach leaves the offer for the next
+                // poll.
+                Err(error @ SyncError::Network(_)) => return Err(error),
+                // An expired offer ends the attempt here too, and the rest
+                // of the poll goes on from the next tick.
+                Err(error) => {
+                    self.accepting = None;
+                    self.signed_in(|view| view.reset_approval = None);
+                    return Err(error);
                 }
-            });
+            }
         }
         let mut accepted = Vec::new();
+        let mut changed = false;
+        let now = Instant::now();
         for (index, candidate) in self.reset_waits.iter_mut().enumerate() {
+            if candidate.lapses(now) {
+                changed = true;
+                let workspace = candidate.workspace();
+                // A reset another device of the new chain took through.
+                if service.open_workspace(workspace).await.is_ok() {
+                    accepted.push(index);
+                } else {
+                    match service.request_reset_approval(workspace).await {
+                        Ok(fresh) => *candidate = fresh,
+                        Err(error) => {
+                            tracing::warn!(kind = ?error.code(), "a reset request lapsed");
+                        }
+                    }
+                }
+                continue;
+            }
             if candidate.confirmed() {
                 if service.join_invited(candidate).await.unwrap_or(false) {
                     accepted.push(index);
                 }
                 continue;
             }
-            if let Ok(CandidateStep::Code(code)) = service.poll_invited(candidate).await {
-                self.shared.update(|screen| {
-                    if let AccountPhase::SignedIn(view) = &mut screen.phase
-                        && let Some(line) = view.reset_waits.get_mut(index)
-                    {
-                        line.code = Some(code);
-                    }
-                });
+            if let Ok(CandidateStep::Code(_)) = service.poll_invited(candidate).await {
+                changed = true;
             }
         }
-        for index in accepted.into_iter().rev() {
-            self.reset_waits.remove(index);
-            self.shared.update(|screen| {
-                if let AccountPhase::SignedIn(view) = &mut screen.phase {
-                    view.reset_waits.remove(index);
-                }
-            });
-            // The folder bootstraps and matches its files (§7).
+        let opened: Vec<Id> = accepted
+            .iter()
+            .rev()
+            .map(|index| self.reset_waits.remove(*index).workspace())
+            .collect();
+        if changed || !opened.is_empty() {
+            self.show_reset_waits();
+        }
+        // The folder bootstraps and matches its files (§7).
+        if self
+            .folder
+            .workspace_of_folder(&self.app_data)
+            .is_some_and(|here| opened.contains(&here))
+        {
             self.folder
                 .act(
                     FolderSyncAction::Connect,
@@ -1890,6 +2041,33 @@ impl Driver {
                 .await;
         }
         Ok(())
+    }
+
+    /// Clears the refusal of this device's own chain when you try again
+    /// from the stop, so the connect judges the chain afresh.
+    fn judge_own_chain_again(&self) -> Result<(), SyncError> {
+        let stopped = matches!(
+            self.shared
+                .screen
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .phase,
+            AccountPhase::ChainStopped
+        );
+        if !stopped {
+            return Ok(());
+        }
+        let Some(stored) = StoredDevice::load(&*self.store, &self.server)? else {
+            return Ok(());
+        };
+        let device = stored.keys()?.device();
+        let mut heads = KeptHeads::open(
+            &self.state_dir(&device),
+            stored.account,
+            device,
+            &*self.store,
+        )?;
+        heads.clear_refusal(&stored.account, &*self.store)
     }
 
     /// After the browser sign-in: the first device of an account starts its

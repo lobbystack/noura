@@ -53,6 +53,14 @@ pub struct Mark {
     pub domains: BTreeMap<Id, DomainMark>,
     /// The highest load number this device may use (§22).
     pub reserved_load: u64,
+    /// The restore generation whose comparison this device finished here,
+    /// so an account screen that holds no journal can tell a workspace
+    /// that still has to compare (§14).
+    #[serde(default)]
+    pub compared_generation: u64,
+    /// Whether a restore stopped this workspace (§14).
+    #[serde(default)]
+    pub stopped: bool,
 }
 
 impl Default for DomainMark {
@@ -75,6 +83,8 @@ impl Default for Mark {
             policy_head: Digest::ZERO,
             domains: BTreeMap::new(),
             reserved_load: 0,
+            compared_generation: 0,
+            stopped: false,
         }
     }
 }
@@ -146,6 +156,12 @@ impl Mark {
             .collect()
     }
 
+    /// Whether the workspace writes and judges nothing at `generation`: a
+    /// restore stopped it, or it has yet to compare that generation (§14).
+    pub fn holds(&self, generation: u64) -> bool {
+        self.stopped || self.compared_generation < generation
+    }
+
     /// Whether `counter` in `domain` lies above the reservation, so the
     /// device raises it before it signs.
     pub fn needs_block(&self, domain: &Id, counter: u64) -> bool {
@@ -193,6 +209,18 @@ mod tests {
         assert_eq!(mark.domains[&domain].reserved, 2_048);
         mark.reserve(&domain, 3_000);
         assert_eq!(mark.domains[&domain].reserved, 3_072);
+    }
+
+    #[test]
+    fn a_stop_or_a_later_generation_holds_the_workspace() {
+        let mut mark = Mark {
+            compared_generation: 7,
+            ..Mark::default()
+        };
+        assert!(!mark.holds(7));
+        assert!(mark.holds(8), "the comparison hasn't run");
+        mark.stopped = true;
+        assert!(mark.holds(7));
     }
 
     #[test]

@@ -180,6 +180,19 @@ pub(crate) fn section(
                 });
             });
         }
+        AccountPhase::ChainStopped => {
+            group(ui, "Sync stopped for your account", |ui| {
+                ui.label("The server's list of your devices doesn't match what this computer accepted, which can follow a restore from a backup. Reset your devices to go on. Your files stay on this computer.");
+                ui.horizontal(|ui| {
+                    if primary_button(ui, "Reset devices", !screen.busy).clicked() {
+                        actions.push(AccountAction::StartReset);
+                    }
+                    if ui.add_enabled(!screen.busy, Button::new("Try again")).clicked() {
+                        actions.push(AccountAction::Retry);
+                    }
+                });
+            });
+        }
         AccountPhase::Recovering(review) => recovering(ui, review, &mut actions),
         AccountPhase::SignedIn(signed_in) => {
             signed_in_section(ui, &screen, signed_in, &mut actions, picker);
@@ -569,6 +582,11 @@ fn signed_in_section(
             && ui.button("Sign that device out").clicked()
         {
             actions.push(AccountAction::EndSessions(device));
+        }
+        if let Some(account) = warning.check_again
+            && ui.button("Check again").clicked()
+        {
+            actions.push(AccountAction::CheckChainAgain(account));
         }
     }
     if !view.requests.is_empty() || view.approval.is_some() {

@@ -1285,3 +1285,58 @@ fn a_workspaces_names_follow_its_members() {
     heads.forget_workspace(first).unwrap();
     assert!(heads.two_current_chains().is_empty());
 }
+
+/// An `accept_reset` in one workspace ends the retired chain there alone: a
+/// workspace that still names it keeps the head and the refusal, so its
+/// comparison still finds what a restore lost (§14).
+#[test]
+fn a_reset_one_workspace_accepted_stays_open_in_another() {
+    let dir = tempfile::tempdir().unwrap();
+    let secrets = MemorySecrets::default();
+    let own = Id([1; 16]);
+    let device = Id([2; 16]);
+    let member = Id([3; 16]);
+    let (first, second) = (Id([4; 16]), Id([5; 16]));
+    let (retired, fresh) = (Digest([6; 32]), Digest([7; 32]));
+    let head = |genesis: Digest, seqno: u64| AccountHead {
+        account: member,
+        genesis,
+        seqno,
+        head: Digest([seqno as u8; 32]),
+    };
+    let mut heads = KeptHeads::rebuild(
+        dir.path(),
+        own,
+        device,
+        [head(retired, 4), head(fresh, 1)],
+        [(first, member, fresh), (second, member, retired)],
+        &secrets,
+    )
+    .unwrap();
+    heads.refuse_short(member, &secrets);
+    assert_eq!(heads.stopped_in(&first, [member]), Some("sync_account_forked"));
+
+    heads.drop_retired(&member, &fresh, first, &secrets).unwrap();
+    assert_eq!(heads.stopped_in(&first, [member]), None, "accepted here");
+    assert_eq!(
+        heads.stopped_in(&second, [member]),
+        Some("sync_account_forked"),
+        "still named there"
+    );
+    assert_eq!(
+        heads
+            .kept_in(&first, &member)
+            .iter()
+            .map(|h| h.genesis)
+            .collect::<Vec<_>>(),
+        vec![fresh]
+    );
+    assert_eq!(heads.kept_in(&second, &member).len(), 2);
+
+    heads.drop_retired(&member, &fresh, second, &secrets).unwrap();
+    assert_eq!(heads.stopped_in(&second, [member]), None);
+    assert_eq!(heads.kept_of(&member).len(), 1, "no workspace names it");
+    let reopened = KeptHeads::open(dir.path(), own, device, &secrets).unwrap();
+    assert_eq!(reopened.stopped([member]), None, "the store forgot it too");
+    assert!(reopened.kept_of(&member).iter().all(|h| h.genesis == fresh));
+}

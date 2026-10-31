@@ -106,6 +106,10 @@ struct Stored {
     /// for each workspace's domains (§10, §12, §17).
     #[serde(default)]
     checkpoint_anchors: Vec<KeptCheckpointAnchor>,
+    /// The workspaces, each with an account, that accepted that account's
+    /// reset while another workspace still names its retired chain (§14).
+    #[serde(default)]
+    accepted_resets: Vec<(Id, Id)>,
 }
 
 /// A checkpoint anchor an approval offer or a recovery kit carried.
@@ -182,6 +186,8 @@ pub struct KeptHeads {
     checkpoint_anchors: BTreeMap<(Id, Id), KeptCheckpointAnchor>,
     /// Accounts whose retired chain the device may read short (§14).
     excused: BTreeSet<Id>,
+    /// See [`Stored::accepted_resets`].
+    accepted_resets: BTreeSet<(Id, Id)>,
 }
 
 impl std::fmt::Debug for KeptHeads {
@@ -354,6 +360,7 @@ impl KeptHeads {
                 .map(|a| ((a.workspace, a.domain), a))
                 .collect(),
             witnessed: stored.witnessed.into_iter().collect(),
+            accepted_resets: stored.accepted_resets.into_iter().collect(),
         };
         if let Some(floor) = stored_own_head(credentials, &device)? {
             let below = heads
@@ -438,6 +445,7 @@ impl KeptHeads {
             trusted: BTreeMap::new(),
             witnessed: BTreeSet::new(),
             checkpoint_anchors: BTreeMap::new(),
+            accepted_resets: BTreeSet::new(),
         };
         rebuilt.save()?;
         for account in forked {
@@ -744,24 +752,76 @@ impl KeptHeads {
         self.name_members(workspace, [])
     }
 
-    /// Drops what the device keeps of `account`'s chains other than
-    /// `genesis`, once it verified an `accept_reset` that names that chain
-    /// (§7, §14), or its own reset retired them: a retired chain no longer
-    /// affects the workspace. The refusal that chain set ends too.
+    /// Ends a retired chain of `account` in `workspace`, once the device
+    /// verified there an `accept_reset` that names `genesis` (§7, §14), or
+    /// its own reset retired it: that chain no longer affects the workspace.
+    /// While another workspace still names the retired chain, its head and
+    /// any refusal stay for that workspace, so its comparison still sees
+    /// what the restore lost. Otherwise the device drops the chain and the
+    /// refusal it set, in the credential store too.
     pub fn drop_retired(
         &mut self,
         account: &Id,
         genesis: &Digest,
         workspace: Id,
+        credentials: &dyn SyncCredentials,
     ) -> Result<(), SyncError> {
-        self.refused.remove(account);
         self.excused.remove(account);
-        self.names.remove(&(workspace, *account));
+        self.names.insert((workspace, *account), *genesis);
+        let elsewhere = self
+            .names
+            .iter()
+            .any(|((_, named), chain)| named == account && chain != genesis);
+        if elsewhere {
+            self.accepted_resets.insert((workspace, *account));
+            return self.save();
+        }
+        self.accepted_resets.retain(|(_, held)| held != account);
         self.heads
             .retain(|(held, chain), _| held != account || chain == genesis);
         self.links
             .retain(|(held, chain), _| held != account || chain == genesis);
-        self.save()
+        self.save()?;
+        if self.refused.remove(account).is_some() {
+            write_refusals(credentials, &self.device, &self.refused)?;
+        }
+        Ok(())
+    }
+
+    /// Every head that counts for `account` in `workspace`: those of its
+    /// chains, except a chain the workspace retired by accepting a reset.
+    pub fn kept_in(&self, workspace: &Id, account: &Id) -> Vec<AccountHead> {
+        let named = self
+            .accepted_resets
+            .contains(&(*workspace, *account))
+            .then(|| self.names.get(&(*workspace, *account)))
+            .flatten();
+        self.kept_of(account)
+            .into_iter()
+            .filter(|head| named.is_none_or(|genesis| head.genesis == *genesis))
+            .collect()
+    }
+
+    /// The accounts the device last saw `workspace`'s policy name as
+    /// members.
+    pub fn members_named(&self, workspace: &Id) -> Vec<Id> {
+        self.names
+            .keys()
+            .filter(|(named, _)| named == workspace)
+            .map(|(_, account)| *account)
+            .collect()
+    }
+
+    /// The first of `accounts` whose chain the device refused.
+    pub fn refused_among(&self, accounts: impl IntoIterator<Item = Id>) -> Option<Id> {
+        accounts
+            .into_iter()
+            .find(|account| self.refused.contains_key(account))
+    }
+
+    /// Every account whose chain the device refused, with the code.
+    pub fn refused_accounts(&self) -> Vec<(Id, &'static str)> {
+        self.refused.iter().map(|(a, code)| (*a, *code)).collect()
     }
 
     /// Lets the device read `account`'s retired chain short of the head it
@@ -809,9 +869,24 @@ impl KeptHeads {
             .find_map(|account| self.refused.get(&account).copied())
     }
 
-    /// Lifts the stop that a refusal of `account`'s chain set, once you
-    /// acted on its alert, such as by having the server repaired or the
-    /// account removed and invited again. The app's alert calls it.
+    /// What stops `workspace`, whose members are `members`: as
+    /// [`KeptHeads::stopped`], leaving out each refused chain the device
+    /// may read short while it answers that account's reset, and each
+    /// account whose reset this workspace accepted (§14).
+    pub fn stopped_in(
+        &self,
+        workspace: &Id,
+        members: impl IntoIterator<Item = Id>,
+    ) -> Option<&'static str> {
+        self.stopped(members.into_iter().filter(|account| {
+            !self.excused.contains(account)
+                && !self.accepted_resets.contains(&(*workspace, *account))
+        }))
+    }
+
+    /// Lifts the stop that a refusal of `account`'s chain set, when you
+    /// ask the device to judge the chain again from its alert. A chain
+    /// that still fails is refused again.
     pub fn clear_refusal(
         &mut self,
         account: &Id,
@@ -929,6 +1004,7 @@ impl KeptHeads {
                 .collect(),
             witnessed: self.witnessed.iter().copied().collect(),
             checkpoint_anchors: self.checkpoint_anchors.values().copied().collect(),
+            accepted_resets: self.accepted_resets.iter().copied().collect(),
         };
         let json =
             serde_json::to_vec_pretty(&stored).map_err(|e| SyncError::Invalid(e.to_string()))?;

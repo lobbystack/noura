@@ -812,6 +812,109 @@ async fn a_member_resets_and_the_owner_accepts_the_reset() {
     assert_eq!(pair.b.files(), files);
 }
 
+/// A refusal of the member's chain, however the device reached it, leaves
+/// the way back open: the owner accepts the reset, and the stop ends for
+/// good, in the credential store too (§14).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_chain_still_lets_the_owner_accept_the_reset() {
+    use std::sync::Arc;
+
+    let mut pair = pair_of_accounts_on(Server::start().await).await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    let workspace = pair.sync_a.workspace();
+    let account = pair.desktop.credentials.account;
+    let _third = approve(&pair.server, &mut pair.desktop, &mut []).await;
+    let genesis = pair.desktop.credentials.reference_head.genesis;
+    pair.service
+        .follow_account(account, genesis)
+        .await
+        .expect("the owner keeps the new head");
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("laptop");
+    assert_eq!(
+        pair.sync_a.restore_lost(),
+        Some(&Lost::MemberAccount(account))
+    );
+    assert!(pair.service.workspace_held(workspace), "the stop shows");
+    assert_eq!(
+        pair.service
+            .open_workspace(workspace)
+            .await
+            .err()
+            .and_then(|e| e.code().map(str::to_owned)),
+        Some("sync_account_forked".to_owned()),
+        "a read that went around the stop"
+    );
+
+    let (mut member, _) =
+        reset_devices(&restored, account, Arc::new(MemorySecrets::default())).await;
+    accept_the_reset(&mut pair, &mut member, workspace).await;
+    for _ in 0..2 {
+        pair.sync_a
+            .round(&mut pair.service, 0)
+            .await
+            .expect("laptop");
+    }
+    assert_eq!(pair.sync_a.restore_lost(), None);
+    assert!(!pair.service.workspace_held(workspace), "the stop ended");
+    let heads = app_core::sync::KeptHeads::open(
+        pair.laptop.state.path(),
+        pair.laptop.credentials.account,
+        pair.laptop.id(),
+        &*pair.laptop.secrets,
+    )
+    .expect("the heads open");
+    assert_eq!(heads.stopped([account]), None, "nothing brings it back");
+}
+
+/// After a relaunch the device holds no verified policy yet, and still
+/// compares the chain of a member the last change doesn't record (§14).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_relaunch_compares_a_member_the_last_change_left_out() {
+    let mut pair = pair_of_accounts_on(Server::start().await).await;
+    let workspace = pair.sync_a.workspace();
+    let account = pair.desktop.credentials.account;
+    pair.sync_a
+        .restrict_folder(&mut pair.service, "Pay", &[])
+        .await
+        .expect("a change that records the owner's head alone");
+    rounds(&mut pair).await;
+    let copy = pair.server.backup("before.sqlite3").await;
+    let _third = approve(&pair.server, &mut pair.desktop, &mut []).await;
+    let genesis = pair.desktop.credentials.reference_head.genesis;
+    pair.service
+        .follow_account(account, genesis)
+        .await
+        .expect("the owner keeps the new head");
+
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    pair.sync_a.lose_saves();
+    pair.sync_a = app_core::sync::workspace::WorkspaceSync::open(
+        pair.a.engine.clone(),
+        pair.laptop.credentials.clone(),
+        pair.laptop.secrets(),
+        &pair.a.registry,
+    )
+    .expect("the folder opens");
+    assert!(
+        pair.service.workspace_held(workspace),
+        "it waits for the comparison"
+    );
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("the comparison ends");
+    assert_eq!(
+        pair.sync_a.restore_lost(),
+        Some(&Lost::MemberAccount(account))
+    );
+}
+
 /// A member's history floors, from the server's database.
 fn floors(server: &Server, account: sync_protocol::types::Id) -> Vec<(Vec<u8>, i64)> {
     let database = server.dir.path().join("data").join(sync_support::DATABASE);

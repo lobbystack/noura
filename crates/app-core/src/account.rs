@@ -116,6 +116,10 @@ pub enum AccountPhase {
     /// A restore lost the account head your kit names, so the kit can't
     /// recover your account and Reset devices is the way back (§14).
     KitLost,
+    /// This device stopped trusting its own account's chain, which stops
+    /// every workspace (§14): Reset devices is the way on, and trying again
+    /// judges the chain afresh.
+    ChainStopped,
     /// A device of your account removed this one (§7).
     Removed {
         /// The fingerprint of the device that removed it.
@@ -209,6 +213,9 @@ pub struct AlertEntry {
     /// The enrolled card it names when your chain doesn't list it, whose
     /// sessions any device of yours can end.
     pub end_sessions: Option<Id>,
+    /// The account whose refused chain you can have this device judge
+    /// again (§7).
+    pub check_again: Option<Id>,
 }
 
 /// A new device's approval request.
@@ -353,6 +360,8 @@ pub enum AccountAction {
     CancelInvitation,
     /// Download the workspace you joined into this new workspace folder.
     DownloadInvited(PathBuf),
+    /// Judge this account's refused chain again (§7).
+    CheckChainAgain(Id),
     /// Reset your devices: sign in again and ask for an emailed code (§7).
     StartReset,
     /// Start the new chain with the emailed code.
@@ -387,6 +396,9 @@ impl std::fmt::Debug for AccountAction {
             AccountAction::SignIn => f.write_str("SignIn"),
             AccountAction::CancelSignIn => f.write_str("CancelSignIn"),
             AccountAction::Retry => f.write_str("Retry"),
+            AccountAction::CheckChainAgain(account) => {
+                f.debug_tuple("CheckChainAgain").field(account).finish()
+            }
             AccountAction::ConfirmCode => f.write_str("ConfirmCode"),
             AccountAction::Approve(index) => f.debug_tuple("Approve").field(index).finish(),
             AccountAction::ConfirmApproval => f.write_str("ConfirmApproval"),

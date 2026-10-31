@@ -136,6 +136,33 @@ fn a_kit_the_server_lost_offers_reset_devices() {
 }
 
 #[test]
+fn a_stopped_chain_offers_reset_devices_and_a_retry() {
+    let app_data = tempfile::tempdir().unwrap();
+    let account = Arc::new(FakeAccount::default());
+    account.show(AccountScreen {
+        server: "https://sync.example.com".into(),
+        phase: AccountPhase::ChainStopped,
+        ..AccountScreen::default()
+    });
+    let mut harness = harness(app_data.path(), account.clone());
+    harness.run();
+    harness.get_by_role_and_label(Role::Group, "Sync stopped for your account");
+    harness
+        .get_by_role_and_label(Role::Button, "Reset devices")
+        .click();
+    harness.run();
+    assert!(matches!(
+        account.taken().last(),
+        Some(AccountAction::StartReset)
+    ));
+    harness
+        .get_by_role_and_label(Role::Button, "Try again")
+        .click();
+    harness.run();
+    assert!(matches!(account.taken().last(), Some(AccountAction::Retry)));
+}
+
+#[test]
 fn signed_out_shows_the_server_address_sign_in_and_recovery() {
     let app_data = tempfile::tempdir().unwrap();
     let account = Arc::new(FakeAccount::default());
@@ -239,10 +266,12 @@ fn the_device_list_alerts_and_signs_out_a_device_nobody_approved() {
             AlertEntry {
                 text: unknown.clone(),
                 end_sessions: Some(Id([9; 16])),
+                check_again: None,
             },
             AlertEntry {
                 text: changed.into(),
                 end_sessions: None,
+                check_again: None,
             },
         ],
         ..SignedInView::default()
@@ -774,10 +803,19 @@ fn the_reset_screens_ask_for_the_code_and_show_what_comes_next() {
         alerts: vec![AlertEntry {
             text: "The devices of account 11111111 changed.".into(),
             end_sessions: None,
+            check_again: Some(Id([9; 16])),
         }],
         ..SignedInView::default()
     }));
     harness.run();
+    harness.get_by_label("Check again").click();
+    harness.run();
+    assert!(
+        account
+            .taken()
+            .iter()
+            .any(|action| matches!(action, AccountAction::CheckChainAgain(_)))
+    );
     assert!(
         harness
             .query_all_by_label("The devices of account 11111111 changed.")

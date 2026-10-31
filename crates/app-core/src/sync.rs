@@ -932,12 +932,26 @@ impl SyncService {
     }
 
     fn check_stops(&self, policy: &PolicyChain) -> Result<(), SyncError> {
-        match self
-            .heads
-            .stopped(policy.head_snapshot().members.keys().copied())
-        {
+        let members = policy.head_snapshot().members.keys().copied();
+        match self.heads.stopped_in(&policy.workspace(), members) {
             Some(code) => Err(SyncError::Check(code)),
             None => Ok(()),
+        }
+    }
+
+    /// Whether `workspace` writes and judges nothing on this device for
+    /// now, as the mark its sync keeps in the credential store says: a
+    /// restore stopped it, or it has yet to compare the server's generation
+    /// (§14). A workspace with no folder here has nothing to compare. A
+    /// credential store that fails counts as a hold.
+    pub fn workspace_held(&self, workspace: Id) -> bool {
+        let device = self.credentials.keys.device();
+        match marks::Mark::read(&*self.secrets, &device, &workspace) {
+            Ok(mark) => mark.is_some_and(|m| m.holds(self.client.restore_generation())),
+            Err(error) => {
+                tracing::warn!(kind = ?error.code(), "the stored sync mark can't be read");
+                true
+            }
         }
     }
 

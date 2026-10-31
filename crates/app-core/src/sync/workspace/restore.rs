@@ -474,6 +474,7 @@ impl WorkspaceSync {
             self.resume_after_reset(service, account).await?;
         }
         if self.state.restore.lost.is_some() {
+            self.mark_stop()?;
             return Ok(false);
         }
         if let Some(code) = self.state.restore.rollback.clone() {
@@ -488,6 +489,7 @@ impl WorkspaceSync {
         if self.state.restore.journal.is_some() {
             self.finish_rewind(service).await?;
         }
+        self.mark_stop()?;
         Ok(self.state.restore.lost.is_none())
     }
 
@@ -497,7 +499,30 @@ impl WorkspaceSync {
         self.state.restore.journal = None;
         self.state.restore.rewrites.clear();
         self.remote = None;
-        self.save()
+        self.save()?;
+        self.mark_stop()
+    }
+
+    /// Tells the account screens what the journal knows, through the mark
+    /// in the credential store: whether a restore stopped this workspace,
+    /// and the last generation it finished comparing (§14).
+    fn mark_stop(&mut self) -> Result<(), SyncError> {
+        let stopped = self.state.restore.lost.is_some();
+        let compared = if self.state.restore.pending || self.state.restore.journal.is_some() {
+            self.mark.compared_generation
+        } else {
+            self.state.generation
+        };
+        if self.mark.stopped == stopped && self.mark.compared_generation == compared {
+            return Ok(());
+        }
+        self.mark.stopped = stopped;
+        self.mark.compared_generation = compared;
+        self.mark.write(
+            &*self.secrets,
+            &self.credentials.keys.device(),
+            &self.state.workspace,
+        )
     }
 
     /// Compares what the device accepted with what the server holds, and
@@ -512,7 +537,8 @@ impl WorkspaceSync {
     /// Whether the server still holds the head this device keeps of
     /// `account`'s chains.
     async fn keeps_heads(&self, service: &mut SyncService, account: Id) -> Result<bool, SyncError> {
-        for head in service.kept_heads().kept_of(&account) {
+        let workspace = self.state.workspace;
+        for head in service.kept_heads().kept_in(&workspace, &account) {
             let links = match service
                 .client()
                 .whole_chain(account, Some(head.genesis))
@@ -601,9 +627,10 @@ impl WorkspaceSync {
         let (Some(genesis), true) = (named, named == current) else {
             return Ok(false);
         };
+        let secrets = service.secrets();
         service
             .kept_heads_mut()
-            .drop_retired(&account, &genesis, workspace)?;
+            .drop_retired(&account, &genesis, workspace, &*secrets)?;
         self.state.restore.lost = None;
         self.state.restore.pending = true;
         self.save()?;
@@ -656,10 +683,11 @@ impl WorkspaceSync {
         let members: BTreeSet<Id> = accepted
             .iter()
             .flat_map(|change| change.body.heads.iter().map(|h| h.account))
+            .chain(service.kept_heads().members_named(&workspace))
             .chain(self.member_accounts())
             .filter(|account| *account != self.state.account)
             .collect();
-        for account in members {
+        for account in members.iter().copied() {
             if !self.keeps_heads(service, account).await? {
                 return Ok(Some(Lost::MemberAccount(account)));
             }
@@ -674,6 +702,21 @@ impl WorkspaceSync {
             // went.
             Err(SyncError::Refused { code, .. }) if code == "not_found" => {
                 return Ok(Some(Lost::Epoch));
+            }
+            // A chain the comparison refused stops the workspace for that
+            // account, with the way back that names.
+            Err(error @ SyncError::Check("sync_account_forked" | "sync_account_unauthorized")) => {
+                let refused = service.kept_heads().refused_among(
+                    members
+                        .iter()
+                        .copied()
+                        .chain(std::iter::once(self.state.account)),
+                );
+                return match refused {
+                    Some(account) if account == self.state.account => Ok(Some(Lost::OwnAccount)),
+                    Some(account) => Ok(Some(Lost::MemberAccount(account))),
+                    None => Err(error),
+                };
             }
             Err(error) => return Err(error),
         };

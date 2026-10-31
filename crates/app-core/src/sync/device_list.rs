@@ -238,7 +238,9 @@ impl SyncService {
             .map(|w| w.workspace)
             .collect();
         for workspace in listed {
-            if opened.contains(&workspace) {
+            // A held workspace judges no chain until its folder compares
+            // (§14).
+            if opened.contains(&workspace) || self.workspace_held(workspace) {
                 continue;
             }
             if let Err(SyncError::Check(code)) = self.verified_policy(workspace).await {

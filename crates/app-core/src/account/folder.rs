@@ -386,6 +386,14 @@ impl Folder {
             .is_some_and(|w| waits.contains(&w));
     }
 
+    /// Holds the open folder while `waits` names its workspace, which has
+    /// yet to accept your reset (§7).
+    pub(super) fn hold_for_reset(&mut self, waits: &[sync_protocol::types::Id], app_data: &Path) {
+        self.reset_held = self
+            .workspace_of_folder(app_data)
+            .is_some_and(|w| waits.contains(&w));
+    }
+
     /// The workspace the registry maps this folder to.
     pub(super) fn workspace_of_folder(&self, app_data: &Path) -> Option<sync_protocol::types::Id> {
         let engine = self.engine.as_ref()?;
@@ -407,6 +415,17 @@ impl Folder {
             .clone()
             .ok_or_else(|| SyncError::Invalid("Open the workspace's folder first.".into()))?;
         let mut registry = Registry::open(app_data)?;
+        // After a restart the journal in the folder names the retired card.
+        let device = service.credentials().keys.device();
+        let retired = retired.or_else(|| {
+            let workspace = registry.of_folder(engine.root())?.workspace;
+            crate::sync::workspace::rebuild::earlier_journal(
+                engine.root(),
+                &device,
+                workspace,
+                &*service.secrets(),
+            )
+        });
         let sync =
             WorkspaceSync::set_up_after_reset(service, engine, &mut registry, retired).await?;
         self.sync = Some(sync);

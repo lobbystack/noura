@@ -102,6 +102,24 @@ pub fn journal_workspace(
     Some((state.server, state.account, state.workspace))
 }
 
+/// The device other than `own` whose journal in the folder at `root` syncs
+/// `workspace`, as a card a reset retired left it.
+pub fn earlier_journal(
+    root: &Path,
+    own: &Id,
+    workspace: Id,
+    secrets: &dyn local_core::sync::SyncCredentials,
+) -> Option<Id> {
+    std::fs::read_dir(root.join(journal::JOURNALS))
+        .ok()?
+        .flatten()
+        .filter_map(|entry| Id::from_hex(entry.file_name().to_str()?))
+        .filter(|device| device != own)
+        .find(|device| {
+            journal_workspace(root, device, secrets).is_some_and(|(_, _, held)| held == workspace)
+        })
+}
+
 impl WorkspaceSync {
     /// Syncs the folder `engine` opened again without this device's
     /// journal (§15): the folder the registry maps to a remote workspace,

@@ -1330,6 +1330,173 @@ fn the_account_backend_accepts_a_members_reset() {
     drop(runtime);
 }
 
+/// A lost link of your own chain stops every workspace, so a restart can't
+/// lean on a folder for the way back: the screens offer Reset devices with
+/// none open (§14).
+#[test]
+fn a_restart_after_a_lost_link_of_your_chain_offers_reset_devices() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let mut pair = runtime.block_on(async { pair_of_accounts_on(Server::start().await).await });
+    let copy = runtime.block_on(pair.server.backup("before.sqlite3"));
+    let _third = runtime.block_on(sync_support::approve(
+        &pair.server,
+        &mut pair.laptop,
+        std::slice::from_mut(pair.sync_a.remote_mut().unwrap()),
+    ));
+    let base = pair.proxy.base.clone();
+    let (account, app) = owner_app_at(pair, &base);
+    drop(account);
+    let restored = runtime.block_on(app.server.put_back(&copy, true));
+    app.proxy.retarget(&restored.base);
+
+    let account = LiveAccount::start(
+        app.a.app_data.path().to_owned(),
+        app.laptop.secrets.clone(),
+        Arc::new(|_| Ok(())),
+    );
+    wait_for(&account, "the way back", |s| {
+        matches!(s.phase, AccountPhase::ChainStopped)
+    });
+    // The server's device page names its own address, not the proxy's.
+    AccountBackend::act(
+        &account,
+        AccountAction::SetServer(restored.base.clone()),
+    );
+    AccountBackend::act(&account, AccountAction::StartReset);
+    wait_for(&account, "the sign-in", |s| {
+        matches!(s.phase, AccountPhase::SigningIn { .. })
+    });
+    drop(account);
+    drop(app);
+    drop(restored);
+    drop(runtime);
+}
+
+/// An offer that lapses ends the acceptance on the accepting device, and
+/// nothing behind it in the poll waits for you to cancel.
+#[test]
+fn an_expired_reset_acceptance_ends_on_its_own() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let pair = runtime.block_on(async { pair_of_accounts_on(Server::start().await).await });
+    let member_account = pair.desktop.credentials.account;
+    let base = pair.proxy.base.clone();
+    let (account, app) = owner_app_at(pair, &base);
+    let (mut member, _) = runtime.block_on(reset_devices(
+        &app.server,
+        member_account,
+        Arc::new(MemorySecrets::default()),
+    ));
+    runtime
+        .block_on(member.service.request_reset_approval(app.workspace))
+        .expect("the request");
+    let started = Instant::now();
+    loop {
+        let screen = AccountBackend::screen(&account);
+        if matches!(&screen.phase, AccountPhase::SignedIn(view) if view.reset_requests.len() == 1) {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(45),
+            "the request never showed: {screen:?}"
+        );
+        app_core::folder_sync::FolderSyncBackend::act(
+            &account,
+            app_core::folder_sync::FolderSyncAction::DismissRestore,
+        );
+        std::thread::sleep(Duration::from_secs(3));
+    }
+    AccountBackend::act(&account, AccountAction::AcceptReset(0));
+    wait_for(
+        &account,
+        "the acceptance",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if view.reset_approval.is_some()),
+    );
+    app.proxy.forge(Box::new(|_, path| {
+        path.ends_with("/reveal").then(|| {
+            let body = sync_protocol::messages::ErrorBody {
+                code: sync_protocol::codec::Text::new("offer_expired").unwrap(),
+                message: sync_protocol::codec::Text::new("the offer expired").unwrap(),
+                retry_after_seconds: None,
+                detail: None,
+            };
+            (410, sync_protocol::codec::Encode::to_bytes(&body))
+        })
+    }));
+    wait_for(
+        &account,
+        "the end of the acceptance",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if view.reset_approval.is_none()),
+    );
+    drop(account);
+    drop(app);
+    drop(runtime);
+}
+
+/// A restore stops the workspace for a member's chain. The account backend
+/// keeps out of it: a relaunch judges no chain there, so the stop stays one
+/// that an `accept_reset` ends (§14).
+#[test]
+fn a_stopped_workspace_stays_out_of_the_account_backend() {
+    use app_core::folder_sync::FolderSyncBackend;
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let mut pair = runtime.block_on(async { pair_of_accounts_on(Server::start().await).await });
+    let member = pair.desktop.credentials.account;
+    let copy = runtime.block_on(pair.server.backup("before.sqlite3"));
+    let _third = runtime.block_on(sync_support::approve(
+        &pair.server,
+        &mut pair.desktop,
+        &mut [],
+    ));
+    let genesis = pair.desktop.credentials.reference_head.genesis;
+    runtime
+        .block_on(pair.service.follow_account(member, genesis))
+        .expect("the owner keeps the head");
+    let base = pair.proxy.base.clone();
+    let (account, app) = owner_app_at(pair, &base);
+    let restored = runtime.block_on(app.server.put_back(&copy, true));
+    app.proxy.retarget(&restored.base);
+
+    let started = Instant::now();
+    loop {
+        if FolderSyncBackend::screen(&account).restore.is_some() {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the stop never showed"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // A relaunch opens the workspaces before any folder.
+    drop(account);
+    std::thread::sleep(Duration::from_millis(300));
+    let account = LiveAccount::start(
+        app.a.app_data.path().to_owned(),
+        app.laptop.secrets.clone(),
+        Arc::new(|_| Ok(())),
+    );
+    wait_for(
+        &account,
+        "the account after the relaunch",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if !view.devices.is_empty()),
+    );
+    drop(account);
+    let device = app.laptop.id();
+    let state = app.a.app_data.path().join("sync").join(device.to_hex());
+    let heads = KeptHeads::open(
+        &state,
+        app.laptop.credentials.account,
+        device,
+        &*app.laptop.secrets,
+    )
+    .expect("the heads open");
+    assert_eq!(heads.stopped([member]), None, "no lasting refusal");
+    drop(app);
+    drop(restored);
+    drop(runtime);
+}
+
 /// A computer on the retired chain (§7 step 3): the next read shows that
 /// the account's devices were reset with the new fingerprint, it signs in
 /// as a new device, the reset device approves it, and it signs in again
@@ -1498,6 +1665,22 @@ fn the_account_backend_sets_up_sync_again_after_a_reset() {
         unreachable!()
     };
     assert!(view.reset_waits[0].set_up_again);
+
+    // A restart leaves nothing in memory: the wait comes back from the
+    // server, and with it what this folder offers (§7, §14).
+    drop(account);
+    std::thread::sleep(Duration::from_millis(300));
+    let account = LiveAccount::start(
+        app.a.app_data.path().to_owned(),
+        app.laptop.secrets.clone(),
+        Arc::new(|_| Ok(())),
+    );
+    FolderSyncBackend::attach(&account, Some(app.a.engine.clone()));
+    wait_for(
+        &account,
+        "the wait after the restart",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if view.reset_waits.first().is_some_and(|w| w.set_up_again)),
+    );
 
     AccountBackend::act(&account, AccountAction::SetUpAfterReset(0));
     wait_for(
