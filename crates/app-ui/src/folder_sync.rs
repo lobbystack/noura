@@ -70,6 +70,29 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
             muted(ui, "Working on it.");
         });
     }
+    if let Some(notice) = &screen.restore {
+        alert(ui, &notice.line);
+        if !notice.written_again.is_empty() {
+            group(ui, "Files this computer wrote again", |ui| {
+                for path in &notice.written_again {
+                    ui.label(path);
+                }
+            });
+        }
+        ui.horizontal(|ui| {
+            if notice.reset_devices && primary_button(ui, "Reset devices", !screen.busy).clicked() {
+                actions.push(FolderSyncAction::ResetDevices);
+            }
+            if notice.set_up_again
+                && primary_button(ui, "Set up sync again", !screen.busy).clicked()
+            {
+                actions.push(FolderSyncAction::SetUpAgain);
+            }
+            if !notice.reset_devices && !notice.set_up_again && ui.button("Dismiss").clicked() {
+                actions.push(FolderSyncAction::DismissRestore);
+            }
+        });
+    }
     match screen.phase {
         FolderSyncPhase::Unavailable => {
             ui.label(

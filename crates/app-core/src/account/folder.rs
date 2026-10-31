@@ -85,6 +85,9 @@ fn text_review_lines(sync: &WorkspaceSync) -> Vec<String> {
 /// The open workspace and its sync.
 #[derive(Default)]
 pub(super) struct Folder {
+    /// The restore generation whose share links this device revoked again
+    /// (§14).
+    revoked_for: Option<u64>,
     engine: Option<Arc<WorkspaceEngine>>,
     sync: Option<WorkspaceSync>,
     last_error: Option<String>,
@@ -422,6 +425,18 @@ impl Folder {
             Err(error) => {
                 tracing::warn!(kind = ?error.code(), "a sync round failed");
                 self.last_error = Some(folder_message(&error));
+            }
+        }
+        let restored = self.sync.as_ref().and_then(|sync| sync.restore_alert());
+        if restored.is_some() && restored != self.revoked_for {
+            let device = service.credentials().keys.device();
+            let revoked = match crate::sync::shares::ShareBook::open(app_data, device) {
+                Ok(book) => service.revoke_shares_again(&book).await,
+                Err(error) => Err(error),
+            };
+            match revoked {
+                Ok(()) => self.revoked_for = restored,
+                Err(error) => tracing::warn!(kind = ?error.code(), "revoking links again failed"),
             }
         }
         if let Some(sync) = self.sync.as_mut() {

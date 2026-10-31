@@ -368,7 +368,7 @@ impl Log {
         seq: u64,
         prev: &sync_protocol::policy::Snapshot,
         next: &sync_protocol::policy::Snapshot,
-    ) {
+    ) -> Result<(), super::SyncError> {
         for kept in self.final_heads.iter_mut() {
             if kept.until.is_none()
                 && kept.revision < revision
@@ -380,16 +380,51 @@ impl Log {
         for device in prev.devices.keys() {
             if prev.can_write(device, domain) && !next.can_write(device, domain) {
                 let head = self.verifier.head(device);
-                self.final_heads.push(super::restore::FinalHead {
-                    device: *device,
-                    revision,
-                    entry: seq,
-                    counter: head.counter,
-                    digest: head.digest,
-                    until: None,
-                });
+                let kept = self
+                    .final_heads
+                    .iter_mut()
+                    .find(|k| k.device == *device && k.revision == revision);
+                match kept {
+                    // A rewind reached the change's entry again: the head
+                    // there must be the one the device kept.
+                    Some(kept) => {
+                        if (kept.counter, kept.digest) != (head.counter, head.digest) {
+                            return Err(super::SyncError::Check("sync_restore_lost"));
+                        }
+                        kept.entry = seq;
+                    }
+                    None => self.final_heads.push(super::restore::FinalHead {
+                        device: *device,
+                        revision,
+                        entry: seq,
+                        counter: head.counter,
+                        digest: head.digest,
+                        until: None,
+                    }),
+                }
             }
         }
+        Ok(())
+    }
+
+    /// Refuses a checkpoint that covers a change's entry and lists another
+    /// head than the final head kept for it (§14).
+    pub fn check_final_heads(
+        &self,
+        covered: u64,
+        heads: &[sync_protocol::records::Ref],
+    ) -> Result<(), super::SyncError> {
+        for kept in &self.final_heads {
+            if kept.entry > covered || kept.until.is_some_and(|until| until <= covered) {
+                continue;
+            }
+            if let Some(head) = heads.iter().find(|h| h.device == kept.device)
+                && (head.counter, head.op_digest) != (kept.counter, kept.digest)
+            {
+                return Err(super::SyncError::Check("sync_restore_lost"));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -584,4 +619,57 @@ pub struct Held {
     pub path: String,
     /// Its revision.
     pub revision: Digest,
+}
+
+#[cfg(test)]
+mod final_head_tests {
+    use super::*;
+    use crate::sync::workspace::restore::FinalHead;
+    use sync_protocol::records::Ref;
+
+    fn kept(until: Option<u64>) -> FinalHead {
+        FinalHead {
+            device: Id([1; 16]),
+            revision: 2,
+            entry: 10,
+            counter: 3,
+            digest: Digest([7; 32]),
+            until,
+        }
+    }
+
+    fn head(counter: u64, digest: u8) -> Ref {
+        Ref {
+            device: Id([1; 16]),
+            counter,
+            seq: 9,
+            op_digest: Digest([digest; 32]),
+        }
+    }
+
+    #[test]
+    fn a_checkpoint_past_the_entry_lists_exactly_the_final_head() {
+        let mut log = Log::new(Id([2; 16]));
+        log.final_heads.push(kept(None));
+        assert!(log.check_final_heads(12, &[head(3, 7)]).is_ok());
+        assert!(log.check_final_heads(12, &[]).is_ok(), "a head may leave");
+        assert_eq!(
+            log.check_final_heads(12, &[head(4, 8)])
+                .err()
+                .and_then(|e| e.code().map(str::to_owned))
+                .as_deref(),
+            Some("sync_restore_lost")
+        );
+        assert!(
+            log.check_final_heads(9, &[head(4, 8)]).is_ok(),
+            "a checkpoint below the entry doesn't cover it"
+        );
+    }
+
+    #[test]
+    fn a_change_that_gives_access_back_ends_the_window() {
+        let mut log = Log::new(Id([2; 16]));
+        log.final_heads.push(kept(Some(11)));
+        assert!(log.check_final_heads(12, &[head(4, 8)]).is_ok());
+    }
 }

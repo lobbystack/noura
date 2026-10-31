@@ -307,3 +307,44 @@ async fn set_up_sync_again_closes_the_old_workspace() {
     assert_eq!(round.applied, 0);
     assert_eq!(pair.sync_b.restore_lost(), Some(&Lost::Closed));
 }
+
+/// One writer goes first for each lost object, whichever device asks.
+#[test]
+fn two_hundred_writers_rank_one_writer_first_for_each_object() {
+    use app_core::sync::workspace::restore::{rank, wait_for};
+    use std::collections::BTreeSet;
+    use sync_protocol::types::Id;
+    let writers: BTreeSet<Id> = (0..200u8).map(|i| Id([i; 16])).collect();
+    let rid = Id([250; 16]);
+    let ranks: BTreeSet<usize> = writers.iter().map(|w| rank(&rid, w, &writers)).collect();
+    assert_eq!(ranks.len(), 200, "each writer holds its own place");
+    let first = writers
+        .iter()
+        .find(|w| rank(&rid, w, &writers) == 0)
+        .unwrap();
+    let last = writers
+        .iter()
+        .find(|w| rank(&rid, w, &writers) == 199)
+        .unwrap();
+    assert!(wait_for(rank(&rid, first, &writers), 200, 60) < 2);
+    assert!(wait_for(rank(&rid, last, &writers), 200, 60) >= 59);
+}
+
+/// A server that claims a restore shows you an alert, and with nothing
+/// lost no file changes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_generation_claim_shows_an_alert_and_changes_no_file() {
+    let mut pair = pair().await;
+    let files = pair.a.files();
+    let copy = pair.server.backup("same.sqlite3").await;
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    assert!(pair.sync_a.restore_alert().is_some());
+    assert_eq!(pair.a.files(), files);
+    pair.sync_a.dismiss_restore_alert().expect("dismissed");
+    assert_eq!(pair.sync_a.restore_alert(), None);
+}

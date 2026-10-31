@@ -207,30 +207,30 @@ pub fn restore_notice(status: &Status) -> Option<RestoreNotice> {
         let short = |id: &Id| id.to_hex().chars().take(8).collect::<String>();
         let (line, reset_devices, set_up_again) = match lost {
             Lost::OwnAccount => (
-                "The server was restored from a backup that lacks your latest devices. Sync stopped. Reset your devices to go on.".to_owned(),
+                "The server's operator restored a backup that lacks your latest devices. Sync stopped here. Reset your devices to go on.".to_owned(),
                 true,
                 false,
             ),
             Lost::MemberAccount(account) => (
                 format!(
-                    "The server was restored from a backup that lacks devices of account {}. Sync stopped here until that person resets their devices and an owner or admin accepts the reset.",
+                    "The server's operator restored a backup that lacks devices of account {}. Sync stopped here until that person resets their devices and an owner or admin accepts the reset.",
                     short(account)
                 ),
                 false,
                 false,
             ),
             Lost::Policy | Lost::Epoch | Lost::Envelope | Lost::Checkpoints | Lost::FinalHead(_) => (
-                "The server was restored from a backup that lacks part of this workspace's history. Sync stopped. An owner can set the workspace up again.".to_owned(),
+                "The server's operator restored a backup that lacks part of this workspace's history. Sync stopped here. An owner can set the workspace up again.".to_owned(),
                 false,
                 true,
             ),
             Lost::Server => (
-                "This server no longer knows your account. Sync stopped. You can turn sync on for this folder as a new workspace.".to_owned(),
+                "This server lost your account. Sync stopped here. You can turn sync on for this folder as a new workspace.".to_owned(),
                 false,
                 true,
             ),
             Lost::Closed => (
-                "The owner closed this workspace. Your files stay on this computer as they are.".to_owned(),
+                "The owner closed this workspace. Your files stay on this computer.".to_owned(),
                 false,
                 false,
             ),
@@ -244,12 +244,12 @@ pub fn restore_notice(status: &Status) -> Option<RestoreNotice> {
     }
     if status.rollback.is_some() {
         return Some(RestoreNotice {
-            line: "The server went back to an older state without reporting a restore. Sync stopped here until its operator marks the restore.".to_owned(),
+            line: "The server went back to an older state and reported no restore. Sync stopped here until its operator marks the restore.".to_owned(),
             ..RestoreNotice::default()
         });
     }
     status.restored.map(|_| RestoreNotice {
-        line: "The server reports a restore from a backup. Sync checked what it holds and went on."
+        line: "The server reports a restore from a backup. Noura checked what it holds and kept syncing."
             .to_owned(),
         written_again: status.written_again.clone(),
         ..RestoreNotice::default()

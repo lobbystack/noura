@@ -118,7 +118,7 @@ fn random_below(limit: u64) -> u64 {
 /// This writer's place among `writers` for `rid`: a hash of the two ranks
 /// the writers the same way on every device, so one writer goes first and
 /// the others find the object written (§14).
-pub(crate) fn rank(rid: &Id, device: &Id, writers: &BTreeSet<Id>) -> usize {
+pub fn rank(rid: &Id, device: &Id, writers: &BTreeSet<Id>) -> usize {
     let score = |d: &Id| {
         let mut bytes = rid.0.to_vec();
         bytes.extend_from_slice(&d.0);
@@ -131,7 +131,7 @@ pub(crate) fn rank(rid: &Id, device: &Id, writers: &BTreeSet<Id>) -> usize {
 /// The seconds a device of rank `rank` among `writers` waits, within
 /// `limit`: each rank gets its own stretch of the wait, and a random point
 /// inside it.
-pub(crate) fn wait_for(rank: usize, writers: usize, limit: u64) -> u64 {
+pub fn wait_for(rank: usize, writers: usize, limit: u64) -> u64 {
     if limit == 0 {
         return 0;
     }
@@ -175,6 +175,9 @@ impl WorkspaceSync {
 
     /// Keeps a rollback that holds the device, and returns the error.
     pub(super) fn note_failure(&mut self, error: SyncError) -> Result<(), SyncError> {
+        if error.code() == Some("sync_restore_lost") {
+            return self.stop_lost(Lost::FinalHead(self.credentials.keys.device()));
+        }
         if let Some(code) = error.code()
             && holds(code)
         {
@@ -239,6 +242,9 @@ impl WorkspaceSync {
         if let Some(lost) = self.lost_state(service).await? {
             return self.stop_lost(lost);
         }
+        // A restore may lose a rename: a profile below the lost revision
+        // reads as new again (§25).
+        self.state.profile = None;
         self.rewind(service).await
     }
 
@@ -307,6 +313,14 @@ impl WorkspaceSync {
     /// What the server lost of the state this device accepted, if anything.
     async fn lost_state(&mut self, service: &mut SyncService) -> Result<Option<Lost>, SyncError> {
         let workspace = self.state.workspace;
+        // A fresh server after a lost secret holds no chain under this ID.
+        match service.client().whole_chain(self.state.account, None).await {
+            Err(SyncError::Refused { code, .. }) if code == "not_found" => {
+                return Ok(Some(Lost::Server));
+            }
+            Err(error) => return Err(error),
+            Ok(_) => {}
+        }
         if !self.keeps_heads(service, self.state.account).await? {
             return Ok(Some(Lost::OwnAccount));
         }
@@ -561,7 +575,9 @@ impl WorkspaceSync {
         self.matching = false;
         if let Err(error) = caught_up {
             // A failed check stops the workspace; files stay as they are.
-            if matches!(error, SyncError::Check(code) if code.starts_with("sync_chain")) {
+            if matches!(error, SyncError::Check(code)
+                if code.starts_with("sync_chain") || code == "sync_restore_lost")
+            {
                 return self.stop_lost(Lost::FinalHead(self.credentials.keys.device()));
             }
             return Err(error);
@@ -811,5 +827,58 @@ impl WorkspaceSync {
                     .get(&self.state.account)
                     .is_some_and(|m| m.role == sync_protocol::records::Role::Owner)
             })
+    }
+
+    /// Keeps a final head for each change the device bootstrapped past
+    /// (§14): only when the checkpoint lists the device and no change up
+    /// to the checkpoint's `policy_revision` gave it write access again.
+    /// The device keeps none otherwise, the split-view residual of §30.
+    pub(super) fn keep_bootstrap_finals(
+        &mut self,
+        revision: u64,
+        covered: u64,
+        heads: &[sync_protocol::records::Ref],
+    ) {
+        let Some(remote) = self.remote.as_ref() else {
+            return;
+        };
+        let domain = self.state.domain;
+        let mut finals = Vec::new();
+        for at in 2..=revision {
+            let (Some(prev), Some(next)) = (remote.policy.at(at - 1), remote.policy.at(at)) else {
+                continue;
+            };
+            for head in heads {
+                let ended =
+                    prev.can_write(&head.device, &domain) && !next.can_write(&head.device, &domain);
+                let regained = (at + 1..=revision).any(|later| {
+                    remote
+                        .policy
+                        .at(later)
+                        .is_some_and(|s| s.can_write(&head.device, &domain))
+                });
+                if ended && !regained {
+                    finals.push(FinalHead {
+                        device: head.device,
+                        revision: at,
+                        entry: covered,
+                        counter: head.counter,
+                        digest: head.op_digest,
+                        until: None,
+                    });
+                }
+            }
+        }
+        for kept in finals {
+            let known = self
+                .state
+                .log
+                .final_heads
+                .iter()
+                .any(|k| k.device == kept.device && k.revision == kept.revision);
+            if !known {
+                self.state.log.final_heads.push(kept);
+            }
+        }
     }
 }

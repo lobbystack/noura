@@ -3874,7 +3874,7 @@ impl WorkspaceSync {
                             entry.seq,
                             before,
                             after,
-                        );
+                        )?;
                     }
                     if matches!(change.body.kind, PolicyKind::CreateDomain { .. }) {
                         log.domain_entries.insert(policy_entry.revision, entry.seq);
@@ -3905,6 +3905,7 @@ impl WorkspaceSync {
                 }
                 EntryRecord::Checkpoint(bundle) => {
                     let record = &bundle.checkpoint.0;
+                    log.check_final_heads(record.body.covered_seq, &bundle.heads)?;
                     // The checkpoint a client bootstrapped from, or one it
                     // fetched by digest, reaches it again (§17).
                     if log.checkpoints.has_reached(&record.digest()) {

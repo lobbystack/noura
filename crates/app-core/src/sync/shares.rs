@@ -609,6 +609,30 @@ impl SyncService {
         book.save()
     }
 
+    /// Revokes again each link this device revoked, right after it sees a
+    /// generation change, whatever state its workspaces are in (§14). A
+    /// link or workspace the server doesn't hold needs nothing.
+    pub async fn revoke_shares_again(&mut self, book: &ShareBook) -> Result<(), SyncError> {
+        for link in book.revoked() {
+            let path = format!(
+                "{}/{}",
+                shares_path(link.workspace),
+                link.token_hash.to_base64url()
+            );
+            match self
+                .client
+                .call_empty(reqwest::Method::DELETE, &path, None)
+                .await
+            {
+                Ok(()) => {}
+                Err(SyncError::Refused { code, .. })
+                    if code == "not_found" || code == "forbidden" => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
     /// Every active link of the workspace, for an owner or admin device,
     /// flagging those whose creating device `policy` no longer counts.
     pub async fn workspace_shares(
