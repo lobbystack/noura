@@ -162,6 +162,8 @@ pub struct Status {
     pub restored: Option<u64>,
     /// What a restore left for you to review.
     pub to_review: Vec<String>,
+    /// Whether a gap in a device's chain holds this workspace.
+    pub chain_gap: bool,
     /// Whether this device's account owns the workspace, as far as it knows.
     pub owner: bool,
     /// The paths this device wrote again after a restore.
@@ -739,6 +741,7 @@ impl WorkspaceSync {
             rollback: self.state.restore.rollback.clone(),
             restored: self.state.restore.alerted,
             to_review: self.state.restore.to_review.clone(),
+            chain_gap: self.state.restore.gap,
             owner: self.state.restore.owner,
             written_again: self.state.restore.written_again.clone(),
             conflicts: self.conflicts().len(),
@@ -1211,6 +1214,7 @@ impl WorkspaceSync {
         }
         self.refresh_usage(service).await;
         self.state.last_success = Some(unix_now());
+        self.state.restore.gap = false;
         self.save()?;
         Ok(Round {
             captured,

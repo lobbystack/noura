@@ -1779,7 +1779,7 @@ impl Driver {
         let mut accepted = Vec::new();
         for (index, candidate) in self.reset_waits.iter_mut().enumerate() {
             if candidate.confirmed() {
-                if service.open_workspace(candidate.workspace()).await.is_ok() {
+                if service.join_invited(candidate).await.unwrap_or(false) {
                     accepted.push(index);
                 }
                 continue;

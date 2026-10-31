@@ -187,6 +187,7 @@ async fn a_member_resets_and_the_owner_accepts_the_reset() {
     rounds(&mut pair).await;
 
     let restored = pair.server.put_back(&copy, true).await;
+    let floors_before = floors(&restored, account);
     reconnect(&mut pair, &restored.base).await;
     pair.sync_a
         .round(&mut pair.service, 0)
@@ -284,6 +285,97 @@ async fn a_member_resets_and_the_owner_accepts_the_reset() {
         .await
         .expect("laptop");
     assert_eq!(pair.sync_a.restore_lost(), None);
+
+    // The accepted account keeps its history floor.
+    assert_eq!(floors(&restored, account), floors_before);
+    assert!(!floors_before.is_empty(), "the member joined with a floor");
+
+    // The reset device verifies the change, and its folder bootstraps and
+    // matches its files as after a lost journal.
+    assert!(
+        member
+            .service
+            .join_invited(&candidate)
+            .await
+            .expect("the change verifies"),
+        "the workspace accepted the reset"
+    );
+    let files = pair.b.files();
+    let rebuilt = app_core::sync::workspace::WorkspaceSync::rebuild(
+        &mut member.service,
+        pair.b.engine.clone(),
+        &mut pair.b.registry,
+    )
+    .await
+    .expect("the folder rebuilds");
+    assert_eq!(rebuilt.status().held, 0);
+    assert_eq!(pair.b.files(), files);
+}
+
+/// A member's history floors, from the server's database.
+fn floors(server: &Server, account: sync_protocol::types::Id) -> Vec<(Vec<u8>, i64)> {
+    let database = server.dir.path().join("data").join(sync_support::DATABASE);
+    let connection = rusqlite::Connection::open(database).expect("the database");
+    let mut statement = connection
+        .prepare("SELECT domain, floor FROM history_floors WHERE account = ?1 ORDER BY domain")
+        .expect("the query");
+    statement
+        .query_map([&account.0[..]], |row| Ok((row.get(0)?, row.get(1)?)))
+        .expect("the rows")
+        .map(|row| row.expect("a row"))
+        .collect()
+}
+
+/// A server that lost its secret: signing up again gives a new account ID,
+/// and this computer starts over with new keys and turns its folder on as a
+/// new workspace.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_secret_starts_over_under_a_new_account() {
+    use app_core::sync::device::{Joined, StoredDevice, join};
+    use app_core::sync::workspace::WorkspaceSync;
+
+    let sync_support::Pair {
+        laptop, a, sync_a, ..
+    } = pair().await;
+    let mut a = a;
+    drop(sync_a);
+    let files = a.files();
+    let fresh = Server::start().await;
+    let account = fresh.person("ana@example.com").await;
+    assert_ne!(
+        account, laptop.credentials.account,
+        "a new secret, a new ID"
+    );
+
+    // What this computer kept of the old account.
+    let secrets = std::sync::Arc::new(MemorySecrets::default());
+    let mut stored = StoredDevice::new(
+        &fresh.base,
+        laptop.credentials.account,
+        &laptop.credentials.keys,
+        "ended",
+    );
+    stored.reference_head = Some(laptop.credentials.reference_head.clone());
+    stored.save(&*secrets).expect("kept");
+
+    let signed_in = fresh.sign_in(account, &fresh.base).await;
+    let Joined::First(credentials) = join(&signed_in, &*secrets).await.expect("joined") else {
+        panic!("a new chain");
+    };
+    assert_ne!(credentials.keys.device(), laptop.id(), "new device keys");
+    let state = tempfile::tempdir().expect("a folder");
+    let mut desktop =
+        sync_support::Desktop::connect(&fresh.base, credentials, secrets, state).await;
+    let mut sync = WorkspaceSync::turn_on(
+        &mut desktop.service,
+        a.engine.clone(),
+        "Field notes",
+        &mut a.registry,
+    )
+    .await
+    .expect("a new workspace");
+    sync.round(&mut desktop.service, 0).await.expect("a round");
+    assert_eq!(a.files(), files);
 }
 
 /// Set up sync again closes the workspace and starts a new one; a device
@@ -1409,7 +1501,12 @@ async fn many_devices_pick_one_writer_for_a_lost_object() {
         // The server caps pending requests, and answered ones count until
         // they expire.
         if index % 16 == 15 {
-            let database = pair.server.dir.path().join("data").join(sync_support::DATABASE);
+            let database = pair
+                .server
+                .dir
+                .path()
+                .join("data")
+                .join(sync_support::DATABASE);
             rusqlite::Connection::open(database)
                 .expect("the database")
                 .execute("DELETE FROM approval_requests", [])

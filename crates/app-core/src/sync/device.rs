@@ -386,9 +386,26 @@ pub async fn join(signed_in: &SignedIn, store: &dyn SyncCredentials) -> Result<J
             }
         }
         Some(stored) if stored.reference_head.is_some() => {
-            return Err(SyncError::Invalid(
-                "This computer already holds a device of another account on this server. Sign out of that account first.".into(),
-            ));
+            // A server that holds no chain under the account this computer
+            // kept lost its secret: signing in gave a new account ID, and
+            // this device starts over with new keys (§14).
+            let new_account = client.whole_chain(signed_in.account, None).await.is_err();
+            let session_gone =
+                match SyncClient::connect(&signed_in.server, &stored.session_token).await {
+                    Ok(mut old) => matches!(
+                        old.whole_chain(stored.account, None).await,
+                        Err(SyncError::Refused { code, .. })
+                            if code == "unauthorized" || code == "not_found"
+                    ),
+                    Err(SyncError::Refused { code, .. }) => code == "unauthorized",
+                    Err(_) => false,
+                };
+            if !(new_account && session_gone) {
+                return Err(SyncError::Invalid(
+                    "This computer already holds a device of another account on this server. Sign out of that account first.".into(),
+                ));
+            }
+            fresh(&mut client, signed_in, store).await?
         }
         _ => fresh(&mut client, signed_in, store).await?,
     };

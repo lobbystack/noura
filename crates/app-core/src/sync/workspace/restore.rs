@@ -116,6 +116,9 @@ pub struct Restore {
     /// the workspace's owner, which holds through a stop.
     #[serde(default)]
     pub owner: bool,
+    /// A `sync_chain_gap` holds the cursor until a page fills the gap.
+    #[serde(default)]
+    pub gap: bool,
     /// A generation change still owes the share links another revocation.
     #[serde(default)]
     pub revoke: bool,
@@ -193,6 +196,57 @@ fn unix_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// Step 2's lag test (§14): the server lacks the `rid`, or the journal's
+/// live operations cover all of the server's.
+pub fn lags(journal_live: &[OpKey], known: impl Fn(&OpKey) -> bool, server_live: &[OpKey]) -> bool {
+    let same = server_live.len() == journal_live.len()
+        && server_live.iter().all(|key| journal_live.contains(key));
+    !same
+        && server_live
+            .iter()
+            .all(|key| known(key) && !journal_live.contains(key))
+}
+
+/// What a file that differs from the rebuilt state is (§14), as path and
+/// revision compare.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileVerdict {
+    /// An edit of yours over a state the server kept: the next capture
+    /// signs it.
+    Edit,
+    /// The file holds what the journal applied, so it follows the server.
+    Follow,
+    /// A version for you to review.
+    Review,
+}
+
+/// Judges a file by the states the journal last applied and the server's
+/// live states.
+pub fn judge_file<S: PartialEq>(
+    applied: &[(S, Digest)],
+    server: &[(S, Digest)],
+    file: &(S, Digest),
+) -> FileVerdict {
+    if server.iter().any(|state| applied.contains(state)) {
+        FileVerdict::Edit
+    } else if applied.contains(file) {
+        FileVerdict::Follow
+    } else {
+        FileVerdict::Review
+    }
+}
+
+/// Whether this device's rewrite lost a race: the server took it as a
+/// patch next to another device's state (§14).
+pub fn lost_rewrite_race(live: &[OpKey], states: &[OpKey], own: &OpKey) -> bool {
+    live.contains(own) && !states.contains(own)
+}
+
+/// Whether a bootstrap keeps a final head for a change it passed (§14).
+pub fn bootstrap_keeps_final(listed: bool, regained: bool) -> bool {
+    listed && !regained
 }
 
 impl WorkspaceSync {
@@ -277,6 +331,10 @@ impl WorkspaceSync {
             && holds(code)
         {
             self.state.restore.rollback = Some(code.to_owned());
+            self.save()?;
+        }
+        if error.code() == Some("sync_chain_gap") && !self.state.restore.gap {
+            self.state.restore.gap = true;
             self.save()?;
         }
         Err(error)
@@ -960,12 +1018,7 @@ impl WorkspaceSync {
             } else {
                 Vec::new()
             };
-            let same_keys =
-                server_live.len() == live.len() && server_live.iter().all(|key| live.contains(key));
-            let behind = !same_keys
-                && server_live
-                    .iter()
-                    .all(|key| object.states.contains_key(key) && !live.contains(key));
+            let behind = lags(live, |key| object.states.contains_key(key), &server_live);
             let text_behind = object.text.is_some() && !self.lost_text_records(rid)?.is_empty();
             if (!behind && !text_behind)
                 || (content.delete && !self.state.objects.contains_key(rid))
@@ -1005,7 +1058,10 @@ impl WorkspaceSync {
             let Some((object, live)) = journal.get(&rid) else {
                 continue;
             };
-            let applied = Self::contents(object, live);
+            let applied: Vec<(String, Digest)> = Self::contents(object, live)
+                .into_iter()
+                .map(|c| (c.path, c.revision))
+                .collect();
             let server: Vec<(OpKey, Content)> = self
                 .live_states(&rid)
                 .into_iter()
@@ -1014,39 +1070,46 @@ impl WorkspaceSync {
                     Some((key, content))
                 })
                 .collect();
-            let matching = server.iter().find(|(_, c)| {
-                applied
-                    .iter()
-                    .any(|a| a.path == c.path && a.revision == c.revision)
-            });
-            if let Some((key, content)) = matching {
-                let key = *key;
-                let local = Local {
-                    path: content.path.clone(),
-                    revision: content.revision,
-                    size: 0,
-                    modified_ns: 0,
-                    file_id: None,
-                };
-                self.state.held.remove(&rid);
-                let object = self.state.objects.get_mut(&rid).expect("listed");
-                // Against that base, the next capture finds your edit.
-                object.base = Some(key);
-                object.local = Some(local);
-                continue;
-            }
-            // The file still holds what the journal applied, so it holds no
-            // edit of yours: it follows the server's newer state.
-            let unchanged = self.state.held.get(&rid).is_some_and(|held| {
-                applied
-                    .iter()
-                    .any(|a| a.path == held.path && a.revision == held.revision)
-            });
-            if unchanged {
-                self.state.held.remove(&rid);
-                let kept = object.local.clone();
-                self.state.objects.get_mut(&rid).expect("listed").local = kept;
-                self.settle(rid, &BTreeMap::new())?;
+            let states: Vec<(String, Digest)> = server
+                .iter()
+                .map(|(_, c)| (c.path.clone(), c.revision))
+                .collect();
+            let held = &self.state.held[&rid];
+            let file = (held.path.clone(), held.revision);
+            match judge_file(&applied, &states, &file) {
+                // Against the state the journal applied, the next capture
+                // finds your edit.
+                FileVerdict::Edit => {
+                    let matching = server.iter().find(|(_, c)| {
+                        applied
+                            .iter()
+                            .any(|(path, revision)| *path == c.path && *revision == c.revision)
+                    });
+                    let Some((key, content)) = matching else {
+                        continue;
+                    };
+                    let local = Local {
+                        path: content.path.clone(),
+                        revision: content.revision,
+                        size: 0,
+                        modified_ns: 0,
+                        file_id: None,
+                    };
+                    let key = *key;
+                    self.state.held.remove(&rid);
+                    let object = self.state.objects.get_mut(&rid).expect("listed");
+                    object.base = Some(key);
+                    object.local = Some(local);
+                }
+                // The file holds no edit of yours: it follows the server's
+                // newer state.
+                FileVerdict::Follow => {
+                    self.state.held.remove(&rid);
+                    let kept = object.local.clone();
+                    self.state.objects.get_mut(&rid).expect("listed").local = kept;
+                    self.settle(rid, &BTreeMap::new())?;
+                }
+                FileVerdict::Review => {}
             }
         }
         self.save()
@@ -1219,11 +1282,11 @@ impl WorkspaceSync {
                 self.state.restore.uncovered.insert(rid, key);
                 continue;
             }
-            let all: BTreeSet<OpKey> = self.live_ops(&rid).into_iter().collect();
-            let states: BTreeSet<OpKey> = self.live_states(&rid).into_iter().collect();
-            if !all.contains(&key) || states.contains(&key) {
+            let live = self.live_ops(&rid);
+            if !lost_rewrite_race(&live, &self.live_states(&rid), &key) {
                 continue;
             }
+            let all: BTreeSet<OpKey> = live.into_iter().collect();
             let path = self.state.objects[&rid]
                 .local
                 .as_ref()
@@ -1351,7 +1414,7 @@ impl WorkspaceSync {
                         .at(later)
                         .is_some_and(|s| s.can_write(&head.device, &domain))
                 });
-                if ended && !regained {
+                if ended && bootstrap_keeps_final(true, regained) {
                     finals.push(FinalHead {
                         device: head.device,
                         revision: at,
@@ -1473,5 +1536,206 @@ impl WorkspaceSync {
             self.journal.forget(&upload);
         }
         Ok(uploaded)
+    }
+}
+
+#[cfg(test)]
+mod fixture_tests {
+    use super::*;
+    use serde_json::Value;
+
+    const LIVE: &str =
+        include_str!("../../../../../docs/workspace-format/fixtures/sync-v2-live.json");
+    const CHAIN: &str =
+        include_str!("../../../../../docs/workspace-format/fixtures/sync-v2-chain.json");
+    const PROFILE: &str =
+        include_str!("../../../../../docs/workspace-format/fixtures/sync-v2-profile.json");
+
+    fn cases(text: &str) -> Vec<Value> {
+        let file: Value = serde_json::from_str(text).expect("the fixture reads");
+        file["restore_cases"].as_array().expect("cases").clone()
+    }
+
+    /// `a2` as device a, counter 2.
+    fn key(text: &str) -> OpKey {
+        let (device, counter) = text.split_at(1);
+        OpKey {
+            device: Id([device.as_bytes()[0]; 16]),
+            counter: counter.parse().expect("a counter"),
+        }
+    }
+
+    fn keys(value: &Value) -> Vec<OpKey> {
+        value
+            .as_array()
+            .expect("a list")
+            .iter()
+            .map(|v| key(v.as_str().expect("a key")))
+            .collect()
+    }
+
+    fn state(value: &Value) -> (String, Digest) {
+        let path = value[0].as_str().expect("a path").to_owned();
+        let revision = value[1].as_str().expect("a revision").as_bytes()[1];
+        (path, Digest([revision; 32]))
+    }
+
+    fn states(value: &Value) -> Vec<(String, Digest)> {
+        value
+            .as_array()
+            .expect("a list")
+            .iter()
+            .map(state)
+            .collect()
+    }
+
+    #[test]
+    fn the_live_restore_cases_hold() {
+        for case in cases(LIVE) {
+            let name = case["name"].as_str().expect("a name");
+            match case["kind"].as_str().expect("a kind") {
+                "lag" => {
+                    let known = keys(&case["journal_states"]);
+                    assert_eq!(
+                        lags(
+                            &keys(&case["journal_live"]),
+                            |k| known.contains(k),
+                            &keys(&case["server_live"])
+                        ),
+                        case["expect"].as_bool().expect("a verdict"),
+                        "{name}"
+                    );
+                }
+                "file" => {
+                    let verdict = judge_file(
+                        &states(&case["applied"]),
+                        &states(&case["server"]),
+                        &state(&case["file"]),
+                    );
+                    let expected = match case["expect"].as_str().expect("a verdict") {
+                        "edit" => FileVerdict::Edit,
+                        "follow" => FileVerdict::Follow,
+                        _ => FileVerdict::Review,
+                    };
+                    assert_eq!(verdict, expected, "{name}");
+                }
+                "race" => assert_eq!(
+                    lost_rewrite_race(
+                        &keys(&case["live"]),
+                        &keys(&case["states"]),
+                        &key(case["own"].as_str().expect("a key"))
+                    ),
+                    case["expect"].as_bool().expect("a verdict"),
+                    "{name}"
+                ),
+                other => panic!("{other}"),
+            }
+        }
+    }
+
+    fn number(value: &Value) -> u64 {
+        value.as_u64().expect("a number")
+    }
+
+    fn digest(value: &Value) -> Digest {
+        let byte = number(value) as u8;
+        if byte == 0 {
+            Digest::ZERO
+        } else {
+            Digest([byte; 32])
+        }
+    }
+
+    fn kept(value: &Value) -> FinalHead {
+        FinalHead {
+            device: Id([1; 16]),
+            revision: 2,
+            entry: number(&value["entry"]),
+            counter: number(&value["counter"]),
+            digest: digest(&value["digest"]),
+            until: value.get("until").map(number),
+            records: value.get("records").map_or_else(Vec::new, |records| {
+                records
+                    .as_array()
+                    .expect("a list")
+                    .iter()
+                    .map(|r| (number(&r[0]), digest(&r[1])))
+                    .collect()
+            }),
+        }
+    }
+
+    fn outcome(result: Result<(), SyncError>) -> String {
+        match result {
+            Ok(()) => "pass".to_owned(),
+            Err(error) => error.code().unwrap_or_default().to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_chain_restore_cases_hold() {
+        for case in cases(CHAIN) {
+            let name = case["name"].as_str().expect("a name");
+            let device = Id([1; 16]);
+            let mut log = Log::new(Id([2; 16]));
+            match case["kind"].as_str().expect("a kind") {
+                "final_checkpoint" => {
+                    log.final_heads.push(kept(&case["final"]));
+                    let heads: Vec<sync_protocol::records::Ref> = case["heads"]
+                        .as_array()
+                        .expect("a list")
+                        .iter()
+                        .map(|h| sync_protocol::records::Ref {
+                            device,
+                            counter: number(&h[0]),
+                            seq: 1,
+                            op_digest: digest(&h[1]),
+                        })
+                        .collect();
+                    let leaves = case["may_leave"].as_bool().unwrap_or(false);
+                    let covered = number(&case["covered"]);
+                    let result = log.check_final_heads(covered, &heads, |_| leaves);
+                    assert_eq!(outcome(result), case["expect"], "{name}");
+                }
+                "final_record" => {
+                    log.final_heads.push(kept(&case["final"]));
+                    let result = log.check_final_record(
+                        &device,
+                        number(&case["record"][0]),
+                        &digest(&case["record"][1]),
+                        number(&case["seq"]),
+                    );
+                    assert_eq!(outcome(result), case["expect"], "{name}");
+                }
+                "bootstrap_final" => assert_eq!(
+                    bootstrap_keeps_final(
+                        case["listed"].as_bool().expect("a flag"),
+                        case["regained"].as_bool().expect("a flag")
+                    ),
+                    case["expect"].as_bool().expect("a verdict"),
+                    "{name}"
+                ),
+                other => panic!("{other}"),
+            }
+        }
+    }
+
+    /// The client forgets its accepted profile revision once a comparison
+    /// passed, so the server's lower revision reads as new (§25).
+    #[test]
+    fn the_profile_restore_cases_hold() {
+        for case in cases(PROFILE) {
+            let name = case["name"].as_str().expect("a name");
+            let accepted = number(&case["accepted"]["revision"]);
+            let forgets = case["forgets_after_comparison"].as_bool().expect("a flag");
+            let mark = (!forgets).then_some(accepted);
+            let refused = mark.is_some_and(|mark| number(&case["server_revision"]) < mark);
+            let expected = if refused {
+                "sync_profile_rollback"
+            } else {
+                "accepted"
+            };
+            assert_eq!(case["expect"], expected, "{name}");
+        }
     }
 }

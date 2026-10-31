@@ -466,8 +466,17 @@ fn check_add_member(
         };
         let answers = change.body.signer == approver.device
             && *recorded == candidate.head
-            && matches!(change.body.kind, PolicyKind::AddMember { account: added, invitation, .. }
-                if added == account && invitation == candidate.invitation);
+            && match change.body.kind {
+                PolicyKind::AddMember {
+                    account: added,
+                    invitation,
+                    ..
+                } => added == account && invitation == candidate.invitation,
+                PolicyKind::AcceptReset { account: accepted } => {
+                    accepted == account && candidate.invitation == RESET
+                }
+                _ => false,
+            };
         return if answers { Ok(true) } else { Err(mismatch()) };
     }
     Ok(false)

@@ -250,6 +250,14 @@ pub fn restore_notice(status: &Status) -> Option<RestoreNotice> {
             ..RestoreNotice::default()
         });
     }
+    if status.chain_gap {
+        return Some(RestoreNotice {
+            line:
+                "The server skipped part of a device's changes. Sync waits here until they arrive."
+                    .to_owned(),
+            ..RestoreNotice::default()
+        });
+    }
     status.restored.map(|_| RestoreNotice {
         line: "The server reports a restore from a backup. Noura checked what it holds and kept syncing."
             .to_owned(),
