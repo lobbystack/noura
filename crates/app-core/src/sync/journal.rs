@@ -26,6 +26,9 @@ use super::account_heads::journal_key;
 pub const JOURNALS: &str = ".noura/sync";
 /// The journal's state file.
 pub const STATE_FILE: &str = "journal.json";
+/// The file that names the domains whose page may have written files the
+/// state file doesn't map yet (§15).
+pub const APPLYING_FILE: &str = "applying.json";
 /// The folder of conflict branches inside a journal (§16).
 pub const CONFLICTS: &str = "conflicts";
 /// The folder of held local versions inside a journal (§15).
@@ -321,6 +324,7 @@ impl Journal {
             }
         }
         let _ = std::fs::remove_file(self.dir.join(STATE_FILE));
+        let _ = std::fs::remove_file(self.dir.join(APPLYING_FILE));
         Ok(archive)
     }
 }

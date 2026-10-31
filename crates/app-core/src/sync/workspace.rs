@@ -258,6 +258,20 @@ pub struct WorkspaceSync {
     restore_wait: std::time::Duration,
     /// The `blob_ref` a rewrite reuses for the bytes it signs now.
     lent_blob: Option<sync_protocol::records::BlobRef>,
+    /// The domains whose page may have written files the state file
+    /// doesn't map yet, each with the sequence the page reaches (§15).
+    applying: BTreeMap<Id, u64>,
+    /// Whether the journal takes no more saves, as a killed app writes
+    /// nothing more.
+    #[cfg(feature = "test-hooks")]
+    saves_lost: bool,
+    /// Whether the app gets killed once the next page's files reach disk.
+    #[cfg(feature = "test-hooks")]
+    killed_after_page: bool,
+    /// How many times the device encrypted a file under an existing blob
+    /// key.
+    #[cfg(feature = "test-hooks")]
+    sealed_again: std::sync::atomic::AtomicUsize,
     /// When the device last asked which blobs the server misses.
     missing_checked: Option<std::time::Instant>,
     /// The objects a rewind writes again, which matching leaves alone.
@@ -478,6 +492,13 @@ impl WorkspaceSync {
             frame_generation: None,
             restore_wait: restore::REWRITE_WAIT,
             lent_blob: None,
+            applying: BTreeMap::new(),
+            #[cfg(feature = "test-hooks")]
+            saves_lost: false,
+            #[cfg(feature = "test-hooks")]
+            killed_after_page: false,
+            #[cfg(feature = "test-hooks")]
+            sealed_again: Default::default(),
             missing_checked: None,
             lagging: BTreeSet::new(),
             active: None,
@@ -591,6 +612,7 @@ impl WorkspaceSync {
         }
         let next = mark.start();
         mark.write(&*secrets, &device, &state.workspace)?;
+        let journal_applying = journal.read(journal::APPLYING_FILE)?.unwrap_or_default();
         let mut sync = Self {
             engine,
             journal,
@@ -611,6 +633,13 @@ impl WorkspaceSync {
             frame_generation: None,
             restore_wait: restore::REWRITE_WAIT,
             lent_blob: None,
+            applying: journal_applying,
+            #[cfg(feature = "test-hooks")]
+            saves_lost: false,
+            #[cfg(feature = "test-hooks")]
+            killed_after_page: false,
+            #[cfg(feature = "test-hooks")]
+            sealed_again: Default::default(),
             missing_checked: None,
             lagging: BTreeSet::new(),
             active: None,
@@ -985,6 +1014,38 @@ impl WorkspaceSync {
         Self::open(engine, credentials, secrets, registry)
     }
 
+    /// Makes every later save fail and lets go of the journal's lock, so
+    /// what the device does next reaches the disk the way it does for an
+    /// app killed before its next save, and a test can start another.
+    #[cfg(feature = "test-hooks")]
+    pub fn lose_saves(&mut self) {
+        self.saves_lost = true;
+        self.journal.release();
+    }
+
+    /// How many times the device encrypted a file under an existing blob
+    /// key.
+    #[cfg(feature = "test-hooks")]
+    pub fn sealed_again(&self) -> usize {
+        self.sealed_again.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Uploads the blobs the server lacks, as a round does after a capture.
+    #[cfg(feature = "test-hooks")]
+    pub async fn upload_missing_for_testing(
+        &mut self,
+        service: &mut SyncService,
+    ) -> Result<usize, SyncError> {
+        self.upload_missing(service, false).await
+    }
+
+    /// Kills the app, as [`Self::lose_saves`] does, once the next page's
+    /// files reach disk.
+    #[cfg(feature = "test-hooks")]
+    pub fn kill_after_page(&mut self) {
+        self.killed_after_page = true;
+    }
+
     /// Writes the journal, with the workspace domain's part in its place
     /// wherever the device works.
     fn save(&mut self) -> Result<(), SyncError> {
@@ -998,6 +1059,10 @@ impl WorkspaceSync {
     }
 
     fn save_here(&mut self) -> Result<(), SyncError> {
+        #[cfg(feature = "test-hooks")]
+        if self.saves_lost {
+            return Err(SyncError::Invalid("the app was killed".into()));
+        }
         self.journal.write(STATE_FILE, &self.state)?;
         // An approval offer anchors the latest accepted checkpoint (§10).
         let accepted = self
@@ -1697,6 +1762,10 @@ impl WorkspaceSync {
         let roots = self.state.held_roots.clone();
         let markers = self.marker_objects();
         let holding_new = self.markers_pending();
+        // A file the journal doesn't map yet may be one a page or a
+        // bootstrap wrote before a kill: the page comes back and maps it,
+        // and until then it counts as no new object (§15, §18).
+        let waiting_for_page = self.state.bootstrap || self.page_unfinished();
         let waiting: BTreeMap<String, Digest> = self
             .state
             .deleted_away
@@ -1738,6 +1807,9 @@ impl WorkspaceSync {
                     }
                 }
                 Change::Create(found) => {
+                    if waiting_for_page {
+                        continue;
+                    }
                     if found.file.size > sync_protocol::blob::MAX_BLOB_FILE {
                         skipped.push(Skipped {
                             path: found.file.relative_path.clone(),
@@ -2692,9 +2764,10 @@ impl WorkspaceSync {
                     return Err(refused());
                 }
                 if kept.is_empty() {
-                    // With no cover left it would class as a patch. The
-                    // change stays local, and the next capture covers what
-                    // the device pulls by then.
+                    // With no cover left it would class as a patch, and
+                    // any cover it could name now replaces a version the
+                    // device never read: a text-mode note merges what it
+                    // pulls, and a file's version waits for review (§14).
                     let rejected = self.state.outbox.remove(index);
                     self.forget_own(&rejected.record);
                     self.keep_local(&rejected.record, false);
@@ -3555,22 +3628,20 @@ impl WorkspaceSync {
         };
         let fetched = self.fetch_blobs(service, &checked).await?;
         let walks = std::mem::take(&mut checked.walks);
-        let applied = self.apply(checked, fetched);
+        if !checked.records.is_empty() {
+            self.open_page(page.complete_through)?;
+        }
+        let Checked { log, records, .. } = checked;
+        let applied = self.with_page_log(log, |sync| {
+            let applied = sync.apply_records(records, fetched)?;
+            sync.retry_waiting()?;
+            Ok(applied)
+        });
         self.clear_downloads();
         let applied = applied?;
-        // Objects a file in their way held back before get another try.
-        if !self.matching {
-            for rid in self.unsettled() {
-                // The rewrite settles an object a rewind found lagging.
-                if !self.state.restore.rewrites.contains_key(&rid) {
-                    self.settle(rid, &BTreeMap::new())?;
-                }
-            }
-            // A hold that ended leaves files to match with the domain's
-            // live objects before anything writes there (§9).
-            if std::mem::take(&mut self.rematch) {
-                self.match_local()?;
-            }
+        #[cfg(feature = "test-hooks")]
+        if self.killed_after_page {
+            self.lose_saves();
         }
         for (digest, at, own) in walks {
             let differing = self.walk_manifest(service, at, &own).await;
@@ -3582,7 +3653,84 @@ impl WorkspaceSync {
         self.state.log.checkpoint_seq = self.state.log.checkpoint_seq.max(page.checkpoint_seq);
         self.state.log.retention_floor = self.state.log.retention_floor.max(page.retention_floor);
         self.save()?;
+        self.close_page()?;
         Ok((applied, false))
+    }
+
+    /// Notes on disk, before a page writes any file, that the files may
+    /// run ahead of the state file until the cursor reaches `through`, so
+    /// a restart doesn't take them for new local files.
+    fn open_page(&mut self, through: u64) -> Result<(), SyncError> {
+        if self
+            .applying
+            .get(&self.state.domain)
+            .is_some_and(|reached| *reached >= through)
+        {
+            return Ok(());
+        }
+        self.applying.insert(self.state.domain, through);
+        Ok(self.journal.write(journal::APPLYING_FILE, &self.applying)?)
+    }
+
+    /// Clears the note of [`Self::open_page`] once the state file holds
+    /// the cursor it named.
+    fn close_page(&mut self) -> Result<(), SyncError> {
+        let cursor = self.state.log.cursor;
+        let domain = self.state.domain;
+        if self.applying.get(&domain).is_some_and(|t| *t <= cursor) {
+            self.applying.remove(&domain);
+            self.journal.write(journal::APPLYING_FILE, &self.applying)?;
+        }
+        Ok(())
+    }
+
+    /// Whether a page of a domain this device still syncs may have written
+    /// files the state file doesn't map yet.
+    fn page_unfinished(&self) -> bool {
+        self.applying.keys().any(|domain| {
+            *domain == self.state.domain || self.state.restricted.contains_key(domain)
+        })
+    }
+
+    /// Runs `apply` on the log a checked page moved to. The log stays there
+    /// only when it succeeds: a failure leaves it where the cursor is, so
+    /// the page comes back whole with its bytes, and the objects it already
+    /// wrote keep their files.
+    fn with_page_log<T>(
+        &mut self,
+        log: Log,
+        apply: impl FnOnce(&mut Self) -> Result<T, SyncError>,
+    ) -> Result<T, SyncError> {
+        let before = std::mem::replace(&mut self.state.log, log);
+        let result = apply(self);
+        if result.is_err() {
+            self.state.log = before;
+        }
+        result
+    }
+
+    /// Gives the objects an earlier page held back another try. One that
+    /// fails again keeps waiting, since its bytes wait in the review store
+    /// and no record of this page depends on it.
+    fn retry_waiting(&mut self) -> Result<(), SyncError> {
+        if self.matching {
+            return Ok(());
+        }
+        for rid in self.unsettled() {
+            // The rewrite settles an object a rewind found lagging.
+            if !self.state.restore.rewrites.contains_key(&rid)
+                && let Err(error) = self.settle(rid, &BTreeMap::new())
+            {
+                tracing::warn!(%error, "an object that waits for its file stays waiting");
+            }
+        }
+        // A hold that ended leaves files to match with the domain's live
+        // objects before anything writes there (§9).
+        if self.rematch {
+            self.match_local()?;
+            self.rematch = false;
+        }
+        Ok(())
     }
 
     /// Settles each fork the log holds (§14): once the accepted policy
@@ -4153,9 +4301,16 @@ impl WorkspaceSync {
     /// Applies a checked page: records each state in the journal, then
     /// brings each touched object's file in line with its live set.
     fn apply(&mut self, checked: Checked, fetched: Bodies) -> Result<usize, SyncError> {
-        let own = self.credentials.keys.device();
         let Checked { log, records, .. } = checked;
-        self.state.log = log;
+        self.with_page_log(log, |sync| sync.apply_records(records, fetched))
+    }
+
+    fn apply_records(
+        &mut self,
+        records: Vec<CheckedRecord>,
+        fetched: Bodies,
+    ) -> Result<usize, SyncError> {
+        let own = self.credentials.keys.device();
         let mut touched: Vec<Id> = Vec::new();
         let mut contents: Bodies = fetched;
         let mut applied = 0;
@@ -4210,12 +4365,16 @@ impl WorkspaceSync {
             let content = match record.payload {
                 Some(payload) => carried(&payload, &mut contents),
                 None => {
-                    self.state.unreadable.push(state::Unreadable {
+                    let unreadable = state::Unreadable {
                         rid: op.body.rid,
                         device: op.body.device,
                         counter: op.body.counter,
                         seq: record.seq,
-                    });
+                    };
+                    // A page that failed comes back with it.
+                    if !self.state.unreadable.contains(&unreadable) {
+                        self.state.unreadable.push(unreadable);
+                    }
                     None
                 }
             };
