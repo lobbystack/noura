@@ -32,14 +32,23 @@ find_one() {
 time_limit=(timeout 180)
 command -v timeout > /dev/null || time_limit=(perl -e 'alarm 180; exec @ARGV')
 
+print_app_logs() {
+  local log
+  find "${LOCALAPPDATA:-$HOME}" -iname '*noura*.log*' -type f 2> /dev/null | while read -r log; do
+    echo "--- $log"
+    tail -n 60 "$log"
+  done
+}
+
 # Run the app with --smoke and check its report. $2 is "on" or "off".
 check() {
   local name="$1" updates="$2"
   shift 2
   local report
   echo "Launching $name."
-  report="$("${time_limit[@]}" "$@" --smoke)" || {
+  report="$(RUST_LOG=info "${time_limit[@]}" "$@" --smoke)" || {
     echo "$name: $report"
+    print_app_logs
     echo "::error::$name failed its smoke run."
     exit 1
   }

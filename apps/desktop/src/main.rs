@@ -163,6 +163,9 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if smoke.is_some() {
+        limit_smoke_run();
+    }
     match run_app(smoke) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -170,6 +173,17 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Ends a smoke run that draws no window, which would otherwise wait
+/// forever and report nothing.
+fn limit_smoke_run() {
+    const LIMIT: Duration = Duration::from_secs(120);
+    std::thread::spawn(|| {
+        std::thread::sleep(LIMIT);
+        println!("Noura drew no window within {} seconds.", LIMIT.as_secs());
+        std::process::exit(1);
+    });
 }
 
 /// Run the app. `smoke` is the plugins line of a smoke run's report.
