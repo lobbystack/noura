@@ -119,6 +119,11 @@ impl Computer {
         app.note(tab).expect("a note").text_mode().is_some()
     }
 
+    fn cursors(&self) -> Vec<app_core::sync::workspace::presence::Cursor> {
+        let app = self.harness.state().app();
+        app.note_cursors(app.active_tab().expect("a tab").id())
+    }
+
     fn signed_in_and_syncing(&self) -> bool {
         matches!(
             AccountBackend::screen(&*self.account).phase,
@@ -262,4 +267,56 @@ fn typing_in_one_editor_reaches_the_other_desktops_editor_and_file() {
     });
     // Each kept its place while the document took over.
     assert_eq!(a.file("Plan.md"), "Ben two Ana one # Plan\n");
+}
+
+#[test]
+fn a_selection_in_one_editor_shows_in_the_others_note_and_goes_with_its_text() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let pair = runtime.block_on(sync_support::pair());
+    let base = pair.server.base.clone();
+    let mut desks = desks(pair, &base);
+    let (a, b) = (&mut desks.laptop, &mut desks.desktop);
+    both_in_their_documents(a, b);
+
+    // Three characters back from the laptop's caret.
+    for _ in 0..3 {
+        a.harness
+            .key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::ArrowLeft);
+        a.harness.run_steps(2);
+    }
+    until(a, b, "the selection arrives", |_, b| {
+        b.cursors().iter().any(|cursor| {
+            cursor
+                .selections
+                .iter()
+                .any(|range| range.anchor.abs_diff(range.head) == 3)
+        })
+    });
+    b.harness
+        .get_by_role_and_label(Role::Caret, "A collaborator's cursor");
+    let at = |b: &Computer| {
+        b.cursors()
+            .iter()
+            .flat_map(|cursor| cursor.selections.clone())
+            .map(|range| (range.anchor, range.head))
+            .max_by_key(|(anchor, head)| anchor.abs_diff(*head))
+            .expect("a selection")
+    };
+    let before = at(b);
+
+    // Text typed ahead of the selection moves it along.
+    b.harness.key_press_modifiers(
+        if cfg!(target_os = "macos") {
+            egui::Modifiers::COMMAND
+        } else {
+            egui::Modifiers::CTRL
+        },
+        egui::Key::Home,
+    );
+    b.harness.run_steps(2);
+    b.harness.event(egui::Event::Text("new ".to_owned()));
+    b.harness.run_steps(3);
+    until(a, b, "the selection moves with its text", |_, b| {
+        at(b) == (before.0 + 4, before.1 + 4)
+    });
 }

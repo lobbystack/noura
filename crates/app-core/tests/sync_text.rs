@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use app_core::sync::SyncService;
 use app_core::sync::realtime::Channel;
 use app_core::sync::workspace::WorkspaceSync;
-use app_core::sync::workspace::presence::{CURSOR_LIFETIME, SelectionRange};
+use app_core::sync::workspace::presence::{CURSOR_LIFETIME, CURSOR_REFRESH, SelectionRange};
 use app_core::sync::workspace::text::{Entered, IDLE, IDLE_ANY_WRITER, Judgement, TextReviewKind};
 use app_core::text_bridge::TextBridge;
 use collab_sandbox::{LineageStatus, SandboxDocument};
@@ -561,6 +561,30 @@ async fn a_collaborators_cursor_stays_on_its_character_and_goes_with_them() {
     // Thirty seconds after its last record it goes.
     let later = Instant::now() + CURSOR_LIFETIME + Duration::from_secs(1);
     assert!(pair.sync_b.cursors(PLAN, later).is_empty());
+}
+
+/// A cursor at rest goes out again before it would expire, which is also
+/// how someone who opens the note later finds it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cursor_at_rest_goes_out_again_in_time() {
+    let mut pair = pair().await;
+    let (_a, _b, mut channel_a, _channel_b) = cursors_ready(&mut pair).await;
+    send_selection(&mut pair, &mut channel_a, 6).await;
+
+    let record = |frames: &[Frame]| {
+        frames
+            .iter()
+            .any(|frame| matches!(frame, Frame::Presence { .. }))
+    };
+    let now = Instant::now();
+    let soon = pair.sync_a.presence_frames_at(now).expect("frames");
+    assert!(!record(&soon), "nothing changed yet");
+    let later = pair
+        .sync_a
+        .presence_frames_at(now + CURSOR_REFRESH + Duration::from_secs(1))
+        .expect("frames");
+    assert!(record(&later), "{later:?}");
+    assert!(CURSOR_REFRESH * 2 <= CURSOR_LIFETIME);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
