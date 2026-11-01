@@ -1,6 +1,19 @@
 //! Chats and their messages, stored as Markdown files under the workspace.
 
+use std::time::{Duration, Instant};
+
 use super::*;
+
+/// How long a chat waits to try recovery again after a failure, when no file
+/// changed. Each try walks the workspace with every file change held off.
+const CHAT_RECOVERY_RETRY: Duration = Duration::from_secs(5);
+
+/// A chat recovery that failed, and how things stood just after.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct FailedChatRecovery {
+    at: Instant,
+    changes: ChangeCounts,
+}
 
 impl WorkspaceEngine {
     pub fn create_chat(&self, input: CreateChatInput) -> Result<MutationResult<Chat>> {
@@ -190,10 +203,20 @@ impl WorkspaceEngine {
             .lock()
             .map_err(|_| lock_error("chat_read"))?
             .chat_message_paths(id)?;
+        self.read_chat_message_files(id, paths, "chat_read")
+    }
+
+    /// The messages of chat `id` among the files at `paths`, oldest first.
+    fn read_chat_message_files(
+        &self,
+        id: &str,
+        paths: Vec<String>,
+        operation: &str,
+    ) -> Result<Vec<ChatMessage>> {
         let mut messages = Vec::with_capacity(paths.len());
         for relative in paths {
-            let path = resolve_for_write(&self.root, &relative, "chat_read")?;
-            let bytes = read_downloaded(&path, &relative, "chat_read")?;
+            let path = resolve_for_write(&self.root, &relative, operation)?;
+            let bytes = read_downloaded(&path, &relative, operation)?;
             // A message file that breaks the chat rules stays as it is and
             // out of the chat, which still reads.
             let message = match parse_chat_message(&relative, &bytes) {
@@ -207,10 +230,7 @@ impl WorkspaceEngine {
             if message.chat_id != id {
                 continue;
             }
-            messages.push((
-                parse_chat_timestamp(&message.created, "chat_read")?,
-                message,
-            ));
+            messages.push((parse_chat_timestamp(&message.created, operation)?, message));
         }
         messages.sort_by(|left, right| {
             left.0
@@ -371,6 +391,9 @@ impl WorkspaceEngine {
         )
     }
 
+    /// Settle the messages of `id` that a dead run left in progress. Between
+    /// a failed try and the next, which waits for a file change or
+    /// [`CHAT_RECOVERY_RETRY`], the messages read as they stand.
     pub fn recover_interrupted_chat(&self, id: &str) -> Result<ChatRead> {
         let read = self.read_chat(id)?;
         if !read
@@ -378,14 +401,71 @@ impl WorkspaceEngine {
             .iter()
             .any(|message| message.status == ChatMessageStatus::InProgress)
         {
+            self.failed_chat_recoveries_guard().remove(id);
+            return Ok(read);
+        }
+        if self.chat_recovery_waits(id) {
             return Ok(read);
         }
         // What this writes lasts, and an index behind the files would call
         // a tool call interrupted beside its result. Another thread's walk
         // can leave the index behind with nothing marked stale, so walk
         // here. The walk takes the write lock, so it comes before it.
-        self.reconcile()?;
-        let mut read = self.read_chat(id)?;
+        let recovered = self.reconcile().and_then(|()| {
+            #[cfg(any(test, feature = "test-hooks"))]
+            self.chat_recovery_checkpoint(ChatRecoveryPoint::BeforeWriteLock);
+            self.settle_interrupted_chat(id)
+        });
+        let changes = self.change_counts();
+        let mut failed = self.failed_chat_recoveries_guard();
+        if recovered.is_ok() {
+            failed.remove(id);
+        } else {
+            let at = Instant::now();
+            failed.insert(id.to_owned(), FailedChatRecovery { at, changes });
+        }
+        recovered
+    }
+
+    /// Whether `id` failed recovery so lately, with no file changed since,
+    /// that another try would only walk the workspace to fail again.
+    fn chat_recovery_waits(&self, id: &str) -> bool {
+        let mut failed = self.failed_chat_recoveries_guard();
+        let Some(last) = failed.get(id) else {
+            return false;
+        };
+        if last.at.elapsed() < CHAT_RECOVERY_RETRY && last.changes == self.change_counts() {
+            return true;
+        }
+        failed.remove(id);
+        false
+    }
+
+    fn failed_chat_recoveries_guard(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, FailedChatRecovery>> {
+        self.failed_chat_recoveries
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// Test hook: make the failed recovery of `id` as old as `age`.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn age_failed_chat_recovery_for_testing(&self, id: &str, age: Duration) {
+        if let Some(last) = self.failed_chat_recoveries_guard().get_mut(id) {
+            last.at = Instant::now() - age;
+        }
+    }
+
+    /// Decide and write under one hold of the write lock, so nothing the
+    /// decision read can change before the write.
+    fn settle_interrupted_chat(&self, id: &str) -> Result<ChatRead> {
+        let operation = "chat_recover_interrupted";
+        let _guard = self.write_lock(operation)?;
+        self.replay_chat_mutations_unlocked()?;
+        let mut read = self.read_chat_unlocked(id, operation)?;
+        #[cfg(any(test, feature = "test-hooks"))]
+        self.chat_recovery_checkpoint(ChatRecoveryPoint::AfterDecidingRead);
         let completed_tool_results = read
             .messages
             .iter()
@@ -403,24 +483,8 @@ impl WorkspaceEngine {
         if interrupted.is_empty() {
             return Ok(read);
         }
-        let _guard = self.write_lock("chat_recover_interrupted")?;
-        let mut recovered_count = 0;
         for message in interrupted {
-            // The write lock is already held. Reconciliation here would try to
-            // acquire it again while recovering a pending mutation, so read the
-            // canonical path captured in the preceding reconciled ChatRead.
-            let path = resolve_for_write(
-                &self.root,
-                &message.relative_path,
-                "chat_recover_interrupted",
-            )?;
-            let bytes = read_downloaded(&path, &message.relative_path, "chat_recover_interrupted")?;
-            let current = parse_chat_message(&message.relative_path, &bytes)?;
-            if current.status != ChatMessageStatus::InProgress {
-                *message = current;
-                continue;
-            }
-            let mut recovered = current;
+            let mut recovered = message.clone();
             recovered.status = if completed_tool_results
                 .iter()
                 .any(|result| tool_result_completes_call(result, &recovered))
@@ -431,19 +495,17 @@ impl WorkspaceEngine {
             };
             recovered.updated = now_rfc3339();
             let expected_chat_revision = read.chat.revision.clone();
+            self.check_chat_revision_unlocked(&read.chat, &expected_chat_revision, operation)?;
+            self.check_chat_message_revision_unlocked(message, &message.revision, operation)?;
             read.chat.updated = now_rfc3339();
             self.commit_chat_mutation_unlocked(
                 &mut read.chat,
                 Some(&expected_chat_revision),
                 &mut recovered,
                 Some(&message.revision),
-                "chat_recover_interrupted",
+                operation,
             )?;
             *message = recovered;
-            recovered_count += 1;
-        }
-        if recovered_count == 0 {
-            return Ok(read);
         }
         self.emit_chat_event(
             "chat:recovered",
@@ -452,6 +514,74 @@ impl WorkspaceEngine {
             serde_json::json!({ "interruptedMessages": read.messages.iter().filter(|message| message.status == ChatMessageStatus::Interrupted).count() }),
         );
         Ok(read)
+    }
+
+    /// [`Self::read_chat`] for a caller that holds the write lock, which a
+    /// walk or a replay would take again. The index finds the chat, and the
+    /// messages come from what the index lists and what the chat's folder
+    /// holds, so a message the index hasn't seen counts.
+    fn read_chat_unlocked(&self, id: &str, operation: &str) -> Result<ChatRead> {
+        let (location, mut paths) = {
+            let index = self.index.lock().map_err(|_| lock_error(operation))?;
+            (index.object_location(id)?, index.chat_message_paths(id)?)
+        };
+        let not_found =
+            || CoreError::validation("chat_not_found", "The chat does not exist", operation);
+        let (relative, _) = location.ok_or_else(not_found)?;
+        let path = resolve_for_write(&self.root, &relative, operation)?;
+        let bytes = read_downloaded(&path, &relative, operation)?;
+        let chat = parse_chat(&relative, &bytes)?;
+        if chat.id != id {
+            return Err(not_found());
+        }
+        paths.retain(|relative| {
+            let path = self.root.join(relative);
+            path.exists() || icloud_placeholder(&path).exists()
+        });
+        if let Some((directory, _)) = relative.rsplit_once('/') {
+            let messages = format!("{directory}/messages");
+            self.collect_chat_message_paths(&messages, &mut paths, operation)?;
+        }
+        paths.sort();
+        paths.dedup();
+        let messages = self.read_chat_message_files(id, paths, operation)?;
+        Ok(ChatRead { chat, messages })
+    }
+
+    /// Add the chat message files under the workspace-relative `directory`.
+    fn collect_chat_message_paths(
+        &self,
+        directory: &str,
+        paths: &mut Vec<String>,
+        operation: &str,
+    ) -> Result<()> {
+        let path = self.root.join(directory);
+        let entries = match std::fs::read_dir(&path) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(CoreError::io(error, operation, path.to_str())),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|error| CoreError::io(error, operation, path.to_str()))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|error| CoreError::io(error, operation, entry.path().to_str()))?;
+            let name = entry.file_name();
+            // A name that isn't UTF-8 can't be a message this app wrote.
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let child = format!("{directory}/{name}");
+            if file_type.is_dir() {
+                self.collect_chat_message_paths(&child, paths, operation)?;
+            } else if file_type.is_file()
+                && name.starts_with("chat-message_")
+                && name.ends_with(".md")
+            {
+                paths.push(child);
+            }
+        }
+        Ok(())
     }
 
     pub fn expire_chats(&self, now: &str) -> Result<Vec<String>> {
@@ -464,11 +594,16 @@ impl WorkspaceEngine {
         })?;
         let chats = self.list_chats()?;
         let _guard = self.write_lock("chat_expire")?;
+        self.replay_chat_mutations_unlocked()?;
         let mut expired = Vec::new();
         for chat in chats {
             let Some(days) = chat.retention_days else {
                 continue;
             };
+            // Its intent still needs these files.
+            if self.stuck_chat_mutation_error(&chat, true).is_some() {
+                continue;
+            }
             let created = chat.created.parse::<jiff::Timestamp>().map_err(|_| {
                 CoreError::validation(
                     "invalid_timestamp",
@@ -521,7 +656,11 @@ impl WorkspaceEngine {
                 operation,
             ));
         };
-        parse_chat(&object.relative_path, &bytes)
+        let chat = parse_chat(&object.relative_path, &bytes)?;
+        match self.stuck_chat_mutation_error(&chat, false) {
+            Some(error) => Err(error),
+            None => Ok(chat),
+        }
     }
 
     fn read_canonical_chat_message(&self, id: &str, operation: &str) -> Result<ChatMessage> {
@@ -823,6 +962,12 @@ impl WorkspaceEngine {
         expected_revision: &str,
         operation: &str,
     ) -> Result<()> {
+        // A change that failed just before this one got the lock counts:
+        // writing past its intent would turn its replay into a conflict.
+        self.replay_chat_mutations_unlocked()?;
+        if let Some(error) = self.stuck_chat_mutation_error(chat, true) {
+            return Err(error);
+        }
         let path = resolve_for_write(&self.root, &chat.relative_path, operation)?;
         let bytes = read_downloaded(&path, &chat.relative_path, operation)?;
         check_revision(&bytes, expected_revision, operation)

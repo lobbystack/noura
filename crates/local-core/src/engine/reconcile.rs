@@ -156,6 +156,10 @@ impl WorkspaceEngine {
         // A write of ours never lands mid-walk, so the walk can't index it
         // as another app's.
         let _changes = self.hold_changes();
+        #[cfg(any(test, feature = "test-hooks"))]
+        self.chat_recovery_probe
+            .walks
+            .fetch_add(1, Ordering::SeqCst);
         self.recover_pending_chat_mutations()?;
         // Clear before walking: a change that lands mid-walk marks it again.
         self.dirty.store(false, Ordering::SeqCst);

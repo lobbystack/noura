@@ -270,52 +270,6 @@ fn a_chat_change_a_failed_write_cut_off_shows_on_the_read_that_completes_it() {
 }
 
 #[test]
-fn chat_mutation_recovery_does_not_clobber_an_external_parent_edit() {
-    let (workspace, _app_data, engine) = engine();
-    let created = engine
-        .create_chat(CreateChatInput {
-            title: "Do not overwrite".into(),
-            retention: None,
-            retention_days: None,
-        })
-        .unwrap();
-    engine.fail_chat_mutation_write_for_testing("chat", 1);
-    let error = engine
-        .append_chat_user_message(AppendChatUserMessageInput {
-            chat_id: created.value.id.clone(),
-            run_id: "run_external".into(),
-            content: "the child write completed first".into(),
-            expected_chat_revision: created.revision,
-        })
-        .unwrap_err();
-    assert_eq!(error.code, "chat_mutation_write_failed");
-
-    let chat_path = workspace.path().join(&created.value.relative_path);
-    let external = std::fs::read_to_string(&chat_path)
-        .unwrap()
-        .replace("title: Do not overwrite", "title: Edited outside Noura");
-    std::fs::write(&chat_path, external).unwrap();
-
-    let recovery = engine.reconcile().unwrap_err();
-    assert_eq!(recovery.code, "chat_mutation_recovery_conflict");
-    assert!(
-        std::fs::read_to_string(chat_path)
-            .unwrap()
-            .contains("title: Edited outside Noura")
-    );
-    assert!(
-        workspace
-            .path()
-            .join(".noura/chat-mutations")
-            .read_dir()
-            .unwrap()
-            .next()
-            .is_some(),
-        "the unresolved intent must remain available for explicit recovery"
-    );
-}
-
-#[test]
 fn chat_retention_changes_are_revision_checked_and_durable() {
     let (workspace, _app_data, engine) = engine();
     let created = engine

@@ -37,6 +37,8 @@ pub use consent::{
     AiConsentRevokeInput, AiConsentRevokeOutcome,
 };
 pub use credentials::{CredentialStore, MemoryCredentials, NoCredentials, SystemCredentials};
+#[cfg(any(test, feature = "test-hooks"))]
+pub use engine::ChatRecoveryPoint;
 pub use engine::{
     ChangeCounts, ConflictResolution, CreateObjectInput, DraftReconcileInput, DraftReconcileResult,
     ImportResult, ManagedConflictResolution, ManagedConflictResolveInput, ManagedDraftInput,
