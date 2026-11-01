@@ -1210,74 +1210,74 @@ fn verdict_traps(f: &mut Fixture) {
 /// 1,000. Memory leaves less room: a snapshot just under the 32 MiB stop
 /// takes 414 MiB of the verdict's 512 MiB.
 const MEASURED: [(&str, u64, u64, u64, f64); 11] = [
-    ("typing one character", 85, 73_962, 1_179_648, 0.0001),
+    ("typing one character", 85, 68_684, 1_179_648, 0.0001),
     (
         "pasting 200,000 ASCII characters",
         200_091,
-        8_275_346,
+        8_270_068,
         1_900_544,
         0.0003,
     ),
     (
         "pasting 60,000 CJK characters",
         180_091,
-        14_205_195,
+        14_199_917,
         1_703_936,
         0.0004,
     ),
     (
         "pasting 50,000 emoji",
         200_091,
-        14_875_195,
+        14_869_917,
         1_900_544,
         0.0004,
     ),
     (
         "a snapshot after 20,000 scattered keystrokes",
         145_316,
-        18_447_385,
+        18_442_107,
         2_818_048,
         0.0010,
     ),
     (
         "a snapshot after 20,000 keystrokes and deletions",
         232_643,
-        30_744_974,
+        30_739_696,
         3_735_552,
         0.0017,
     ),
     (
         "a snapshot of 64 writers",
         37_986,
-        5_588_268,
+        5_582_990,
         1_703_936,
         0.0004,
     ),
     (
         "deleting every other character of 40,000",
         71_819,
-        7_344_297,
+        7_339_019,
         1_572_864,
         0.0003,
     ),
     (
         "a managed note with a large frontmatter",
         137_131,
-        9_791_593,
+        9_786_315,
         1_441_792,
         0.0004,
     ),
     (
         "a 16 MiB snapshot of scattered typing",
         18_837_030,
-        2_822_065_529,
+        2_822_060_251,
         248_774_656,
         0.1631,
     ),
     (
         "a 32 MiB snapshot of scattered typing",
         33_494_308,
-        4_961_043_936,
+        4_961_038_658,
         434_176_000,
         0.2754,
     ),
@@ -1363,7 +1363,7 @@ fn limits(f: &mut Fixture) {
         repeated(&payload, b"5e-324,"),
         None,
         None,
-        51_388_122,
+        51_382_844,
     );
 
     // A GC struct right at the start, then zeros: the guest takes the blob
@@ -1375,9 +1375,9 @@ fn limits(f: &mut Fixture) {
             "memory_near_limit_input",
             largest,
             "gc_struct",
-            535_696_910u64,
+            535_691_632u64,
         ),
-        ("memory_over_limit_input", largest + 1, "memory", 66_435),
+        ("memory_over_limit_input", largest + 1, "memory", 61_157),
     ] {
         let (content, blob) = repeated_blob(&gc, 0, length - gc.len() as u64, &[]);
         let payload = update_payload("", 1, vec![], content);
@@ -1392,12 +1392,12 @@ fn limits(f: &mut Fixture) {
 
     // One string item: yrs holds a copy of the string beside the input.
     for (name, mib, expect, fuel) in [
-        ("memory_near_limit_decoded", 250u64, None, 10_485_836_141u64),
+        ("memory_near_limit_decoded", 250u64, None, 10_485_830_863u64),
         (
             "memory_over_limit_decoded",
             260,
             Some("memory"),
-            5_861_613_861,
+            5_861_608_583,
         ),
     ] {
         let length = mib << 20;

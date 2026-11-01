@@ -188,6 +188,11 @@ fn engine(backend: Backend) -> wasmtime::Result<Engine> {
     config.epoch_interruption(false);
     config.consume_fuel(true);
     config.operator_cost(operator_costs());
+    // A copy-on-write image rounds the data segments up to the target's page
+    // size, and Wasmtime charges that rounded length: x86-64 would pay 4,096
+    // units less than Apple silicon and Pulley. Copying the segments charges
+    // their exact length everywhere.
+    config.memory_init_cow(false);
     Engine::new(&config)
 }
 

@@ -2100,7 +2100,7 @@
 			"card_count": 1,
 			"card_index": 1,
 			"expect": null,
-			"fuel": 51388122,
+			"fuel": 51382844,
 			"kind": "verdict_limit",
 			"name": "fuel_near_limit_subnormal_numbers",
 			"payload": {
@@ -2120,7 +2120,7 @@
 			"card_count": 1,
 			"card_index": 1,
 			"expect": "gc_struct",
-			"fuel": 535696910,
+			"fuel": 535691632,
 			"kind": "verdict_limit",
 			"name": "memory_near_limit_input",
 			"payload": {
@@ -2140,7 +2140,7 @@
 			"card_count": 1,
 			"card_index": 1,
 			"expect": "memory",
-			"fuel": 66435,
+			"fuel": 61157,
 			"kind": "verdict_limit",
 			"name": "memory_over_limit_input",
 			"payload": {
@@ -2160,7 +2160,7 @@
 			"card_count": 1,
 			"card_index": 1,
 			"expect": null,
-			"fuel": 10485836141,
+			"fuel": 10485830863,
 			"kind": "verdict_limit",
 			"name": "memory_near_limit_decoded",
 			"payload": {
@@ -2180,7 +2180,7 @@
 			"card_count": 1,
 			"card_index": 1,
 			"expect": "memory",
-			"fuel": 5861613861,
+			"fuel": 5861608583,
 			"kind": "verdict_limit",
 			"name": "memory_over_limit_decoded",
 			"payload": {
@@ -2352,77 +2352,77 @@
 				"records": [
 					{
 						"bytes": 85,
-						"fuel": 73962,
+						"fuel": 68684,
 						"memory_bytes": 1179648,
 						"record": "typing one character",
 						"reference_seconds": 0.0001
 					},
 					{
 						"bytes": 200091,
-						"fuel": 8275346,
+						"fuel": 8270068,
 						"memory_bytes": 1900544,
 						"record": "pasting 200,000 ASCII characters",
 						"reference_seconds": 0.0003
 					},
 					{
 						"bytes": 180091,
-						"fuel": 14205195,
+						"fuel": 14199917,
 						"memory_bytes": 1703936,
 						"record": "pasting 60,000 CJK characters",
 						"reference_seconds": 0.0004
 					},
 					{
 						"bytes": 200091,
-						"fuel": 14875195,
+						"fuel": 14869917,
 						"memory_bytes": 1900544,
 						"record": "pasting 50,000 emoji",
 						"reference_seconds": 0.0004
 					},
 					{
 						"bytes": 145316,
-						"fuel": 18447385,
+						"fuel": 18442107,
 						"memory_bytes": 2818048,
 						"record": "a snapshot after 20,000 scattered keystrokes",
 						"reference_seconds": 0.001
 					},
 					{
 						"bytes": 232643,
-						"fuel": 30744974,
+						"fuel": 30739696,
 						"memory_bytes": 3735552,
 						"record": "a snapshot after 20,000 keystrokes and deletions",
 						"reference_seconds": 0.0017
 					},
 					{
 						"bytes": 37986,
-						"fuel": 5588268,
+						"fuel": 5582990,
 						"memory_bytes": 1703936,
 						"record": "a snapshot of 64 writers",
 						"reference_seconds": 0.0004
 					},
 					{
 						"bytes": 71819,
-						"fuel": 7344297,
+						"fuel": 7339019,
 						"memory_bytes": 1572864,
 						"record": "deleting every other character of 40,000",
 						"reference_seconds": 0.0003
 					},
 					{
 						"bytes": 137131,
-						"fuel": 9791593,
+						"fuel": 9786315,
 						"memory_bytes": 1441792,
 						"record": "a managed note with a large frontmatter",
 						"reference_seconds": 0.0004
 					},
 					{
 						"bytes": 18837030,
-						"fuel": 2822065529,
+						"fuel": 2822060251,
 						"memory_bytes": 248774656,
 						"record": "a 16 MiB snapshot of scattered typing",
 						"reference_seconds": 0.1631
 					},
 					{
 						"bytes": 33494308,
-						"fuel": 4961043936,
+						"fuel": 4961038658,
 						"memory_bytes": 434176000,
 						"record": "a 32 MiB snapshot of scattered typing",
 						"reference_seconds": 0.2754
