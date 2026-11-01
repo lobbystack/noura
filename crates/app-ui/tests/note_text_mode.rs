@@ -111,6 +111,22 @@ fn enter(harness: &mut Ui, bridge: &TextBridge) -> app_core::text_bridge::TestNo
     shared
 }
 
+/// Types into the note, and leaves a document waiting that can't take over
+/// yet: the note stays outside text mode.
+fn wait_for_a_document(harness: &mut Ui, bridge: &TextBridge) {
+    type_in(harness, "x");
+    let until = Instant::now() + Duration::from_secs(5);
+    while is_unsaved(harness) && Instant::now() < until {
+        harness.run_steps(1);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let (document, _shared) = TextBridge::document_for_testing(RID, "some other text");
+    bridge.deliver_for_testing("Plan.md", document);
+    harness.run_steps(3);
+    assert!(!in_text_mode(harness));
+    bridge.take_opening_for_testing();
+}
+
 fn wait_for_file(folder: &Path, text: &str, harness: &mut Ui) {
     let until = Instant::now() + Duration::from_secs(5);
     while Instant::now() < until {
@@ -124,6 +140,46 @@ fn wait_for_file(folder: &Path, text: &str, harness: &mut Ui) {
         std::fs::read_to_string(folder.join("Plan.md")).unwrap(),
         text
     );
+}
+
+/// Closing the tab tells the sync thread nobody will take the document.
+#[test]
+fn closing_a_tab_lets_go_of_a_document_that_waits_for_it() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let (mut harness, bridge) = opened(app_data.path(), &folder, "# Plan\n");
+    wait_for_a_document(&mut harness, &bridge);
+    assert!(bridge.take_forgotten_for_testing().is_empty());
+
+    let tab = harness.state().app().active_tab().expect("a tab").id();
+    harness.state_mut().app_mut().close_tab(tab);
+    harness.run_steps(3);
+
+    assert_eq!(bridge.take_forgotten_for_testing(), ["Plan.md"]);
+}
+
+/// A rename forgets the old path and asks for the document at the new one.
+#[test]
+fn renaming_a_note_asks_for_its_document_at_the_new_path() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let (mut harness, bridge) = opened(app_data.path(), &folder, "# Plan\n");
+    wait_for_a_document(&mut harness, &bridge);
+
+    let name = harness.get_by_role_and_label(Role::TextInput, "File name");
+    name.focus();
+    harness.run_steps(2);
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness.event(egui::Event::Text("Moved".to_owned()));
+    harness.run_steps(2);
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(4);
+    assert!(folder.join("Moved.md").exists());
+
+    assert_eq!(bridge.take_forgotten_for_testing(), ["Plan.md"]);
+    assert_eq!(bridge.take_opening_for_testing(), ["Moved.md"]);
 }
 
 #[test]

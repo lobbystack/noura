@@ -157,6 +157,8 @@ struct Waiting {
     left: BTreeMap<Id, LeftNote>,
     /// Notes the windows let go of.
     closing: Vec<Id>,
+    /// Paths no window shows any more, whose documents nobody will take.
+    forgotten: Vec<String>,
     /// Each open note's selections, and whether you're typing.
     selections: BTreeMap<Id, (Vec<SelectionRange>, bool)>,
     /// Each open note's collaborators, as of the last turn.
@@ -249,7 +251,10 @@ impl TextBridge {
     /// Whether a window waits for the sync thread.
     pub fn has_work(&self) -> bool {
         let waiting = self.waiting();
-        !waiting.opening.is_empty() || !waiting.attaching.is_empty() || !waiting.closing.is_empty()
+        !waiting.opening.is_empty()
+            || !waiting.attaching.is_empty()
+            || !waiting.closing.is_empty()
+            || !waiting.forgotten.is_empty()
     }
 
     /// Lets the next edit ask again for a note that stayed out of text
@@ -265,6 +270,18 @@ impl TextBridge {
         waiting.left.remove(&rid);
         waiting.selections.remove(&rid);
         waiting.cursors.remove(&rid);
+        drop(waiting);
+        self.wake();
+    }
+
+    /// The window stopped showing the note at `path`: its tab closed, or
+    /// its file moved. A document on its way there closes on the sync
+    /// thread's next turn, which also catches one that turn was opening.
+    pub fn forget(&self, path: &str) {
+        let mut waiting = self.waiting();
+        waiting.opening.retain(|p| p != path);
+        waiting.attaching.retain(|p| p != path);
+        waiting.forgotten.push(path.to_owned());
         drop(waiting);
         self.wake();
     }
@@ -318,6 +335,11 @@ impl TextBridge {
     pub fn serve(&self, sync: &mut WorkspaceSync) {
         let (attaching, opening, closing, selections) = {
             let mut waiting = self.waiting();
+            for path in std::mem::take(&mut waiting.forgotten) {
+                if let Some(document) = waiting.ready.remove(&path) {
+                    waiting.closing.push(document.rid);
+                }
+            }
             (
                 std::mem::take(&mut waiting.attaching),
                 std::mem::take(&mut waiting.opening),
@@ -414,6 +436,12 @@ impl TextBridge {
         let mut paths = std::mem::take(&mut waiting.opening);
         paths.append(&mut waiting.attaching);
         paths
+    }
+
+    /// The paths windows stopped showing since the last call.
+    #[cfg(feature = "test-hooks")]
+    pub fn take_forgotten_for_testing(&self) -> Vec<String> {
+        std::mem::take(&mut self.waiting().forgotten)
     }
 
     /// Ends a window's hold on a document, as the sync thread would.

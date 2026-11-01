@@ -1071,9 +1071,11 @@ impl NoteSession {
     /// or code file into a Markdown file, or the other way, as when the
     /// name field renames `LICENSE` to `LICENSE.md`, shows the file as its
     /// new kind once nothing is unsaved, as [`Self::reopen_if_fixed`] says.
-    /// Noura's own renames and moves save first, so that's at once.
+    /// Noura's own renames and moves save first, so that's at once. The
+    /// window asks for the note's document again at its new path.
     pub(crate) fn moved_to(&mut self, relative_path: &str) {
         relative_path.clone_into(&mut self.relative_path);
+        self.attach = true;
         self.reopen_if_fixed();
     }
 

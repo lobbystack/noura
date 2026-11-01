@@ -492,6 +492,88 @@ async fn the_windows_get_a_document_that_holds_the_edit_that_asked_for_it() {
     assert_eq!(read(&pair.a, PLAN), "# Plan typed\n");
 }
 
+/// You close the note's tab while its document waits for your save. The
+/// document closes, so sync stops holding the note open for an editor that
+/// went away.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_document_that_waits_closes_when_its_tab_closes() {
+    let mut pair = pair().await;
+    both_rounds(&mut pair).await;
+    let bridge = TextBridge::default();
+    bridge.open(PLAN);
+    bridge.serve(&mut pair.sync_a);
+    pair.a.write(PLAN, b"# Plan typed\n");
+    assert!(bridge.take_document(PLAN, "# Plan typed\n").is_none());
+    assert!(pair.sync_a.text_active(), "the document waits");
+
+    bridge.forget(PLAN);
+    assert!(bridge.has_work());
+    bridge.serve(&mut pair.sync_a);
+
+    assert!(!pair.sync_a.text_active(), "the document closed");
+    assert!(bridge.take_document(PLAN, "# Plan\n").is_none());
+    assert!(!bridge.has_work());
+    both_rounds(&mut pair).await;
+    assert_eq!(read(&pair.b, PLAN), "# Plan typed\n");
+}
+
+/// A tab that closes while the sync thread opens its document, so the
+/// document arrives after the window forgot the path, closes it too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_document_that_arrives_after_its_tab_closed_closes() {
+    let mut pair = pair().await;
+    both_rounds(&mut pair).await;
+    let bridge = TextBridge::default();
+    bridge.open(PLAN);
+    bridge.serve(&mut pair.sync_a);
+    assert!(pair.sync_a.text_active());
+    let document = bridge
+        .take_document(PLAN, "# Plan\n")
+        .expect("the document");
+
+    bridge.forget(PLAN);
+    bridge.deliver_for_testing(PLAN, document);
+    bridge.serve(&mut pair.sync_a);
+
+    assert!(!pair.sync_a.text_active(), "the document closed");
+}
+
+/// You rename the note while its document waits, here on text the document
+/// hasn't read. The note stays in text mode and the window gets a document
+/// at the new path, so the note stays in live editing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_note_renamed_while_its_document_waits_gets_a_document_at_its_new_path() {
+    let mut pair = pair().await;
+    both_rounds(&mut pair).await;
+    let bridge = TextBridge::default();
+    bridge.open(PLAN);
+    bridge.serve(&mut pair.sync_a);
+    assert!(bridge.take_document(PLAN, "# Plan typed\n").is_none());
+    let rid = pair.sync_a.rid_at(PLAN).expect("the note");
+
+    let root = pair.a.dir.path();
+    std::fs::rename(root.join(PLAN), root.join("Moved.md")).unwrap();
+    bridge.forget(PLAN);
+    both_rounds(&mut pair).await;
+    assert_eq!(pair.sync_a.rid_at("Moved.md"), Some(rid));
+    assert!(pair.sync_a.in_text_mode(&rid));
+
+    let until = Instant::now() + Duration::from_secs(10);
+    let document = loop {
+        bridge.ask_again("Moved.md");
+        bridge.open("Moved.md");
+        bridge.serve(&mut pair.sync_a);
+        if let Some(document) = bridge.take_document("Moved.md", "# Plan\n") {
+            break document;
+        }
+        assert!(Instant::now() < until, "the new path never got a document");
+        both_rounds(&mut pair).await;
+    };
+    let _editor = document.catch_up("# Plan\n", "# Plan typed\n");
+    both_rounds(&mut pair).await;
+    assert_eq!(read(&pair.b, "Moved.md"), "# Plan typed\n");
+}
+
 /// Hands every frame that waits on `channel` to `sync`, until it goes quiet.
 async fn drain(channel: &mut Channel, sync: &mut WorkspaceSync, service: &mut SyncService) {
     while let Ok(frame) = tokio::time::timeout(Duration::from_millis(300), channel.next()).await {
