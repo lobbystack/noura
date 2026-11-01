@@ -645,6 +645,10 @@ impl WorkspaceSync {
         let applied = self.apply(checked, fetched);
         self.clear_downloads();
         applied?;
+        #[cfg(feature = "test-hooks")]
+        if self.killed_after_page {
+            self.lose_saves();
+        }
         for rid in gone {
             self.left_while_away(rid);
         }

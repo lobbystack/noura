@@ -1153,7 +1153,7 @@ impl WorkspaceSync {
     }
 
     /// Kills the app, as [`Self::lose_saves`] does, once the next page's
-    /// files reach disk.
+    /// or bootstrap bucket's files reach disk.
     #[cfg(feature = "test-hooks")]
     pub fn kill_after_page(&mut self) {
         self.killed_after_page = true;
@@ -4131,7 +4131,18 @@ impl WorkspaceSync {
             // The floor passed the cursor: the device loads what it lacks
             // from the latest checkpoint (§18).
             PageStatus::Compacted => {
-                if !self.bootstrap_above(service, page.retention_floor).await? {
+                // Its buckets write files before the journal maps them, so
+                // capture waits through a kill as in any bootstrap (§15).
+                self.state.bootstrap = true;
+                self.save()?;
+                let loaded = self.bootstrap_above(service, page.retention_floor).await;
+                // A lost connection resumes; a failed check keeps the cursor,
+                // so a false report doesn't leave the device bootstrapping.
+                if matches!(loaded, Ok(_) | Err(SyncError::Check(_))) {
+                    self.state.bootstrap = false;
+                    self.save()?;
+                }
+                if !loaded? {
                     return Err(SyncError::Check("sync_manifest_rollback"));
                 }
                 return Ok((0, false));

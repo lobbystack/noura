@@ -5,12 +5,19 @@
 mod sync_support;
 
 use std::os::unix::fs::PermissionsExt;
+use std::time::Duration;
 
+use app_core::sync::invitations::InvitationBook;
 use app_core::sync::workspace::WorkspaceSync;
 use app_core::sync::workspace::text::Entered;
 use editor_core::text_mode::{CollabDocument, Utf16Splice};
-use sync_store::Backend;
-use sync_support::{Folder, Pair, Proxy, Server, approve, cut_off, first_desktop, pair, rounds};
+use sync_protocol::matching::MARKER;
+use sync_protocol::records::{Access, Level, Role};
+use sync_store::{Backend, Retention};
+use sync_support::{
+    Folder, Pair, Proxy, Server, approve, cut_off, first_desktop, invite_and_join, pair, pair_on,
+    rounds,
+};
 
 fn set_read_only(path: &std::path::Path, read_only: bool) {
     let mode = if read_only { 0o555 } else { 0o755 };
@@ -115,6 +122,141 @@ async fn a_kill_in_a_page_uploads_no_applied_file_as_new() {
     assert_eq!(pair.sync_a.status().conflicts, 0);
     assert_eq!(pair.sync_b.status().conflicts, 0);
     assert_eq!(pair.sync_a.status().pending, 0);
+}
+
+/// The same kill in the bootstrap of a device the floor passed: the files
+/// its first bucket wrote wait for the bootstrap to map them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kill_in_a_compaction_bootstrap_uploads_no_applied_file_as_new() {
+    let retention = Retention {
+        retained_bytes: 1,
+        ..Retention::default()
+    };
+    let mut pair = pair_on(Server::start_with_retention(4, retention).await).await;
+    pair.sync_a.set_checkpoint_wait(Duration::ZERO);
+    pair.sync_b.set_checkpoint_wait(Duration::ZERO);
+    for i in 0..10 {
+        pair.b
+            .write(&format!("Away{i}.md"), format!("# {i}\n").as_bytes());
+        pair.sync_b
+            .round(&mut pair.desktop.service, 0)
+            .await
+            .expect("a round on the desktop");
+        pair.server.store.maintain().await.expect("a pass");
+    }
+    let before = pair.a.files().len();
+
+    pair.sync_a.kill_after_page();
+    let killed = pair.sync_a.pull(&mut pair.service, 0).await;
+    assert!(killed.is_err(), "the kill: {killed:?}");
+    assert!(pair.a.files().len() > before, "a bucket reached disk");
+
+    pair.sync_a = laptop_reopened(&pair);
+    pair.a.write("Mine.md", b"# Mine\n");
+    rounds(&mut pair).await;
+    rounds(&mut pair).await;
+    assert_eq!(pair.a.files().len(), 12, "ten away, the plan and yours");
+    assert_eq!(pair.a.files(), pair.b.files());
+    assert_eq!(pair.sync_a.status().conflicts, 0);
+    assert_eq!(pair.sync_b.status().conflicts, 0);
+    assert_eq!(pair.sync_a.status().pending, 0);
+}
+
+/// The same kill in a restricted domain's bootstrap: the files of its
+/// first bucket wait beneath the root, and a new file elsewhere goes out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kill_in_a_restricted_bootstrap_uploads_no_applied_file_as_new() {
+    let retention = Retention {
+        retained_bytes: 1,
+        ..Retention::default()
+    };
+    let server = Server::start_with_retention(4, retention).await;
+    let mut owner = first_desktop(&server, "ana@example.com").await;
+    let mut folder = Folder::new("Field notes");
+    folder.write("Plan.md", b"# Plan\n");
+    let mut sync = WorkspaceSync::turn_on(
+        &mut owner.service,
+        folder.engine.clone(),
+        "Field notes",
+        &mut folder.registry,
+    )
+    .await
+    .expect("sync turns on");
+    sync.set_checkpoint_wait(Duration::ZERO);
+    sync.round(&mut owner.service, 0).await.expect("a round");
+    let mut book = InvitationBook::open(owner.state.path(), owner.id()).unwrap();
+    let mut grantee = first_desktop(&server, "ben@example.com").await;
+    let (mut grantee_sync, grantee_folder) =
+        invite_and_join(&mut owner, &mut sync, &mut book, &mut grantee, Role::Editor).await;
+    grantee_sync
+        .round(&mut grantee.service, 0)
+        .await
+        .expect("a round");
+    sync.round(&mut owner.service, 0).await.expect("a round");
+    sync.restrict_folder(
+        &mut owner.service,
+        "Pay",
+        &[Access {
+            account: grantee.credentials.account,
+            level: Level::Write,
+        }],
+    )
+    .await
+    .expect("restricted");
+    grantee_sync.set_checkpoint_wait(Duration::ZERO);
+    for _ in 0..3 {
+        sync.round(&mut owner.service, 0).await.expect("a round");
+        grantee_sync
+            .round(&mut grantee.service, 0)
+            .await
+            .expect("a round");
+    }
+    assert!(grantee_folder.path(&format!("Pay/{MARKER}")).exists());
+    for i in 0..10 {
+        folder.write(&format!("Pay/{i}.md"), format!("# {i}\n").as_bytes());
+        sync.round(&mut owner.service, 0).await.expect("a round");
+        sync.round(&mut owner.service, 0).await.expect("a round");
+        server.store.maintain().await.expect("a pass");
+    }
+
+    grantee_sync.kill_after_page();
+    let killed = grantee_sync.pull(&mut grantee.service, 0).await;
+    assert!(killed.is_err(), "the kill: {killed:?}");
+    assert!(
+        grantee_folder
+            .files()
+            .keys()
+            .any(|p| p.ends_with(".md") && p.starts_with("Pay/")),
+        "a bucket reached disk"
+    );
+
+    drop(grantee_sync);
+    grantee_folder.write("Open.md", b"# Open\n");
+    grantee_folder.write("Pay/Mine.md", b"# Mine\n");
+    let mut grantee_sync = WorkspaceSync::open(
+        grantee_folder.engine.clone(),
+        grantee.credentials.clone(),
+        grantee.secrets(),
+        &grantee_folder.registry,
+    )
+    .expect("the journal opens");
+    for _ in 0..4 {
+        grantee_sync
+            .round(&mut grantee.service, 0)
+            .await
+            .expect("a round");
+        sync.round(&mut owner.service, 0).await.expect("a round");
+    }
+    assert_eq!(grantee_folder.files(), folder.files());
+    let names = folder
+        .files()
+        .keys()
+        .filter(|p| !p.contains(MARKER))
+        .count();
+    assert_eq!(names, 13, "ten paid, the plan, and two of yours");
+    assert_eq!(grantee_sync.status().conflicts, 0);
+    assert_eq!(sync.status().conflicts, 0);
+    assert_eq!(grantee_sync.status().pending, 0);
 }
 
 /// A download that hasn't reached the server signs nothing for the files
