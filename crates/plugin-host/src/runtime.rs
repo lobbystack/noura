@@ -5,7 +5,7 @@
 
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use wasmtime::component::Component;
 use wasmtime::{Config, Engine, ResourceLimiter, Trap};
@@ -269,8 +269,17 @@ impl EpochTicker {
         let thread = std::thread::Builder::new()
             .name("plugin-epochs".into())
             .spawn(move || {
+                // A busy machine can wake this thread late, so each pass
+                // catches up: a tick stands for 10 ms of real time, which
+                // deadlines count on.
+                let started = Instant::now();
+                let mut ticks = 0;
                 while let Err(RecvTimeoutError::Timeout) = stopped.recv_timeout(EPOCH_TICK) {
-                    engine.increment_epoch();
+                    let due = started.elapsed().as_nanos() / EPOCH_TICK.as_nanos();
+                    while ticks < due {
+                        engine.increment_epoch();
+                        ticks += 1;
+                    }
                 }
             })?;
         Ok(Self {
