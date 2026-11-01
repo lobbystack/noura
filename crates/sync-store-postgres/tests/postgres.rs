@@ -4,8 +4,9 @@
 //! commit in parallel while a policy change waits; the policy lock writes
 //! no row; no push holds or waits for the notification lock, or for a
 //! connection that does; a push reads the state a policy change it waited
-//! for left, whatever the database's default isolation; and a pull waiting
-//! on one instance wakes when another commits, and only then.
+//! for left, whatever the database's default isolation; a pull waiting on
+//! one instance wakes when another commits, and only then; and a push of a
+//! new record looks up no position in `operations`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -161,6 +162,58 @@ async fn queued_pushes_into_one_domain_commit_together_with_a_savepoint_each() {
     );
     let page = world.pull(0, 0).await;
     assert_eq!(page.head, 2 + 12 * 10, "the good records and no failed one");
+}
+
+/// A record above its device's chain head can't be a retry, so its push
+/// looks nothing up by position. Until ANALYZE first reaches `operations`,
+/// the planner costs every index on its workspace and domain alike and may
+/// serve that lookup from a narrower one than `operations_by_position`,
+/// which walks the domain's whole log under its head row on each push. The
+/// scan counters show the lookup whichever plan the database picked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_new_record_looks_up_no_position() {
+    const PUSHES: i64 = 4;
+    let (store, database) = open().await;
+    let world = World::new(store, 1).await;
+    let mut previous = Digest::ZERO;
+    for counter in 1..=PUSHES as u64 {
+        let op = world.op(0, |op| {
+            op.counter = counter;
+            op.previous = previous;
+        });
+        world
+            .push(0, std::slice::from_ref(&op))
+            .await
+            .expect("pushed");
+        previous = op.digest();
+    }
+    // A backend hands in its counters as it exits.
+    world.store.backend().close().await;
+    let mut connection = PgConnection::connect(&database.url)
+        .await
+        .expect("connected");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let (inserted, scans): (i64, i64) = sqlx::query_as(
+            "SELECT t.n_tup_ins, COALESCE(SUM(i.idx_scan), 0)::bigint
+             FROM pg_stat_user_tables t
+             LEFT JOIN pg_stat_user_indexes i ON i.relid = t.relid
+               AND i.indexrelname <> 'operations_by_rid'
+             WHERE t.relname = 'operations' GROUP BY t.n_tup_ins",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .expect("the counters");
+        if inserted == PUSHES {
+            assert_eq!(scans, 0, "a push read `operations` by position");
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{inserted} inserts counted of {PUSHES}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 /// Runs `push` and `other` at once and returns how long both took.

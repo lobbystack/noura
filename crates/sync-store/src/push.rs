@@ -594,10 +594,16 @@ async fn apply(
     // A retried upload gets its original receipt; another record at the
     // same position conflicts.
     let head = txn.chain_head(workspace, domain, op.device).await?;
-    if let Some((seq, digest)) = txn
-        .position(workspace, domain, op.device, op.counter)
-        .await?
-    {
+    // Every operation sets its device's head as it commits, so the store
+    // can hold one at this position only at or below the head.
+    let held = match head {
+        Some(head) if op.counter <= head.counter => {
+            txn.position(workspace, domain, op.device, op.counter)
+                .await?
+        }
+        _ => None,
+    };
+    if let Some((seq, digest)) = held {
         if digest == pushed.digest {
             return Ok(Receipt {
                 record_digest: digest,
