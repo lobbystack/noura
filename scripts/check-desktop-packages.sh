@@ -32,25 +32,34 @@ find_one() {
 time_limit=(timeout 180)
 command -v timeout > /dev/null || time_limit=(perl -e 'alarm 180; exec @ARGV')
 
-# Windows: a process stopped before main, as by a missing-DLL dialog, ignores
-# bash's timeout and holds the step open, so PowerShell runs it and says what
-# it was doing.
+# Windows: the launch has hung past every limit that waits on the process or
+# on a pipe it holds, so it runs in the background, writes to a file, and this
+# only polls. A hang gets a report and never waits for the process to end.
 launch_on_windows() {
-  local output
+  local output seconds=0
   output="$(mktemp)"
-  powershell -NoProfile -Command "
-    \$p = Start-Process -FilePath '$(cygpath -w "$1")' -ArgumentList '--smoke' -PassThru \`
-      -RedirectStandardOutput '$(cygpath -w "$output")'
-    \$null = \$p.Handle
-    if (\$p.WaitForExit(150000)) { exit \$p.ExitCode }
-    Write-Output \"Still running: window '\$(\$p.MainWindowTitle)', \$(\$p.Threads.Count) threads.\"
-    \$p.Modules | ForEach-Object { \$_.ModuleName } | Select-Object -Last 12
-    Stop-Process -Id \$p.Id -Force
-    exit 1
-  "
-  local status=$?
+  "$1" --smoke > "$output" 2>&1 < /dev/null &
+  local pid=$!
+  while [ "$seconds" -lt 150 ]; do
+    if ! kill -0 "$pid" 2> /dev/null; then
+      wait "$pid"
+      local status=$?
+      cat "$output"
+      return "$status"
+    fi
+    sleep 1
+    seconds=$((seconds + 1))
+  done
+  echo "Still running after $seconds seconds."
   cat "$output"
-  return "$status"
+  powershell -NoProfile -Command "
+    Get-Process noura -ErrorAction SilentlyContinue | ForEach-Object {
+      'Process {0}: responding {1}, window [{2}], {3} threads' -f \$_.Id, \$_.Responding, \$_.MainWindowTitle, \$_.Threads.Count
+      \$_.Modules | ForEach-Object { \$_.ModuleName } | Select-Object -Last 15
+    }
+  " < /dev/null
+  taskkill //F //T //IM noura.exe < /dev/null > /dev/null 2>&1 || true
+  return 1
 }
 
 launch() {
@@ -62,7 +71,7 @@ launch() {
 
 print_app_logs() {
   local log
-  find "${LOCALAPPDATA:-$HOME}" -iname '*noura*.log*' -type f 2> /dev/null | while read -r log; do
+  find "${LOCALAPPDATA:-$HOME}/noura" -iname 'noura.log*' -type f 2> /dev/null | while read -r log; do
     echo "--- $log"
     tail -n 60 "$log"
   done
