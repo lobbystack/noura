@@ -186,10 +186,12 @@ impl WorkspaceEngine {
             );
             match self.recover_chat_mutation(&path, &relative) {
                 Ok(()) => {
-                    let _ = self.clear_chat_mutation_intent(&path, "chat_mutation_recover");
                     // The index never recorded the files the change wrote,
                     // so the next look at the index walks the workspace.
+                    // Marked before the intent goes, so a reader that finds
+                    // no intent finds the mark.
                     self.dirty.store(true, Ordering::SeqCst);
+                    let _ = self.clear_chat_mutation_intent(&path, "chat_mutation_recover");
                 }
                 // Reading a file that lives only in the cloud would start a
                 // download and block. The intent waits until it downloads.

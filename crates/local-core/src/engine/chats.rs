@@ -372,6 +372,19 @@ impl WorkspaceEngine {
     }
 
     pub fn recover_interrupted_chat(&self, id: &str) -> Result<ChatRead> {
+        let read = self.read_chat(id)?;
+        if !read
+            .messages
+            .iter()
+            .any(|message| message.status == ChatMessageStatus::InProgress)
+        {
+            return Ok(read);
+        }
+        // What this writes lasts, and an index behind the files would call
+        // a tool call interrupted beside its result. Another thread's walk
+        // can leave the index behind with nothing marked stale, so walk
+        // here. The walk takes the write lock, so it comes before it.
+        self.reconcile()?;
         let mut read = self.read_chat(id)?;
         let completed_tool_results = read
             .messages

@@ -8,8 +8,8 @@ use local_core::{
     ManagedConflictResolveInput, ManagedDraftInput, ManagedDraftResult, ManifestUpdateInput,
     MarkdownLinkTarget, ObjectFilter, ObjectPatch, ParseStatus, ParsedMarkdown, PropertyValue,
     RawConflictResolveInput, RawRestoreInput, RawSaveInput, RawSaveResult, RenameChatInput,
-    SearchInput, WORKSPACE_MANIFEST_PATH, WorkspaceEngine, WorkspaceEntryKind, WorkspaceManifest,
-    new_object_id, parse_markdown,
+    SearchInput, WORKSPACE_MANIFEST_PATH, WatchFault, WorkspaceEngine, WorkspaceEntryKind,
+    WorkspaceManifest, new_object_id, parse_markdown,
 };
 use tempfile::tempdir;
 
@@ -727,6 +727,68 @@ fn chat_recovery_interrupts_tool_calls_without_matching_durable_results() {
             .unwrap()
             .status,
         ChatMessageStatus::Interrupted
+    );
+}
+
+#[test]
+fn chat_recovery_completes_a_tool_call_whose_result_the_index_has_not_seen() {
+    let (workspace, _app_data, engine) = engine();
+    // No watcher report marks the index stale, as while another thread's
+    // walk or replay has yet to reach the result.
+    engine.force_watch_fault(WatchFault::Silent);
+    let chat = engine
+        .create_chat(CreateChatInput {
+            title: "Unindexed result".into(),
+            retention: None,
+            retention_days: None,
+        })
+        .unwrap();
+    let tool_call = engine
+        .begin_chat_tool_call(BeginChatToolCallInput {
+            chat_id: chat.value.id.clone(),
+            run_id: "run_recovery".into(),
+            tool_call_id: "call_recovery".into(),
+            tool_name: "workspace.search".into(),
+            content: r#"{"query":"status"}"#.into(),
+            expected_chat_revision: chat.revision,
+        })
+        .unwrap();
+    let after_call = engine.read_chat(&chat.value.id).unwrap();
+    let tool_result = engine
+        .append_chat_tool_result(AppendChatToolResultInput {
+            chat_id: chat.value.id.clone(),
+            run_id: "run_recovery".into(),
+            tool_call_id: "call_recovery".into(),
+            tool_name: "workspace.search".into(),
+            content: r#"{"matches":1}"#.into(),
+            expected_chat_revision: after_call.chat.revision,
+        })
+        .unwrap();
+    let path = workspace.path().join(&tool_result.value.relative_path);
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    engine.reconcile().unwrap();
+    std::fs::write(&path, bytes).unwrap();
+    let stale = engine.read_chat(&chat.value.id).unwrap();
+    assert!(
+        !stale
+            .messages
+            .iter()
+            .any(|message| message.id == tool_result.value.id)
+    );
+
+    let recovered = engine.recover_interrupted_chat(&chat.value.id).unwrap();
+    let recovered_call = recovered
+        .messages
+        .iter()
+        .find(|message| message.id == tool_call.value.id)
+        .unwrap();
+    assert_eq!(recovered_call.status, ChatMessageStatus::Completed);
+    assert!(
+        recovered
+            .messages
+            .iter()
+            .any(|message| message.id == tool_result.value.id)
     );
 }
 
