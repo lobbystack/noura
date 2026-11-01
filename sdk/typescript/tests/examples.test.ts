@@ -205,7 +205,7 @@ describe('each page’s example', () => {
 			const ran = spawnSync(process.execPath, [vitest, 'run'], {
 				cwd: project,
 				encoding: 'utf8',
-				env,
+				env: { ...env, NO_COLOR: '1', FORCE_COLOR: '0' },
 			});
 			expect(ran.status, ran.stdout + ran.stderr).toBe(0);
 			expect(ran.stdout).toMatch(/Tests +\d+ passed/);
