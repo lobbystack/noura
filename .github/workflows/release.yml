@@ -215,6 +215,9 @@ jobs:
           xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" --wait
           xcrun stapler staple "$dmg"
+      - name: Check that Gatekeeper accepts the disk image and the app
+        if: runner.os == 'macOS' && env.APPLE_ID != ''
+        run: scripts/check-notarization.sh target/universal-apple-darwin/release/*.dmg
       # A package that lacks a plugin or won't start never reaches the draft.
       - name: Install each package and launch it
         shell: bash
