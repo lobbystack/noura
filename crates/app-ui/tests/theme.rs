@@ -30,6 +30,29 @@ fn the_window_follows_the_system_appearance() {
     }
 }
 
+/// Tailwind's scale, as the legacy app uses it: 12, 14 and 16 px text, and
+/// a 4 px spacing unit.
+#[test]
+fn the_type_scale_and_spacing_keep_the_legacy_values() {
+    let app_data = tempfile::tempdir().unwrap();
+    let harness = harness(app_data.path(), FakePicker::default());
+    let style = harness.ctx.global_style();
+
+    let size = |text: egui::TextStyle| style.text_styles[&text].size;
+    assert_eq!(size(egui::TextStyle::Small), 12.0);
+    assert_eq!(size(egui::TextStyle::Body), 14.0);
+    assert_eq!(size(egui::TextStyle::Button), 14.0);
+    assert_eq!(size(egui::TextStyle::Heading), 16.0);
+
+    let spacing = &style.spacing;
+    assert_eq!(spacing.item_spacing, egui::vec2(8.0, 8.0));
+    assert_eq!(spacing.button_padding, egui::vec2(12.0, 6.0));
+    assert_eq!(spacing.interact_size, egui::vec2(32.0, 32.0));
+    assert_eq!(spacing.window_margin, egui::Margin::same(16));
+    assert_eq!(spacing.menu_margin, egui::Margin::same(4));
+    assert_eq!(spacing.indent, 12.0);
+}
+
 /// Noura's own background sits behind a note, so the editor's code colors
 /// must read on that.
 #[test]
