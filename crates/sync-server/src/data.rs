@@ -62,6 +62,7 @@ fn write_secret(data: &Path, secret: &SecretKey) -> Result<(), CommandError> {
 /// Writes a new secret file at `path`, readable by its owner alone,
 /// durably, and never over an existing file.
 pub(crate) fn write_secret_at(path: &Path, secret: &SecretKey) -> Result<(), CommandError> {
+    #[cfg(unix)]
     let data = crate::restore::directory_of(path);
     let mut partial = path.as_os_str().to_owned();
     partial.push(".partial");
