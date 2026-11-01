@@ -40,21 +40,7 @@ zeroize.workspace = true
 [dev-dependencies]
 # The tests hold the PDF threads to watch the window draw meanwhile.
 app-core = { version = "0.2.0", path = "../app-core", features = ["test-hooks"] }
-# Two windows edit one note over the real sync server, with app-core's sync
-# test support and what it needs.
-axum = { workspace = true, features = ["ws"] }
 egui_kittest.workspace = true
-local-core = { version = "0.2.0", path = "../local-core" }
-reqwest.workspace = true
-sync-key-envelope = { version = "0.2.0", path = "../sync-key-envelope" }
-sync-protocol = { version = "0.2.0", path = "../sync-protocol" }
-sync-server = { version = "0.2.0", path = "../sync-server" }
-sync-store = { version = "0.2.0", path = "../sync-store", features = ["conformance"] }
-sync-store-postgres = { version = "0.2.0", path = "../sync-store-postgres", features = ["testing"] }
-sync-store-sqlite = { version = "0.2.0", path = "../sync-store-sqlite" }
-tokio.workspace = true
-tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect"] }
-zeroize.workspace = true
 # The fake AI provider streams an answer, then waits.
 futures.workspace = true
 # A test breaks the index to see search say it isn't available.

@@ -42,7 +42,7 @@ fn a_plugin_built_against_0_1_0_runs_in_a_host_that_serves_a_later_version() {
 
     // And finds the plugin's export the way the host does, by its own name.
     let view = component
-        .get_export_index(None, &format!("noura:plugin/view@{LATER}"))
+        .get_export_index(None, format!("noura:plugin/view@{LATER}"))
         .expect("the older export answers to the later name");
     let render = component
         .get_export_index(Some(&view), "render")

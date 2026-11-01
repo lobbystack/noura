@@ -3,6 +3,7 @@
 //! and these tests type, select and share through AccessKit, then read the
 //! other desktop's editor and file, or open the link as a browser would.
 
+#[path = "../../app-ui/tests/support/mod.rs"]
 mod support;
 
 #[path = "../../app-core/tests/sync_support/mod.rs"]
