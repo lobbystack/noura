@@ -29,5 +29,9 @@
 		"semver": "7.8.5",
 		"typescript": "7.0.2",
 		"vitest": "5.0.5"
+	},
+	"overrides": {
+		"glob": "^14.0.3",
+		"minimatch": "^11.0.3"
 	}
 }
