@@ -1,7 +1,7 @@
 //! Two desktops as people use them (sync-v2.md §22, §23, §24): each runs
 //! the window, the real editor and `LiveAccount` against the real server,
 //! and these tests type, select and share through AccessKit, then read the
-//! other desktop's editor and file.
+//! other desktop's editor and file, or open the link as a browser would.
 
 mod support;
 
@@ -15,13 +15,17 @@ use std::time::{Duration, Instant};
 use app_core::account::live::{ACCOUNT_FILE, LiveAccount};
 use app_core::account::{AccountBackend, AccountPhase};
 use app_core::folder_sync::{FolderSyncBackend, FolderSyncPhase};
+use app_core::shares::{ShareBackend, ShareScreen};
 use app_core::sync::Secrets;
 use app_core::sync::account_heads::KEPT_HEADS_FILE;
 use app_core::sync::device::StoredDevice;
-use app_core::{App, Platform};
+use app_core::{App, Platform, command_id};
 use egui::accesskit::Role;
 use egui_kittest::{Harness, kittest::Queryable};
 use support::harness_for;
+use sync_protocol::codec::{Decode, Encode};
+use sync_protocol::messages::ShareBody;
+use sync_protocol::records::{open_share, parse_share_fragment};
 use sync_store_sqlite::SqliteBackend;
 use sync_support::{Line, MemorySecrets, Pair, Server};
 
@@ -216,6 +220,79 @@ fn desks(pair: Pair<SqliteBackend>, laptop_base: &str) -> Desks {
     }
 }
 
+/// What a browser with no account reads at `url`: the snapshot's version,
+/// title and Markdown, opened with the keys in the fragment, or the HTTP
+/// status when nothing opens.
+async fn browser(url: &str) -> Result<(u64, String, String), u16> {
+    let (address, fragment) = url.split_once('#').expect("a fragment");
+    let (origin, token) = address.split_once("/s/").expect("a share path");
+    let response = reqwest::get(format!("{origin}/v2/shares/{token}"))
+        .await
+        .expect("the server answers");
+    if !response.status().is_success() {
+        return Err(response.status().as_u16());
+    }
+    let body = ShareBody::from_bytes(&response.bytes().await.unwrap()).expect("a share body");
+    let (link_key, verify_key) = parse_share_fragment(fragment).expect("the fragment");
+    let (share, payload) =
+        open_share(&body.share.0.to_bytes(), &link_key, &verify_key).expect("it opens");
+    Ok((
+        share.body.snapshot_revision,
+        payload.title.0,
+        String::from_utf8(payload.markdown.0).expect("UTF-8"),
+    ))
+}
+
+impl Computer {
+    /// Draws until the window puts a link on the clipboard.
+    fn copied_link(&mut self) -> String {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            self.harness.step();
+            let copied = self
+                .harness
+                .output()
+                .platform_output
+                .commands
+                .iter()
+                .find_map(|command| match command {
+                    egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                    _ => None,
+                });
+            if let Some(link) = copied {
+                return link;
+            }
+            let problem = ShareBackend::screen(&*self.account);
+            assert!(Instant::now() < deadline, "no link came: {problem:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Runs Share Link… from the menu, and waits for the dialog's lists.
+    fn share_dialog(&mut self) {
+        self.harness
+            .state_mut()
+            .run_menu_command(command_id::SHARE_LINK, Instant::now());
+        self.dialog_until("the dialog opens", |screen| {
+            screen.open && !screen.busy && screen.unavailable.is_none()
+        });
+    }
+
+    fn dialog_until(&mut self, what: &str, done: impl Fn(&ShareScreen) -> bool) {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            self.harness.step();
+            let screen = ShareBackend::screen(&*self.account);
+            if done(&screen) {
+                self.harness.run_steps(2);
+                return;
+            }
+            assert!(Instant::now() < deadline, "{what}: {screen:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
 /// Puts `one`'s note into its document with a first word. A note whose
 /// file holds an edit that sync hasn't captured waits, so a later edit
 /// asks again on `one`.
@@ -243,6 +320,67 @@ fn both_in_their_documents(a: &mut Computer, b: &mut Computer) {
     until(a, b, "the desktop's words arrive", |a, _| {
         a.file("Plan.md").contains("Ben ") && a.shown().contains("Ben ")
     });
+}
+
+#[test]
+fn the_share_dialog_creates_updates_and_revokes_a_link_a_browser_opens() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let pair = runtime.block_on(sync_support::pair());
+    let base = pair.server.base.clone();
+    let mut desks = desks(pair, &base);
+    let a = &mut desks.laptop;
+
+    a.share_dialog();
+    a.harness.get_by_label("Share \u{201c}Plan\u{201d}");
+    a.harness
+        .get_by_role_and_label(Role::Button, "Create and copy link")
+        .click();
+    let link = a.copied_link();
+    assert!(link.starts_with(&format!("{base}/s/")), "{link}");
+    assert_eq!(
+        runtime.block_on(browser(&link)),
+        Ok((1, "Plan".to_owned(), "# Plan\n".to_owned()))
+    );
+    a.dialog_until("the link shows", |screen| {
+        screen.links.len() == 1 && screen.workspace_links.len() == 1
+    });
+
+    // Copy hands back the same link.
+    a.harness
+        .get_by_role_and_label(Role::Button, "Copy")
+        .click();
+    assert_eq!(a.copied_link(), link);
+
+    // Update carries the note as it stands now.
+    a.dialog_until("the dialog settles", |screen| !screen.busy);
+    a.harness
+        .get_by_role_and_label(Role::Button, "Done")
+        .click();
+    a.harness.run_steps(3);
+    a.typing("Ana ");
+    a.share_dialog();
+    a.dialog_until("the link shows again", |screen| screen.links.len() == 1);
+    a.harness
+        .get_by_role_and_label(Role::Button, "Update")
+        .click();
+    a.dialog_until("the link updates", |screen| {
+        screen.links.first().is_some_and(|link| link.revision == 2)
+    });
+    assert_eq!(
+        runtime.block_on(browser(&link)),
+        Ok((2, "Plan".to_owned(), "Ana # Plan\n".to_owned()))
+    );
+
+    // Revoke ends it for everyone, and the dialog lists nothing.
+    a.harness
+        .get_all_by_role_and_label(Role::Button, "Revoke")
+        .next()
+        .expect("a Revoke button")
+        .click();
+    a.dialog_until("the link goes", |screen| {
+        screen.links.is_empty() && screen.workspace_links.is_empty()
+    });
+    assert_eq!(runtime.block_on(browser(&link)), Err(404));
 }
 
 #[test]
