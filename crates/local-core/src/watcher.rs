@@ -9,7 +9,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::event::{AccessKind, AccessMode};
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::{CoreError, ErrorCategory, Result};
 
@@ -76,6 +77,9 @@ impl WatchCoordinator {
                     LOSE_AND_REPORT => return flag.store(true, Ordering::SeqCst),
                     LOSE_SILENTLY => return,
                     _ => {}
+                }
+                if event.as_ref().is_ok_and(only_read) {
+                    return;
                 }
                 // A rescan request is noticed when the poller drains it.
                 match &event {
@@ -221,10 +225,15 @@ impl WatchCoordinator {
     }
 }
 
+/// Whether `event` only says something opened or read a file. Linux reports
+/// each open, and treating Noura's own reads as changes would rescan forever.
+fn only_read(event: &Event) -> bool {
+    matches!(event.kind, EventKind::Access(access) if access != AccessKind::Close(AccessMode::Write))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notify::EventKind;
     use tempfile::tempdir;
 
     #[test]
@@ -244,6 +253,35 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn reading_a_file_is_no_change() {
+        let root = tempdir().unwrap();
+        let file = root.path().join("Note.md");
+        std::fs::write(&file, "text").unwrap();
+        let watcher = WatchCoordinator::new(root.path(), |_| {});
+        // The write's own events may arrive after the watcher starts.
+        watcher.drain_coalesced(Duration::from_millis(300)).unwrap();
+
+        std::fs::read(&file).unwrap();
+
+        assert!(
+            watcher
+                .drain_coalesced(Duration::from_millis(300))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn only_reads_are_left_out_and_a_finished_write_stays() {
+        let event = |access| Event::new(EventKind::Access(access));
+        assert!(only_read(&event(AccessKind::Open(AccessMode::Any))));
+        assert!(only_read(&event(AccessKind::Read)));
+        assert!(only_read(&event(AccessKind::Close(AccessMode::Read))));
+        assert!(!only_read(&event(AccessKind::Close(AccessMode::Write))));
+        assert!(!only_read(&Event::new(EventKind::Any)));
     }
 
     #[test]
