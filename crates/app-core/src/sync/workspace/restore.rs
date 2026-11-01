@@ -945,6 +945,7 @@ impl WorkspaceSync {
             log.checkpoints.forget_above(covered);
         }
         self.state.log = log;
+        self.drop_page_note()?;
         for outgoing in std::mem::take(&mut self.state.outbox) {
             if let Some(blob) = outgoing.upload {
                 self.journal.forget(&super::state::upload_path(&blob.blob));

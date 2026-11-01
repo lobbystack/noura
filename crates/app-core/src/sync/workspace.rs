@@ -1995,6 +1995,10 @@ impl WorkspaceSync {
                 }
                 Change::Create(found) => {
                     if waiting_for_page {
+                        skipped.push(Skipped {
+                            path: found.file.relative_path.clone(),
+                            why: SkipWhy::WaitsForPage,
+                        });
                         continue;
                     }
                     if !self.may_write(domain_of(&found.file.relative_path, &self.state.roots)) {
@@ -4259,6 +4263,16 @@ impl WorkspaceSync {
         let domain = self.state.domain;
         if self.applying.get(&domain).is_some_and(|t| *t <= cursor) {
             self.applying.remove(&domain);
+            self.journal.write(journal::APPLYING_FILE, &self.applying)?;
+        }
+        Ok(())
+    }
+
+    /// Clears the note of [`Self::open_page`] when the domain's log starts
+    /// again: the restored log may never reach the sequence it named, and
+    /// the rewind matches the files that page left.
+    fn drop_page_note(&mut self) -> Result<(), SyncError> {
+        if self.applying.remove(&self.state.domain).is_some() {
             self.journal.write(journal::APPLYING_FILE, &self.applying)?;
         }
         Ok(())

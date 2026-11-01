@@ -354,6 +354,7 @@ pub fn skipped_line(skipped: &crate::sync::workspace::Skipped) -> String {
         SkipWhy::HeldRoot => "it waits until you confirm who may see this folder",
         SkipWhy::CrossesRoot => "it moved into or out of a restricted folder",
         SkipWhy::CantWrite => "your role can't edit here, so your change stays on this computer",
+        SkipWhy::WaitsForPage => "it waits until Noura finishes bringing in changes",
     };
     let path = if skipped.path.is_empty() {
         "The workspace folder"

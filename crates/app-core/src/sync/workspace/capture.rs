@@ -42,6 +42,9 @@ pub enum SkipWhy {
     /// This device can't write there, so the change stays in the file
     /// until it can (§14).
     CantWrite,
+    /// A page or a bootstrap hasn't finished, and it may have written this
+    /// file itself (§15).
+    WaitsForPage,
 }
 
 /// A file sync leaves out.

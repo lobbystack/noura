@@ -61,6 +61,62 @@ async fn a_restore_that_lost_only_content_writes_it_again() {
     link.revoked_again(&mut pair).await;
 }
 
+/// A page a kill cut short named a sequence the restored log never reaches
+/// again. Its note ends with the rewind, so new files go out in a quiet
+/// workspace, and the files that page left upload as the only copies.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rewind_ends_the_note_of_a_page_above_the_restored_head() {
+    let mut pair = pair().await;
+    let workspace = pair.sync_a.workspace();
+    let mut third = approve(
+        &pair.server,
+        &mut pair.laptop,
+        std::slice::from_mut(pair.sync_a.remote_mut().expect("connected")),
+    )
+    .await;
+    let mut remote = third
+        .service
+        .open_workspace(workspace)
+        .await
+        .expect("opens");
+    third
+        .service
+        .push_file(&mut remote, "Third.md", b"# Third\n")
+        .await
+        .expect("written");
+    rounds(&mut pair).await;
+    let copy = pair.server.backup("before.sqlite3").await;
+
+    for i in 0..4 {
+        third
+            .service
+            .push_file(&mut remote, &format!("Gone {i}.md"), b"# Gone\n")
+            .await
+            .expect("written");
+    }
+    pair.sync_b.kill_after_page();
+    let killed = pair.sync_b.pull(&mut pair.desktop.service, 0).await;
+    assert!(killed.is_err(), "the kill: {killed:?}");
+    pair.sync_b = app_core::sync::workspace::WorkspaceSync::open(
+        pair.b.engine.clone(),
+        pair.desktop.credentials.clone(),
+        pair.desktop.secrets(),
+        &pair.b.registry,
+    )
+    .expect("the journal opens");
+
+    let restored = pair.server.put_back(&copy, true).await;
+    reconnect(&mut pair, &restored.base).await;
+    rounds(&mut pair).await;
+    pair.b.write("Mine.md", b"# Mine\n");
+    rounds(&mut pair).await;
+    rounds(&mut pair).await;
+
+    assert_eq!(pair.a.files()["Mine.md"], b"# Mine\n");
+    assert_eq!(pair.a.files()["Gone 3.md"], b"# Gone\n");
+    assert_eq!(pair.a.files(), pair.b.files());
+}
+
 /// The backup keeps a removal but not the checkpoint that followed it. The
 /// removal makes a checkpoint due again after the restore, and a rewound
 /// writer signs it, at the removed device's final head (§14, §17).

@@ -8,8 +8,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
 use app_core::sync::invitations::InvitationBook;
-use app_core::sync::workspace::WorkspaceSync;
 use app_core::sync::workspace::text::Entered;
+use app_core::sync::workspace::{SkipWhy, WorkspaceSync};
 use editor_core::text_mode::{CollabDocument, Utf16Splice};
 use sync_protocol::matching::MARKER;
 use sync_protocol::records::{Access, Level, Role};
@@ -113,8 +113,17 @@ async fn a_kill_in_a_page_uploads_no_applied_file_as_new() {
     assert_eq!(pair.b.files()["New.md"], b"# New\n");
 
     pair.sync_b = reopened(&pair);
-    // A local file that arrived meanwhile waits no longer than the page.
+    // A local file that arrived meanwhile waits no longer than the page,
+    // and the list of skipped files says so.
     pair.b.write("Mine.md", b"# Mine\n");
+    pair.sync_b.capture().expect("a capture");
+    assert!(
+        pair.sync_b
+            .status()
+            .skipped
+            .iter()
+            .any(|s| s.path == "Mine.md" && s.why == SkipWhy::WaitsForPage),
+    );
     rounds(&mut pair).await;
     let names: Vec<String> = pair.a.files().keys().cloned().collect();
     assert_eq!(names, ["Another.md", "Mine.md", "New.md", "Plan.md"]);
@@ -122,6 +131,7 @@ async fn a_kill_in_a_page_uploads_no_applied_file_as_new() {
     assert_eq!(pair.sync_a.status().conflicts, 0);
     assert_eq!(pair.sync_b.status().conflicts, 0);
     assert_eq!(pair.sync_a.status().pending, 0);
+    assert!(pair.sync_b.status().skipped.is_empty());
 }
 
 /// The same kill in the bootstrap of a device the floor passed: the files
