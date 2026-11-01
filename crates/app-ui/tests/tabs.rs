@@ -289,3 +289,77 @@ fn moving_a_file_to_the_trash_from_its_row_menu_closes_its_tab() {
     assert_eq!(tabs(&harness), ["Alpha", "Gamma (preview)"]);
     assert_eq!(selected(&harness).as_deref(), Some("Gamma (preview)"));
 }
+
+/// At a normal window width, tabs past the window's edge scroll sideways
+/// with the mouse wheel, inside the title bar row, with no scrollbar.
+#[test]
+fn tabs_fit_the_title_bar_row_with_no_scrollbar_and_still_scroll() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    create_workspace(app_data.path(), "Garden", &folder);
+    let names: Vec<String> = (1..=12).map(|n| format!("A long note name {n}")).collect();
+    for name in &names {
+        std::fs::write(folder.join(format!("{name}.md")), b"x").unwrap();
+    }
+    let mut harness = harness_registering(app_data.path(), FakePicker::default(), |_| {});
+    settle(&mut harness);
+    harness.set_size(egui::vec2(1100.0, 750.0));
+    harness.run();
+    for name in &names {
+        harness.state_mut().app_mut().open_file(
+            &format!("{name}.md"),
+            app_core::OpenAs::Kept,
+        );
+    }
+    harness.state_mut().app_mut().open_page(app_core::INBOX_PAGE, app_core::OpenAs::Kept);
+    harness.run();
+
+    let tab_rect = |harness: &Ui, name: &str| harness.get_by_role_and_label(Role::Tab, name).rect();
+    let first = tab_rect(&harness, &names[0]);
+    let last = tab_rect(&harness, "Inbox");
+    // The row starts where the window's content does, here the harness's
+    // margin, and no scrollbar takes room from its 40 points.
+    let row_top = harness
+        .get_by_role_and_label(Role::Splitter, "Resize panel")
+        .rect()
+        .top();
+    assert!(first.top() > row_top, "{first:?} under {row_top}");
+    assert!(first.bottom() < row_top + 40.0, "{first:?} under {row_top}");
+    assert!(
+        (first.center().y - (row_top + 20.0)).abs() <= 1.0,
+        "{first:?} under {row_top}"
+    );
+    assert!(
+        first.left() < 0.0 || last.right() > 1100.0,
+        "the tabs should run past the window: {first:?} {last:?}"
+    );
+
+    let wheel = |harness: &mut Ui, delta: f32| {
+        harness.hover_at(egui::pos2(600.0, 28.0));
+        harness.run();
+        for _ in 0..8 {
+            harness.event(Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, delta),
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
+                modifiers: Modifiers::NONE,
+            });
+            harness.step();
+        }
+        harness.run();
+    };
+
+    // The Inbox opened last, so the bar may sit anywhere; scroll to its
+    // start, then down moves the tabs left.
+    wheel(&mut harness, 300.0);
+    let start = tab_rect(&harness, &names[0]).left();
+    wheel(&mut harness, -300.0);
+    let moved = tab_rect(&harness, &names[0]).left();
+    assert!(moved < start - 200.0, "the wheel moved {start} to {moved}");
+    assert!(
+        tab_rect(&harness, "Inbox").right() <= 1100.0,
+        "the wheel reaches the last tab"
+    );
+}

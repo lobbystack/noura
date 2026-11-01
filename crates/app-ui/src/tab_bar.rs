@@ -151,6 +151,9 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TabBarView) {
         .accessibility_role(Role::TabList)
         .accessibility_label("Tabs");
     ui.scope_builder(builder, |ui| {
+        // A mouse wheel moves the tabs sideways, as the bar scrolls no
+        // other way.
+        ui.style_mut().always_scroll_the_only_direction = true;
         ScrollArea::horizontal()
             .id_salt("tab-bar")
             .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
