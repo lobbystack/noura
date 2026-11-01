@@ -266,6 +266,55 @@ fn a_rename_that_fails_keeps_the_field_open_and_says_why() {
     assert_eq!(tasks::text(&app, "rename-problem"), None);
 }
 
+#[test]
+fn mark_as_done_and_mark_as_not_done_write_the_task_and_change_the_menu() {
+    let fixture = workspace();
+    let Some((mut app, _folder)) = tasks_app(&fixture, FakeSystem::new()) else {
+        return;
+    };
+    let path = "tasks/Water the beds.md";
+    let status = |fixture: &Fixture| tasks::property(&fixture.read(path), "status");
+    let body = |fixture: &Fixture| {
+        String::from_utf8(fixture.read(path))
+            .unwrap()
+            .split_once("\n---\n")
+            .unwrap()
+            .1
+            .to_owned()
+    };
+    let before = body(&fixture);
+    assert_eq!(status(&fixture), Some("todo".into()));
+
+    choose(&mut app, "done", A);
+    support::plugins::wait_until(&mut app, "the menu offers Mark as not done", |app| {
+        find(tasks::page(app).root(), &format!("undone:task_{A}")).is_some()
+    });
+    assert_eq!(status(&fixture), Some("done".into()));
+    assert_eq!(body(&fixture), before);
+    assert!(find(tasks::page(&app).root(), &format!("done:task_{A}")).is_none());
+    assert_eq!(
+        tasks::rows(&app)
+            .iter()
+            .find(|row| row.id == format!("task_{A}"))
+            .and_then(|row| row.checked),
+        Some(true)
+    );
+
+    choose(&mut app, "undone", A);
+    support::plugins::wait_until(&mut app, "the menu offers Mark as done", |app| {
+        find(tasks::page(app).root(), &format!("done:task_{A}")).is_some()
+    });
+    assert_eq!(status(&fixture), Some("todo".into()));
+    assert_eq!(body(&fixture), before);
+    assert_eq!(
+        tasks::rows(&app)
+            .iter()
+            .find(|row| row.id == format!("task_{A}"))
+            .and_then(|row| row.checked),
+        Some(false)
+    );
+}
+
 /// Open the task at `path` and type in it, so it has edits that aren't on
 /// disk yet. Returns its tab.
 fn type_unsaved(app: &mut App, path: &str, added: &str) -> app_core::TabId {
