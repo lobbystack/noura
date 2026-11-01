@@ -168,6 +168,7 @@ fn a_project_opens_beside_the_projects_panel_with_its_labeled_sections() {
         ["Planned", "Active", "On hold", "Completed", "Cancelled"]
     );
     panel.get_by_role_and_label(Role::Button, "Add task");
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
     assert_eq!(
         labels(board(&harness).get_all_by_role(Role::List)),
         ["To do", "In progress", "Done", "Cancelled"]
@@ -244,6 +245,7 @@ fn a_cards_menu_moves_it_to_another_column_from_the_keyboard() {
 
     press_with(&mut harness, Modifiers::SHIFT, Key::F10);
 
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
     let menu = harness.get_by_label("Move Water");
     assert_eq!(
         labels(menu.get_all_by_role(Role::Button)),

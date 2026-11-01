@@ -58,6 +58,8 @@ fn harness(app_data: &std::path::Path, sync: Arc<FakeSync>) -> Harness<'static, 
         .with_size([1000.0, 900.0])
         .build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), ui);
     harness.run();
+    // Every screen these tests show opens through here.
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
     harness
 }
 

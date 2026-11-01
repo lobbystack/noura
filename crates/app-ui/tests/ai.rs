@@ -201,6 +201,7 @@ fn the_answer_streams_in_as_markdown_and_stop_ends_it() {
         "the Markdown draws: {shown:?}"
     );
     assert!(shown.contains(&"You".to_owned()));
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
     assert!(shown.contains(&"Local, llama3".to_owned()));
     assert!(
         harness
@@ -246,6 +247,7 @@ fn noura_s_prompt_names_the_provider_starts_on_deny_and_escape_denies() {
     let dialog = harness.get_by_role_and_label(Role::AlertDialog, title);
     dialog.get_by_role_and_label(Role::Button, "Deny");
     dialog.get_by_role_and_label(Role::Button, "Allow");
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
     assert!(
         texts(dialog.query_all(By::new().role(Role::Label))).contains(
             &"Your messages and the chat so far go from Garden to Local, which answers with \
@@ -302,6 +304,7 @@ fn the_provider_form_labels_each_field_and_hides_the_key() {
         .app_mut()
         .open_settings_at("ai-providers");
     run(harness);
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
 
     let local = harness.get_by_role_and_label(Role::Group, "Local");
     assert!(
@@ -566,6 +569,7 @@ fn noura_s_tool_prompt_names_the_tool_its_plugin_and_input_and_escape_denies() {
     };
     let harness = &mut tooled.harness;
     let dialog = harness.get_by_role_and_label(Role::AlertDialog, TOOL_PROMPT);
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
     let shown = texts(dialog.query_all(By::new().role(Role::Label)));
     assert!(
         shown.contains(&"The AI wants to run the tool create from Tasks.".to_owned()),

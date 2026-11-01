@@ -192,6 +192,7 @@ fn the_toolbar_moves_through_pages_and_zooms_from_the_keyboard_and_the_tab_keeps
         shows_page(harness, "Page 1 of 3")
     });
     let tab = active(&harness);
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
     // A kept tab stays open beside the next file you open.
     harness.state_mut().app_mut().keep_tab(tab);
     harness.get_by_role_and_label(Role::Toolbar, "PDF navigation");
@@ -320,6 +321,7 @@ fn the_thumbnails_panel_lists_one_button_per_page_and_opens_the_page_you_pick() 
         .click();
     harness.run_steps(2);
     harness.get_by_label("Page thumbnails");
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
     for number in 1..=3 {
         harness.get_by_role_and_label(Role::Button, &format!("Go to page {number}"));
     }
@@ -362,6 +364,7 @@ fn a_locked_pdf_asks_for_its_password_and_says_when_its_wrong() {
     harness.run_steps(2);
     let field = harness.get_by_role_and_label(Role::PasswordInput, "PDF password");
     assert!(field.is_focused());
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
     field.type_text("sesame");
     harness.key_press(Key::Enter);
     wait_until(
@@ -441,6 +444,7 @@ fn a_pdf_embedded_in_a_note_shows_its_page_and_opens_in_a_tab_at_that_page() {
             .is_some()
     });
     harness.get_by_role_and_label(Role::Image, "text.pdf#page=2");
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
     harness
         .get_by_role_and_label(Role::Button, "Open text.pdf in a tab")
         .click();
@@ -573,6 +577,7 @@ fn an_image_opens_in_a_viewer_labelled_with_its_file_name() {
     });
     let tab = active(&harness);
     assert!(harness.state().app().image(tab).is_some());
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
 }
 
 #[test]

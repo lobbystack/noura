@@ -75,6 +75,7 @@ fn a_note_opens_from_the_tree_in_the_editor_with_its_name_and_properties() {
     open_plan(&mut harness);
 
     harness.get_by_role_and_label(Role::Document, "Note text");
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
     assert_eq!(
         name_field(&harness).accesskit_node().value().as_deref(),
         Some("Plan")
@@ -560,6 +561,7 @@ mod failed_saves {
         );
         dialog.get_by_role_and_label(Role::Button, "Keep editing");
         dialog.get_by_role_and_label(Role::Button, "Discard changes");
+        assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
         assert!(
             dialog
                 .get_by_role_and_label(Role::Button, "Try again")
