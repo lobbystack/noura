@@ -362,6 +362,9 @@ struct Panel {
     drawn: Drawn,
     /// The file revision a draw was asked for that hasn't answered yet.
     requested: Option<String>,
+    /// Something changed since that draw started, so its answer may show
+    /// what came before and the panel draws again after it.
+    outdated: bool,
 }
 
 /// Which revision of an object's file a panel shows.
@@ -375,6 +378,13 @@ enum Drawn {
 }
 
 impl Panel {
+    /// The panel's files may have changed: it draws again the next time it
+    /// shows, and a draw on its way counts for nothing.
+    fn draw_again(&mut self) {
+        self.drawn = Drawn::Nothing;
+        self.outdated = self.requested.is_some();
+    }
+
     /// A panel the plugin hasn't drawn yet, which shows nothing.
     fn empty() -> Self {
         let root = Node {
@@ -386,6 +396,7 @@ impl Panel {
             view: View::from_nodes(vec![root]).map_err(|error| error.to_string()),
             drawn: Drawn::Nothing,
             requested: None,
+            outdated: false,
         }
     }
 
@@ -1571,7 +1582,7 @@ impl Plugins {
             self.acts += 1;
             // What it did may change any of its panels.
             for panel in running.panels.values_mut() {
-                panel.drawn = Drawn::Nothing;
+                panel.draw_again();
             }
         }
         if let Some(drawn) = outcome.panel {
@@ -1579,11 +1590,16 @@ impl Plugins {
                 .panels
                 .entry(drawn.object)
                 .or_insert_with(Panel::empty);
-            if panel.requested.is_some() && panel.requested == drawn.revision {
+            let answers_request = panel.requested.is_some() && panel.requested == drawn.revision;
+            if answers_request {
                 panel.requested = None;
             }
             panel.view = drawn.view;
-            panel.drawn = drawn.revision.map_or(Drawn::AfterPress, Drawn::Revision);
+            panel.drawn = if answers_request && std::mem::take(&mut panel.outdated) {
+                Drawn::Nothing
+            } else {
+                drawn.revision.map_or(Drawn::AfterPress, Drawn::Revision)
+            };
         }
         if let Some(refused) = outcome.refused_types
             && !refused.is_empty()
@@ -1935,7 +1951,7 @@ impl Plugins {
         for id in ids {
             if let Some(running) = self.running.get_mut(&id) {
                 for panel in running.panels.values_mut() {
-                    panel.drawn = Drawn::Nothing;
+                    panel.draw_again();
                 }
             }
             self.send(&id, Job::Redraw);
