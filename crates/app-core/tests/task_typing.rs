@@ -133,6 +133,8 @@ fn changing_a_task_s_properties_while_typing_keeps_both() {
         "Notes.\npack bags and passport"
     );
     assert!(!app.note(tab).unwrap().is_unsaved());
+    // The panel is Noura's own, so nothing says another app edited the task.
+    assert!(app.notice().is_none());
 }
 
 #[test]

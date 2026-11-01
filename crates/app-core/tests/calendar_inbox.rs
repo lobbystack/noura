@@ -8,8 +8,15 @@
 
 mod support;
 
-use app_core::{App, PluginEvent, Target, ViewKind, ViewNode};
-use support::{FakeSystem, Fixture, calendar::with_calendar, plugins::wait_until};
+use app_core::{
+    App, Field, INBOX_PAGE, InputValue, OpenAs, PluginEvent, Target, ViewKind, ViewNode,
+};
+use support::{
+    FakeSystem, Fixture,
+    calendar::{self, with_calendar},
+    plugins::wait_until,
+    tasks::{self, with_tasks},
+};
 
 /// A note's file with the stable ID suffix `suffix` and `properties` as
 /// frontmatter lines.
@@ -189,6 +196,86 @@ fn an_entry_opens_from_the_section_in_a_tab() {
     support::settle(&mut app);
 
     assert_eq!(app.active_tab().map(|tab| tab.title()), Some("Market"));
+}
+
+/// One task, from New task to the Inbox: its due date goes in from its
+/// panel, it shows on the calendar and under Next 7 days, and the Inbox
+/// opens it with its text.
+#[test]
+fn a_task_due_today_shows_on_the_calendar_and_in_the_inbox_and_opens() {
+    let fixture = Fixture::new(&[]);
+    let mut app = app_on(&fixture);
+    let Some(_tasks) = with_tasks(&mut app) else {
+        return;
+    };
+    let Some(_calendar) = with_calendar(&mut app) else {
+        return;
+    };
+    app.open_page(tasks::PAGE, OpenAs::Preview);
+    support::settle(&mut app);
+    tasks::name_new_task(&mut app, "Dentist");
+    wait_until(&mut app, "the task opens", |app| {
+        app.active_tab().is_some_and(|tab| tab.title() == "Dentist")
+    });
+    let tab = app.active_tab().unwrap().id();
+    wait_until(&mut app, "the task's panel draws", |app| {
+        app.plugin_panel(tab)
+            .and_then(Result::ok)
+            .is_some_and(|view| tasks::find(view.root(), "due").is_some())
+    });
+
+    app.send_panel_event(
+        tab,
+        &PluginEvent::Changed(Field {
+            node: "due".to_owned(),
+            value: InputValue::Date(Some("2026-10-21".to_owned())),
+        }),
+    );
+    support::settle(&mut app);
+    let bytes = fixture.read("tasks/Dentist.md");
+    assert_eq!(tasks::property(&bytes, "due"), Some("2026-10-21".into()));
+    let id = local_object_id(&bytes);
+
+    app.open_page(calendar::PAGE, OpenAs::Preview);
+    wait_until(&mut app, "the calendar shows the task", |app| {
+        matches!(app.plugin_view(calendar::PAGE), Some(Ok(_)))
+            && calendar::titles(app).iter().any(|title| title == "Dentist")
+    });
+
+    app.open_page(INBOX_PAGE, OpenAs::Preview);
+    wait_until(&mut app, "Next 7 days lists the task", |app| {
+        section(app).is_some_and(|(_, lines)| lines.iter().any(|(label, _)| label == "Dentist"))
+    });
+    app.send_inbox_event(
+        "calendar",
+        "next-7-days",
+        &PluginEvent::Activated(Target {
+            node: "upcoming".to_owned(),
+            item: format!("{id}:due"),
+        }),
+    );
+    support::settle(&mut app);
+
+    let tab = app.active_tab().expect("the task opens");
+    assert_eq!(tab.title(), "Dentist");
+    assert_eq!(
+        tab.file().map(|file| file.relative_path.as_str()),
+        Some("tasks/Dentist.md")
+    );
+    let tab = tab.id();
+    assert_eq!(app.note(tab).unwrap().text(), "");
+    wait_until(&mut app, "the task opens beside its panel", |app| {
+        app.plugin_panel(tab)
+            .and_then(Result::ok)
+            .is_some_and(|view| tasks::find(view.root(), "due").is_some())
+    });
+}
+
+fn local_object_id(bytes: &[u8]) -> String {
+    match local_core::parse_markdown("x.md", bytes) {
+        local_core::ParsedMarkdown::Managed(object) => object.id,
+        other => panic!("not a managed file: {other:?}"),
+    }
 }
 
 #[test]
