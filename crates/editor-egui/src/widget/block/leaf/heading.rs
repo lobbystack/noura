@@ -50,7 +50,10 @@ impl<'ast> MdRender {
         let Some((indentation, prefix, _, postfix_whitespace, _)) =
             self.split_range(node, node_line)
         else {
-            unreachable!("setext headings never have empty lines");
+            // A line that holds no inline child, such as the lone backslash
+            // in `\\\n*\n- `.
+            layout.push_source(node_line, &self.buffer[node_line], self.text_format(node));
+            return layout;
         };
         if reveal {
             if !indentation.is_empty() {

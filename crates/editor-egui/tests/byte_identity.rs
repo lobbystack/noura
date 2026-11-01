@@ -124,6 +124,15 @@ fn callouts_after_unusual_line_endings_keep_their_bytes() {
     }
 }
 
+/// A line of a setext heading can hold no inline child: here the backslash
+/// before the line break, which drew as a panic.
+#[test]
+fn a_setext_heading_line_with_no_inline_child_keeps_its_bytes() {
+    for note in ["\\\n*\n- ", "\\\n*\n---\n", "a\n\\\n===\n"] {
+        assert_eq!(open_display_close(note), Outcome::Identical, "{note:?}");
+    }
+}
+
 /// Typing can bring a note shown in the live preview into that class:
 /// `---` and a line break at its start turn a first line that holds a lone
 /// carriage return into frontmatter. The editor draws the callout after it
