@@ -328,9 +328,12 @@ fn run<S: Strategy>(
         end >> 20,
         baseline >> 20
     );
+    // The first cases settle a few MiB of the runtime's own caches, which
+    // scaling the cases doesn't grow, so a leak has to pass that first.
+    let margin = (baseline / 10).max(5 << 20);
     assert!(
-        end <= baseline + baseline / 10,
-        "{name}: memory {end} passed the baseline {baseline} by more than 10%"
+        end <= baseline + margin,
+        "{name}: memory {end} passed the baseline {baseline} by more than {margin}"
     );
 }
 

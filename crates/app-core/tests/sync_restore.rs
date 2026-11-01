@@ -2782,8 +2782,12 @@ async fn many_devices_pick_one_writer_for_a_lost_object() {
         services.push(desktop.connect_through(&restored.base).await);
         sync.set_restore_wait(wait);
     }
-    let started = std::time::Instant::now();
-    while started.elapsed() < wait + std::time::Duration::from_secs(3) {
+    // Each device's wait starts at its first round here, and on a slow
+    // machine that one pass can outlast the wait, so the clock starts after
+    // it and at least one more pass follows.
+    let mut waited: Option<std::time::Instant> = None;
+    while waited.is_none_or(|from| from.elapsed() < wait + std::time::Duration::from_secs(3)) {
+        let pass = std::time::Instant::now();
         for ((_, _, sync), service) in devices.iter_mut().zip(services.iter_mut()) {
             match sync.round(service, 0).await {
                 Ok(_) => {}
@@ -2793,6 +2797,8 @@ async fn many_devices_pick_one_writer_for_a_lost_object() {
                 }
             }
         }
+        eprintln!("a pass over {count} devices took {:?}", pass.elapsed());
+        waited.get_or_insert_with(std::time::Instant::now);
     }
     let writers = devices
         .iter()

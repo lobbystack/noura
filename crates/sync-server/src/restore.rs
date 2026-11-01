@@ -64,6 +64,7 @@ fn matches(secret: &SecretKey, check: &[u8; 32]) -> bool {
 }
 
 /// The directory that holds `path`: `.` for a bare file name.
+#[cfg(unix)]
 pub(crate) fn directory_of(path: &Path) -> &Path {
     path.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
