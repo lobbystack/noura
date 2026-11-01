@@ -327,8 +327,10 @@ fn the_add_field_creates_a_task_due_on_the_devices_date_then_clears() {
     assert_eq!(due_labels(&app), ["Buy seeds"]);
     assert_eq!(due_text(&app, "due-count").as_deref(), Some("1 task"));
     // The field starts again, empty.
+    support::plugins::wait_until(&mut app, "the field starts again", |app| {
+        add_form(app).input != form.input
+    });
     let next = add_form(&app);
-    assert_ne!(next.input, form.input);
     assert_eq!(next.required, std::slice::from_ref(&next.input));
     assert_eq!(next.text, "");
 }

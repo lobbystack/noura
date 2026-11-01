@@ -196,7 +196,9 @@ fn rename_edits_the_name_in_the_row_and_saves_it_against_the_latest_revision() {
 
     name(&mut app, "Water the roses");
 
-    assert!(!fixture.exists("tasks/Water the beds.md"));
+    support::plugins::wait_until(&mut app, "the rename reaches the file", |_| {
+        !fixture.exists("tasks/Water the beds.md")
+    });
     assert_eq!(fixture.read("tasks/Water the roses.md"), outside);
     assert_eq!(rename_field(&app, A), None);
     assert_eq!(labels(&app), ["Water the roses", "Read the manual"]);
