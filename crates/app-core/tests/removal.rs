@@ -199,7 +199,11 @@ async fn a_kept_device_stays_and_signing_out_removes_only_this_device() {
     );
     tablet
         .service
-        .sign_out(std::slice::from_mut(&mut tablet_remote), &*tablet_secrets)
+        .sign_out(
+            std::slice::from_mut(&mut tablet_remote),
+            &[],
+            &*tablet_secrets,
+        )
         .await
         .expect("signed out");
     assert!(
@@ -263,7 +267,7 @@ async fn signing_out_rotates_what_it_can_and_skips_stopped_and_keyless_workspace
     let tablet_secrets = tablet.secrets.clone();
     tablet
         .service
-        .sign_out(&mut [], &*tablet_secrets)
+        .sign_out(&mut [], &[], &*tablet_secrets)
         .await
         .unwrap();
     phone
@@ -354,7 +358,7 @@ async fn signing_out_rotates_what_it_can_and_skips_stopped_and_keyless_workspace
     stored.save(&*laptop_secrets).unwrap();
     laptop
         .service
-        .sign_out(&mut workspaces, &*laptop_secrets)
+        .sign_out(&mut workspaces, &[], &*laptop_secrets)
         .await
         .expect("signed out");
     assert!(

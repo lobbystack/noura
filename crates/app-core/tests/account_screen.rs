@@ -1770,10 +1770,21 @@ fn wait_for_folder(
 #[test]
 fn a_sign_out_lets_go_of_the_folders_sync() {
     use app_core::folder_sync::FolderSyncPhase;
+    use local_core::sync::SyncCredentials;
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let pair = runtime.block_on(sync_support::pair());
-    let (account, _app) = owner_app(pair);
+    let (account, app) = owner_app(pair);
     wait_for_folder(&account, "sync on", |s| s.phase == FolderSyncPhase::On);
+    let secrets = app.laptop.secrets.clone();
+    let items = app_core::sync::marks::items(&app.laptop.id(), [app.workspace]);
+    let held = |item: &String| {
+        secrets
+            .read_optional(item)
+            .unwrap()
+            .is_some_and(|value| !value.is_empty())
+    };
+    assert_eq!(items.len(), 2);
+    assert!(items.iter().all(held), "the folder keeps its keys");
     AccountBackend::act(&account, AccountAction::SignOut);
     wait_for(
         &account,
@@ -1787,6 +1798,7 @@ fn a_sign_out_lets_go_of_the_folders_sync() {
     wait_for_folder(&account, "the folder let go", |s| {
         s.phase == FolderSyncPhase::Unavailable
     });
+    assert!(!items.iter().any(held), "the sign-out deletes them");
     drop(account);
     std::thread::sleep(Duration::from_millis(300));
 }

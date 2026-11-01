@@ -269,7 +269,9 @@ impl SyncService {
     /// Signs this device out (§7): it first finishes the pending rotation of
     /// each workspace's domain it reads, then appends a `remove` link that
     /// names itself, which ends its sessions, and deletes its keys, session
-    /// token and journal key from `store`. Workspace files stay as they are.
+    /// token and journal key from `store`, and the marks and blob wrap keys
+    /// of `workspaces` and `kept`, the other workspaces it holds a folder
+    /// of. Workspace files stay as they are.
     ///
     /// It skips a workspace whose sync is stopped, whose checks refuse what
     /// the server serves, and a domain whose rotation it can't commit, such
@@ -280,6 +282,7 @@ impl SyncService {
     pub async fn sign_out(
         &mut self,
         workspaces: &mut [RemoteWorkspace],
+        kept: &[Id],
         store: &dyn SyncCredentials,
     ) -> Result<(), SyncError> {
         for remote in workspaces.iter_mut() {
@@ -303,7 +306,12 @@ impl SyncService {
         );
         self.client.append_chain(vec![link]).await?;
         StoredDevice::delete(store, self.client.base())?;
-        for item in super::account_heads::device_items(&device) {
+        let synced = workspaces.iter().map(|remote| remote.workspace);
+        let marks = super::marks::items(&device, synced.chain(kept.iter().copied()));
+        for item in super::account_heads::device_items(&device)
+            .into_iter()
+            .chain(marks)
+        {
             store.delete(&item).map_err(|e| {
                 crate::sync::local_failure("The system's credential store failed.", e)
             })?;

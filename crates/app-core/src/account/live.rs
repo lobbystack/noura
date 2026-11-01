@@ -1701,9 +1701,25 @@ impl Driver {
             AccountAction::ConfirmSignOut => {
                 let service = self.service.as_mut().ok_or_else(not_signed_in)?;
                 self.shared.update(|screen| screen.busy = true);
+                let (server, account) = (
+                    service.client().base().to_owned(),
+                    service.credentials().account,
+                );
+                // A held workspace is left out of `workspaces`, and its
+                // folder still has a mark and a blob wrap key.
+                let kept: Vec<Id> = Registry::open(&self.app_data)
+                    .iter()
+                    .flat_map(Registry::folders)
+                    .filter(|folder| folder.server == server && folder.account == account)
+                    .map(|folder| folder.workspace)
+                    .chain(self.held_out.iter().copied())
+                    .chain(self.unopened.iter().copied())
+                    .collect();
                 // The service stays when the sign-out fails, so you can try
                 // again.
-                service.sign_out(&mut self.workspaces, &*self.store).await?;
+                service
+                    .sign_out(&mut self.workspaces, &kept, &*self.store)
+                    .await?;
                 self.drop_service();
                 self.shared.update(|screen| {
                     screen.busy = false;
