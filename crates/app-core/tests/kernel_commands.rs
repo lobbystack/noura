@@ -56,6 +56,24 @@ fn close_tab_closes_the_active_tab() {
 }
 
 #[test]
+fn close_tab_pressed_twice_quickly_closes_two_tabs() {
+    let fixture = Fixture::new(&[("One.md", b"1"), ("Two.md", b"2"), ("Three.md", b"3")]);
+    let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));
+    for path in ["One.md", "Two.md", "Three.md"] {
+        app.open_file(path, OpenAs::Kept);
+    }
+    let press = KeyPress::new(Key::W).with_cmd();
+    let start = Instant::now();
+
+    assert!(app.press_key(&press, None, start));
+    assert!(app.press_key(&press, None, start + Duration::from_millis(40)));
+
+    let titles: Vec<&str> = app.tabs().iter().map(|tab| tab.title()).collect();
+    assert_eq!(titles, ["One"]);
+    assert_eq!(document(&app).as_deref(), Some("One.md"));
+}
+
+#[test]
 fn toggle_sidebar_shows_and_hides_the_sidebar() {
     let fixture = Fixture::new(&[]);
     let mut app = fixture.app();

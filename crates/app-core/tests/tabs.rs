@@ -404,6 +404,25 @@ fn tabs_come_back_with_the_last_workspace_at_launch() {
 }
 
 #[test]
+fn reopening_the_app_shows_each_tab_s_note_text() {
+    let (app_data, folder, mut app) = opened(&["Left.md", "Right.md"]);
+    write(folder.path(), "Left.md", b"left text\n");
+    write(folder.path(), "Right.md", b"right text\n");
+    app.open_file("Left.md", OpenAs::Kept);
+    app.open_file("Right.md", OpenAs::Kept);
+    app.activate_tab(tab_id(&app, "Left"));
+
+    let mut app = relaunch(app, app_data.path());
+
+    let left = tab_id(&app, "Left");
+    assert_eq!(active(&app).as_deref(), Some("Left"));
+    assert_eq!(app.note(left).unwrap().text(), "left text\n");
+    let right = tab_id(&app, "Right");
+    app.activate_tab(right);
+    assert_eq!(app.note(right).unwrap().text(), "right text\n");
+}
+
+#[test]
 fn each_workspace_keeps_its_own_tabs() {
     let (_app_data, _first, mut app) = opened(&["A.md"]);
     let second = tempfile::tempdir().unwrap();

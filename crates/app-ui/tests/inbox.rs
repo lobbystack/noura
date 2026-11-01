@@ -251,6 +251,7 @@ fn recent_opens_a_note_on_click_or_enter_as_the_file_tree_does() {
         .click();
     harness.run();
     assert_eq!(tabs(&harness), ["Apples (preview)"]);
+    assert_eq!(note_text(&harness), "# Apples\n");
 
     open_inbox(&mut harness);
     document(&harness)
@@ -261,6 +262,15 @@ fn recent_opens_a_note_on_click_or_enter_as_the_file_tree_does() {
     harness.run();
     assert_eq!(tabs(&harness), ["Pears (preview)"]);
     assert_eq!(selected_tab(&harness).as_deref(), Some("Pears (preview)"));
+    assert_eq!(note_text(&harness), "# Pears\n");
+}
+
+/// The text the open note shows.
+fn note_text(harness: &Ui) -> String {
+    harness
+        .get_by_role_and_label(Role::MultilineTextInput, "Note text")
+        .value()
+        .expect("the note reports its text")
 }
 
 /// Cmd-click (Ctrl-click on Windows and Linux) or a middle-click keeps a

@@ -155,6 +155,49 @@ fn files_shows_the_document_tab_a_page_took_over_from() {
     assert_eq!(current(&harness).as_deref(), Some("Files"));
 }
 
+/// The Inbox takes over the note's tab, and Files shows that note's text
+/// again.
+#[test]
+fn files_shows_the_note_the_inbox_took_over_from_with_its_text() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let mut harness = opened(app_data.path(), &folder);
+    std::fs::write(folder.join("One.md"), "shown text\n").unwrap();
+    harness.state_mut().app_mut().rescan();
+    settle(&mut harness);
+    harness.get_by_role_and_label(Role::TreeItem, "One").click();
+    harness.run();
+    page(&harness, "Inbox").click_modifiers(Modifiers::COMMAND);
+    harness.run();
+    assert_eq!(selected(&harness).as_deref(), Some("Inbox"));
+    assert!(
+        harness
+            .query_by_role_and_label(Role::TextInput, "File name")
+            .is_none()
+    );
+
+    page(&harness, "Files").click();
+    harness.run();
+
+    assert_eq!(selected(&harness).as_deref(), Some("One (preview)"));
+    assert_eq!(
+        harness
+            .get_by_role_and_label(Role::TextInput, "File name")
+            .accesskit_node()
+            .value()
+            .as_deref(),
+        Some("One")
+    );
+    assert_eq!(
+        harness
+            .get_by_role_and_label(Role::MultilineTextInput, "Note text")
+            .value()
+            .as_deref(),
+        Some("shown text\n")
+    );
+}
+
 fn focused_page(harness: &Ui) -> Option<String> {
     harness
         .get_all_by_role(Role::Link)
