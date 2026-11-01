@@ -7,6 +7,7 @@ mod sync_support;
 
 use std::time::Duration;
 
+use app_core::sync::workspace::WorkspaceSync;
 use sync_store::Backend;
 use sync_support::{Folder, Pair, pair};
 
@@ -78,6 +79,40 @@ async fn a_deleted_file_needs_no_walk_and_a_new_one_takes_one() {
     both(&mut pair).await;
     assert_eq!(pair.b.files()["New.md"], b"# New\n");
     assert_eq!(pair.sync_a.walks(), walks + 1);
+}
+
+/// A new file that waited for a page takes a walk once the page ends, with
+/// no event left to name it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_that_waited_for_a_page_goes_out_without_the_periodic_walk() {
+    let mut pair = pair().await;
+    following(&mut pair).await;
+    pair.a.write("New.md", b"# New\n");
+    heard(&pair.a, &["New.md"]);
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    pair.sync_b.kill_after_page();
+    let killed = pair.sync_b.pull(&mut pair.desktop.service, 0).await;
+    assert!(killed.is_err(), "the kill: {killed:?}");
+
+    pair.sync_b = WorkspaceSync::open(
+        pair.b.engine.clone(),
+        pair.desktop.credentials.clone(),
+        pair.desktop.secrets(),
+        &pair.b.registry,
+    )
+    .expect("the journal opens");
+    pair.sync_b.follow_changes();
+    pair.sync_b
+        .set_walk_every(Duration::from_secs(u64::MAX >> 8));
+    pair.b.write("Mine.md", b"# Mine\n");
+    pair.sync_b.capture().expect("a capture");
+    both(&mut pair).await;
+    both(&mut pair).await;
+    both(&mut pair).await;
+    assert_eq!(pair.a.files()["Mine.md"], b"# Mine\n");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

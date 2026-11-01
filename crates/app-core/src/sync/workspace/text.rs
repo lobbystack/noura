@@ -1086,8 +1086,9 @@ impl WorkspaceSync {
             if entered != Entered::Yes {
                 return Ok((entered, None));
             }
-        } else if self.local_edit(&rid) {
-            // The file holds an edit sync hasn't captured yet.
+        } else if self.holds_its_file(&rid) {
+            // The file holds an edit sync hasn't captured yet, or a held
+            // version that waits for your choice.
             return Ok((Entered::NotYet, None));
         }
         self.text_settle(rid)?;
@@ -1180,7 +1181,7 @@ impl WorkspaceSync {
         if content.delete || content.revision != local.revision {
             return Ok(Entered::NotYet);
         }
-        if self.live_states(&rid) != [base] || self.local_edit(&rid) {
+        if self.live_states(&rid) != [base] || self.holds_its_file(&rid) {
             return Ok(Entered::NotYet);
         }
         if !self.can_write_note(&rid) {

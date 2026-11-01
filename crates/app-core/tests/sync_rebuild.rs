@@ -509,6 +509,8 @@ async fn a_text_snapshot_that_arrives_leaves_a_held_version_in_place() {
             .expect("a round");
         assert_eq!(b.files()["Plan.md"], b"# Mine\n", "your version stays");
         assert_eq!(sync_b.status().held, 1);
+        let (entered, _) = sync_b.open_text("Plan.md").expect("asked");
+        assert_eq!(entered, Entered::NotYet, "the note waits for your choice");
 
         sync_b.resolve_held(rid, choice).expect("you choose");
         assert_eq!(b.files()["Plan.md"], ending);

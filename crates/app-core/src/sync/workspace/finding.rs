@@ -13,7 +13,7 @@ use local_core::{CoreEvent, SyncedEntry, SyncedFile, SyncedListing};
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::TryRecvError;
 
-use super::{SyncError, WorkspaceSync, core};
+use super::{SkipWhy, SyncError, WorkspaceSync, core};
 
 /// How often a following device walks the workspace anyway, the app's own
 /// full rescan interval.
@@ -123,7 +123,9 @@ impl WorkspaceSync {
             .walked
             .is_some_and(|walked| walked.elapsed() < every);
         // What waits outside the journal's objects only a walk can check.
-        let plain = self.state.deleted_away.is_empty() && self.state.held_roots.is_empty();
+        let waiting = self.skipped.iter().any(|s| s.why == SkipWhy::WaitsForPage);
+        let plain =
+            self.state.deleted_away.is_empty() && self.state.held_roots.is_empty() && !waiting;
         if complete && fresh && plain && self.engine.is_watching() {
             let named = std::mem::take(&mut self.finding.named);
             if let Some(listing) = self.listing_from_journal(&named) {
