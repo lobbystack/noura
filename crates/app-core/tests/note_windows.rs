@@ -7,7 +7,7 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use app_core::{App, CommandSource, TabId, command_id};
+use app_core::{App, CommandSource, SAVE_PAUSE, TabId, command_id};
 use support::{Fixture, hold_writes, note, open_from_tree, settle};
 
 const A: &str = "01jbcdefghjkmnpqrstvwxyz0a";
@@ -141,6 +141,88 @@ fn switching_workspace_saves_every_window_s_notes_first() {
         fixture.read("Docs/Other.md"),
         note(B, "Other\ntyped there\n")
     );
+}
+
+/// The shared note's file.
+fn body(fixture: &Fixture) -> String {
+    String::from_utf8(fixture.read("Shared.md")).unwrap()
+}
+
+/// Replace the text of the note in `tab`, then let its save run.
+fn edit_and_save(windows: &mut [&mut App], which: usize, tab: TabId, text: &str) {
+    let at = Instant::now();
+    windows[which].edit_note(tab, 1, text, at);
+    windows[which].save_due_notes(at + SAVE_PAUSE);
+    settle_windows(windows);
+}
+
+/// Poll both windows until the note in each shows `text`. Each window
+/// learns of the other's save as it learns of any change to the file.
+fn wait_for_both(first: &mut App, one: TabId, second: &mut App, two: TabId, text: &str) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        first.poll();
+        second.poll();
+        if first.note(one).unwrap().text() == text && second.note(two).unwrap().text() == text {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the windows show {:?} and {:?}, not {text:?}",
+            first.note(one).unwrap().text(),
+            second.note(two).unwrap().text()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Typing in one note from two windows keeps both, one after the other
+/// and while both hold unsaved typing.
+#[test]
+fn typing_in_one_note_from_two_windows_keeps_both() {
+    let fixture = Fixture::new(&[("Shared.md", &note(A, "from one"))]);
+    let mut first = fixture.app();
+    let mut second = first.new_window().expect("a second window opens");
+    let one = open_from_tree(&mut first, "Shared.md");
+    let two = open_from_tree(&mut second, "Shared.md");
+
+    edit_and_save(
+        &mut [&mut first, &mut second],
+        1,
+        two,
+        "from one\nfrom two",
+    );
+    assert!(body(&fixture).ends_with("---\nfrom one\nfrom two"));
+    wait_for_both(&mut first, one, &mut second, two, "from one\nfrom two");
+
+    edit_and_save(
+        &mut [&mut first, &mut second],
+        0,
+        one,
+        "> from one\nfrom two",
+    );
+    assert!(body(&fixture).ends_with("---\n> from one\nfrom two"));
+    wait_for_both(&mut first, one, &mut second, two, "> from one\nfrom two");
+
+    // Both windows type before either saves, in lines apart from each
+    // other: lines side by side would count as the same text.
+    let apart = "> from one\n\nmiddle\n\nfrom two";
+    edit_and_save(&mut [&mut first, &mut second], 0, one, apart);
+    wait_for_both(&mut first, one, &mut second, two, apart);
+    let at = Instant::now();
+    first.edit_note(one, 1, "> from one, again\n\nmiddle\n\nfrom two", at);
+    second.edit_note(two, 1, "> from one\n\nmiddle\n\nfrom two, again", at);
+    first.save_due_notes(at + SAVE_PAUSE);
+    settle_windows(&mut [&mut first, &mut second]);
+    second.save_due_notes(at + SAVE_PAUSE);
+    settle_windows(&mut [&mut first, &mut second]);
+
+    let both = "> from one, again\n\nmiddle\n\nfrom two, again";
+    wait_for_both(&mut first, one, &mut second, two, both);
+    settle_windows(&mut [&mut first, &mut second]);
+    assert!(body(&fixture).ends_with(&format!("---\n{both}")));
+    assert!(first.note(one).unwrap().conflict().is_none());
+    assert!(second.note(two).unwrap().conflict().is_none());
 }
 
 /// Saves fail with a real permission error while a note's folder is
