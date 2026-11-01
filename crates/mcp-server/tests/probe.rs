@@ -1,10 +1,7 @@
 //! Seam 1: Test connection starts a configured command as an AI tool
 //! would and waits for the answer to MCP's initialize request, here
-//! against the `noura-mcp` binary on a real workspace folder. `env` sets
-//! the server's home folder, so its app data lands in the test's own
-//! folder.
-
-#![cfg(unix)]
+//! against the `noura-mcp` binary on a real workspace folder, with its
+//! app data in the test's own folder.
 
 mod support;
 
@@ -17,25 +14,37 @@ use std::{
 use noura_mcp::test_connection;
 use support::Fixture;
 
-/// `noura-mcp --workspace <folder>`, with `home` as its home folder.
-fn command(home: &Path, folder: &Path) -> Vec<OsString> {
+const SERVER: &str = env!("CARGO_BIN_EXE_noura-mcp");
+
+/// `noura-mcp`'s arguments for `folder`, with `app_data` as its app data.
+fn arguments(app_data: &Path, folder: &Path) -> Vec<OsString> {
     vec![
-        format!("HOME={}", home.display()).into(),
-        format!("XDG_DATA_HOME={}", home.join("data").display()).into(),
-        env!("CARGO_BIN_EXE_noura-mcp").into(),
         "--workspace".into(),
         folder.as_os_str().to_owned(),
+        "--app-data".into(),
+        app_data.as_os_str().to_owned(),
     ]
+}
+
+/// A program that runs for 30 seconds and says nothing.
+fn silent_command() -> (&'static Path, Vec<OsString>) {
+    if cfg!(windows) {
+        let sleep = "Start-Sleep -Seconds 30";
+        let arguments = ["-NoProfile", "-Command", sleep].map(OsString::from);
+        (Path::new("powershell.exe"), arguments.to_vec())
+    } else {
+        (Path::new("/bin/sleep"), vec!["30".into()])
+    }
 }
 
 #[test]
 fn a_server_that_answers_works() {
     let fixture = Fixture::new(&[]);
-    let home = tempfile::tempdir().unwrap();
+    let app_data = tempfile::tempdir().unwrap();
 
     let answered = test_connection(
-        Path::new("/usr/bin/env"),
-        &command(home.path(), &fixture.root),
+        Path::new(SERVER),
+        &arguments(app_data.path(), &fixture.root),
         Duration::from_secs(10),
     )
     .unwrap();
@@ -47,12 +56,12 @@ fn a_server_that_answers_works() {
 #[test]
 fn a_server_that_stops_says_why() {
     let fixture = Fixture::new(&[]);
-    let home = tempfile::tempdir().unwrap();
+    let app_data = tempfile::tempdir().unwrap();
     let plain = tempfile::tempdir().unwrap();
 
     let error = test_connection(
-        Path::new("/usr/bin/env"),
-        &command(home.path(), plain.path()),
+        Path::new(SERVER),
+        &arguments(app_data.path(), plain.path()),
         Duration::from_secs(10),
     )
     .unwrap_err();
@@ -68,14 +77,10 @@ fn a_server_that_stops_says_why() {
 
 #[test]
 fn a_command_that_never_answers_fails_once_the_wait_ends() {
+    let (program, arguments) = silent_command();
     let started = Instant::now();
 
-    let error = test_connection(
-        Path::new("/bin/sleep"),
-        &["30".into()],
-        Duration::from_secs(2),
-    )
-    .unwrap_err();
+    let error = test_connection(program, &arguments, Duration::from_secs(2)).unwrap_err();
 
     assert_eq!(error, "The server didn't answer within 2 seconds.");
     assert!(started.elapsed() < Duration::from_secs(10));

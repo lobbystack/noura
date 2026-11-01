@@ -481,25 +481,43 @@ pub async fn serve_stdio(app_data: PathBuf, folder: PathBuf) -> Result<(), Strin
     Ok(())
 }
 
-/// The workspace folder in `--workspace <path>`, the only argument the
-/// server takes, read without assuming the path is UTF-8.
-pub fn workspace_argument(
+/// What the server's command line asks for.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ServerArguments {
+    /// The workspace folder in `--workspace <folder>`.
+    pub workspace: PathBuf,
+    /// The app data folder in `--app-data <folder>`, which replaces this
+    /// user's when it's there.
+    pub app_data: Option<PathBuf>,
+}
+
+/// Read the server's arguments without assuming a path is UTF-8.
+pub fn server_arguments(
     arguments: impl IntoIterator<Item = OsString>,
-) -> Result<PathBuf, String> {
+) -> Result<ServerArguments, String> {
     use lexopt::prelude::*;
-    let usage = || "Usage: noura mcp --workspace <folder>".to_owned();
+    let usage = || "Usage: noura mcp --workspace <folder> [--app-data <folder>]".to_owned();
     let mut parser = lexopt::Parser::from_args(arguments);
     let mut workspace = None;
+    let mut app_data = None;
     while let Some(argument) = parser.next().map_err(|error| error.to_string())? {
         match argument {
             Long("workspace") => {
                 let value = parser.value().map_err(|_| usage())?;
                 workspace = Some(PathBuf::from(value));
             }
+            Long("app-data") => {
+                let value = parser.value().map_err(|_| usage())?;
+                app_data = Some(PathBuf::from(value));
+            }
             _ => return Err(usage()),
         }
     }
-    workspace.ok_or_else(usage)
+    let workspace = workspace.ok_or_else(usage)?;
+    Ok(ServerArguments {
+        workspace,
+        app_data,
+    })
 }
 
 /// Run the server as a command: read `--workspace <folder>` from
@@ -517,14 +535,17 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> std::process::ExitC
         .with_ansi(false)
         .with_env_filter(filter)
         .try_init();
-    let folder = match workspace_argument(arguments) {
-        Ok(folder) => folder,
+    let ServerArguments {
+        workspace: folder,
+        app_data,
+    } = match server_arguments(arguments) {
+        Ok(arguments) => arguments,
         Err(usage) => {
             eprintln!("{usage}");
             return ExitCode::from(2);
         }
     };
-    let Some(app_data) = app_core::default_app_data_dir() else {
+    let Some(app_data) = app_data.or_else(app_core::default_app_data_dir) else {
         eprintln!("This system has no app data folder for Noura.");
         return ExitCode::FAILURE;
     };
