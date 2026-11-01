@@ -22,7 +22,8 @@ use sync_protocol::records::{PolicyChange, PolicyKind, Signed};
 use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 use sync_store::conformance::{World, head_of, manager};
 use sync_store::{
-    Backend, Error, INITIAL_RESTORE_GENERATION, LockPlan, Store, WriteGroup, WriteJob, WriteTxn,
+    Backend, Error, INITIAL_RESTORE_GENERATION, LockPlan, ReadTxn, Store, WriteGroup, WriteJob,
+    WriteTxn,
 };
 use sync_store_postgres::testing::{Cluster, TestDatabase};
 use sync_store_postgres::{CONNECTIONS, PgBackend};
@@ -292,6 +293,44 @@ async fn a_rolled_back_job_leaves_the_next_one_no_locks() {
         !head_row_locked(&database.url, workspace, domain).await,
         "the commit let go of the row"
     );
+}
+
+/// A group reads the workspace's row once, and sees its own quota change.
+#[tokio::test]
+async fn a_group_rereads_the_workspace_after_a_quota_change() {
+    type Job = WriteJob<<PgBackend as Backend>::Write, bool>;
+    let (store, _database) = open().await;
+    let world = World::new(store, 1).await;
+    let (workspace, domain) = (world.workspace, world.domain);
+    let plan = LockPlan {
+        workspace: Some(workspace),
+        domains: vec![domain],
+        ..LockPlan::default()
+    };
+    let job = |raise: bool| -> Job {
+        let plan = plan.clone();
+        Box::new(move |txn| {
+            Box::pin(async move {
+                txn.lock(&plan).await?;
+                txn.workspace(workspace).await?;
+                if raise {
+                    txn.set_quota_pressure(workspace, true).await?;
+                }
+                let row = txn.workspace(workspace).await?.expect("a workspace");
+                Ok(row.quota_pressure)
+            })
+        })
+    };
+    let backend = world.store.backend();
+    let group = WriteGroup { workspace, domain };
+    let (first, second, third) = tokio::join!(
+        backend.write_grouped(group, job(false)),
+        backend.write_grouped(group, job(true)),
+        backend.write_grouped(group, job(false)),
+    );
+    assert!(!first.expect("kept"), "no pressure yet");
+    assert!(second.expect("kept"), "the job sees its own write");
+    assert!(third.expect("kept"), "the next job sees it too");
 }
 
 /// A push's head row changes go in one update, so a busy domain's row grows

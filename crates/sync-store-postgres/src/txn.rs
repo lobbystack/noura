@@ -33,6 +33,9 @@ pub struct PgTxn {
     taken: Option<LockPlan>,
     /// The locks a released savepoint left with the whole transaction.
     held: Option<LockPlan>,
+    /// The workspace row read under those locks. The shared policy lock
+    /// keeps out what would change its policy head or close it.
+    workspace_row: Option<(Id, WorkspaceRow)>,
 }
 
 impl PgTxn {
@@ -49,6 +52,7 @@ impl PgTxn {
             policy_read_delay,
             taken: None,
             held: None,
+            workspace_row: None,
         }
     }
 
@@ -1189,8 +1193,19 @@ impl ReadTxn for PgTxn {
         rows.into_iter().map(|r| id(r.instance)).collect()
     }
 
-    async fn workspace(&mut self, workspace: Id) -> Result<Option<WorkspaceRow>> {
-        let workspace = &workspace.0[..];
+    async fn workspace(&mut self, workspace_id: Id) -> Result<Option<WorkspaceRow>> {
+        if self
+            .held
+            .as_ref()
+            .is_some_and(|held| held.workspace == Some(workspace_id))
+            && let Some((_, row)) = self
+                .workspace_row
+                .as_ref()
+                .filter(|(id, _)| *id == workspace_id)
+        {
+            return Ok(Some(row.clone()));
+        }
+        let workspace = &workspace_id.0[..];
         let row = sqlx::query!(
             "SELECT owner, creation_digest, creation_response, policy_revision, policy_head,
                     quota_pressure, quota_crossings
@@ -1203,18 +1218,23 @@ impl ReadTxn for PgTxn {
         if let Some(delay) = self.policy_read_delay {
             tokio::time::sleep(delay).await;
         }
-        row.map(|r| {
-            Ok(WorkspaceRow {
-                owner: id(r.owner)?,
-                creation_digest: digest(r.creation_digest)?,
-                creation_response: r.creation_response,
-                policy_revision: uint(r.policy_revision)?,
-                policy_head: digest(r.policy_head)?,
-                quota_pressure: r.quota_pressure,
-                quota_crossings: uint(r.quota_crossings)?,
+        let row = row
+            .map(|r| {
+                Ok(WorkspaceRow {
+                    owner: id(r.owner)?,
+                    creation_digest: digest(r.creation_digest)?,
+                    creation_response: r.creation_response,
+                    policy_revision: uint(r.policy_revision)?,
+                    policy_head: digest(r.policy_head)?,
+                    quota_pressure: r.quota_pressure,
+                    quota_crossings: uint(r.quota_crossings)?,
+                })
             })
-        })
-        .transpose()
+            .transpose()?;
+        if self.taken.is_some() {
+            self.workspace_row = row.clone().map(|row| (workspace_id, row));
+        }
+        Ok(row)
     }
 
     async fn workspace_closed(&mut self, workspace: Id) -> Result<bool> {
@@ -2668,6 +2688,7 @@ impl WriteTxn for PgTxn {
     }
 
     async fn set_quota_pressure(&mut self, workspace: Id, above: bool) -> Result<bool> {
+        self.workspace_row = None;
         let workspace = &workspace.0[..];
         let done = if above {
             sqlx::query!(

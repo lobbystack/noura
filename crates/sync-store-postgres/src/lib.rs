@@ -315,15 +315,18 @@ impl Inner {
             txn.execute("SAVEPOINT push").await?;
             for (index, job) in jobs.iter_mut().enumerate() {
                 let kept = job.run(txn).await;
-                txn.execute(match (kept, index == last) {
-                    (true, false) => "RELEASE SAVEPOINT push; SAVEPOINT push",
-                    (true, true) => "RELEASE SAVEPOINT push",
+                // The commit closes the last savepoint when it stays.
+                let close = match (kept, index == last) {
+                    (true, false) => Some("RELEASE SAVEPOINT push; SAVEPOINT push"),
+                    (true, true) => None,
                     (false, false) => {
-                        "ROLLBACK TO SAVEPOINT push; RELEASE SAVEPOINT push; SAVEPOINT push"
+                        Some("ROLLBACK TO SAVEPOINT push; RELEASE SAVEPOINT push; SAVEPOINT push")
                     }
-                    (false, true) => "ROLLBACK TO SAVEPOINT push; RELEASE SAVEPOINT push",
-                })
-                .await?;
+                    (false, true) => Some("ROLLBACK TO SAVEPOINT push; RELEASE SAVEPOINT push"),
+                };
+                if let Some(close) = close {
+                    txn.execute(close).await?;
+                }
                 txn.settle_locks(kept);
             }
         }
