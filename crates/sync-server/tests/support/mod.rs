@@ -12,7 +12,9 @@ use reqwest::StatusCode;
 use reqwest::header::HeaderMap;
 use sync_key_envelope::v2::DeviceKeys;
 use sync_protocol::codec::{Bytes, Decode, Encode, List, Sorted};
-use sync_protocol::messages::{ErrorBody, PushFailureDetail, PushRequest, RecordRef};
+use sync_protocol::messages::{
+    ErrorBody, PullCursor, PullRequest, PushFailureDetail, PushRequest, PushResponse, RecordRef,
+};
 use sync_protocol::records::{AccountLink, Card, Operation, PolicyChange, PolicyKind, Signed};
 use sync_protocol::types::{Digest, Id, Nonce, to_base64url};
 use sync_store::Session;
@@ -174,6 +176,51 @@ pub fn push_body(ops: &[Signed<Operation>]) -> Vec<u8> {
         records: List(ops.iter().cloned().map(RecordRef::Operation).collect()),
     }
     .to_bytes()
+}
+
+/// Where `created`'s operations go.
+pub fn ops_path(created: &Created) -> String {
+    format!("/v2/workspaces/{}/ops", created.workspace.to_base64url())
+}
+
+/// Creates the workspace of `created` through the server and pushes a chain
+/// of three operations. Returns the last.
+pub async fn fill(client: &Client, created: &Created, account: &Account) -> Signed<Operation> {
+    let _: PushResponse = client
+        .post("/v2/workspaces", created.body.clone())
+        .await
+        .decode();
+    let mut previous = Digest::ZERO;
+    let mut last = None;
+    for counter in 1..=3 {
+        let op = created.op(&account.keys[0], counter, previous, |_| {});
+        let _: PushResponse = client
+            .post(&ops_path(created), push_body(std::slice::from_ref(&op)))
+            .await
+            .decode();
+        previous = op.digest();
+        last = Some(op);
+    }
+    last.expect("three operations")
+}
+
+/// The bytes of a pull of `created`'s whole log.
+pub async fn pull(client: &Client, created: &Created) -> Vec<u8> {
+    let reply = client
+        .post(
+            &format!("/v2/workspaces/{}/pull", created.workspace.to_base64url()),
+            PullRequest {
+                cursors: List(vec![PullCursor {
+                    domain: created.domain,
+                    after: 0,
+                }]),
+                wait_seconds: 0,
+            }
+            .to_bytes(),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK);
+    reply.body
 }
 
 /// Writes an account of `devices` devices and a session for each into the
