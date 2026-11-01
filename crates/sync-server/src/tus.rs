@@ -228,6 +228,18 @@ async fn stranded<B: Backend>(
     }
 }
 
+/// Reads a refused PATCH's body and drops it, up to one segment.
+async fn discard_segment(request: Body) {
+    let mut frames = request.into_data_stream();
+    let mut read = 0;
+    while let Some(Ok(frame)) = futures::StreamExt::next(&mut frames).await {
+        read += frame.len();
+        if read > SEGMENT_LEN {
+            break;
+        }
+    }
+}
+
 async fn patch<B: Backend>(
     State(state): State<AppState<B>>,
     Auth(session): Auth,
@@ -248,9 +260,14 @@ async fn patch<B: Backend>(
             }
             let offset = header_number(&headers, "Upload-Offset")?;
             let upload = state.store.blob_upload(session, workspace, blob).await?;
-            // Refuse a wrong offset before reading the body.
+            // Refuse a wrong offset without storing the body. The client is
+            // still sending it, and closing on it now could reset the
+            // connection before the client reads the refusal.
             let next = SEGMENT.min(upload.row.length.saturating_sub(upload.row.offset));
-            Store::<B>::check_segment(&upload.row, offset, next)?;
+            if let Err(error) = Store::<B>::check_segment(&upload.row, offset, next) {
+                discard_segment(request).await;
+                return Err(error.into());
+            }
             // The body lands in one buffer of the segment's size as it
             // arrives, so a PATCH holds about one segment in memory.
             let too_large = || refused("too_large", "a PATCH appends at most 1 MiB");
