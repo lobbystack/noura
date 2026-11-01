@@ -33,6 +33,7 @@ mod view;
 pub use archive::{ARCHIVE_SUFFIX, Archive};
 pub use error::{InstallError, InstallErrorCode};
 pub use host::{Candidate, CodeSource, LoadedPlugin, PluginHost};
+pub use instance::trap_foreign_imports;
 pub use instance::{
     AiChat, AiFailure, AiMessage, AiMessageKind, AiMessageStatus, AiProvider, AiRequest,
     AiRetention, AiRun, AiRunStatus, AiToolCall, AiToolDefinition, AiToolResult, AiWebPage,

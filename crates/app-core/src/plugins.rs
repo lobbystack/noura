@@ -252,6 +252,58 @@ pub struct ShippedPlugin {
     pub capabilities: Vec<CapabilityLine>,
 }
 
+/// The plugins every package of Noura ships: each one's ID, which names
+/// its folder, and its name.
+pub const SHIPPED_PLUGINS: [(&str, &str); 4] = [
+    ("ai", "AI"),
+    ("calendar", "Calendar"),
+    ("projects", "Projects"),
+    ("tasks", "Tasks"),
+];
+
+/// A plugin a package should ship and can't, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShippedProblem {
+    pub name: &'static str,
+    pub reason: String,
+}
+
+/// Whether `folder`, a package's plugins folder if it has one, holds every
+/// plugin in [`SHIPPED_PLUGINS`] in a form Noura installs: the right
+/// manifest and a component that compiles. Nothing is written and none of
+/// their code runs. Returns one problem per plugin that fails.
+pub fn check_shipped_plugins(folder: Option<&Path>) -> Vec<ShippedProblem> {
+    let problems = |reason: &str| {
+        SHIPPED_PLUGINS
+            .iter()
+            .map(|&(_, name)| ShippedProblem {
+                name,
+                reason: reason.to_owned(),
+            })
+            .collect()
+    };
+    let Some(folder) = folder else {
+        return problems("this copy has no plugins folder");
+    };
+    // No plugin is installed in a library that doesn't exist, so a
+    // reviewed plugin still gets compiled here.
+    let host = match PluginHost::shared(folder.join(".no-library")) {
+        Ok(host) => host,
+        Err(error) => return problems(&error.message),
+    };
+    SHIPPED_PLUGINS
+        .iter()
+        .filter_map(|&(id, name)| {
+            let reason = match host.inspect(&folder.join(id)) {
+                Ok(candidate) if candidate.manifest().id == id => return None,
+                Ok(candidate) => format!("its folder holds {}", candidate.manifest().id),
+                Err(error) => error.message,
+            };
+            Some(ShippedProblem { name, reason })
+        })
+        .collect()
+}
+
 /// A tool a running plugin offers to AI assistants.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginTool {
@@ -310,6 +362,9 @@ struct Panel {
     drawn: Drawn,
     /// The file revision a draw was asked for that hasn't answered yet.
     requested: Option<String>,
+    /// Something changed since that draw started, so its answer may show
+    /// what came before and the panel draws again after it.
+    outdated: bool,
 }
 
 /// Which revision of an object's file a panel shows.
@@ -323,6 +378,13 @@ enum Drawn {
 }
 
 impl Panel {
+    /// The panel's files may have changed: it draws again the next time it
+    /// shows, and a draw on its way counts for nothing.
+    fn draw_again(&mut self) {
+        self.drawn = Drawn::Nothing;
+        self.outdated = self.requested.is_some();
+    }
+
     /// A panel the plugin hasn't drawn yet, which shows nothing.
     fn empty() -> Self {
         let root = Node {
@@ -334,6 +396,7 @@ impl Panel {
             view: View::from_nodes(vec![root]).map_err(|error| error.to_string()),
             drawn: Drawn::Nothing,
             requested: None,
+            outdated: false,
         }
     }
 
@@ -1519,7 +1582,7 @@ impl Plugins {
             self.acts += 1;
             // What it did may change any of its panels.
             for panel in running.panels.values_mut() {
-                panel.drawn = Drawn::Nothing;
+                panel.draw_again();
             }
         }
         if let Some(drawn) = outcome.panel {
@@ -1527,11 +1590,16 @@ impl Plugins {
                 .panels
                 .entry(drawn.object)
                 .or_insert_with(Panel::empty);
-            if panel.requested.is_some() && panel.requested == drawn.revision {
+            let answers_request = panel.requested.is_some() && panel.requested == drawn.revision;
+            if answers_request {
                 panel.requested = None;
             }
             panel.view = drawn.view;
-            panel.drawn = drawn.revision.map_or(Drawn::AfterPress, Drawn::Revision);
+            panel.drawn = if answers_request && std::mem::take(&mut panel.outdated) {
+                Drawn::Nothing
+            } else {
+                drawn.revision.map_or(Drawn::AfterPress, Drawn::Revision)
+            };
         }
         if let Some(refused) = outcome.refused_types
             && !refused.is_empty()
@@ -1883,7 +1951,7 @@ impl Plugins {
         for id in ids {
             if let Some(running) = self.running.get_mut(&id) {
                 for panel in running.panels.values_mut() {
-                    panel.drawn = Drawn::Nothing;
+                    panel.draw_again();
                 }
             }
             self.send(&id, Job::Redraw);

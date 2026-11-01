@@ -58,7 +58,7 @@ x25519-dalek.workspace = true
 
 [dev-dependencies]
 # The sync file tests record which folders a write syncs.
-local-core = { path = ".", features = ["durability-probe"] }
+local-core = { path = ".", features = ["durability-probe", "test-hooks"] }
 tempfile.workspace = true
 
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]

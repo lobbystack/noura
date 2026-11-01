@@ -7,7 +7,9 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use app_core::{App, CommandSource, LineWidth, PropertyValue, SAVE_PAUSE, TabId};
+use app_core::{
+    App, CommandSource, INBOX_PAGE, LineWidth, OpenAs, PropertyValue, SAVE_PAUSE, TabId,
+};
 use support::{Fixture, hold_writes, open_from_tree, settle_saves};
 
 const ID: &str = "01jbcdefghjkmnpqrstvwxyz0a";
@@ -296,6 +298,34 @@ fn a_save_counts_only_once_its_durable_write_returns_and_closing_waits_for_it() 
 
     assert_eq!(fixture.read("Plan.md"), managed("\n", "Body\ntyped\n"));
     assert!(app.tabs().iter().all(|open| open.id() != tab));
+}
+
+#[test]
+fn going_to_the_inbox_while_a_save_waits_for_the_disk_still_saves() {
+    let first = managed("\n", "first ");
+    let fixture = Fixture::new(&[("Plan.md", &first)]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Plan.md");
+    let at = Instant::now();
+    type_into(&mut app, tab, at, |text| format!("{text}second"));
+    let lock = hold_writes(&fixture, &app);
+    app.save_due_notes(at + SAVE_PAUSE);
+    std::thread::sleep(Duration::from_millis(200));
+    app.poll();
+    assert!(app.is_saving_notes());
+
+    app.open_page(INBOX_PAGE, OpenAs::Preview);
+    app.poll();
+
+    assert_eq!(app.current_page(), INBOX_PAGE);
+    assert_eq!(fixture.read("Plan.md"), first, "the save still waits");
+    lock.unlock().unwrap();
+    settle_saves(&mut app);
+
+    assert_eq!(fixture.read("Plan.md"), managed("\n", "first second"));
+    assert_eq!(app.current_page(), INBOX_PAGE);
+    assert!(app.unsaved_prompt().is_none());
+    assert!(app.notice().is_none());
 }
 
 #[test]
@@ -987,19 +1017,11 @@ fn line_width_applies_to_every_note_and_survives_a_restart() {
 
 /// Saves fail with a real permission error while the note's folder is
 /// read-only.
-#[cfg(unix)]
 mod failures {
-    use std::os::unix::fs::PermissionsExt;
-
     use super::*;
 
     fn read_only(fixture: &Fixture, folder: &str, read_only: bool) {
-        let mode = if read_only { 0o555 } else { 0o755 };
-        std::fs::set_permissions(
-            fixture.root.join(folder),
-            std::fs::Permissions::from_mode(mode),
-        )
-        .unwrap();
+        support::read_only(&fixture.root.join(folder), read_only);
     }
 
     /// A note in a read-only folder, with typing that can't save.

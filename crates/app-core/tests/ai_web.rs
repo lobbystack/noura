@@ -9,14 +9,17 @@
 //! the query or address the model named. Revoking web
 //! consent fails the next call and the chat goes on, and failures reach
 //! the chat as public errors without the key or what Brave Search
-//! answered.
+//! answered. One test joins the real Brave Search client to a chat, with a
+//! scripted stand-in for the network below the request boundary.
 
 mod support;
 
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use app_core::web_client::{WebAccessFuture, WebAccessProvider, WebClient};
 use app_core::{App, ViewKind, ViewNode};
-use local_core::AiToolCall;
+use local_core::{AiToolCall, BraveSearch, TransportRequest, TransportResponse, WebTransport};
 use serde_json::{Value, json};
 use support::{
     FakeSystem, Fixture,
@@ -839,4 +842,149 @@ fn brave_search_failures_reach_the_chat_as_public_errors_without_the_key_or_its_
             "BSA-raw",
         ],
     );
+}
+
+/// The network below the request boundary: it answers as Brave Search and
+/// a web page do, and records what reached it.
+#[derive(Default)]
+struct Network {
+    hops: Mutex<Vec<TransportRequest>>,
+}
+
+impl WebTransport for Network {
+    fn resolve<'a>(&'a self, _host: &'a str, _port: u16) -> WebAccessFuture<'a, Vec<IpAddr>> {
+        Box::pin(async { Ok(vec![IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))]) })
+    }
+
+    fn send(&self, request: TransportRequest) -> WebAccessFuture<'_, TransportResponse> {
+        let url = request.url.clone();
+        self.hops.lock().unwrap().push(request);
+        Box::pin(async move {
+            let answer = |status, kind: &str, body: Vec<u8>| TransportResponse {
+                status,
+                headers: vec![("content-type".to_owned(), kind.to_owned())],
+                body,
+            };
+            Ok(match url.host_str() {
+                Some("api.search.brave.com") if url.as_str().contains("q=rejected") => answer(
+                    422,
+                    "application/json",
+                    json!({"error": {"code": "SUBSCRIPTION_TOKEN_INVALID", "detail": KEY}})
+                        .to_string()
+                        .into_bytes(),
+                ),
+                Some("api.search.brave.com") => answer(
+                    200,
+                    "application/json",
+                    json!({"type": "search", "web": {"results": [
+                        {
+                            "title": "Tomato <strong>care</strong> guide",
+                            "url": "https://garden.example.com/tomatoes",
+                            "description": "Water &amp; feed <strong>tomatoes</strong> weekly."
+                        },
+                        {
+                            "title": "Plain page",
+                            "url": "http://old.example.com/",
+                            "description": "Not over HTTPS"
+                        }
+                    ]}})
+                    .to_string()
+                    .into_bytes(),
+                ),
+                _ => answer(
+                    200,
+                    "text/html",
+                    b"<html><title>Tomatoes</title><body><p>Stake them early.</p></body></html>"
+                        .to_vec(),
+                ),
+            })
+        })
+    }
+}
+
+/// The real Brave Search client over `network`.
+struct RealBrave(Arc<Network>);
+
+impl WebClient for RealBrave {
+    fn provider(&self, key: &str) -> Arc<dyn WebAccessProvider> {
+        Arc::new(BraveSearch::with_transport(key, self.0.clone()))
+    }
+}
+
+#[test]
+fn the_real_brave_client_answers_a_chat_through_the_request_boundary() {
+    let Some(mut chat) = Searching::new(READY) else {
+        return;
+    };
+    let network = Arc::new(Network::default());
+    chat.app
+        .set_web_client(Arc::new(RealBrave(network.clone())));
+
+    chat.send("Find a tomato guide");
+    chat.requests(1);
+    chat.call(0, "call_1", "web_search", search("tomato care"));
+
+    // The model reads Brave Search's answer as plain text, without the
+    // result that isn't HTTPS.
+    assert_eq!(
+        chat.result(1, "call_1"),
+        json!({
+            "query": "tomato care",
+            "results": [{
+                "title": "Tomato care guide",
+                "url": "https://garden.example.com/tomatoes",
+                "snippet": "Water & feed tomatoes weekly."
+            }]
+        })
+    );
+    {
+        let hops = network.hops.lock().unwrap();
+        assert_eq!(hops.len(), 1);
+        assert_eq!(hops[0].url.host_str(), Some("api.search.brave.com"));
+        assert!(hops[0].url.as_str().contains("q=tomato+care"));
+        assert!(
+            hops[0]
+                .headers
+                .contains(&("x-subscription-token".to_owned(), KEY.to_owned()))
+        );
+    }
+
+    // A page read goes to its own host and carries no key.
+    chat.call(
+        1,
+        "call_2",
+        "web_fetch",
+        json!({ "url": "https://garden.example.com/tomatoes" }),
+    );
+    let page = chat.result(2, "call_2");
+    assert!(page.to_string().contains("Stake them early."), "{page}");
+    {
+        let hops = network.hops.lock().unwrap();
+        assert_eq!(hops.len(), 2);
+        assert_eq!(hops[1].url.host_str(), Some("garden.example.com"));
+        assert!(
+            hops[1]
+                .headers
+                .iter()
+                .all(|(name, value)| name != "x-subscription-token" && value != KEY)
+        );
+    }
+
+    // A refused key reaches the chat in Noura's words.
+    chat.call(2, "call_3", "web_search", search("rejected"));
+    assert_eq!(
+        chat.result(3, "call_3"),
+        json!({ "error": {
+            "code": "web_search_key_rejected",
+            "message": "Brave Search didn't accept the key. Check it in Settings, under Web search."
+        }})
+    );
+    chat.answer(3, "Stake them early.");
+
+    let files = chat.files();
+    assert!(
+        files.iter().any(|file| file.contains("tomato care")),
+        "the chat records the search"
+    );
+    assert!(!files.iter().any(|file| file.contains(KEY)));
 }

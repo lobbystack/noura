@@ -80,6 +80,8 @@ enum Message {
     Share(ShareAction),
     Members(MembersAction),
     Attach(Option<Arc<local_core::WorkspaceEngine>>),
+    /// A window waits for a turn of the note documents.
+    TextWork,
     /// Moves the clock of waiting requests, for a test.
     #[cfg(feature = "test-hooks")]
     MoveRequestClock(Duration),
@@ -150,7 +152,7 @@ impl Shared {
 /// The account backend of the desktop app.
 pub struct LiveAccount {
     shared: Arc<Shared>,
-    actions: Mutex<Sender<Message>>,
+    actions: Arc<Mutex<Sender<Message>>>,
 }
 
 impl LiveAccount {
@@ -174,14 +176,26 @@ impl LiveAccount {
             interrupt: tokio::sync::Notify::new(),
             text: Arc::default(),
         });
-        // A window that needs a note's document ends the waiting pull.
+        let (sender, receiver) = channel();
+        let actions = Arc::new(Mutex::new(sender));
+        // A window that needs a note's document ends the waiting pull and
+        // the rest between rounds: the note enters text mode before your
+        // edit reaches its file, and a file sync hasn't captured keeps it
+        // out. The thread ends when the sender goes, so this holds neither
+        // side up.
         let interrupted = Arc::downgrade(&shared);
+        let sending = Arc::downgrade(&actions);
         shared.text.set_wake(Arc::new(move || {
+            if let Some(actions) = sending.upgrade() {
+                let _ = actions
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .send(Message::TextWork);
+            }
             if let Some(shared) = interrupted.upgrade() {
                 shared.interrupt.notify_one();
             }
         }));
-        let (sender, receiver) = channel();
         let driver = Driver {
             shared: shared.clone(),
             app_data,
@@ -223,10 +237,7 @@ impl LiveAccount {
                 screen.problem = Some("Sync couldn't start on this computer.".into());
             });
         }
-        Self {
-            shared,
-            actions: Mutex::new(sender),
-        }
+        Self { shared, actions }
     }
 }
 
@@ -681,7 +692,7 @@ impl Driver {
                         .attach(engine, self.service.as_ref(), &self.store, &self.app_data);
                     self.show_reset_waits();
                 }
-                Err(RecvTimeoutError::Timeout) => {
+                Err(RecvTimeoutError::Timeout) | Ok(Message::TextWork) => {
                     runtime.block_on(self.tick());
                     runtime.block_on(self.membership.tick(
                         self.service.as_mut(),

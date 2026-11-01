@@ -4,37 +4,31 @@
 //! there, and exits once the tool closes stdin, which a window would
 //! outlive.
 //!
-//! The binary finds its app data through the home folder, which the test
-//! points at a folder of its own, so this runs on macOS and Linux.
-
-#![cfg(unix)]
+//! The binary takes the test's app data folder through `--app-data`, since
+//! Windows gives no way to move a user's own.
 
 use std::{
+    ffi::OsString,
     io::{BufRead, BufReader, Write},
+    path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::mpsc,
+    sync::{Arc, mpsc},
     time::{Duration, Instant},
 };
 
-use app_core::{App, WorkspaceService};
+use app_core::{App, McpProbe, McpTest, WorkspaceService, settings_section};
 use serde_json::{Value, json};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 
 #[test]
 fn mcp_mode_answers_on_stdout_alone_while_the_app_has_the_workspace_open() {
-    let home = tempfile::tempdir().unwrap();
-    // SAFETY: this test binary runs this one test, before any other thread
-    // reads the environment.
-    unsafe {
-        std::env::set_var("HOME", home.path());
-        std::env::set_var("XDG_DATA_HOME", home.path().join("data"));
-    }
-    let app_data = app_core::default_app_data_dir().unwrap();
+    let app_data = tempfile::tempdir().unwrap();
+    let app_data = app_data.path();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
     std::fs::create_dir_all(&folder).unwrap();
-    let workspace = WorkspaceService::new(&app_data)
+    let workspace = WorkspaceService::new(app_data)
         .create("Garden", &folder)
         .unwrap();
     let root = std::path::PathBuf::from(workspace.root());
@@ -43,7 +37,7 @@ fn mcp_mode_answers_on_stdout_alone_while_the_app_has_the_workspace_open() {
 
     // The app runs: it has the workspace open and holds the lock a second
     // launch of the app would stop at.
-    let mut app = App::launch(&app_data);
+    let mut app = App::launch(app_data);
     let deadline = Instant::now() + PATIENCE;
     while app.workspace().is_none() || app.is_busy() {
         app.poll();
@@ -65,6 +59,8 @@ fn mcp_mode_answers_on_stdout_alone_while_the_app_has_the_workspace_open() {
         .arg("mcp")
         .arg("--workspace")
         .arg(&root)
+        .arg("--app-data")
+        .arg(app_data)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -154,5 +150,74 @@ fn mcp_mode_answers_on_stdout_alone_while_the_app_has_the_workspace_open() {
         assert_eq!(message["jsonrpc"], "2.0", "{line}");
     }
     drop(lock);
+    app.close_window();
+}
+
+/// Starts the command the way the desktop binary's Test connection does,
+/// and keeps its app data in the test's folder.
+struct RealProbe {
+    app_data: PathBuf,
+}
+
+impl McpProbe for RealProbe {
+    fn test(
+        &self,
+        program: &Path,
+        arguments: &[OsString],
+        wait: Duration,
+    ) -> Result<String, String> {
+        let mut arguments = arguments.to_vec();
+        arguments.push("--app-data".into());
+        arguments.push(self.app_data.clone().into());
+        noura_mcp::test_connection(program, &arguments, wait)
+            .map(|answered| format!("{} {}", answered.name, answered.version))
+    }
+}
+
+#[test]
+fn test_connection_in_settings_starts_the_real_binary_and_says_it_works() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    std::fs::create_dir_all(&folder).unwrap();
+    let workspace = WorkspaceService::new(app_data.path())
+        .create("Garden", &folder)
+        .unwrap();
+    drop(workspace);
+    let mut app = App::launch(app_data.path());
+    let deadline = Instant::now() + PATIENCE;
+    while app.workspace().is_none() || app.is_busy() {
+        app.poll();
+        assert!(
+            Instant::now() < deadline,
+            "the app didn't open the workspace"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    app.set_mcp_server(
+        Ok(PathBuf::from(env!("CARGO_BIN_EXE_noura"))),
+        Arc::new(RealProbe {
+            app_data: app_data.path().to_owned(),
+        }),
+    );
+
+    app.open_settings_at(settings_section::AI_TOOLS);
+
+    app.test_mcp_connection();
+
+    let deadline = Instant::now() + PATIENCE;
+    let answer = loop {
+        app.poll();
+        match app.mcp_setup().unwrap().test {
+            McpTest::Testing => {}
+            answer => break answer,
+        }
+        assert!(Instant::now() < deadline, "Test connection never answered");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(
+        answer,
+        McpTest::Works(format!("noura {}", env!("CARGO_PKG_VERSION")))
+    );
     app.close_window();
 }

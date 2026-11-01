@@ -148,12 +148,12 @@ impl App {
         if session.is_saving() {
             return None;
         }
-        let document = bridge.take_document(session.relative_path())?;
+        let base = session.loaded_text().to_owned();
+        let document = bridge.take_document(session.relative_path(), &base)?;
         if !session.may_enter_text_mode() {
             bridge.close(document.rid);
             return None;
         }
-        let base = session.loaded_text().to_owned();
         session.enter_text_mode(document.rid);
         Some(document.catch_up(&base, shown))
     }
@@ -1111,7 +1111,16 @@ impl App {
     }
 
     fn open_notes(&mut self) {
+        let bridge = self.text_bridge();
+        let forget = |path: &str| {
+            if let Some(bridge) = &bridge {
+                bridge.forget(path);
+            }
+        };
         let Some(workspace) = &self.workspace else {
+            for session in self.notes.sessions.values() {
+                forget(session.relative_path());
+            }
             self.notes.sessions.clear();
             self.notes.unreadable.clear();
             return;
@@ -1124,11 +1133,19 @@ impl App {
             .filter(|(_, path)| opens_in_editor(path))
             .collect();
         let open = |tab: &TabId| files.iter().any(|(id, _)| id == tab);
-        self.notes.sessions.retain(|tab, _| open(tab));
+        self.notes.sessions.retain(|tab, session| {
+            let keep = open(tab);
+            let path = session.relative_path();
+            if !keep && !files.iter().any(|(_, shown)| shown == path) {
+                forget(path);
+            }
+            keep
+        });
         self.notes.unreadable.retain(|tab, _| open(tab));
         for (tab, path) in &files {
             if let Some(session) = self.notes.sessions.get_mut(tab) {
                 if session.relative_path() != path {
+                    forget(session.relative_path());
                     session.moved_to(path);
                 }
                 continue;

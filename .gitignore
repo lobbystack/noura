@@ -15,6 +15,7 @@ src-tauri/gen/
 src-tauri/THIRD_PARTY_LICENSES.txt
 # Written by scripts/package-desktop.sh before packaging
 apps/desktop/packaging/THIRD_PARTY_LICENSES.html
+apps/desktop/packaging/plugins/
 packages/workspace-format-wasm/wasm/
 crates/workspace-format/bindings/
 

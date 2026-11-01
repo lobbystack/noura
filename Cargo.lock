@@ -6462,6 +6462,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 
 [[package]]
+name = "live-tests"
+version = "0.2.0"
+dependencies = [
+ "app-core",
+ "app-ui",
+ "axum",
+ "egui",
+ "egui_kittest",
+ "futures",
+ "jiff",
+ "local-core",
+ "reqwest 0.13.4",
+ "rusqlite",
+ "serde_json",
+ "sync-key-envelope",
+ "sync-protocol",
+ "sync-server",
+ "sync-store",
+ "sync-store-postgres",
+ "sync-store-sqlite",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+ "zeroize",
+]
+
+[[package]]
 name = "local-core"
 version = "0.2.0"
 dependencies = [

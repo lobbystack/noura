@@ -109,17 +109,17 @@ jobs:
           - os: macos-latest
             platform: macos
             package-args: --universal
-            rust-targets: aarch64-apple-darwin x86_64-apple-darwin
+            rust-targets: aarch64-apple-darwin x86_64-apple-darwin wasm32-wasip2
           - os: windows-latest
             platform: windows
             package-args: ''
-            rust-targets: ''
+            rust-targets: wasm32-wasip2
           # The oldest supported Ubuntu keeps the AppImage compatible with
           # older glibc.
           - os: ubuntu-22.04
             platform: linux
             package-args: ''
-            rust-targets: ''
+            rust-targets: wasm32-wasip2
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -150,9 +150,14 @@ jobs:
           esac
       - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
         with: { tool: 'cargo-packager@0.11.8,cargo-about@0.9.2' }
-      - name: Install the Linux packaging tools
+      # libfuse2 runs AppImages, including the tools cargo-packager uses to
+      # build one. Xvfb and Mesa give the app a display and a GPU for the
+      # check before upload.
+      - name: Install the Linux packaging and display tools
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libfuse2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse2 xvfb mesa-vulkan-drivers libegl1 libxkbcommon-x11-0
       # Apple signing is optional. Without a Developer ID certificate the app
       # is signed ad hoc, and macOS asks people to approve it on first launch.
       - name: Load the Apple signing credentials when configured
@@ -187,6 +192,7 @@ jobs:
           identity="${identity//\"/\\\"}"
           printf '\n[package.metadata.packager.macos]\nsigning-identity = "%s"\n' "$identity" \
             >> apps/desktop/Cargo.toml
+      # scripts/package-desktop.sh builds the plugins each package ships.
       # cargo-packager signs and notarizes the app, then signs every package
       # for the updater and writes a .sig beside each one.
       - name: Build and sign the packages
@@ -209,6 +215,18 @@ jobs:
           xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" --wait
           xcrun stapler staple "$dmg"
+      - name: Check that Gatekeeper accepts the disk image and the app
+        if: runner.os == 'macOS' && env.APPLE_ID != ''
+        run: scripts/check-notarization.sh target/universal-apple-darwin/release/*.dmg
+      # A package that lacks a plugin or won't start never reaches the draft.
+      - name: Install each package and launch it
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a scripts/check-desktop-packages.sh
+          else
+            scripts/check-desktop-packages.sh
+          fi
       - name: Upload the packages to the draft release
         shell: bash
         env:

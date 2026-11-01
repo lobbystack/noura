@@ -6,10 +6,13 @@
 
 mod support;
 
-use app_core::{InputValue, PluginEvent, Target, ViewKind};
+use std::time::{Duration, Instant};
+
+use app_core::{Field, InputValue, PluginEvent, SAVE_PAUSE, Target, ViewKind};
 use support::{
     FakeSystem, Fixture, note, open_from_tree,
     projects::{self, items, listed, name_new_project, project_file, text_of, with_projects},
+    settle_saves,
     tasks::{A, B, C, D, E, H, find, property, task_file, with_tasks},
 };
 
@@ -159,6 +162,61 @@ fn opening_a_task_or_a_note_from_the_project_opens_it_in_the_editor() {
         }),
     );
     assert_eq!(app.active_tab().unwrap().title(), "Compost");
+}
+
+/// The overview you type in a new project survives saves, and a status
+/// set while typing waits changes the file without losing the text.
+#[test]
+fn a_new_project_keeps_its_overview_typed_across_saves_and_a_status_change() {
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app();
+    let (Some(_tasks), Some(_projects)) = (with_tasks(&mut app), with_projects(&mut app)) else {
+        return;
+    };
+    name_new_project(&mut app, "Garden plan");
+    let path = "projects/Garden plan/Garden plan.md";
+    let tab = app.active_tab().expect("the new project opens").id();
+    let body = |fixture: &Fixture| {
+        let text = String::from_utf8(fixture.read(path)).unwrap();
+        text.split_once("\n---\n").unwrap().1.to_owned()
+    };
+
+    let mut typed = app.note(tab).unwrap().text().to_owned();
+    for chunk in ["Beds and ", "paths  ", "first"] {
+        let at = Instant::now();
+        typed.push_str(chunk);
+        app.edit_note(tab, 1, &typed, at);
+        app.save_due_notes(at + SAVE_PAUSE);
+        settle_saves(&mut app);
+        assert_eq!(body(&fixture), typed);
+    }
+
+    // Far enough ahead that no save starts on its own before the change.
+    let later = Instant::now() + Duration::from_secs(600);
+    typed.push_str("\n- dig");
+    app.edit_note(tab, 1, &typed, later);
+    assert!(app.note(tab).unwrap().is_unsaved());
+    projects::panel_with(&mut app, tab, "status");
+    projects::send_panel(
+        &mut app,
+        tab,
+        PluginEvent::Changed(Field {
+            node: "status".to_owned(),
+            value: InputValue::Choice(Some("active".to_owned())),
+        }),
+    );
+    settle_saves(&mut app);
+    app.save_due_notes(later + SAVE_PAUSE);
+    settle_saves(&mut app);
+
+    assert_eq!(
+        property(&fixture.read(path), "status"),
+        Some("active".into())
+    );
+    assert_eq!(body(&fixture), typed);
+    assert_eq!(app.note(tab).unwrap().text(), typed);
+    assert!(!app.note(tab).unwrap().is_unsaved());
+    assert_eq!(support::notice(&app), None);
 }
 
 #[test]

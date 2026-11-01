@@ -41,6 +41,21 @@ pub fn bundled_plugins() -> Option<PathBuf> {
     folder.is_dir().then_some(folder)
 }
 
+/// The smoke run's line about the plugins this copy ships: the name of
+/// each, or the error of a copy that lacks one or can't install it.
+pub fn shipped_plugins_line() -> Result<String, String> {
+    let problems = app_core::check_shipped_plugins(bundled_plugins().as_deref());
+    if problems.is_empty() {
+        let names = app_core::SHIPPED_PLUGINS.map(|(_, name)| name);
+        return Ok(format!("Plugins: {}", names.join(", ")));
+    }
+    let missing = problems
+        .iter()
+        .map(|problem| format!("{} ({})", problem.name, problem.reason))
+        .collect::<Vec<_>>();
+    Err(format!("Plugins: missing {}", missing.join(", ")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

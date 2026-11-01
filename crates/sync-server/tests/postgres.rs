@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sqlx::{Connection, PgConnection};
-use support::{Account, BIN, Client, Created, Server, push_body, seed_store};
+use support::{Account, BIN, Client, Created, Server, fill, ops_path, pull, push_body, seed_store};
 use sync_key_envelope::v2::DeviceKeys;
 use sync_protocol::codec::{Encode, List};
 use sync_protocol::ids::secret_check;
@@ -312,6 +312,153 @@ async fn serve_refuses_an_unmigrated_database_and_pending_migrations() {
         "{}",
         stderr(&pending)
     );
+}
+
+/// Gives `older` the schema of the real migrations up to `version` and
+/// every row of the database at `from` that fits it.
+async fn older_database(from: &str, older: &str, version: i64) {
+    let mut source = PgConnection::connect(from).await.expect("connects");
+    let mut connection = PgConnection::connect(older).await.expect("connects");
+    sync_store_postgres::MIGRATOR
+        .run_to(version, &mut connection)
+        .await
+        .expect("the older schema");
+    sqlx::query("SET session_replication_role = replica")
+        .execute(&mut connection)
+        .await
+        .expect("no checks while rows arrive");
+    let tables: Vec<(String,)> = sqlx::query_as(
+        "SELECT table_name::text FROM information_schema.tables
+         WHERE table_schema = 'public' AND table_name <> '_sqlx_migrations'",
+    )
+    .fetch_all(&mut connection)
+    .await
+    .expect("the tables");
+    for (table,) in tables {
+        let exists: Option<(String,)> = sqlx::query_as(
+            "SELECT table_name::text FROM information_schema.tables
+             WHERE table_schema = 'public' AND table_name = $1",
+        )
+        .bind(&table)
+        .fetch_optional(&mut source)
+        .await
+        .expect("the source table");
+        if exists.is_none() {
+            continue;
+        }
+        let rows: Vec<(String,)> = sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "SELECT to_jsonb(row)::text FROM {table} AS row"
+        )))
+        .fetch_all(&mut source)
+        .await
+        .expect("the rows")
+        .iter()
+        .map(|row| (sqlx::Row::get(row, 0),))
+        .collect();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
+            .execute(&mut connection)
+            .await
+            .expect("the table empties");
+        for (row,) in rows {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "INSERT INTO {table} SELECT * FROM jsonb_populate_record(NULL::{table}, $1::jsonb)"
+            )))
+            .bind(row)
+            .execute(&mut connection)
+            .await
+            .expect("the row");
+        }
+    }
+    connection.close().await.expect("closed");
+    source.close().await.expect("closed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn migrate_upgrades_an_older_database_and_keeps_what_it_holds() {
+    // Real data, through the server.
+    let secret = random_secret();
+    let (database, root) = migrated(&secret).await;
+    let store = sync_server::postgres::open_store(&sync_server::Postgres {
+        url: database.url.clone(),
+        secret: Some(secret.clone()),
+    })
+    .await
+    .expect("the store opens");
+    let account = seed_store(&store, 1).await;
+    sync_store::Backend::close(store.backend()).await;
+    let created = account.creation();
+    let server = Server::start_with(&mut postgres(
+        &["serve"],
+        root.path(),
+        &database.url,
+        Some(&secret),
+    ));
+    let client = Client::new(server.base(), Some(account.token(0)));
+    let held = fill(&client, &created, &account).await;
+    let before = pull(&client, &created).await;
+    server.kill();
+
+    let versions: Vec<i64> = sync_store_postgres::MIGRATOR
+        .iter()
+        .map(|migration| migration.version)
+        .collect();
+    let newest = *versions.last().expect("migrations");
+    for older in versions.iter().copied().filter(|v| *v < newest) {
+        let upgraded = Cluster::shared(tmp()).database().await;
+        older_database(&database.url, &upgraded.url, older).await;
+        let root = tempfile::tempdir().expect("temporary directory");
+
+        // `serve` waits for the upgrade, and one command runs it.
+        let refused = output(&mut postgres(
+            &["serve"],
+            root.path(),
+            &upgraded.url,
+            Some(&secret),
+        ));
+        assert!(!refused.status.success());
+        assert!(
+            stderr(&refused).contains("are pending"),
+            "{}",
+            stderr(&refused)
+        );
+        let migrate = output(&mut postgres(
+            &["migrate"],
+            root.path(),
+            &upgraded.url,
+            Some(&secret),
+        ));
+        assert!(migrate.status.success(), "{}", stderr(&migrate));
+        assert!(
+            stderr(&migrate).contains(&format!("ran {} migration(s)", newest - older)),
+            "{}",
+            stderr(&migrate)
+        );
+
+        // The upgraded server serves the same log, and the log goes on.
+        let server = Server::start_with(&mut postgres(
+            &["serve"],
+            root.path(),
+            &upgraded.url,
+            Some(&secret),
+        ));
+        let client = Client::new(server.base(), Some(account.token(0)));
+        assert_eq!(
+            pull(&client, &created).await,
+            before,
+            "from version {older}"
+        );
+        let next = created.op(&account.keys[0], 4, held.digest(), |_| {});
+        let _: PushResponse = client
+            .post(&ops_path(&created), push_body(&[next]))
+            .await
+            .decode();
+        assert_ne!(
+            pull(&client, &created).await,
+            before,
+            "from version {older}"
+        );
+        server.kill();
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

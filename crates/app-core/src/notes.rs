@@ -741,8 +741,9 @@ impl NoteSession {
     }
 
     /// Take the result of the write [`Self::start_write`] handed out.
-    /// Returns whether the save merged another app's edit with your
-    /// typing.
+    /// Returns whether the save merged another app's edit of the text
+    /// with your typing. A change of the properties alone, such as a
+    /// plugin's panel writes, leaves your text as it was.
     pub(crate) fn finish_write(&mut self, written: Written, now: Instant) -> bool {
         let Some((version, sent)) = self.writing.take() else {
             return false;
@@ -755,6 +756,7 @@ impl NoteSession {
             Written::Text(Ok(RawSaveResult::Merged { current, .. })) => {
                 let sent = in_whole_file(self.take(current), sent);
                 let merged = self.body().to_owned();
+                let other_text = merged != sent;
                 // The editor merges the outside edit in when it shows the
                 // note. Until then the session's text carries it too, so a
                 // save of edits made meanwhile can't take it out again.
@@ -767,7 +769,7 @@ impl NoteSession {
                         .unwrap_or_else(|| std::mem::take(&mut self.text))
                 };
                 self.saved(version, sent, Some(merged));
-                return true;
+                return other_text;
             }
             Written::Text(Ok(RawSaveResult::Conflict { current, .. })) => {
                 tracing::info!("an outside edit changed the text a note's typing changed");
@@ -1069,9 +1071,11 @@ impl NoteSession {
     /// or code file into a Markdown file, or the other way, as when the
     /// name field renames `LICENSE` to `LICENSE.md`, shows the file as its
     /// new kind once nothing is unsaved, as [`Self::reopen_if_fixed`] says.
-    /// Noura's own renames and moves save first, so that's at once.
+    /// Noura's own renames and moves save first, so that's at once. The
+    /// window asks for the note's document again at its new path.
     pub(crate) fn moved_to(&mut self, relative_path: &str) {
         relative_path.clone_into(&mut self.relative_path);
+        self.attach = true;
         self.reopen_if_fixed();
     }
 

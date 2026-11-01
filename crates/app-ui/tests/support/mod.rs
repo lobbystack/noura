@@ -231,6 +231,33 @@ impl System for FakeSystem {
     }
 }
 
+/// Make `folder` refuse new files, or take them again, so a save in it
+/// fails with a real permission error.
+pub fn read_only(folder: &Path, read_only: bool) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if read_only { 0o555 } else { 0o755 };
+        std::fs::set_permissions(folder, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+    #[cfg(windows)]
+    {
+        // Everyone, by its well-known SID, whatever the system's language.
+        let change: &[&str] = if read_only {
+            &["/deny", "*S-1-1-0:(OI)(CI)(WD,AD)"]
+        } else {
+            &["/remove:d", "*S-1-1-0"]
+        };
+        let status = std::process::Command::new("icacls")
+            .arg(folder)
+            .args(change)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "icacls changed nothing on {folder:?}");
+    }
+}
+
 /// Run frames until the app finishes background work and settles.
 pub fn settle(harness: &mut Harness<'static, NouraUi>) {
     let deadline = Instant::now() + Duration::from_secs(20);

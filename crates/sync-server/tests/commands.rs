@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use sqlx::{ConnectOptions, Connection};
-use support::{BIN, Client, Server, push_body, run, seed};
+use support::{BIN, Client, Server, fill, ops_path, pull, push_body, run, seed};
 use sync_protocol::codec::{Encode, List};
 use sync_protocol::ids::secret_check;
 use sync_protocol::messages::{
@@ -155,6 +155,135 @@ async fn serve_refuses_pending_migrations() {
         "{}",
         stderr(&pending)
     );
+}
+
+/// An older schema built from the real migrations up to `version`, holding
+/// every row of the database at `from` that fits it.
+async fn older_database(from: &Path, data: &Path, version: i64) {
+    std::fs::create_dir_all(data).expect("a data directory");
+    let mut connection = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(data.join(sync_store_sqlite::DATABASE_FILE))
+        .create_if_missing(true)
+        .connect()
+        .await
+        .expect("the database opens");
+    sync_store_sqlite::MIGRATOR
+        .run_to(version, &mut connection)
+        .await
+        .expect("the older schema");
+    sqlx::query("ATTACH DATABASE ? AS seeded")
+        .bind(from.to_str().expect("a UTF-8 path"))
+        .execute(&mut connection)
+        .await
+        .expect("attached");
+    let tables: Vec<(String,)> = sqlx::query_as(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_%' ESCAPE '\\' AND name NOT LIKE 'sqlite%'",
+    )
+    .fetch_all(&mut connection)
+    .await
+    .expect("the tables");
+    for (table,) in tables {
+        let columns: Vec<(String,)> = sqlx::query_as("SELECT name FROM pragma_table_info(?)")
+            .bind(&table)
+            .fetch_all(&mut connection)
+            .await
+            .expect("the columns");
+        let newer: BTreeSet<String> =
+            sqlx::query_as::<_, (String,)>("SELECT name FROM pragma_table_info(?, 'seeded')")
+                .bind(&table)
+                .fetch_all(&mut connection)
+                .await
+                .expect("the newer columns")
+                .into_iter()
+                .map(|(name,)| name)
+                .collect();
+        let shared: Vec<String> = columns
+            .into_iter()
+            .map(|(name,)| name)
+            .filter(|name| newer.contains(name))
+            .collect();
+        if shared.is_empty() {
+            continue;
+        }
+        let shared = shared.join(", ");
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "INSERT OR REPLACE INTO main.{table} ({shared}) SELECT {shared} FROM seeded.{table}"
+        )))
+        .execute(&mut connection)
+        .await
+        .expect("the rows");
+    }
+    sqlx::query("DETACH DATABASE seeded")
+        .execute(&mut connection)
+        .await
+        .expect("detached");
+    connection.close().await.expect("closed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn migrate_upgrades_an_older_database_and_keeps_what_it_holds() {
+    // Real data, through the server.
+    let root = tempfile::tempdir().expect("temporary directory");
+    let data = root.path().join("data");
+    assert!(run(&["migrate"], &data).status.success());
+    let account = seed(&data, 1).await;
+    let created = account.creation();
+    let server = Server::start(&data);
+    let client = Client::new(server.base(), Some(account.token(0)));
+    let held = fill(&client, &created, &account).await;
+    let before = pull(&client, &created).await;
+    server.kill();
+
+    let versions: Vec<i64> = sync_store_sqlite::MIGRATOR
+        .iter()
+        .map(|migration| migration.version)
+        .collect();
+    let newest = *versions.last().expect("migrations");
+    for older in versions.iter().copied().filter(|v| *v < newest) {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let upgraded = root.path().join("data");
+        older_database(
+            &data.join(sync_store_sqlite::DATABASE_FILE),
+            &upgraded,
+            older,
+        )
+        .await;
+        std::fs::copy(data.join("server-secret"), upgraded.join("server-secret"))
+            .expect("the secret");
+
+        // `serve` waits for the upgrade, and one command runs it.
+        let refused = run(&["serve"], &upgraded);
+        assert!(!refused.status.success());
+        assert!(
+            stderr(&refused).contains("are pending"),
+            "{}",
+            stderr(&refused)
+        );
+        let migrate = run(&["migrate"], &upgraded);
+        assert!(migrate.status.success(), "{}", stderr(&migrate));
+        assert!(
+            stderr(&migrate).contains(&format!("ran {} migration(s)", newest - older)),
+            "{}",
+            stderr(&migrate)
+        );
+
+        // The upgraded server serves the same log, and the log goes on.
+        let server = Server::start(&upgraded);
+        let client = Client::new(server.base(), Some(account.token(0)));
+        assert_eq!(
+            pull(&client, &created).await,
+            before,
+            "from version {older}"
+        );
+        let next = created.op(&account.keys[0], 4, held.digest(), |_| {});
+        let _: PushResponse = client
+            .post(&ops_path(&created), push_body(&[next]))
+            .await
+            .decode();
+        let after = pull(&client, &created).await;
+        assert_ne!(after, before, "from version {older}");
+        server.kill();
+    }
 }
 
 #[test]

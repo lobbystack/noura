@@ -60,6 +60,28 @@ fn a_link_opens_its_target_in_the_preview_tab_as_a_single_click_in_the_tree_does
     assert_eq!(active(&app).as_deref(), Some("Projects/Plan.md"));
 }
 
+/// A link names a note, not a folder, so it still leads there after the
+/// note moves.
+#[test]
+fn a_link_still_opens_its_target_after_the_target_moves_to_another_folder() {
+    let fixture = Fixture::new(FILES);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "Inbox.md");
+
+    std::fs::create_dir(fixture.root.join("Archive")).unwrap();
+    std::fs::rename(
+        fixture.root.join("Projects/Plan.md"),
+        fixture.root.join("Archive/Plan.md"),
+    )
+    .unwrap();
+    app.rescan();
+
+    app.follow_note_link(tab, "Plan", OpenAs::Kept);
+
+    assert_eq!(active(&app).as_deref(), Some("Archive/Plan.md"));
+    assert!(notice(&app).is_none());
+}
+
 #[test]
 fn a_link_opened_in_a_new_tab_keeps_the_current_tab() {
     let fixture = Fixture::new(FILES);

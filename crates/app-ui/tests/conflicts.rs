@@ -71,6 +71,7 @@ fn conflict_review_labels_both_versions_and_escape_leaves_a_banner_that_opens_it
     let mut harness = opened(app_data.path(), &folder);
 
     in_conflict(&folder, &mut harness);
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
 
     let dialog = harness.get_by_role_and_label(Role::Dialog, "Choose a version");
     let mine = dialog.get_by_role_and_label(Role::MultilineTextInput, "Your version");
@@ -102,6 +103,7 @@ fn conflict_review_labels_both_versions_and_escape_leaves_a_banner_that_opens_it
     assert!(!has(&harness, Role::Dialog, "Choose a version"));
     let banner = harness.get_by_role_and_label(Role::Alert, "This file changed in another app");
     banner.get_by_label("Your text is still here. Compare both versions and choose one.");
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
     banner
         .get_by_role_and_label(Role::Button, "Compare")
         .click();

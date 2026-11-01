@@ -29,7 +29,7 @@ The second command asks for the key's password. Skip it if the key has none. To 
 
 ### Sign the macOS app with a Developer ID
 
-To sign and notarize the macOS app with an Apple Developer ID, add these secrets to the `release` environment: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID`. cargo-packager imports the certificate, signs the app with the hardened runtime, and notarizes and staples it. The workflow then notarizes and staples the `.dmg`.
+To sign and notarize the macOS app with an Apple Developer ID, add these secrets to the `release` environment: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID`. cargo-packager imports the certificate, signs the app with the hardened runtime, and notarizes and staples it. The workflow then notarizes and staples the `.dmg`, and `scripts/check-notarization.sh` fails the build unless both carry a ticket and Gatekeeper accepts them.
 
 Without these secrets, the workflow signs the app ad hoc, and macOS asks each person to approve it in **System Settings** > **Privacy & Security** on first launch. If you set some of the six secrets but not all, the build stops and names the missing ones.
 
@@ -76,9 +76,15 @@ cargo install cargo-about --version 0.9.2 --locked
 
 Builds for Intel and AMD processors, including the Intel half of `--universal`, also need [NASM](https://nasm.us) 2.14 or newer on your `PATH`. rav1d, which decodes AVIF images, assembles its x86 code with it. Install it with `brew install nasm`, `sudo apt-get install nasm` or `choco install nasm`.
 
-Then run `scripts/package-desktop.sh` from the repository root. It writes the license list, builds the app in release mode, and packages it for your operating system. The packages land in `target/release`. On macOS, `--universal` builds one app for Apple silicon and Intel instead, which needs the `aarch64-apple-darwin` and `x86_64-apple-darwin` Rust targets.
+The packages also need the WebAssembly target for the plugins:
 
-To check the result, run `scripts/check-desktop-packages.sh`. It installs or mounts each package and launches the installed app with `--smoke`, which opens the first window, prints a short report, and quits. On Linux, run it under `xvfb-run` when you have no display.
+```bash
+rustup target add wasm32-wasip2
+```
+
+Then run `scripts/package-desktop.sh` from the repository root. It writes the license list, builds the app and the plugins that ship with it in release mode, and packages them for your operating system. The packages land in `target/release`. On macOS, `--universal` builds one app for Apple silicon and Intel instead, which needs the `aarch64-apple-darwin` and `x86_64-apple-darwin` Rust targets.
+
+To check the result, run `scripts/check-desktop-packages.sh`. It installs or mounts each package and launches the installed app with `--smoke`, which opens the first window, prints a short report, and quits. If the app lacks Tasks, Projects, Calendar or AI, or can't compile one, `--smoke` names the plugin and exits with an error before it opens a window. On Linux, run it under `xvfb-run` when you have no display.
 
 Set `CARGO_PACKAGER_SIGN_PRIVATE_KEY` to a key file or key, and `CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD` to its password, to sign each package for the updater. cargo-packager then writes a `.sig` file beside each package.
 
@@ -98,6 +104,14 @@ cargo-packager puts the file in each package's resources: `Noura.app/Contents/Re
 
 The **Third-party licenses** link in **Settings** > **About Noura** opens this file. A build that cargo-packager didn't package has no copy, so the link opens `THIRD_PARTY_NOTICES.md` on GitHub instead.
 
+## Plugins in the app
+
+Every package ships Tasks, Projects, Calendar and AI. `scripts/build-shipped-plugins.sh` builds them for `wasm32-wasip2` into `apps/desktop/packaging/plugins`, with a folder for each plugin that holds its `plugin.toml` and its component. cargo-packager copies that folder into the same resources folder as the license list, as `plugins`. On first run, Noura lists the plugins and installs them once you approve.
+
+To ship another plugin, add it to that script, to `SHIPPED_PLUGINS` in `crates/app-core/src/plugins.rs` and to the report line `scripts/check-desktop-packages.sh` expects.
+
+The plugins link one crate the desktop binary doesn't, `wit-bindgen` 0.63. `apps/desktop/packaging/about.hbs` names it in the license list.
+
 ## How the app updates
 
 Noura checks `latest.json` on the latest GitHub release 5 seconds after launch and every 6 hours. **Settings** > **Updates** also has a **Check for updates** button. When Noura finds a newer version, it downloads the bundle and verifies its signature in the background, then offers a **Restart** button. Noura installs nothing until you choose it.
@@ -114,7 +128,7 @@ On Linux, only the AppImage updates itself. The `.deb` package runs without the 
 
 ## Release checks in CI
 
-The `packages` job in `.github/workflows/ci.yml` runs on every push and pull request. On macOS, Windows, and Ubuntu 22.04, it builds each package, signs it with a throwaway updater key, and runs `scripts/check-desktop-packages.sh`. The check fails unless each installed app draws its first window and finds its license list. It also checks that the `.dmg`, the `.msi` and the AppImage update themselves and the `.deb` doesn't.
+The `packages` job in `.github/workflows/ci.yml` runs on every push and pull request. On macOS, Windows, and Ubuntu 22.04, it builds each package, signs it with a throwaway updater key, and runs `scripts/check-desktop-packages.sh`. The check fails unless each installed app draws its first window, finds its license list and holds the four plugins that ship with Noura. It also checks that the `.dmg`, the `.msi` and the AppImage update themselves and the `.deb` doesn't.
 
 The desktop crate's tests run the real updater against a feed served on a local port. They check that it accepts a bundle signed with the expected key and rejects a changed bundle or another key's signature.
 

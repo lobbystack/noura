@@ -26,6 +26,8 @@ The browser encrypted-sync foundation uses `@noble/hashes` (MIT) for BLAKE3 devi
 
 Notable runtime dependencies include the Apache-2.0 licensed official Rust MCP SDK (`rmcp`), dual MIT/Apache-2.0 `genai`, MIT/Apache-2.0 `keyring`, MIT `trash`, MIT `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai`, MIT `Tauri`, MIT `Svelte`, MIT `Tiptap`, and CC0-1.0 `fractional-indexing`. Desktop release packaging includes the generated license file described above.
 
+The plugins that ship in each desktop package are WebAssembly components that link `wit-bindgen` (Apache-2.0 WITH LLVM-exception, Apache-2.0 or MIT), as the license file says. Their other crates also appear in the desktop binary.
+
 Plugin calendar grids name weekdays and months and write times in your locale with ICU4X's `icu_datetime`, `icu_calendar`, `icu_time` and `icu_locale_core` (Unicode-3.0), which compile in CLDR data under the same license. `sys-locale` (MIT/Apache-2.0) reads the locale from the operating system. These are dependencies, not copied donor implementations, and the generated license file carries their license texts.
 
 When the AI reads a web page, `local-core` decodes it with `encoding_rs` ((Apache-2.0 OR MIT) AND BSD-3-Clause), parses its HTML with `html5ever` and `markup5ever` (MIT/Apache-2.0), and turns it into text with `html2text` (MIT). These are dependencies, not copied donor implementations, and the generated license file carries their license texts.

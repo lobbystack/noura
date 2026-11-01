@@ -812,6 +812,82 @@ struct Hold {
 /// its place, none to drop it.
 pub type FrameTamper = Box<dyn Fn(Frame) -> Vec<Frame> + Send + Sync>;
 
+/// A TCP line to the server that a test can cut: every connection on it
+/// drops at once, and new ones find nobody listening, as when a computer
+/// goes offline, until the test restores it.
+pub struct Line {
+    pub base: String,
+    target: u16,
+    port: u16,
+    up: tokio::sync::watch::Sender<bool>,
+    listening: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl Line {
+    /// A line up to the server at `base`, an `http://localhost` address.
+    pub async fn to(base: &str) -> Self {
+        let target = base
+            .rsplit_once(':')
+            .and_then(|(_, port)| port.parse().ok())
+            .expect("a port");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a port");
+        let port = listener.local_addr().expect("an address").port();
+        let (up, _) = tokio::sync::watch::channel(true);
+        let line = Self {
+            base: format!("http://localhost:{port}"),
+            target,
+            port,
+            up,
+            listening: Mutex::new(None),
+        };
+        line.listen(listener);
+        line
+    }
+
+    fn listen(&self, listener: tokio::net::TcpListener) {
+        let (target, up) = (self.target, self.up.clone());
+        let task = tokio::spawn(async move {
+            while let Ok((mut near, _)) = listener.accept().await {
+                let mut down = up.subscribe();
+                tokio::spawn(async move {
+                    let Ok(mut far) = tokio::net::TcpStream::connect(("127.0.0.1", target)).await
+                    else {
+                        return;
+                    };
+                    tokio::select! {
+                        _ = tokio::io::copy_bidirectional(&mut near, &mut far) => {}
+                        _ = down.wait_for(|up| !*up) => {}
+                    }
+                });
+            }
+        });
+        *self.listening.lock().unwrap() = Some(task);
+    }
+
+    /// Drops every connection and stops listening.
+    pub fn cut(&self) {
+        self.up.send_replace(false);
+        if let Some(task) = self.listening.lock().unwrap().take() {
+            task.abort();
+        }
+    }
+
+    /// Listens again on the same port.
+    pub async fn restore(&self) {
+        self.up.send_replace(true);
+        let listener = loop {
+            match tokio::net::TcpListener::bind(("127.0.0.1", self.port)).await {
+                Ok(listener) => break listener,
+                // The aborted listener lets go of the port a moment later.
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        };
+        self.listen(listener);
+    }
+}
+
 /// A proxy between a client and the server that forwards every request
 /// and lets a test rewrite responses, or answer in the server's place, as
 /// a malicious server or relay would. It bridges realtime channels too,

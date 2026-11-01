@@ -56,6 +56,7 @@ mod synced;
 mod trash;
 
 use chat_journal::*;
+use chats::FailedChatRecovery;
 use drafts::*;
 use durable::*;
 use manifest::*;
@@ -64,6 +65,8 @@ use own_writes::OwnWrites;
 use raw_markdown::*;
 use scan::*;
 
+#[cfg(any(test, feature = "test-hooks"))]
+pub use chat_journal::ChatRecoveryPoint;
 pub use drafts::{
     ConflictResolution, DraftReconcileInput, DraftReconcileResult, ManagedConflictResolution,
     ManagedConflictResolveInput, ManagedDraftInput, ManagedDraftResult, ResolveConflictInput,
@@ -104,6 +107,13 @@ pub struct WorkspaceEngine {
     /// disk before the index has it, and never indexes it as another
     /// app's. Reentrant, because some writes reconcile while they hold it.
     change_gate: parking_lot::ReentrantMutex<()>,
+    /// The chat intents the last replay couldn't finish.
+    stuck_chat_mutations: Mutex<Vec<StuckChatMutation>>,
+    /// The chats whose last recovery failed, so a read doesn't walk the
+    /// workspace for each retry.
+    failed_chat_recoveries: Mutex<HashMap<String, FailedChatRecovery>>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    chat_recovery_probe: ChatRecoveryProbe,
     /// File changes announced so far, by who made them. Unlike the event
     /// channel these never drop a change, however many arrive at once.
     own_changes: AtomicU64,
@@ -300,6 +310,10 @@ impl WorkspaceEngine {
             dirty,
             scan_state: Mutex::new(ScanState::default()),
             change_gate: parking_lot::ReentrantMutex::new(()),
+            stuck_chat_mutations: Mutex::new(Vec::new()),
+            failed_chat_recoveries: Mutex::new(HashMap::new()),
+            #[cfg(any(test, feature = "test-hooks"))]
+            chat_recovery_probe: ChatRecoveryProbe::default(),
             own_changes: AtomicU64::new(0),
             outside_changes: AtomicU64::new(0),
             chat_mutation_fault: Mutex::new(None),

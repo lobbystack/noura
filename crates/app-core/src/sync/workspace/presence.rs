@@ -23,6 +23,10 @@ use super::{SyncError, SyncService, WorkspaceSync, random, unix_now};
 
 /// How long a cursor stays after its last record.
 pub const CURSOR_LIFETIME: Duration = Duration::from_secs(30);
+/// How often a note's record goes out again while your selection stays
+/// put, so a resting cursor stays and someone who just opened the note
+/// finds it.
+pub const CURSOR_REFRESH: Duration = Duration::from_secs(15);
 
 /// A selection of this device, in UTF-16 offsets of the note's text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,8 +69,8 @@ pub struct PresenceRuntime {
     sequence: u64,
     /// Each open note's selections as they stand.
     selections: BTreeMap<Id, (Vec<SelectionRange>, bool)>,
-    /// The selections each note last sent.
-    sent: BTreeMap<Id, (Vec<SelectionRange>, bool)>,
+    /// The selections each note last sent, and when.
+    sent: BTreeMap<Id, ((Vec<SelectionRange>, bool), Instant)>,
     /// The channels the server knows of.
     subscribed: BTreeSet<Id>,
     /// What each collaborator's session last said.
@@ -139,6 +143,11 @@ impl WorkspaceSync {
     /// The frames to send on this tick: a subscribe when the open notes
     /// changed, and a presence record for each note whose selection changed.
     pub fn presence_frames(&mut self) -> Result<Vec<Frame>, SyncError> {
+        self.presence_frames_at(Instant::now())
+    }
+
+    /// [`Self::presence_frames`] as of `now`.
+    pub fn presence_frames_at(&mut self, now: Instant) -> Result<Vec<Frame>, SyncError> {
         let Some(session) = self.presence.session else {
             return Ok(Vec::new());
         };
@@ -155,7 +164,11 @@ impl WorkspaceSync {
             .presence
             .selections
             .iter()
-            .filter(|(rid, current)| self.presence.sent.get(rid) != Some(current))
+            .filter(|(rid, current)| {
+                self.presence.sent.get(rid).is_none_or(|(sent, at)| {
+                    sent != *current || now.saturating_duration_since(*at) >= CURSOR_REFRESH
+                })
+            })
             .map(|(rid, current)| (*rid, current.clone()))
             .collect();
         // At most two records a second, on the 500 ms tick (§23), taking
@@ -169,7 +182,7 @@ impl WorkspaceSync {
             if let Some(frame) = self.presence_record(session, rid, &ranges, active)? {
                 frames.push(frame);
             }
-            self.presence.sent.insert(rid, (ranges, active));
+            self.presence.sent.insert(rid, ((ranges, active), now));
         }
         Ok(frames)
     }

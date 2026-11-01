@@ -1,7 +1,7 @@
 name: Scale
 
 # The runs of sync-v2.md §28 and §32 too long for every push, each on SQLite
-# and on PostgreSQL. A job fails on a lost, duplicated or diverged object and
+# and on PostgreSQL, and the 2 GiB attachment of §21. A job fails on a lost, duplicated or diverged object and
 # prints the seed that reproduces it: run the same test with NOURA_SCALE_SEED
 # or NOURA_SOAK_SEED set. Each job adds its numbers to the run's summary and
 # keeps them as an artifact. The spec sets no time budgets yet.
@@ -73,6 +73,27 @@ jobs:
           name: scale-${{ matrix.store }}
           path: numbers.jsonl
           if-no-files-found: ignore
+
+  # The largest attachment a blob carries, up and down, in bounded memory.
+  large-attachment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # The run holds 2 GiB three times over.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+          df -h .
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - run: rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: large-attachment }
+      - name: Sync a 2 GiB attachment
+        run: cargo test --locked -p app-core --test sync_attachment_memory a_2_gib_attachment -- --ignored --nocapture
 
   # 200 devices at the 500 ms tick, in the workspace domain and 2 restricted
   # domains, with `retained_bytes` at 64 MiB.

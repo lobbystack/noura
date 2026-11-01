@@ -232,6 +232,48 @@ fn each_change_in_the_panel_writes_the_task_and_keeps_its_body() {
     assert!(text.ends_with("---\nNotes.\n"), "{text}");
 }
 
+/// A task holds its project's stable ID, so it stays with the project
+/// through a rename and a move of the project's file.
+#[test]
+fn a_task_keeps_its_project_when_the_project_is_renamed_and_moved() {
+    let garden = format!("project_{H}");
+    let task = task_file(
+        A,
+        &format!("status: todo\npriority: medium\nproject: {garden}\n"),
+        "2026-10-01T10:00:00Z",
+    );
+    let fixture = Fixture::new(&[
+        ("tasks/Paint the fence.md", &task),
+        ("projects/Garden/Garden.md", &project_file(H)),
+    ]);
+    let mut app = fixture.app();
+    let Some(_folder) = with_tasks(&mut app) else {
+        return;
+    };
+    let tab = open_from_tree(&mut app, "tasks/Paint the fence.md");
+    wait_for(&mut app, tab, "project", choice(&garden));
+
+    app.start_rename("projects/Garden/Garden.md");
+    assert!(app.commit_rename("Allotment"));
+    support::plugins::wait_until(&mut app, "the panel shows the new name", |app| {
+        input(app, tab, "project").is_some_and(|(value, choices)| {
+            value == choice(&garden)
+                && ids(&choices).contains(&(garden.clone(), "Allotment".to_owned()))
+        })
+    });
+
+    std::fs::rename(
+        fixture.root.join("projects/Garden/Allotment.md"),
+        fixture.root.join("Allotment.md"),
+    )
+    .unwrap();
+    app.rescan();
+    settle(&mut app);
+
+    wait_for(&mut app, tab, "project", choice(&garden));
+    assert_eq!(fixture.read("tasks/Paint the fence.md"), task);
+}
+
 #[test]
 fn after_an_outside_edit_a_panel_change_fails_and_the_panel_shows_the_latest_version() {
     let fixture = workspace();

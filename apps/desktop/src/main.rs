@@ -2,7 +2,8 @@
 //!
 //! `--smoke` opens the first window, prints what this copy found about
 //! itself once that window's first frame is on screen, and quits. CI runs
-//! it from each installed package.
+//! it from each installed package. A copy that lacks a plugin it should
+//! ship says which and fails without opening a window.
 //!
 //! `mcp --workspace <folder>` serves that workspace to an AI tool over
 //! stdio instead, with `noura-mcp`. It opens no window and doesn't count as
@@ -152,7 +153,17 @@ fn main() -> ExitCode {
     if arguments.next().as_deref() == Some(OsStr::new("mcp")) {
         return noura_mcp::run(arguments);
     }
-    match run_app() {
+    let smoke = std::env::args_os()
+        .skip(1)
+        .any(|argument| argument == "--smoke");
+    let smoke = match smoke.then(licenses::shipped_plugins_line).transpose() {
+        Ok(plugins) => plugins,
+        Err(missing) => {
+            println!("{missing}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match run_app(smoke) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("Noura stopped: {error}");
@@ -161,11 +172,9 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_app() -> eframe::Result {
+/// Run the app. `smoke` is the plugins line of a smoke run's report.
+fn run_app(smoke: Option<String>) -> eframe::Result {
     let launched = Instant::now();
-    let smoke = std::env::args()
-        .skip(1)
-        .any(|argument| argument == "--smoke");
     let app_data = app_core::default_app_data_dir();
     let has_app_data = app_data.is_some();
     let app_data = app_data.unwrap_or_else(|| std::env::temp_dir().join("Noura"));
@@ -241,8 +250,8 @@ fn run_app() -> eframe::Result {
                 let mut windows = Windows::new(app, instance, || Box::new(SystemFolderPicker))
                     .quitting_on(quit)
                     .checking_spelling_with(spelling::system_spell_checker());
-                if smoke {
-                    windows = windows.smoke_test(smoke_report(&updates));
+                if let Some(plugins) = &smoke {
+                    windows = windows.smoke_test(smoke_report(plugins, &updates));
                 }
                 windows.install_menu_bar(creation);
                 Ok(Box::new(windows))
@@ -314,7 +323,7 @@ fn set_up_updates(
     }
 }
 
-fn smoke_report(updates: &Result<(), String>) -> String {
+fn smoke_report(plugins: &str, updates: &Result<(), String>) -> String {
     let licenses = licenses::bundled_licenses()
         .map_or_else(|| "missing".to_owned(), |path| path.display().to_string());
     let updates = match updates {
@@ -322,7 +331,7 @@ fn smoke_report(updates: &Result<(), String>) -> String {
         Err(reason) => format!("off ({reason})"),
     };
     format!(
-        "Noura {} drew its first window.\nThird-party licenses: {licenses}\nUpdates: {updates}",
+        "Noura {} drew its first window.\nThird-party licenses: {licenses}\n{plugins}\nUpdates: {updates}",
         env!("CARGO_PKG_VERSION")
     )
 }

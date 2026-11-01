@@ -75,6 +75,7 @@ fn a_note_opens_from_the_tree_in_the_editor_with_its_name_and_properties() {
     open_plan(&mut harness);
 
     harness.get_by_role_and_label(Role::Document, "Note text");
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
     assert_eq!(
         name_field(&harness).accesskit_node().value().as_deref(),
         Some("Plan")
@@ -181,6 +182,20 @@ fn f2_moves_from_the_text_to_the_name_and_enter_renames_the_file() {
         Some("Roadmap")
     );
     assert!(!name_field(&harness).accesskit_node().is_focused());
+    assert!(
+        harness
+            .get_by_role_and_label(Role::MultilineTextInput, "Note text")
+            .accesskit_node()
+            .is_focused()
+    );
+    // The Enter that left the field isn't a line break in the text.
+    let app = harness.state().app();
+    let tab = app.active_tab().unwrap().id();
+    assert!(!app.note(tab).unwrap().is_unsaved());
+    assert_eq!(
+        app.note(tab).unwrap().text(),
+        "# Heading\n\nSome **bold** text.\n"
+    );
 }
 
 #[test]
@@ -473,16 +488,10 @@ fn try_again_opens_a_file_that_couldn_t_open_before() {
     harness.get_by_role_and_label(Role::Document, "Note text");
 }
 
-#[cfg(unix)]
 mod failed_saves {
-    use std::os::unix::fs::PermissionsExt;
+    use support::read_only;
 
     use super::*;
-
-    fn read_only(folder: &std::path::Path, read_only: bool) {
-        let mode = if read_only { 0o555 } else { 0o755 };
-        std::fs::set_permissions(folder, std::fs::Permissions::from_mode(mode)).unwrap();
-    }
 
     /// The note open with typing that couldn't save, and the prompt that
     /// closing its tab brings up.
@@ -560,6 +569,7 @@ mod failed_saves {
         );
         dialog.get_by_role_and_label(Role::Button, "Keep editing");
         dialog.get_by_role_and_label(Role::Button, "Discard changes");
+        assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
         assert!(
             dialog
                 .get_by_role_and_label(Role::Button, "Try again")
