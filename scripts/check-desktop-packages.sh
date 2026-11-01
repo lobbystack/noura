@@ -62,7 +62,9 @@ case "$(uname -s)" in
   Darwin)
     dmg="$(find_one '*.dmg')"
     mkdir "$work/mount" "$work/Applications"
-    hdiutil attach -nobrowse -readonly -mountpoint "$work/mount" "$dmg"
+    # The image carries a license agreement, and hdiutil cancels the mount
+    # unless something answers it.
+    PAGER=cat hdiutil attach -nobrowse -readonly -mountpoint "$work/mount" "$dmg" < <(yes)
     cp -R "$work/mount/Noura.app" "$work/Applications/"
     hdiutil detach "$work/mount"
     check "$(basename "$dmg")" on "$work/Applications/Noura.app/Contents/MacOS/noura"

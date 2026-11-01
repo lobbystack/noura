@@ -22,7 +22,9 @@ spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg
   fail "Gatekeeper refuses $dmg."
 
 mount="$(mktemp -d)"
-hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg"
+# The image carries a license agreement, and hdiutil cancels the mount unless
+# something answers it.
+PAGER=cat hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg" < <(yes)
 trap 'hdiutil detach "$mount"' EXIT
 
 app="$mount/Noura.app"
