@@ -10,6 +10,7 @@ use app_core::sync::SyncError;
 use app_core::sync::invitations::InvitationBook;
 use app_core::sync::realtime::Channel;
 use app_core::sync::workspace::WorkspaceSync;
+use app_core::sync::workspace::rebuild::HeldChoice;
 use app_core::sync::workspace::text::{Entered, LeftWhy, TextReviewKind};
 use editor_core::text_mode::{CollabDocument, Utf16Splice};
 use sync_protocol::matching::MARKER;
@@ -896,6 +897,40 @@ async fn a_folder_rebuilt_while_its_marker_is_invalid_matches_once_it_is_restore
         on_disk(&team.grantee_folder).as_deref(),
         Some(&b"mine\n"[..])
     );
+}
+
+/// Keeping a held version in a restricted folder signs it in that folder's
+/// domain, so the choice takes effect and stays inside the domain.
+#[tokio::test]
+async fn keeping_a_held_restricted_file_signs_in_its_domain() {
+    let server = Server::start().await;
+    let mut team = team(&server).await;
+    settle(&mut team.grantee_sync, &mut team.grantee).await;
+    let salaries = team.grantee_sync.rid_at("Pay/Salaries.md").expect("synced");
+    drop(team.grantee_sync);
+    team.grantee_folder.write("Pay/Salaries.md", b"mine\n");
+    let engine = team.grantee_folder.engine.clone();
+    let mut rebuilt = WorkspaceSync::rebuild(
+        &mut team.grantee.service,
+        engine,
+        &mut team.grantee_folder.registry,
+    )
+    .await
+    .expect("rebuilt");
+    settle(&mut rebuilt, &mut team.grantee).await;
+    assert_eq!(rebuilt.status().held, 1, "the differing file waits for you");
+
+    rebuilt
+        .resolve_held(salaries, HeldChoice::KeepMine)
+        .expect("you keep your version");
+    settle(&mut rebuilt, &mut team.grantee).await;
+    settle(&mut team.sync, &mut team.owner).await;
+    assert_eq!(rebuilt.status().held, 0);
+    assert_eq!(rebuilt.status().pending, 0);
+    assert_eq!(rebuilt.object_domain(&salaries), Some(team.domain));
+    assert_eq!(team.folder.files()["Pay/Salaries.md"], b"mine\n");
+    settle(&mut team.outsider_sync, &mut team.outsider).await;
+    assert!(!team.outsider_folder.path("Pay").exists());
 }
 
 #[tokio::test]
