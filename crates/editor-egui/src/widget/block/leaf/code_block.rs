@@ -324,11 +324,12 @@ impl<'ast> MdRender {
         layout
     }
 
-    /// The color highlighted code of `style` draws in.
+    /// The color highlighted code of `style` draws in, kept readable on
+    /// the block's fill or, without one, on the note's background.
     fn code_color(&self, style: CodeStyle) -> egui::Color32 {
         let theme = self.ctx.get_lb_theme();
-        if let Some(code) = theme.code_variant() {
-            return match style {
+        let (color, background) = if let Some(code) = theme.code_variant() {
+            let color = match style {
                 CodeStyle::Keyword => code.keyword,
                 CodeStyle::Function => code.function,
                 CodeStyle::Type => code.class,
@@ -336,16 +337,20 @@ impl<'ast> MdRender {
                 CodeStyle::Number => code.number,
                 CodeStyle::Comment => code.comment,
             };
-        }
-        let fg = theme.fg();
-        match style {
-            CodeStyle::Keyword => fg.magenta,
-            CodeStyle::Function => fg.blue,
-            CodeStyle::Type => fg.cyan,
-            CodeStyle::String => fg.green,
-            CodeStyle::Number => fg.yellow,
-            CodeStyle::Comment => theme.neutral_fg_secondary(),
-        }
+            (color, code.background)
+        } else {
+            let fg = theme.fg();
+            let color = match style {
+                CodeStyle::Keyword => fg.magenta,
+                CodeStyle::Function => fg.blue,
+                CodeStyle::Type => fg.cyan,
+                CodeStyle::String => fg.green,
+                CodeStyle::Number => fg.yellow,
+                CodeStyle::Comment => theme.neutral_fg_secondary(),
+            };
+            (color, self.ctx.global_style().visuals.panel_fill)
+        };
+        crate::palette::ensure_normal_text_contrast(color, background)
     }
 
     fn height_code_block_line(

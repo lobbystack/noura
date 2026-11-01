@@ -85,6 +85,9 @@ pub struct PaintedSpan {
     pub underlined: bool,
     /// Whether the spell checker flagged the text.
     pub misspelled: bool,
+    /// The color the first glyph of the text drew in, as shaped for the
+    /// renderer.
+    pub color: Option<egui::Color32>,
 }
 
 /// A region painted this frame that a platform deciding touches itself
@@ -658,19 +661,32 @@ impl Editor {
             .fragments
             .iter()
             .map(|fragment| {
-                let text = match &fragment.content {
+                let (text, color) = match &fragment.content {
                     FragmentContent::Glyphs { buffer, .. } => buffer
                         .read()
                         .map(|buffer| {
-                            buffer
+                            let text = buffer
                                 .lines
                                 .iter()
                                 .map(|line| line.text())
                                 .collect::<Vec<_>>()
-                                .join("\n")
+                                .join("\n");
+                            let color = buffer
+                                .layout_runs()
+                                .flat_map(|run| run.glyphs.iter())
+                                .find_map(|glyph| glyph.color_opt)
+                                .map(|color| {
+                                    egui::Color32::from_rgba_unmultiplied(
+                                        color.r(),
+                                        color.g(),
+                                        color.b(),
+                                        color.a(),
+                                    )
+                                });
+                            (text, color)
                         })
                         .unwrap_or_default(),
-                    _ => String::new(),
+                    _ => (String::new(), None),
                 };
                 PaintedSpan {
                     source_range: fragment.source_range,
@@ -683,6 +699,7 @@ impl Editor {
                         .last()
                         .is_some_and(|style| style.format.underline),
                     misspelled: fragment.style_stack.iter().any(|style| style.misspelled),
+                    color,
                 }
             })
             .collect()
