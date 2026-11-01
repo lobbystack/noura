@@ -355,8 +355,8 @@ jobs:
   # tracer on a PostgreSQL service, as a hosted deployment runs it, then the
   # push soak for five minutes. Tests that need a cluster of their own, such
   # as one that requires TLS, start it with the runner's PostgreSQL. The job
-  # builds dependencies optimized, the crypto crates among them, so a debug
-  # build of the server keeps the soak's rate on a shared runner.
+  # builds dependencies optimized, the crypto crates among them, so its
+  # debug tests stay quick on a shared runner.
   postgres:
     runs-on: ubuntu-latest
     services:
