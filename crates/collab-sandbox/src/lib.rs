@@ -63,7 +63,7 @@ pub static GUEST_MODULE: &[u8] = include_bytes!("../guest/collab_sandbox_guest.w
 /// The BLAKE3 hash of [`GUEST_MODULE`], as `sync-v2-collaboration.json`
 /// records it. The sandbox refuses to run any other module.
 pub const GUEST_MODULE_HASH: &str =
-    "0b81c71fa22faa53b76c9889da9cd84a1192e8a82f5a32ec24172922f6e00b7f";
+    "c6ad0cfc002bd7459fc6099ab39554505cf155b9a3b47ecc5ac97c978be73e10";
 
 /// The operators that cost no fuel. Every other operator costs one unit,
 /// as `sync-v2-collaboration.json` records.

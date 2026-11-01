@@ -38,6 +38,11 @@ fail=0
 for check in "${checks[@]}"; do
   case "$check" in
     module)
+      # Other hosts build the same functions in another order: see build.sh.
+      if [ "$(uname -s)/$(uname -m)" != Linux/x86_64 ]; then
+        echo "Skipping the module check: only x86-64 Linux builds the pinned module."
+        continue
+      fi
       built="$repo/target/tmp/check-collab-sandbox/collab_sandbox_guest.wasm"
       CARGO_TARGET_DIR="$repo/target/tmp/check-collab-sandbox" \
         crates/collab-sandbox-guest/build.sh "$built"

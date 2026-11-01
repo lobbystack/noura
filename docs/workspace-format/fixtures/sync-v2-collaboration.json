@@ -2307,7 +2307,7 @@
 			"text_bytes": 8388608
 		},
 		"module": {
-			"blake3": "0b81c71fa22faa53b76c9889da9cd84a1192e8a82f5a32ec24172922f6e00b7f",
+			"blake3": "c6ad0cfc002bd7459fc6099ab39554505cf155b9a3b47ecc5ac97c978be73e10",
 			"path": "crates/collab-sandbox/guest/collab_sandbox_guest.wasm"
 		},
 		"operator_costs": {
