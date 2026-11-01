@@ -32,6 +32,34 @@ find_one() {
 time_limit=(timeout 180)
 command -v timeout > /dev/null || time_limit=(perl -e 'alarm 180; exec @ARGV')
 
+# Windows: a process stopped before main, as by a missing-DLL dialog, ignores
+# bash's timeout and holds the step open, so PowerShell runs it and says what
+# it was doing.
+launch_on_windows() {
+  local output
+  output="$(mktemp)"
+  powershell -NoProfile -Command "
+    \$p = Start-Process -FilePath '$(cygpath -w "$1")' -ArgumentList '--smoke' -PassThru \`
+      -RedirectStandardOutput '$(cygpath -w "$output")'
+    \$null = \$p.Handle
+    if (\$p.WaitForExit(150000)) { exit \$p.ExitCode }
+    Write-Output \"Still running: window '\$(\$p.MainWindowTitle)', \$(\$p.Threads.Count) threads.\"
+    \$p.Modules | ForEach-Object { \$_.ModuleName } | Select-Object -Last 12
+    Stop-Process -Id \$p.Id -Force
+    exit 1
+  "
+  local status=$?
+  cat "$output"
+  return "$status"
+}
+
+launch() {
+  case "$(uname -s)" in
+    MINGW* | MSYS* | CYGWIN*) launch_on_windows "$1" ;;
+    *) "${time_limit[@]}" "$@" --smoke ;;
+  esac
+}
+
 print_app_logs() {
   local log
   find "${LOCALAPPDATA:-$HOME}" -iname '*noura*.log*' -type f 2> /dev/null | while read -r log; do
@@ -46,7 +74,7 @@ check() {
   shift 2
   local report
   echo "Launching $name."
-  report="$(RUST_LOG=info "${time_limit[@]}" "$@" --smoke)" || {
+  report="$(RUST_LOG=info launch "$@")" || {
     echo "$name: $report"
     print_app_logs
     echo "::error::$name failed its smoke run."
