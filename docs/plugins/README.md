@@ -2,6 +2,8 @@
 
 A Noura plugin adds pages, object types, commands, Inbox sections, a Settings page or AI tools to a workspace. It runs as a WebAssembly component in a sandbox, and it reaches files and the network only through the capabilities its manifest declares and you approve. This guide takes you from a new project to a release archive with the TypeScript author kit.
 
+To write a plugin in Rust instead, see [Write a Noura plugin in Rust](rust.md).
+
 The kit is four npm packages:
 
 - `@noura/create-plugin`: the `create-noura-plugin` command, which writes a new project.

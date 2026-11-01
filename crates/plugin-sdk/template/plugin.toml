@@ -1,0 +1,12 @@
+id = "word-count"
+name = "Word count"
+version = "0.1.0"
+interface-version = "0.1.0"
+entry = "dist/plugin.wasm"
+platforms = ["desktop"]
+
+[[capabilities]]
+name = "workspace-read"
+
+[[capabilities]]
+name = "views"
