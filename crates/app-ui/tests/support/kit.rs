@@ -54,7 +54,7 @@ impl Busy for app_ui::NouraUi {
 /// arrive.
 pub fn run<S: Busy>(harness: &mut Harness<'static, S>) {
     harness.run();
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + Duration::from_secs(20);
     while harness.state().busy() {
         assert!(Instant::now() < deadline, "background work never finished");
         std::thread::sleep(Duration::from_millis(5));

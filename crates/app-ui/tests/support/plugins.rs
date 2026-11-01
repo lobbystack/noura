@@ -75,7 +75,7 @@ pub fn kit_manifest() -> String {
 /// at launch, and turn it on there, before the harness starts.
 pub fn install_and_enable(app_data: &Path, folder: &Path, id: &str) {
     let mut app = app_core::App::launch(app_data);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     while app.is_busy() || app.workspace().is_none() {
         app.poll();
         assert!(

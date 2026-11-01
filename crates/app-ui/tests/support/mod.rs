@@ -260,7 +260,7 @@ pub fn read_only(folder: &Path, read_only: bool) {
 
 /// Run frames until the app finishes background work and settles.
 pub fn settle(harness: &mut Harness<'static, NouraUi>) {
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         // The spinner keeps repainting while work runs, so step frames
         // one at a time until it stops.
