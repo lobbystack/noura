@@ -399,8 +399,10 @@ jobs:
         with: { key: postgres }
       - run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p sync-store-postgres -p sync-server
       - run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p app-core --test sync
+      # The 500 ms bar is for the server as it ships, so the soak builds
+      # Noura's own crates optimized too.
       - name: Run the push soak for five minutes
-        run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p sync-server --test soak -- --nocapture
+        run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" --config profile.dev.opt-level=2 --config profile.test.opt-level=2 -p sync-server --test soak -- --nocapture
         env:
           NOURA_SOAK_SECONDS: '300'
 
