@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT device_code_hash, user_code_hash, account, denied, poll_interval, next_poll,\n                    expires_at\n             FROM device_grants WHERE user_code_hash = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "device_code_hash",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "device_grants",
+            "name": "device_code_hash"
+          }
+        }
+      },
+      {
+        "name": "user_code_hash",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "device_grants",
+            "name": "user_code_hash"
+          }
+        }
+      },
+      {
+        "name": "account",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "device_grants",
+            "name": "account"
+          }
+        }
+      },
+      {
+        "name": "denied",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "device_grants",
+            "name": "denied"
+          }
+        }
+      },
+      {
+        "name": "poll_interval",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "device_grants",
+            "name": "poll_interval"
+          }
+        }
+      },
+      {
+        "name": "next_poll",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "device_grants",
+            "name": "next_poll"
+          }
+        }
+      },
+      {
+        "name": "expires_at",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "device_grants",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0004df95bed16c085d1d83e01c374a36e4f876a75d4a7f3f4c2ef60d1e81cc1e"
+}

@@ -1175,7 +1175,7 @@ impl Ai {
                 if error.code == CANCELLED {
                     Ended::Cancelled
                 } else {
-                    Ended::Failed(error)
+                    Ended::Failed(Box::new(error))
                 }
             });
         self.end(id, engine, answer, ended);
@@ -1392,7 +1392,7 @@ impl Ai {
     ) -> Ended {
         let ended = loop {
             let Some(frame) = frames.blocking_recv() else {
-                break Ended::Failed(incomplete());
+                break Ended::Failed(Box::new(incomplete()));
             };
             match frame.event {
                 AiStreamEvent::Started { .. } => {}
@@ -1416,7 +1416,7 @@ impl Ai {
                     break Ended::Completed;
                 }
                 AiStreamEvent::Cancelled => break Ended::Cancelled,
-                AiStreamEvent::Error { error } => break Ended::Failed(error),
+                AiStreamEvent::Error { error } => break Ended::Failed(Box::new(error)),
             }
         };
         if let Some(run) = lock(&self.state).runs.get_mut(id) {
@@ -2082,7 +2082,7 @@ enum Ended {
     Cancelled,
     /// A plugin the run relied on was turned off.
     Interrupted,
-    Failed(CoreError),
+    Failed(Box<CoreError>),
 }
 
 /// What one plugin reaches through the host AI interface.

@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="strict-origin">
+<title>{% block title %}{% endblock %} · Noura</title>
+<link rel="stylesheet" href="/account/assets/account.css">
+{% block scripts %}<script type="module" src="/account/assets/account.js"></script>{% endblock %}
+</head>
+<body>
+<main>
+<p class="brand">Noura</p>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

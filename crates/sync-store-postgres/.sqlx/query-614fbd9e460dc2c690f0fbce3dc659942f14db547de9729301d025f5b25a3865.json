@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO instances (instance, lease_until) VALUES ($1, $2)\n             ON CONFLICT (instance) DO UPDATE SET lease_until = excluded.lease_until",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "614fbd9e460dc2c690f0fbce3dc659942f14db547de9729301d025f5b25a3865"
+}

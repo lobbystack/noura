@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM approval_offers WHERE expires_at <= $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c4b129cfb4d255456fda7ef41d5662397ae3f9668f6810de2ecd40973d0791f7"
+}

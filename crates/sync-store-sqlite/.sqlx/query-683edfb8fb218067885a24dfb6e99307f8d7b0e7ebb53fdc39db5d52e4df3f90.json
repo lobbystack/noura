@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM approval_requests WHERE expires_at <= ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "683edfb8fb218067885a24dfb6e99307f8d7b0e7ebb53fdc39db5d52e4df3f90"
+}

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM device_grants WHERE expires_at <= $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "90b70003fc43e9956d9cab82b1c75217df25517120798fb21af36a54aae5c0f4"
+}

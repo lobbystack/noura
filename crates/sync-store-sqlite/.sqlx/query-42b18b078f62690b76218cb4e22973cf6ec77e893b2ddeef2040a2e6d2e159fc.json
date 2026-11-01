@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO epochs (workspace, domain, epoch, seq, digest, previous, record, bundle)\n             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "42b18b078f62690b76218cb4e22973cf6ec77e893b2ddeef2040a2e6d2e159fc"
+}

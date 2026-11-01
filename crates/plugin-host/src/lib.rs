@@ -21,6 +21,7 @@ pub mod fake_github;
 mod host;
 mod instance;
 mod manifest;
+mod memory;
 mod object_types;
 mod release;
 mod running;
@@ -44,12 +45,13 @@ pub use manifest::{
     Capability, Grant, INTERFACE_VERSIONS, MANIFEST_FILE, Platform, PluginManifest, read_manifest,
     valid_command_id, valid_plugin_id,
 };
+pub use memory::{process_memory, release_free_memory};
 pub use object_types::{KERNEL_TYPES, ObjectTypes, PLUGIN_TYPES, SERVICE_WRITTEN_TYPES, TypeError};
 pub use release::{MAX_ARCHIVE_BYTES, Release, ReleaseUrl, Releases};
 pub use running::{
     CalledListener, FAILURE_WINDOW, Health, MAX_FAILURES, Router, RunningPlugin, Surface,
 };
-pub use runtime::{Backend, Limits};
+pub use runtime::{Backend, Limits, StoreLimiter, wasmtime_config};
 pub use services::{
     AiChats, ClockReading, DeviceClock, Entry, EntryKind, FileRead, Listed, Navigation, NewObject,
     ObjectChanges, ObjectRead, ObjectRecord, PropertyProblem, ServiceError, WorkspaceObjects,

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO key_sequences (workspace, key_seq) VALUES ($1, 1)\n             ON CONFLICT (workspace) DO UPDATE SET key_seq = key_sequences.key_seq + 1\n             RETURNING key_seq",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key_seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "key_sequences",
+            "name": "key_seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "04b9c0e81f1540c9c5dd8d69f962275eb4a858ce92853679dfac8804278d4e68"
+}

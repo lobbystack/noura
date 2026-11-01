@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE sessions SET recovery = ?2 WHERE token_hash = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "c7009b104f4aea98e130baa299f0095c6a7364556f2733cc9e9b6a35a994d19d"
+}

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT instance AS \"instance!\" FROM instances WHERE lease_until > $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "instance!",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "instances",
+            "name": "instance"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "dd3e67e6453b7702acd805be20aefdc9c3edcdb5b88d5217b9ee99cd13a615d3"
+}

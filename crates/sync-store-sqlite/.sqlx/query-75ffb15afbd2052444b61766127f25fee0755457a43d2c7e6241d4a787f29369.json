@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT blob AS \"blob!\" FROM blobs AS b\n               WHERE b.workspace = ?1 AND b.complete = 0 AND b.marked = 0 AND EXISTS (\n                 SELECT 1 FROM blob_listings AS l\n                 WHERE l.workspace = b.workspace AND l.blob = b.blob\n               )\n               ORDER BY blob",
+  "describe": {
+    "columns": [
+      {
+        "name": "blob!",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "blob"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "75ffb15afbd2052444b61766127f25fee0755457a43d2c7e6241d4a787f29369"
+}

@@ -111,6 +111,15 @@ jobs:
       - name: Build the plugins
         shell: bash
         run: bash crates/plugin-sdk/build-plugins.sh
+      # The PostgreSQL store's tests start throwaway clusters with the
+      # runner's initdb and pg_ctl and fail when PostgreSQL is missing. The
+      # Linux and Windows images ship PostgreSQL; Homebrew provides it on
+      # macOS.
+      - name: Install PostgreSQL on macOS
+        if: runner.os == 'macOS'
+        run: |
+          brew list postgresql@16 > /dev/null 2>&1 || brew install postgresql@16
+          echo "NOURA_POSTGRES_BIN=$(brew --prefix postgresql@16)/bin" >> "$GITHUB_ENV"
       - run: cargo test --workspace --locked
         env:
           NOURA_S7_REQUIRE_PLUGINS: '1'
@@ -237,7 +246,179 @@ jobs:
             echo "::error::$binary needs shared libraries."
             exit 1
           fi
-          "$binary"
+          "$binary" version
+      - name: Migrate, serve and pass the health check
+        run: |
+          binary=target/x86_64-unknown-linux-musl/release/sync-server
+          data="$RUNNER_TEMP/sync-data"
+          "$binary" migrate --data "$data"
+          "$binary" serve --data "$data" --listen 127.0.0.1:8787 &
+          server=$!
+          for _ in $(seq 1 50); do
+            if "$binary" healthcheck --listen 127.0.0.1:8787; then
+              kill "$server"
+              wait "$server" || true
+              exit 0
+            fi
+            sleep 0.2
+          done
+          echo "::error::The server never passed its health check."
+          exit 1
+      # A hosted PostgreSQL usually requires TLS. This cluster refuses every
+      # connection without it, and the static binary migrates and serves
+      # through it.
+      - name: Migrate and serve on a PostgreSQL that requires TLS
+        run: |
+          binary="$PWD/target/x86_64-unknown-linux-musl/release/sync-server"
+          bin="$(pg_config --bindir 2> /dev/null || ls -d /usr/lib/postgresql/*/bin | sort -V | tail -n 1)"
+          cluster="$RUNNER_TEMP/tls-cluster"
+          "$bin/initdb" -D "$cluster" -A trust -U postgres --no-sync > /dev/null
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 \
+            -subj /CN=localhost -keyout "$cluster/server.key" -out "$cluster/server.crt" 2> /dev/null
+          chmod 600 "$cluster/server.key"
+          {
+            echo "port = 54329"
+            echo "listen_addresses = '127.0.0.1'"
+            echo "unix_socket_directories = ''"
+            echo "ssl = on"
+          } >> "$cluster/postgresql.conf"
+          printf 'hostssl all all 127.0.0.1/32 trust\nhostnossl all all 127.0.0.1/32 reject\n' > "$cluster/pg_hba.conf"
+          "$bin/pg_ctl" -D "$cluster" -l "$RUNNER_TEMP/tls-cluster.log" -w start
+          export NOURA_DATABASE_URL="postgres://postgres@127.0.0.1:54329/postgres?sslmode=require"
+          export NOURA_SERVER_SECRET="$(openssl rand -hex 32)"
+          data="$RUNNER_TEMP/tls-data"
+          if NOURA_DATABASE_URL="${NOURA_DATABASE_URL/sslmode=require/sslmode=disable}" "$binary" migrate --data "$data"; then
+            echo "::error::The cluster took a connection without TLS."
+            exit 1
+          fi
+          "$binary" migrate --data "$data"
+          "$binary" serve --data "$data" --listen 127.0.0.1:8788 &
+          server=$!
+          for _ in $(seq 1 50); do
+            if "$binary" healthcheck --listen 127.0.0.1:8788; then
+              kill "$server"
+              wait "$server" || true
+              "$bin/pg_ctl" -D "$cluster" -m fast -w stop
+              exit 0
+            fi
+            sleep 0.2
+          done
+          echo "::error::The server on PostgreSQL never passed its health check."
+          exit 1
+
+  # The image the self-hosting guide and the Dokploy compose file run.
+  server-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: scripts/check-server-image.sh
+
+  # Both stores' queries are checked at compile time against offline data in
+  # crates/sync-store-sqlite/.sqlx and crates/sync-store-postgres/.sqlx, so
+  # builds need no database. This job rebuilds that data from the
+  # migrations, PostgreSQL's in the service below, and fails when it changed.
+  sqlx-offline-data:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - run: rustc --version
+      - name: Install the SQLite command-line tool
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: sqlx }
+      - run: scripts/sqlx-prepare.sh --check
+        env:
+          SQLX_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
+
+  # The store conformance suite, the server's PostgreSQL mode tests and the
+  # tracer on a PostgreSQL service, as a hosted deployment runs it, then the
+  # push soak for five minutes. Tests that need a cluster of their own, such
+  # as one that requires TLS, start it with the runner's PostgreSQL. The job
+  # builds dependencies optimized, the crypto crates among them, so a debug
+  # build of the server keeps the soak's rate on a shared runner.
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      NOURA_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432
+      DEV_DEPENDENCIES: profile.dev.package."*".opt-level=2
+      TEST_DEPENDENCIES: profile.test.package."*".opt-level=2
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # The tests run several instances at once, each with 32 request
+      # connections, as the local test clusters allow with 500.
+      - name: Raise the service's connection limit
+        env:
+          SERVICE: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$SERVICE" psql -U postgres -c "ALTER SYSTEM SET max_connections = 500"
+          docker restart "$SERVICE"
+          for _ in $(seq 1 30); do
+            if docker exec "$SERVICE" pg_isready -U postgres; then
+              docker exec "$SERVICE" psql -U postgres -tAc "SHOW max_connections"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::The PostgreSQL service didn't come back after its restart."
+          exit 1
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - run: rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: postgres }
+      - run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p sync-store-postgres -p sync-server
+      - run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p app-core --test sync
+      - name: Run the push soak for five minutes
+        run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p sync-server --test soak -- --nocapture
+        env:
+          NOURA_SOAK_SECONDS: '300'
+
+  # Review item M7: 200 real devices apply a state a restore lost, and each
+  # waits by its rank for that object, so one writes it again and none gets
+  # conflict_limit. The job builds dependencies optimized, as the soak does.
+  restore-fleet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DEV_DEPENDENCIES: profile.dev.package."*".opt-level=2
+      TEST_DEPENDENCIES: profile.test.package."*".opt-level=2
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - run: rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: restore-fleet }
+      - name: Restore with 200 devices
+        run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p app-core --test sync_restore many_devices_pick_one_writer_for_a_lost_object -- --nocapture
+        env:
+          NOURA_RESTORE_DEVICES: '200'
 
   editor-dependencies:
     runs-on: ubuntu-latest
@@ -253,6 +434,85 @@ jobs:
       # client; the build holds one wgpu version.
       - run: scripts/check-editor-deps.sh
 
+  sync-protocol:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain and the WebAssembly target
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+      - run: rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: wasm }
+      # sync-protocol holds no filesystem, socket or database crate and builds
+      # for account-web's WebAssembly target (sync-v2.md §4). Its published
+      # test vectors and fixtures run with the workspace tests.
+      - run: scripts/check-sync-protocol.sh
+
+  # The collaboration sandbox (sync-v2.md §22). Every platform runs its
+  # whole test suite twice, once on Cranelift and once on Pulley, and in
+  # each run the verdict fixtures and the records at the verdict's limits
+  # must reach the same verdicts and fuel on both backends. Linux also
+  # rebuilds the guest module and requires the bytes the sandbox embeds,
+  # checks that the guest's yrs resolves without `small-client`, runs the
+  # guest's unit tests, and runs the previous release on the current
+  # fixture.
+  collab-sandbox:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The release check needs the release tags.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain and the WebAssembly target
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+      - run: rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: collab-sandbox }
+      - name: Run the sandbox on Pulley and Cranelift
+        shell: bash
+        run: scripts/check-collab-sandbox.sh backends
+      - name: Check the guest module, its yrs and the previous release
+        if: runner.os == 'Linux'
+        shell: bash
+        run: scripts/check-collab-sandbox.sh module features guest release
+
+  account-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain and the WebAssembly target
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+      - run: rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: account-web }
+      # The wasm-bindgen command-line tool at the version Cargo.lock pins.
+      - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
+        with: { tool: wasm-bindgen@0.2.127 }
+      - run: cargo clippy -p account-web --lib --target wasm32-unknown-unknown --locked -- -D warnings
+      # The module and its notice, as the sync server serves them.
+      - run: scripts/build-account-web.sh --debug
+      # Chrome with a virtual WebAuthn authenticator signs up with a
+      # passkey, adds another and signs in with each through the module.
+      - name: Run account-web's browser test
+        run: cargo test -p account-web --test browser --locked -- --ignored
+        env:
+          NOURA_CHROME: /usr/bin/google-chrome
+
   dependency-audit:
     runs-on: ubuntu-latest
     steps:
@@ -267,6 +527,10 @@ jobs:
       # Checks advisories, bans, licenses, and sources. Bans needs version
       # requirements on every workspace path dependency.
       - run: cargo deny check
+      # The collaboration sandbox's guest and fuzz crates sit outside the
+      # workspace with lockfiles of their own, and the guest's crates ship
+      # inside the app's module.
+      - run: scripts/check-collab-sandbox.sh audit
 
   # The TypeScript author kit's packages as authors get them: their npm
   # dependencies' licenses and advisories, and the packed archives

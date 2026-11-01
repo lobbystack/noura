@@ -1,0 +1,136 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT commit_digest, account, device, card, candidate_head, invitation,\n                    invite_proof, workspace, request, expires_at\n             FROM approval_requests WHERE account = $1 ORDER BY commit_digest",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "commit_digest",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "commit_digest"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "account",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "account"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "device",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "device"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "card",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "card"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "candidate_head",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "candidate_head"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "invitation",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "invitation"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "invite_proof",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "invite_proof"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "workspace",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "workspace"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "request",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "request"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "expires_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "248a7329598cfa8f925caeb92364255dd956538c932fc4d8640cc2ba50f4c4ec"
+}

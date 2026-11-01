@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM chain_heads WHERE workspace = ?1 AND domain = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "ec6027d60691d8f8137d0043497ebad1e9e404a775be028a75aed456044af56a"
+}

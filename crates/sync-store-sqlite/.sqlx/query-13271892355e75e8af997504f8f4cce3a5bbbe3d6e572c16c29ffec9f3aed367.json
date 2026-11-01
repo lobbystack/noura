@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT o.device AS \"device!\", o.counter AS \"counter!\", o.seq AS \"seq!\",\n                      o.digest AS \"digest!\", o.is_delete AS \"is_delete!: bool\",\n                      o.class AS \"class!\", o.weight AS \"weight!\"\n             FROM operations o\n             WHERE o.workspace = ?1 AND o.rid = ?2 AND o.seq <= ?3 AND o.dropped = 0\n               AND NOT EXISTS (\n                 SELECT 1 FROM covers c\n                 WHERE c.workspace = o.workspace AND c.rid = o.rid AND c.device = o.device\n                   AND c.counter >= o.counter AND c.by_seq <= ?3\n               )\n             ORDER BY o.seq",
+  "describe": {
+    "columns": [
+      {
+        "name": "device!",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "device"
+          }
+        }
+      },
+      {
+        "name": "counter!",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "counter"
+          }
+        }
+      },
+      {
+        "name": "seq!",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "seq"
+          }
+        }
+      },
+      {
+        "name": "digest!",
+        "ordinal": 3,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "digest"
+          }
+        }
+      },
+      {
+        "name": "is_delete!: bool",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "is_delete"
+          }
+        }
+      },
+      {
+        "name": "class!",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "class"
+          }
+        }
+      },
+      {
+        "name": "weight!",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "operations",
+            "name": "weight"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "13271892355e75e8af997504f8f4cce3a5bbbe3d6e572c16c29ffec9f3aed367"
+}

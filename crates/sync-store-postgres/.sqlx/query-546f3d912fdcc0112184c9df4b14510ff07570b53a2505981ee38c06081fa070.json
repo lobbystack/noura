@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT domain, history_bytes, retention_floor, checkpoint_seq FROM domains\n             WHERE workspace = $1 AND deleted = FALSE\n             ORDER BY history_bytes DESC, domain",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "domain",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "domain"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "history_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "history_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "retention_floor",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "retention_floor"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "checkpoint_seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "checkpoint_seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "546f3d912fdcc0112184c9df4b14510ff07570b53a2505981ee38c06081fa070"
+}

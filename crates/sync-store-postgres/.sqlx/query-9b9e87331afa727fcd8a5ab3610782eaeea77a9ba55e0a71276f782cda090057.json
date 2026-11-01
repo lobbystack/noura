@@ -1,0 +1,78 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT epoch, seq, digest, previous, record FROM epochs\n             WHERE workspace = $1 AND domain = $2 AND digest = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "epoch",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "epochs",
+            "name": "epoch"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "epochs",
+            "name": "seq"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "digest",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "epochs",
+            "name": "digest"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "previous",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "epochs",
+            "name": "previous"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "record",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "epochs",
+            "name": "record"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9b9e87331afa727fcd8a5ab3610782eaeea77a9ba55e0a71276f782cda090057"
+}

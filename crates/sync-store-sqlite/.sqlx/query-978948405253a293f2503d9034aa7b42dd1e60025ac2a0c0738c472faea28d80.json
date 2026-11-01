@@ -1,0 +1,122 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT domain, device, length, digest, upload_offset, complete, delete_after, marked,\n                    live_listings\n             FROM blobs WHERE workspace = ?1 AND blob = ?2",
+  "describe": {
+    "columns": [
+      {
+        "name": "domain",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "domain"
+          }
+        }
+      },
+      {
+        "name": "device",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "device"
+          }
+        }
+      },
+      {
+        "name": "length",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "length"
+          }
+        }
+      },
+      {
+        "name": "digest",
+        "ordinal": 3,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "digest"
+          }
+        }
+      },
+      {
+        "name": "upload_offset",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "upload_offset"
+          }
+        }
+      },
+      {
+        "name": "complete",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "complete"
+          }
+        }
+      },
+      {
+        "name": "delete_after",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "delete_after"
+          }
+        }
+      },
+      {
+        "name": "marked",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "marked"
+          }
+        }
+      },
+      {
+        "name": "live_listings",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "live_listings"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "978948405253a293f2503d9034aa7b42dd1e60025ac2a0c0738c472faea28d80"
+}

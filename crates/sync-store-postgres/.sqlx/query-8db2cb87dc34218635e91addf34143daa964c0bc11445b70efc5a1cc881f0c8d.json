@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM rewrap_answers WHERE workspace = $1 AND domain = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8db2cb87dc34218635e91addf34143daa964c0bc11445b70efc5a1cc881f0c8d"
+}

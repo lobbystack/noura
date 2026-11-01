@@ -15,6 +15,7 @@ mod capability;
 pub use capability::WorkspaceCapability;
 mod coordinator;
 mod crypto;
+mod device_keychain;
 pub(crate) use crypto::decode;
 mod keys;
 mod presence;
@@ -45,6 +46,7 @@ pub use coordinator::{
     WorkspaceSyncTransitionObject, WorkspaceSyncTransitionPhase, WorkspaceSyncTransitionStatus,
 };
 pub use crypto::{EncryptedOperation, ObjectKey, OperationKind, SigningIdentity};
+pub use device_keychain::{DEVICE_SERVICE, DeviceKeychain};
 pub use keys::{DeviceKeys, KeyConstruction, KeyEnvelope, OsSyncCredentials, SyncCredentials};
 pub use presence::{
     CollaborationPresenceEvent, CollaborationPresenceInput, CollaborationPresenceMember,

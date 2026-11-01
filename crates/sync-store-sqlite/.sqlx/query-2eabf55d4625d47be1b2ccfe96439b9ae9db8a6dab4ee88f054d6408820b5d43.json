@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT account, device, recovery, removed FROM sessions WHERE token_hash = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "account",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "account"
+          }
+        }
+      },
+      {
+        "name": "device",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "device"
+          }
+        }
+      },
+      {
+        "name": "recovery",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "recovery"
+          }
+        }
+      },
+      {
+        "name": "removed",
+        "ordinal": 3,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "removed"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "2eabf55d4625d47be1b2ccfe96439b9ae9db8a6dab4ee88f054d6408820b5d43"
+}

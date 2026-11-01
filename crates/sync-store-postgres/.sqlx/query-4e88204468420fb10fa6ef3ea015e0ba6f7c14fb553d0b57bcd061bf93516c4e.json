@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE device_grants SET account = $2, denied = $3, poll_interval = $4, next_poll = $5\n             WHERE device_code_hash = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Bool",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4e88204468420fb10fa6ef3ea015e0ba6f7c14fb553d0b57bcd061bf93516c4e"
+}

@@ -42,6 +42,13 @@ pub mod settings_section {
     pub const WORKSPACE: &str = "workspace";
     /// The plugins installed on this device and enabled in the workspace.
     pub const PLUGINS: &str = "plugins";
+    /// Whether the open workspace syncs, and how its sync stands.
+    pub const SYNC: &str = "workspace-sync";
+    /// The workspace's members and invitations.
+    pub const MEMBERS: &str = "workspace-members";
+    /// The sync account: the server, this computer's sign-in, your devices
+    /// and the recovery kit.
+    pub const SYNC_ACCOUNT: &str = "sync-account";
     /// The AI providers on this device, their keys, and your consent for
     /// the open workspace.
     pub const AI: &str = "ai-providers";
@@ -84,6 +91,11 @@ pub(crate) fn kernel_sections() -> Vec<SettingsSection> {
             SettingsGroup::ThisComputer,
         ),
         (
+            settings_section::SYNC_ACCOUNT,
+            "Sync account",
+            SettingsGroup::ThisComputer,
+        ),
+        (
             settings_section::AI,
             "AI providers",
             SettingsGroup::ThisComputer,
@@ -101,6 +113,12 @@ pub(crate) fn kernel_sections() -> Vec<SettingsSection> {
         (
             settings_section::PLUGINS,
             "Plugins",
+            SettingsGroup::Workspace,
+        ),
+        (settings_section::SYNC, "Sync", SettingsGroup::Workspace),
+        (
+            settings_section::MEMBERS,
+            "Members",
             SettingsGroup::Workspace,
         ),
         (settings_section::ABOUT, "About Noura", SettingsGroup::App),

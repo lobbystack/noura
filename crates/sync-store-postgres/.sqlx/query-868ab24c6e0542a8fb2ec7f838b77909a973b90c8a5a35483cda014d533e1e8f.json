@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT account, card FROM cards WHERE device = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "cards",
+            "name": "account"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "card",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "cards",
+            "name": "card"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "868ab24c6e0542a8fb2ec7f838b77909a973b90c8a5a35483cda014d533e1e8f"
+}

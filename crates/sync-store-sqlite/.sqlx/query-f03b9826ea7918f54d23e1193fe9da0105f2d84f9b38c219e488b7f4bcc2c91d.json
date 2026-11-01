@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT device FROM chain_heads WHERE workspace = ?1 AND domain = ?2",
+  "describe": {
+    "columns": [
+      {
+        "name": "device",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "chain_heads",
+            "name": "device"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f03b9826ea7918f54d23e1193fe9da0105f2d84f9b38c219e488b7f4bcc2c91d"
+}

@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT workspace AS \"workspace!\", expires_at FROM approval_requests\n               WHERE account = ?1 AND invitation IS NOT NULL AND workspace IS NOT NULL\n               ORDER BY commit_digest",
+  "describe": {
+    "columns": [
+      {
+        "name": "workspace!",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "workspace"
+          }
+        }
+      },
+      {
+        "name": "expires_at",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "4fa0c46eade7a1c41a5787698cd19d305140b7ec31671162a12170f34c71b657"
+}

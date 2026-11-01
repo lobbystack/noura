@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM device_grants WHERE device_code_hash = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "19adef21fa32de753ec2827572361a03e9a8d664b587ca3c0123a3cc98feb1aa"
+}

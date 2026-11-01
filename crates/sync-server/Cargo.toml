@@ -6,11 +6,59 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+askama.workspace = true
+axum = { workspace = true, features = ["ws"] }
+# Names the server's daily log files and prunes those older than 14 days.
+jiff.workspace = true
+lettre.workspace = true
+base64.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+futures.workspace = true
+# The accept loop: hyper's HTTP/1 connections, which take the header timeout
+# that `axum::serve` doesn't expose.
+http-body.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+# Keeps blob segments on S3-compatible storage (sync-v2.md §21).
+object_store.workspace = true
 # webauthn-rs links OpenSSL. Building it from source keeps the Linux server one
 # static binary.
 openssl = { workspace = true, features = ["vendored"] }
+# Sends sign-in mail through Resend's HTTPS API.
+reqwest.workspace = true
+serde_json.workspace = true
+sync-protocol = { version = "0.2.0", path = "../sync-protocol" }
+sync-store = { version = "0.2.0", path = "../sync-store" }
 sync-store-postgres = { version = "0.2.0", path = "../sync-store-postgres" }
 sync-store-sqlite = { version = "0.2.0", path = "../sync-store-sqlite" }
+# Writes each disk segment to a temporary file before it renames it into place.
+tempfile.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
+tower-service.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 url.workspace = true
-webauthn-rs.workspace = true
+# Passkey ceremonies, unmodified. Their state lives in the store between a
+# ceremony's two requests, so a request may land on another instance.
+webauthn-rs = { workspace = true, features = ["danger-allow-state-serialisation"] }
+
+[dev-dependencies]
+async-trait.workspace = true
+passkey-authenticator.workspace = true
+passkey-client.workspace = true
+passkey-crypto.workspace = true
+passkey-types.workspace = true
+public-suffix.workspace = true
+# An S3-compatible emulator that the blob store suite runs against.
+s3s.workspace = true
+s3s-fs.workspace = true
+# The tests read and change the database the way an operator's tools would.
+sqlx = { workspace = true, features = ["postgres", "sqlite-bundled"] }
+sync-key-envelope = { version = "0.2.0", path = "../sync-key-envelope" }
+sync-store = { version = "0.2.0", path = "../sync-store", features = ["conformance"] }
+# Throwaway PostgreSQL clusters for the PostgreSQL mode tests.
+sync-store-postgres = { version = "0.2.0", path = "../sync-store-postgres", features = ["testing"] }
+tempfile.workspace = true
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect"] }

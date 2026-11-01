@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT workspace FROM workspaces WHERE quota_pressure = 1 ORDER BY random() LIMIT ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "workspace",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "workspace"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1db9baf0d8a89dadd6a44660aad56f16dd52be729d9a6358cbdab9564f82e2c3"
+}

@@ -90,6 +90,14 @@ pub(crate) struct Session {
     /// Held apart from `state`, so a plugin call never blocks a window
     /// that only reads the session.
     plugins: Mutex<Plugins>,
+    /// The sync account every window's account screens show.
+    account: Mutex<Arc<dyn crate::account::AccountBackend>>,
+    /// The open workspace's sync, which Settings shows.
+    folder_sync: Mutex<Arc<dyn crate::folder_sync::FolderSyncBackend>>,
+    /// The share dialog's backend.
+    shares: Mutex<Arc<dyn crate::shares::ShareBackend>>,
+    /// The Members section's backend.
+    members: Mutex<Arc<dyn crate::members::MembersBackend>>,
     /// The AI providers, consents and runs every window shares.
     pub(crate) ai: Arc<Ai>,
 }
@@ -270,8 +278,109 @@ impl Session {
                 departures: 0,
             }),
             plugins: Mutex::new(plugins),
+            account: Mutex::new(Arc::new(crate::account::NoAccount::default())),
+            folder_sync: Mutex::new(Arc::new(crate::folder_sync::NoFolderSync::default())),
+            shares: Mutex::new(Arc::new(crate::shares::NoShares::default())),
+            members: Mutex::new(Arc::new(crate::members::NoMembers::default())),
             ai,
         }
+    }
+
+    /// The sync account backend every window shares.
+    pub(crate) fn account(&self) -> Arc<dyn crate::account::AccountBackend> {
+        self.account
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    /// Runs the account screens with `backend`, which wakes every window
+    /// when the screens change.
+    pub(crate) fn set_account(self: &Arc<Self>, backend: Arc<dyn crate::account::AccountBackend>) {
+        let session = Arc::downgrade(self);
+        backend.set_wake(Arc::new(move || {
+            if let Some(session) = session.upgrade() {
+                session.emit_all(Change::Account);
+            }
+        }));
+        *self
+            .account
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = backend;
+    }
+
+    /// The open workspace's sync, which every window's Settings shows.
+    pub(crate) fn folder_sync(&self) -> Arc<dyn crate::folder_sync::FolderSyncBackend> {
+        self.folder_sync
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    /// Runs the open workspace's sync with `backend`, which wakes every
+    /// window when its state changes, and tells it which workspace is open.
+    pub(crate) fn set_folder_sync(
+        self: &Arc<Self>,
+        backend: Arc<dyn crate::folder_sync::FolderSyncBackend>,
+    ) {
+        let session = Arc::downgrade(self);
+        backend.set_wake(Arc::new(move || {
+            if let Some(session) = session.upgrade() {
+                session.emit_all(Change::Account);
+            }
+        }));
+        let open = self.lock().workspace.as_ref().map(|w| w.shared_engine());
+        backend.attach(open);
+        *self
+            .folder_sync
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = backend;
+    }
+
+    /// The share dialog's backend.
+    pub(crate) fn shares(&self) -> Arc<dyn crate::shares::ShareBackend> {
+        self.shares
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    /// Runs the share dialog with `backend`, which wakes every window when
+    /// the dialog changes.
+    pub(crate) fn set_shares(self: &Arc<Self>, backend: Arc<dyn crate::shares::ShareBackend>) {
+        let session = Arc::downgrade(self);
+        backend.set_wake(Arc::new(move || {
+            if let Some(session) = session.upgrade() {
+                session.emit_all(Change::Account);
+            }
+        }));
+        *self
+            .shares
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = backend;
+    }
+
+    /// The Members section's backend.
+    pub(crate) fn members(&self) -> Arc<dyn crate::members::MembersBackend> {
+        self.members
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    /// Runs the Members section with `backend`, which wakes every window
+    /// when the section changes.
+    pub(crate) fn set_members(self: &Arc<Self>, backend: Arc<dyn crate::members::MembersBackend>) {
+        let session = Arc::downgrade(self);
+        backend.set_wake(Arc::new(move || {
+            if let Some(session) = session.upgrade() {
+                session.emit_all(Change::Account);
+            }
+        }));
+        *self
+            .members
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = backend;
     }
 
     /// The plugins service every window shares.
@@ -397,6 +506,7 @@ impl Session {
         state.moves.clear();
         state.watch = self.watch(&workspace, snapshot, counts, state.opening);
         let view = state.views.load(workspace.id());
+        let engine = workspace.shared_engine();
         state.workspace = Some(workspace);
         state.rail_order.clone_from(&view.rail_order);
         state.rail += 1;
@@ -420,6 +530,7 @@ impl Session {
         if let Some(previous) = previous {
             previous.finish();
         }
+        self.folder_sync().attach(Some(engine));
         for listeners in closing {
             listeners.emit(Change::Screen);
         }

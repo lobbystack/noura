@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT code_hash, expires_at FROM reset_codes WHERE account = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "code_hash",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "reset_codes",
+            "name": "code_hash"
+          }
+        }
+      },
+      {
+        "name": "expires_at",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "reset_codes",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "3a19d768bf4d5c1493c605d86b146fd57d2c9ae4f82a7963e1476f1e778ac88c"
+}

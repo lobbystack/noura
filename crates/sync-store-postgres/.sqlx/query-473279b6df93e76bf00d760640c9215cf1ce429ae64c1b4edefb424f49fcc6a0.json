@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT genesis FROM accounts WHERE account = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "genesis",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "genesis"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "473279b6df93e76bf00d760640c9215cf1ce429ae64c1b4edefb424f49fcc6a0"
+}

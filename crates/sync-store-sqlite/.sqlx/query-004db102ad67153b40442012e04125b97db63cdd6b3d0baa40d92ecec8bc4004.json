@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE blobs SET delete_after = ?3 WHERE workspace = ?1 AND blob = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "004db102ad67153b40442012e04125b97db63cdd6b3d0baa40d92ecec8bc4004"
+}

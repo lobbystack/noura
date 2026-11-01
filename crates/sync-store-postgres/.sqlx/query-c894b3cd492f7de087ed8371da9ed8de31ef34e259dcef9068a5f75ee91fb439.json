@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM pending_passkeys WHERE token_hash = $1\n             RETURNING email, credential_id, passkey, expires_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "email",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pending_passkeys",
+            "name": "email"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "credential_id",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "pending_passkeys",
+            "name": "credential_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "passkey",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "pending_passkeys",
+            "name": "passkey"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "expires_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "pending_passkeys",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c894b3cd492f7de087ed8371da9ed8de31ef34e259dcef9068a5f75ee91fb439"
+}

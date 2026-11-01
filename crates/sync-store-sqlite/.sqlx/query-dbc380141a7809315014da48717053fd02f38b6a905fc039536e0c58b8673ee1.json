@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT seq FROM blob_listings WHERE workspace = ?1 AND blob = ?2 LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "seq",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blob_listings",
+            "name": "seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "dbc380141a7809315014da48717053fd02f38b6a905fc039536e0c58b8673ee1"
+}

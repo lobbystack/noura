@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT floor FROM checkpoints\n             WHERE workspace = ?1 AND domain = ?2 AND covered_seq >= ?3\n             ORDER BY covered_seq LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "floor",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "checkpoints",
+            "name": "floor"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "412b1d13c86f01e70cb25e7f11de690eaded98dbf8aecd528078378a57a22da1"
+}

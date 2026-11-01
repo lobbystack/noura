@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT record FROM profiles WHERE workspace = ?1 ORDER BY profile_revision",
+  "describe": {
+    "columns": [
+      {
+        "name": "record",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "record"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2bb17608e4a9cda1c2435c1fab3cc2a2e5eb65294e826ad2a6ae011190c15d75"
+}

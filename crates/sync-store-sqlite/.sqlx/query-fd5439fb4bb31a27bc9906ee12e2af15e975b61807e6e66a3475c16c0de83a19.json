@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT workspace, role FROM members WHERE account = ?1 ORDER BY workspace",
+  "describe": {
+    "columns": [
+      {
+        "name": "workspace",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "members",
+            "name": "workspace"
+          }
+        }
+      },
+      {
+        "name": "role",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "members",
+            "name": "role"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "fd5439fb4bb31a27bc9906ee12e2af15e975b61807e6e66a3475c16c0de83a19"
+}

@@ -211,6 +211,12 @@ impl App {
 
     /// Close a tab whose note, if any, is on disk.
     pub(super) fn close_tab_now(&mut self, id: TabId) {
+        if let (Some(bridge), Some(rid)) = (
+            self.text_bridge(),
+            self.notes.sessions.get(&id).and_then(|s| s.text_mode()),
+        ) {
+            bridge.close(rid);
+        }
         let was_active = self.tabs.active().map(Tab::id) == Some(id);
         if self.tabs.close(id) {
             self.tabs_changed(was_active);

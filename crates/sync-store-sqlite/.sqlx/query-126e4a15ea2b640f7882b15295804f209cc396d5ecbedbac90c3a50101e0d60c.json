@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE blobs SET delete_after = ?1\n         WHERE complete = 1 AND marked = 0 AND NOT EXISTS (\n           SELECT 1 FROM blob_listings l\n           WHERE l.workspace = blobs.workspace AND l.blob = blobs.blob\n         )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "126e4a15ea2b640f7882b15295804f209cc396d5ecbedbac90c3a50101e0d60c"
+}

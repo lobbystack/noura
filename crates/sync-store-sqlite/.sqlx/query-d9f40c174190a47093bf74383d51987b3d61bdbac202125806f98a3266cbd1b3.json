@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO ended_invitations (invitation, expires_at) SELECT invitation, expires_at FROM invitations WHERE invitation = ?1 ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "d9f40c174190a47093bf74383d51987b3d61bdbac202125806f98a3266cbd1b3"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO approval_requests\n                 (commit_digest, account, device, card, candidate_head, invitation, invite_proof,\n                  workspace, request, expires_at)\n             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "383090bd092ad0de92b4120f76a67907f5d21fc78037b08ca814971d0f23e3f2"
+}

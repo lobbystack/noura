@@ -1,0 +1,207 @@
+[
+  {
+    "threat": "Drops a record inside a device chain",
+    "tests": ["sync_tampering::a_dropped_record_is_a_gap"]
+  },
+  {
+    "threat": "Reorders a device's records",
+    "tests": ["sync_tampering::a_reordered_record_is_caught"]
+  },
+  {
+    "threat": "Replays a record at a new position",
+    "tests": ["sync_tampering::a_replayed_record_is_caught"]
+  },
+  {
+    "threat": "Serves two different records at one chain position, including two re-seals of one attempt",
+    "tests": ["sync_tampering::a_forked_chain_is_caught_and_a_forged_record_is_refused"]
+  },
+  {
+    "threat": "Drops the newest records of a device",
+    "tests": ["sync_tampering::withheld_own_records_are_caught"],
+    "sees": ["sync_chain_gap"]
+  },
+  {
+    "threat": "Leaves a checkpoint out of one client's log while other records still cross",
+    "tests": ["sync_checkpoints::a_checkpoint_left_out_of_one_log_is_fetched_by_digest"]
+  },
+  {
+    "threat": "Forges an operation, policy change, account link, epoch record, envelope, checkpoint, presence record or share snapshot",
+    "tests": [
+      "sync_tampering::a_forked_chain_is_caught_and_a_forged_record_is_refused",
+      "sync_members::forged_policy_changes_are_refused_on_both_sides",
+      "tampering::a_server_key_inserted_into_your_chain_is_refused",
+      "tampering::two_recipients_shown_different_epoch_records_get_caught",
+      "tampering::a_recipient_handed_another_key_than_the_epochs_is_refused",
+      "sync_checkpoints::a_log_checkpoint_its_signer_didnt_sign_fails",
+      "sync_text::a_server_that_forwards_an_old_presence_record_moves_no_cursor",
+      "sync_shares::a_tampered_share_snapshot_is_refused"
+    ],
+    "sees": ["sync_policy_unauthorized", "sync_account_unauthorized", "sync_key_mismatch"]
+  },
+  {
+    "threat": "Inserts its own device key",
+    "tests": ["tampering::a_server_key_inserted_into_your_chain_is_refused"],
+    "sees": ["sync_account_unauthorized"]
+  },
+  {
+    "threat": "Plants a device in a member's account, with an owner or admin",
+    "tests": [
+      "tampering::a_card_planted_in_another_members_chain_is_refused",
+      "tampering::a_card_planted_in_a_workspace_policy_is_refused"
+    ],
+    "sees": ["sync_account_unauthorized", "sync_policy_unauthorized"]
+  },
+  {
+    "threat": "Reuses a device ID under another card",
+    "tests": [
+      "account_chains::a_removed_card_brought_back_or_a_device_id_reused_is_caught",
+      "tampering::a_device_id_reused_under_another_card_is_refused"
+    ]
+  },
+  {
+    "threat": "Brings back a removed card, or forks or rolls back an account chain",
+    "tests": [
+      "tampering::a_removed_card_brought_back_is_refused",
+      "account_chains::a_fork_at_one_seqno_is_caught_and_stops_the_shared_workspace",
+      "account_chains::a_chain_cut_back_below_the_kept_head_is_caught"
+    ]
+  },
+  {
+    "threat": "Claims that an account reset its devices",
+    "tests": ["sync_restore::an_editor_device_shows_a_reset_nobody_asked_it_to_accept"]
+  },
+  {
+    "threat": "Serves a made-up workspace log, under a workspace ID a device knew or a new one, also one that a removed device of the account signed",
+    "tests": [
+      "account_chains::a_removed_cards_change_confers_no_trust",
+      "sync_anchor::a_lost_journal_trusts_the_workspace_through_the_mark"
+    ]
+  },
+  {
+    "threat": "Swaps a card during approval",
+    "tests": [
+      "tampering::a_request_swapped_on_the_approver_never_adds_your_device",
+      "approval::a_swapped_card_gets_no_reveal"
+    ],
+    "sees": ["sync_approval_mismatch"]
+  },
+  {
+    "threat": "Returns an older or different policy chain",
+    "tests": ["sync_tampering::an_older_or_forked_policy_and_a_missing_policy_entry_are_caught"]
+  },
+  {
+    "threat": "Shows two devices different changes at one policy revision",
+    "tests": ["sync_tampering::an_older_or_forked_policy_and_a_missing_policy_entry_are_caught"]
+  },
+  {
+    "threat": "Gives recipients of one epoch different keys (with a malicious member)",
+    "tests": ["tampering::a_recipient_handed_another_key_than_the_epochs_is_refused"],
+    "sees": ["sync_key_mismatch"]
+  },
+  {
+    "threat": "Lists an unauthorized recipient in an epoch",
+    "tests": ["keys::a_tampered_envelope_or_a_wrong_recipient_list_fails_the_key_check"],
+    "sees": ["sync_key_mismatch"]
+  },
+  {
+    "threat": "Serves a manifest that omits an object",
+    "tests": ["sync_checkpoints::a_bootstrap_refuses_a_manifest_that_omits_an_object"],
+    "sees": ["sync_manifest_mismatch"]
+  },
+  {
+    "threat": "Rolls a device back to an older checkpoint",
+    "tests": ["sync_checkpoints::a_log_checkpoint_that_rolls_back_fails"]
+  },
+  {
+    "threat": "Seeds a new device from a checkpoint that a removed device signed, placed before the removal's entry, or from a checkpoint off the anchor's chain",
+    "tests": [
+      "sync_checkpoints::a_bootstrap_refuses_a_checkpoint_a_removed_device_signed",
+      "sync_checkpoints::an_approved_device_bootstraps_only_from_its_anchor_or_a_descendant",
+      "sync_moves::a_checkpoint_off_the_chain_in_a_restricted_domain_is_caught"
+    ],
+    "sees": ["sync_manifest_rollback"]
+  },
+  {
+    "threat": "Claims compaction or lowers the retention floor to force a bootstrap from an old checkpoint",
+    "tests": [
+      "sync_retention::a_server_that_lowers_the_floor_or_claims_compaction_is_caught",
+      "sync_retention::a_false_compaction_from_live_or_manifest_is_caught"
+    ],
+    "sees": ["sync_manifest_rollback"]
+  },
+  {
+    "threat": "Serves a live operation at different log positions to different clients",
+    "tests": ["sync_checkpoints::a_bootstrap_refuses_a_live_operation_at_another_log_position"],
+    "sees": ["sync_manifest_mismatch"]
+  },
+  {
+    "threat": "Shows two recipients two different epoch records for one epoch (with the rotating member)",
+    "tests": ["tampering::two_recipients_shown_different_epoch_records_get_caught"],
+    "sees": ["sync_key_mismatch"]
+  },
+  {
+    "threat": "Accepts writes from a device that lost write access",
+    "tests": [
+      "sync_backdated::a_record_after_the_change_that_ended_its_writer_is_refused",
+      "sync_backdated::a_checkpoint_listing_another_final_head_is_reported"
+    ]
+  },
+  {
+    "threat": "Commits after a removal an epoch record that a former reader, or the removed device, signed at an older revision",
+    "tests": [
+      "sync_backdated::a_backdated_epoch_after_a_removal_is_replaced"
+    ]
+  },
+  {
+    "threat": "Commits an epoch record whose lineage or key check fails, or envelopes that fail for some recipients (with a reader)",
+    "tests": [
+      "keys::a_tampered_envelope_or_a_wrong_recipient_list_fails_the_key_check",
+      "keys::a_new_card_whose_first_envelope_fails_asks_for_a_rewrap_at_once"
+    ]
+  },
+  {
+    "threat": "Leaves a policy change's entry out of one log",
+    "tests": ["sync_tampering::an_older_or_forked_policy_and_a_missing_policy_entry_are_caught"]
+  },
+  {
+    "threat": "Keeps writers from seeing a removal, or refuses the change that records an account's removal, so a removed device keeps reading their new records",
+    "tests": [
+      "sync_removal_hold::a_member_device_that_learned_the_head_holds_its_writes",
+      "sync_removal_hold::the_remover_holds_while_the_server_refuses_the_recording",
+      "sync_backdated::a_record_under_an_old_epoch_after_a_rotation_is_caught"
+    ]
+  },
+  {
+    "threat": "Claims a restore so clients accept lower heads and checkpoints",
+    "tests": [
+      "sync_restore::a_generation_claim_shows_an_alert_and_changes_no_file",
+      "sync_restore::a_frame_changes_no_file_on_a_stopped_workspace",
+      "sync_restore_attacks::a_dropped_policy_change_stops_the_workspace",
+      "sync_restore_attacks::a_dropped_epoch_record_stops_the_workspace",
+      "sync_restore_attacks::a_dropped_envelope_stops_the_workspace",
+      "sync_restore_attacks::a_start_whose_signer_lost_write_access_stops_the_rewind",
+      "sync_restore_attacks::a_chain_head_above_the_final_head_stops_the_rewind",
+      "sync_restore_attacks::a_checkpoint_head_that_differs_from_the_final_head_stops_the_rewind"
+    ]
+  },
+  {
+    "threat": "Goes back to an older state without raising the generation",
+    "tests": [
+      "sync_tampering::an_older_state_and_withheld_own_records_are_caught",
+      "sync_tampering::an_older_or_forked_policy_and_a_missing_policy_entry_are_caught",
+      "account_chains::a_chain_cut_back_below_the_kept_head_is_caught"
+    ]
+  },
+  {
+    "threat": "Takes over an account or device ID after a restore",
+    "tests": [
+      "sync_restore_attacks::a_new_chain_under_your_account_id_stops_you",
+      "sync_restore_attacks::a_new_chain_under_a_members_account_id_stops_the_workspace",
+      "sync_restore_attacks::a_card_that_claims_a_device_id_never_decodes"
+    ]
+  },
+  {
+    "threat": "Forwards an old presence record",
+    "tests": ["sync_text::a_server_that_forwards_an_old_presence_record_moves_no_cursor"]
+  }
+]

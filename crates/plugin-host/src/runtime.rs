@@ -72,9 +72,18 @@ impl Default for Limits {
 /// An engine for components on `backend`, with epoch interruption for call
 /// deadlines.
 pub(crate) fn engine(backend: Backend) -> wasmtime::Result<Engine> {
+    let mut config = wasmtime_config(backend)?;
+    config.epoch_interruption(true);
+    Engine::new(&config)
+}
+
+/// The Wasmtime configuration every guest Noura runs starts from: the
+/// component model and the code generator for `backend`. Plugins add epoch
+/// interruption for their call deadlines; the collaboration sandbox adds fuel
+/// instead, so no clock decides its verdicts.
+pub fn wasmtime_config(backend: Backend) -> wasmtime::Result<Config> {
     let mut config = Config::new();
     config.wasm_component_model(true);
-    config.epoch_interruption(true);
     match backend {
         Backend::Cranelift => {}
         #[cfg(feature = "pulley")]
@@ -91,7 +100,7 @@ pub(crate) fn engine(backend: Backend) -> wasmtime::Result<Engine> {
             config.target(target)?;
         }
     }
-    Engine::new(&config)
+    Ok(config)
 }
 
 /// The names of the interfaces `component` imports.
@@ -150,7 +159,7 @@ impl Failure {
 /// so a refund could free budget the store still uses. Refusing growth past a
 /// memory's or table's own maximum up front leaves allocation failures as the
 /// only granted growth that fails, and counting those errs on the safe side.
-pub(crate) struct StoreLimiter {
+pub struct StoreLimiter {
     pub(crate) cap_bytes: usize,
     pub(crate) memory_bytes: usize,
     table_bytes: usize,
@@ -159,13 +168,29 @@ pub(crate) struct StoreLimiter {
 }
 
 impl StoreLimiter {
-    pub(crate) fn new(cap_bytes: usize) -> Self {
+    /// A limiter that lets a store hold at most `cap_bytes`.
+    pub fn new(cap_bytes: usize) -> Self {
         Self {
             cap_bytes,
             memory_bytes: 0,
             table_bytes: 0,
             cap_hit: false,
         }
+    }
+
+    /// Whether the cap refused a growth since [`Self::clear_cap_hit`].
+    pub fn cap_hit(&self) -> bool {
+        self.cap_hit
+    }
+
+    /// Forgets earlier refusals, as before a new call.
+    pub fn clear_cap_hit(&mut self) {
+        self.cap_hit = false;
+    }
+
+    /// The linear memory the store holds, in bytes.
+    pub fn memory_bytes(&self) -> usize {
+        self.memory_bytes
     }
 
     /// Whether `growth` more bytes fit under the cap, noting a refusal.

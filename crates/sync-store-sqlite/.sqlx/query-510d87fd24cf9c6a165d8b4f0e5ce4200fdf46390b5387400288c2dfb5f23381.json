@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT backup_stamp FROM server WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "backup_stamp",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "server",
+            "name": "backup_stamp"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "510d87fd24cf9c6a165d8b4f0e5ce4200fdf46390b5387400288c2dfb5f23381"
+}

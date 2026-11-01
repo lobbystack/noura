@@ -44,6 +44,13 @@ workspace-format = { version = "0.2.0", path = "../workspace-format" }
 # stand-in release server.
 zip.workspace = true
 
+# process_memory: proc_pid_rusage on macOS, sysconf on Linux, and
+# GetProcessMemoryInfo on Windows.
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+libc.workspace = true
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Memory", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
 [dev-dependencies]
 egui = { workspace = true, features = ["default_fonts"] }
 egui_kittest.workspace = true

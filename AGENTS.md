@@ -38,12 +38,14 @@ Noura is moving to an all-Rust desktop app. Until the Rust app reaches parity, t
 - `crates/local-core` owns filesystem safety, atomic writes, indexing, watching, reconciliation, credentials, and domain operations.
 - `crates/app-core` holds product behavior and view state for every client. It has no UI dependency, so a mobile client can reuse it later.
 - `crates/app-ui` holds the egui screens and the widget kit that draws plugin UI. It calls only `app-core`.
-- `crates/editor-core` holds the Markdown editor's buffer, parsing, reveal rules, and yrs binding, with no UI dependency. `crates/editor-egui` draws and drives it.
+- `crates/editor-core` holds the Markdown editor's buffer, parsing and reveal rules, with no UI dependency. It sends a text-mode note's local edits into the collaboration sandbox, which owns that note's only yrs document, its client IDs and its undo, and it applies the text changes the sandbox returns (`docs/workspace-format/sync-v2.md` §22). `crates/editor-egui` draws and drives it.
 - `crates/plugin-host` runs plugins in Wasmtime and enforces their capabilities. `crates/plugin-sdk` holds the WIT interfaces and the Rust author library.
+- `crates/collab-sandbox` runs the collaboration sandbox (`docs/workspace-format/sync-v2.md` §22) in Wasmtime: the verdict on each remote yrs record, each text-mode note's document on its own thread, writer allowances and load numbers. It hands `editor-core` the note's document and the sync client its side of the note.
+- `crates/collab-sandbox-guest` is the sandbox's guest module, with its patched copy of yrs. The workspace excludes it; `build.sh` builds the `.wasm` that `crates/collab-sandbox` embeds and `sync-v2-collaboration.json` pins by hash, so any change to it is a protocol change.
 - `crates/plugins/*` holds first-party plugins. They build to WebAssembly against `plugin-sdk`, exactly like third-party plugins.
 - `crates/mcp-server` adapts MCP tools to shared services and duplicates no business logic.
 - `crates/sync-protocol` holds the wire types, signing, and verification shared by clients and the server. `crates/sync-key-envelope` owns the key envelope and device formats.
-- `crates/sync-server` is the sync service. `crates/sync-store-sqlite` and `crates/sync-store-postgres` implement its store and pass one conformance suite. Local features never depend on the server.
+- `crates/sync-server` is the sync service: HTTP, commands and logs. `crates/sync-store` holds the store's transaction traits, the protocol checks and commits every store shares, and the conformance suite. `crates/sync-store-sqlite` and `crates/sync-store-postgres` implement those traits and pass that suite. Local features never depend on the server.
 - `crates/account-web` is the WebAssembly module for passkey ceremonies and the encrypted share viewer.
 - `apps/desktop` is the desktop binary: windows, menus, drag and drop, and updates.
 - `sdk/typescript` holds the `@noura` packages for TypeScript plugin authors: the types generated from the WIT, the project template, the CLI and the mock host. Its tests drive `crates/kit-host`, a test-only binary that serves `app-core`'s plugin service over stdio as the real host. Author docs live in `docs/plugins/`, and `scripts/plugin-reference.sh` regenerates the interface reference from the WIT.

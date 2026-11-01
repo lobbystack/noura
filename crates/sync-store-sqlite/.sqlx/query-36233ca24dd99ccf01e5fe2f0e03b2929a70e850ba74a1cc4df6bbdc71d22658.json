@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT e.seq AS \"seq!\", e.record_type AS \"record_type!\", e.record AS \"record!\"\n             FROM operations o\n             JOIN entries e ON e.workspace = o.workspace AND e.domain = o.domain AND e.seq = o.seq\n             WHERE o.workspace = ?1 AND o.domain = ?2 AND o.device = ?3 AND o.counter >= ?4\n             ORDER BY o.counter LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "seq!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "entries",
+            "name": "seq"
+          }
+        }
+      },
+      {
+        "name": "record_type!",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "entries",
+            "name": "record_type"
+          }
+        }
+      },
+      {
+        "name": "record!",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "entries",
+            "name": "record"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "36233ca24dd99ccf01e5fe2f0e03b2929a70e850ba74a1cc4df6bbdc71d22658"
+}

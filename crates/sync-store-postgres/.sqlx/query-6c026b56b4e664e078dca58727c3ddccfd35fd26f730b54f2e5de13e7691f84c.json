@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO approval_requests\n                 (commit_digest, account, device, card, candidate_head, invitation, invite_proof,\n                  workspace, request, expires_at)\n             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6c026b56b4e664e078dca58727c3ddccfd35fd26f730b54f2e5de13e7691f84c"
+}

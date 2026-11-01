@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT genesis, seqno, link FROM account_links WHERE account = ?1 ORDER BY genesis, seqno",
+  "describe": {
+    "columns": [
+      {
+        "name": "genesis",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "account_links",
+            "name": "genesis"
+          }
+        }
+      },
+      {
+        "name": "seqno",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "account_links",
+            "name": "seqno"
+          }
+        }
+      },
+      {
+        "name": "link",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "account_links",
+            "name": "link"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "10b7ad1a091e2d3afcde3efd383da14b202f709b49044c34d3f52f957f01a747"
+}

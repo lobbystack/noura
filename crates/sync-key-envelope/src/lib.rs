@@ -12,6 +12,8 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod v2;
+
 use aes_gcm::{
     Aes256Gcm, KeyInit,
     aead::{Aead, Payload},

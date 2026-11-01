@@ -18,6 +18,7 @@ use ts_rs::TS;
 pub mod merge;
 mod object_type;
 pub mod raw_text;
+pub mod text_note;
 
 pub use object_type::{
     ObjectTypeRegistry, PropertyDeclaration, PropertyError, PropertyKind, PropertySchema,
@@ -648,7 +649,9 @@ pub fn frontmatter_block(entries: &[(&str, serde_json::Value)]) -> Result<String
 fn frontmatter_yaml(entries: &[(&str, serde_json::Value)]) -> Result<String, FormatError> {
     let mut mapping = serde_yaml_ng::Mapping::with_capacity(entries.len());
     for (key, value) in entries {
-        let value = serde_yaml_ng::to_value(value).map_err(|_| FormatError::ObjectSerialization)?;
+        let mut value =
+            serde_yaml_ng::to_value(value).map_err(|_| FormatError::ObjectSerialization)?;
+        sort_nested_keys(&mut value);
         mapping.insert(serde_yaml_ng::Value::String((*key).to_owned()), value);
     }
     let mut mapping = serde_yaml_ng::Value::Mapping(mapping);
@@ -663,6 +666,24 @@ fn frontmatter_yaml(entries: &[(&str, serde_json::Value)]) -> Result<String, For
         .strip_suffix("''\n")
         .ok_or(FormatError::ObjectSerialization)?;
     Ok(format!("{before}{}\n", double_quoted(&text)))
+}
+
+/// Sorts every mapping inside `value` by key, so a nested mapping's bytes
+/// don't depend on how `serde_json` keeps its maps. A dependency that turns
+/// on `preserve_order` would otherwise change them for the whole program.
+fn sort_nested_keys(value: &mut serde_yaml_ng::Value) {
+    match value {
+        serde_yaml_ng::Value::Sequence(items) => items.iter_mut().for_each(sort_nested_keys),
+        serde_yaml_ng::Value::Mapping(map) => {
+            let mut entries: Vec<_> = std::mem::take(map).into_iter().collect();
+            entries.sort_by(|(a, _), (b, _)| a.as_str().cmp(&b.as_str()));
+            for (key, mut value) in entries {
+                sort_nested_keys(&mut value);
+                map.insert(key, value);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The last scalar libyaml writes for `value`, when it's a string. A mapping
@@ -762,6 +783,19 @@ pub fn normalize_workspace_manifest(manifest: &mut WorkspaceManifest) {
 /// Serializes a manifest with the existing canonical YAML serializer.
 pub fn serialize_workspace_manifest(manifest: &WorkspaceManifest) -> Result<String, FormatError> {
     serde_yaml_ng::to_string(manifest).map_err(|_| FormatError::ManifestSerialization)
+}
+
+/// The marker file of a restricted folder. Scanners leave it out of the
+/// workspace's objects, and encrypted sync alone reads and writes it.
+pub const DOMAIN_MARKER: &str = ".noura-domain";
+
+/// Whether a file named `name` is a restricted folder's marker or an
+/// iCloud placeholder of one, which counts as the marker.
+pub fn is_domain_marker(name: &str) -> bool {
+    matches!(
+        name,
+        DOMAIN_MARKER | ".noura-domain.icloud" | "..noura-domain.icloud"
+    )
 }
 
 /// Checks whether an ID has the stable prefix and lowercase ULID required by the format.
@@ -1067,6 +1101,14 @@ mod tests {
         titles: Vec<TitleFixture>,
         file_names: Vec<FileNameFixture>,
         rewrites: Vec<RewriteFixture>,
+        domain_markers: Vec<DomainMarkerFixture>,
+    }
+
+    #[derive(Deserialize)]
+    struct DomainMarkerFixture {
+        name: String,
+        file: String,
+        marker: bool,
     }
 
     #[derive(Deserialize)]
@@ -1100,6 +1142,18 @@ mod tests {
             "../../../docs/workspace-format/fixtures/conformance-v1.json"
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn domain_markers_match_the_shared_fixtures() {
+        for fixture in conformance().domain_markers {
+            assert_eq!(
+                is_domain_marker(&fixture.file),
+                fixture.marker,
+                "{}",
+                fixture.name
+            );
+        }
     }
 
     #[test]

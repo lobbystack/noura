@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT floor FROM history_floors\n             WHERE workspace = ?1 AND account = ?2 AND domain = ?3",
+  "describe": {
+    "columns": [
+      {
+        "name": "floor",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "history_floors",
+            "name": "floor"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "992a8ba48ac072408205fbc1886bae0993513f5dbb01a0a45746fd216d8c8ea2"
+}

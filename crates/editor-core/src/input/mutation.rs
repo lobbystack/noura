@@ -312,6 +312,12 @@ impl<'ast> MdDoc {
                 response |= self.flush_operations(operations);
                 response |= self.run_indent(deindent);
             }
+            // In text mode undo belongs to the note's document, after the
+            // edits made before it.
+            Event::Undo | Event::Redo if self.in_text_mode() => {
+                response |= self.flush_operations(operations);
+                self.text_mode_undo(matches!(event, Event::Redo));
+            }
             Event::Undo => {
                 response |= self.buffer.undo();
             }

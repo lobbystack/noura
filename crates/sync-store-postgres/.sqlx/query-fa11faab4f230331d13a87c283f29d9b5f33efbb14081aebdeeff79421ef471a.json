@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT a.genesis AS \"genesis!\", l.seqno AS \"seqno!\", l.digest AS \"digest!\"\n             FROM accounts a\n             JOIN account_links l ON l.account = a.account AND l.genesis = a.genesis\n             WHERE a.account = $1 ORDER BY l.seqno DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "genesis!",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "genesis"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "seqno!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "account_links",
+            "name": "seqno"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "digest!",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "account_links",
+            "name": "digest"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "fa11faab4f230331d13a87c283f29d9b5f33efbb14081aebdeeff79421ef471a"
+}

@@ -230,7 +230,7 @@ fn unreadable_file(relative: &str, reason: &str, scan: &mut WorkspaceScan) {
 
 /// Keep walking past a folder or file the walker could not open. The OS
 /// reason goes to the log; the diagnostic names the path in plain words.
-fn record_walk_error(root: &Path, error: &ignore::Error, scan: &mut WorkspaceScan) {
+pub(super) fn record_walk_error(root: &Path, error: &ignore::Error, scan: &mut WorkspaceScan) {
     let path = walk_error_path(error);
     tracing::warn!(path = ?path, %error, "the workspace walk skipped an entry");
     let relative =
@@ -283,6 +283,7 @@ pub(super) fn placeholder_target(name: &str) -> Option<&str> {
     name.strip_prefix('.')?
         .strip_suffix(".icloud")
         .filter(|real| !real.is_empty() && !real.starts_with('.'))
+        .filter(|_| !workspace_format::is_domain_marker(name))
 }
 
 /// Where iCloud keeps the placeholder for a file it has not downloaded.
@@ -400,7 +401,7 @@ pub(super) fn is_index_candidate(relative: &Path) -> bool {
 
 /// Walker over the paths the index and file browser show: the workspace
 /// walker minus dot folders and dot files (iCloud placeholders stay).
-fn index_walker(root: &Path, ignore_patterns: &[String]) -> Result<ignore::Walk> {
+pub(super) fn index_walker(root: &Path, ignore_patterns: &[String]) -> Result<ignore::Walk> {
     let ignores = compile_workspace_ignores(root, ignore_patterns)?;
     let filter_root = root.to_owned();
     Ok(WalkBuilder::new(root)

@@ -36,6 +36,7 @@ use crate::{
     workspace::identity_changed,
 };
 
+mod account;
 mod ai;
 mod commands;
 mod drops;
@@ -119,6 +120,8 @@ pub enum Change {
     Notice,
     /// The update status changed.
     Update,
+    /// The sync account screens changed.
+    Account,
     /// Settings or the Ignored files page changed.
     Settings,
     /// The appearance, text size or zoom changed.
@@ -266,6 +269,8 @@ pub struct App {
     preferences: Preferences,
     preferences_store: PreferencesStore,
     notice: Option<Notice>,
+    /// What sync last said needs you, shown once.
+    sync_attention: Option<String>,
     /// The tree row being renamed in place.
     renaming: Option<Rename>,
     /// The Ignored files page, while it is open.
@@ -403,6 +408,7 @@ impl App {
             preferences: Preferences::default(),
             preferences_store: PreferencesStore::new(&session.app_data),
             notice: None,
+            sync_attention: None,
             renaming: None,
             ignored_files: None,
             settings: None,
@@ -767,6 +773,29 @@ impl App {
         self.poll_at(Instant::now())
     }
 
+    /// Says once what sync's review waits for, so a file held from more
+    /// people doesn't wait unseen in Settings (§9).
+    fn poll_sync_attention(&mut self) -> bool {
+        let attention = self.session.folder_sync().screen().attention;
+        if attention == self.sync_attention {
+            return false;
+        }
+        self.sync_attention = attention.clone();
+        let Some(message) = attention else {
+            return false;
+        };
+        if self.notice.is_none() {
+            self.notice = Some(Notice {
+                title: "Sync needs you".to_owned(),
+                message,
+                remove_recent: None,
+                kind: NoticeKind::Done,
+            });
+            self.listeners.emit(Change::Notice);
+        }
+        true
+    }
+
     /// [`App::poll`] with the time given, so tests can step through the
     /// update schedule.
     pub fn poll_at(&mut self, now: Instant) -> bool {
@@ -790,7 +819,9 @@ impl App {
         let ai = self.poll_ai();
         let viewed = self.poll_viewers();
         let tested = self.poll_mcp_test();
+        let attention = self.poll_sync_attention();
         saved
+            | attention
             | updated
             | searched
             | opened
@@ -853,9 +884,11 @@ impl App {
                 self.show_notice(&title, error, Some(workspace_id));
             }
             (Err(error), Job::OpenFolder(_)) => {
+                self.folder_failed_to_open();
                 self.show_notice("Couldn't open the folder", error, None);
             }
             (Err(error), Job::Create { .. }) => {
+                self.folder_failed_to_open();
                 self.show_notice("Couldn't create the workspace", error, None);
             }
         }

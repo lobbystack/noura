@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT expires_at FROM ended_invitations WHERE invitation = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "expires_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "ended_invitations",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "64025476965cab9cb75f885deb1787a980bcab0263065141d36b7c50f1f22ae6"
+}

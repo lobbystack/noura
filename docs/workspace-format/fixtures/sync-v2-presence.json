@@ -1,0 +1,219 @@
+{
+	"cases": [
+		{
+			"context": "noura.sync.v2 presence key",
+			"expect": "b0e0c37f2d171eae1241243ed251903dd86f5be97ee83b2018220ade09fca59b",
+			"input": "4fb59fd49b4fdb134d366d47c67d5cc21f4a685545009222fa6dd1c21de92124",
+			"kind": "derive_key",
+			"name": "presence_key"
+		},
+		{
+			"epoch_key": "4fb59fd49b4fdb134d366d47c67d5cc21f4a685545009222fa6dd1c21de92124",
+			"expect": "03635ffebfc9ec4dc8e951c9e66b4d40",
+			"kind": "presence_channel",
+			"name": "channel_of_a_note",
+			"rid": "8166db9a6e96dd44846df7ac67542047"
+		},
+		{
+			"epoch_key": "1e0e13ec7d3b8fee32b1a0980b242fdb9fdacebe371e39414d798d73a1c3ec1a",
+			"expect": "ec4ad6fa126e05198b5e0e376bf6168f",
+			"kind": "presence_channel",
+			"name": "the_channel_changes_with_each_epoch",
+			"rid": "8166db9a6e96dd44846df7ac67542047"
+		},
+		{
+			"epoch_key": "4fb59fd49b4fdb134d366d47c67d5cc21f4a685545009222fa6dd1c21de92124",
+			"epoch_record": "ac97f97498c3dd926814a87f543bdf291899ae11ab70476715525282e23201f3",
+			"expect": "1b6e6f7572612e73796e632e70726573656e63652e7061796c6f616400028166db9a6e96dd44846df7ac6754204701000000010000000301020300000003010205",
+			"kind": "presence_open",
+			"name": "open_under_the_current_epoch",
+			"presence": "136e6f7572612e73796e632e70726573656e636500028129c2cd914f86f1bc05f6ccb45aa9e69ca500792f1985d383db653cc4c4427b000000000000000298a2225467402ba93826b8c0cf7d6ea245550f77499f9719e01c99479b99a13e000000000000000701bf975503635ffebfc9ec4dc8e951c9e66b4d4034cd3e6af180b4b8c2a93086e7368c603efcdb3d2be86a4a00000110a8baabda015551cfd5978b827395a909062604c2ef3d70a4ad307d0bc861d250eea9bbd0a10ab11eaced5c41058888601f87ddde14581d05b8d1228f8da915307671cb0c1cc55ec6e782715e0eb99f6bab5c79dfe978bc23d25e06738759e22a36ab621f31e6ea75d5770927bee62916f92f884de9e7c8222fa4e2e61faa7930f47a3179e531eda02f5d90af92789a542b3465063d3e0033204b04427fa640f1dac4d2b5dc7fbeb52e284d5a33c7a151c57b217ddb637f7494fa76d484d06b6270e86d0fae6029bad56ab1614ad6a31ac5ce0165a05e0ab9f94904a9adab1b15ff57cb9c4e57149318f8784ad746527f76a2727b2405921e9900bebbe29d19c19ef24049fb48aac24934738994172e4ce49652011582ee675fa10b350e320fde7fa85793df269970240318acb9029a3eb7b108516c165b7a65df683ec44478b3ebb92772f92f20e3e41ac54dcb7ac604"
+		},
+		{
+			"epoch_key": "4fb59fd49b4fdb134d366d47c67d5cc21f4a685545009222fa6dd1c21de92124",
+			"epoch_record": "aea96221100322a817c050aaa5035324006231037665c67fff387fe2600cb454",
+			"expect": "invalid",
+			"kind": "presence_open",
+			"name": "another_epoch_record_fails",
+			"presence": "136e6f7572612e73796e632e70726573656e636500028129c2cd914f86f1bc05f6ccb45aa9e69ca500792f1985d383db653cc4c4427b000000000000000298a2225467402ba93826b8c0cf7d6ea245550f77499f9719e01c99479b99a13e000000000000000701bf975503635ffebfc9ec4dc8e951c9e66b4d4034cd3e6af180b4b8c2a93086e7368c603efcdb3d2be86a4a00000110a8baabda015551cfd5978b827395a909062604c2ef3d70a4ad307d0bc861d250eea9bbd0a10ab11eaced5c41058888601f87ddde14581d05b8d1228f8da915307671cb0c1cc55ec6e782715e0eb99f6bab5c79dfe978bc23d25e06738759e22a36ab621f31e6ea75d5770927bee62916f92f884de9e7c8222fa4e2e61faa7930f47a3179e531eda02f5d90af92789a542b3465063d3e0033204b04427fa640f1dac4d2b5dc7fbeb52e284d5a33c7a151c57b217ddb637f7494fa76d484d06b6270e86d0fae6029bad56ab1614ad6a31ac5ce0165a05e0ab9f94904a9adab1b15ff57cb9c4e57149318f8784ad746527f76a2727b2405921e9900bebbe29d19c19ef24049fb48aac24934738994172e4ce49652011582ee675fa10b350e320fde7fa85793df269970240318acb9029a3eb7b108516c165b7a65df683ec44478b3ebb92772f92f20e3e41ac54dcb7ac604"
+		},
+		{
+			"expect": true,
+			"kind": "clock_window",
+			"minute": 29333333,
+			"name": "receiver_at_0",
+			"now": 29333333
+		},
+		{
+			"expect": true,
+			"kind": "clock_window",
+			"minute": 29333333,
+			"name": "receiver_at_2",
+			"now": 29333335
+		},
+		{
+			"expect": true,
+			"kind": "clock_window",
+			"minute": 29333333,
+			"name": "receiver_at_-2",
+			"now": 29333331
+		},
+		{
+			"expect": false,
+			"kind": "clock_window",
+			"minute": 29333333,
+			"name": "receiver_at_3",
+			"now": 29333336
+		},
+		{
+			"expect": false,
+			"kind": "clock_window",
+			"minute": 29333333,
+			"name": "receiver_at_-3",
+			"now": 29333330
+		}
+	],
+	"description": "Presence (sync-v2.md §23): the signed record, its padded payload under the presence subkey with the epoch record's digest in its associated data, the note's channel, and the receivers' clock window.",
+	"fixture_keys_are_public_test_values": true,
+	"keys": {
+		"alice laptop": {
+			"account": "388c232914e7019eae9893223c868ce2",
+			"card_digest": "fca4c4ce44f87436703f6267b020f83a8d3011db0436763786fdbeca61f9d82f",
+			"device": "98a2225467402ba93826b8c0cf7d6ea2",
+			"hpke_seed": "d0e480f81779809de8048f6d36a019d81ce35bd164a68e0391399c14e7432ed4",
+			"signing_public": "6b7448b5645b8c7e3db2a29f39c710438fa58fbcc1de76c4ae00569cabe726d9",
+			"signing_seed": "87359218d2b1a9be0c9ff1b5b3f60be7b288219bb6c81d360d3b7cd9dac3c984"
+		}
+	},
+	"records": [
+		{
+			"digest": "8a9cd579d5ace0ab08f5bbf1f76ae44c07901d93005f6ef942ebb7c0334c0eb1",
+			"expect": "ok",
+			"hex": "1b6e6f7572612e73796e632e70726573656e63652e7061796c6f616400028166db9a6e96dd44846df7ac6754204701000000010000000301020300000003010205",
+			"name": "presence_payload",
+			"type": "presence_payload",
+			"value": {
+				"rid": "8166db9a6e96dd44846df7ac67542047",
+				"selections": [
+					{
+						"anchor": "010203",
+						"head": "010205"
+					}
+				],
+				"state": "active"
+			}
+		},
+		{
+			"expect": {
+				"decode": "truncated"
+			},
+			"from": "presence_payload",
+			"mutation": {
+				"truncate": 1
+			},
+			"name": "presence_payload_truncated",
+			"type": "presence_payload"
+		},
+		{
+			"expect": {
+				"decode": "wrong_tag"
+			},
+			"from": "presence_payload",
+			"mutation": {
+				"retag": "106e6f7572612e73796e632e73686172650002"
+			},
+			"name": "presence_payload_wrong_tag",
+			"type": "presence_payload"
+		},
+		{
+			"expect": {
+				"decode": "unsupported_version"
+			},
+			"from": "presence_payload",
+			"mutation": {
+				"version": 3
+			},
+			"name": "presence_payload_wrong_version",
+			"type": "presence_payload"
+		},
+		{
+			"digest": "ee8966c9481d76bca736ace2f09eac630f32321bb36c903c3c117f8e1212c0a9",
+			"expect": "ok",
+			"hex": "136e6f7572612e73796e632e70726573656e636500028129c2cd914f86f1bc05f6ccb45aa9e69ca500792f1985d383db653cc4c4427b000000000000000298a2225467402ba93826b8c0cf7d6ea245550f77499f9719e01c99479b99a13e000000000000000701bf975503635ffebfc9ec4dc8e951c9e66b4d4034cd3e6af180b4b8c2a93086e7368c603efcdb3d2be86a4a00000110a8baabda015551cfd5978b827395a909062604c2ef3d70a4ad307d0bc861d250eea9bbd0a10ab11eaced5c41058888601f87ddde14581d05b8d1228f8da915307671cb0c1cc55ec6e782715e0eb99f6bab5c79dfe978bc23d25e06738759e22a36ab621f31e6ea75d5770927bee62916f92f884de9e7c8222fa4e2e61faa7930f47a3179e531eda02f5d90af92789a542b3465063d3e0033204b04427fa640f1dac4d2b5dc7fbeb52e284d5a33c7a151c57b217ddb637f7494fa76d484d06b6270e86d0fae6029bad56ab1614ad6a31ac5ce0165a05e0ab9f94904a9adab1b15ff57cb9c4e57149318f8784ad746527f76a2727b2405921e9900bebbe29d19c19ef24049fb48aac24934738994172e4ce49652011582ee675fa10b350e320fde7fa85793df269970240318acb9029a3eb7b108516c165b7a65df683ec44478b3ebb92772f92f20e3e41ac54dcb7ac604",
+			"name": "presence",
+			"signer": "alice laptop",
+			"type": "presence",
+			"value": {
+				"body": {
+					"channel": "03635ffebfc9ec4dc8e951c9e66b4d40",
+					"ciphertext": "a8baabda015551cfd5978b827395a909062604c2ef3d70a4ad307d0bc861d250eea9bbd0a10ab11eaced5c41058888601f87ddde14581d05b8d1228f8da915307671cb0c1cc55ec6e782715e0eb99f6bab5c79dfe978bc23d25e06738759e22a36ab621f31e6ea75d5770927bee62916f92f884de9e7c8222fa4e2e61faa7930f47a3179e531eda02f5d90af92789a542b3465063d3e0033204b04427fa640f1dac4d2b5dc7fbeb52e284d5a33c7a151c57b217ddb637f7494fa76d484d06b6270e86d0fae6029bad56ab1614ad6a31ac5ce0165a05e0ab9f94904a9adab1b15ff57cb9c4e57149318f8784ad746527f76a2727b2405921e9900bebbe29d19c19ef24049fb48aac24934738994172e4c",
+					"device": "98a2225467402ba93826b8c0cf7d6ea2",
+					"domain": "9ca500792f1985d383db653cc4c4427b",
+					"epoch": 2,
+					"minute": 29333333,
+					"nonce": "34cd3e6af180b4b8c2a93086e7368c603efcdb3d2be86a4a",
+					"sequence": 7,
+					"session": "45550f77499f9719e01c99479b99a13e",
+					"workspace": "8129c2cd914f86f1bc05f6ccb45aa9e6"
+				},
+				"sig": "e49652011582ee675fa10b350e320fde7fa85793df269970240318acb9029a3eb7b108516c165b7a65df683ec44478b3ebb92772f92f20e3e41ac54dcb7ac604"
+			}
+		},
+		{
+			"expect": {
+				"decode": "truncated"
+			},
+			"from": "presence",
+			"mutation": {
+				"truncate": 1
+			},
+			"name": "presence_truncated",
+			"signer": "alice laptop",
+			"type": "presence"
+		},
+		{
+			"expect": {
+				"decode": "wrong_tag"
+			},
+			"from": "presence",
+			"mutation": {
+				"retag": "106e6f7572612e73796e632e73686172650002"
+			},
+			"name": "presence_wrong_tag",
+			"signer": "alice laptop",
+			"type": "presence"
+		},
+		{
+			"expect": {
+				"decode": "unsupported_version"
+			},
+			"from": "presence",
+			"mutation": {
+				"version": 3
+			},
+			"name": "presence_wrong_version",
+			"signer": "alice laptop",
+			"type": "presence"
+		},
+		{
+			"expect": {
+				"verify": "signature"
+			},
+			"from": "presence",
+			"mutation": {
+				"flip_last_byte": true
+			},
+			"name": "presence_bad_signature",
+			"signer": "alice laptop",
+			"type": "presence"
+		},
+		{
+			"expect": {
+				"decode": "too_long"
+			},
+			"hex": "1b6e6f7572612e73796e632e70726573656e63652e7061796c6f616400028166db9a6e96dd44846df7ac675420470100000009000000030102030000000301020500000003010203000000030102050000000301020300000003010205000000030102030000000301020500000003010203000000030102050000000301020300000003010205000000030102030000000301020500000003010203000000030102050000000301020300000003010205",
+			"name": "presence_payload_nine_selections",
+			"type": "presence_payload"
+		}
+	]
+}

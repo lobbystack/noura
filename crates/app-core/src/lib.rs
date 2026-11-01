@@ -19,6 +19,7 @@
 //! through MCP, the same search, file rules and plugin tools, beside the
 //! app on the same app data.
 
+pub mod account;
 mod agent;
 mod ai;
 mod app;
@@ -27,6 +28,7 @@ mod commands;
 mod diagnostics;
 mod error;
 mod files;
+pub mod folder_sync;
 mod ignored;
 mod inbox;
 mod items;
@@ -35,6 +37,7 @@ mod layout;
 mod links;
 mod login;
 mod mcp_setup;
+pub mod members;
 mod menus;
 mod notes;
 mod objects;
@@ -53,9 +56,12 @@ mod saves;
 mod search;
 mod session;
 mod settings;
+pub mod shares;
 mod store;
+pub mod sync;
 mod system;
 mod tabs;
+pub mod text_bridge;
 mod updates;
 mod view_state;
 mod viewers;

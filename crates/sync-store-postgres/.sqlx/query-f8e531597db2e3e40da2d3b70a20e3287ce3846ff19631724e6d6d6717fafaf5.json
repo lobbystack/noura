@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM domains WHERE workspace = $1 AND domain = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f8e531597db2e3e40da2d3b70a20e3287ce3846ff19631724e6d6d6717fafaf5"
+}

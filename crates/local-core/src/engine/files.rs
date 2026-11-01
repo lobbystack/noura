@@ -357,7 +357,12 @@ impl WorkspaceEngine {
     /// Move the file or folder at `source` to `destination`, creating the
     /// folders it lands in, once the watcher's reports of the move are
     /// expected as this engine's own. The caller holds the write lock.
-    fn move_item(&self, source: &Path, destination: &Path, operation: &str) -> Result<()> {
+    pub(super) fn move_item(
+        &self,
+        source: &Path,
+        destination: &Path,
+        operation: &str,
+    ) -> Result<()> {
         let from = normalized_relative_path(&self.root, source, operation)?;
         let to = normalized_relative_path(&self.root, destination, operation)?;
         let noted = self.expect_own_move(&from, Some(&to));

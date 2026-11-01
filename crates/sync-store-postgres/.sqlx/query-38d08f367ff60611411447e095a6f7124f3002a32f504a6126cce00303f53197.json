@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT complete FROM blobs WHERE workspace = $1 AND blob = $2 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "complete",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "complete"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "38d08f367ff60611411447e095a6f7124f3002a32f504a6126cce00303f53197"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM ceremonies WHERE expires_at <= ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "eb7492b247d67a791b087d2a1e135858fb21c585ece248b119bc2bb6b494f58b"
+}

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO rewrap_requests (workspace, domain, epoch, device, key_seq)\n             VALUES ($1, $2, $3, $4, $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Int8",
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a0ff4c3eca64c5cf252e60e67b6ed5b2e6cf7e573916facf67de0bf0052b8fbc"
+}

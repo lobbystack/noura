@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM reset_codes WHERE expires_at <= $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2c06776b94271fdd1005c1543084ba5669039bb5b9d539953e5a99ca8a6d122f"
+}

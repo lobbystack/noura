@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE sessions SET recovery = NULL WHERE account = ?1 AND device = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "3f3c2261f2eca6c42c6bc31874831f3ff7fee2d7273376fad77fe79017dd0e5a"
+}

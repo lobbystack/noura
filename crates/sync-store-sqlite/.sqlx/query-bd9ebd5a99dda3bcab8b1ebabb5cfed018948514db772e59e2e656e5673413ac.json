@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT account FROM web_sessions WHERE token_hash = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "account",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "web_sessions",
+            "name": "account"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "bd9ebd5a99dda3bcab8b1ebabb5cfed018948514db772e59e2e656e5673413ac"
+}

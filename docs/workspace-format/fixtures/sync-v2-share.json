@@ -1,0 +1,166 @@
+{
+	"cases": [
+		{
+			"expect": "d3064a937b750219f745744c0ea92d59f4dc248b4abba74f48bad16f94c0520a",
+			"input": "166e6f7572612e73796e632e73686172652e746f6b656e000253535353535353535353535353535353",
+			"kind": "token_hash",
+			"name": "token_hash",
+			"token": "53535353535353535353535353535353"
+		},
+		{
+			"context": "noura.sync.v2 share key",
+			"expect": "0125c069f94676840e14d4927e000233fcf92a3fc1131bd1ecd0bcd79d160aec",
+			"input": "fc398dc5cd85f5d1de95cc05632312462af4c03c567d10489c7e7054d52643af",
+			"kind": "derive_key",
+			"name": "share_key"
+		},
+		{
+			"expect": "186e6f7572612e73796e632e73686172652e7061796c6f616400020004506c616e0000001f2320506c616e0a0a506c616e7420746f6d61746f657320696e204d61792e0a",
+			"fragment": "_DmNxc2F9dHelcwFYyMSRir0wDxWfRBInH5wVNUmQ69P-sxk_tvwOOEaRIdg0ZJxkI9F7kPPJ8MhOyKcRMuXUQ",
+			"kind": "share_open",
+			"name": "open_from_the_fragment",
+			"share": "106e6f7572612e73796e632e73686172650002d3064a937b750219f745744c0ea92d59f4dc248b4abba74f48bad16f94c0520a0000000000000001f930534683cd83ea072a8871faf625bf9d53f425ab4a2fc800000110b86b6e1147ab680835d866cd0435fa3d787ad543361c3abab2e5a767a1527739328aad1172aebdde746c76cf0a15c272d25760cb773529c4419f470bd6dd3d3b3bd72dd2f293cc7fe7aeea7eaf8926c6d1078906e9c05a7be10beb2c8b95441452462ffeedb91d0fd2465c1332897506916fbfb49b29d2a8056517e70c0713c3d42908ac9ef42e540de3224a98083dffc65bf1290b3a97849fe3543778009b13852c5c6b3115aab8ec2e916d20aea65b69be69212b25a377d70ece3d7fa9966598dcaba23262c8fbc8185eca0f3a2c837f9924a65789d5b47419b31600df362d09b2285125dd1b55b37fc7aae87006fa9c266700717558447eff4cc2e373199c3671578a38452fd5554842031ac27c001d79d815bd21ac9c3061a7fc68ccfa9a7e923ec5d0f71cd1bdf63cbfcdbafe508be9e0d358fd1a477c8f11cd1e2890874d69e1d41e02710d4fe5ce4c629daa0c"
+		},
+		{
+			"expect": "invalid",
+			"fragment": "QjLAlocv0qx7JtBRkHut5Rlz93K4PI5K94gDOgLSiONP-sxk_tvwOOEaRIdg0ZJxkI9F7kPPJ8MhOyKcRMuXUQ",
+			"kind": "share_open",
+			"name": "wrong_link_key",
+			"share": "106e6f7572612e73796e632e73686172650002d3064a937b750219f745744c0ea92d59f4dc248b4abba74f48bad16f94c0520a0000000000000001f930534683cd83ea072a8871faf625bf9d53f425ab4a2fc800000110b86b6e1147ab680835d866cd0435fa3d787ad543361c3abab2e5a767a1527739328aad1172aebdde746c76cf0a15c272d25760cb773529c4419f470bd6dd3d3b3bd72dd2f293cc7fe7aeea7eaf8926c6d1078906e9c05a7be10beb2c8b95441452462ffeedb91d0fd2465c1332897506916fbfb49b29d2a8056517e70c0713c3d42908ac9ef42e540de3224a98083dffc65bf1290b3a97849fe3543778009b13852c5c6b3115aab8ec2e916d20aea65b69be69212b25a377d70ece3d7fa9966598dcaba23262c8fbc8185eca0f3a2c837f9924a65789d5b47419b31600df362d09b2285125dd1b55b37fc7aae87006fa9c266700717558447eff4cc2e373199c3671578a38452fd5554842031ac27c001d79d815bd21ac9c3061a7fc68ccfa9a7e923ec5d0f71cd1bdf63cbfcdbafe508be9e0d358fd1a477c8f11cd1e2890874d69e1d41e02710d4fe5ce4c629daa0c"
+		},
+		{
+			"expect": "invalid",
+			"fragment": "_DmNxc2F9dHelcwFYyMSRir0wDxWfRBInH5wVNUmQ69P-sxk_tvwOOEaRIdg0ZJxkI9F7kPPJ8MhOyKcRMuXUQ",
+			"kind": "share_open",
+			"name": "bad_link_signature",
+			"share": "106e6f7572612e73796e632e73686172650002d3064a937b750219f745744c0ea92d59f4dc248b4abba74f48bad16f94c0520a0000000000000002f930534683cd83ea072a8871faf625bf9d53f425ab4a2fc800000110b86b6e1147ab680835d866cd0435fa3d787ad543361c3abab2e5a767a1527739328aad1172aebdde746c76cf0a15c272d25760cb773529c4419f470bd6dd3d3b3bd72dd2f293cc7fe7aeea7eaf8926c6d1078906e9c05a7be10beb2c8b95441452462ffeedb91d0fd2465c1332897506916fbfb49b29d2a8056517e70c0713c3d42908ac9ef42e540de3224a98083dffc65bf1290b3a97849fe3543778009b13852c5c6b3115aab8ec2e916d20aea65b69be69212b25a377d70ece3d7fa9966598dcaba23262c8fbc8185eca0f3a2c837f9924a65789d5b47419b31600df362d09b2285125dd1b55b37fc7aae87006fa9c266700717558447eff4cc2e373199c3671578a38452fd5554842031ac27c001d79d815bd21ac9c3061a7fc68ccfa9a7e923ec5d0f71cd1bdf63cbfcdbafe508be9e0d358fd1a477c8f11cd1e2890874d69e1d41e02710d4fe5ce4c629daa0c"
+		}
+	],
+	"description": "Share links (sync-v2.md §24): the token hash, the snapshot signed with the link's key and encrypted under the share key, its padded payload, and the URL fragment.",
+	"fixture_keys_are_public_test_values": true,
+	"keys": {
+		"share link": {
+			"account": "388c232914e7019eae9893223c868ce2",
+			"card_digest": "e1d66dd1bd72b70b51179fd862fdd76273f22be11e497ebeb028261eddffe912",
+			"device": "37c41611c3b6cfad8329f298595ec3df",
+			"hpke_seed": "4d0f89f78e49381c3c95dc038e6f41cc696e5e5838f7d7cb27c9e72881d7b3fa",
+			"signing_public": "4ffacc64fedbf038e11a448760d19271908f45ee43cf27c3213b229c44cb9751",
+			"signing_seed": "3d6dc6ba1a8ff04fec1c0a7eb8481e7366a7ccb5e160ee16276929d8fe9e0ae9"
+		}
+	},
+	"link": {
+		"example": "https://sync.noura.app/s/U1NTU1NTU1NTU1NTU1NTUw#_DmNxc2F9dHelcwFYyMSRir0wDxWfRBInH5wVNUmQ69P-sxk_tvwOOEaRIdg0ZJxkI9F7kPPJ8MhOyKcRMuXUQ",
+		"format": "{origin}/s/{base64url(token)}#{base64url(link_key || link_verify_key)}"
+	},
+	"records": [
+		{
+			"digest": "42d5c21ed033a2778a9dd1e8c38cf900e9cbf4c04b7403513db7c5f8aeecb696",
+			"expect": "ok",
+			"hex": "186e6f7572612e73796e632e73686172652e7061796c6f616400020004506c616e0000001f2320506c616e0a0a506c616e7420746f6d61746f657320696e204d61792e0a",
+			"name": "share_payload",
+			"type": "share_payload",
+			"value": {
+				"markdown": "2320506c616e0a0a506c616e7420746f6d61746f657320696e204d61792e0a",
+				"title": "Plan"
+			}
+		},
+		{
+			"expect": {
+				"decode": "truncated"
+			},
+			"from": "share_payload",
+			"mutation": {
+				"truncate": 1
+			},
+			"name": "share_payload_truncated",
+			"type": "share_payload"
+		},
+		{
+			"expect": {
+				"decode": "wrong_tag"
+			},
+			"from": "share_payload",
+			"mutation": {
+				"retag": "106e6f7572612e73796e632e73686172650002"
+			},
+			"name": "share_payload_wrong_tag",
+			"type": "share_payload"
+		},
+		{
+			"expect": {
+				"decode": "unsupported_version"
+			},
+			"from": "share_payload",
+			"mutation": {
+				"version": 3
+			},
+			"name": "share_payload_wrong_version",
+			"type": "share_payload"
+		},
+		{
+			"digest": "6be6f718c4533098b653e72c2a7f78f12f7ad90717b296fb636cc63f8d22af57",
+			"expect": "ok",
+			"hex": "106e6f7572612e73796e632e73686172650002d3064a937b750219f745744c0ea92d59f4dc248b4abba74f48bad16f94c0520a0000000000000001f930534683cd83ea072a8871faf625bf9d53f425ab4a2fc800000110b86b6e1147ab680835d866cd0435fa3d787ad543361c3abab2e5a767a1527739328aad1172aebdde746c76cf0a15c272d25760cb773529c4419f470bd6dd3d3b3bd72dd2f293cc7fe7aeea7eaf8926c6d1078906e9c05a7be10beb2c8b95441452462ffeedb91d0fd2465c1332897506916fbfb49b29d2a8056517e70c0713c3d42908ac9ef42e540de3224a98083dffc65bf1290b3a97849fe3543778009b13852c5c6b3115aab8ec2e916d20aea65b69be69212b25a377d70ece3d7fa9966598dcaba23262c8fbc8185eca0f3a2c837f9924a65789d5b47419b31600df362d09b2285125dd1b55b37fc7aae87006fa9c266700717558447eff4cc2e373199c3671578a38452fd5554842031ac27c001d79d815bd21ac9c3061a7fc68ccfa9a7e923ec5d0f71cd1bdf63cbfcdbafe508be9e0d358fd1a477c8f11cd1e2890874d69e1d41e02710d4fe5ce4c629daa0c",
+			"name": "share",
+			"signer": "share link",
+			"type": "share",
+			"value": {
+				"body": {
+					"ciphertext": "b86b6e1147ab680835d866cd0435fa3d787ad543361c3abab2e5a767a1527739328aad1172aebdde746c76cf0a15c272d25760cb773529c4419f470bd6dd3d3b3bd72dd2f293cc7fe7aeea7eaf8926c6d1078906e9c05a7be10beb2c8b95441452462ffeedb91d0fd2465c1332897506916fbfb49b29d2a8056517e70c0713c3d42908ac9ef42e540de3224a98083dffc65bf1290b3a97849fe3543778009b13852c5c6b3115aab8ec2e916d20aea65b69be69212b25a377d70ece3d7fa9966598dcaba23262c8fbc8185eca0f3a2c837f9924a65789d5b47419b31600df362d09b2285125dd1b55b37fc7aae87006fa9c266700717558447eff4cc2e373199c3671578a38452fd5554842031ac27c00",
+					"nonce": "f930534683cd83ea072a8871faf625bf9d53f425ab4a2fc8",
+					"snapshot_revision": 1,
+					"token_hash": "d3064a937b750219f745744c0ea92d59f4dc248b4abba74f48bad16f94c0520a"
+				},
+				"sig": "1d79d815bd21ac9c3061a7fc68ccfa9a7e923ec5d0f71cd1bdf63cbfcdbafe508be9e0d358fd1a477c8f11cd1e2890874d69e1d41e02710d4fe5ce4c629daa0c"
+			}
+		},
+		{
+			"expect": {
+				"decode": "truncated"
+			},
+			"from": "share",
+			"mutation": {
+				"truncate": 1
+			},
+			"name": "share_truncated",
+			"signer": "share link",
+			"type": "share"
+		},
+		{
+			"expect": {
+				"decode": "wrong_tag"
+			},
+			"from": "share",
+			"mutation": {
+				"retag": "0d6e6f7572612e73796e632e6f700002"
+			},
+			"name": "share_wrong_tag",
+			"signer": "share link",
+			"type": "share"
+		},
+		{
+			"expect": {
+				"decode": "unsupported_version"
+			},
+			"from": "share",
+			"mutation": {
+				"version": 3
+			},
+			"name": "share_wrong_version",
+			"signer": "share link",
+			"type": "share"
+		},
+		{
+			"expect": {
+				"verify": "signature"
+			},
+			"from": "share",
+			"mutation": {
+				"flip_last_byte": true
+			},
+			"name": "share_bad_signature",
+			"signer": "share link",
+			"type": "share"
+		}
+	]
+}

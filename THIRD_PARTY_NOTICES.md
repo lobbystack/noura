@@ -16,6 +16,12 @@ Resumable uploads use `@tus/server`, `@tus/file-store`, and `@tus/utils` (MIT). 
 
 The browser viewer uses Marked (MIT), DOMPurify (the Apache-2.0 option of its dual license), and Public Sans (OFL-1.1). Native and portable encryption use age, aes-gcm, ed25519-dalek, x25519-dalek (BSD-3-Clause), hkdf (MIT/Apache-2.0), and zeroize under their permissive Cargo-declared license options. These are dependencies, not copied donor implementations. The pinned Cargo and Bun lockfiles remain the complete dependency inventories.
 
+The v2 sync server (`sync-server`, `sync-store`, `sync-store-sqlite` and `sync-store-postgres`) uses axum (MIT), sqlx (MIT/Apache-2.0) with the SQLite it bundles (public domain) and its PostgreSQL driver, tokio and tracing (MIT), jiff (MIT/Unlicense), and hashlink (MIT/Apache-2.0) for its caches of verified chains. It reaches PostgreSQL over TLS through rustls (Apache-2.0/ISC/MIT) with ring (Apache-2.0 and ISC) and the Mozilla root certificates in `webpki-roots` (CDLA-Permissive-2.0). These are dependencies, not copied donor implementations. Atuin's server (MIT) served as a layout reference for running SQLite and PostgreSQL from one binary, and noura copied none of its code.
+
+The sync server's account pages run passkey ceremonies with `webauthn-rs`, `webauthn-rs-core`, `webauthn-attestation-ca` and `base64urlsafedata` 0.5.5 from https://github.com/kanidm/webauthn-rs, under MPL-2.0, unmodified, and render askama templates (MIT/Apache-2.0); they send mail with lettre (MIT) or Resend's API. `account-web`, the WebAssembly module those pages load, holds `webauthn-rs-proto` and `base64urlsafedata` 0.5.5 under MPL-2.0, unmodified, with wasm-bindgen, js-sys and web-sys (MIT/Apache-2.0). The module ships with `crates/account-web/THIRD_PARTY_NOTICES.txt`, which names those crates and carries the MPL-2.0 text, and the server serves it beside the module at `/account/assets/THIRD_PARTY_NOTICES.txt`. The server's container image carries `crates/sync-server/THIRD_PARTY_NOTICES.txt` at `/usr/share/noura/THIRD_PARTY_NOTICES.txt`, which names the crates the binary links and carries the MPL-2.0 text. The server's tests sign up with passkey-rs (`passkey-client` and `passkey-authenticator`, MIT/Apache-2.0), and account-web's browser test drives Chrome through chromiumoxide (MIT/Apache-2.0). These are dependencies, not copied donor implementations.
+
+Sync protocol v2 (`sync-protocol` and `sync-key-envelope`) uses ed25519-dalek 3 and x25519-dalek 3 (BSD-3-Clause), hpke with x-wing and ml-kem, chacha20poly1305, aead-stream and getrandom (MIT/Apache-2.0), and blake3 (CC0-1.0/Apache-2.0). These are dependencies, not copied donor implementations. Its tests read one draft-ietf-hpke-pq vector taken from the `hpke` package and the Wycheproof sets through the `wycheproof` crate (Apache-2.0); see `docs/provenance/sync-v2-test-vectors.md`.
+
 The browser encrypted-sync foundation uses `@noble/hashes` (MIT) for BLAKE3 device fingerprints and attachment content revisions, and `@noble/ciphers` (MIT) for the ChaCha20-Poly1305 primitive inside the byte-compatible `age` attachment stream; the Rust side uses the `blake3` and `age` crates. These are dependencies, not copied donor implementations.
 
 Notable runtime dependencies include the Apache-2.0 licensed official Rust MCP SDK (`rmcp`), dual MIT/Apache-2.0 `genai`, MIT/Apache-2.0 `keyring`, MIT `trash`, MIT `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai`, MIT `Tauri`, MIT `Svelte`, MIT `Tiptap`, and CC0-1.0 `fractional-indexing`. Desktop release packaging includes the generated license file described above.
@@ -38,7 +44,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ## yrs 0.26.0 (native text collaboration)
 
-Dependency source and verification: [Yrs provenance](docs/provenance/yrs.md). No upstream implementation source was copied.
+Dependency source and verification: [Yrs provenance](docs/provenance/yrs.md). `crates/local-core` uses the crates.io package unchanged. The collaboration sandbox's guest module builds from a patched copy of the package in `crates/collab-sandbox-guest/vendor/yrs`; the provenance record lists each change.
 
 The MIT License (MIT)
 

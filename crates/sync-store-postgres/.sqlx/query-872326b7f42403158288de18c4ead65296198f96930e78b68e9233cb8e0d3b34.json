@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT current_setting('track_commit_timestamp') AS \"setting!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "setting!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "872326b7f42403158288de18c4ead65296198f96930e78b68e9233cb8e0d3b34"
+}

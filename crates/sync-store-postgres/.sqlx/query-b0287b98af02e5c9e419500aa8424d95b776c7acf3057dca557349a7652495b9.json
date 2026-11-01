@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM epochs WHERE workspace = $1 AND domain = $2 AND epoch IN (\n               SELECT epoch FROM epochs WHERE workspace = $1 AND domain = $2\n               ORDER BY epoch LIMIT $3\n             )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b0287b98af02e5c9e419500aa8424d95b776c7acf3057dca557349a7652495b9"
+}

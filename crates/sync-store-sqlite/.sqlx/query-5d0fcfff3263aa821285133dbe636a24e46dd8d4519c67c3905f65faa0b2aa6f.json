@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM invitations WHERE workspace = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "5d0fcfff3263aa821285133dbe636a24e46dd8d4519c67c3905f65faa0b2aa6f"
+}

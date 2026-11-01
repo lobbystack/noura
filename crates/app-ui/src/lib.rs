@@ -3,17 +3,20 @@
 //! This crate calls only `app-core`: it draws [`App`]'s view state and sends
 //! it what people do.
 
+mod account;
 mod ai;
 mod chooser;
 mod common;
 mod dates;
 mod finder;
+mod folder_sync;
 mod ignored_files;
 mod image_decoders;
 mod image_view;
 mod inbox;
 mod keys;
 mod markdown;
+mod members;
 mod note;
 mod note_images;
 mod note_links;
@@ -23,6 +26,7 @@ mod plugin_view;
 mod plugins;
 mod rail;
 mod settings;
+mod share;
 mod shortcuts;
 mod tab_bar;
 pub mod theme;
@@ -351,6 +355,7 @@ impl NouraUi {
             web_search::consent_prompt(ui, &mut self.app, &mut self.web_consent);
         }
         palette::show(ui, &mut self.app, &mut self.palette);
+        share::dialog(ui, &mut self.app);
         note::unsaved_prompt(ui, &mut self.app);
         self.notes.commit_hidden_drafts(&mut self.app);
         self.close_requested_windows(ui.ctx());

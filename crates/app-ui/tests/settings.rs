@@ -140,13 +140,19 @@ fn the_rail_s_settings_button_opens_settings_with_its_sections_by_group() {
                     "General".to_owned(),
                     "Editor".to_owned(),
                     "Keyboard shortcuts".to_owned(),
+                    "Sync account".to_owned(),
                     "AI providers".to_owned(),
                     "Web search".to_owned()
                 ]
             ),
             (
                 "Workspace".to_owned(),
-                vec!["Name and location".to_owned(), "Plugins".to_owned()]
+                vec![
+                    "Name and location".to_owned(),
+                    "Plugins".to_owned(),
+                    "Sync".to_owned(),
+                    "Members".to_owned()
+                ]
             ),
             (
                 "App".to_owned(),

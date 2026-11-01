@@ -107,9 +107,101 @@ impl App {
             return;
         };
         if session.edited(version, text, at) {
+            self.ask_for_document(tab);
             self.keep_tab(tab);
             self.listeners.emit(Change::Note);
             self.edited_while_leaving();
+        }
+    }
+
+    /// Where the note in `tab` stands with its document, once the windows
+    /// reach one: an edit asks for it, and it arrives through
+    /// [`Self::take_note_document`].
+    fn ask_for_document(&self, tab: TabId) {
+        let Some(bridge) = self.text_bridge() else {
+            return;
+        };
+        if let Some(session) = self.notes.sessions.get(&tab)
+            && session.may_enter_text_mode()
+        {
+            bridge.open(session.relative_path());
+        }
+    }
+
+    /// The document of the note in `tab`, once it arrived, caught up with
+    /// `shown`, the editor's text. The editor takes the note's edits from
+    /// here on, and the note's file follows the document.
+    pub fn take_note_document(
+        &mut self,
+        tab: TabId,
+        shown: &str,
+    ) -> Option<Box<dyn editor_core::text_mode::CollabDocument>> {
+        let bridge = self.text_bridge()?;
+        let session = self.notes.sessions.get_mut(&tab)?;
+        if session.text_mode().is_some() {
+            return None;
+        }
+        if session.take_attach() {
+            bridge.attach(session.relative_path());
+        }
+        // A save on its way already writes your edits to the file.
+        if session.is_saving() {
+            return None;
+        }
+        let document = bridge.take_document(session.relative_path())?;
+        if !session.may_enter_text_mode() {
+            bridge.close(document.rid);
+            return None;
+        }
+        let base = session.loaded_text().to_owned();
+        session.enter_text_mode(document.rid);
+        Some(document.catch_up(&base, shown))
+    }
+
+    /// Whether the note in `tab` just stopped living in its document, so
+    /// the editor leaves text mode. What the file holds reaches the editor
+    /// as an outside edit, and text past what the document merged saves as
+    /// an ordinary edit.
+    pub fn take_note_left(&mut self, tab: TabId) -> bool {
+        let Some(bridge) = self.text_bridge() else {
+            return false;
+        };
+        let Some(session) = self.notes.sessions.get_mut(&tab) else {
+            return false;
+        };
+        let Some(left) = session.text_mode().and_then(|rid| bridge.take_left(&rid)) else {
+            return false;
+        };
+        let rejoin = left.why == crate::sync::workspace::text::LeftWhy::Moved;
+        session.leave_text_mode(&left.body, rejoin, Instant::now());
+        self.check_note_files(&[tab]);
+        self.listeners.emit(Change::Note);
+        true
+    }
+
+    /// Tells the sync client where your cursors are in the note in `tab`.
+    pub fn set_note_selections(
+        &self,
+        tab: TabId,
+        ranges: Vec<crate::sync::workspace::presence::SelectionRange>,
+        typing: bool,
+    ) {
+        if let (Some(bridge), Some(rid)) = (
+            self.text_bridge(),
+            self.notes.sessions.get(&tab).and_then(|s| s.text_mode()),
+        ) {
+            bridge.set_selections(rid, ranges, typing);
+        }
+    }
+
+    /// The collaborators' cursors in the note in `tab`.
+    pub fn note_cursors(&self, tab: TabId) -> Vec<crate::sync::workspace::presence::Cursor> {
+        match (
+            self.text_bridge(),
+            self.notes.sessions.get(&tab).and_then(|s| s.text_mode()),
+        ) {
+            (Some(bridge), Some(rid)) => bridge.cursors(&rid),
+            _ => Vec::new(),
         }
     }
 
@@ -870,6 +962,11 @@ impl App {
     }
 
     fn finish_note_write(&mut self, finished: Finished) {
+        if let (Some(bridge), Some(session)) =
+            (self.text_bridge(), self.notes.sessions.get(&finished.tab))
+        {
+            bridge.ask_again(session.relative_path());
+        }
         let merged = self
             .notes
             .sessions

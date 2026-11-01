@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE operations SET dropped = TRUE\n             WHERE workspace = $1 AND rid = $2 AND device = $3 AND counter = $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a19e2d4724cfdd79e18f70d78e663cd9cf88de4ce16ab8d7bdaf154de7f5370a"
+}

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT genesis FROM accounts WHERE account = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "genesis",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "genesis"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0b1d0328e4300c84fb1907ccedd3076dd9a1f046d480e6abff12ed2f5dcc6a39"
+}

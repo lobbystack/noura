@@ -12,10 +12,17 @@ rust-version.workspace = true
 test-hooks = ["local-core/test-hooks", "plugin-host/test-hooks"]
 
 [dependencies]
+# Text mode: each note's document, its verdicts and its writers' allowances.
+collab-sandbox = { version = "0.2.0", path = "../collab-sandbox" }
+# The editor's side of a text-mode note's document.
+editor-core = { version = "0.2.0", path = "../editor-core" }
 # Finds the workspace's names in log lines for Copy diagnostics.
 aho-corasick.workspace = true
 atomic-write-file.workspace = true
+# Hashes attachments as they stream, so a large file never sits in memory.
+blake3.workspace = true
 directories.workspace = true
+futures.workspace = true
 # Draws the pages of PDFs, finds their text and unlocks them, on each PDF
 # tab's own thread.
 hayro.workspace = true
@@ -24,15 +31,29 @@ hayro.workspace = true
 jiff.workspace = true
 jsonschema.workspace = true
 local-core = { version = "0.2.0", path = "../local-core" }
+# tus `Upload-Metadata` values for blob uploads (sync-v2.md §21).
+base64.workspace = true
 nucleo-matcher.workspace = true
 plugin-host = { version = "0.2.0", path = "../plugin-host" }
+# The sync service's HTTP client for the v2 API.
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sync-key-envelope = { version = "0.2.0", path = "../sync-key-envelope" }
+sync-protocol = { version = "0.2.0", path = "../sync-protocol" }
 # The locale calendar grids name months, weekdays and times in.
 sys-locale.workspace = true
-# Drives the requests to AI providers and streams their answers.
+thiserror.workspace = true
+# Drives the requests to AI providers and streams their answers. The
+# sync service also waits on it between device-grant polls and before
+# the pushes it schedules, on the runtime reqwest runs on.
 tokio.workspace = true
+# The realtime channel's WebSocket (sync-v2.md §23), over a reqwest
+# upgrade: the release axum 0.8 serves it with.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
 tracing.workspace = true
+# Tells a loopback server address from one that must use HTTPS.
+url.workspace = true
 unicode-normalization.workspace = true
 # Names AI runs and the provider requests they make.
 uuid.workspace = true
@@ -44,6 +65,9 @@ zeroize.workspace = true
 
 [dev-dependencies]
 app-core = { path = ".", features = ["test-hooks"] }
+# The sync tests put a tampering proxy between the client and the server,
+# realtime channels included.
+axum = { workspace = true, features = ["ws"] }
 # The fake AI provider streams what each test tells it to.
 futures.workspace = true
 # The tests record which folders each change syncs.
@@ -52,12 +76,25 @@ local-core = { version = "0.2.0", path = "../local-core", features = ["durabilit
 proptest.workspace = true
 # The tests stop the index from accepting writes.
 rusqlite.workspace = true
+sqlx = { workspace = true, features = ["postgres"] }
 serde_yaml_ng.workspace = true
+# The sync tests run the real server in-process, on SQLite and on a
+# throwaway PostgreSQL cluster.
+sync-server = { version = "0.2.0", path = "../sync-server" }
+sync-store = { version = "0.2.0", path = "../sync-store", features = ["conformance"] }
+sync-store-postgres = { version = "0.2.0", path = "../sync-store-postgres", features = ["testing"] }
+sync-store-sqlite = { version = "0.2.0", path = "../sync-store-sqlite" }
 tempfile.workspace = true
+tokio.workspace = true
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect"] }
 # A test reads every log line to check that a PDF's password stays out.
 tracing-subscriber.workspace = true
 # Writes plugin release archives for the install tests.
 zip.workspace = true
+
+# The scale tests read a thread's name without allocating.
+[target.'cfg(unix)'.dev-dependencies]
+libc.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
