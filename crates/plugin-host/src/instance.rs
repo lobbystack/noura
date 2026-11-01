@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 
 use local_core::{CoreError, HostRequest, HostRequests, WebMethod};
 use parking_lot::RwLock;
-use wasmtime::component::{Component, HasSelf, Linker};
+use wasmtime::component::types::ComponentItem;
+use wasmtime::component::{Component, HasSelf, Linker, LinkerInstance, ResourceType};
 use wasmtime::{Engine, Store, UpdateDeadline};
 
 use crate::{
@@ -728,6 +729,52 @@ macro_rules! export {
     };
 }
 
+/// Makes imports the host doesn't provide, such as the WASI interfaces the
+/// standard library pulls in for printing, trap when called. Noura's own
+/// interfaces stay out: a plugin built against an earlier version links to
+/// the version the host serves by the linker's semver rule, and a stub
+/// under the plugin's version would stand in front of it.
+pub fn trap_foreign_imports<T: 'static>(
+    linker: &mut Linker<T>,
+    component: &Component,
+) -> wasmtime::Result<()> {
+    let engine = component.engine();
+    let plugin = component.component_type();
+    for (name, import) in plugin.imports(engine) {
+        if !name.starts_with("noura:plugin/") {
+            trap(&mut linker.root(), name, &import.ty, engine)?;
+        }
+    }
+    Ok(())
+}
+
+fn trap<T: 'static>(
+    linker: &mut LinkerInstance<'_, T>,
+    name: &str,
+    item: &ComponentItem,
+    engine: &Engine,
+) -> wasmtime::Result<()> {
+    match item {
+        ComponentItem::ComponentFunc(_) => {
+            let full = name.to_owned();
+            linker.func_new(name, move |_, _, _, _| {
+                wasmtime::bail!("the plugin called `{full}`, which Noura doesn't provide")
+            })
+        }
+        ComponentItem::ComponentInstance(instance) => {
+            let mut inner = linker.instance(name)?;
+            for (export, item) in instance.exports(engine) {
+                trap(&mut inner, export, &item.ty, engine)?;
+            }
+            Ok(())
+        }
+        ComponentItem::Resource(_) => {
+            linker.resource(name, ResourceType::host::<()>(), |_, _| Ok(()))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// What registering one of a plugin's types gave: the type's name and
 /// whether it is the plugin's now.
 pub type Registration = (String, Result<(), TypeError>);
@@ -789,10 +836,7 @@ impl PluginInstance {
         let mut linker = Linker::new(engine);
         Plugin::add_to_linker::<HostState, HasSelf<HostState>>(&mut linker, |state| state)
             .map_err(|error| PluginError::Instantiate(format!("{error:?}")))?;
-        // Imports the host doesn't provide, such as the WASI interfaces the
-        // standard library pulls in for printing, trap when called.
-        linker
-            .define_unknown_imports_as_traps(component)
+        trap_foreign_imports(&mut linker, component)
             .map_err(|error| PluginError::Instantiate(format!("{error:?}")))?;
         let exports = (|| -> wasmtime::Result<Exports> {
             let pre = linker.instantiate_pre(component)?;
