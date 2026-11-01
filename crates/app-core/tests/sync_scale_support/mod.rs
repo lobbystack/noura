@@ -406,7 +406,9 @@ pub fn reader_stayed_open(file: &Path, window: Duration) -> bool {
     let started = Instant::now();
     let mut began = None;
     loop {
-        if let Some((_, log, copied)) = checkpoint(&connection, "PASSIVE") {
+        // A checkpoint that finds the database busy reports a log of -1.
+        let pass = checkpoint(&connection, "PASSIVE").filter(|(_, log, _)| *log >= 0);
+        if let Some((_, log, copied)) = pass {
             let start = *began.get_or_insert(log);
             if log < start || copied > start {
                 return false;
