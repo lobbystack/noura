@@ -28,12 +28,17 @@ find_one() {
   echo "${matches[0]}"
 }
 
+# macOS has no timeout command.
+time_limit=(timeout 180)
+command -v timeout > /dev/null || time_limit=(perl -e 'alarm 180; exec @ARGV')
+
 # Run the app with --smoke and check its report. $2 is "on" or "off".
 check() {
   local name="$1" updates="$2"
   shift 2
   local report
-  report="$("$@" --smoke)" || {
+  echo "Launching $name."
+  report="$("${time_limit[@]}" "$@" --smoke)" || {
     echo "$name: $report"
     echo "::error::$name failed its smoke run."
     exit 1
@@ -72,6 +77,7 @@ case "$(uname -s)" in
   MINGW* | MSYS* | CYGWIN*)
     msi="$(find_one '*.msi')"
     msi_windows="$(cygpath -w "$msi")"
+    echo "Installing $(basename "$msi")."
     powershell -NoProfile -Command \
       "\$p = Start-Process msiexec -ArgumentList '/i', '\"$msi_windows\"', '/quiet', '/norestart' -Wait -PassThru; exit \$p.ExitCode"
     check "$(basename "$msi")" on "$(cygpath -u "$PROGRAMFILES")/Noura/noura.exe"

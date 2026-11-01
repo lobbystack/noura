@@ -214,6 +214,7 @@ jobs:
             test -s "$bundle.sig" || { echo "::error::$bundle has no signature."; exit 1; }
           done
       - name: Install each package and launch it
+        timeout-minutes: 15
         shell: bash
         run: |
           if [ "$RUNNER_OS" = Linux ]; then
