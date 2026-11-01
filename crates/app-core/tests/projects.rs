@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 
 use app_core::{Field, InputValue, PluginEvent, SAVE_PAUSE, Target, ViewKind};
 use support::{
-    FakeSystem, Fixture, note, open_from_tree, settle_saves,
+    FakeSystem, Fixture, note, open_from_tree,
     projects::{self, items, listed, name_new_project, project_file, text_of, with_projects},
+    settle_saves,
     tasks::{A, B, C, D, E, H, find, property, task_file, with_tasks},
 };
 
@@ -208,7 +209,10 @@ fn a_new_project_keeps_its_overview_typed_across_saves_and_a_status_change() {
     app.save_due_notes(later + SAVE_PAUSE);
     settle_saves(&mut app);
 
-    assert_eq!(property(&fixture.read(path), "status"), Some("active".into()));
+    assert_eq!(
+        property(&fixture.read(path), "status"),
+        Some("active".into())
+    );
     assert_eq!(body(&fixture), typed);
     assert_eq!(app.note(tab).unwrap().text(), typed);
     assert!(!app.note(tab).unwrap().is_unsaved());

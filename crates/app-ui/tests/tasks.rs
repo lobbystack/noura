@@ -460,7 +460,9 @@ fn the_task_pane_shows_its_whole_toolbar_at_a_normal_window_width() {
         .next()
         .expect("Status offers choices")
         .rect();
-    let document = harness.get_by_role_and_label(Role::TextInput, "File name").rect();
+    let document = harness
+        .get_by_role_and_label(Role::TextInput, "File name")
+        .rect();
     for button in &buttons {
         let rect = button.rect();
         let label = button.accesskit_node().label();
@@ -473,18 +475,24 @@ fn the_task_pane_shows_its_whole_toolbar_at_a_normal_window_width() {
             "{label:?} at {rect:?} leaves the window"
         );
     }
-    assert!(
-        buttons
-            .iter()
-            .any(|button| button.accesskit_node().label().is_some_and(|label| label.starts_with("Find")))
-    );
+    assert!(buttons.iter().any(|button| {
+        button
+            .accesskit_node()
+            .label()
+            .is_some_and(|label| label.starts_with("Find"))
+    }));
 
     let selected = |group: &str| {
         harness
             .get_by_role_and_label(Role::RadioGroup, group)
             .get_all_by_role(Role::RadioButton)
-            .find(|option| option.accesskit_node().is_selected() == Some(true)
-                || option.accesskit_node().toggled().is_some_and(|state| state == egui::accesskit::Toggled::True))
+            .find(|option| {
+                option.accesskit_node().is_selected() == Some(true)
+                    || option
+                        .accesskit_node()
+                        .toggled()
+                        .is_some_and(|state| state == egui::accesskit::Toggled::True)
+            })
             .and_then(|option| option.accesskit_node().label())
     };
     assert_eq!(selected("Status").as_deref(), Some("To do"));

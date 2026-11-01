@@ -85,7 +85,10 @@ fn ignored_files_leave_search_and_come_back_with_their_pattern() {
     assert!(app.remove_ignored("build/"));
     support::settle(&mut app);
     assert_eq!(found(&app, "zebrafinch"), ["Plan", "late", "out"]);
-    assert_eq!(fixture.read("build/out.md"), b"zebrafinch in the build folder\n");
+    assert_eq!(
+        fixture.read("build/out.md"),
+        b"zebrafinch in the build folder\n"
+    );
 }
 
 #[test]

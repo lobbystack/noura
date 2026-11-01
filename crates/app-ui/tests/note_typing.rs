@@ -11,10 +11,7 @@ use std::{
 
 use app_core::Platform;
 use egui::{Event, Key, Modifiers, accesskit::Role};
-use egui_kittest::{
-    Harness,
-    kittest::Queryable,
-};
+use egui_kittest::{Harness, kittest::Queryable};
 use support::{create_workspace, harness_for, settle};
 
 type Ui = Harness<'static, app_ui::NouraUi>;
@@ -159,11 +156,7 @@ fn undo_and_redo_after_saves_reach_the_file() {
     assert_eq!(session_text(&harness), "alpha ");
     expect_saved(&mut harness, &path, "alpha ");
 
-    press(
-        &mut harness,
-        Modifiers::COMMAND | Modifiers::SHIFT,
-        Key::Z,
-    );
+    press(&mut harness, Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
     assert_eq!(session_text(&harness), "alpha beta");
     expect_saved(&mut harness, &path, "alpha beta");
 }

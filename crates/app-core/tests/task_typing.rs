@@ -153,7 +153,11 @@ fn an_outside_edit_to_the_open_task_merges_with_typing() {
 
     // Typing waits while another app adds a line further down.
     let at = Instant::now();
-    let text = app.note(tab).unwrap().text().replacen("Notes.", "My notes.", 1);
+    let text = app
+        .note(tab)
+        .unwrap()
+        .text()
+        .replacen("Notes.", "My notes.", 1);
     app.edit_note(tab, 1, &text, at);
     let outside = String::from_utf8(fixture.read(PATH)).unwrap();
     support::write(

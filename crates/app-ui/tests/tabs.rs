@@ -307,12 +307,15 @@ fn tabs_fit_the_title_bar_row_with_no_scrollbar_and_still_scroll() {
     harness.set_size(egui::vec2(1100.0, 750.0));
     harness.run();
     for name in &names {
-        harness.state_mut().app_mut().open_file(
-            &format!("{name}.md"),
-            app_core::OpenAs::Kept,
-        );
+        harness
+            .state_mut()
+            .app_mut()
+            .open_file(&format!("{name}.md"), app_core::OpenAs::Kept);
     }
-    harness.state_mut().app_mut().open_page(app_core::INBOX_PAGE, app_core::OpenAs::Kept);
+    harness
+        .state_mut()
+        .app_mut()
+        .open_page(app_core::INBOX_PAGE, app_core::OpenAs::Kept);
     harness.run();
 
     let tab_rect = |harness: &Ui, name: &str| harness.get_by_role_and_label(Role::Tab, name).rect();

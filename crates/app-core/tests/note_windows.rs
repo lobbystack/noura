@@ -186,12 +186,7 @@ fn typing_in_one_note_from_two_windows_keeps_both() {
     let one = open_from_tree(&mut first, "Shared.md");
     let two = open_from_tree(&mut second, "Shared.md");
 
-    edit_and_save(
-        &mut [&mut first, &mut second],
-        1,
-        two,
-        "from one\nfrom two",
-    );
+    edit_and_save(&mut [&mut first, &mut second], 1, two, "from one\nfrom two");
     assert!(body(&fixture).ends_with("---\nfrom one\nfrom two"));
     wait_for_both(&mut first, one, &mut second, two, "from one\nfrom two");
 

@@ -232,9 +232,7 @@ fn trashing_the_open_note_saves_its_typing_and_the_next_tab_shows_its_own_text()
     );
     choose_from_row_menu(&mut harness, "Keep", "Open in new tab");
     choose_from_row_menu(&mut harness, "Doomed", "Open in new tab");
-    harness
-        .get_by_role_and_label(Role::Tab, "Doomed")
-        .click();
+    harness.get_by_role_and_label(Role::Tab, "Doomed").click();
     harness.run_steps(4);
     harness
         .get_by_role_and_label(Role::MultilineTextInput, "Note text")
@@ -249,7 +247,11 @@ fn trashing_the_open_note_saves_its_typing_and_the_next_tab_shows_its_own_text()
     wait_until(&mut harness, "the note leaves the folder", |harness| {
         !folder.join("Doomed.md").exists() && harness.state().app().tabs().len() == 1
     });
-    assert!(harness.query_by_role_and_label(Role::TreeItem, "Doomed").is_none());
+    assert!(
+        harness
+            .query_by_role_and_label(Role::TreeItem, "Doomed")
+            .is_none()
+    );
     assert_eq!(tab_labels(&harness), ["Keep"]);
     assert_eq!(selected(&harness).as_deref(), Some("Keep"));
     assert_eq!(name_shown(&harness).as_deref(), Some("Keep"));
@@ -313,8 +315,16 @@ fn switching_tabs_keeps_each_note_s_text() {
     harness.run_steps(4);
     assert_eq!(shown(&harness), "text of two");
 
-    wait_for_bytes(&mut harness, &folder.join("One.md"), &note('a', "text of one"));
-    wait_for_bytes(&mut harness, &folder.join("Two.md"), &note('b', "text of two"));
+    wait_for_bytes(
+        &mut harness,
+        &folder.join("One.md"),
+        &note('a', "text of one"),
+    );
+    wait_for_bytes(
+        &mut harness,
+        &folder.join("Two.md"),
+        &note('b', "text of two"),
+    );
 }
 
 /// The note keeps its caret and how far it scrolled while you look at

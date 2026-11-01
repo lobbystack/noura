@@ -36,7 +36,10 @@ fn the_window_follows_the_system_appearance() {
 fn every_code_color_reads_on_noura_s_background() {
     const CODE: &str = "```rust\n// a comment\nstruct Point;\nfn main() {\n    \
                         let total = 42;\n    let name = \"text\";\n}\n```\n";
-    for (theme, palette) in [(Theme::Light, Palette::light()), (Theme::Dark, Palette::dark())] {
+    for (theme, palette) in [
+        (Theme::Light, Palette::light()),
+        (Theme::Dark, Palette::dark()),
+    ] {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(800.0, 600.0))
             .with_theme(theme)
