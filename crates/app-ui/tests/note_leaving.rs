@@ -328,7 +328,7 @@ fn switching_tabs_keeps_each_note_s_text() {
 }
 
 /// The note keeps its caret and how far it scrolled while you look at
-/// another tab or a page.
+/// another tab.
 #[test]
 fn switching_tabs_keeps_a_note_s_caret_and_scroll() {
     let app_data = tempfile::tempdir().unwrap();
@@ -371,6 +371,63 @@ fn switching_tabs_keeps_a_note_s_caret_and_scroll() {
     harness.run_steps(4);
     assert_eq!(shown(&harness), "short");
     harness.get_by_role_and_label(Role::Tab, "Long").click();
+    harness.run_steps(6);
+
+    assert_eq!(support::point_at(&harness, "the end", 0), scrolled);
+    harness
+        .get_by_role_and_label(Role::MultilineTextInput, "Note text")
+        .focus();
+    harness.run_steps(3);
+    type_text(&mut harness, "!");
+    assert_eq!(shown(&harness), format!("{long}!"));
+}
+
+/// A page opened with Mod takes over the preview tab. Going back to Files
+/// brings the note back, and it keeps its caret and how far it scrolled.
+#[test]
+fn a_page_that_takes_over_a_preview_tab_keeps_the_note_s_caret_and_scroll() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let long: String = (0..300).map(|line| format!("line {line}\n\n")).collect();
+    let long = format!("{long}the end");
+    let mut harness = opened(app_data.path(), &folder, &[("Long.md", 'a', &long)]);
+    open(&mut harness, "Long");
+    harness
+        .get_by_role_and_label(Role::MultilineTextInput, "Note text")
+        .focus();
+    harness.run_steps(3);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    harness.run_steps(6);
+    let end = support::point_at(&harness, "the end", 0);
+    harness.hover_at(end);
+    harness.run_steps(1);
+    harness.event(Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        source: egui::MouseWheelSource::Unknown,
+        delta: egui::vec2(0.0, 120.0),
+        modifiers: Modifiers::NONE,
+        phase: egui::TouchPhase::Move,
+    });
+    harness.run_steps(6);
+    let scrolled = support::point_at(&harness, "the end", 0);
+    assert!(scrolled.y > end.y + 50.0, "{end:?} to {scrolled:?}");
+
+    harness
+        .get_by_role_and_label(Role::Navigation, "Pages")
+        .get_by_role_and_label(Role::Link, "Inbox")
+        .click_modifiers(Modifiers::COMMAND);
+    harness.run_steps(6);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::MultilineTextInput, "Note text")
+            .is_none(),
+        "the Inbox took the tab"
+    );
+    harness
+        .get_by_role_and_label(Role::Navigation, "Pages")
+        .get_by_role_and_label(Role::Link, "Files")
+        .click();
     harness.run_steps(6);
 
     assert_eq!(support::point_at(&harness, "the end", 0), scrolled);
