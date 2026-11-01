@@ -372,6 +372,7 @@ fn a_streamed_write_never_replaces_an_outside_edit_or_writes_changed_bytes() {
 
 #[test]
 fn a_streamed_write_and_read_stay_inside_the_workspace() {
+    #[cfg_attr(not(unix), allow(unused_variables))]
     let (workspace, _app_data, engine) = engine();
     let outside = tempdir().unwrap();
     let source = outside.path().join("download.plain");
