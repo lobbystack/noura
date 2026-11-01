@@ -290,6 +290,31 @@ fn moving_a_file_to_the_trash_from_its_row_menu_closes_its_tab() {
     assert_eq!(selected(&harness).as_deref(), Some("Gamma (preview)"));
 }
 
+/// What the last frame painted wholly inside `area`, leaving out text.
+fn painted_inside(harness: &Ui, area: egui::Rect) -> Vec<egui::Rect> {
+    fn visit(shape: &egui::Shape, area: egui::Rect, found: &mut Vec<egui::Rect>) {
+        match shape {
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    visit(shape, area, found);
+                }
+            }
+            egui::Shape::Noop | egui::Shape::Text(_) => {}
+            shape => {
+                let bounds = shape.visual_bounding_rect();
+                if bounds.is_positive() && area.contains_rect(bounds) {
+                    found.push(bounds);
+                }
+            }
+        }
+    }
+    let mut found = Vec::new();
+    for clipped in &harness.output().shapes {
+        visit(&clipped.shape, area, &mut found);
+    }
+    found
+}
+
 /// At a normal window width, tabs past the window's edge scroll sideways
 /// with the mouse wheel, inside the title bar row, with no scrollbar.
 #[test]
@@ -322,7 +347,7 @@ fn tabs_fit_the_title_bar_row_with_no_scrollbar_and_still_scroll() {
     let first = tab_rect(&harness, &names[0]);
     let last = tab_rect(&harness, "Inbox");
     // The row starts where the window's content does, here the harness's
-    // margin, and no scrollbar takes room from its 40 points.
+    // margin, and the tabs sit in its 40 points.
     let row_top = harness
         .get_by_role_and_label(Role::Splitter, "Resize panel")
         .rect()
@@ -361,6 +386,14 @@ fn tabs_fit_the_title_bar_row_with_no_scrollbar_and_still_scroll() {
     wheel(&mut harness, -300.0);
     let moved = tab_rect(&harness, &names[0]).left();
     assert!(moved < start - 200.0, "the wheel moved {start} to {moved}");
+
+    // A scrollbar shows with the pointer over the row, in the strip under
+    // the tabs. Nothing paints there.
+    harness.hover_at(egui::pos2(600.0, 28.0));
+    harness.run_steps(3);
+    let under_the_tabs = egui::Rect::from_x_y_ranges(0.0..=1100.0, first.bottom()..=row_top + 39.0);
+    let bars = painted_inside(&harness, under_the_tabs);
+    assert!(bars.is_empty(), "painted under the tabs: {bars:?}");
     assert!(
         tab_rect(&harness, "Inbox").right() <= 1100.0,
         "the wheel reaches the last tab"
