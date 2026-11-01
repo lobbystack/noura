@@ -43,6 +43,51 @@ fn adding_a_pattern_saves_it_to_the_manifest_and_hides_matches_from_the_tree() {
     assert_eq!(fixture.read("build/out.txt"), b"o");
 }
 
+/// The titles search finds for `text`, sorted.
+fn found(app: &app_core::App, text: &str) -> Vec<String> {
+    let query = app_core::SearchQuery {
+        text: text.to_owned(),
+        ..app_core::SearchQuery::default()
+    };
+    let mut titles: Vec<String> = app
+        .workspace()
+        .unwrap()
+        .search(&query)
+        .unwrap()
+        .into_iter()
+        .map(|hit| hit.title)
+        .collect();
+    titles.sort();
+    titles
+}
+
+#[test]
+fn ignored_files_leave_search_and_come_back_with_their_pattern() {
+    let fixture = Fixture::new(&[
+        ("build/out.md", b"zebrafinch in the build folder\n"),
+        ("Docs/draft.tmp.md", b"zebrafinch in a draft\n"),
+        ("Docs/Plan.md", b"zebrafinch in the plan\n"),
+    ]);
+    let mut app = fixture.app();
+    assert_eq!(found(&app, "zebrafinch"), ["Plan", "draft.tmp", "out"]);
+    app.open_ignored_files();
+
+    assert!(app.add_ignored("build/"));
+    assert!(app.add_ignored("*.tmp.md"));
+    assert_eq!(found(&app, "zebrafinch"), ["Plan"]);
+
+    // A matching file that arrives later stays out of search too.
+    support::write(&fixture.root, "build/late.md", b"zebrafinch arrived late\n");
+    app.rescan();
+    support::settle(&mut app);
+    assert_eq!(found(&app, "zebrafinch"), ["Plan"]);
+
+    assert!(app.remove_ignored("build/"));
+    support::settle(&mut app);
+    assert_eq!(found(&app, "zebrafinch"), ["Plan", "late", "out"]);
+    assert_eq!(fixture.read("build/out.md"), b"zebrafinch in the build folder\n");
+}
+
 #[test]
 fn removing_a_pattern_brings_its_items_back() {
     let fixture = Fixture::new(&[("build/out.txt", b"o"), ("Readme.md", b"r")]);
