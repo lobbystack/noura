@@ -128,9 +128,8 @@ fn linux_has_no_terminal_noura_can_rely_on() {
 #[test]
 fn nothing_outside_the_workspace_reaches_the_system() {
     let fixture = fixture();
-    let outside = fixture.outside();
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&outside, fixture.root.join("Linked")).unwrap();
+    std::os::unix::fs::symlink(fixture.outside(), fixture.root.join("Linked")).unwrap();
     let system = FakeSystem::on(Platform::MacOs);
     let mut app = fixture.app_with(system.clone());
 
