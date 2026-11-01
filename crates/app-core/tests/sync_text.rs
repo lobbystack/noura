@@ -1634,6 +1634,28 @@ async fn a_note_refused_before_its_file_operation_is_live_enters_on_a_later_edit
     assert_eq!(document.rid, rid);
 }
 
+/// You stop typing after the edit that was refused. Nothing edits the note
+/// again, and it still goes live once sync has captured that edit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_note_refused_before_its_file_operation_is_live_enters_with_no_later_edit() {
+    let mut pair = pair().await;
+    let bridge = TextBridge::default();
+    pair.a.write(PLAN, b"# Plan edited\n");
+    bridge.open(PLAN);
+    bridge.serve(&mut pair.sync_a);
+    assert!(bridge.take_document(PLAN, "# Plan edited\n").is_none());
+    both_rounds(&mut pair).await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+    assert!(bridge.has_work(), "the sync thread tries again");
+    bridge.serve(&mut pair.sync_a);
+
+    let document = bridge
+        .take_document(PLAN, "# Plan edited\n")
+        .expect("the note entered");
+    assert_eq!(pair.sync_a.rid_at(PLAN), Some(document.rid));
+}
+
 /// The document opens on the file, and your save lands before the window
 /// takes it. The window waits until the document holds the save: the
 /// difference would otherwise read as someone deleting what you typed, and

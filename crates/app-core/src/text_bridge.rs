@@ -21,6 +21,11 @@ use crate::sync::workspace::text::{Entered, LeftNote};
 /// again.
 const ASK_AGAIN: Duration = Duration::from_secs(2);
 
+/// Whether a note that stayed out of text mode is due another try.
+fn asks_again((entered, at): &(Entered, Instant)) -> bool {
+    *entered == Entered::NotYet && at.elapsed() >= ASK_AGAIN
+}
+
 /// The sync client's side of a test's document.
 #[cfg(feature = "test-hooks")]
 pub type TestNote = collab_sandbox::SharedNote;
@@ -255,6 +260,7 @@ impl TextBridge {
             || !waiting.attaching.is_empty()
             || !waiting.closing.is_empty()
             || !waiting.forgotten.is_empty()
+            || waiting.refused.values().any(asks_again)
     }
 
     /// Lets the next edit ask again for a note that stayed out of text
@@ -281,6 +287,7 @@ impl TextBridge {
         let mut waiting = self.waiting();
         waiting.opening.retain(|p| p != path);
         waiting.attaching.retain(|p| p != path);
+        waiting.refused.remove(path);
         waiting.forgotten.push(path.to_owned());
         drop(waiting);
         self.wake();
@@ -335,6 +342,18 @@ impl TextBridge {
     pub fn serve(&self, sync: &mut WorkspaceSync) {
         let (attaching, opening, closing, selections) = {
             let mut waiting = self.waiting();
+            // A note that waited for sync to capture your edit needs no
+            // further edit to go live.
+            let again: Vec<String> = waiting
+                .refused
+                .iter()
+                .filter(|(_, refusal)| asks_again(refusal))
+                .map(|(path, _)| path.clone())
+                .collect();
+            for path in again {
+                waiting.refused.remove(&path);
+                waiting.opening.push(path);
+            }
             for path in std::mem::take(&mut waiting.forgotten) {
                 if let Some(document) = waiting.ready.remove(&path) {
                     waiting.closing.push(document.rid);
