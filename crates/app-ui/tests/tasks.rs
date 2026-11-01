@@ -424,6 +424,73 @@ fn a_task_opens_beside_the_tasks_panel_with_its_labeled_properties() {
     );
 }
 
+/// At a normal window width the note's whole toolbar stays beside the
+/// Tasks panel, and the panel's values show in words.
+#[test]
+fn the_task_pane_shows_its_whole_toolbar_at_a_normal_window_width() {
+    let Some(Opened {
+        mut harness,
+        _folders,
+        ..
+    }) = opened()
+    else {
+        return;
+    };
+    harness.set_size(egui::vec2(1100.0, 750.0));
+    run(&mut harness);
+    harness
+        .get_by_role_and_label(Role::TreeItem, "tasks")
+        .click();
+    run(&mut harness);
+    harness
+        .get_by_role_and_label(Role::TreeItem, "Read the manual")
+        .click();
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::Group, "Properties")
+            .is_some_and(|panel| panel.query_by_role_and_label(Role::Group, "Task").is_some())
+    });
+
+    let toolbar = harness.get_by_role_and_label(Role::Toolbar, "Formatting");
+    let buttons: Vec<_> = toolbar.get_all_by_role(Role::Button).collect();
+    assert!(buttons.len() > 10, "{}", buttons.len());
+    let panel = harness
+        .get_by_role_and_label(Role::RadioGroup, "Status")
+        .get_all_by_role(Role::RadioButton)
+        .next()
+        .expect("Status offers choices")
+        .rect();
+    let document = harness.get_by_role_and_label(Role::TextInput, "File name").rect();
+    for button in &buttons {
+        let rect = button.rect();
+        let label = button.accesskit_node().label();
+        assert!(
+            rect.right() <= panel.left() && rect.left() >= document.left() - 1.0,
+            "{label:?} at {rect:?} leaves the pane left of {panel:?}"
+        );
+        assert!(
+            rect.top() >= 0.0 && rect.bottom() <= 750.0,
+            "{label:?} at {rect:?} leaves the window"
+        );
+    }
+    assert!(
+        buttons
+            .iter()
+            .any(|button| button.accesskit_node().label().is_some_and(|label| label.starts_with("Find")))
+    );
+
+    let selected = |group: &str| {
+        harness
+            .get_by_role_and_label(Role::RadioGroup, group)
+            .get_all_by_role(Role::RadioButton)
+            .find(|option| option.accesskit_node().is_selected() == Some(true)
+                || option.accesskit_node().toggled().is_some_and(|state| state == egui::accesskit::Toggled::True))
+            .and_then(|option| option.accesskit_node().label())
+    };
+    assert_eq!(selected("Status").as_deref(), Some("To do"));
+    assert_eq!(selected("Priority").as_deref(), Some("High"));
+}
+
 /// The Inbox's Due today list.
 fn due_today(harness: &Ui) -> Vec<String> {
     harness
