@@ -148,12 +148,12 @@ impl App {
         if session.is_saving() {
             return None;
         }
-        let document = bridge.take_document(session.relative_path())?;
+        let base = session.loaded_text().to_owned();
+        let document = bridge.take_document(session.relative_path(), &base)?;
         if !session.may_enter_text_mode() {
             bridge.close(document.rid);
             return None;
         }
-        let base = session.loaded_text().to_owned();
         session.enter_text_mode(document.rid);
         Some(document.catch_up(&base, shown))
     }

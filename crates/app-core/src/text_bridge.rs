@@ -30,6 +30,8 @@ pub struct TextDocument {
     /// The note.
     pub rid: Id,
     document: SandboxDocument,
+    /// The text the document opened on.
+    opened: String,
     /// The text the document's changes apply to.
     text: String,
 }
@@ -43,12 +45,17 @@ impl std::fmt::Debug for TextDocument {
 }
 
 impl TextDocument {
-    /// The document, caught up with the editor. `base` is the text the
-    /// editor last loaded and `shown` what it holds now, so your edits are
-    /// the difference between them. They go to the document on top of what
-    /// it merged since `base`, and the editor takes what the document holds
-    /// beyond `base` on its first poll.
-    pub fn catch_up(mut self, base: &str, shown: &str) -> Box<dyn CollabDocument> {
+    fn new(rid: Id, document: SandboxDocument, text: String) -> Self {
+        Self {
+            rid,
+            document,
+            opened: text.clone(),
+            text,
+        }
+    }
+
+    /// Brings [`Self::text`] up to what the document merged.
+    fn read_changes(&mut self) {
         for change in self.document.take_changes() {
             match change.apply(&self.text) {
                 Ok(text) => self.text = text,
@@ -57,6 +64,24 @@ impl TextDocument {
                 Err(_) => break,
             }
         }
+    }
+
+    /// Whether the document may take over from `base`, the text the editor
+    /// last loaded. A save of yours that landed after the document opened
+    /// isn't in it until the sync client reads the file: until then the
+    /// difference looks like someone deleting what you typed.
+    fn takes_over_from(&mut self, base: &str) -> bool {
+        self.read_changes();
+        self.opened == base || self.text == base
+    }
+
+    /// The document, caught up with the editor. `base` is the text the
+    /// editor last loaded and `shown` what it holds now, so your edits are
+    /// the difference between them. They go to the document on top of what
+    /// it merged since `base`, and the editor takes what the document holds
+    /// beyond `base` on its first poll.
+    pub fn catch_up(mut self, base: &str, shown: &str) -> Box<dyn CollabDocument> {
+        self.read_changes();
         match three_way(base, shown, &self.text) {
             Ok((mine, theirs)) => {
                 let mine = splices(&mine);
@@ -187,9 +212,10 @@ impl TextBridge {
         let asked = waiting.opening.iter().any(|p| p == path)
             || waiting.ready.contains_key(path)
             || waiting.refused.contains_key(path);
-        if !asked {
-            waiting.opening.push(path.to_owned());
+        if asked {
+            return;
         }
+        waiting.opening.push(path.to_owned());
         drop(waiting);
         self.wake();
     }
@@ -210,9 +236,14 @@ impl TextBridge {
         self.waiting().left.remove(rid)
     }
 
-    /// The document of the note at `path`, once it's ready.
-    pub fn take_document(&self, path: &str) -> Option<TextDocument> {
-        self.waiting().ready.remove(path)
+    /// The document of the note at `path`, once it's ready to take over
+    /// from `base`, the text the editor last loaded.
+    pub fn take_document(&self, path: &str, base: &str) -> Option<TextDocument> {
+        let mut waiting = self.waiting();
+        if !waiting.ready.get_mut(path)?.takes_over_from(base) {
+            return None;
+        }
+        waiting.ready.remove(path)
     }
 
     /// Whether a window waits for the sync thread.
@@ -260,14 +291,9 @@ impl TextBridge {
                 let Some(rid) = sync.rid_at(&path) else {
                     return;
                 };
-                self.waiting().ready.insert(
-                    path,
-                    TextDocument {
-                        rid,
-                        document,
-                        text,
-                    },
-                );
+                self.waiting()
+                    .ready
+                    .insert(path, TextDocument::new(rid, document, text));
             }
             // Another window holds the document: its edits reach the note,
             // and this one saves its own.
@@ -370,11 +396,7 @@ impl TextBridge {
         let (handle, text) = NoteHandle::open(&sandbox, vec![first], ids).expect("the note opens");
         let shared = handle.shared();
         (
-            TextDocument {
-                rid,
-                document: SandboxDocument::new(handle),
-                text,
-            },
+            TextDocument::new(rid, SandboxDocument::new(handle), text),
             shared,
         )
     }

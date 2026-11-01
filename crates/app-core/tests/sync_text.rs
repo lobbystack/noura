@@ -477,7 +477,9 @@ async fn the_windows_get_a_document_that_holds_the_edit_that_asked_for_it() {
     let bridge = TextBridge::default();
     bridge.open(PLAN);
     bridge.serve(&mut pair.sync_a);
-    let document = bridge.take_document(PLAN).expect("the document");
+    let document = bridge
+        .take_document(PLAN, "# Plan\n")
+        .expect("the document");
     let rid = document.rid;
     let _editor = document.catch_up("# Plan\n", "# Plan typed\n");
     both_rounds(&mut pair).await;
@@ -1483,7 +1485,9 @@ async fn a_document_catches_up_with_an_editor_that_fell_behind_it() {
     // between the first keystroke and the document's arrival.
     bridge.open(PLAN);
     bridge.serve(&mut pair.sync_b);
-    let document = bridge.take_document(PLAN).expect("the document");
+    let document = bridge
+        .take_document(PLAN, "# Plan\n")
+        .expect("the document");
     type_at(&mut a, 2, "Monday ");
     both_rounds(&mut pair).await;
     assert_eq!(read(&pair.b, PLAN), "# Monday Plan\n");
@@ -1507,7 +1511,7 @@ async fn a_note_refused_before_its_file_operation_is_live_enters_on_a_later_edit
     pair.a.write(PLAN, b"# Plan edited\n");
     bridge.open(PLAN);
     bridge.serve(&mut pair.sync_a);
-    assert!(bridge.take_document(PLAN).is_none());
+    assert!(bridge.take_document(PLAN, "# Plan edited\n").is_none());
     bridge.open(PLAN);
     assert!(!bridge.has_work(), "too soon to ask again");
 
@@ -1516,10 +1520,42 @@ async fn a_note_refused_before_its_file_operation_is_live_enters_on_a_later_edit
     bridge.ask_again(PLAN);
     bridge.open(PLAN);
     bridge.serve(&mut pair.sync_a);
-    let document = bridge.take_document(PLAN).expect("the note entered");
+    let document = bridge
+        .take_document(PLAN, "# Plan edited\n")
+        .expect("the note entered");
     let rid = pair.sync_a.rid_at(PLAN).unwrap();
     assert!(pair.sync_a.in_text_mode(&rid));
     assert_eq!(document.rid, rid);
+}
+
+/// The document opens on the file, and your save lands before the window
+/// takes it. The window waits until the document holds the save: the
+/// difference would otherwise read as someone deleting what you typed, and
+/// your caret would go with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_save_that_lands_after_the_document_opens_waits_for_the_document() {
+    let mut pair = pair().await;
+    both_rounds(&mut pair).await;
+    let bridge = TextBridge::default();
+    bridge.open(PLAN);
+    bridge.serve(&mut pair.sync_a);
+
+    pair.a.write(PLAN, b"# Plan typed\n");
+    assert!(bridge.take_document(PLAN, "# Plan typed\n").is_none());
+
+    let until = Instant::now() + Duration::from_secs(10);
+    let document = loop {
+        both_rounds(&mut pair).await;
+        pair.sync_a.text_tick(Instant::now()).expect("a tick");
+        if let Some(document) = bridge.take_document(PLAN, "# Plan typed\n") {
+            break document;
+        }
+        assert!(Instant::now() < until, "the document never read the file");
+    };
+    let mut editor = document.catch_up("# Plan typed\n", "# Plan typed\n");
+    assert_eq!(editor.poll(), Vec::new(), "the editor keeps its text");
+    both_rounds(&mut pair).await;
+    assert_eq!(read(&pair.b, PLAN), "# Plan typed\n");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

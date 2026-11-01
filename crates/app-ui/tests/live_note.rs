@@ -1,0 +1,265 @@
+//! Two desktops as people use them (sync-v2.md §22, §23, §24): each runs
+//! the window, the real editor and `LiveAccount` against the real server,
+//! and these tests type, select and share through AccessKit, then read the
+//! other desktop's editor and file.
+
+mod support;
+
+#[path = "../../app-core/tests/sync_support/mod.rs"]
+mod sync_support;
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use app_core::account::live::{ACCOUNT_FILE, LiveAccount};
+use app_core::account::{AccountBackend, AccountPhase};
+use app_core::folder_sync::{FolderSyncBackend, FolderSyncPhase};
+use app_core::sync::Secrets;
+use app_core::sync::account_heads::KEPT_HEADS_FILE;
+use app_core::sync::device::StoredDevice;
+use app_core::{App, Platform};
+use egui::accesskit::Role;
+use egui_kittest::{Harness, kittest::Queryable};
+use support::harness_for;
+use sync_store_sqlite::SqliteBackend;
+use sync_support::{MemorySecrets, Pair, Server};
+
+type Ui = Harness<'static, app_ui::NouraUi>;
+
+const WAIT: Duration = Duration::from_secs(60);
+
+/// One computer: its window and the account behind it.
+struct Computer {
+    harness: Ui,
+    account: Arc<LiveAccount>,
+    folder: PathBuf,
+}
+
+impl Computer {
+    /// The app on `folder` with `device`, talking to `base`, as the desktop
+    /// binary wires it up. `keep_at` is the address the device was kept
+    /// under.
+    fn start(
+        app_data: &Path,
+        folder: &Path,
+        device: &sync_support::Desktop,
+        base: &str,
+        keep_at: &str,
+    ) -> Self {
+        let secrets: Arc<MemorySecrets> = device.secrets.clone();
+        let state = app_data.join("sync").join(device.id().to_hex());
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::copy(
+            device.state.path().join(KEPT_HEADS_FILE),
+            state.join(KEPT_HEADS_FILE),
+        )
+        .unwrap();
+        std::fs::write(
+            app_data.join(ACCOUNT_FILE),
+            serde_json::json!({"server": base}).to_string(),
+        )
+        .unwrap();
+        let mut stored = StoredDevice::load(&*secrets, keep_at)
+            .unwrap()
+            .expect("the device");
+        stored.server = base.to_owned();
+        stored.save(&*secrets).unwrap();
+        app_core::WorkspaceService::new(app_data)
+            .open_folder(folder)
+            .unwrap();
+        let store: Secrets = secrets;
+        let account = Arc::new(LiveAccount::start(
+            app_data.to_owned(),
+            store,
+            Arc::new(|_| Ok(())),
+        ));
+        let backend = account.clone();
+        let mut harness = harness_for(app_data, Platform::Windows, move |app: &mut App| {
+            app.set_account_backend(backend.clone());
+            app.set_share_backend(backend.clone());
+            app.set_folder_sync_backend(backend);
+        });
+        harness.run_steps(3);
+        Self {
+            harness,
+            account,
+            folder: folder.to_owned(),
+        }
+    }
+
+    fn file(&self, name: &str) -> String {
+        std::fs::read_to_string(self.folder.join(name)).unwrap()
+    }
+
+    fn open(&mut self, name: &str) {
+        self.harness
+            .get_by_role_and_label(Role::TreeItem, name)
+            .click();
+        self.harness.run_steps(4);
+    }
+
+    fn shown(&self) -> String {
+        self.harness
+            .get_by_role(Role::MultilineTextInput)
+            .value()
+            .unwrap_or_default()
+    }
+
+    fn typing(&mut self, text: &str) {
+        self.harness.get_by_role(Role::MultilineTextInput).focus();
+        self.harness.run_steps(2);
+        self.harness.event(egui::Event::Text(text.to_owned()));
+        self.harness.run_steps(3);
+    }
+
+    fn in_text_mode(&self) -> bool {
+        let app = self.harness.state().app();
+        let tab = app.active_tab().expect("a tab").id();
+        app.note(tab).expect("a note").text_mode().is_some()
+    }
+
+    fn signed_in_and_syncing(&self) -> bool {
+        matches!(
+            AccountBackend::screen(&*self.account).phase,
+            AccountPhase::SignedIn(_)
+        ) && FolderSyncBackend::screen(&*self.account).phase == FolderSyncPhase::On
+    }
+}
+
+/// Draws both windows until `done` holds.
+fn until(
+    a: &mut Computer,
+    b: &mut Computer,
+    what: &str,
+    done: impl Fn(&Computer, &Computer) -> bool,
+) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        a.harness.step();
+        b.harness.step();
+        if done(a, b) {
+            a.harness.run_steps(2);
+            b.harness.run_steps(2);
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{what}: the laptop shows {:?} over {:?}, the desktop {:?} over {:?}; the laptop's sync says {:?}, the desktop's {:?}",
+            a.shown(),
+            a.file("Plan.md"),
+            b.shown(),
+            b.file("Plan.md"),
+            FolderSyncBackend::screen(&*a.account).last_error,
+            FolderSyncBackend::screen(&*b.account).last_error,
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The two desktops of a pair as the app runs them, each with `Plan.md`
+/// open.
+struct Desks {
+    laptop: Computer,
+    desktop: Computer,
+    _server: Server<SqliteBackend>,
+    _proxy: sync_support::Proxy,
+    _devices: (sync_support::Desktop, sync_support::Desktop),
+    _folders: (sync_support::Folder, sync_support::Folder),
+}
+
+/// [`Desks`] over `pair`, the laptop on the server at `laptop_base`.
+fn desks(pair: Pair<SqliteBackend>, laptop_base: &str) -> Desks {
+    let Pair {
+        server,
+        proxy,
+        laptop,
+        service,
+        a,
+        sync_a,
+        desktop,
+        b,
+        sync_b,
+    } = pair;
+    drop((service, sync_a, sync_b));
+    let mut one = Computer::start(
+        a.app_data.path(),
+        a.dir.path(),
+        &laptop,
+        laptop_base,
+        &server.base,
+    );
+    let mut two = Computer::start(
+        b.app_data.path(),
+        b.dir.path(),
+        &desktop,
+        &server.base,
+        &server.base,
+    );
+    until(&mut one, &mut two, "both computers sync", |a, b| {
+        a.signed_in_and_syncing() && b.signed_in_and_syncing()
+    });
+    one.open("Plan");
+    two.open("Plan");
+    Desks {
+        laptop: one,
+        desktop: two,
+        _server: server,
+        _proxy: proxy,
+        _devices: (laptop, desktop),
+        _folders: (a, b),
+    }
+}
+
+/// Puts `one`'s note into its document with a first word. A note whose
+/// file holds an edit that sync hasn't captured waits, so a later edit
+/// asks again on `one`.
+fn first_word(one: &mut Computer, other: &mut Computer, word: &str) {
+    one.typing(word);
+    let deadline = Instant::now() + WAIT;
+    while !one.in_text_mode() {
+        assert!(
+            Instant::now() < deadline,
+            "the first edit never brought the document"
+        );
+        one.harness.step();
+        other.harness.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The two desktops, each with its note in its document.
+fn both_in_their_documents(a: &mut Computer, b: &mut Computer) {
+    first_word(a, b, "Ana ");
+    until(a, b, "the laptop's words arrive", |_, b| {
+        b.file("Plan.md").contains("Ana ") && b.shown().contains("Ana ")
+    });
+    first_word(b, a, "Ben ");
+    until(a, b, "the desktop's words arrive", |a, _| {
+        a.file("Plan.md").contains("Ben ") && a.shown().contains("Ben ")
+    });
+}
+
+#[test]
+fn typing_in_one_editor_reaches_the_other_desktops_editor_and_file() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let pair = runtime.block_on(sync_support::pair());
+    let base = pair.server.base.clone();
+    let mut desks = desks(pair, &base);
+    let (a, b) = (&mut desks.laptop, &mut desks.desktop);
+    both_in_their_documents(a, b);
+
+    // Both type at once, and each ends with what the other typed.
+    a.typing("one ");
+    b.typing("two ");
+    until(a, b, "both files match", |a, b| {
+        let file = a.file("Plan.md");
+        file.contains("one ")
+            && file.contains("two ")
+            && file == b.file("Plan.md")
+            && a.shown() == file
+            && b.shown() == file
+    });
+    // Each kept its place while the document took over.
+    assert_eq!(a.file("Plan.md"), "Ben two Ana one # Plan\n");
+}
