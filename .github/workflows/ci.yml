@@ -120,7 +120,7 @@ jobs:
         run: |
           brew list postgresql@16 > /dev/null 2>&1 || brew install postgresql@16
           echo "NOURA_POSTGRES_BIN=$(brew --prefix postgresql@16)/bin" >> "$GITHUB_ENV"
-      - run: cargo test --workspace --locked
+      - run: cargo test --workspace --locked --no-fail-fast
         env:
           NOURA_S7_REQUIRE_PLUGINS: '1'
           NOURA_REQUIRE_PLUGINS: '1'
