@@ -309,14 +309,22 @@ impl Inner {
                 return Err("the write rolled back".into());
             }
         } else {
-            for job in jobs.iter_mut() {
-                txn.execute("SAVEPOINT push").await?;
-                if job.run(txn).await {
-                    txn.execute("RELEASE SAVEPOINT push").await?;
-                } else {
-                    txn.execute("ROLLBACK TO SAVEPOINT push").await?;
-                    txn.execute("RELEASE SAVEPOINT push").await?;
-                }
+            // One round trip closes a job's savepoint and opens the next
+            // one's: a busy domain's other pushes wait for this transaction.
+            let last = jobs.len().saturating_sub(1);
+            txn.execute("SAVEPOINT push").await?;
+            for (index, job) in jobs.iter_mut().enumerate() {
+                let kept = job.run(txn).await;
+                txn.execute(match (kept, index == last) {
+                    (true, false) => "RELEASE SAVEPOINT push; SAVEPOINT push",
+                    (true, true) => "RELEASE SAVEPOINT push",
+                    (false, false) => {
+                        "ROLLBACK TO SAVEPOINT push; RELEASE SAVEPOINT push; SAVEPOINT push"
+                    }
+                    (false, true) => "ROLLBACK TO SAVEPOINT push; RELEASE SAVEPOINT push",
+                })
+                .await?;
+                txn.settle_locks(kept);
             }
         }
         txn.commit().await

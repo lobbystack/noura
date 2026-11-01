@@ -443,6 +443,31 @@ pub struct CheckpointProgress {
     pub crossing_seen: u64,
 }
 
+/// What [`ReadTxn::operation_state`] reads: the domain's row, the device's
+/// chain head there and the domain that holds the `rid`.
+pub type OperationState = (Option<DomainRow>, Option<ChainHeadRow>, Option<Id>);
+
+/// What an accepted operation writes at its domain's next sequence, under
+/// the head row.
+#[derive(Clone, Copy, Debug)]
+pub struct OperationWrite<'a> {
+    /// The record, as its log entry stores it.
+    pub record: &'a [u8],
+    /// Its live-set fields, with its sequence, one above the head row the
+    /// transaction read under its lock.
+    pub op: &'a LiveOp,
+    /// Its class.
+    pub class: OpClass,
+    /// Whether it brings a new `rid` into the domain.
+    pub new_rid: bool,
+    /// What its entry changes on the head row.
+    pub progress: CheckpointProgress,
+    /// What it adds to the domain's usage.
+    pub usage: i64,
+    /// Its device's new chain head.
+    pub chain_head: ChainHeadRow,
+}
+
 /// A domain's numbers that the pressure rule of §20 reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DomainHistory {
@@ -988,6 +1013,24 @@ pub trait ReadTxn: Send {
         device: Id,
         counter: u64,
     ) -> impl Future<Output = Result<Option<RawEntry>>> + Send;
+    /// What an operation's checks read under its head row: the domain's
+    /// row, the device's chain head there and the domain of its `rid`. A
+    /// store over a network reads them in one round trip, since the
+    /// domain's other pushes wait through it.
+    fn operation_state(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        device: Id,
+        rid: Id,
+    ) -> impl Future<Output = Result<OperationState>> + Send {
+        async move {
+            let row = self.domain(workspace, domain).await?;
+            let head = self.chain_head(workspace, domain, device).await?;
+            let rid_domain = self.rid_domain(workspace, rid).await?;
+            Ok((row, head, rid_domain))
+        }
+    }
     /// The device's chain head in a domain.
     fn chain_head(
         &mut self,
@@ -1453,6 +1496,37 @@ pub trait WriteTxn: ReadTxn {
         domain: Id,
         progress: &CheckpointProgress,
     ) -> impl Future<Output = Result<()>> + Send;
+    /// Writes an accepted operation: its log entry, its head row changes,
+    /// its `rid`, its live-set fields with its covers, and its device's
+    /// chain head. A busy domain's pushes wait for one another's head row
+    /// through all of this, so a store over a network does it in fewer
+    /// round trips than these.
+    fn write_operation(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        write: &OperationWrite<'_>,
+    ) -> impl Future<Output = Result<()>> + Send {
+        let write = *write;
+        async move {
+            let seq = self
+                .append_entry(workspace, domain, push::ENTRY_OPERATION, write.record)
+                .await?;
+            if seq != write.op.seq {
+                return Err(Error::internal("the head row moved under its lock"));
+            }
+            if write.new_rid {
+                self.insert_rid(workspace, write.op.rid, domain).await?;
+            }
+            self.insert_operation(workspace, domain, write.op, write.class)
+                .await?;
+            self.set_checkpoint_progress(workspace, domain, &write.progress)
+                .await?;
+            self.add_usage(workspace, domain, write.usage, 0).await?;
+            self.set_chain_head(workspace, domain, write.op.device, &write.chain_head)
+                .await
+        }
+    }
     /// Records an operation's live-set fields, its covers included.
     fn insert_operation(
         &mut self,

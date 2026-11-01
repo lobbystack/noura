@@ -13,10 +13,13 @@ use sync_protocol::types::{Digest, Id, Key};
 use sync_store::{
     ApprovalRequestRow, BlobRow, BlobToCollect, CeremonyKind, CeremonyRow, ChainHeadRow,
     CheckpointProgress, CheckpointRow, DeleteRow, DeviceGrantRow, DomainHistory, DomainRow,
-    EpochRow, Error, InvitationRow, KeyRow, LinkRow, LockPlan, OfferRow, PasskeyRow, PendingDomain,
-    PendingPasskeyRow, PruneScan, PrunedEntry, RawEntry, ReadTxn, RemovedBy, Result, RewrapRow,
-    Session, SessionRow, ShareRow, WorkspaceRow, WriteTxn,
+    EpochRow, Error, InvitationRow, KeyRow, LinkRow, LockPlan, OfferRow, OperationState,
+    OperationWrite, PasskeyRow, PendingDomain, PendingPasskeyRow, PruneScan, PrunedEntry, RawEntry,
+    ReadTxn, RemovedBy, Result, RewrapRow, Session, SessionRow, ShareRow, WorkspaceRow, WriteTxn,
 };
+
+/// The log entry record type of an operation (§15).
+const ENTRY_OPERATION: u8 = 1;
 
 /// One transaction: a read-only REPEATABLE READ snapshot for reads, or a
 /// READ COMMITTED write transaction.
@@ -25,14 +28,16 @@ pub struct PgTxn {
     /// A test seam: how long a write transaction waits right after it
     /// reads a workspace's policy head.
     policy_read_delay: Option<Duration>,
+    /// The locks taken since the open savepoint, which rolling it back
+    /// gives up.
+    taken: Option<LockPlan>,
+    /// The locks a released savepoint left with the whole transaction.
+    held: Option<LockPlan>,
 }
 
 impl PgTxn {
     pub(crate) fn new(transaction: Transaction<'static, Postgres>) -> Self {
-        Self {
-            transaction: Some(transaction),
-            policy_read_delay: None,
-        }
+        Self::writer(transaction, None)
     }
 
     pub(crate) fn writer(
@@ -42,6 +47,8 @@ impl PgTxn {
         Self {
             transaction: Some(transaction),
             policy_read_delay,
+            taken: None,
+            held: None,
         }
     }
 
@@ -61,6 +68,47 @@ impl PgTxn {
             .map_err(|e| e.to_string())
     }
 
+    /// Notes how a job's savepoint ended: a release leaves the job's locks
+    /// with the transaction, so the next job of its group, which plans the
+    /// same ones, needs no statement for them, and a rollback gives up what
+    /// the job took.
+    pub(crate) fn settle_locks(&mut self, kept: bool) {
+        match self.taken.take() {
+            Some(plan) if kept => self.held = Some(plan),
+            _ => {}
+        }
+    }
+
+    /// Records the covers `op` makes at `seq`.
+    async fn insert_covers(
+        &mut self,
+        workspace: &[u8],
+        domain: &[u8],
+        op: &LiveOp,
+        seq: i64,
+    ) -> Result<()> {
+        let rid = &op.rid.0[..];
+        for cover in &op.covers {
+            let cover_device = &cover.device.0[..];
+            let cover_counter = counter_bytes(cover.counter);
+            let cover_counter = &cover_counter[..];
+            sqlx::query!(
+                "INSERT INTO covers (workspace, rid, device, counter, by_seq, domain)
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+                workspace,
+                rid,
+                cover_device,
+                cover_counter,
+                seq,
+                domain
+            )
+            .execute(self.c())
+            .await
+            .map_err(db)?;
+        }
+        Ok(())
+    }
+
     /// Commits the transaction.
     pub(crate) async fn commit(&mut self) -> std::result::Result<(), String> {
         match self.transaction.take() {
@@ -75,6 +123,30 @@ impl PgTxn {
             let _ = transaction.rollback().await;
         }
     }
+}
+
+/// A [`DomainRow`] from a query's row, which the macro's own type names.
+macro_rules! domain_row {
+    ($r:expr) => {
+        Ok(DomainRow {
+            head_seq: uint($r.head_seq)?,
+            epoch: uint($r.epoch)?,
+            epoch_digest: digest($r.epoch_digest)?,
+            epoch_policy_revision: uint($r.epoch_policy_revision)?,
+            retention_floor: uint($r.retention_floor)?,
+            checkpoint_seq: uint($r.checkpoint_seq)?,
+            checkpoint_due: uint($r.checkpoint_due)?,
+            entries_since_checkpoint: uint($r.entries_since_checkpoint)?,
+            weight_since_checkpoint: uint($r.weight_since_checkpoint)?,
+            deleted: $r.deleted,
+            log_weight: uint($r.log_weight)?,
+            usage_bytes: uint($r.usage_bytes)?,
+            history_bytes: uint($r.history_bytes)?,
+            pruned_floor: uint($r.pruned_floor)?,
+            crossing_seen: uint($r.crossing_seen)?,
+            quota_crossings: $r.quota_crossings.map_or(Ok(0), uint)?,
+        })
+    };
 }
 
 fn id(bytes: Vec<u8>) -> Result<Id> {
@@ -1259,27 +1331,71 @@ impl ReadTxn for PgTxn {
         .fetch_optional(self.c())
         .await
         .map_err(db)?;
-        row.map(|r| {
-            Ok(DomainRow {
-                head_seq: uint(r.head_seq)?,
-                epoch: uint(r.epoch)?,
-                epoch_digest: digest(r.epoch_digest)?,
-                epoch_policy_revision: uint(r.epoch_policy_revision)?,
-                retention_floor: uint(r.retention_floor)?,
-                checkpoint_seq: uint(r.checkpoint_seq)?,
-                checkpoint_due: uint(r.checkpoint_due)?,
-                entries_since_checkpoint: uint(r.entries_since_checkpoint)?,
-                weight_since_checkpoint: uint(r.weight_since_checkpoint)?,
-                deleted: r.deleted,
-                log_weight: uint(r.log_weight)?,
-                usage_bytes: uint(r.usage_bytes)?,
-                history_bytes: uint(r.history_bytes)?,
-                pruned_floor: uint(r.pruned_floor)?,
-                crossing_seen: uint(r.crossing_seen)?,
-                quota_crossings: r.quota_crossings.map_or(Ok(0), uint)?,
-            })
-        })
-        .transpose()
+        row.map(|r| domain_row!(r)).transpose()
+    }
+
+    async fn operation_state(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        device: Id,
+        rid: Id,
+    ) -> Result<OperationState> {
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let device = &device.0[..];
+        let rid = &rid.0[..];
+        let row = sqlx::query!(
+            r#"SELECT d.head_seq, d.epoch, d.epoch_digest, d.epoch_policy_revision,
+                    d.retention_floor, d.checkpoint_seq, d.checkpoint_due,
+                    d.entries_since_checkpoint, d.weight_since_checkpoint, d.deleted,
+                    d.log_weight, d.usage_bytes, d.history_bytes, d.pruned_floor,
+                    d.crossing_seen, w.quota_crossings AS "quota_crossings?",
+                    h.counter AS "head_counter?", h.digest AS "head_digest?",
+                    h.seq AS "head_seq_entry?", h.policy_revision AS "head_policy_revision?",
+                    h.generation AS "head_generation?", r.domain AS "rid_domain?"
+             FROM domains d
+             LEFT JOIN workspaces w ON w.workspace = d.workspace
+             LEFT JOIN chain_heads h ON h.workspace = d.workspace AND h.domain = d.domain
+               AND h.device = $3
+             LEFT JOIN rids r ON r.workspace = d.workspace AND r.rid = $4
+             WHERE d.workspace = $1 AND d.domain = $2"#,
+            workspace,
+            domain,
+            device,
+            rid
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        let Some(r) = row else {
+            return Ok((None, None, None));
+        };
+        let head = match (
+            r.head_counter,
+            r.head_digest,
+            r.head_seq_entry,
+            r.head_policy_revision,
+            r.head_generation,
+        ) {
+            (
+                Some(head_counter),
+                Some(head_digest),
+                Some(seq),
+                Some(revision),
+                Some(generation),
+            ) => Some(ChainHeadRow {
+                counter: counter(head_counter)?,
+                digest: digest(head_digest)?,
+                seq: uint(seq)?,
+                policy_revision: uint(revision)?,
+                generation: uint(generation)?,
+            }),
+            _ => None,
+        };
+        let rid_domain = r.rid_domain.map(id).transpose()?;
+        let row: Result<DomainRow> = domain_row!(r);
+        Ok((Some(row?), head, rid_domain))
     }
 
     async fn entries_after(
@@ -2779,6 +2895,9 @@ impl WriteTxn for PgTxn {
     }
 
     async fn lock(&mut self, plan: &LockPlan) -> Result<()> {
+        if self.held.as_ref() == Some(plan) {
+            return Ok(());
+        }
         // The policy lock: a transaction-level advisory lock in the one-key
         // form, so concurrent pushes lock no row and write none.
         if let Some(workspace) = &plan.workspace {
@@ -2845,6 +2964,7 @@ impl WriteTxn for PgTxn {
                 .map_err(db)?;
             }
         }
+        self.taken = Some(plan.clone());
         Ok(())
     }
 
@@ -3238,25 +3358,96 @@ impl WriteTxn for PgTxn {
         .execute(self.c())
         .await
         .map_err(db)?;
-        for cover in &op.covers {
-            let cover_device = &cover.device.0[..];
-            let cover_counter = counter_bytes(cover.counter);
-            let cover_counter = &cover_counter[..];
-            sqlx::query!(
-                "INSERT INTO covers (workspace, rid, device, counter, by_seq, domain)
-                 VALUES ($1, $2, $3, $4, $5, $6)",
-                workspace,
-                rid,
-                cover_device,
-                cover_counter,
-                seq,
-                domain
-            )
-            .execute(self.c())
-            .await
-            .map_err(db)?;
+        self.insert_covers(workspace, domain, op, seq).await
+    }
+
+    async fn write_operation(
+        &mut self,
+        workspace: Id,
+        domain: Id,
+        write: &OperationWrite<'_>,
+    ) -> Result<()> {
+        let op = write.op;
+        let seq = int(op.seq)?;
+        let workspace = &workspace.0[..];
+        let domain = &domain.0[..];
+        let record_type = i16::from(ENTRY_OPERATION);
+        let device = &op.device.0[..];
+        let position = counter_bytes(op.counter);
+        let position = &position[..];
+        let rid = &op.rid.0[..];
+        let op_digest = &op.digest.0[..];
+        let class = class_code(write.class);
+        let weight = int(op.weight)?;
+        let entries = at_most(write.progress.entries);
+        let checkpoint_weight = at_most(write.progress.weight);
+        let due = int(write.progress.due)?;
+        let log_weight = at_most(write.progress.log_weight);
+        let crossing_seen = at_most(write.progress.crossing_seen);
+        let head = &write.chain_head;
+        let head_counter = counter_bytes(head.counter);
+        let head_counter = &head_counter[..];
+        let head_digest = &head.digest.0[..];
+        let policy_revision = int(head.policy_revision)?;
+        let generation = int(head.generation)?;
+        // One statement in place of six: a busy domain's other pushes wait
+        // for the head row through every round trip of this one. The update
+        // names the sequence before, which the transaction's lock holds.
+        let written = sqlx::query!(
+            r#"WITH entry AS (
+                 INSERT INTO entries (workspace, domain, seq, record_type, record)
+                 VALUES ($1, $2, $3, $4, $5)
+               ), new_rid AS (
+                 INSERT INTO rids (workspace, rid, domain)
+                 SELECT $1::bytea, $8::bytea, $2::bytea WHERE $19::boolean
+               ), operation AS (
+                 INSERT INTO operations
+                   (workspace, domain, seq, device, counter, rid, digest, is_delete, class, weight)
+                 VALUES ($1, $2, $3, $6, $7, $8, $9, $10, $11, $12)
+               ), chain_head AS (
+                 INSERT INTO chain_heads
+                   (workspace, domain, device, counter, digest, seq, policy_revision, generation)
+                 VALUES ($1, $2, $6, $20, $21, $3, $22, $23)
+                 ON CONFLICT (workspace, domain, device) DO UPDATE SET
+                   counter = excluded.counter, digest = excluded.digest, seq = excluded.seq,
+                   policy_revision = excluded.policy_revision, generation = excluded.generation
+               )
+               UPDATE domains
+               SET head_seq = $3, entries_since_checkpoint = $13, weight_since_checkpoint = $14,
+                   checkpoint_due = $15, log_weight = $16, crossing_seen = $17,
+                   usage_bytes = GREATEST(usage_bytes + $18, 0)
+               WHERE workspace = $1 AND domain = $2 AND head_seq = $3 - 1"#,
+            workspace,
+            domain,
+            seq,
+            record_type,
+            write.record,
+            device,
+            position,
+            rid,
+            op_digest,
+            op.delete,
+            class,
+            weight,
+            entries,
+            checkpoint_weight,
+            due,
+            log_weight,
+            crossing_seen,
+            write.usage,
+            write.new_rid,
+            head_counter,
+            head_digest,
+            policy_revision,
+            generation
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        if written.rows_affected() != 1 {
+            return Err(Error::internal("the head row moved under its lock"));
         }
-        Ok(())
+        self.insert_covers(workspace, domain, op, seq).await
     }
 
     async fn insert_rid(&mut self, workspace: Id, rid: Id, domain: Id) -> Result<()> {

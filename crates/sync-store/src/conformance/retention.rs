@@ -643,6 +643,59 @@ pub async fn a_push_racing_the_collector_stays_consistent<B: Backend>(store: Sto
     }
 }
 
+/// An operation moves its domain's head row whole, whether it starts a
+/// `rid`, replaces one's live operation or shares its push with another.
+pub async fn an_operation_moves_its_head_row<B: Backend>(store: Store<B>) {
+    let world = World::new(store, 1).await;
+    let device = world.devices[0].id();
+    let start = world.domain_row(world.domain).await;
+
+    let first = world.op(0, |_| {});
+    world
+        .push(0, std::slice::from_ref(&first))
+        .await
+        .expect("first");
+    let first_length = first.to_bytes().len() as u64;
+    let row = world.domain_row(world.domain).await;
+    assert_eq!(row.head_seq, start.head_seq + 1);
+    assert_eq!(
+        row.entries_since_checkpoint,
+        start.entries_since_checkpoint + 1
+    );
+    assert_eq!(
+        row.weight_since_checkpoint,
+        start.weight_since_checkpoint + first_length
+    );
+    assert_eq!(row.log_weight, start.log_weight + first_length);
+    assert_eq!(row.usage_bytes, start.usage_bytes + first_length);
+    assert_eq!(row.history_bytes, start.history_bytes);
+
+    let replacement = world.op(0, |op| {
+        op.rid = first.body.rid;
+        op.counter = 2;
+        op.previous = first.digest();
+        op.supersedes = Sorted::new(vec![Cover { device, counter: 1 }]).expect("sorted");
+    });
+    let next = world.op(0, |op| {
+        op.counter = 3;
+        op.previous = replacement.digest();
+    });
+    world
+        .push(0, &[replacement.clone(), next.clone()])
+        .await
+        .expect("replacement and a new rid");
+    let added = (replacement.to_bytes().len() + next.to_bytes().len()) as u64;
+    let row = world.domain_row(world.domain).await;
+    assert_eq!(row.head_seq, start.head_seq + 3);
+    assert_eq!(
+        row.entries_since_checkpoint,
+        start.entries_since_checkpoint + 3
+    );
+    assert_eq!(row.log_weight, start.log_weight + first_length + added);
+    assert_eq!(row.usage_bytes, start.usage_bytes + added);
+    assert_eq!(row.history_bytes, start.history_bytes + first_length);
+}
+
 /// `GET /v2/workspaces` reports usage, history and the quota (§20): live
 /// operations and blobs count as usage, what they replaced as history, and
 /// a delete frees its object's usage when it commits.

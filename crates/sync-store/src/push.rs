@@ -24,8 +24,8 @@ pub(crate) use keys::KEY_REWRAP;
 
 use crate::policy::{self, PolicyCache};
 use crate::{
-    ChainHeadRow, CheckpointInterval, Error, LockPlan, Refusal, Result, Session, WriteGroup,
-    WriteTxn, refuse,
+    ChainHeadRow, CheckpointInterval, Error, LockPlan, OperationWrite, Refusal, Result, Session,
+    WriteGroup, WriteTxn, refuse,
 };
 
 /// Log entry record types (§15).
@@ -587,13 +587,15 @@ async fn apply(
     if !snapshot.domains.contains_key(&domain) {
         return Err(refuse("not_found", "no such domain"));
     }
-    let Some(domain_row) = txn.domain(workspace, domain).await? else {
+    let (domain_row, head, rid_domain) = txn
+        .operation_state(workspace, domain, op.device, op.rid)
+        .await?;
+    let Some(domain_row) = domain_row else {
         return Err(refuse("not_found", "no such domain"));
     };
 
     // A retried upload gets its original receipt; another record at the
     // same position conflicts.
-    let head = txn.chain_head(workspace, domain, op.device).await?;
     // Every operation sets its device's head as it commits, so the store
     // can hold one at this position only at or below the head.
     let held = match head {
@@ -685,7 +687,6 @@ async fn apply(
     }
 
     // The object.
-    let rid_domain = txn.rid_domain(workspace, op.rid).await?;
     if rid_domain.is_some_and(|d| d != domain) {
         return Err(refuse(
             "rid_domain_mismatch",
@@ -703,10 +704,17 @@ async fn apply(
             break;
         }
     }
-    let covered = txn
-        .covered(workspace, op.rid, op.device, op.counter, u64::MAX)
-        .await?;
-    let live = txn.live_ops(workspace, op.rid, u64::MAX).await?;
+    // A rid keeps its row while an operation on it stands, and pruning an
+    // operation takes the covers it made, so a new rid has neither.
+    let (covered, live) = if rid_domain.is_some() {
+        (
+            txn.covered(workspace, op.rid, op.device, op.counter, u64::MAX)
+                .await?,
+            txn.live_ops(workspace, op.rid, u64::MAX).await?,
+        )
+    } else {
+        (false, Vec::new())
+    };
     let class = judge(
         &live_op,
         rid_domain.is_some(),
@@ -731,41 +739,58 @@ async fn apply(
         });
     }
 
-    // The write.
-    let seq = txn
-        .append_entry(workspace, domain, ENTRY_OPERATION, &pushed.bytes)
-        .await?;
-    if rid_domain.is_none() {
-        txn.insert_rid(workspace, op.rid, domain).await?;
-    }
+    // The operations this one takes out of the live set, which `judge`
+    // left out of its own count too.
+    let left: Vec<u64> = live
+        .iter()
+        .filter(|(live, _)| {
+            op.supersedes
+                .iter()
+                .any(|cover| live.device == cover.device && live.counter <= cover.counter)
+        })
+        .map(|(live, _)| live.seq)
+        .collect();
+    let length = pushed.bytes.len() as u64;
+    let usage = if crate::retention::counted_by_write(&listings, &left) {
+        crate::retention::record_usage(length)
+    } else {
+        0
+    };
+
+    // The write. This transaction holds the head row, so the next sequence
+    // and what the entry changes there are known here.
+    let seq = domain_row.head_seq + 1;
     let live_op = LiveOp { seq, ..live_op };
-    txn.insert_operation(workspace, domain, &live_op, class)
-        .await?;
+    txn.write_operation(
+        workspace,
+        domain,
+        &OperationWrite {
+            record: &pushed.bytes,
+            op: &live_op,
+            class,
+            new_rid: rid_domain.is_none(),
+            progress: crate::checkpoints::progress(&domain_row, interval, seq, weight, false),
+            usage,
+            chain_head: ChainHeadRow {
+                counter: op.counter,
+                digest: pushed.digest,
+                seq,
+                policy_revision: op.policy_revision,
+                generation: op.generation,
+            },
+        },
+    )
+    .await?;
     crate::blobs::list(txn, workspace, domain, seq, &op.blobs).await?;
-    crate::checkpoints::note_entry(txn, interval, workspace, domain, seq, weight, false).await?;
     crate::retention::note_operation(
         txn,
         quota,
         workspace,
         domain,
-        op.rid,
-        pushed.bytes.len() as u64,
+        length,
         (!op.delete).then_some(op.ciphertext.len() as u64),
         &listings,
-        &live,
-    )
-    .await?;
-    txn.set_chain_head(
-        workspace,
-        domain,
-        op.device,
-        &ChainHeadRow {
-            counter: op.counter,
-            digest: pushed.digest,
-            seq,
-            policy_revision: op.policy_revision,
-            generation: op.generation,
-        },
+        &left,
     )
     .await?;
     Ok(Receipt {

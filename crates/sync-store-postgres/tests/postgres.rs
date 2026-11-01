@@ -5,8 +5,10 @@
 //! no row; no push holds or waits for the notification lock, or for a
 //! connection that does; a push reads the state a policy change it waited
 //! for left, whatever the database's default isolation; a pull waiting on
-//! one instance wakes when another commits, and only then; and a push of a
-//! new record looks up no position in `operations`.
+//! one instance wakes when another commits, and only then; a push of a new
+//! record looks up no position in `operations`; a grouped job keeps its
+//! locks only once its savepoint is released; and an operation updates its
+//! head row once.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -19,7 +21,9 @@ use sync_protocol::messages::{EntryRecord, PullCursor, PullRequest};
 use sync_protocol::records::{PolicyChange, PolicyKind, Signed};
 use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 use sync_store::conformance::{World, head_of, manager};
-use sync_store::{Backend, INITIAL_RESTORE_GENERATION, LockPlan, Store, WriteTxn};
+use sync_store::{
+    Backend, Error, INITIAL_RESTORE_GENERATION, LockPlan, Store, WriteGroup, WriteJob, WriteTxn,
+};
 use sync_store_postgres::testing::{Cluster, TestDatabase};
 use sync_store_postgres::{CONNECTIONS, PgBackend};
 
@@ -206,6 +210,130 @@ async fn a_new_record_looks_up_no_position() {
         .expect("the counters");
         if inserted == PUSHES {
             assert_eq!(scans, 0, "a push read `operations` by position");
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{inserted} inserts counted of {PUSHES}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Whether another connection finds the head row of `domain` locked.
+async fn head_row_locked(url: &str, workspace: Id, domain: Id) -> bool {
+    let mut connection = PgConnection::connect(url).await.expect("connected");
+    let locked =
+        sqlx::query("SELECT 1 FROM domains WHERE workspace = $1 AND domain = $2 FOR UPDATE NOWAIT")
+            .bind(&workspace.0[..])
+            .bind(&domain.0[..])
+            .fetch_optional(&mut connection)
+            .await;
+    match locked {
+        Ok(_) => false,
+        Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("55P03") => true,
+        Err(error) => panic!("the probe failed: {error}"),
+    }
+}
+
+/// A group's later jobs skip the lock statements only for locks a released
+/// savepoint left with the transaction. On this one-thread runtime the
+/// group's worker starts after all four jobs queued, so they share one
+/// transaction.
+#[tokio::test]
+async fn a_rolled_back_job_leaves_the_next_one_no_locks() {
+    type Job = WriteJob<<PgBackend as Backend>::Write, (bool, bool)>;
+    let (store, database) = open().await;
+    let world = World::new(store, 1).await;
+    let (workspace, domain) = (world.workspace, world.domain);
+    let plan = LockPlan {
+        workspace: Some(workspace),
+        domains: vec![domain],
+        ..LockPlan::default()
+    };
+    let job = |lock: bool, keep: bool| -> Job {
+        let (plan, url) = (plan.clone(), database.url.clone());
+        Box::new(move |txn| {
+            Box::pin(async move {
+                let found = head_row_locked(&url, workspace, domain).await;
+                if lock {
+                    txn.lock(&plan).await?;
+                }
+                let held = head_row_locked(&url, workspace, domain).await;
+                if keep {
+                    Ok((found, held))
+                } else {
+                    Err(Error::internal(format!("rolled back, row held: {held}")))
+                }
+            })
+        })
+    };
+    let backend = world.store.backend();
+    let group = WriteGroup { workspace, domain };
+    let before = backend.writer_counts();
+    let (first, second, third, fourth) = tokio::join!(
+        // Rolled back, so its locks go with its savepoint.
+        backend.write_grouped(group, job(true, false)),
+        // Found nothing locked; takes the locks and keeps them.
+        backend.write_grouped(group, job(true, true)),
+        // Plans the same locks, sends no statement, and rolls back.
+        backend.write_grouped(group, job(true, false)),
+        // The transaction still holds what the second job kept.
+        backend.write_grouped(group, job(false, true)),
+    );
+    let after = backend.writer_counts();
+    assert_eq!(after.transactions - before.transactions, 1, "one group");
+    let held = "rolled back, row held: true";
+    assert!(matches!(first, Err(Error::Internal(ref e)) if e == held));
+    assert_eq!(second.expect("kept"), (false, true), "the row came back");
+    assert!(matches!(third, Err(Error::Internal(ref e)) if e == held));
+    assert_eq!(fourth.expect("kept"), (true, true), "the row stayed held");
+    assert!(
+        !head_row_locked(&database.url, workspace, domain).await,
+        "the commit let go of the row"
+    );
+}
+
+/// A push's head row changes go in one update, so a busy domain's row grows
+/// one version per operation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_operation_updates_its_head_row_once() {
+    const PUSHES: i64 = 20;
+    let (store, database) = open().await;
+    let world = World::new(store, 1).await;
+    let mut previous = Digest::ZERO;
+    for counter in 1..=PUSHES as u64 {
+        let op = world.op(0, |op| {
+            op.counter = counter;
+            op.previous = previous;
+        });
+        world
+            .push(0, std::slice::from_ref(&op))
+            .await
+            .expect("pushed");
+        previous = op.digest();
+    }
+    // A backend hands in its counters as it exits.
+    world.store.backend().close().await;
+    let mut connection = PgConnection::connect(&database.url)
+        .await
+        .expect("connected");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let (inserted, updated): (i64, i64) = sqlx::query_as(
+            "SELECT o.n_tup_ins, d.n_tup_upd
+             FROM pg_stat_user_tables o, pg_stat_user_tables d
+             WHERE o.relname = 'operations' AND d.relname = 'domains'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .expect("the counters");
+        if inserted == PUSHES {
+            // The workspace's creation updated it a few times too.
+            assert!(
+                updated < 2 * PUSHES,
+                "{updated} updates of the head row in {PUSHES} pushes"
+            );
             return;
         }
         assert!(

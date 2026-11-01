@@ -23,8 +23,8 @@ use crate::push::{ENTRY_EPOCH, ENTRY_POLICY};
 use crate::reads::{authorize_domain, reader};
 use crate::retention::BUCKET_HASH_WEIGHT;
 use crate::{
-    CheckpointInterval, CheckpointProgress, CheckpointRow, DeleteRow, Error, LockPlan, ReadTxn,
-    Refusal, Result, Session, WriteTxn, refuse,
+    CheckpointInterval, CheckpointProgress, CheckpointRow, DeleteRow, DomainRow, Error, LockPlan,
+    ReadTxn, Refusal, Result, Session, WriteTxn, refuse,
 };
 
 /// The log entry record type of a checkpoint bundle (§15).
@@ -51,6 +51,19 @@ pub(crate) async fn note_entry(
         .domain(workspace, domain)
         .await?
         .ok_or_else(|| Error::internal("a log entry's domain has no head row"))?;
+    let progress = progress(&row, interval, seq, weight, due_now);
+    txn.set_checkpoint_progress(workspace, domain, &progress)
+        .await
+}
+
+/// What [`note_entry`] writes to the head row `row` for an entry at `seq`.
+pub(crate) fn progress(
+    row: &DomainRow,
+    interval: CheckpointInterval,
+    seq: u64,
+    weight: u64,
+    due_now: bool,
+) -> CheckpointProgress {
     let entries = row.entries_since_checkpoint + 1;
     let log_weight = row.log_weight.saturating_add(weight);
     let weight = row.weight_since_checkpoint.saturating_add(weight);
@@ -66,18 +79,13 @@ pub(crate) async fn note_entry(
     if due_now {
         due = due.max(seq);
     }
-    txn.set_checkpoint_progress(
-        workspace,
-        domain,
-        &CheckpointProgress {
-            entries,
-            weight,
-            due,
-            log_weight,
-            crossing_seen: row.quota_crossings,
-        },
-    )
-    .await
+    CheckpointProgress {
+        entries,
+        weight,
+        due,
+        log_weight,
+        crossing_seen: row.quota_crossings,
+    }
 }
 
 /// Whether a policy change from `prev` to `next` ends the write access, in

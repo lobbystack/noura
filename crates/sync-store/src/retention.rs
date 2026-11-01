@@ -7,12 +7,9 @@
 //! to usage or history happens under the domain's head row. Pruning takes
 //! the head row one batch at a time, so a push waits for at most one batch.
 
-use std::collections::BTreeSet;
-
 use sync_protocol::codec::Encode;
-use sync_protocol::live::LiveOp;
 use sync_protocol::manifest::BUCKETS;
-use sync_protocol::records::{Heads, OpClass};
+use sync_protocol::records::Heads;
 use sync_protocol::types::{Digest, Id};
 
 use crate::push::{ENTRY_EPOCH, ENTRY_OPERATION, ENTRY_POLICY};
@@ -191,24 +188,40 @@ pub(crate) struct NewListing {
     pub(crate) listed: bool,
 }
 
+/// Whether a new operation's record is all it adds to the counters, which
+/// its write then counts on the head row, so [`note_operation`] reads
+/// nothing to count it.
+pub(crate) fn counted_by_write(blobs: &[NewListing], left: &[u64]) -> bool {
+    blobs.is_empty() && left.is_empty()
+}
+
+/// What a record of `length` bytes adds to usage.
+pub(crate) fn record_usage(length: u64) -> i64 {
+    signed(length)
+}
+
 /// Counts an operation the push just wrote (§20): it adds its record to
 /// usage, brings back to usage each blob only history listed, and moves
-/// each operation it took out of the live set to history. `before` holds
-/// the `rid`'s live set before the write. A delete never counts as raising
-/// usage, and neither do an edit's signature and covers: only its payload
-/// and blobs do, so a replacement of equal size passes a full quota.
+/// each operation it took out of the live set to history. `left` holds the
+/// sequences of those operations. A delete never counts as raising usage,
+/// and neither do an edit's signature and covers: only its payload and
+/// blobs do, so a replacement of equal size passes a full quota. When
+/// [`counted_by_write`] holds, the write already counted the record and
+/// only the quota remains to check.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn note_operation(
     txn: &mut impl WriteTxn,
     quota: Option<u64>,
     workspace: Id,
     domain: Id,
-    rid: Id,
     length: u64,
     payload: Option<u64>,
     blobs: &[NewListing],
-    before: &[(LiveOp, OpClass)],
+    left: &[u64],
 ) -> Result<()> {
+    if counted_by_write(blobs, left) {
+        return check_quota(txn, workspace, quota, payload.map_or(0, signed)).await;
+    }
     let (mut usage, mut history) = (signed(length), 0);
     for listing in blobs {
         let row = txn
@@ -223,18 +236,10 @@ pub(crate) async fn note_operation(
         txn.set_blob_delete_after(workspace, listing.blob, None)
             .await?;
     }
-    let after: BTreeSet<u64> = txn
-        .live_ops(workspace, rid, u64::MAX)
-        .await?
-        .iter()
-        .map(|(op, _)| op.seq)
-        .collect();
-    for (op, _) in before {
-        if !after.contains(&op.seq) {
-            let (used, kept) = leave_live(txn, workspace, domain, op.seq).await?;
-            usage += used;
-            history += kept;
-        }
+    for seq in left {
+        let (used, kept) = leave_live(txn, workspace, domain, *seq).await?;
+        usage += used;
+        history += kept;
     }
     txn.add_usage(workspace, domain, usage, history).await?;
     let raised = match payload {
