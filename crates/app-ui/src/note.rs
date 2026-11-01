@@ -506,6 +506,12 @@ fn header(ui: &mut Ui, app: &mut App, note: &mut OpenNote, tab: TabId) {
             app.rename_note(tab, &typed);
         }
         if enter || escape {
+            // The key ended the field's edit, so the editor, which draws
+            // after this and takes the keyboard now, must not see it too.
+            ui.input_mut(|input| {
+                input.consume_key(Modifiers::NONE, Key::Enter);
+                input.consume_key(Modifiers::NONE, Key::Escape);
+            });
             note.editor.focus(ui.ctx());
         }
     }

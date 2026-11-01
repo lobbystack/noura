@@ -182,6 +182,20 @@ fn f2_moves_from_the_text_to_the_name_and_enter_renames_the_file() {
         Some("Roadmap")
     );
     assert!(!name_field(&harness).accesskit_node().is_focused());
+    assert!(
+        harness
+            .get_by_role_and_label(Role::MultilineTextInput, "Note text")
+            .accesskit_node()
+            .is_focused()
+    );
+    // The Enter that left the field isn't a line break in the text.
+    let app = harness.state().app();
+    let tab = app.active_tab().unwrap().id();
+    assert!(!app.note(tab).unwrap().is_unsaved());
+    assert_eq!(
+        app.note(tab).unwrap().text(),
+        "# Heading\n\nSome **bold** text.\n"
+    );
 }
 
 #[test]
