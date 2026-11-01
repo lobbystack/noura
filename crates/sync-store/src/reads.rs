@@ -161,12 +161,12 @@ pub(crate) async fn workspaces(
             .map(|bytes| Signed::<Profile>::from_bytes(&bytes).map(Nested))
             .transpose()
             .map_err(Error::internal)?;
-        let (used_bytes, history_bytes) = txn.workspace_usage(workspace).await?;
+        let usage = txn.workspace_usage(workspace).await?;
         workspaces.push(WorkspaceInfo {
             workspace,
             role,
-            used_bytes,
-            history_bytes,
+            used_bytes: usage.usage,
+            history_bytes: usage.history,
             quota_bytes: quota,
             profile,
         });

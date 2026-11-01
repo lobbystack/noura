@@ -131,6 +131,7 @@ macro_rules! conformance_tests {
             retention_floor_follows_the_weight_after_a_checkpoint,
             bucket_hashes_count_in_weight,
             an_operation_moves_its_head_row,
+            an_operation_sets_the_due_point,
             pruning_keeps_servable_checkpoints_through_a_crash,
             the_floor_compacts_cursors_and_routes,
             deleted_domains_are_reclaimed_in_batches,

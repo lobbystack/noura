@@ -406,8 +406,6 @@ pub(crate) async fn commit(
             creation_response: response.clone(),
             policy_revision: 1,
             policy_head: genesis_digest,
-            quota_pressure: false,
-            quota_crossings: 0,
         },
     )
     .await?;

@@ -108,8 +108,7 @@ pub(crate) async fn check_quota(
     if raised <= 0 {
         return Ok(());
     }
-    let (usage, _) = txn.workspace_usage(workspace).await?;
-    if usage > quota {
+    if txn.workspace_usage(workspace).await?.usage > quota {
         return Err(refuse(
             "quota_exceeded",
             "the workspace's usage would exceed its quota",
@@ -127,7 +126,7 @@ pub(crate) async fn over_quota(
     let Some(quota) = quota else {
         return Ok(false);
     };
-    Ok(txn.workspace_usage(workspace).await?.0 > quota)
+    Ok(txn.workspace_usage(workspace).await?.usage > quota)
 }
 
 /// Follows the pressure trigger (§20): usage and history going from within
@@ -141,14 +140,14 @@ pub(crate) async fn note_pressure(
     let Some(quota) = quota else {
         return Ok(());
     };
-    let Some(row) = txn.workspace(workspace).await? else {
+    let usage = txn.workspace_usage(workspace).await?;
+    let Some(pressure) = usage.quota_pressure else {
         return Ok(());
     };
-    let (usage, history) = txn.workspace_usage(workspace).await?;
-    let total = u128::from(usage) + u128::from(history);
-    if !row.quota_pressure && total > u128::from(quota) {
+    let total = u128::from(usage.usage) + u128::from(usage.history);
+    if !pressure && total > u128::from(quota) {
         txn.set_quota_pressure(workspace, true).await?;
-    } else if row.quota_pressure && total * 10 < u128::from(quota) * 9 {
+    } else if pressure && total * 10 < u128::from(quota) * 9 {
         txn.set_quota_pressure(workspace, false).await?;
     }
     Ok(())
@@ -540,8 +539,12 @@ impl<B: Backend> Store<B> {
                 .backend
                 .read(Box::new(move |txn: &mut B::Read| {
                     Box::pin(async move {
-                        let (usage, history) = txn.workspace_usage(workspace).await?;
-                        Ok((usage, history, txn.domain_histories(workspace).await?))
+                        let usage = txn.workspace_usage(workspace).await?;
+                        Ok((
+                            usage.usage,
+                            usage.history,
+                            txn.domain_histories(workspace).await?,
+                        ))
                     })
                 }))
                 .await?;

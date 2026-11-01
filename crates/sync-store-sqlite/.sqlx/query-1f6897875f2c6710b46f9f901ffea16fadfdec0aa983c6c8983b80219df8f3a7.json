@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT owner, creation_digest, creation_response, policy_revision, policy_head,\n                    quota_pressure, quota_crossings\n             FROM workspaces WHERE workspace = ?1 AND closed = 0",
+  "query": "SELECT owner, creation_digest, creation_response, policy_revision, policy_head\n             FROM workspaces WHERE workspace = ?1 AND closed = 0",
   "describe": {
     "columns": [
       {
@@ -57,28 +57,6 @@
             "name": "policy_head"
           }
         }
-      },
-      {
-        "name": "quota_pressure",
-        "ordinal": 5,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "workspaces",
-            "name": "quota_pressure"
-          }
-        }
-      },
-      {
-        "name": "quota_crossings",
-        "ordinal": 6,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "workspaces",
-            "name": "quota_crossings"
-          }
-        }
       }
     ],
     "parameters": {
@@ -89,10 +67,8 @@
       false,
       false,
       false,
-      false,
-      false,
       false
     ]
   },
-  "hash": "b8fecf46850351995f5401c0dd590f216709dbf4034ef86fe98b79866561fac8"
+  "hash": "1f6897875f2c6710b46f9f901ffea16fadfdec0aa983c6c8983b80219df8f3a7"
 }

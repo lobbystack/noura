@@ -13,13 +13,11 @@ use sync_protocol::types::{Digest, Id, Key};
 use sync_store::{
     ApprovalRequestRow, BlobRow, BlobToCollect, CeremonyKind, CeremonyRow, ChainHeadRow,
     CheckpointProgress, CheckpointRow, DeleteRow, DeviceGrantRow, DomainHistory, DomainRow,
-    EpochRow, Error, InvitationRow, KeyRow, LinkRow, LockPlan, OfferRow, OperationState,
-    OperationWrite, PasskeyRow, PendingDomain, PendingPasskeyRow, PruneScan, PrunedEntry, RawEntry,
-    ReadTxn, RemovedBy, Result, RewrapRow, Session, SessionRow, ShareRow, WorkspaceRow, WriteTxn,
+    ENTRY_OPERATION, EpochRow, Error, InvitationRow, KeyRow, LinkRow, LockPlan, OfferRow,
+    OperationState, OperationWrite, PasskeyRow, PendingDomain, PendingPasskeyRow, PruneScan,
+    PrunedEntry, RawEntry, ReadTxn, RemovedBy, Result, RewrapRow, Session, SessionRow, ShareRow,
+    WorkspaceRow, WorkspaceUsage, WriteTxn,
 };
-
-/// The log entry record type of an operation (§15).
-const ENTRY_OPERATION: u8 = 1;
 
 /// One transaction: a read-only REPEATABLE READ snapshot for reads, or a
 /// READ COMMITTED write transaction.
@@ -36,6 +34,8 @@ pub struct PgTxn {
     /// The workspace row read under those locks. The shared policy lock
     /// keeps out what would change its policy head or close it.
     workspace_row: Option<(Id, WorkspaceRow)>,
+    /// The statements sent so far, each one round trip.
+    round_trips: u64,
 }
 
 impl PgTxn {
@@ -53,10 +53,13 @@ impl PgTxn {
             taken: None,
             held: None,
             workspace_row: None,
+            round_trips: 0,
         }
     }
 
+    /// The transaction's connection, for one statement.
     fn c(&mut self) -> &mut PgConnection {
+        self.round_trips += 1;
         match &mut self.transaction {
             Some(transaction) => transaction,
             None => unreachable!("a finished transaction takes no query"),
@@ -72,14 +75,21 @@ impl PgTxn {
             .map_err(|e| e.to_string())
     }
 
+    /// How many statements the transaction sent.
+    pub(crate) fn round_trips(&self) -> u64 {
+        self.round_trips
+    }
+
     /// Notes how a job's savepoint ended: a release leaves the job's locks
     /// with the transaction, so the next job of its group, which plans the
     /// same ones, needs no statement for them, and a rollback gives up what
     /// the job took.
     pub(crate) fn settle_locks(&mut self, kept: bool) {
-        match self.taken.take() {
-            Some(plan) if kept => self.held = Some(plan),
-            _ => {}
+        if !kept {
+            self.taken = None;
+            self.workspace_row = None;
+        } else if let Some(plan) = self.taken.take() {
+            self.held = Some(plan);
         }
     }
 
@@ -378,18 +388,24 @@ fn checkpoint_row(
 }
 
 impl ReadTxn for PgTxn {
-    async fn workspace_usage(&mut self, workspace: Id) -> Result<(u64, u64)> {
+    async fn workspace_usage(&mut self, workspace: Id) -> Result<WorkspaceUsage> {
         let workspace = &workspace.0[..];
         let row = sqlx::query!(
             r#"SELECT CAST(COALESCE(SUM(usage_bytes), 0) AS BIGINT) AS "usage!: i64",
-                      CAST(COALESCE(SUM(history_bytes), 0) AS BIGINT) AS "history!: i64"
+                      CAST(COALESCE(SUM(history_bytes), 0) AS BIGINT) AS "history!: i64",
+                      (SELECT quota_pressure FROM workspaces
+                       WHERE workspace = $1 AND closed = 0) AS "quota_pressure?: bool"
              FROM domains WHERE workspace = $1 AND deleted = FALSE"#,
             workspace
         )
         .fetch_one(self.c())
         .await
         .map_err(db)?;
-        Ok((uint(row.usage)?, uint(row.history)?))
+        Ok(WorkspaceUsage {
+            usage: uint(row.usage)?,
+            history: uint(row.history)?,
+            quota_pressure: row.quota_pressure,
+        })
     }
 
     async fn domain_histories(&mut self, workspace: Id) -> Result<Vec<DomainHistory>> {
@@ -1207,8 +1223,7 @@ impl ReadTxn for PgTxn {
         }
         let workspace = &workspace_id.0[..];
         let row = sqlx::query!(
-            "SELECT owner, creation_digest, creation_response, policy_revision, policy_head,
-                    quota_pressure, quota_crossings
+            "SELECT owner, creation_digest, creation_response, policy_revision, policy_head
              FROM workspaces WHERE workspace = $1 AND closed = 0",
             workspace
         )
@@ -1226,8 +1241,6 @@ impl ReadTxn for PgTxn {
                     creation_response: r.creation_response,
                     policy_revision: uint(r.policy_revision)?,
                     policy_head: digest(r.policy_head)?,
-                    quota_pressure: r.quota_pressure,
-                    quota_crossings: uint(r.quota_crossings)?,
                 })
             })
             .transpose()?;
@@ -2533,7 +2546,7 @@ impl WriteTxn for PgTxn {
         let workspace = &workspace.0[..];
         let domain = &domain.0[..];
         let seq = int(seq)?;
-        if record_type == 1 {
+        if record_type == ENTRY_OPERATION {
             sqlx::query!(
                 "DELETE FROM covers WHERE workspace = $1 AND domain = $2 AND by_seq = $3",
                 workspace,
@@ -2688,7 +2701,6 @@ impl WriteTxn for PgTxn {
     }
 
     async fn set_quota_pressure(&mut self, workspace: Id, above: bool) -> Result<bool> {
-        self.workspace_row = None;
         let workspace = &workspace.0[..];
         let done = if above {
             sqlx::query!(

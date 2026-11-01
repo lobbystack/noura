@@ -694,6 +694,68 @@ pub async fn an_operation_moves_its_head_row<B: Backend>(store: Store<B>) {
     assert_eq!(row.log_weight, start.log_weight + first_length + added);
     assert_eq!(row.usage_bytes, start.usage_bytes + added);
     assert_eq!(row.history_bytes, start.history_bytes + first_length);
+
+    // A cover names one counter, and takes that device's lower ones too.
+    let state = world.op(0, |op| {
+        op.counter = 4;
+        op.previous = next.digest();
+    });
+    let first_patch = world.op(0, |op| {
+        op.rid = state.body.rid;
+        op.counter = 5;
+        op.previous = state.digest();
+    });
+    let second_patch = world.op(0, |op| {
+        op.rid = state.body.rid;
+        op.counter = 6;
+        op.previous = first_patch.digest();
+    });
+    world
+        .push(
+            0,
+            &[state.clone(), first_patch.clone(), second_patch.clone()],
+        )
+        .await
+        .expect("a state and two patches");
+    let before = world.domain_row(world.domain).await;
+    let live = world
+        .store
+        .live_at(world.workspace, state.body.rid, u64::MAX);
+    assert_eq!(live.await.expect("live").len(), 3);
+    let covering = world.op(0, |op| {
+        op.rid = state.body.rid;
+        op.counter = 7;
+        op.previous = second_patch.digest();
+        op.supersedes = Sorted::new(vec![Cover { device, counter: 6 }]).expect("sorted");
+    });
+    world
+        .push(0, std::slice::from_ref(&covering))
+        .await
+        .expect("the cover");
+    let moved = (state.to_bytes().len()
+        + first_patch.to_bytes().len()
+        + second_patch.to_bytes().len()) as u64;
+    let row = world.domain_row(world.domain).await;
+    assert_eq!(
+        row.usage_bytes,
+        before.usage_bytes + covering.to_bytes().len() as u64 - moved,
+        "all three leave usage"
+    );
+    assert_eq!(row.history_bytes, before.history_bytes + moved);
+}
+
+/// An operation sets the due point on its head row at the entry that
+/// reaches the interval, and leaves it there until a checkpoint.
+pub async fn an_operation_sets_the_due_point<B: Backend>(store: Store<B>) {
+    let world = World::new(store.with_checkpoint_interval(interval(4)), 1).await;
+    let mut track = Track::new(&world).await;
+    // The genesis and epoch 1 are entries 1 and 2.
+    assert_eq!(track.write(&world, 0).await, 3);
+    assert_eq!(world.domain_row(world.domain).await.checkpoint_due, 0);
+    assert_eq!(track.write(&world, 0).await, 4);
+    assert_eq!(world.domain_row(world.domain).await.checkpoint_due, 4);
+    track.write(&world, 0).await;
+    assert_eq!(world.domain_row(world.domain).await.checkpoint_due, 4);
 }
 
 /// `GET /v2/workspaces` reports usage, history and the quota (§20): live

@@ -29,7 +29,7 @@ use crate::{
 };
 
 /// Log entry record types (§15).
-pub(crate) const ENTRY_OPERATION: u8 = 1;
+pub const ENTRY_OPERATION: u8 = 1;
 pub(crate) const ENTRY_EPOCH: u8 = 8;
 pub(crate) const ENTRY_POLICY: u8 = 9;
 /// Key stream record types (§26).
@@ -704,8 +704,10 @@ async fn apply(
             break;
         }
     }
-    // A rid keeps its row while an operation on it stands, and pruning an
-    // operation takes the covers it made, so a new rid has neither.
+    // Pruning keeps a rid's row while an operation on it stands and takes
+    // an operation's covers with it, so a new rid has neither. Reclaiming a
+    // deleted domain may drop the row first, and what it hasn't reached yet
+    // serves nobody.
     let (covered, live) = if rid_domain.is_some() {
         (
             txn.covered(workspace, op.rid, op.device, op.counter, u64::MAX)

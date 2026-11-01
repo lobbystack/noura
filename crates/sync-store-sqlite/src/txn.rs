@@ -11,7 +11,7 @@ use sync_store::{
     CheckpointProgress, CheckpointRow, DeleteRow, DeviceGrantRow, DomainHistory, DomainRow,
     EpochRow, Error, InvitationRow, KeyRow, LinkRow, LockPlan, OfferRow, PasskeyRow, PendingDomain,
     PendingPasskeyRow, PruneScan, PrunedEntry, RawEntry, ReadTxn, RemovedBy, Result, RewrapRow,
-    Session, SessionRow, ShareRow, WorkspaceRow, WriteTxn,
+    Session, SessionRow, ShareRow, WorkspaceRow, WorkspaceUsage, WriteTxn,
 };
 
 /// A read transaction from the pool, or the writer's connection inside its
@@ -290,18 +290,24 @@ fn checkpoint_row(
 }
 
 impl ReadTxn for SqliteTxn {
-    async fn workspace_usage(&mut self, workspace: Id) -> Result<(u64, u64)> {
+    async fn workspace_usage(&mut self, workspace: Id) -> Result<WorkspaceUsage> {
         let workspace = &workspace.0[..];
         let row = sqlx::query!(
             r#"SELECT CAST(COALESCE(SUM(usage_bytes), 0) AS BIGINT) AS "usage!: i64",
-                      CAST(COALESCE(SUM(history_bytes), 0) AS BIGINT) AS "history!: i64"
+                      CAST(COALESCE(SUM(history_bytes), 0) AS BIGINT) AS "history!: i64",
+                      (SELECT quota_pressure FROM workspaces
+                       WHERE workspace = ?1 AND closed = 0) AS "quota_pressure?: bool"
              FROM domains WHERE workspace = ?1 AND deleted = 0"#,
             workspace
         )
         .fetch_one(self.c())
         .await
         .map_err(db)?;
-        Ok((uint(row.usage)?, uint(row.history)?))
+        Ok(WorkspaceUsage {
+            usage: uint(row.usage)?,
+            history: uint(row.history)?,
+            quota_pressure: row.quota_pressure,
+        })
     }
 
     async fn domain_histories(&mut self, workspace: Id) -> Result<Vec<DomainHistory>> {
@@ -1108,8 +1114,7 @@ impl ReadTxn for SqliteTxn {
     async fn workspace(&mut self, workspace: Id) -> Result<Option<WorkspaceRow>> {
         let workspace = &workspace.0[..];
         let row = sqlx::query!(
-            "SELECT owner, creation_digest, creation_response, policy_revision, policy_head,
-                    quota_pressure, quota_crossings
+            "SELECT owner, creation_digest, creation_response, policy_revision, policy_head
              FROM workspaces WHERE workspace = ?1 AND closed = 0",
             workspace
         )
@@ -1123,8 +1128,6 @@ impl ReadTxn for SqliteTxn {
                 creation_response: r.creation_response,
                 policy_revision: uint(r.policy_revision)?,
                 policy_head: digest(r.policy_head)?,
-                quota_pressure: r.quota_pressure != 0,
-                quota_crossings: uint(r.quota_crossings)?,
             })
         })
         .transpose()

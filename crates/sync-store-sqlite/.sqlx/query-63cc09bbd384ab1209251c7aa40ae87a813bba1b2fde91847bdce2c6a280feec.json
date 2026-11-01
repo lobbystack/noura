@@ -1,0 +1,40 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT CAST(COALESCE(SUM(usage_bytes), 0) AS BIGINT) AS \"usage!: i64\",\n                      CAST(COALESCE(SUM(history_bytes), 0) AS BIGINT) AS \"history!: i64\",\n                      (SELECT quota_pressure FROM workspaces\n                       WHERE workspace = ?1 AND closed = 0) AS \"quota_pressure?: bool\"\n             FROM domains WHERE workspace = ?1 AND deleted = 0",
+  "describe": {
+    "columns": [
+      {
+        "name": "usage!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "history!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "quota_pressure?: bool",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "quota_pressure"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "63cc09bbd384ab1209251c7aa40ae87a813bba1b2fde91847bdce2c6a280feec"
+}

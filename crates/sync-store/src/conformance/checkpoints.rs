@@ -23,6 +23,9 @@ use sync_protocol::types::{Digest, Id, SecretKey};
 use super::{World, push_failure, refusal};
 use crate::{Backend, CheckpointInterval, ReadTxn, Session, Store, WriteTxn};
 
+/// The most writes a schedule makes while it waits for a due point.
+const MOST_WRITES_TO_DUE: usize = 64;
+
 /// What a test wrote: each device's chain, the objects it made and the
 /// checkpoints the server accepted.
 #[derive(Default)]
@@ -36,6 +39,24 @@ pub(super) struct Track {
 }
 
 impl Track {
+    /// Writes in turn from `devices` until a checkpoint falls due, and
+    /// returns the due point and the last entry. A due point that never
+    /// comes fails here, so a schedule that waits for one can't hang.
+    pub(super) async fn write_to_due<B: Backend>(
+        &mut self,
+        world: &World<B>,
+        devices: &[usize],
+    ) -> (u64, u64) {
+        for device in devices.iter().cycle().take(MOST_WRITES_TO_DUE) {
+            let head = self.write(world, *device).await;
+            let due = world.pull(0, 0).await.checkpoint_due;
+            if due != 0 {
+                return (due, head);
+            }
+        }
+        panic!("no checkpoint fell due in {MOST_WRITES_TO_DUE} writes");
+    }
+
     pub(super) async fn new<B: Backend>(world: &World<B>) -> Self {
         Self {
             epoch: Some(world.first_epoch().await),
@@ -344,13 +365,7 @@ pub async fn checkpoint_checks_match_the_fixture<B: Backend>(store: Store<B>) {
                 .expect("the first checkpoint commits");
             previous_entry = receipt.receipts[0].seq;
             track.accepted.push(first.checkpoint.0.clone());
-            due = 0;
-            let mut writer = 0;
-            while due == 0 {
-                head = track.write(&world, writer).await;
-                writer = 1 - writer;
-                due = world.pull(0, 0).await.checkpoint_due;
-            }
+            (due, head) = track.write_to_due(&world, &[0, 1]).await;
         }
         // A bad epoch 2, then a replacement epoch 3 that skips it, which
         // makes a checkpoint due at its entry.
@@ -1066,11 +1081,7 @@ pub async fn checkpoint_routes_serve_the_chain_and_manifest<B: Backend>(store: S
     let mut track = Track::new(&world).await;
     let mut seqs = Vec::new();
     for _ in 0..6 {
-        let mut due = 0;
-        while due == 0 {
-            track.write(&world, 0).await;
-            due = world.pull(0, 0).await.checkpoint_due;
-        }
+        let (due, _) = track.write_to_due(&world, &[0]).await;
         let bundle = track.checkpoint(&world, 0, due, &[], |_, _| {}).await;
         let receipt = push_checkpoint(&world, 0, &bundle).await.expect("commits");
         seqs.push(receipt.receipts[0].seq);
@@ -1207,11 +1218,7 @@ pub async fn commit_checkpoints<B: Backend>(
     let mut track = Track::new(world).await;
     let mut committed = Vec::new();
     for _ in 0..count {
-        let mut due = 0;
-        while due == 0 {
-            track.write(world, 0).await;
-            due = world.pull(0, 0).await.checkpoint_due;
-        }
+        let (due, _) = track.write_to_due(world, &[0]).await;
         let bundle = track.checkpoint(world, 0, due, &[], |_, _| {}).await;
         let receipt = push_checkpoint(world, 0, &bundle).await.expect("commits");
         track.accepted.push(bundle.checkpoint.0.clone());
@@ -1437,13 +1444,7 @@ pub async fn checkpoint_heads_follow_the_fixture<B: Backend>(store: Store<B>) {
         track.accepted.push(second.checkpoint.0.clone());
 
         // The owner's devices write to the next due point.
-        let mut writer = 0;
-        let mut due = 0;
-        while due == 0 {
-            track.write(&world, writer).await;
-            writer = 1 - writer;
-            due = world.pull(0, 0).await.checkpoint_due;
-        }
+        let (due, _) = track.write_to_due(&world, &[0, 1]).await;
         let leave: Vec<Id> = case["leave"]
             .as_array()
             .expect("a list")

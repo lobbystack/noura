@@ -68,6 +68,7 @@ use sync_protocol::types::{Digest, Id, SecretKey};
 pub use hub::{EventHub, Relayed, Subscription};
 pub use limiter::{Limit, Limiter, MemoryLimiter, Taken};
 pub use policy::PolicyCache;
+pub use push::ENTRY_OPERATION;
 pub use realtime::Watch;
 pub use restore::READY_FOR;
 pub use retention::{BlobToCollect, Maintenance, Retention, UPLOAD_TTL};
@@ -384,10 +385,18 @@ pub struct WorkspaceRow {
     pub policy_revision: u64,
     /// The policy head's digest.
     pub policy_head: Digest,
-    /// Whether usage and history together stand above the quota (§20).
-    pub quota_pressure: bool,
-    /// How many times they crossed it.
-    pub quota_crossings: u64,
+}
+
+/// A workspace's numbers against its quota (§20).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkspaceUsage {
+    /// The sum of its domains' usage.
+    pub usage: u64,
+    /// The sum of their history.
+    pub history: u64,
+    /// Whether usage and history together stood above the quota when last
+    /// checked, or `None` for a workspace the store doesn't hold open.
+    pub quota_pressure: Option<bool>,
 }
 
 /// A domain's head row.
@@ -746,9 +755,12 @@ pub struct WriteGroup {
 /// one snapshot.
 pub trait ReadTxn: Send {
     /// The sum of the workspace's domains' usage and history (§15, §20),
-    /// leaving out domains that wait to be reclaimed.
-    fn workspace_usage(&mut self, workspace: Id)
-    -> impl Future<Output = Result<(u64, u64)>> + Send;
+    /// leaving out domains that wait to be reclaimed, and its quota
+    /// pressure.
+    fn workspace_usage(
+        &mut self,
+        workspace: Id,
+    ) -> impl Future<Output = Result<WorkspaceUsage>> + Send;
     /// The history of the workspace's domains, most first.
     fn domain_histories(
         &mut self,

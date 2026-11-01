@@ -7,8 +7,9 @@
 //! for left, whatever the database's default isolation; a pull waiting on
 //! one instance wakes when another commits, and only then; a push of a new
 //! record looks up no position in `operations`; a grouped job keeps its
-//! locks only once its savepoint is released; and an operation updates its
-//! head row once.
+//! locks only once its savepoint is released; a group reads the quota
+//! pressure fresh; a statement error undoes only its job; a queued push
+//! takes three round trips; and an operation updates its head row once.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -17,13 +18,14 @@ use std::time::{Duration, Instant};
 use sqlx::{Connection, PgConnection};
 use sync_protocol::codec::List;
 use sync_protocol::keys::{EpochParams, build_epoch};
+use sync_protocol::live::LiveOp;
 use sync_protocol::messages::{EntryRecord, PullCursor, PullRequest};
-use sync_protocol::records::{PolicyChange, PolicyKind, Signed};
+use sync_protocol::records::{OpClass, PolicyChange, PolicyKind, Signed};
 use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 use sync_store::conformance::{World, head_of, manager};
 use sync_store::{
-    Backend, Error, INITIAL_RESTORE_GENERATION, LockPlan, ReadTxn, Store, WriteGroup, WriteJob,
-    WriteTxn,
+    Backend, ChainHeadRow, CheckpointProgress, Error, INITIAL_RESTORE_GENERATION, LockPlan,
+    OperationWrite, ReadTxn, Retention, Store, WriteGroup, WriteJob, WriteTxn,
 };
 use sync_store_postgres::testing::{Cluster, TestDatabase};
 use sync_store_postgres::{CONNECTIONS, PgBackend};
@@ -295,11 +297,112 @@ async fn a_rolled_back_job_leaves_the_next_one_no_locks() {
     );
 }
 
-/// A group reads the workspace's row once, and sees its own quota change.
+/// A group's jobs share the workspace's row, whose policy head the shared
+/// policy lock keeps. Another transaction may clear the quota pressure with
+/// no such lock, and the next push over the line has to count a crossing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_group_reads_the_quota_pressure_fresh() {
+    const QUOTA: u64 = 1_000_000;
+    let (store, database) = open().await;
+    let store = store.with_retention(Retention {
+        quota_bytes: Some(QUOTA),
+        ..Retention::default()
+    });
+    let world = Arc::new(World::new(store, 1).await);
+    let (workspace, domain) = (world.workspace, world.domain);
+    let mut other = PgConnection::connect(&database.url)
+        .await
+        .expect("connected");
+    // Usage leaves room for a push, and history puts the total over.
+    sqlx::query("UPDATE domains SET history_bytes = $1 WHERE workspace = $2 AND domain = $3")
+        .bind(QUOTA as i64)
+        .bind(&workspace.0[..])
+        .bind(&domain.0[..])
+        .execute(&mut other)
+        .await
+        .expect("history");
+    sqlx::query(
+        "UPDATE workspaces SET quota_pressure = TRUE, quota_crossings = 1 WHERE workspace = $1",
+    )
+    .bind(&workspace.0[..])
+    .execute(&mut other)
+    .await
+    .expect("pressure");
+
+    type Job = WriteJob<<PgBackend as Backend>::Write, ()>;
+    let backend = world.store.backend();
+    let group = WriteGroup { workspace, domain };
+    let before = backend.writer_counts();
+    let waits: Job = {
+        let world = world.clone();
+        Box::new(move |_| {
+            Box::pin(async move {
+                while world.store.backend().writer_counts().queued < before.queued + 3 {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                Ok(())
+            })
+        })
+    };
+    let reads: Job = {
+        let url = database.url.clone();
+        Box::new(move |txn| {
+            Box::pin(async move {
+                txn.lock(&LockPlan {
+                    workspace: Some(workspace),
+                    domains: vec![domain],
+                    ..LockPlan::default()
+                })
+                .await?;
+                txn.workspace(workspace).await?;
+                let mut other = PgConnection::connect(&url).await.expect("connected");
+                sqlx::query("UPDATE workspaces SET quota_pressure = FALSE WHERE workspace = $1")
+                    .bind(&workspace.0[..])
+                    .execute(&mut other)
+                    .await
+                    .expect("cleared");
+                Ok(())
+            })
+        })
+    };
+    // The first job holds up the worker until the other two queue, so they
+    // share the next transaction.
+    let waiting = backend.write_grouped(group, waits);
+    while backend.writer_counts().jobs == before.jobs {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let reading = backend.write_grouped(group, reads);
+    let pushing = {
+        let world = world.clone();
+        tokio::spawn(async move {
+            let op = world.op(0, |_| {});
+            world.push(0, std::slice::from_ref(&op)).await.map(|_| ())
+        })
+    };
+    let (waited, read, pushed) = tokio::join!(waiting, reading, pushing);
+    waited.expect("waited");
+    read.expect("read");
+    pushed.expect("finished").expect("pushed");
+    let after = backend.writer_counts();
+    assert_eq!(after.transactions - before.transactions, 2);
+    let (pressure, crossings): (bool, i64) = sqlx::query_as(
+        "SELECT quota_pressure, quota_crossings FROM workspaces WHERE workspace = $1",
+    )
+    .bind(&workspace.0[..])
+    .fetch_one(&mut other)
+    .await
+    .expect("the row");
+    assert!(pressure, "the push found the total above the quota");
+    assert_eq!(crossings, 2, "the push counted its crossing");
+}
+
+/// A real statement error fails one job through the batched `ROLLBACK TO`,
+/// in the middle of a group and at its end: the jobs before it stay, its
+/// head row update goes, and the next job takes the sequence it left.
 #[tokio::test]
-async fn a_group_rereads_the_workspace_after_a_quota_change() {
-    type Job = WriteJob<<PgBackend as Backend>::Write, bool>;
-    let (store, _database) = open().await;
+async fn a_statement_error_undoes_only_its_job() {
+    type Job = WriteJob<<PgBackend as Backend>::Write, u64>;
+    let (store, database) = open().await;
     let world = World::new(store, 1).await;
     let (workspace, domain) = (world.workspace, world.domain);
     let plan = LockPlan {
@@ -307,30 +410,153 @@ async fn a_group_rereads_the_workspace_after_a_quota_change() {
         domains: vec![domain],
         ..LockPlan::default()
     };
-    let job = |raise: bool| -> Job {
+    let job = |rid: Id| -> Job {
         let plan = plan.clone();
         Box::new(move |txn| {
             Box::pin(async move {
                 txn.lock(&plan).await?;
-                txn.workspace(workspace).await?;
-                if raise {
-                    txn.set_quota_pressure(workspace, true).await?;
-                }
-                let row = txn.workspace(workspace).await?.expect("a workspace");
-                Ok(row.quota_pressure)
+                let row = txn.domain(workspace, domain).await?.expect("a row");
+                let seq = row.head_seq + 1;
+                let op = LiveOp {
+                    rid,
+                    device: Id::random().expect("random"),
+                    counter: 1,
+                    seq,
+                    digest: Digest::ZERO,
+                    delete: false,
+                    covers: Vec::new(),
+                    weight: 3,
+                };
+                txn.write_operation(
+                    workspace,
+                    domain,
+                    &OperationWrite {
+                        record: &[1, 2, 3],
+                        op: &op,
+                        class: OpClass::State,
+                        new_rid: true,
+                        progress: CheckpointProgress {
+                            entries: row.entries_since_checkpoint + 1,
+                            weight: row.weight_since_checkpoint + 3,
+                            due: 0,
+                            log_weight: row.log_weight + 3,
+                            crossing_seen: 0,
+                        },
+                        usage: 3,
+                        chain_head: ChainHeadRow {
+                            counter: 1,
+                            digest: Digest::ZERO,
+                            seq,
+                            policy_revision: 1,
+                            generation: INITIAL_RESTORE_GENERATION,
+                        },
+                    },
+                )
+                .await?;
+                Ok(seq)
             })
         })
     };
+    let (taken, other, last) = (
+        Id::random().expect("random"),
+        Id::random().expect("random"),
+        Id::random().expect("random"),
+    );
     let backend = world.store.backend();
     let group = WriteGroup { workspace, domain };
-    let (first, second, third) = tokio::join!(
-        backend.write_grouped(group, job(false)),
-        backend.write_grouped(group, job(true)),
-        backend.write_grouped(group, job(false)),
+    let start = world.pull(0, 0).await.head;
+    let before = backend.writer_counts();
+    // A second row for one rid breaks `rids_pkey`.
+    let (first, middle, third, fourth, end) = tokio::join!(
+        backend.write_grouped(group, job(taken)),
+        backend.write_grouped(group, job(taken)),
+        backend.write_grouped(group, job(other)),
+        backend.write_grouped(group, job(last)),
+        backend.write_grouped(group, job(taken)),
     );
-    assert!(!first.expect("kept"), "no pressure yet");
-    assert!(second.expect("kept"), "the job sees its own write");
-    assert!(third.expect("kept"), "the next job sees it too");
+    let after = backend.writer_counts();
+    assert_eq!(after.transactions - before.transactions, 1, "one group");
+    for failed in [middle, end] {
+        let error = failed.expect_err("a duplicate rid").to_string();
+        assert!(error.contains("rids_pkey"), "{error}");
+    }
+    assert_eq!(first.expect("kept"), start + 1);
+    assert_eq!(third.expect("kept"), start + 2, "the sequence came back");
+    assert_eq!(fourth.expect("kept"), start + 3);
+    let mut connection = PgConnection::connect(&database.url)
+        .await
+        .expect("connected");
+    let (head, entries, rids, heads): (i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT d.head_seq,
+                (SELECT COUNT(*) FROM entries e
+                 WHERE e.workspace = d.workspace AND e.domain = d.domain AND e.seq > $3),
+                (SELECT COUNT(*) FROM rids r WHERE r.workspace = d.workspace AND r.rid = ANY($4)),
+                (SELECT COUNT(*) FROM chain_heads h
+                 WHERE h.workspace = d.workspace AND h.domain = d.domain AND h.seq > $3)
+         FROM domains d WHERE d.workspace = $1 AND d.domain = $2",
+    )
+    .bind(&workspace.0[..])
+    .bind(&domain.0[..])
+    .bind(start as i64)
+    .bind(vec![&taken.0[..], &other.0[..], &last.0[..]])
+    .fetch_one(&mut connection)
+    .await
+    .expect("the counts");
+    assert_eq!(head as u64, start + 3, "a failed job's update went");
+    assert_eq!((entries, rids, heads), (3, 3, 3), "the kept jobs stayed");
+}
+
+/// The soak's shape: a queued push of a new `rid` takes three round trips
+/// under its head row, plus a few for each transaction's locks. A push that
+/// lists blobs, edits a live `rid` or runs under a quota takes more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_queued_push_takes_three_round_trips() {
+    const PUSHES: usize = 12;
+    let (store, database) = open().await;
+    let world = Arc::new(World::new(store, PUSHES).await);
+    let mut holder = PgConnection::connect(&database.url)
+        .await
+        .expect("connected");
+    let mut holding = holder.begin().await.expect("begun");
+    sqlx::query("SELECT 1 FROM domains WHERE workspace = $1 AND domain = $2 FOR UPDATE")
+        .bind(&world.workspace.0[..])
+        .bind(&world.domain.0[..])
+        .fetch_one(&mut *holding)
+        .await
+        .expect("the head row");
+    let before = world.store.backend().writer_counts();
+    let mut pushes = Vec::new();
+    for device in 0..PUSHES {
+        let world = world.clone();
+        pushes.push(tokio::spawn(async move {
+            let op = world.op(device, |_| {});
+            world
+                .push(device, std::slice::from_ref(&op))
+                .await
+                .expect("pushed");
+        }));
+    }
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while world.store.backend().writer_counts().queued - before.queued < PUSHES as u64 {
+        assert!(Instant::now() < deadline, "the pushes never queued");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    holding.rollback().await.expect("let go");
+    for push in pushes {
+        push.await.expect("finished");
+    }
+    let after = world.store.backend().writer_counts();
+    let (jobs, transactions) = (
+        after.jobs - before.jobs,
+        after.transactions - before.transactions,
+    );
+    let round_trips = after.round_trips - before.round_trips;
+    assert_eq!(jobs, PUSHES as u64);
+    assert!(transactions <= 2, "{transactions} transactions");
+    assert!(
+        round_trips <= 3 * jobs + 3 * transactions,
+        "{round_trips} round trips for {jobs} pushes in {transactions} transactions"
+    );
 }
 
 /// A push's head row changes go in one update, so a busy domain's row grows

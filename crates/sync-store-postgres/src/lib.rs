@@ -101,6 +101,8 @@ pub(crate) async fn connect(url: &str) -> Result<PgConnection, sqlx::Error> {
 struct WriterStats {
     transactions: AtomicU64,
     jobs: AtomicU64,
+    round_trips: AtomicU64,
+    queued: AtomicU64,
 }
 
 /// A snapshot of the writers' counters.
@@ -110,6 +112,11 @@ pub struct WriterCounts {
     pub transactions: u64,
     /// Write jobs run.
     pub jobs: u64,
+    /// Round trips the write transactions took between `BEGIN` and their
+    /// commit, while they held their locks.
+    pub round_trips: u64,
+    /// Pushes queued for a group.
+    pub queued: u64,
 }
 
 /// One queued write: its job, then its result once the transaction's
@@ -293,6 +300,9 @@ impl Inner {
             .map_err(|e| e.to_string())?;
         let mut txn = PgTxn::writer(transaction, self.policy_read_delay());
         let outcome = self.run_in(&mut txn, jobs).await;
+        self.stats
+            .round_trips
+            .fetch_add(txn.round_trips(), Ordering::Relaxed);
         if outcome.is_err() {
             txn.rollback().await;
         }
@@ -429,6 +439,8 @@ impl PgBackend {
         WriterCounts {
             transactions: self.inner.stats.transactions.load(Ordering::Relaxed),
             jobs: self.inner.stats.jobs.load(Ordering::Relaxed),
+            round_trips: self.inner.stats.round_trips.load(Ordering::Relaxed),
+            queued: self.inner.stats.queued.load(Ordering::Relaxed),
         }
     }
 
@@ -584,6 +596,7 @@ impl Backend for PgBackend {
         group: WriteGroup,
         job: WriteJob<PgTxn, R>,
     ) -> BoxFut<'_, Result<R>> {
+        self.inner.stats.queued.fetch_add(1, Ordering::Relaxed);
         let (reply, result) = oneshot::channel();
         let request: Box<dyn Queued> = Box::new(Request {
             job: Some(job),
