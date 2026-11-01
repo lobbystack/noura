@@ -2810,7 +2810,15 @@ async fn many_devices_pick_one_writer_for_a_lost_object() {
         "{writers} of {count} devices wrote it"
     );
     for ((_, folder, sync), service) in devices.iter_mut().zip(services.iter_mut()) {
-        sync.round(service, 0).await.expect("a round");
+        // A device idle since the last pass can find its connection closed;
+        // its next round reconnects, as it does in the app.
+        if let Err(error) = sync.round(service, 0).await {
+            assert!(
+                matches!(error, app_core::sync::SyncError::Network(_)),
+                "{error:?}"
+            );
+            sync.round(service, 0).await.expect("a round");
+        }
         assert_eq!(
             folder.files().get("Lost.md").map(Vec::as_slice),
             Some(&b"# Lost\n"[..])
