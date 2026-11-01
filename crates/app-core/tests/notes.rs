@@ -1017,19 +1017,11 @@ fn line_width_applies_to_every_note_and_survives_a_restart() {
 
 /// Saves fail with a real permission error while the note's folder is
 /// read-only.
-#[cfg(unix)]
 mod failures {
-    use std::os::unix::fs::PermissionsExt;
-
     use super::*;
 
     fn read_only(fixture: &Fixture, folder: &str, read_only: bool) {
-        let mode = if read_only { 0o555 } else { 0o755 };
-        std::fs::set_permissions(
-            fixture.root.join(folder),
-            std::fs::Permissions::from_mode(mode),
-        )
-        .unwrap();
+        support::read_only(&fixture.root.join(folder), read_only);
     }
 
     /// A note in a read-only folder, with typing that can't save.

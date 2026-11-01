@@ -227,21 +227,14 @@ fn typing_in_one_note_from_two_windows_keeps_both() {
 
 /// Saves fail with a real permission error while a note's folder is
 /// read-only.
-#[cfg(unix)]
 mod failures {
-    use std::os::unix::fs::PermissionsExt;
 
     use app_core::SAVE_PAUSE;
 
     use super::*;
 
     fn read_only(fixture: &Fixture, folder: &str, read_only: bool) {
-        let mode = if read_only { 0o555 } else { 0o755 };
-        std::fs::set_permissions(
-            fixture.root.join(folder),
-            std::fs::Permissions::from_mode(mode),
-        )
-        .unwrap();
+        support::read_only(&fixture.root.join(folder), read_only);
     }
 
     /// The second window's note can't save: its folder is read-only.

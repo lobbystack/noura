@@ -488,16 +488,10 @@ fn try_again_opens_a_file_that_couldn_t_open_before() {
     harness.get_by_role_and_label(Role::Document, "Note text");
 }
 
-#[cfg(unix)]
 mod failed_saves {
-    use std::os::unix::fs::PermissionsExt;
+    use support::read_only;
 
     use super::*;
-
-    fn read_only(folder: &std::path::Path, read_only: bool) {
-        let mode = if read_only { 0o555 } else { 0o755 };
-        std::fs::set_permissions(folder, std::fs::Permissions::from_mode(mode)).unwrap();
-    }
 
     /// The note open with typing that couldn't save, and the prompt that
     /// closing its tab brings up.
