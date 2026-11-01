@@ -429,6 +429,7 @@ fn a_failed_answer_shows_a_public_reason_and_records_its_code() {
 }
 
 /// The message box's text, as the page draws it.
+#[cfg(unix)]
 fn draft(app: &App) -> Option<String> {
     let view = ai::page(app);
     let composer = ai::find(view.root(), "composer")?;

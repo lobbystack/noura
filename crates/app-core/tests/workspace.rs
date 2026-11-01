@@ -600,6 +600,7 @@ fn new_workspace_in_a_folder_noura_cannot_represent_returns_unsupported_path() {
 }
 
 /// Every file and folder under `root`, with each file's bytes.
+#[cfg(unix)]
 fn snapshot(root: &std::path::Path) -> Vec<(String, Option<Vec<u8>>)> {
     walk(root)
         .into_iter()

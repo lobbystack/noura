@@ -364,6 +364,7 @@ fn the_open_workspace_spelled_another_way_opens_nothing_more() {
     let recents = app_data.path().join("recent-workspaces.json");
     assert!(recents.exists());
     let name = folder.path().file_name().unwrap();
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut spellings = vec![folder.path().join("."), folder.path().join("..").join(name)];
     #[cfg(unix)]
     {

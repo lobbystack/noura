@@ -139,6 +139,7 @@ fn an_app_or_script_never_goes_to_the_default_app() {
     files.push(("script", b"#!/bin/sh\necho hi\n"));
     files.push(("Links.md", links.as_bytes()));
     let fixture = Fixture::new(&files);
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut runnable: Vec<&str> = RUNNABLE.to_vec();
     #[cfg(unix)]
     {

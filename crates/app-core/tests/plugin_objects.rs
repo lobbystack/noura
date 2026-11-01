@@ -9,9 +9,13 @@ mod support;
 
 use std::time::Instant;
 
-use app_core::{App, Change, SearchQuery, TabId, ViewKind, ViewNode};
+use app_core::{App, TabId, ViewKind, ViewNode};
+#[cfg(unix)]
+use app_core::{Change, SearchQuery};
+#[cfg(unix)]
+use support::index_files;
 use support::{
-    FakeSystem, Fixture, index_files, note, open_from_tree,
+    FakeSystem, Fixture, note, open_from_tree,
     plugins::{self, PluginFolder},
     recipes::{A, Answer, B, REFUSED, call, object, parse, recipe_file, revision, with_recipes},
     settle_saves,
