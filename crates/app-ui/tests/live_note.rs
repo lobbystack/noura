@@ -23,7 +23,7 @@ use egui::accesskit::Role;
 use egui_kittest::{Harness, kittest::Queryable};
 use support::harness_for;
 use sync_store_sqlite::SqliteBackend;
-use sync_support::{MemorySecrets, Pair, Server};
+use sync_support::{Line, MemorySecrets, Pair, Server};
 
 type Ui = Harness<'static, app_ui::NouraUi>;
 
@@ -318,5 +318,50 @@ fn a_selection_in_one_editor_shows_in_the_others_note_and_goes_with_its_text() {
     b.harness.run_steps(3);
     until(a, b, "the selection moves with its text", |_, b| {
         at(b) == (before.0 + 4, before.1 + 4)
+    });
+}
+
+#[test]
+fn edits_on_both_sides_of_a_dropped_connection_merge_when_it_returns() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let pair = runtime.block_on(sync_support::pair());
+    let line = runtime.block_on(Line::to(&pair.server.base));
+    let mut desks = desks(pair, &line.base);
+    let (a, b) = (&mut desks.laptop, &mut desks.desktop);
+    both_in_their_documents(a, b);
+
+    line.cut();
+    a.typing("offline ");
+    until(a, b, "the laptop finds itself offline", |a, _| {
+        FolderSyncBackend::screen(&*a.account)
+            .last_error
+            .is_some_and(|error| error.contains("can't be reached"))
+    });
+    b.typing("online ");
+
+    // Each keeps its typing in its file, and the other's stays away.
+    until(a, b, "each file holds its own typing", |a, b| {
+        a.file("Plan.md").contains("offline ") && b.file("Plan.md").contains("online ")
+    });
+    for _ in 0..200 {
+        a.harness.step();
+        b.harness.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!a.file("Plan.md").contains("online "));
+    assert!(!b.file("Plan.md").contains("offline "));
+
+    runtime.block_on(line.restore());
+    until(a, b, "both files match", |a, b| {
+        let file = a.file("Plan.md");
+        file.contains("offline ")
+            && file.contains("online ")
+            && file == b.file("Plan.md")
+            && a.shown() == file
+            && b.shown() == file
+    });
+    assert_eq!(a.file("Plan.md"), "Ben online Ana offline # Plan\n");
+    until(a, b, "the laptop's sync is well", |a, _| {
+        FolderSyncBackend::screen(&*a.account).last_error.is_none()
     });
 }
