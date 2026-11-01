@@ -277,7 +277,7 @@ mod tests {
         time::Instant,
     };
 
-    use app_core::{App, FIRST_UPDATE_CHECK, UpdateStatus};
+    use app_core::{App, FIRST_UPDATE_CHECK, UPDATE_CHECK_INTERVAL, UpdateStatus};
     use base64::{Engine, engine::general_purpose::STANDARD};
 
     use super::*;
@@ -319,16 +319,28 @@ mod tests {
         format!("{os}-{}", std::env::consts::ARCH)
     }
 
+    /// The files a test's server holds, which the test can change.
+    type Files = Arc<Mutex<Vec<(&'static str, Vec<u8>)>>>;
+
     /// Serve the files `files` lists for the server's base URL over HTTP on
     /// a local port. Returns the base URL and a log of the paths requested.
     fn serve(
         files: impl FnOnce(&str) -> Vec<(&'static str, Vec<u8>)>,
     ) -> (String, Arc<Mutex<Vec<String>>>) {
+        let (base, requested, _) = serve_changing(files);
+        (base, requested)
+    }
+
+    /// [`serve`], with the files it serves.
+    fn serve_changing(
+        files: impl FnOnce(&str) -> Vec<(&'static str, Vec<u8>)>,
+    ) -> (String, Arc<Mutex<Vec<String>>>, Files) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        let files = files(&base);
+        let files: Files = Arc::new(Mutex::new(files(&base)));
         let requested = Arc::new(Mutex::new(Vec::new()));
         let log = requested.clone();
+        let serving = files.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
@@ -344,14 +356,20 @@ mod tests {
                 }
                 let path = request_line.split(' ').nth(1).unwrap_or("").to_owned();
                 log.lock().unwrap().push(path.clone());
-                let response = match files.iter().find(|(name, _)| *name == path) {
-                    Some((_, body)) => {
+                let file = serving
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|(name, _)| *name == path)
+                    .map(|(_, body)| body.clone());
+                let response = match file {
+                    Some(body) => {
                         let mut response = format!(
                             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                             body.len()
                         )
                         .into_bytes();
-                        response.extend_from_slice(body);
+                        response.extend_from_slice(&body);
                         response
                     }
                     None => {
@@ -362,8 +380,26 @@ mod tests {
                 let _ = stream.write_all(&response);
             }
         });
-        (base, requested)
+        (base, requested, files)
     }
+
+    /// Polls `app` as of `now` until its check and download end.
+    fn settle(app: &mut App, now: Instant) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            app.poll_at(now);
+            if !matches!(
+                app.updates().status(),
+                UpdateStatus::Checking | UpdateStatus::Downloading { .. }
+            ) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "update work never finished");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    const UNREACHABLE: &str = "Couldn't reach the update server. Check your connection.";
 
     /// A feed offering `version` from the server at `base`, with
     /// `signature` for its bundle, in the shape
@@ -532,6 +568,141 @@ mod tests {
             .map(|entry| entry.unwrap().path())
             .collect();
         assert!(untouched.is_empty(), "nothing installed: {untouched:?}");
+    }
+
+    #[test]
+    fn noura_keeps_its_schedule_against_a_failing_feed_and_recovers_from_it() {
+        let keys = keys();
+        let bundle = b"Noura 99.0.0".to_vec();
+        let signature = sign(&keys, &bundle);
+        let (base, requested, files) = serve_changing(|_| Vec::new());
+        let install_over = tempfile::tempdir().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        let mut app = App::launch(app_data.path());
+        let launched = Instant::now();
+        app.enable_updates(
+            "0.2.0",
+            Arc::new(source(&base, &keys.public, install_over.path())),
+            launched,
+        );
+        let checks = || {
+            requested
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|path| *path == "/latest.json")
+                .count()
+        };
+
+        // The feed isn't there yet: nothing goes out before the first check,
+        // which fails in plain words.
+        settle(
+            &mut app,
+            launched + FIRST_UPDATE_CHECK - Duration::from_millis(100),
+        );
+        assert_eq!(checks(), 0);
+        let first = launched + FIRST_UPDATE_CHECK;
+        app.poll_at(first);
+        settle(&mut app, first);
+        assert_eq!(checks(), 1);
+        assert_eq!(
+            app.updates().status(),
+            UpdateStatus::Failed {
+                message: UNREACHABLE.to_owned()
+            }
+        );
+        assert!(!app.updates().offers_restart());
+
+        // A failed check waits out the schedule like any other.
+        let next = first + UPDATE_CHECK_INTERVAL;
+        settle(&mut app, next - Duration::from_secs(1));
+        assert_eq!(checks(), 1);
+
+        // The feed answers with something that isn't a feed.
+        files
+            .lock()
+            .unwrap()
+            .push(("/latest.json", b"<html>a captive portal</html>".to_vec()));
+        app.poll_at(next);
+        settle(&mut app, next);
+        assert_eq!(checks(), 2);
+        assert_eq!(
+            app.updates().status(),
+            UpdateStatus::Failed {
+                message: UNREACHABLE.to_owned()
+            }
+        );
+
+        // Once it recovers, Check for updates finds the release at once.
+        *files.lock().unwrap() = vec![
+            ("/latest.json", feed(&base, "99.0.0", &signature)),
+            ("/Noura.app.tar.gz", bundle),
+        ];
+        app.check_for_updates();
+        settle(&mut app, next);
+        assert_eq!(checks(), 3);
+        assert!(
+            matches!(
+                app.updates().status(),
+                UpdateStatus::Ready { ref version, .. } if version == "99.0.0"
+            ),
+            "{:?}",
+            app.updates().status()
+        );
+        assert!(app.updates().offers_restart());
+    }
+
+    #[test]
+    fn a_tampered_download_offers_no_restart_and_a_good_one_can_follow() {
+        let keys = keys();
+        let bundle = b"Noura 99.0.0".to_vec();
+        let signature = sign(&keys, &bundle);
+        let (base, _, files) = serve_changing(|base| {
+            vec![
+                ("/latest.json", feed(base, "99.0.0", &signature)),
+                (
+                    "/Noura.app.tar.gz",
+                    b"Noura 99.0.0 with a backdoor".to_vec(),
+                ),
+            ]
+        });
+        let install_over = tempfile::tempdir().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        let mut app = App::launch(app_data.path());
+        let launched = Instant::now();
+        app.enable_updates(
+            "0.2.0",
+            Arc::new(source(&base, &keys.public, install_over.path())),
+            launched,
+        );
+
+        let first = launched + FIRST_UPDATE_CHECK;
+        app.poll_at(first);
+        settle(&mut app, first);
+        assert_eq!(
+            app.updates().status(),
+            UpdateStatus::Failed {
+                message: "The download's signature didn't match Noura's key, so Noura deleted it."
+                    .to_owned()
+            }
+        );
+        assert!(!app.updates().offers_restart());
+        app.restart_to_update();
+        assert!(
+            std::fs::read_dir(install_over.path())
+                .unwrap()
+                .next()
+                .is_none()
+        );
+
+        files.lock().unwrap()[1].1 = bundle;
+        app.check_for_updates();
+        settle(&mut app, first);
+        assert!(
+            app.updates().offers_restart(),
+            "{:?}",
+            app.updates().status()
+        );
     }
 
     #[test]
