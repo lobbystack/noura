@@ -1892,7 +1892,9 @@ impl WorkspaceSync {
 
     /// Writes the note's file from its merged state, through the kernel's
     /// durable write path. A file with an edit sync hasn't captured keeps
-    /// it until the next capture turns it into an update.
+    /// it until the next capture turns it into an update, a held version
+    /// stays until you choose (§15), and a `file` edit in the outbox until
+    /// the server takes it.
     fn write_note(&mut self, rid: Id, file: &mut TextFile) -> Result<(), SyncError> {
         let Some(session) = self.text.sessions.get(&rid) else {
             return Ok(());
@@ -1900,7 +1902,11 @@ impl WorkspaceSync {
         // A document with no snapshot yet holds nothing of the note: one
         // that waits on its writer's allowance, or a lineage's start that
         // was refused.
-        if file.stopped || !file.holds_a_snapshot() || self.local_edit(&rid) {
+        if file.stopped
+            || !file.holds_a_snapshot()
+            || self.holds_its_file(&rid)
+            || self.unsent_file_edit(&rid)
+        {
             return Ok(());
         }
         let merged = merged_meta(&file.records);

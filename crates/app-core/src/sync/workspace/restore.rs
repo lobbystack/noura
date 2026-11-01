@@ -1285,7 +1285,7 @@ impl WorkspaceSync {
                         file_id: None,
                     };
                     let key = *key;
-                    self.state.held.remove(&rid);
+                    self.end_hold(&rid);
                     let object = self.state.objects.get_mut(&rid).expect("listed");
                     object.base = Some(key);
                     object.local = Some(local);
@@ -1293,7 +1293,7 @@ impl WorkspaceSync {
                 // The file holds no edit of yours: it follows the server's
                 // newer state.
                 FileVerdict::Follow => {
-                    self.state.held.remove(&rid);
+                    self.end_hold(&rid);
                     let kept = object.local.clone();
                     self.state.objects.get_mut(&rid).expect("listed").local = kept;
                     self.settle(rid, &BTreeMap::new())?;

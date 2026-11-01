@@ -507,6 +507,18 @@ async fn a_cover_of_a_pruned_operation_goes_on_supersedes_unknown() {
     assert_eq!(pair.b.files()["Note.md"], b"# Desktop 23\n");
     let (rid, path) = pair.sync_a.held().pop().expect("the edit waits for you");
     assert_eq!(path, "Note.md");
+    let store = pair
+        .a
+        .path(".noura/sync")
+        .join(pair.laptop.id().to_hex())
+        .join("held")
+        .join(rid.to_hex());
+    let kept = sync_protocol::crypto::hash(b"# Note from the laptop\n").to_hex();
+    assert_eq!(
+        std::fs::read(store.join(&kept)).unwrap(),
+        b"# Note from the laptop\n",
+        "the review store keeps a copy"
+    );
 
     pair.sync_a
         .resolve_held(rid, HeldChoice::KeepMine)

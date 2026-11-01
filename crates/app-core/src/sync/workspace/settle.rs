@@ -154,9 +154,7 @@ impl WorkspaceSync {
         // A held version stays in its file until you choose (§15), and an
         // edit that waits in the outbox until the server takes it, as a
         // conflict branch if it must be.
-        let edited = self.local_edit(&rid)
-            || self.state.held.contains_key(&rid)
-            || self.unsent_edit(&rid, &object);
+        let edited = self.holds_its_file(&rid) || self.unsent_edit(&rid, &object);
         if branches.len() == 1 {
             // A text-mode note's file follows its document (§22).
             let text = object
@@ -199,17 +197,46 @@ impl WorkspaceSync {
         Ok(())
     }
 
+    /// Whether `rid`'s file stays as it is whatever arrives: it holds edits
+    /// sync hasn't captured, or a held version that waits for your choice.
+    pub(super) fn holds_its_file(&self, rid: &Id) -> bool {
+        self.local_edit(rid) || self.state.held.contains_key(rid)
+    }
+
     /// Whether a state of `rid` this device signed still waits in the
     /// outbox. A rewrite carries no edit.
     fn unsent_edit(&self, rid: &Id, object: &super::state::Object) -> bool {
+        self.unsent_state(rid, object, |_| true)
+    }
+
+    /// Whether a `file` operation of `rid` this device signed still waits
+    /// in the outbox. Its bytes are in no document, so the merged text
+    /// doesn't hold them.
+    pub(super) fn unsent_file_edit(&self, rid: &Id) -> bool {
+        self.state.objects.get(rid).is_some_and(|object| {
+            self.unsent_state(rid, object, |state| {
+                state.content.as_ref().is_some_and(|c| c.text.is_none())
+            })
+        })
+    }
+
+    fn unsent_state(
+        &self,
+        rid: &Id,
+        object: &super::state::Object,
+        counts: impl Fn(&super::state::StateInfo) -> bool,
+    ) -> bool {
         self.state.outbox.iter().any(|outgoing| {
             let record = &outgoing.record;
             record.body.rid == *rid
                 && !outgoing.rewrite
-                && object.states.contains_key(&OpKey {
-                    device: record.body.device,
-                    counter: record.body.counter,
-                })
+                && object
+                    .states
+                    .get(&OpKey {
+                        device: record.body.device,
+                        counter: record.body.counter,
+                    })
+                    .is_some_and(&counts)
         })
     }
 
@@ -328,7 +355,7 @@ impl WorkspaceSync {
     /// The bytes the file takes for the state at `key`, with their
     /// revision: a text-mode state's come from the note's document, which
     /// its record alone doesn't hold (§22).
-    fn state_body(
+    pub(super) fn state_body(
         &mut self,
         rid: &Id,
         key: &OpKey,

@@ -2196,13 +2196,7 @@ impl WorkspaceSync {
         if let Some(object) = self.state.objects.get_mut(&rid) {
             object.local = Some(found.local());
         }
-        self.state.held.insert(
-            rid,
-            Held {
-                path: found.file.relative_path.clone(),
-                revision: found.revision,
-            },
-        );
+        self.hold_file(rid, found.local());
     }
 
     /// Holds a delete with no cover to name for your choice (§15). The
@@ -3249,13 +3243,7 @@ impl WorkspaceSync {
                 let rejected = self.take_outgoing(index);
                 let rid = rejected.record.body.rid;
                 if let Some(local) = self.state.objects.get(&rid).and_then(|o| o.local.clone()) {
-                    self.state.held.insert(
-                        rid,
-                        Held {
-                            path: local.path,
-                            revision: local.revision,
-                        },
-                    );
+                    self.hold_file(rid, local);
                 }
                 self.reseal_replacing_or_end(index, &rejected.record)
             }
@@ -3457,15 +3445,7 @@ impl WorkspaceSync {
             .and_then(|object| object.local.clone());
         let deleted = self.synced_path_of(&rid).filter(|_| record.body.delete);
         match (file, deleted) {
-            (Some(local), _) => {
-                self.state.held.insert(
-                    rid,
-                    Held {
-                        path: local.path,
-                        revision: local.revision,
-                    },
-                );
-            }
+            (Some(local), _) => self.hold_file(rid, local),
             // The version you hold is the file's absence, which waits for
             // you the same way.
             (None, Some(path)) => {

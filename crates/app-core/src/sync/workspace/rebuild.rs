@@ -21,7 +21,7 @@ use sync_protocol::types::{Digest, Id};
 
 use super::capture::{Found, object_id_of};
 use super::settle::{Bodies, Body, free_name};
-use super::state::{Held, OpKey, State};
+use super::state::{Held, Local, OpKey, State};
 use super::{SyncError, SyncService, WorkspaceSync, core, profile_of};
 use crate::sync::journal::{self, Journal, STATE_FILE};
 use crate::sync::registry::{Registry, SyncedFolder};
@@ -454,8 +454,17 @@ impl WorkspaceSync {
             return Ok(());
         }
         object.base = None;
-        // The file stays the version you hold, and the review store keeps
-        // a copy of it. A file that changed meanwhile keeps the hold.
+        self.hold_file(rid, local);
+        for (key, _) in live {
+            self.keep_branch(&rid, &key, cache)?;
+        }
+        Ok(())
+    }
+
+    /// Holds `rid`'s file for your choice (§15). The file stays the version
+    /// you hold, and the review store keeps a copy of it. A file that
+    /// changed meanwhile keeps the hold.
+    pub(super) fn hold_file(&mut self, rid: Id, local: Local) {
         let copy = held_copy(&rid, &local.revision);
         let source = self.engine.root().join(&local.path);
         if let Err(error) = self.journal.keep_file(&copy, &source, &local.revision) {
@@ -468,10 +477,39 @@ impl WorkspaceSync {
                 revision: local.revision,
             },
         );
-        for (key, _) in live {
-            self.keep_branch(&rid, &key, cache)?;
+    }
+
+    /// Ends the hold on `rid` with no choice to make, and drops the review
+    /// store's copy.
+    pub(super) fn end_hold(&mut self, rid: &Id) -> bool {
+        match self.state.held.remove(rid) {
+            Some(held) => {
+                self.journal.forget(&held_copy(rid, &held.revision));
+                true
+            }
+            None => false,
         }
-        Ok(())
+    }
+
+    /// Puts a held version whose file went away back from the review store.
+    fn restore_held(&mut self, rid: &Id, held: &Held) -> Result<(), SyncError> {
+        if self.engine.hash_synced(&held.path).map_err(core)?.is_some() {
+            return Ok(());
+        }
+        let Ok(copy) = self
+            .journal
+            .kept_path(&held_copy(rid, &held.revision), &held.revision)
+        else {
+            return Ok(());
+        };
+        self.engine
+            .write_synced_from(
+                &held.path,
+                &copy,
+                &held.revision.to_hex(),
+                &SyncedExpect::Absent,
+            )
+            .map_err(core)
     }
 
     /// Resolves a held local version (§15).
@@ -500,9 +538,11 @@ impl WorkspaceSync {
             HeldChoice::KeepMine => {
                 let view: BTreeSet<OpKey> = self.live_states(&rid).into_iter().collect();
                 let covers = self.covers_of(&rid, &view);
+                self.restore_held(&rid, &held)?;
                 let found = self.found_on_disk(&held.path)?;
                 self.state.held.remove(&rid);
-                self.sign_file(rid, &found, covers)?;
+                let domain = self.object_domain(&rid);
+                self.in_domain(domain, |sync| sync.sign_file(rid, &found, covers))?;
                 self.journal.forget(&held_copy(&rid, &held.revision));
             }
             HeldChoice::KeepLive => {
@@ -511,6 +551,7 @@ impl WorkspaceSync {
                 self.journal.forget(&held_copy(&rid, &held.revision));
             }
             HeldChoice::KeepBoth => {
+                self.restore_held(&rid, &held)?;
                 let root = self.engine.root().to_owned();
                 let taken = |candidate: &str| root.join(candidate).exists();
                 let copy = free_name(&held.path, &taken);
@@ -569,10 +610,11 @@ impl WorkspaceSync {
             object.base = Some(key);
             return Ok(());
         }
-        let body = self.content_body(&rid, &key, &BTreeMap::new())?;
-        self.place(&rid, &content.path, &body, content.revision)?;
+        let (body, revision) = self.state_body(&rid, &key, &BTreeMap::new())?;
+        self.place(&rid, &content.path, &body, revision)?;
         self.state.objects.get_mut(&rid).expect("listed").base = Some(key);
-        Ok(())
+        // A text-mode note's document takes the file as its own again.
+        self.text_settle(rid)
     }
 
     /// Keeps a live branch's bytes in the review store, for a held object.

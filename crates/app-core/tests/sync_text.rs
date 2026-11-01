@@ -70,6 +70,36 @@ async fn two_desktops_see_each_others_edits_and_end_with_identical_bytes() {
     co_edit(&mut pair).await;
 }
 
+/// An edit signed and waiting in the outbox stays in its file when another
+/// device's text snapshot arrives first: the document doesn't hold it, and
+/// the two meet as a conflict.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_edit_in_the_outbox_stays_in_its_file_when_a_snapshot_arrives() {
+    let mut pair = pair().await;
+    both_rounds(&mut pair).await;
+    pair.b.write(PLAN, b"# Plan, from the desktop\n");
+    assert_eq!(pair.sync_b.capture().expect("a capture"), 1);
+
+    let (entered, _document) = pair.sync_a.open_text(PLAN).expect("the note opens");
+    assert_eq!(entered, Entered::Yes);
+    pair.sync_a
+        .round(&mut pair.service, 0)
+        .await
+        .expect("a round");
+    pair.sync_b
+        .pull(&mut pair.desktop.service, 0)
+        .await
+        .expect("a pull");
+    assert_eq!(read(&pair.b, PLAN), "# Plan, from the desktop\n");
+
+    both_rounds(&mut pair).await;
+    both_rounds(&mut pair).await;
+    assert_eq!(pair.sync_b.status().pending, 0);
+    assert_eq!(read(&pair.b, PLAN), "# Plan, from the desktop\n");
+    assert_eq!(pair.sync_a.status().conflicts, 1, "the laptop reviews it");
+    assert_eq!(pair.sync_b.status().conflicts, 1, "and so does the desktop");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_desktops_co_edit_on_postgres() {
     let mut pair = pair_on(Server::start_postgres().await).await;

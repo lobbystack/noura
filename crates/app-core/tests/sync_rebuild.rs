@@ -12,6 +12,7 @@ use app_core::sync::marks::Mark;
 use app_core::sync::registry::Registry;
 use app_core::sync::workspace::WorkspaceSync;
 use app_core::sync::workspace::rebuild::HeldChoice;
+use app_core::sync::workspace::text::Entered;
 use sync_support::{Folder, Pair, approve, pair};
 
 /// Removes `device`'s journal from `folder`, as a lost journal would.
@@ -461,6 +462,108 @@ async fn a_change_that_arrives_leaves_a_held_version_in_place() {
         }
         assert_eq!(a.files(), b.files());
         assert_eq!(a.files()["Plan.md"], ending);
+    }
+}
+
+/// A note that enters text mode on another device while your version of it
+/// is held: the file keeps your version until you choose, and each choice
+/// ends with every device on the same bytes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_text_snapshot_that_arrives_leaves_a_held_version_in_place() {
+    for (choice, ending, copy) in [
+        (HeldChoice::KeepMine, &b"# Mine\n"[..], false),
+        (HeldChoice::KeepLive, &b"# Plan\n"[..], false),
+        (HeldChoice::KeepBoth, &b"# Plan\n"[..], true),
+    ] {
+        let Pair {
+            server: _server,
+            proxy: _proxy,
+            laptop: _laptop,
+            mut service,
+            a,
+            mut sync_a,
+            mut desktop,
+            mut b,
+            sync_b,
+        } = pair().await;
+        drop(sync_b);
+        lose_journal(&b, desktop.id());
+        b.write("Plan.md", b"# Mine\n");
+        b.reopen();
+        let mut sync_b =
+            WorkspaceSync::rebuild(&mut desktop.service, b.engine.clone(), &mut b.registry)
+                .await
+                .expect("the folder syncs again");
+        sync_b
+            .round(&mut desktop.service, 0)
+            .await
+            .expect("a round");
+        let (rid, _) = sync_b.held().pop().expect("the file is held");
+
+        let (entered, _document) = sync_a.open_text("Plan.md").expect("the note opens");
+        assert_eq!(entered, Entered::Yes);
+        sync_a.round(&mut service, 0).await.expect("a round");
+        sync_b
+            .round(&mut desktop.service, 0)
+            .await
+            .expect("a round");
+        assert_eq!(b.files()["Plan.md"], b"# Mine\n", "your version stays");
+        assert_eq!(sync_b.status().held, 1);
+
+        sync_b.resolve_held(rid, choice).expect("you choose");
+        assert_eq!(b.files()["Plan.md"], ending);
+        if copy {
+            assert_eq!(b.files()["Plan (2).md"], b"# Mine\n");
+        }
+        for _ in 0..3 {
+            sync_b
+                .round(&mut desktop.service, 0)
+                .await
+                .expect("a round");
+            sync_a.round(&mut service, 0).await.expect("a round");
+        }
+        assert_eq!(a.files(), b.files());
+        assert_eq!(a.files()["Plan.md"], ending);
+    }
+}
+
+/// A held version whose file went away comes back from the review store
+/// when you keep it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keeping_a_held_version_puts_its_file_back_from_the_review_store() {
+    for (choice, ending, mine) in [
+        (HeldChoice::KeepMine, &b"# Mine\n"[..], "Plan.md"),
+        (HeldChoice::KeepBoth, &b"# Plan\n"[..], "Plan (2).md"),
+    ] {
+        let Pair {
+            server: _server,
+            proxy: _proxy,
+            laptop: _laptop,
+            service: _service,
+            a: _a,
+            sync_a: _sync_a,
+            mut desktop,
+            mut b,
+            sync_b,
+        } = pair().await;
+        drop(sync_b);
+        lose_journal(&b, desktop.id());
+        b.write("Plan.md", b"# Mine\n");
+        b.reopen();
+        let mut sync_b =
+            WorkspaceSync::rebuild(&mut desktop.service, b.engine.clone(), &mut b.registry)
+                .await
+                .expect("the folder syncs again");
+        sync_b
+            .round(&mut desktop.service, 0)
+            .await
+            .expect("a round");
+        let (rid, _) = sync_b.held().pop().expect("the file is held");
+
+        std::fs::remove_file(b.path("Plan.md")).unwrap();
+        sync_b.resolve_held(rid, choice).expect("you choose");
+        assert_eq!(b.files()["Plan.md"], ending);
+        assert_eq!(b.files()[mine], b"# Mine\n");
     }
 }
 

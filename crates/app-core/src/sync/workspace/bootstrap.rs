@@ -720,7 +720,7 @@ impl WorkspaceSync {
     /// for you to confirm its deletion, and a changed one uploads under a
     /// new `rid` in the next capture.
     fn left_while_away(&mut self, rid: Id) {
-        let edited = self.local_edit(&rid) || self.state.held.remove(&rid).is_some();
+        let edited = self.local_edit(&rid) || self.end_hold(&rid);
         let Some(object) = self.state.objects.remove(&rid) else {
             return;
         };
