@@ -29,7 +29,7 @@ The second command asks for the key's password. Skip it if the key has none. To 
 
 ### Sign the macOS app with a Developer ID
 
-To sign and notarize the macOS app with an Apple Developer ID, add these secrets to the `release` environment: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID`. cargo-packager imports the certificate, signs the app with the hardened runtime, and notarizes and staples it. The workflow then notarizes and staples the `.dmg`.
+To sign and notarize the macOS app with an Apple Developer ID, add these secrets to the `release` environment: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID`. cargo-packager imports the certificate, signs the app with the hardened runtime, and notarizes and staples it. The workflow then notarizes and staples the `.dmg`, and `scripts/check-notarization.sh` fails the build unless both carry a ticket and Gatekeeper accepts them.
 
 Without these secrets, the workflow signs the app ad hoc, and macOS asks each person to approve it in **System Settings** > **Privacy & Security** on first launch. If you set some of the six secrets but not all, the build stops and names the missing ones.
 
