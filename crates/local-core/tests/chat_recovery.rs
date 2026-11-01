@@ -106,6 +106,16 @@ fn intents(workspace: &Path) -> Vec<PathBuf> {
     }
 }
 
+fn set_aside(workspace: &Path) -> Vec<PathBuf> {
+    match std::fs::read_dir(workspace.join(".noura/chat-mutations")) {
+        Ok(entries) => entries
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|value| value == "unapplied"))
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// A chat whose user message reached its file and whose chat file a failed
 /// write left behind: the state a crash leaves between the two writes.
 fn chat_cut_off_before_its_chat_file(
@@ -253,15 +263,195 @@ fn recovery_of_a_stale_chat_revision_writes_nothing() {
     );
 }
 
+/// The message file an intent on disk names.
+fn message_named_by_intent(workspace: &Path) -> PathBuf {
+    let intent = std::fs::read(&intents(workspace)[0]).unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&intent).unwrap();
+    workspace.join(parsed["message"]["relative_path"].as_str().unwrap())
+}
+
+fn files_under(folder: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return files;
+    };
+    for entry in entries {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            files.extend(files_under(&path));
+        } else {
+            files.push(path);
+        }
+    }
+    files
+}
+
 #[test]
-fn a_crash_plus_an_external_edit_stops_only_that_chat_until_the_edit_is_undone() {
+fn an_edit_after_the_intent_reaches_disk_fails_the_write_and_leaves_the_chat_readable() {
+    let (workspace, _app_data, engine) = quiet_engine();
+    let chat = create_chat(&engine, "Edited");
+    let chat_path = workspace.path().join(&chat.value.relative_path);
+    let hook_path = chat_path.clone();
+    engine.on_chat_recovery_point(ChatRecoveryPoint::IntentWritten, move |_| {
+        edit_title_outside(&hook_path, "Edited");
+    });
+    let wrote_message = Arc::new(AtomicBool::new(false));
+    let hook_wrote = wrote_message.clone();
+    engine.on_chat_recovery_point(ChatRecoveryPoint::MessageWritten, move |_| {
+        hook_wrote.store(true, Ordering::SeqCst);
+    });
+
+    let error = append_user(&engine, &chat.value.id, chat.revision.clone()).unwrap_err();
+
+    assert_eq!(error.code, "revision_conflict");
+    assert!(
+        !wrote_message.load(Ordering::SeqCst),
+        "the check after the intent stops the commit before it writes"
+    );
+    assert!(intents(workspace.path()).is_empty());
+    assert!(engine.index_marked_stale_for_testing());
+    assert!(files_under(&chat_path.parent().unwrap().join("messages")).is_empty());
+    let read = engine.read_chat(&chat.value.id).unwrap();
+    assert!(read.messages.is_empty());
+    assert_eq!(read.chat.title, "Edited outside Noura");
+    append_user(&engine, &chat.value.id, read.chat.revision).unwrap();
+    assert_eq!(engine.read_chat(&chat.value.id).unwrap().messages.len(), 1);
+}
+
+#[test]
+fn a_recovery_an_edit_beats_after_its_intent_can_try_again() {
+    let (workspace, _app_data, engine) = quiet_engine();
+    let (chat_id, call) = chat_with_open_call(&engine);
+    let chat_path = workspace
+        .path()
+        .join(&engine.read_chat(&chat_id).unwrap().chat.relative_path);
+    let call_path = workspace.path().join(&call.value.relative_path);
+    let call_bytes = std::fs::read(&call_path).unwrap();
+    let hook_path = chat_path.clone();
+    engine.on_chat_recovery_point(ChatRecoveryPoint::IntentWritten, move |_| {
+        edit_title_outside(&hook_path, "Open call");
+    });
+
+    let error = engine.recover_interrupted_chat(&chat_id).unwrap_err();
+
+    assert_eq!(error.code, "revision_conflict");
+    assert!(intents(workspace.path()).is_empty());
+    assert_eq!(std::fs::read(&call_path).unwrap(), call_bytes);
+    engine.age_failed_chat_recovery_for_testing(&chat_id, Duration::from_secs(60));
+    engine.recover_interrupted_chat(&chat_id).unwrap();
+    assert_eq!(
+        status_of(&engine, &chat_id, &call.value.id),
+        ChatMessageStatus::Interrupted
+    );
+}
+
+#[test]
+fn a_new_message_goes_when_an_edit_beats_the_chat_file() {
+    let (workspace, _app_data, engine) = quiet_engine();
+    let chat = create_chat(&engine, "Edited");
+    let chat_path = workspace.path().join(&chat.value.relative_path);
+    let hook_path = chat_path.clone();
+    let messages = chat_path.parent().unwrap().join("messages");
+    let hook_messages = messages.clone();
+    engine.on_chat_recovery_point(ChatRecoveryPoint::MessageWritten, move |_| {
+        assert_eq!(files_under(&hook_messages).len(), 1);
+        edit_title_outside(&hook_path, "Edited");
+    });
+
+    let error = append_user(&engine, &chat.value.id, chat.revision.clone()).unwrap_err();
+
+    assert_eq!(error.code, "revision_conflict");
+    assert!(intents(workspace.path()).is_empty());
+    assert!(files_under(&messages).is_empty());
+    assert!(
+        engine
+            .read_chat(&chat.value.id)
+            .unwrap()
+            .messages
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_finished_message_goes_back_when_an_edit_beats_the_chat_file() {
+    let (workspace, _app_data, engine) = quiet_engine();
+    let (chat_id, call) = chat_with_open_call(&engine);
+    let chat_path = workspace
+        .path()
+        .join(&engine.read_chat(&chat_id).unwrap().chat.relative_path);
+    let call_path = workspace.path().join(&call.value.relative_path);
+    let call_bytes = std::fs::read(&call_path).unwrap();
+    let hook_call = call_path.clone();
+    let hook_bytes = call_bytes.clone();
+    engine.on_chat_recovery_point(ChatRecoveryPoint::MessageWritten, move |_| {
+        assert_ne!(std::fs::read(&hook_call).unwrap(), hook_bytes);
+        edit_title_outside(&chat_path, "Open call");
+    });
+
+    let error = engine.recover_interrupted_chat(&chat_id).unwrap_err();
+
+    assert_eq!(error.code, "revision_conflict");
+    assert!(intents(workspace.path()).is_empty());
+    assert_eq!(std::fs::read(&call_path).unwrap(), call_bytes);
+    assert_eq!(
+        status_of(&engine, &chat_id, &call.value.id),
+        ChatMessageStatus::InProgress
+    );
+}
+
+#[test]
+fn undoing_a_commit_keeps_a_message_file_that_changed_after_it() {
+    let (workspace, _app_data, engine) = quiet_engine();
+    let (chat_id, call) = chat_with_open_call(&engine);
+    let chat_path = workspace
+        .path()
+        .join(&engine.read_chat(&chat_id).unwrap().chat.relative_path);
+    let call_path = workspace.path().join(&call.value.relative_path);
+    let hook_call = call_path.clone();
+    engine.on_chat_recovery_point(ChatRecoveryPoint::MessageWritten, move |_| {
+        let text = std::fs::read_to_string(&hook_call).unwrap();
+        std::fs::write(&hook_call, format!("{text}\nEdited outside Noura\n")).unwrap();
+        edit_title_outside(&chat_path, "Open call");
+    });
+
+    let error = engine.recover_interrupted_chat(&chat_id).unwrap_err();
+
+    assert_eq!(error.code, "revision_conflict");
+    assert!(intents(workspace.path()).is_empty());
+    assert!(
+        std::fs::read_to_string(&call_path)
+            .unwrap()
+            .contains("Edited outside Noura")
+    );
+}
+
+#[test]
+fn undoing_a_commit_keeps_a_new_message_file_that_changed_after_it() {
+    let (workspace, _app_data, engine) = quiet_engine();
+    let chat = create_chat(&engine, "Edited");
+    let chat_path = workspace.path().join(&chat.value.relative_path);
+    let messages = chat_path.parent().unwrap().join("messages");
+    let hook_messages = messages.clone();
+    engine.on_chat_recovery_point(ChatRecoveryPoint::MessageWritten, move |_| {
+        let path = files_under(&hook_messages).remove(0);
+        let edited = std::fs::read_to_string(&path).unwrap() + "\nEdited outside Noura\n";
+        std::fs::write(path, edited).unwrap();
+        edit_title_outside(&chat_path, "Edited");
+    });
+
+    let error = append_user(&engine, &chat.value.id, chat.revision.clone()).unwrap_err();
+
+    assert_eq!(error.code, "revision_conflict");
+    assert!(intents(workspace.path()).is_empty());
+    assert_eq!(files_under(&messages).len(), 1);
+}
+
+#[test]
+fn a_crash_plus_an_edit_to_the_chat_file_keeps_the_edit_and_the_message() {
     let (workspace, app_data, engine) = quiet_engine();
     let (chat, chat_path) = chat_cut_off_before_its_chat_file(workspace.path(), &engine);
-    let before_edit = std::fs::read(&chat_path).unwrap();
     edit_title_outside(&chat_path, "Cut off");
     let edited = std::fs::read(&chat_path).unwrap();
-    let intent = intents(workspace.path()).remove(0);
-    let intent_bytes = std::fs::read(&intent).unwrap();
     let index_path = engine.index_path().to_owned();
 
     // The crash, with the derived index gone too.
@@ -269,59 +459,109 @@ fn a_crash_plus_an_external_edit_stops_only_that_chat_until_the_edit_is_undone()
     std::fs::remove_file(&index_path).unwrap();
     let engine = WorkspaceEngine::open_with_app_data(workspace.path(), app_data.path()).unwrap();
 
-    let error = engine.read_chat(&chat.value.id).unwrap_err();
-    assert_eq!(error.code, "chat_mutation_recovery_conflict");
-    assert!(matches!(
-        error.category,
-        local_core::ErrorCategory::Conflict
-    ));
-    let error = engine.recover_interrupted_chat(&chat.value.id).unwrap_err();
-    assert_eq!(error.code, "chat_mutation_recovery_conflict");
-    let error = append_user(&engine, &chat.value.id, chat.revision.clone()).unwrap_err();
-    assert_eq!(error.code, "chat_mutation_recovery_conflict");
-    assert!(
-        engine
-            .list_chats()
-            .unwrap()
-            .iter()
-            .any(|listed| listed.id == chat.value.id),
-        "the chat stays in the list, so you can reach the error"
-    );
-    assert_workspace_still_works(&engine);
-    engine.rebuild_index().unwrap();
-    assert_workspace_still_works(&engine);
-    assert_eq!(std::fs::read(&chat_path).unwrap(), edited);
-    assert_eq!(std::fs::read(&intent).unwrap(), intent_bytes);
-
-    // Put the file back and the waiting change finishes by itself.
-    std::fs::write(&chat_path, before_edit).unwrap();
     let read = engine.read_chat(&chat.value.id).unwrap();
     assert_eq!(read.messages.len(), 1);
     assert_eq!(read.messages[0].content, "hello");
+    assert_eq!(read.chat.title, "Edited outside Noura");
+    assert_eq!(std::fs::read(&chat_path).unwrap(), edited);
     assert!(intents(workspace.path()).is_empty());
-    assert_ne!(read.chat.revision, chat.revision);
+    assert!(set_aside(workspace.path()).is_empty());
+    assert_workspace_still_works(&engine);
+    engine.rebuild_index().unwrap();
     append_user(&engine, &chat.value.id, read.chat.revision).unwrap();
 }
 
 #[test]
-fn replay_of_a_conflicting_chat_file_leaves_the_message_file_unwritten() {
+fn replay_writes_a_message_the_crash_kept_from_its_file_past_an_edited_chat_file() {
     let (workspace, _app_data, engine) = quiet_engine();
     let chat = create_chat(&engine, "Cut off");
     engine.fail_chat_mutation_write_for_testing("message", 1);
     let error = append_user(&engine, &chat.value.id, chat.revision.clone()).unwrap_err();
     assert_eq!(error.code, "chat_mutation_write_failed");
+    let message = message_named_by_intent(workspace.path());
+    assert!(!message.exists());
     let chat_path = workspace.path().join(&chat.value.relative_path);
     edit_title_outside(&chat_path, "Cut off");
+    let edited = std::fs::read(&chat_path).unwrap();
 
     engine.reconcile().unwrap();
 
-    let error = engine.read_chat(&chat.value.id).unwrap_err();
-    assert_eq!(error.code, "chat_mutation_recovery_conflict");
-    assert!(
-        !chat_path.parent().unwrap().join("messages").exists(),
-        "a replay that can't finish writes neither file"
+    assert!(message.exists());
+    assert_eq!(std::fs::read(&chat_path).unwrap(), edited);
+    assert!(intents(workspace.path()).is_empty());
+    assert_eq!(engine.read_chat(&chat.value.id).unwrap().messages.len(), 1);
+}
+
+#[test]
+fn a_crash_plus_an_edit_to_the_message_file_keeps_the_edit_and_sets_the_intent_aside() {
+    let (workspace, _app_data, engine) = quiet_engine();
+    let (chat_id, call) = chat_with_open_call(&engine);
+    let read = engine.read_chat(&chat_id).unwrap();
+    let chat_path = workspace.path().join(&read.chat.relative_path);
+    let chat_bytes = std::fs::read(&chat_path).unwrap();
+    engine.fail_chat_mutation_write_for_testing("message", 1);
+    let error = engine.recover_interrupted_chat(&chat_id).unwrap_err();
+    assert_eq!(error.code, "chat_mutation_write_failed");
+    let call_path = workspace.path().join(&call.value.relative_path);
+    let edited = std::fs::read_to_string(&call_path)
+        .unwrap()
+        .replace("\"query\"", "\"edited\"");
+    std::fs::write(&call_path, &edited).unwrap();
+
+    engine.reconcile().unwrap();
+
+    assert_eq!(std::fs::read_to_string(&call_path).unwrap(), edited);
+    assert_eq!(std::fs::read(&chat_path).unwrap(), chat_bytes);
+    assert!(intents(workspace.path()).is_empty());
+    assert_eq!(set_aside(workspace.path()).len(), 1);
+    assert_eq!(
+        status_of(&engine, &chat_id, &call.value.id),
+        ChatMessageStatus::InProgress
     );
+}
+
+#[test]
+fn a_crash_plus_a_chat_file_that_left_writes_nothing_and_sets_the_intent_aside() {
+    let (workspace, _app_data, engine) = quiet_engine();
+    let chat = create_chat(&engine, "Moved");
+    engine.fail_chat_mutation_write_for_testing("message", 1);
+    append_user(&engine, &chat.value.id, chat.revision.clone()).unwrap_err();
+    let message = message_named_by_intent(workspace.path());
+    let chat_path = workspace.path().join(&chat.value.relative_path);
+    let folder = chat_path.parent().unwrap();
+    let moved = folder.with_file_name("moved-chat");
+    std::fs::rename(folder, &moved).unwrap();
+
+    engine.reconcile().unwrap();
+
+    assert!(!message.exists());
+    assert!(!folder.exists());
+    assert!(intents(workspace.path()).is_empty());
+    assert_eq!(set_aside(workspace.path()).len(), 1);
+    let read = engine.read_chat(&chat.value.id).unwrap();
+    assert!(read.messages.is_empty());
+    append_user(&engine, &chat.value.id, read.chat.revision).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_target_the_disk_refuses_to_read_keeps_its_intent() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (workspace, _app_data, engine) = quiet_engine();
+    let chat = create_chat(&engine, "Refused");
+    engine.fail_chat_mutation_write_for_testing("message", 1);
+    append_user(&engine, &chat.value.id, chat.revision.clone()).unwrap_err();
+    let chat_path = workspace.path().join(&chat.value.relative_path);
+    std::fs::set_permissions(&chat_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    engine.reconcile().ok();
+
+    std::fs::set_permissions(&chat_path, std::fs::Permissions::from_mode(0o644)).unwrap();
     assert_eq!(intents(workspace.path()).len(), 1);
+    assert!(set_aside(workspace.path()).is_empty());
+    assert_eq!(engine.read_chat(&chat.value.id).unwrap().messages.len(), 1);
+    assert!(intents(workspace.path()).is_empty());
 }
 
 #[test]
@@ -422,15 +662,23 @@ fn expiry_leaves_a_chat_whose_change_is_stuck() {
             retention_days: Some(30),
         })
         .unwrap();
-    engine.fail_chat_mutation_write_for_testing("chat", 1);
-    append_user(&engine, &chat.value.id, chat.revision.clone()).unwrap_err();
-    let chat_path = workspace.path().join(&chat.value.relative_path);
-    edit_title_outside(&chat_path, "Cut off");
+    let directory = workspace.path().join(".noura/chat-mutations");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("future.json"),
+        serde_json::json!({
+            "version": 2,
+            "chat": { "relative_path": chat.value.relative_path, "expected_revision": null, "bytes": "x" },
+            "message": { "relative_path": "chats/a/messages/b.md", "expected_revision": null, "bytes": "x" },
+        })
+        .to_string(),
+    )
+    .unwrap();
 
     let expired = engine.expire_chats("2099-01-01T00:00:00Z").unwrap();
 
     assert!(expired.is_empty());
-    assert!(chat_path.exists());
+    assert!(workspace.path().join(&chat.value.relative_path).exists());
     assert_eq!(intents(workspace.path()).len(), 1);
 }
 
