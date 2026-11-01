@@ -177,7 +177,7 @@ pub fn files_under(folder: &Path) -> Vec<String> {
 
 /// Poll the app until `done` holds, for up to 20 seconds.
 pub fn wait_until(app: &mut App, what: &str, done: impl Fn(&App) -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         super::settle(app);
         if done(app) {

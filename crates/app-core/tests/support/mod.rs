@@ -362,7 +362,7 @@ pub fn read_only(folder: &Path, read_only: bool) {
 
 /// Poll until every note save finishes.
 pub fn settle_saves(app: &mut App) {
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         app.poll();
         if !app.is_saving_notes() {
@@ -407,9 +407,10 @@ pub fn open_from_tree(app: &mut App, relative_path: &str) -> app_core::TabId {
     tab.id()
 }
 
-/// Poll until background work finishes.
+/// Poll until background work finishes. A CI runner can take most of a
+/// minute to compile a plugin.
 pub fn settle(app: &mut App) {
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         app.poll();
         if !app.is_busy() && !app.is_plugin_work_pending() {
