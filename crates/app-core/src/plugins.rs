@@ -252,6 +252,58 @@ pub struct ShippedPlugin {
     pub capabilities: Vec<CapabilityLine>,
 }
 
+/// The plugins every package of Noura ships: each one's ID, which names
+/// its folder, and its name.
+pub const SHIPPED_PLUGINS: [(&str, &str); 4] = [
+    ("ai", "AI"),
+    ("calendar", "Calendar"),
+    ("projects", "Projects"),
+    ("tasks", "Tasks"),
+];
+
+/// A plugin a package should ship and can't, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShippedProblem {
+    pub name: &'static str,
+    pub reason: String,
+}
+
+/// Whether `folder`, a package's plugins folder if it has one, holds every
+/// plugin in [`SHIPPED_PLUGINS`] in a form Noura installs: the right
+/// manifest and a component that compiles. Nothing is written and none of
+/// their code runs. Returns one problem per plugin that fails.
+pub fn check_shipped_plugins(folder: Option<&Path>) -> Vec<ShippedProblem> {
+    let problems = |reason: &str| {
+        SHIPPED_PLUGINS
+            .iter()
+            .map(|&(_, name)| ShippedProblem {
+                name,
+                reason: reason.to_owned(),
+            })
+            .collect()
+    };
+    let Some(folder) = folder else {
+        return problems("this copy has no plugins folder");
+    };
+    // No plugin is installed in a library that doesn't exist, so a
+    // reviewed plugin still gets compiled here.
+    let host = match PluginHost::shared(folder.join(".no-library")) {
+        Ok(host) => host,
+        Err(error) => return problems(&error.message),
+    };
+    SHIPPED_PLUGINS
+        .iter()
+        .filter_map(|&(id, name)| {
+            let reason = match host.inspect(&folder.join(id)) {
+                Ok(candidate) if candidate.manifest().id == id => return None,
+                Ok(candidate) => format!("its folder holds {}", candidate.manifest().id),
+                Err(error) => error.message,
+            };
+            Some(ShippedProblem { name, reason })
+        })
+        .collect()
+}
+
 /// A tool a running plugin offers to AI assistants.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginTool {

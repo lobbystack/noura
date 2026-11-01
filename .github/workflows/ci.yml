@@ -149,7 +149,8 @@ jobs:
 
   # Release checks: build each desktop package with cargo-packager, sign it
   # with a throwaway updater key, install or mount it, and launch the app to
-  # its first window.
+  # its first window. Each package has to hold the plugins that ship with
+  # Noura, built for wasm32-wasip2.
   packages:
     strategy:
       fail-fast: false
@@ -161,8 +162,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - name: Install the pinned Rust toolchain
-        run: rustup toolchain install
+      - name: Install the pinned Rust toolchain and the WebAssembly target
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-wasip2
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with: { key: packages }
       # rav1d, which decodes AVIF images in notes, assembles its x86 code

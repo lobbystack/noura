@@ -153,7 +153,8 @@ pub use plugin_host::{
 };
 pub use plugin_inputs::{date_time_fields, date_time_value, date_value};
 pub use plugins::{
-    CapabilityLine, PluginInstall, PluginRow, PluginTool, PluginView, ShippedPlugin, UpdateCheck,
+    CapabilityLine, PluginInstall, PluginRow, PluginTool, PluginView, SHIPPED_PLUGINS,
+    ShippedPlugin, ShippedProblem, UpdateCheck, check_shipped_plugins,
 };
 pub use preferences::{ACTUAL_SIZE, Appearance, LineWidth, Preferences, TextSize, ZOOM_LEVELS};
 pub use problems::Problem;

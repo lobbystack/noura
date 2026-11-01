@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Install or mount each package scripts/package-desktop.sh built, launch the
 # installed app with --smoke and check what it reports: its first window,
-# the bundled license list, and whether it updates itself.
+# the bundled license list, the plugins it ships, and whether it updates
+# itself. --smoke itself fails when a plugin is missing.
 #
 # macOS mounts the .dmg and copies the app out, Windows installs the .msi,
 # and Linux installs the .deb and runs the AppImage. Linux needs a display:
@@ -32,7 +33,11 @@ check() {
   local name="$1" updates="$2"
   shift 2
   local report
-  report="$("$@" --smoke)"
+  report="$("$@" --smoke)" || {
+    echo "$name: $report"
+    echo "::error::$name failed its smoke run."
+    exit 1
+  }
   echo "$name: $report"
   grep -q "drew its first window." <<<"$report" || {
     echo "::error::$name didn't draw its first window."
@@ -42,6 +47,10 @@ check() {
     echo "::error::$name doesn't ship THIRD_PARTY_LICENSES.html."
     exit 1
   fi
+  grep -q "^Plugins: AI, Calendar, Projects, Tasks$" <<<"$report" || {
+    echo "::error::$name doesn't ship Tasks, Projects, Calendar and AI."
+    exit 1
+  }
   grep -q "^Updates: $updates" <<<"$report" || {
     echo "::error::$name should have updates $updates."
     exit 1

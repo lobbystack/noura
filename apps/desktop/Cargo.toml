@@ -80,8 +80,8 @@ objc2.workspace = true
 objc2-app-kit = { workspace = true, features = ["std", "NSApplication", "NSEvent", "NSGraphicsContext", "NSMenu", "NSResponder"] }
 objc2-foundation = { workspace = true, features = ["std", "NSGeometry", "NSString"] }
 
-# cargo-packager reads this. scripts/package-desktop.sh builds the binary,
-# generates the license list and runs cargo-packager. The release workflow
+# cargo-packager reads this. scripts/package-desktop.sh builds the binary and
+# the plugins, generates the license list and runs cargo-packager. The release workflow
 # adds the macOS signing identity at build time.
 [package.metadata.packager]
 product-name = "Noura"
@@ -99,6 +99,7 @@ icons = [
 ]
 resources = [
     { src = "packaging/THIRD_PARTY_LICENSES.html", target = "THIRD_PARTY_LICENSES.html" },
+    { src = "packaging/plugins", target = "plugins" },
 ]
 
 # winit and wgpu load these libraries when the app starts.

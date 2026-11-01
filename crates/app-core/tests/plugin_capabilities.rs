@@ -10,8 +10,8 @@ mod support;
 use std::time::{Duration, Instant};
 
 use app_core::{
-    App, CapabilityLine, CommandSource, Grant, PluginTool, SettingsGroup, ViewKind, ViewNode,
-    command_id, settings_section,
+    App, CapabilityLine, CommandSource, Grant, PluginTool, SHIPPED_PLUGINS, SettingsGroup,
+    ShippedProblem, ViewKind, ViewNode, check_shipped_plugins, command_id, settings_section,
 };
 use support::{
     Fixture,
@@ -540,6 +540,103 @@ fn the_first_run_screen_lists_shipped_plugins_and_one_approval_runs_them_on_this
     settle(&mut app);
     assert_eq!(app.shipped_plugins().len(), 1);
     assert_eq!(rail_titles(&app), ["Inbox", "Files"]);
+}
+
+/// The plugins folder a package ships, with each first-party plugin as
+/// `scripts/build-shipped-plugins.sh` lays it out.
+fn shipped_with_first_party_plugins() -> Option<tempfile::TempDir> {
+    let shipped = tempfile::tempdir().unwrap();
+    let manifests = [
+        ("ai", include_str!("../../plugins/ai/plugin.toml")),
+        (
+            "calendar",
+            include_str!("../../plugins/calendar/plugin.toml"),
+        ),
+        (
+            "projects",
+            include_str!("../../plugins/projects/plugin.toml"),
+        ),
+        ("tasks", include_str!("../../plugins/tasks/plugin.toml")),
+    ];
+    for (id, manifest) in manifests {
+        let library = format!("{id}_plugin");
+        let folder = shipped.path().join(id);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("plugin.toml"), manifest).unwrap();
+        std::fs::write(
+            folder.join(format!("{library}.wasm")),
+            plugins::built(&library)?,
+        )
+        .unwrap();
+    }
+    Some(shipped)
+}
+
+#[test]
+fn a_package_ships_every_first_party_plugin_and_the_first_run_screen_lists_each() {
+    let Some(shipped) = shipped_with_first_party_plugins() else {
+        return;
+    };
+
+    assert_eq!(check_shipped_plugins(Some(shipped.path())), []);
+
+    let fixture = Fixture::new(&[("Plan.md", b"# Plan\n")]);
+    let mut app = fixture.app();
+    // A new workspace turns on the first three. You turn on AI yourself.
+    assert!(app.set_plugin_enabled("ai", true));
+    app.set_shipped_plugins(shipped.path().to_owned());
+    let listed: Vec<_> = app
+        .shipped_plugins()
+        .into_iter()
+        .map(|plugin| plugin.name)
+        .collect();
+    assert_eq!(listed, SHIPPED_PLUGINS.map(|(_, name)| name));
+
+    assert!(app.approve_shipped_plugins());
+    settle(&mut app);
+    assert_eq!(
+        rail_titles(&app),
+        ["Inbox", "Files", "AI", "Calendar", "Projects", "Tasks"]
+    );
+}
+
+#[test]
+fn a_package_that_lacks_a_plugin_or_breaks_one_fails_the_check() {
+    let names = |problems: &[ShippedProblem]| -> Vec<&str> {
+        problems.iter().map(|problem| problem.name).collect()
+    };
+    assert_eq!(
+        names(&check_shipped_plugins(None)),
+        SHIPPED_PLUGINS.map(|(_, name)| name)
+    );
+    let Some(shipped) = shipped_with_first_party_plugins() else {
+        return;
+    };
+    std::fs::remove_dir_all(shipped.path().join("tasks")).unwrap();
+    std::fs::write(shipped.path().join("calendar/calendar_plugin.wasm"), b"no").unwrap();
+    std::fs::remove_file(shipped.path().join("ai/ai_plugin.wasm")).unwrap();
+
+    let problems = check_shipped_plugins(Some(shipped.path()));
+
+    assert_eq!(
+        names(&problems),
+        ["AI", "Calendar", "Tasks"],
+        "{problems:?}"
+    );
+    assert!(
+        problems[1].reason.contains("calendar_plugin.wasm"),
+        "{problems:?}"
+    );
+    // A second folder for another plugin's ID doesn't pass as the first.
+    let moved = shipped.path().join("projects");
+    std::fs::rename(&moved, shipped.path().join("tasks")).unwrap();
+    let problems = check_shipped_plugins(Some(shipped.path()));
+    assert_eq!(
+        names(&problems),
+        ["AI", "Calendar", "Projects", "Tasks"],
+        "{problems:?}"
+    );
+    assert_eq!(problems[3].reason, "its folder holds projects");
 }
 
 #[test]

@@ -4,8 +4,10 @@
 # Windows, and a .deb and an AppImage on Linux. Packages land in
 # target/<triple>/release or target/release.
 #
-# Needs cargo-packager and cargo-about on PATH. cargo-about writes the
-# third-party license list every package ships.
+# Needs cargo-packager and cargo-about on PATH, and the wasm32-wasip2 Rust
+# target. cargo-about writes the third-party license list every package
+# ships, and scripts/build-shipped-plugins.sh builds the plugins each one
+# ships.
 #
 # Usage: scripts/package-desktop.sh [--universal]
 #   --universal  On macOS, build one app for Apple silicon and Intel.
@@ -50,11 +52,14 @@ generate_licenses() {
     apps/desktop/packaging/about.hbs
 }
 
+if [ "$universal" = true ] && [[ "$host" != *-apple-darwin ]]; then
+  echo "--universal works only on macOS." >&2
+  exit 2
+fi
+
+scripts/build-shipped-plugins.sh
+
 if [ "$universal" = true ]; then
-  if [[ "$host" != *-apple-darwin ]]; then
-    echo "--universal works only on macOS." >&2
-    exit 2
-  fi
   targets=(aarch64-apple-darwin x86_64-apple-darwin)
   generate_licenses "${targets[@]}"
   for target in "${targets[@]}"; do
