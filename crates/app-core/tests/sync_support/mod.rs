@@ -285,10 +285,8 @@ impl Server<SqliteBackend> {
         let dir = tempfile::tempdir().expect("temporary directory");
         let data = dir.path().join("data");
         std::fs::create_dir_all(&data).expect("a directory");
-        std::os::unix::fs::symlink(self.dir.path().join("blobs"), data.join("blobs"))
-            .expect("the shared blob store");
-        std::os::unix::fs::symlink(self.dir.path().join("blobs"), dir.path().join("blobs"))
-            .expect("the shared blob store");
+        link_directory(&self.dir.path().join("blobs"), &data.join("blobs"));
+        link_directory(&self.dir.path().join("blobs"), &dir.path().join("blobs"));
         if recorded {
             sync_server::restore::restore(
                 &data,
@@ -480,8 +478,7 @@ impl Server<PgBackend> {
             secret: self.instance.as_ref().expect("a config").secret.clone(),
         };
         let dir = tempfile::tempdir().expect("temporary directory");
-        std::os::unix::fs::symlink(self.dir.path().join("blobs"), dir.path().join("blobs"))
-            .expect("the shared blob store");
+        link_directory(&self.dir.path().join("blobs"), &dir.path().join("blobs"));
         if recorded {
             sync_server::restore::mark_restored_postgres(
                 &config,
@@ -2131,4 +2128,14 @@ pub async fn invite(
             .expect("joined")
     );
     workspace
+}
+
+/// Links `link` to the directory `target`, as a restored server shares the
+/// first server's blob store.
+fn link_directory(target: &Path, link: &Path) {
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_dir(target, link);
+    linked.expect("the shared blob store");
 }

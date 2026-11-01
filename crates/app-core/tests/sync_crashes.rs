@@ -4,6 +4,7 @@
 
 mod sync_support;
 
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
@@ -19,6 +20,7 @@ use sync_support::{
     rounds,
 };
 
+#[cfg(unix)]
 fn set_read_only(path: &std::path::Path, read_only: bool) {
     let mode = if read_only { 0o555 } else { 0o755 };
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
@@ -27,6 +29,7 @@ fn set_read_only(path: &std::path::Path, read_only: bool) {
 /// A write that fails in the middle of a page leaves the page to come back
 /// whole: the file that failed still arrives, and so do the changes after
 /// it, once the disk takes them.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_write_brings_the_whole_page_back() {
     let mut pair = pair().await;
@@ -59,6 +62,7 @@ async fn a_failed_write_brings_the_whole_page_back() {
 
 /// The same failure, with a kill before the page comes back: the journal
 /// the next start reads names no record it can't finish applying.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_write_and_a_restart_bring_the_whole_page_back() {
     let mut pair = pair().await;
