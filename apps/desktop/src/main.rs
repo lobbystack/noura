@@ -166,14 +166,31 @@ fn main() -> ExitCode {
     if smoke.is_some() {
         limit_smoke_run();
     }
-    match run_app(smoke) {
-        Ok(()) => ExitCode::SUCCESS,
+    let code = match run_app(smoke) {
+        Ok(()) => 0,
         Err(error) => {
             eprintln!("Noura stopped: {error}");
-            ExitCode::FAILURE
+            1
         }
+    };
+    end_process(code);
+    ExitCode::from(code)
+}
+
+/// Windows can hang unloading a display driver's libraries as a process
+/// ends, with its window still listed. Everything is saved by now, so the
+/// process ends here and leaves no copy of Noura behind.
+#[cfg(windows)]
+fn end_process(code: u8) {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+    // SAFETY: the call takes this process's own pseudo handle and a number.
+    unsafe {
+        TerminateProcess(GetCurrentProcess(), u32::from(code));
     }
 }
+
+#[cfg(not(windows))]
+fn end_process(_code: u8) {}
 
 /// Ends a smoke run that draws no window, which would otherwise wait
 /// forever and report nothing.
@@ -182,6 +199,7 @@ fn limit_smoke_run() {
     std::thread::spawn(|| {
         std::thread::sleep(LIMIT);
         println!("Noura drew no window within {} seconds.", LIMIT.as_secs());
+        end_process(1);
         std::process::exit(1);
     });
 }
