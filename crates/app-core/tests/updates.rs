@@ -567,13 +567,19 @@ fn a_failed_install_keeps_this_version_running_and_restart_can_try_again() {
     *source.install_fails.lock().unwrap() = true;
 
     app.restart_to_update();
-    settle(&mut app, now);
-    let UpdateStatus::Ready {
-        problem: Some(problem),
-        ..
-    } = app.updates().status()
-    else {
-        panic!("expected a problem, got {:?}", app.updates().status());
+    // Noura saves first, and the status stays Ready until the install ends.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let problem = loop {
+        app.poll_at(now);
+        if let UpdateStatus::Ready {
+            problem: Some(problem),
+            ..
+        } = app.updates().status()
+        {
+            break problem;
+        }
+        assert!(Instant::now() < deadline, "{:?}", app.updates().status());
+        std::thread::sleep(Duration::from_millis(5));
     };
     assert!(
         problem.contains("couldn't install version 0.3.0"),
@@ -583,7 +589,12 @@ fn a_failed_install_keeps_this_version_running_and_restart_can_try_again() {
 
     *source.install_fails.lock().unwrap() = false;
     app.restart_to_update();
-    settle(&mut app, now);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while source.calls().len() < 5 {
+        app.poll_at(now);
+        assert!(Instant::now() < deadline, "{:?}", source.calls());
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert_eq!(
         source.calls(),
         ["check", "download", "install", "install", "restart"]
