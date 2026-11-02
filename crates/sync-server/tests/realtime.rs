@@ -329,9 +329,13 @@ async fn entries_beyond_one_frame_send_a_notify_at_most_every_250_ms() {
     let started = tokio::time::Instant::now();
     // The reader takes frames as they come, while the pushes commit.
     let listening = tokio::spawn(async move {
+        // The first push can take seconds on a busy runner, and on Windows
+        // `localhost` connects slowly.
         let mut frames = Vec::new();
-        while let Some(frame) = reader.next(Duration::from_secs(2)).await {
+        let mut wait = Duration::from_secs(30);
+        while let Some(frame) = reader.next(wait).await {
             frames.push((tokio::time::Instant::now(), frame));
+            wait = Duration::from_secs(5);
         }
         frames
     });
