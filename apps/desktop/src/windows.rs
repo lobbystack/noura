@@ -457,6 +457,8 @@ impl Windows {
         println!("{}", smoke.report);
         self.smoke = None;
         self.quit_app(ctx);
+        // Nothing else asks for the frame that closes the window.
+        ctx.request_repaint();
     }
 
     /// Whether Quit ran in any window.
