@@ -561,9 +561,10 @@ async fn a_magic_link_signs_up_once_and_expires_after_ten_minutes() {
     .await;
     outbox.take();
     assert_eq!(count(&site.database(), "magic_links").await, 1);
-    site.store.clock().advance(Duration::from_secs(599));
+    // The clock also runs on its own, so the first step stops well short.
+    site.store.clock().advance(Duration::from_secs(590));
     assert_eq!(site.store.delete_expired().await.unwrap(), 0);
-    site.store.clock().advance(Duration::from_secs(1));
+    site.store.clock().advance(Duration::from_secs(10));
     assert_eq!(site.store.delete_expired().await.unwrap(), 1);
     assert_eq!(count(&site.database(), "magic_links").await, 0);
 }

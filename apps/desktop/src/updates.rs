@@ -388,10 +388,13 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             app.poll_at(now);
-            if !matches!(
-                app.updates().status(),
-                UpdateStatus::Checking | UpdateStatus::Downloading { .. }
-            ) {
+            // The status moves only once the check's first event arrives.
+            if !app.updates().is_busy()
+                && !matches!(
+                    app.updates().status(),
+                    UpdateStatus::Checking | UpdateStatus::Downloading { .. }
+                )
+            {
                 return;
             }
             assert!(Instant::now() < deadline, "update work never finished");
