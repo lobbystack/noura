@@ -263,10 +263,19 @@ impl TextBridge {
             || waiting.refused.values().any(asks_again)
     }
 
-    /// Lets the next edit ask again for a note that stayed out of text
-    /// mode, once its file changed.
+    /// The note's file changed, so a note that stayed out of text mode
+    /// because sync hadn't captured an edit asks again now, and any other
+    /// asks at the next edit.
     pub fn ask_again(&self, path: &str) {
-        self.waiting().refused.remove(path);
+        let mut waiting = self.waiting();
+        let refused = waiting.refused.remove(path);
+        if matches!(refused, Some((Entered::NotYet, _)))
+            && !waiting.opening.iter().any(|p| p == path)
+        {
+            waiting.opening.push(path.to_owned());
+            drop(waiting);
+            self.wake();
+        }
     }
 
     /// The window let go of the note.
