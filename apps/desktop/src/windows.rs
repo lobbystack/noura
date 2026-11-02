@@ -455,6 +455,7 @@ impl Windows {
             return;
         }
         println!("{}", smoke.report);
+        tracing::info!("the smoke run reported");
         self.smoke = None;
         self.quit_app(ctx);
         // Nothing else asks for the frame that closes the window.
@@ -743,11 +744,14 @@ impl eframe::App for Windows {
         // A later launch from now on finds no copy to bring forward. It
         // waits for the lock, which goes once every window has let go of
         // the workspace, and then runs.
+        tracing::info!("Noura is ending");
         if let Some(instance) = &mut self.instance {
             instance.stop_listening();
         }
+        tracing::info!("the single-instance listener stopped");
         self.save_before_exit();
         self.quit();
+        tracing::info!("every window let go of its workspace");
         self.instance = None;
     }
 }

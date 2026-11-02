@@ -272,6 +272,7 @@ fn run_app(smoke: Option<String>) -> eframe::Result {
             }
         }),
     );
+    tracing::info!("the windows are gone");
     // The windows are gone, so nothing starts a new write. Writes still
     // running finish before the process ends, whichever way Noura quit.
     if let Some(writes) = writes.get()
@@ -280,6 +281,7 @@ fn run_app(smoke: Option<String>) -> eframe::Result {
         tracing::error!("Noura quit while a write was still running");
     }
     install_at_exit.run();
+    tracing::info!("Noura is done");
     closed
 }
 
