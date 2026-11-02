@@ -85,6 +85,21 @@ impl Device {
     }
 }
 
+/// Removes the index in `local`. On Windows its files stay in use for a
+/// moment after the app that held them dropped.
+fn remove_index(local: &std::path::Path) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    for file in index_files(local) {
+        while let Err(error) = std::fs::remove_file(&file) {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "{error}");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+}
+
 /// Every file whose name starts with `index.sqlite` in `dir`: the index and
 /// whatever SQLite or an interrupted rebuild left next to it.
 fn index_files(dir: &Path) -> Vec<PathBuf> {
@@ -225,9 +240,7 @@ fn deleting_every_index_file_rebuilds_the_same_workspace() {
     drop(app);
     assert!(!before.objects.is_empty() && !before.problems.is_empty() && !before.recent.is_empty());
 
-    for file in index_files(&local) {
-        std::fs::remove_file(file).unwrap();
-    }
+    remove_index(&local);
     let mut app = device.launch();
 
     assert_eq!(seen(&mut app), before);
@@ -287,9 +300,7 @@ fn a_first_rebuild_interrupted_midway_starts_over_at_the_next_open() {
     drop(app);
 
     // You deleted the index, and Noura crashed while it built a new one.
-    for file in index_files(&local) {
-        support::remove_when_free(&file);
-    }
+    remove_index(&local);
     std::fs::write(local.join("index.sqlite.next"), b"half a database").unwrap();
     let mut app = device.launch();
 
@@ -305,9 +316,7 @@ fn an_index_that_is_not_a_database_anymore_is_rebuilt_from_the_files() {
     let local = device.local_dir(&app);
     drop(app);
 
-    for file in index_files(&local) {
-        std::fs::remove_file(file).unwrap();
-    }
+    remove_index(&local);
     std::fs::write(local.join("index.sqlite"), vec![0x5a; 8192]).unwrap();
     let mut app = device.launch();
 
@@ -388,9 +397,7 @@ fn opening_repairs_index_updates_that_a_crash_cut_short() {
 
     // Noura crashed before its index updates reached the disk, so the index
     // on disk is the one from before the changes.
-    for file in index_files(&local) {
-        std::fs::remove_file(file).unwrap();
-    }
+    remove_index(&local);
     for file in index_files(saved.path()) {
         std::fs::copy(&file, local.join(file.file_name().unwrap())).unwrap();
     }
