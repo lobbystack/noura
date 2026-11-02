@@ -162,9 +162,10 @@ async fn connections_stop_at_the_limit_with_channels_counted() {
     // drops.
     drop(client);
 
+    // `localhost` tries IPv6 first, which on Windows outlasts the second
+    // each attempt below gets.
     let url = format!(
-        "ws://localhost:{}/v2/workspaces/{}/realtime",
-        address.port(),
+        "ws://{address}/v2/workspaces/{}/realtime",
         created.workspace.to_base64url()
     );
     let mut request =
@@ -178,8 +179,7 @@ async fn connections_stop_at_the_limit_with_channels_counted() {
     );
     let mut sockets = Vec::new();
     for _ in 0..2 {
-        // Windows takes seconds to report the closed sockets' places free.
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + Duration::from_secs(5);
         sockets.push(loop {
             let opened = tokio::time::timeout(
                 Duration::from_secs(1),

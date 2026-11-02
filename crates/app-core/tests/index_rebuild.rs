@@ -288,7 +288,7 @@ fn a_first_rebuild_interrupted_midway_starts_over_at_the_next_open() {
 
     // You deleted the index, and Noura crashed while it built a new one.
     for file in index_files(&local) {
-        std::fs::remove_file(file).unwrap();
+        support::remove_when_free(&file);
     }
     std::fs::write(local.join("index.sqlite.next"), b"half a database").unwrap();
     let mut app = device.launch();
