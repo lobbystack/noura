@@ -593,6 +593,10 @@ fn an_update_that_depends_on_an_unreadable_record_waits_for_a_rewrite() {
                 LineageStatus::Stopped(_) => "stopped",
             };
             assert_eq!(status, step["status"], "{name}");
+            if let Some(booted) = step.get("booted") {
+                let state = editor.note.state().unwrap();
+                assert_eq!(open(vec![state]).doc.text(), *booted, "{name}");
+            }
         }
     }
 }

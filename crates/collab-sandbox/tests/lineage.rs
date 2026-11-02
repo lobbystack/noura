@@ -608,3 +608,69 @@ fn canonical_order_follows_the_fixture() {
         assert_eq!(arrivals.text().unwrap(), case["text"], "{name}");
     }
 }
+
+/// A snapshot the fuzz suite found: client 0's clocks 0 to 4 deleted, then a
+/// string up to clock 13 that names an element of card 1, which nobody holds.
+/// Over [`PAIR_NOTE`], whose units sit at clocks 0 to 12, only clock 13 is
+/// new, and it holds the low half of an emoji. It also replays through
+/// `fuzzing::record`, from `fuzz/regressions/record`.
+const WAITING_SNAPSHOT: [u8; 39] = [
+    1, 2, 0, 0, 129, 129, 128, 128, 128, 2, 0, 5, 132, 129, 128, 128, 128, 2, 0, 18, 204, 129, 228,
+    184, 173, 97, 97, 204, 129, 204, 129, 228, 184, 173, 240, 159, 152, 128, 0,
+];
+const PAIR_NOTE: &str = "fuzz 😀 base\n";
+
+fn booted_text(state: Vec<u8>) -> String {
+    note(vec![state]).text().unwrap()
+}
+
+#[test]
+fn a_state_holds_nothing_of_a_snapshot_that_waits() {
+    let hostile = snapshot(9, 3, 1, &[], &WAITING_SNAPSHOT);
+    let mut device = note(vec![first(PAIR_NOTE)]);
+    let reported = events(&mut device, hostile.clone());
+    assert!(
+        reported.contains(&Event::Disagrees { id: 9, writer: 3 }),
+        "{reported:?}"
+    );
+    assert_eq!(device.status(), LineageStatus::Pending);
+    assert_eq!(device.text().unwrap(), PAIR_NOTE);
+
+    let state = device.state().unwrap();
+    assert_eq!(booted_text(state.clone()), PAIR_NOTE);
+
+    // A second device took the same record, then the snapshot the first
+    // writes: both show the same text.
+    let mut other = note(vec![first(PAIR_NOTE)]);
+    events(&mut other, hostile);
+    events(&mut other, snapshot(10, 2, 1, &[], &state));
+    assert_eq!(other.text().unwrap(), device.text().unwrap());
+}
+
+#[test]
+fn a_state_holds_nothing_of_an_update_that_waits() {
+    let writer = client(1, 1);
+    let held = insert_after(writer, 0, (0, 0), "😀");
+    // The same clocks again and one more, after an element nobody holds.
+    let waits = insert_after(writer, 0, (client(2, 1), 0), "😀b");
+    let shown = "a😀";
+
+    let mut device = note(vec![first("a")]);
+    device.receive(update(5, 1, 1, &held), Instant::now());
+    device.receive(update(6, 1, 2, &waits), Instant::now());
+    assert_eq!(device.status(), LineageStatus::Pending);
+    assert_eq!(device.text().unwrap(), shown);
+    let state = device.state().unwrap();
+    assert_eq!(booted_text(state.clone()), shown);
+
+    // The update stays live, so a device that boots from the state still
+    // takes it, and reaches the text of the device that held it all along.
+    let mut booted = note(vec![state]);
+    booted.receive(update(6, 1, 2, &waits), Instant::now());
+    assert_eq!(booted.text().unwrap(), shown);
+    let dependency = insert_after(client(2, 1), 0, (0, 0), "q");
+    let arrives = update(7, 2, 1, &dependency);
+    device.receive(arrives.clone(), Instant::now());
+    booted.receive(arrives, Instant::now());
+    assert_eq!(booted.text().unwrap(), device.text().unwrap());
+}

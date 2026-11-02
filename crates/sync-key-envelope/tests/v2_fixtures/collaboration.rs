@@ -1164,6 +1164,26 @@ fn pending(f: &mut Fixture) {
             {"receive": rewrite, "text": "xabcd", "status": "merging"},
         ],
     }));
+
+    // A record that repeats clocks the note holds and names an element
+    // nobody holds waits whole. The document's state holds none of it: a
+    // device that boots from the state shows the text this one shows.
+    let held = insert_between(OTHER, 0, Some((0, 0)), None, "😀");
+    let waits = insert_between(OTHER, 0, Some(((3 << 29) + 1, 0)), None, "😀b");
+    f.case(json!({
+        "kind": "pending",
+        "name": "a_state_holds_nothing_of_an_update_that_waits",
+        "base": to_hex(&base),
+        "steps": [
+            {"receive": record(1, "Notes/Plan.md", held), "text": "x😀", "status": "merging"},
+            {
+                "receive": record(2, "Notes/Plan.md", waits),
+                "text": "x😀",
+                "status": "pending",
+                "booted": "x😀",
+            },
+        ],
+    }));
 }
 
 /// A trap in the verdict: whatever makes the guest trap, a panic in its yrs

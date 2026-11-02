@@ -329,11 +329,13 @@ impl Note {
     }
 
     /// The document encoded with garbage collection on, as a snapshot
-    /// holds it.
+    /// holds it. It leaves out what yrs holds pending:
+    /// `encode_state_as_update_v1` merges that in, and the merge cuts a
+    /// pending struct that repeats clocks the document holds, so the part
+    /// past them names the element before it, not the origin it waits for,
+    /// and shows on a boot. The records it came from stay live.
     pub fn state(&self) -> Vec<u8> {
-        self.doc
-            .transact()
-            .encode_state_as_update_v1(&StateVector::default())
+        self.doc.transact().encode_diff_v1(&StateVector::default())
     }
 
     /// The text of `content`.
@@ -576,6 +578,23 @@ mod tests {
         reader.integrate(&first_document("x")).unwrap();
         reader.integrate(&merged).unwrap();
         assert_eq!(reader.text(), note.text());
+    }
+
+    #[test]
+    fn a_state_holds_nothing_that_waits() {
+        // Client 0's clock 0 again and one clock more, after an element of
+        // a client nobody holds.
+        let waits = unhex("0101000084070002616200");
+        let mut note = Note::new(3 << 29 | 1).unwrap();
+        note.integrate(&first_document("x")).unwrap();
+        let (_, status) = note.integrate(&waits).unwrap();
+        assert_ne!(status & status::PENDING, 0);
+        assert_eq!(note.text(), "x");
+
+        let mut booted = Note::new(4 << 29 | 1).unwrap();
+        let (_, status) = booted.integrate(&note.state()).unwrap();
+        assert_eq!(status & status::PENDING, 0);
+        assert_eq!(booted.text(), "x");
     }
 
     #[test]

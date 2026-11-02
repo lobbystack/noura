@@ -2058,6 +2058,34 @@
 		},
 		{
 			"base": "01010000040107636f6e74656e74017800",
+			"kind": "pending",
+			"name": "a_state_holds_nothing_of_an_update_that_waits",
+			"steps": [
+				{
+					"receive": {
+						"card_count": 2,
+						"card_index": 2,
+						"id": 1,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d640100000011010181808080040084000004f09f988000"
+					},
+					"status": "merging",
+					"text": "x😀"
+				},
+				{
+					"booted": "x😀",
+					"receive": {
+						"card_count": 2,
+						"card_index": 2,
+						"id": 2,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000001601018180808004008481808080060005f09f98806200"
+					},
+					"status": "pending",
+					"text": "x😀"
+				}
+			]
+		},
+		{
+			"base": "01010000040107636f6e74656e74017800",
 			"kind": "verdict_trap",
 			"module_wat": "(module (memory (export \"memory\") 1) (func (export \"alloc\") (param i32) (result i32) i32.const 0) (func (export \"verdict\") (param i32 i32 i32 i32 i32 i32 i32) (result i32) unreachable))",
 			"name": "a_trapping_verdict_makes_one_record_unreadable",
@@ -2307,7 +2335,7 @@
 			"text_bytes": 8388608
 		},
 		"module": {
-			"blake3": "c6ad0cfc002bd7459fc6099ab39554505cf155b9a3b47ecc5ac97c978be73e10",
+			"blake3": "474fc8ff67264921721d966cab76ebae7f5d0b24684b80c7c0be769b2cb43b6e",
 			"path": "crates/collab-sandbox/guest/collab_sandbox_guest.wasm"
 		},
 		"operator_costs": {
