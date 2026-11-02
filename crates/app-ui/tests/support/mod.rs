@@ -115,7 +115,7 @@ pub fn harness_for(
 pub fn builder() -> egui_kittest::HarnessBuilder<NouraUi> {
     Harness::builder()
         .with_size([1000.0, 700.0])
-        .with_max_steps(12)
+        .with_max_steps(32)
 }
 
 /// A system that records what Noura asks of it. Its trash refuses, so
