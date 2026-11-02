@@ -145,9 +145,16 @@ async fn changes_made_through_mcp_show_in_the_open_app_and_survive_an_index_rebu
         .join("workspaces")
         .join(&workspace_id);
     for name in ["index.sqlite", "index.sqlite-wal", "index.sqlite-shm"] {
+        // On Windows the file stays in use until the app's threads end.
         let path = index.join(name);
-        if path.exists() {
-            std::fs::remove_file(path).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while path.exists() {
+            match std::fs::remove_file(&path) {
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                removed => removed.unwrap(),
+            }
         }
     }
     let rebuilt = AgentWorkspace::open(fixture.app_data.path(), &fixture.root).unwrap();

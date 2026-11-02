@@ -81,7 +81,7 @@ fn walk(root: &std::path::Path, folder: &std::path::Path, found: &mut Vec<String
                 path.strip_prefix(root)
                     .unwrap()
                     .to_string_lossy()
-                    .into_owned(),
+                    .replace('\\', "/"),
             );
         }
     }

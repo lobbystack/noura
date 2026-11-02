@@ -310,9 +310,7 @@ fn board_order_survives_reopening_the_workspace_without_its_index() {
     let index = index_files(&fixture, &app);
     drop(app);
     for file in &index {
-        if file.exists() {
-            std::fs::remove_file(file).unwrap();
-        }
+        support::remove_when_free(file);
     }
 
     let mut app = fixture.app();

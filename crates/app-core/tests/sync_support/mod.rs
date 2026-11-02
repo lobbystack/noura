@@ -558,7 +558,7 @@ impl<B: Backend> Server<B> {
     pub fn quarantined(&self) -> Vec<PathBuf> {
         self.blob_files()
             .into_iter()
-            .filter(|f| f.to_string_lossy().contains("/quarantine/"))
+            .filter(|f| f.components().any(|part| part.as_os_str() == "quarantine"))
             .collect()
     }
 

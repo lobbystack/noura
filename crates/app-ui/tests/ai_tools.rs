@@ -102,10 +102,9 @@ fn the_section_shows_the_configuration_a_copy_button_and_a_warning() {
         .value()
         .unwrap();
     assert!(configuration.contains(PROGRAM), "{configuration}");
-    assert!(
-        configuration.contains(&root.replace('\\', "\\\\")),
-        "{configuration}"
-    );
+    // The configuration is JSON, which doubles a Windows path's backslashes.
+    let escaped = root.replace('\\', "\\\\");
+    assert!(configuration.contains(&escaped), "{configuration}");
     assert!(configuration.contains("\"--workspace\""), "{configuration}");
     harness.get_by_label_contains("without asking you first");
 
@@ -119,7 +118,7 @@ fn the_section_shows_the_configuration_a_copy_button_and_a_warning() {
     assert!(
         calls
             .iter()
-            .any(|call| call.starts_with("copy ") && call.contains(&root)),
+            .any(|call| call.starts_with("copy ") && call.contains(&escaped)),
         "{calls:?}"
     );
     harness.get_by_role(Role::Status);

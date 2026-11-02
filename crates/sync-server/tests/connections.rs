@@ -178,7 +178,8 @@ async fn connections_stop_at_the_limit_with_channels_counted() {
     );
     let mut sockets = Vec::new();
     for _ in 0..2 {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // Windows takes seconds to report the closed sockets' places free.
+        let deadline = Instant::now() + Duration::from_secs(20);
         sockets.push(loop {
             let opened = tokio::time::timeout(
                 Duration::from_secs(1),
