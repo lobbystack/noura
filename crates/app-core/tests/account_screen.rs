@@ -1919,8 +1919,9 @@ fn a_start_without_a_network_connects_once_the_server_answers() {
         "the account by itself",
         |s| matches!(&s.phase, AccountPhase::SignedIn(view) if !view.devices.is_empty()),
     );
-    assert_eq!(screen.problem, None);
     assert!(!screen.reconnecting);
+    // The last failed try's message goes with the next round.
+    wait_for(&account, "the message goes", |s| s.problem.is_none());
     wait_for_folder(&account, "sync on", |s| s.phase == FolderSyncPhase::On);
     drop(account);
     std::thread::sleep(Duration::from_millis(300));
