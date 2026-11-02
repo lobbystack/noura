@@ -636,9 +636,10 @@ fn a_note_the_cloud_drive_evicts_keeps_its_entry_and_id_until_it_downloads_again
     let mut live = Live::open(&[("Journal/today.md", &note(PLAN_ID, "Morning pages."))]);
     expand(&mut live.app, "Journal");
 
-    // iCloud swaps the file for a placeholder named after it.
-    std::fs::remove_file(live.path("Journal/today.md")).unwrap();
+    // iCloud swaps the file for a placeholder named after it. The placeholder
+    // comes first, so a rescan never meets a plainly deleted file.
     write(&live.folder, "Journal/.today.md.icloud", "bplist00");
+    std::fs::remove_file(live.path("Journal/today.md")).unwrap();
 
     live.wait_until("the row shows as not downloaded", |app| {
         not_downloaded(app, "Journal/today.md") == Some(true)
