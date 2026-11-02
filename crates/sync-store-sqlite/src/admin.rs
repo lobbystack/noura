@@ -201,7 +201,10 @@ pub async fn backup_into(database: &Path, target: &Path) -> Result<(), sqlx::Err
         .execute(&mut copy)
         .await?;
     copy.close().await?;
-    std::fs::File::open(target)
+    // Windows flushes only a file opened for writing.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(target)
         .and_then(|file| file.sync_all())
         .map_err(sqlx::Error::Io)?;
     let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")

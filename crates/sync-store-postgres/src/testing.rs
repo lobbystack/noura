@@ -124,15 +124,26 @@ fn free_port() -> u16 {
 }
 
 fn pg_ctl(bin: &Path, args: &[&str], data: &Path) -> std::process::Output {
-    Command::new(executable(bin, "pg_ctl"))
+    // The server `start` leaves running inherits these handles, and on
+    // Windows it would hold a pipe open until it stops, so they go to a file.
+    let errors = data.with_extension("pg_ctl-errors");
+    let file = std::fs::File::create(&errors).expect("a file for pg_ctl's errors");
+    let status = Command::new(executable(bin, "pg_ctl"))
         .args(args)
         .arg("-D")
         .arg(data)
         // PostgreSQL on macOS refuses to start without a valid locale.
         .env("LC_ALL", "C")
         .stdin(Stdio::null())
-        .output()
-        .expect("pg_ctl runs")
+        .stdout(Stdio::null())
+        .stderr(file)
+        .status()
+        .expect("pg_ctl runs");
+    std::process::Output {
+        status,
+        stdout: Vec::new(),
+        stderr: std::fs::read(&errors).unwrap_or_default(),
+    }
 }
 
 /// Stops the clusters of test processes that died before they could.

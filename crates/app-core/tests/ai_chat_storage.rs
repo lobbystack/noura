@@ -287,10 +287,17 @@ fn a_deleted_index_rebuilds_the_same_chats() {
     let index = index_files(&fixture, &app);
     drop(app);
 
-    // Every index file goes, and another app adds a message meanwhile.
+    // Every index file goes, and another app adds a message meanwhile. On
+    // Windows the file stays in use until the app's threads have ended.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     for file in &index {
-        if file.exists() {
-            std::fs::remove_file(file).unwrap();
+        while file.exists() {
+            match std::fs::remove_file(file) {
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                removed => removed.unwrap(),
+            }
         }
     }
     support::write(
