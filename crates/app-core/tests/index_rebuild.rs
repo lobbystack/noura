@@ -378,8 +378,11 @@ fn opening_repairs_index_updates_that_a_crash_cut_short() {
     let local = device.local_dir(&app);
     drop(app);
     let saved = tempfile::tempdir().unwrap();
+    // The app's threads can still be closing the index, and with it the log.
     for file in index_files(&local) {
-        std::fs::copy(&file, saved.path().join(file.file_name().unwrap())).unwrap();
+        if let Err(error) = std::fs::copy(&file, saved.path().join(file.file_name().unwrap())) {
+            assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+        }
     }
     let mut app = device.launch();
     change_files_outside(&device.folder);
