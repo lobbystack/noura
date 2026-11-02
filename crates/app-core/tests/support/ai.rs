@@ -464,16 +464,21 @@ pub fn body(text: &str) -> &str {
 /// The file of the message of `kind`, such as `tool-result`, for the tool
 /// call `call`, once Noura wrote it.
 pub fn tool_message(app: &mut App, root: &std::path::Path, kind: &str, call: &str) -> String {
-    let find = || {
-        message_files(root).into_iter().find(|text| {
+    // The first read that finds it keeps it: on Windows a later read can
+    // meet the file as it's replaced.
+    let found = std::cell::RefCell::new(None);
+    wait_until(app, &format!("the {kind} of {call} is written"), |_| {
+        let message = message_files(root).into_iter().find(|text| {
             frontmatter(text, "kind").as_deref() == Some(kind)
                 && frontmatter(text, "tool_call_id").as_deref() == Some(call)
-        })
-    };
-    wait_until(app, &format!("the {kind} of {call} is written"), |_| {
-        find().is_some()
+        });
+        let written = message.is_some();
+        if written {
+            *found.borrow_mut() = message;
+        }
+        written
     });
-    find().unwrap()
+    found.into_inner().expect("the message was found")
 }
 
 /// The JSON a tool result for the call `call` holds, once Noura wrote it.

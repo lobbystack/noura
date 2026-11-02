@@ -3026,9 +3026,10 @@ pub async fn sign_in_rows_work_once_and_expire<B: Backend>(store: Store<B>) {
         .challenge(Session::new(account, Id::random().expect("random")))
         .await
         .expect("a challenge");
-    store.clock().advance(Duration::from_secs(599));
+    // The clock also runs on its own, so the first step stops well short.
+    store.clock().advance(Duration::from_secs(590));
     assert_eq!(store.delete_expired().await.expect("swept"), 0);
-    store.clock().advance(Duration::from_secs(1));
+    store.clock().advance(Duration::from_secs(10));
     assert_eq!(store.delete_expired().await.expect("swept"), 4);
 }
 

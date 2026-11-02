@@ -684,7 +684,11 @@ pub async fn chain_appends_race_pushes_recording_the_head<B: Backend>(
         tokio::spawn(async move {
             let mut committed = 0;
             let mut recorded = 1;
-            for _ in 0..rounds * 2 {
+            // On a slow machine the first append can outlast these rounds.
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            let mut round = 0;
+            while round < rounds * 2 || (committed == 0 && std::time::Instant::now() < deadline) {
+                round += 1;
                 let snapshot = links.lock().await.clone();
                 let mut world = world.lock().await;
                 let head = head_of(&snapshot);
