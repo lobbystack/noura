@@ -370,6 +370,19 @@ impl Cluster {
             "pg_basebackup failed: {}",
             String::from_utf8_lossy(&backup.stderr)
         );
+        // pg_ctl drops administrator rights on Windows, and the copy gave
+        // this user access only through them.
+        #[cfg(windows)]
+        {
+            let user = std::env::var("USERNAME").expect("a user name");
+            let granted = Command::new("icacls")
+                .arg(&target)
+                .args(["/grant", &format!("{user}:(OI)(CI)F"), "/T", "/Q"])
+                .stdin(Stdio::null())
+                .output()
+                .expect("icacls runs");
+            assert!(granted.status.success(), "icacls failed: {granted:?}");
+        }
         target
     }
 

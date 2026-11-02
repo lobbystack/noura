@@ -282,7 +282,10 @@ pub async fn restore(
     let generation = sync_store_sqlite::raise_generation(&incoming, floor, unix_now() + UPLOAD_TTL)
         .await
         .map_err(|e| fail(format!("can't raise the restore generation: {e}")))?;
-    fs::File::open(&incoming)
+    // Windows flushes only a file opened for writing.
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&incoming)
         .and_then(|file| file.sync_all())
         .map_err(|e| fail(format!("can't flush the copy: {e}")))?;
     if !damaged {

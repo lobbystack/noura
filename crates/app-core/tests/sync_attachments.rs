@@ -216,10 +216,10 @@ fn holds(dir: &std::path::Path, needle: &[u8]) -> bool {
         if path.is_dir() {
             holds(&path, needle)
         } else {
+            // Windows refuses a file another thread holds locked, as an
+            // open index.
             std::fs::read(&path)
-                .unwrap()
-                .windows(needle.len())
-                .any(|window| window == needle)
+                .is_ok_and(|bytes| bytes.windows(needle.len()).any(|window| window == needle))
         }
     })
 }

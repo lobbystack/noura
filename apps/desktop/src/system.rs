@@ -33,15 +33,15 @@ impl System for DesktopSystem {
     /// Finder and Explorer select the item. On Linux, `app-core` opens
     /// the folder that holds it through [`Self::open_folder`] instead.
     fn reveal(&self, path: &Path) -> io::Result<()> {
-        opener::reveal(path).map_err(io::Error::other)
+        opener::reveal(dunce::simplified(path)).map_err(io::Error::other)
     }
 
     fn open_folder(&self, folder: &Path) -> io::Result<()> {
-        opener::open(folder).map_err(io::Error::other)
+        opener::open(dunce::simplified(folder)).map_err(io::Error::other)
     }
 
     fn open_terminal(&self, folder: &Path) -> io::Result<()> {
-        open_terminal(folder)
+        open_terminal(dunce::simplified(folder))
     }
 
     fn copy_text(&self, text: &str) {
@@ -53,7 +53,7 @@ impl System for DesktopSystem {
     }
 
     fn open_file(&self, path: &Path) -> io::Result<()> {
-        opener::open(path).map_err(io::Error::other)
+        opener::open(dunce::simplified(path)).map_err(io::Error::other)
     }
 }
 

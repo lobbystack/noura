@@ -17,6 +17,7 @@ app-core = { version = "0.2.0", path = "../../crates/app-core" }
 app-ui = { version = "0.2.0", path = "../../crates/app-ui" }
 auto-launch.workspace = true
 cargo-packager-updater.workspace = true
+dunce.workspace = true
 eframe.workspace = true
 # The note editor paints its text through eframe's wgpu renderer.
 editor-egui = { version = "0.2.0", path = "../../crates/editor-egui" }

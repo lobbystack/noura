@@ -3143,6 +3143,7 @@ dependencies = [
  "base64 0.22.1",
  "cargo-packager-updater",
  "drag",
+ "dunce",
  "editor-egui",
  "eframe",
  "egui",

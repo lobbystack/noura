@@ -394,9 +394,7 @@ fn deleting_every_index_file_rebuilds_the_same_tasks_and_projects_from_the_files
     drop(app);
 
     for file in &index {
-        if file.exists() {
-            std::fs::remove_file(file).unwrap();
-        }
+        support::remove_when_free(file);
     }
     let mut app = fixture.app();
     plugins::wait_until(&mut app, "the plugins run again", |app| {

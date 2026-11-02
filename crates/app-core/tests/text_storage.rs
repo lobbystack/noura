@@ -343,7 +343,7 @@ fn with_a_stale_index(fixture: &Fixture, change: impl FnOnce()) {
     }
     change();
     for file in &files {
-        let _ = std::fs::remove_file(file);
+        support::remove_when_free(file);
         let old = stale.path().join(file.file_name().unwrap());
         if old.exists() {
             std::fs::copy(old, file).unwrap();

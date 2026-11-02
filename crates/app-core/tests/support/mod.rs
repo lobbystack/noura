@@ -407,6 +407,19 @@ pub fn open_from_tree(app: &mut App, relative_path: &str) -> app_core::TabId {
     tab.id()
 }
 
+/// Removes `file`. On Windows it stays in use for a moment after the app
+/// that held it dropped, until the app's threads have ended.
+pub fn remove_when_free(file: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while let Err(error) = std::fs::remove_file(file) {
+        match error.kind() {
+            std::io::ErrorKind::NotFound => return,
+            _ if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            _ => panic!("{} stayed in use: {error}", file.display()),
+        }
+    }
+}
+
 /// Poll until background work finishes. A CI runner can take most of a
 /// minute to compile a plugin.
 pub fn settle(app: &mut App) {

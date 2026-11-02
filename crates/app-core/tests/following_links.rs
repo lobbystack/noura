@@ -114,7 +114,9 @@ fn outcome(
         .iter()
         .map(|call| {
             roots.iter().fold(format!("{call:?}"), |call, root| {
-                call.replace(&root.display().to_string(), "<workspace>")
+                // The call prints with its backslashes escaped.
+                let root = root.display().to_string().escape_debug().to_string();
+                call.replace(&root, "<workspace>")
             })
         })
         .collect();

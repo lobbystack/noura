@@ -102,7 +102,10 @@ fn the_section_shows_the_configuration_a_copy_button_and_a_warning() {
         .value()
         .unwrap();
     assert!(configuration.contains(PROGRAM), "{configuration}");
-    assert!(configuration.contains(&root), "{configuration}");
+    assert!(
+        configuration.contains(&root.replace('\\', "\\\\")),
+        "{configuration}"
+    );
     assert!(configuration.contains("\"--workspace\""), "{configuration}");
     harness.get_by_label_contains("without asking you first");
 

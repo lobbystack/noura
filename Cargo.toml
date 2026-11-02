@@ -126,6 +126,7 @@ minisign = "0.7"
 # built and tested against; see docs/provenance/lockbook-editor.md.
 comrak = { version = "=0.50.0", default-features = false, features = ["shortcodes"] }
 directories = "6"
+dunce = "1"
 diffy = "=0.5.1"
 drag = "2.1.1"
 # eframe's native defaults. `clipboard` connects copy and paste to the

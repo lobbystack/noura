@@ -152,9 +152,11 @@ impl Instance {
             requests.stopping = true;
             requests.waiting.clear();
         }
-        // Wake the listening thread, which then lets go of the socket.
+        // Wake the listening thread, which then lets go of the socket. The
+        // connection stays open until it does: Windows discards one that
+        // ends before the listener sees it, and the thread would wait on.
         if let Some(listening) = self.listening.take()
-            && Stream::connect(self.name.clone()).is_ok()
+            && let Ok(_waking) = Stream::connect(self.name.clone())
             && listening.join().is_err()
         {
             tracing::debug!("the single-instance thread stopped early");
