@@ -436,10 +436,16 @@ async fn a_checkpoint_listing_another_final_head_is_reported() {
     let failures = pair.sync_a.checkpoint_failures().to_vec();
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert_eq!(Some(failures[0].digest), *forged_digest.lock().unwrap());
-    assert_eq!(failures[0].code, "sync_manifest_mismatch");
-    assert_eq!(pair.sync_a.restore_lost(), None, "the workspace goes on");
+    // Which check answers depends on whether an honest checkpoint from
+    // before the removal was accepted first.
     assert!(
-        pair.sync_a.latest_checkpoint().is_none(),
+        ["sync_manifest_mismatch", "sync_manifest_rollback"].contains(&failures[0].code.as_str()),
+        "{failures:?}"
+    );
+    assert_eq!(pair.sync_a.restore_lost(), None, "the workspace goes on");
+    assert_ne!(
+        pair.sync_a.latest_checkpoint().map(|c| c.digest()),
+        Some(failures[0].digest),
         "a failed checkpoint never becomes the latest accepted one"
     );
     assert!(pair.sync_b.checkpoint_failures().is_empty());

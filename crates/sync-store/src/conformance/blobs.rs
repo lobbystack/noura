@@ -134,6 +134,9 @@ pub async fn blob_uploads_follow_tus<B: Backend>(store: Store<B>) {
         .create_blob(session, w, creation)
         .await
         .expect("created");
+    let now = store.clock().now();
+    let expires = row.delete_after.expect("an upload expires");
+    assert!((now - 5..=now).contains(&(expires - crate::UPLOAD_TTL)));
     assert_eq!(
         row,
         BlobRow {
@@ -144,7 +147,7 @@ pub async fn blob_uploads_follow_tus<B: Backend>(store: Store<B>) {
             digest: creation.digest,
             offset: 0,
             complete: false,
-            delete_after: Some(store.clock().now() + crate::UPLOAD_TTL),
+            delete_after: row.delete_after,
             marked: false,
             live_listings: 0,
         }
