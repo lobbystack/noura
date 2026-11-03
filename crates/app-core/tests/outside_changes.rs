@@ -82,6 +82,19 @@ impl Live {
         }
     }
 
+    /// Wait on the change stream until `change` arrives, or has.
+    fn wait_for(&mut self, change: Change) {
+        let deadline = Instant::now() + PATIENCE;
+        while !self.seen.contains(&change) {
+            self.seen.extend(self.changes.try_iter());
+            let left = deadline.saturating_duration_since(Instant::now());
+            assert!(!left.is_zero(), "timed out waiting for {change:?}");
+            if let Ok(heard) = self.changes.recv_timeout(left) {
+                self.seen.push(heard);
+            }
+        }
+    }
+
     fn path(&self, relative: &str) -> PathBuf {
         self.folder.join(relative)
     }
@@ -851,7 +864,9 @@ fn an_edit_another_app_makes_reaches_search() {
     live.wait_until("search finds the new words", |app| {
         hit_paths(app, "evening") == ["Plan.md"] && hit_paths(app, "morning").is_empty()
     });
-    assert!(live.seen.contains(&Change::Files(Origin::Outside)));
+    // Search reads the index, so it can find the edit just before the
+    // watch thread announces it.
+    live.wait_for(Change::Files(Origin::Outside));
 }
 
 #[test]
