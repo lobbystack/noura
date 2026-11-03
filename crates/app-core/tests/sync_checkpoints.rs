@@ -345,10 +345,21 @@ async fn a_root_mismatch_walks_the_tree_to_the_differing_objects() {
     assert!(pair.sync_a.latest_checkpoint().is_none());
 }
 
+/// Prints what the server logs as a failure, since a client sees only
+/// `internal`.
+fn print_server_failures() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::ERROR)
+        .with_writer(std::io::stderr)
+        .try_init();
+}
+
 /// A laptop that synced a folder until its log holds a checkpoint, with
 /// one more note after it, and a second desktop of the account that
 /// connects through a proxy, ready to download the workspace.
 struct Bootstrap {
+    /// The server's folder. A test that destructures this binds the field,
+    /// or the folder goes while the server still answers.
     _server: Server,
     laptop: sync_support::Desktop,
     a: sync_support::Folder,
@@ -361,7 +372,7 @@ struct Bootstrap {
 }
 
 async fn bootstrap_setup() -> Bootstrap {
-    use sync_support::{Folder, Proxy, approve, first_desktop, print_server_failures};
+    use sync_support::{Folder, Proxy, approve, first_desktop};
 
     print_server_failures();
     let server = Server::start_with_interval(6).await;
@@ -417,6 +428,7 @@ async fn a_new_device_bootstraps_from_the_latest_checkpoint() {
     use sync_protocol::messages::PullRequest;
 
     let Bootstrap {
+        _server,
         mut laptop,
         a,
         mut sync_a,
@@ -478,6 +490,7 @@ async fn a_bootstrap_refuses_a_manifest_that_omits_an_object() {
     use sync_protocol::messages::LiveResponse;
 
     let Bootstrap {
+        _server,
         a,
         sync_a,
         proxy,
@@ -732,6 +745,7 @@ async fn a_bootstrap_refuses_a_live_operation_at_another_log_position() {
     use sync_protocol::messages::LiveResponse;
 
     let Bootstrap {
+        _server,
         sync_a,
         proxy,
         mut service,
@@ -1336,6 +1350,7 @@ async fn a_bootstrap_resumes_after_the_live_pages_it_fetched() {
     use sync_protocol::messages::{LiveCursor, LiveResponse};
 
     let Bootstrap {
+        _server,
         a,
         sync_a,
         proxy,
@@ -2229,6 +2244,7 @@ async fn a_bootstrap_installs_each_bucket_and_resumes_at_the_next() {
     use sync_protocol::messages::{LiveCursor, LiveResponse};
 
     let Bootstrap {
+        _server,
         a,
         sync_a,
         proxy,

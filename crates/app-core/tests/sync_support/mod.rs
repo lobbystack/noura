@@ -24,16 +24,6 @@ use sync_store_postgres::testing::{Cluster, TestDatabase};
 use sync_store_sqlite::SqliteBackend;
 use zeroize::Zeroizing;
 
-/// Prints what the server logs as a failure, since a client sees only
-/// `internal`. It sets the process's subscriber, so a test file that sets
-/// its own leaves this out.
-pub fn print_server_failures() {
-    let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::ERROR)
-        .with_writer(std::io::stderr)
-        .try_init();
-}
-
 /// A credential store in memory.
 #[derive(Default)]
 pub struct MemorySecrets(Mutex<HashMap<String, String>>);
