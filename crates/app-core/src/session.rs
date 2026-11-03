@@ -450,6 +450,7 @@ impl Session {
         if let Some(window) = state.window(key) {
             window.listeners = None;
         }
+        state.flush_after_last();
         let waiting = state.window_gone(key);
         drop(state);
         wake(waiting);
@@ -470,6 +471,7 @@ impl Session {
         } else if let Some(window) = state.window(key) {
             window.listeners = None;
         }
+        state.flush_after_last();
         let waiting = state.window_gone(key);
         drop(state);
         wake(waiting);
@@ -937,6 +939,15 @@ impl State {
         };
         let id = workspace.id().to_owned();
         self.views.save(&id, view);
+    }
+
+    /// Once no window is open, wait until the view state is on disk. A
+    /// background thread can keep the session a moment longer, and a
+    /// launch right after must find what the last window showed.
+    fn flush_after_last(&mut self) {
+        if self.windows.iter().all(|window| window.listeners.is_none()) {
+            self.views.flush();
+        }
     }
 
     /// How to wake the window `key`, while it is open.

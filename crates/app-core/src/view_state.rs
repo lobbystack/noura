@@ -236,7 +236,7 @@ impl ViewStore {
     }
 
     /// Wait until every save sent so far is on disk.
-    fn flush(&mut self) {
+    pub(crate) fn flush(&mut self) {
         let Some(writer) = &self.writer else {
             return;
         };
