@@ -13,7 +13,7 @@ use std::{
         Arc, Mutex,
         mpsc::{Receiver, TryRecvError, channel},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use local_core::{ChangeCounts, WorkspaceEngine};
@@ -1185,11 +1185,25 @@ fn copy_of_shown(path: &str, shown: &Shown) -> AppError {
     )
 }
 
+/// How long the last window's drop waits for background threads to let
+/// go of the session.
+const LAST_WINDOW_WAIT: Duration = Duration::from_secs(1);
+
 impl Drop for App {
     fn drop(&mut self) {
         // Quitting drops every window without closing it, so each one's
         // tabs stay saved for the next launch.
         self.session.leave(self.key);
+        // A background thread that wakes the windows holds the session for
+        // a moment. Once the last window goes, wait for it, so the session
+        // and the workspace's index close here rather than on that thread.
+        if self.session.any_window_open() {
+            return;
+        }
+        let deadline = Instant::now() + LAST_WINDOW_WAIT;
+        while Arc::strong_count(&self.session) > 1 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 }
 

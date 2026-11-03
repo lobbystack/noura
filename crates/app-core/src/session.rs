@@ -456,6 +456,14 @@ impl Session {
         wake(waiting);
     }
 
+    /// Whether a window still shows this session.
+    pub(crate) fn any_window_open(&self) -> bool {
+        self.lock()
+            .windows
+            .iter()
+            .any(|window| window.listeners.is_some())
+    }
+
     /// Close the window. Its view state leaves the saved windows while
     /// another window stays open. The last window's stays, so it comes
     /// back at the next launch as when Noura quits.
