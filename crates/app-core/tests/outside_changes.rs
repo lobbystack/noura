@@ -486,10 +486,11 @@ fn another_app_undoing_a_rename_noura_just_made_reaches_the_tree() {
     // files, so its next listing matches the one before the rename.
     std::fs::rename(live.path("Picture.png"), live.path("Photo.png")).unwrap();
 
+    // The window's own listing after the rename can already show the old
+    // name, and then nothing new reaches the views from another app.
     live.wait_until("the tree shows the old name again", |app| {
         rows(app) == ["Photo.png"]
     });
-    assert!(live.seen.contains(&Change::Files(Origin::Outside)));
     // Later rescans leave the view as it is.
     std::thread::sleep(Duration::from_millis(700));
     live.app.poll();

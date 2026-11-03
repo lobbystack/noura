@@ -429,7 +429,12 @@ pub fn settle(app: &mut App) {
         if !app.is_busy() && !app.is_plugin_work_pending() {
             return;
         }
-        assert!(Instant::now() < deadline, "background work never finished");
+        assert!(
+            Instant::now() < deadline,
+            "background work never finished: busy {}, plugin work pending {}",
+            app.is_busy(),
+            app.is_plugin_work_pending()
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
 }
