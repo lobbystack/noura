@@ -43,9 +43,10 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::Path,
     sync::{
-        Arc, Condvar, Mutex, MutexGuard, PoisonError,
+        Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak,
         atomic::{AtomicU64, Ordering},
     },
+    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
@@ -358,8 +359,30 @@ pub(crate) struct Ai {
     settings_changed: std::sync::atomic::AtomicBool,
     /// When the open workspace's chats last expired.
     expired: Mutex<Option<Instant>>,
+    /// The expiry threads that may still run. Each holds its workspace's
+    /// index open, so the service waits for them when it goes.
+    expiries: Mutex<Vec<JoinHandle<()>>>,
     /// The web search key and consents.
     web: web::Web,
+}
+
+impl Drop for Ai {
+    /// Wait for the expiry threads, so the workspace's index is free once
+    /// the service goes. On an expiry thread itself, as when its wake
+    /// outlived the session, leave that thread to finish.
+    fn drop(&mut self) {
+        let current = std::thread::current().id();
+        let expiries = std::mem::take(
+            self.expiries
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        for thread in expiries {
+            if thread.thread().id() != current {
+                let _ = thread.join();
+            }
+        }
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -404,6 +427,7 @@ impl Ai {
             version: AtomicU64::new(0),
             settings_changed: std::sync::atomic::AtomicBool::new(false),
             expired: Mutex::new(None),
+            expiries: Mutex::new(Vec::new()),
             web,
         })
     }
@@ -535,19 +559,26 @@ impl Ai {
             return;
         };
         let now = self.system.now().to_string();
-        let ai = self.clone();
+        let ai = Arc::downgrade(self);
         let started = std::thread::Builder::new()
             .name("ai-expiry".to_owned())
             .spawn(move || match workspace.shared_engine().expire_chats(&now) {
                 Ok(expired) if !expired.is_empty() => {
                     tracing::info!(count = expired.len(), "expired chats went to the trash");
-                    ai.changed();
+                    if let Some(ai) = Weak::upgrade(&ai) {
+                        ai.changed();
+                    }
                 }
                 Ok(_) => {}
                 Err(error) => tracing::warn!(code = %error.code, "expired chats stayed"),
             });
-        if let Err(error) = started {
-            tracing::warn!(%error, "the chat expiry's thread didn't start");
+        match started {
+            Ok(thread) => {
+                let mut expiries = lock(&self.expiries);
+                expiries.retain(|thread| !thread.is_finished());
+                expiries.push(thread);
+            }
+            Err(error) => tracing::warn!(%error, "the chat expiry's thread didn't start"),
         }
     }
 
