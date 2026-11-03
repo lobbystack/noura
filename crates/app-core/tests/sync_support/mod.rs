@@ -1742,7 +1742,9 @@ impl Folder {
         std::fs::write(path, bytes).unwrap();
     }
 
-    /// Every file outside `.noura`, with its bytes.
+    /// Every file outside `.noura`, with its bytes. A file that goes
+    /// between the listing and the read, as a download's temporary file
+    /// does, is left out.
     pub fn files(&self) -> std::collections::BTreeMap<String, Vec<u8>> {
         files(self.dir.path())
             .into_iter()
@@ -1752,8 +1754,14 @@ impl Folder {
                     .ok()?
                     .to_str()?
                     .replace('\\', "/");
-                (!relative.starts_with(".noura/"))
-                    .then(|| (relative, std::fs::read(&path).unwrap()))
+                if relative.starts_with(".noura/") {
+                    return None;
+                }
+                match std::fs::read(&path) {
+                    Ok(bytes) => Some((relative, bytes)),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => panic!("{relative} can't be read: {error}"),
+                }
             })
             .collect()
     }
