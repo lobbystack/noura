@@ -361,8 +361,9 @@ struct Bootstrap {
 }
 
 async fn bootstrap_setup() -> Bootstrap {
-    use sync_support::{Folder, Proxy, approve, first_desktop};
+    use sync_support::{Folder, Proxy, approve, first_desktop, print_server_failures};
 
+    print_server_failures();
     let server = Server::start_with_interval(6).await;
     let mut laptop = first_desktop(&server, "ana@example.com").await;
     let mut a = Folder::new("Field notes");
