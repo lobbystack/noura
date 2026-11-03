@@ -122,9 +122,11 @@ async fn a_blob_upload_and_download_wait_out_their_budgets() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_long_wait_reaches_the_caller() {
+    // Windows end at fixed times counted from 1970, so an hour's can end
+    // between the two requests. A thousand years' first ends in 2970.
     let requests = Limit {
         allowance: 1,
-        window: Duration::from_secs(3600),
+        window: Duration::from_secs(1000 * 365 * 24 * 3600),
     };
     let (world, base, _dir) = serve(limits(requests, wide())).await;
     let mut client = SyncClient::connect(&base, &world.devices[0].bearer())
