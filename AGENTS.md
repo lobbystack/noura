@@ -85,6 +85,19 @@ Keep architectural responsibilities separated:
 
 Internal plans and product notes belong in the private Noura-Internal workspace, not this public repository. Public workspace-format, contributor, provenance, and security documents belong here.
 
+## Interface Copy
+
+Write interface text the way Apple Reminders does: sparse. Every string must earn its place by telling the user something they need and can't already see.
+
+- Label a control with one or two words: "Save key", "New task", "Done".
+- A heading names the screen, and the controls under it explain themselves. Add a description line only when a choice has a consequence the label can't carry, such as data leaving the device or something that can't be undone.
+- An empty state is a short title, plus at most one line that names the next action.
+- An error says what failed and what to do next, in one sentence.
+- One string says each thing once. Cut a line that repeats a heading, a label, a tooltip or what the screen already shows.
+- Before you add a string, check whether the screen works without it. If it does, leave it out.
+
+Accessibility labels follow the same rule: name the control, and leave the rest to its role and state.
+
 ## Security Principles
 
 Treat workspace content, plugin input, paths, frontmatter, provider output, and MCP arguments as untrusted. Resolve and validate relative paths inside the selected workspace; reject traversal, absolute paths, and symlink escapes. Paths crossing the plugin boundary need a lossless, validated representation. Do not corrupt or reinterpret non-UTF-8 paths; return a structured unsupported-path error when the current platform or API cannot represent one safely. Keep credentials in the operating system credential store and never hand secrets to plugins or write them to workspace files, SQLite, logs, or snapshots. Check every plugin call against the capabilities the user approved for that plugin. Escape FTS queries instead of accepting raw SQLite syntax. Use expected content revisions to prevent silent overwrite of external edits. Return structured public errors and keep raw OS, database, and provider details in local diagnostic logs.
