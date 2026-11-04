@@ -121,6 +121,24 @@ pub(crate) fn show_sidebar(ui: &mut Ui, app: &mut App, window: Id, page_id: &str
     true
 }
 
+/// Whether the plugin page `page_id` starts with a page heading of its
+/// own.
+pub(crate) fn has_page_heading(app: &App, page_id: &str) -> bool {
+    app.plugin_view(page_id)
+        .and_then(|view| view.ok())
+        .is_some_and(|view| {
+            view.root().children.first().is_some_and(|child| {
+                matches!(
+                    child.kind,
+                    ViewKind::Heading {
+                        level: app_core::HeadingLevel::Page,
+                        ..
+                    }
+                )
+            })
+        })
+}
+
 /// The plugin page `page_id` in the window whose ID salt is `window`.
 pub(crate) fn show(ui: &mut Ui, app: &mut App, window: Id, page_id: &str) {
     let Some(view) = app.plugin_view(page_id) else {

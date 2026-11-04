@@ -303,9 +303,13 @@ fn content(state: &mut NouraUi, ui: &mut Ui) {
             }
             TabContent::Page { .. } if is_inbox => inbox::show(ui, &mut state.app, state.window),
             TabContent::Page { title, page_id } => {
-                ui.label(RichText::new(title).size(TITLE_SIZE).strong());
-                if state.app.is_plugin_page(page_id) {
+                // A plugin page that draws its own heading gets no other.
+                let plugin = state.app.is_plugin_page(page_id);
+                if !(plugin && crate::plugin_view::has_page_heading(&state.app, page_id)) {
+                    ui.label(RichText::new(title).size(TITLE_SIZE).strong());
                     ui.add_space(8.0);
+                }
+                if plugin {
                     crate::plugin_view::show(ui, &mut state.app, state.window, page_id);
                 }
             }

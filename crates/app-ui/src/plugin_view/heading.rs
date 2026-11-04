@@ -55,23 +55,36 @@ pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
                     false,
                 );
             }
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 2.0;
-                let size = if page { PAGE_TITLE_SIZE } else { BODY_SIZE };
-                ui.label(
-                    RichText::new(text)
-                        .size(size)
-                        .strong()
-                        .color(palette.foreground),
-                );
-                if let Some(detail) = detail {
+            let size = if page { PAGE_TITLE_SIZE } else { BODY_SIZE };
+            let title = RichText::new(text)
+                .size(size)
+                .strong()
+                .color(palette.foreground);
+            match detail {
+                // A page heading's detail goes under its title.
+                Some(detail) if page => {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.label(title);
+                        ui.label(
+                            RichText::new(detail)
+                                .size(SUPPORTING_SIZE)
+                                .color(palette.muted_foreground),
+                        );
+                    });
+                }
+                Some(detail) => {
+                    ui.label(title);
                     ui.label(
                         RichText::new(detail)
                             .size(SUPPORTING_SIZE)
                             .color(palette.muted_foreground),
                     );
                 }
-            });
+                None => {
+                    ui.label(title);
+                }
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 // Right to left, so the first button goes last.
                 for (index, child) in node.children.iter().enumerate().rev() {

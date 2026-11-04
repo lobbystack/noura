@@ -13,9 +13,11 @@ use egui::{
 use crate::{
     common::muted,
     icons, plugin_view,
-    theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, TITLE_SIZE, radius},
+    theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, radius},
 };
 
+/// The size of the greeting at the top.
+const GREETING_SIZE: f32 = 22.0;
 /// The widest the Inbox's column grows.
 const COLUMN_WIDTH: f32 = 720.0;
 /// The space between the Inbox's parts.
@@ -53,7 +55,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, window: Id) {
 
 fn page(ui: &mut Ui, app: &mut App, window: Id, inbox: &Inbox) -> Option<Follow> {
     let mut follow = None;
-    heading(ui, inbox.greeting, 0, TITLE_SIZE);
+    heading(ui, inbox.greeting, 0, GREETING_SIZE);
     if !inbox.needs_attention.is_empty() {
         ui.add_space(GAP);
         follow = follow.or(needs_attention(ui, inbox));
