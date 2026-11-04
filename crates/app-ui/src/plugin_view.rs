@@ -58,6 +58,8 @@ struct Kit<'a> {
     /// Enter left a single-line text input this frame, which submits the
     /// form around it.
     entered: bool,
+    /// How many panels the node being drawn sits in.
+    depth: usize,
 }
 
 impl Kit<'_> {
@@ -200,6 +202,7 @@ fn draw(
         events: Vec::new(),
         link: None,
         entered: false,
+        depth: 0,
     };
     ui.push_id(("plugin-view", window, place), |ui| {
         node(ui, view.root(), &mut kit);
@@ -249,14 +252,60 @@ fn boxed(ui: &mut Ui, role: Role, label: Option<&str>, add: impl FnOnce(&mut Ui)
     });
 }
 
-fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
-    ui.push_id(&node.id, |ui| match &node.kind {
-        ViewKind::Panel { label } => {
-            boxed(ui, Role::Group, label.as_deref(), |ui| {
-                for child in &node.children {
+/// Whether `node` lines up beside its neighbours, as a toolbar's buttons
+/// and a segmented choice do.
+fn inline(node: &ViewNode) -> bool {
+    match &node.kind {
+        ViewKind::Button { .. } => true,
+        ViewKind::Input { value, choices, .. } => form::segmented(value, choices),
+        _ => false,
+    }
+}
+
+/// Draw a panel's children from top to bottom, with each run of inline
+/// nodes on one row.
+fn children(ui: &mut Ui, nodes: &[ViewNode], kit: &mut Kit) {
+    let mut index = 0;
+    while index < nodes.len() {
+        let run = nodes[index..]
+            .iter()
+            .take_while(|node| inline(node))
+            .count();
+        if run > 1 {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                for child in &nodes[index..index + run] {
                     self::node(ui, child, kit);
                 }
             });
+            index += run;
+        } else {
+            self::node(ui, &nodes[index], kit);
+            index += 1;
+        }
+    }
+}
+
+fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
+    ui.push_id(&node.id, |ui| match &node.kind {
+        ViewKind::Panel { label } => {
+            kit.depth += 1;
+            if kit.depth == 1 {
+                // The view's own panel is the page, so it draws no box.
+                let mut builder = UiBuilder::new().accessibility_role(Role::Group);
+                if let Some(label) = label.as_deref() {
+                    builder = builder.accessibility_label(label);
+                }
+                ui.scope_builder(builder, |ui| {
+                    ui.spacing_mut().item_spacing.y = 12.0;
+                    children(ui, &node.children, kit);
+                });
+            } else {
+                boxed(ui, Role::Group, label.as_deref(), |ui| {
+                    children(ui, &node.children, kit);
+                });
+            }
+            kit.depth -= 1;
         }
         ViewKind::Text(text) => {
             ui.label(text);
