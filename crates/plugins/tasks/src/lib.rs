@@ -342,7 +342,7 @@ fn page() -> Vec<Node> {
             .find(|task| task.id == selected)
     });
     match selected {
-        Some(task) => selected_task(&mut view, detail_pane, task, &now, &projects),
+        Some(task) => selected_task(&mut view, detail_pane, task, &mut state),
         None => {
             view.empty_state(
                 detail_pane,
@@ -387,35 +387,17 @@ fn page() -> Vec<Node> {
 /// How wide the list pane is, as the legacy Tasks page's.
 const LIST_WIDTH: u32 = 384;
 
-/// The selected task in the right pane: its title, its status, priority,
-/// due date and project, and Open, which shows it in the note editor.
-fn selected_task(
-    view: &mut View,
-    pane: u32,
-    task: &Task,
-    now: &Now,
-    projects: &[(String, String)],
-) {
+/// The selected task in the right pane, edited in place as the legacy
+/// Tasks page did: its title with Open, which shows its text in the note
+/// editor, then the same fields its properties panel has.
+fn selected_task(view: &mut View, pane: u32, task: &Task, state: &mut State) {
     let heading = view.section_heading(pane, "selected-title", &task.title, None);
     view.button(heading, OPEN_SELECTED, "Open");
-    let mut lines = vec![
-        format!("Status: {}", label(&STATUSES, &task.status)),
-        format!("Priority: {}", label(&PRIORITIES, &task.priority)),
-    ];
-    if let Some(due) = task.due {
-        lines.push(format!("Due: {}", views::due_label(due, now)));
-    }
-    if let Some((_, title)) = task
-        .project
-        .as_deref()
-        .and_then(|project| projects.iter().find(|(id, _)| id == project))
-    {
-        lines.push(format!("Project: {title}"));
-    }
-    for (index, line) in lines.iter().enumerate() {
-        view.text(pane, &format!("selected-line-{index}"), line);
-    }
+    task_fields(view, pane, &task.id, SELECTED_PREFIX, state);
 }
+
+/// What the right pane's field IDs start with, apart from the page's own.
+const SELECTED_PREFIX: &str = "selected-";
 
 /// The button that opens the selected task in the note editor.
 const OPEN_SELECTED: &str = "open-selected";
@@ -643,6 +625,15 @@ fn handle(event: Event) {
             }
         }
         Event::Checked(check) if check.node == "tasks" => complete(&check.item, check.checked),
+        // A change in the right pane's fields edits the selected task as
+        // its properties panel does.
+        Event::Changed(mut field) if field.node.starts_with(SELECTED_PREFIX) => {
+            let selected = state().selected.clone();
+            if let Some(id) = selected {
+                field.node = field.node[SELECTED_PREFIX.len()..].to_owned();
+                panel_event(&id, Event::Changed(field));
+            }
+        }
         Event::Changed(field) => filter(&field.node, field.value),
         _ => {}
     }
@@ -772,24 +763,33 @@ fn set_done(id: &str, revision: &str, done: bool) -> Option<String> {
 /// A task's properties panel: status, priority, due date and project.
 fn panel(id: &str) -> Vec<Node> {
     let mut view = View::panel("task", Some("Task"));
+    task_fields(&mut view, View::ROOT, id, "", &mut state());
+    view.into_nodes()
+}
+
+/// The fields of the task `id` under `parent`: its notice, status,
+/// priority, due date and project, each node ID starting with `prefix`.
+/// The properties panel and the Tasks page's right pane both draw them,
+/// and [`panel_event`] takes their changes. `state` is the plugin's
+/// state, which the caller holds.
+fn task_fields(view: &mut View, parent: u32, id: &str, prefix: &str, state: &mut State) {
+    let node = |name: &str| format!("{prefix}{name}");
     let object = match objects::get(id) {
         Ok(object) => object,
         Err(error) => {
             view.text(
-                View::ROOT,
-                "problem",
+                parent,
+                &node("problem"),
                 &format!("Noura couldn't read the task: {}", reason(&error)),
             );
-            return view.into_nodes();
+            return;
         }
     };
     let task = Task::of(&object);
-    let mut state = state();
     state.panels.insert(task.id.clone(), task.revision.clone());
     if let Some(notice) = state.panel_notices.get(&task.id) {
-        view.text(View::ROOT, "notice", notice);
+        view.text(parent, &node("notice"), notice);
     }
-    drop(state);
     let pairs = |choices: &[(&str, &str)]| -> Vec<(String, String)> {
         choices
             .iter()
@@ -797,17 +797,17 @@ fn panel(id: &str) -> Vec<Node> {
             .collect()
     };
     choice(
-        &mut view,
-        View::ROOT,
-        "status",
+        view,
+        parent,
+        &node("status"),
         "Status",
         pairs(&STATUSES),
         &task.status,
     );
     choice(
-        &mut view,
-        View::ROOT,
-        "priority",
+        view,
+        parent,
+        &node("priority"),
         "Priority",
         pairs(&PRIORITIES),
         &task.priority,
@@ -817,32 +817,24 @@ fn panel(id: &str) -> Vec<Node> {
         Some(task::Due::Day(day)) => Value::Date(Some(day.to_string())),
         None => Value::Date(None),
     };
-    view.input(View::ROOT, "due", "Due", due);
+    view.input(parent, &node("due"), "Due", due);
     let mut projects: Vec<(String, String)> = vec![("none".to_owned(), "No project".to_owned())];
     projects.extend(self::projects());
     let chosen = task.project.clone().unwrap_or_else(|| "none".to_owned());
     if !projects.iter().any(|(id, _)| *id == chosen) {
         projects.push((chosen.clone(), "Unknown project".to_owned()));
     }
-    choice(
-        &mut view,
-        View::ROOT,
-        "project",
-        "Project",
-        projects,
-        &chosen,
-    );
+    choice(view, parent, &node("project"), "Project", projects, &chosen);
     if let Some(problem) = &object.problem {
         view.text(
-            View::ROOT,
-            "schema-problem",
+            parent,
+            &node("schema-problem"),
             &format!(
                 "{} doesn't fit the task fields: {}",
                 problem.property, problem.code
             ),
         );
     }
-    view.into_nodes()
 }
 
 /// The task's due value as its file writes it.

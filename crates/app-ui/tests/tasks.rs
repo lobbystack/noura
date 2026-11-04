@@ -796,11 +796,11 @@ fn rename_shows_the_name_in_a_field_in_the_row_and_enter_saves_it() {
 }
 
 #[test]
-fn the_page_shows_the_list_beside_the_selected_task_or_select_a_task() {
+fn the_page_shows_the_list_beside_the_selected_task_which_edits_in_place() {
     let Some(Opened {
         mut harness,
+        folder,
         _folders,
-        ..
     }) = opened()
     else {
         return;
@@ -819,8 +819,21 @@ fn the_page_shows_the_list_beside_the_selected_task_or_select_a_task() {
         .get_by_role_and_label(Role::ListBoxOption, "Read the manual")
         .click();
     wait_until(&mut harness, |harness| {
-        harness.query_by_label("Priority: High").is_some()
+        harness
+            .query_by_role_and_label(Role::RadioGroup, "Priority")
+            .is_some()
     });
     assert!(harness.query_by_label("Select a task").is_none());
     harness.get_by_role_and_label(Role::Heading, "Read the manual");
+
+    // The pane's fields write the task file, as its properties panel does.
+    harness
+        .get_by_role_and_label(Role::RadioGroup, "Priority")
+        .get_by_role_and_label(Role::RadioButton, "Urgent")
+        .click();
+    wait_until(&mut harness, |_| {
+        std::fs::read_to_string(folder.join("tasks/Read the manual.md"))
+            .unwrap()
+            .contains("priority: urgent")
+    });
 }

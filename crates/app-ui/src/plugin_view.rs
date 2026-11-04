@@ -53,7 +53,12 @@ fn split(ui: &mut Ui, node: &ViewNode, first_width: u32, kit: &mut Kit) {
         available.min - egui::vec2(24.0, 0.0),
         egui::vec2(available.width() + 48.0, height),
     );
-    ui.allocate_rect(rect, egui::Sense::hover());
+    // Only the page's own width counts toward its size, so the panes
+    // running into its margins never widen it.
+    ui.allocate_rect(
+        egui::Rect::from_min_size(available.min, egui::vec2(available.width(), height)),
+        egui::Sense::hover(),
+    );
     let first = (first_width as f32).min(rect.width() / 2.0);
     let line = rect.left() + first;
     ui.painter()
@@ -81,8 +86,14 @@ fn split(ui: &mut Ui, node: &ViewNode, first_width: u32, kit: &mut Kit) {
                         }
                         _ => builder,
                     };
+                    // A pane is narrow, so its nodes stack, one per row.
                     ui.push_id(&child.id, |ui| {
-                        ui.scope_builder(builder, |ui| children(ui, &child.children, kit));
+                        ui.scope_builder(builder, |ui| {
+                            ui.spacing_mut().item_spacing.y = 12.0;
+                            for node in &child.children {
+                                self::node(ui, node, kit);
+                            }
+                        });
                     });
                 });
             });
