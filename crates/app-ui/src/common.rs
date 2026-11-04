@@ -1091,3 +1091,11 @@ pub(crate) fn badge(ui: &mut Ui, text: &str, look: BadgeLook) -> Response {
     }
     response
 }
+
+/// A legacy dialog: centered over the dimmed window in the legacy
+/// dialog frame.
+pub(crate) fn dialog(ctx: &egui::Context, id: Id) -> egui::Modal {
+    egui::Modal::new(id)
+        .frame(dialog_frame(ctx))
+        .backdrop_color(BACKDROP)
+}

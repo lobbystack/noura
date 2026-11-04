@@ -12,8 +12,8 @@
 
 use app_core::{App, CapabilityLine, Grant, PluginRow, UpdateCheck};
 use egui::{
-    Button, Frame, Id, Key, Margin, Modal, RichText, ScrollArea, Spinner, Stroke, TextEdit, Ui,
-    UiBuilder, accesskit::Role,
+    Button, Frame, Id, Key, Margin, RichText, ScrollArea, Spinner, Stroke, TextEdit, Ui, UiBuilder,
+    accesskit::Role,
 };
 
 /// What the install dialog says about a plugin from GitHub.
@@ -487,16 +487,18 @@ pub(crate) fn shipped_dialog(ui: &mut Ui, app: &mut App, view: &mut ShippedView)
     let opened = !view.open;
     view.open = true;
     let mut approve = false;
-    Modal::new(Id::unique("shipped-plugins")).show(ui.ctx(), |ui| {
+    crate::common::dialog(ui.ctx(), Id::unique("shipped-plugins")).show(ui.ctx(), |ui| {
         let builder = UiBuilder::new()
             .accessibility_role(Role::Dialog)
             .accessibility_label("Plugins that ship with Noura");
         ui.scope_builder(builder, |ui| {
             ui.set_width(460.0);
             ui.label(
-                RichText::new("Plugins that ship with Noura")
-                    .size(TITLE_SIZE)
-                    .strong(),
+                RichText::new("Plugins that ship with Noura").font(crate::theme::font(
+                    ui.ctx(),
+                    TITLE_SIZE,
+                    crate::theme::Weight::Medium,
+                )),
             );
             description(
                 ui,
@@ -559,53 +561,58 @@ pub(crate) fn install_dialog(ui: &mut Ui, app: &mut App, view: &mut InstallView)
     view.downloading = install.downloading;
     let mut cancel = false;
     let mut approve = false;
-    let modal = Modal::new(Id::unique("plugin-install")).show(ui.ctx(), |ui| {
-        let builder = UiBuilder::new()
-            .accessibility_role(Role::Dialog)
-            .accessibility_label("Install plugin");
-        ui.scope_builder(builder, |ui| {
-            ui.set_width(420.0);
-            let title = match &install.problem {
-                Some(_) => "Noura can't install this plugin".to_owned(),
-                None if install.downloading => "Downloading the plugin\u{2026}".to_owned(),
-                None => format!("Install {}?", install.name),
-            };
-            ui.label(RichText::new(title).size(TITLE_SIZE).strong());
-            if install.problem.is_none() && !install.downloading {
-                description(ui, &format!("Version {}", install.version));
-            }
-            ui.add(egui::Label::new(&install.source).selectable(true).wrap());
-            ui.add_space(8.0);
-            match &install.problem {
-                Some(problem) => alert(ui, problem),
-                None if install.downloading => {
-                    ui.add(Spinner::new());
-                }
-                None if install.from_github => {
-                    warning(ui, UNREVIEWED);
-                    ui.add_space(8.0);
-                    capability_list(ui, &install.capabilities);
-                }
-                None => capability_list(ui, &install.capabilities),
-            }
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                let label = if install.problem.is_some() {
-                    "Close"
-                } else {
-                    "Cancel"
+    let modal =
+        crate::common::dialog(ui.ctx(), Id::unique("plugin-install")).show(ui.ctx(), |ui| {
+            let builder = UiBuilder::new()
+                .accessibility_role(Role::Dialog)
+                .accessibility_label("Install plugin");
+            ui.scope_builder(builder, |ui| {
+                ui.set_width(420.0);
+                let title = match &install.problem {
+                    Some(_) => "Noura can't install this plugin".to_owned(),
+                    None if install.downloading => "Downloading the plugin\u{2026}".to_owned(),
+                    None => format!("Install {}?", install.name),
                 };
-                let cancel_button = ui.add(Button::new(label));
-                if opened || downloaded {
-                    cancel_button.request_focus();
-                }
-                cancel = cancel_button.clicked();
+                ui.label(RichText::new(title).font(crate::theme::font(
+                    ui.ctx(),
+                    TITLE_SIZE,
+                    crate::theme::Weight::Medium,
+                )));
                 if install.problem.is_none() && !install.downloading {
-                    approve = primary_button(ui, "Install", true).clicked();
+                    description(ui, &format!("Version {}", install.version));
                 }
+                ui.add(egui::Label::new(&install.source).selectable(true).wrap());
+                ui.add_space(8.0);
+                match &install.problem {
+                    Some(problem) => alert(ui, problem),
+                    None if install.downloading => {
+                        ui.add(Spinner::new());
+                    }
+                    None if install.from_github => {
+                        warning(ui, UNREVIEWED);
+                        ui.add_space(8.0);
+                        capability_list(ui, &install.capabilities);
+                    }
+                    None => capability_list(ui, &install.capabilities),
+                }
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let label = if install.problem.is_some() {
+                        "Close"
+                    } else {
+                        "Cancel"
+                    };
+                    let cancel_button = ui.add(Button::new(label));
+                    if opened || downloaded {
+                        cancel_button.request_focus();
+                    }
+                    cancel = cancel_button.clicked();
+                    if install.problem.is_none() && !install.downloading {
+                        approve = primary_button(ui, "Install", true).clicked();
+                    }
+                });
             });
         });
-    });
     if approve {
         app.approve_plugin_install();
     } else if cancel || modal.should_close() {

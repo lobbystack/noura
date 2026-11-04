@@ -6,7 +6,7 @@
 
 use app_core::App;
 use app_core::members::{FolderEntry, Id, Level, MembersAction, MembersScreen, Role, role_name};
-use egui::{Button, Modal, RichText, TextEdit, Ui, UiBuilder, accesskit};
+use egui::{Button, RichText, TextEdit, Ui, UiBuilder, accesskit};
 
 use crate::common::{description, primary_button};
 use crate::theme::Palette;
@@ -159,22 +159,25 @@ fn draw(
                 MembersAction::DeleteFolder(*domain),
             ),
         };
-        let modal = Modal::new(egui::Id::unique("members-confirm")).show(ui.ctx(), |ui| {
-            ui.set_width(380.0);
-            group(ui, "Confirm", |ui| {
-                ui.label(question);
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if primary_button(ui, button, idle).clicked() {
-                        actions.push(action);
-                        view.confirm = None;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        view.confirm = None;
-                    }
+        let modal = crate::common::dialog(ui.ctx(), egui::Id::unique("members-confirm")).show(
+            ui.ctx(),
+            |ui| {
+                ui.set_width(380.0);
+                group(ui, "Confirm", |ui| {
+                    ui.label(question);
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if primary_button(ui, button, idle).clicked() {
+                            actions.push(action);
+                            view.confirm = None;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            view.confirm = None;
+                        }
+                    });
                 });
-            });
-        });
+            },
+        );
         if modal.should_close() {
             view.confirm = None;
         }

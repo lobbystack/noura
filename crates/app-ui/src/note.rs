@@ -652,95 +652,111 @@ fn conflict_review(ui: &mut Ui, app: &mut App, tab: TabId) {
     let mut keep = false;
     let mut cancel = false;
     let mut confirm = false;
-    let modal = egui::Modal::new(Id::unique(("conflict-review", tab))).show(ui.ctx(), |ui| {
-        if let Some(choice) = confirming {
-            let (title, text) = match choice {
-                ConflictChoice::Mine => (
-                    "Use your version?",
-                    "The file\u{2019}s version is kept as a backup first.",
-                ),
-                ConflictChoice::File => (
-                    "Use the file\u{2019}s version?",
-                    "Your version is kept as a backup first.",
-                ),
-            };
+    let modal = crate::common::dialog(ui.ctx(), Id::unique(("conflict-review", tab))).show(
+        ui.ctx(),
+        |ui| {
+            if let Some(choice) = confirming {
+                let (title, text) = match choice {
+                    ConflictChoice::Mine => (
+                        "Use your version?",
+                        "The file\u{2019}s version is kept as a backup first.",
+                    ),
+                    ConflictChoice::File => (
+                        "Use the file\u{2019}s version?",
+                        "Your version is kept as a backup first.",
+                    ),
+                };
+                let builder = UiBuilder::new()
+                    .accessibility_role(Role::AlertDialog)
+                    .accessibility_label(title);
+                ui.scope_builder(builder, |ui| {
+                    ui.set_width(360.0);
+                    ui.label(RichText::new(title).font(crate::theme::font(
+                        ui.ctx(),
+                        TITLE_SIZE,
+                        crate::theme::Weight::Medium,
+                    )));
+                    ui.label(text);
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        let cancel_button = ui.button("Cancel");
+                        let continue_button = ui.add(
+                            Button::new(
+                                RichText::new("Continue").color(palette.primary_foreground),
+                            )
+                            .fill(palette.primary),
+                        );
+                        let ids = [cancel_button.id, continue_button.id];
+                        if !ui.memory(|memory| memory.focused().is_some_and(|id| ids.contains(&id)))
+                        {
+                            continue_button.request_focus();
+                        }
+                        cancel = cancel_button.clicked();
+                        confirm = continue_button.clicked();
+                    });
+                });
+                return;
+            }
             let builder = UiBuilder::new()
-                .accessibility_role(Role::AlertDialog)
-                .accessibility_label(title);
+                .accessibility_role(Role::Dialog)
+                .accessibility_label("Choose a version");
             ui.scope_builder(builder, |ui| {
-                ui.set_width(360.0);
-                ui.label(RichText::new(title).size(TITLE_SIZE).strong());
-                ui.label(text);
+                let width = (ui.ctx().content_rect().width() - 96.0).clamp(360.0, 960.0);
+                ui.set_width(width);
+                ui.label(RichText::new("Choose a version").font(crate::theme::font(
+                    ui.ctx(),
+                    TITLE_SIZE,
+                    crate::theme::Weight::Medium,
+                )));
+                ui.label("Both versions are kept until you choose.");
+                if let Some(problem) = &problem {
+                    ui.label(RichText::new(problem).color(palette.destructive));
+                }
+                ui.add_space(8.0);
+                let height = (ui.ctx().content_rect().height() * 0.5).max(160.0);
+                ui.columns(2, |columns| {
+                    version(
+                        &mut columns[0],
+                        ("conflict-mine", tab),
+                        "Your version",
+                        &mine,
+                        height,
+                    );
+                    version(
+                        &mut columns[1],
+                        ("conflict-file", tab),
+                        "The file\u{2019}s version",
+                        &theirs,
+                        height,
+                    );
+                });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let cancel_button = ui.button("Cancel");
-                    let continue_button = ui.add(
-                        Button::new(RichText::new("Continue").color(palette.primary_foreground))
-                            .fill(palette.primary),
+                    let keep_button = ui.button("Keep editing");
+                    let file_button = ui.button("Use the file\u{2019}s version");
+                    let mine_button = ui.add(
+                        Button::new(
+                            RichText::new("Use my version").color(palette.primary_foreground),
+                        )
+                        .fill(palette.primary),
                     );
-                    let ids = [cancel_button.id, continue_button.id];
+                    // The keyboard stays in the review, starting on Keep
+                    // editing, so nothing typed reaches the note behind it.
+                    let ids = [keep_button.id, file_button.id, mine_button.id];
                     if !ui.memory(|memory| memory.focused().is_some_and(|id| ids.contains(&id))) {
-                        continue_button.request_focus();
+                        keep_button.request_focus();
                     }
-                    cancel = cancel_button.clicked();
-                    confirm = continue_button.clicked();
+                    keep = keep_button.clicked();
+                    if file_button.clicked() {
+                        chosen = Some(ConflictChoice::File);
+                    }
+                    if mine_button.clicked() {
+                        chosen = Some(ConflictChoice::Mine);
+                    }
                 });
             });
-            return;
-        }
-        let builder = UiBuilder::new()
-            .accessibility_role(Role::Dialog)
-            .accessibility_label("Choose a version");
-        ui.scope_builder(builder, |ui| {
-            let width = (ui.ctx().content_rect().width() - 96.0).clamp(360.0, 960.0);
-            ui.set_width(width);
-            ui.label(RichText::new("Choose a version").size(TITLE_SIZE).strong());
-            ui.label("Both versions are kept until you choose.");
-            if let Some(problem) = &problem {
-                ui.label(RichText::new(problem).color(palette.destructive));
-            }
-            ui.add_space(8.0);
-            let height = (ui.ctx().content_rect().height() * 0.5).max(160.0);
-            ui.columns(2, |columns| {
-                version(
-                    &mut columns[0],
-                    ("conflict-mine", tab),
-                    "Your version",
-                    &mine,
-                    height,
-                );
-                version(
-                    &mut columns[1],
-                    ("conflict-file", tab),
-                    "The file\u{2019}s version",
-                    &theirs,
-                    height,
-                );
-            });
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let keep_button = ui.button("Keep editing");
-                let file_button = ui.button("Use the file\u{2019}s version");
-                let mine_button = ui.add(
-                    Button::new(RichText::new("Use my version").color(palette.primary_foreground))
-                        .fill(palette.primary),
-                );
-                // The keyboard stays in the review, starting on Keep
-                // editing, so nothing typed reaches the note behind it.
-                let ids = [keep_button.id, file_button.id, mine_button.id];
-                if !ui.memory(|memory| memory.focused().is_some_and(|id| ids.contains(&id))) {
-                    keep_button.request_focus();
-                }
-                keep = keep_button.clicked();
-                if file_button.clicked() {
-                    chosen = Some(ConflictChoice::File);
-                }
-                if mine_button.clicked() {
-                    chosen = Some(ConflictChoice::Mine);
-                }
-            });
-        });
-    });
+        },
+    );
     let escape = modal.should_close();
     if confirm {
         app.confirm_version(tab);
@@ -1005,13 +1021,17 @@ pub(crate) fn unsaved_prompt(ui: &mut Ui, app: &mut App) {
     let mut retry = false;
     let mut keep = false;
     let mut discard = false;
-    let modal = egui::Modal::new(Id::unique("unsaved-note")).show(ui.ctx(), |ui| {
+    let modal = crate::common::dialog(ui.ctx(), Id::unique("unsaved-note")).show(ui.ctx(), |ui| {
         let builder = UiBuilder::new()
             .accessibility_role(Role::AlertDialog)
             .accessibility_label(prompt.title.clone());
         ui.scope_builder(builder, |ui| {
             ui.set_width(360.0);
-            ui.label(RichText::new(&prompt.title).size(TITLE_SIZE).strong());
+            ui.label(RichText::new(&prompt.title).font(crate::theme::font(
+                ui.ctx(),
+                TITLE_SIZE,
+                crate::theme::Weight::Medium,
+            )));
             ui.label(&prompt.message);
             ui.add_space(8.0);
             ui.horizontal(|ui| {

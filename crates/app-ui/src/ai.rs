@@ -8,8 +8,7 @@
 
 use app_core::{AiConsentPrompt, AiProviderInput, AiProviderRow, App, DEFAULT_CONTEXT_WINDOW};
 use egui::{
-    Button, ComboBox, Frame, Id, Margin, Modal, RichText, Stroke, TextEdit, Ui, UiBuilder,
-    accesskit::Role,
+    Button, ComboBox, Frame, Id, Margin, RichText, Stroke, TextEdit, Ui, UiBuilder, accesskit::Role,
 };
 use zeroize::Zeroizing;
 
@@ -489,13 +488,17 @@ pub(crate) fn consent_prompt(ui: &mut Ui, app: &mut App, view: &mut ConsentView)
         prompt.provider_name
     );
     let mut answer = None;
-    let modal = Modal::new(Id::unique("ai-consent")).show(ui.ctx(), |ui| {
+    let modal = crate::common::dialog(ui.ctx(), Id::unique("ai-consent")).show(ui.ctx(), |ui| {
         let builder = UiBuilder::new()
             .accessibility_role(Role::AlertDialog)
             .accessibility_label(&title);
         ui.scope_builder(builder, |ui| {
             ui.set_width(440.0);
-            ui.label(RichText::new(&title).size(TITLE_SIZE).strong());
+            ui.label(RichText::new(&title).font(crate::theme::font(
+                ui.ctx(),
+                TITLE_SIZE,
+                crate::theme::Weight::Medium,
+            )));
             ui.add_space(4.0);
             ui.label(details(app, &prompt));
             description(
@@ -555,13 +558,17 @@ pub(crate) fn tool_prompt(ui: &mut Ui, app: &mut App, view: &mut ToolPromptView)
     view.asking = Some(asking);
     let title = "Allow this tool call?";
     let mut answer = None;
-    let modal = Modal::new(Id::unique("ai-tool")).show(ui.ctx(), |ui| {
+    let modal = crate::common::dialog(ui.ctx(), Id::unique("ai-tool")).show(ui.ctx(), |ui| {
         let builder = UiBuilder::new()
             .accessibility_role(Role::AlertDialog)
             .accessibility_label(title);
         ui.scope_builder(builder, |ui| {
             ui.set_width(440.0);
-            ui.label(RichText::new(title).size(TITLE_SIZE).strong());
+            ui.label(RichText::new(title).font(crate::theme::font(
+                ui.ctx(),
+                TITLE_SIZE,
+                crate::theme::Weight::Medium,
+            )));
             ui.add_space(4.0);
             ui.label(format!(
                 "The AI wants to run the tool {} from {}.",

@@ -310,7 +310,11 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
 fn page_content(state: &mut NouraUi, ui: &mut Ui, content: &TabContent, is_inbox: bool) {
     match content {
         TabContent::File { file, .. } => {
-            ui.label(RichText::new(&file.name).size(TITLE_SIZE).strong());
+            ui.label(RichText::new(&file.name).font(crate::theme::font(
+                ui.ctx(),
+                TITLE_SIZE,
+                crate::theme::Weight::Medium,
+            )));
             muted(ui, &file.relative_path);
         }
         TabContent::Page { .. } if is_inbox => inbox::show(ui, &mut state.app, state.window),
@@ -318,7 +322,11 @@ fn page_content(state: &mut NouraUi, ui: &mut Ui, content: &TabContent, is_inbox
             // A plugin page that draws its own heading gets no other.
             let plugin = state.app.is_plugin_page(page_id);
             if !(plugin && crate::plugin_view::has_page_heading(&state.app, page_id)) {
-                ui.label(RichText::new(title).size(TITLE_SIZE).strong());
+                ui.label(RichText::new(title).font(crate::theme::font(
+                    ui.ctx(),
+                    TITLE_SIZE,
+                    crate::theme::Weight::Medium,
+                )));
                 ui.add_space(8.0);
             }
             if plugin {
@@ -415,9 +423,13 @@ fn new_workspace_dialog(state: &mut NouraUi, ui: &mut Ui) {
     if state.new_workspace.is_none() {
         return;
     }
-    let modal = Modal::new(Id::unique("new-workspace")).show(ui.ctx(), |ui| {
+    let modal = crate::common::dialog(ui.ctx(), Id::unique("new-workspace")).show(ui.ctx(), |ui| {
         ui.set_width(320.0);
-        ui.label(RichText::new("New workspace").size(TITLE_SIZE).strong());
+        ui.label(RichText::new("New workspace").font(crate::theme::font(
+            ui.ctx(),
+            TITLE_SIZE,
+            crate::theme::Weight::Medium,
+        )));
         muted(ui, "Name it, then choose its folder.");
         common::new_workspace_form(state, ui);
     });

@@ -5,7 +5,7 @@
 //! plugin can show a prompt that grants web consent or read the key.
 
 use app_core::App;
-use egui::{Button, Id, Modal, RichText, Ui, UiBuilder, accesskit::Role};
+use egui::{Button, Id, RichText, Ui, UiBuilder, accesskit::Role};
 use zeroize::Zeroizing;
 
 use crate::{
@@ -124,13 +124,17 @@ pub(crate) fn consent_prompt(ui: &mut Ui, app: &mut App, view: &mut WebConsentVi
     view.asking = true;
     let title = format!("Let the AI search the web with {}?", prompt.provider_name);
     let mut answer = None;
-    let modal = Modal::new(Id::unique("web-consent")).show(ui.ctx(), |ui| {
+    let modal = crate::common::dialog(ui.ctx(), Id::unique("web-consent")).show(ui.ctx(), |ui| {
         let builder = UiBuilder::new()
             .accessibility_role(Role::AlertDialog)
             .accessibility_label(&title);
         ui.scope_builder(builder, |ui| {
             ui.set_width(440.0);
-            ui.label(RichText::new(&title).size(TITLE_SIZE).strong());
+            ui.label(RichText::new(&title).font(crate::theme::font(
+                ui.ctx(),
+                TITLE_SIZE,
+                crate::theme::Weight::Medium,
+            )));
             ui.add_space(4.0);
             ui.label(format!(
                 "When a chat in {} uses the web, the search queries the AI writes go to {}, and \

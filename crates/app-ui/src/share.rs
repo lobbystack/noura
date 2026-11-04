@@ -5,7 +5,7 @@
 
 use app_core::App;
 use app_core::shares::{DEFAULT_SHARE_DAYS, ShareAction};
-use egui::{Button, Id, Modal, RichText, ScrollArea, Slider, Ui};
+use egui::{Button, Id, RichText, ScrollArea, Slider, Ui};
 
 use crate::common::{muted, primary_button};
 use crate::theme::{Palette, TITLE_SIZE};
@@ -22,12 +22,10 @@ pub(crate) fn dialog(ui: &mut Ui, app: &mut App) {
     }
     let palette = Palette::of(ui.ctx());
     let mut actions = Vec::new();
-    let modal = Modal::new(Id::unique("share-link")).show(ui.ctx(), |ui| {
+    let modal = crate::common::dialog(ui.ctx(), Id::unique("share-link")).show(ui.ctx(), |ui| {
         ui.set_width(420.0);
         ui.label(
-            RichText::new(format!("Share \u{201c}{}\u{201d}", screen.note))
-                .size(TITLE_SIZE)
-                .strong(),
+            RichText::new(format!("Share \u{201c}{}\u{201d}", screen.note)).font(crate::theme::font(ui.ctx(), TITLE_SIZE, crate::theme::Weight::Medium)),
         );
         if let Some(why) = &screen.unavailable {
             muted(ui, why);
