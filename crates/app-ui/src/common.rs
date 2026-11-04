@@ -555,7 +555,23 @@ pub(crate) fn segmented_with_icons<T: Clone + PartialEq>(
     let font = font(ui.ctx(), BODY_SIZE, Weight::Medium);
     let mut picked = None;
     let last = options.len().saturating_sub(1);
-    ui.horizontal(|ui| {
+    // Measure first, so the row lays out left to right even inside a
+    // right-to-left layout, such as a heading's end.
+    let width: f32 = options
+        .iter()
+        .map(|(_, label, icon)| {
+            let text = ui
+                .painter()
+                .layout_no_wrap((*label).to_owned(), font.clone(), Color32::PLACEHOLDER)
+                .size()
+                .x;
+            let icon_width = if icon.is_some() { 20.0 } else { 0.0 };
+            (text + icon_width + 16.0).max(28.0) - 1.0
+        })
+        .sum::<f32>()
+        + 1.0;
+    let layout = egui::Layout::left_to_right(egui::Align::Center);
+    ui.allocate_ui_with_layout(vec2(width, 28.0), layout, |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         for (index, (value, label, icon)) in options.iter().enumerate() {
             let selected = *chosen == *value;
