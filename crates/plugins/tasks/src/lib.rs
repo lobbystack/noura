@@ -337,8 +337,8 @@ fn page() -> Vec<Node> {
             View::ROOT,
             "empty",
             "No tasks here",
-            Some("Tasks you add or that fall in this view show here."),
-            Some(Icon::Done),
+            None,
+            Some(Icon::Tasks),
         );
         return view.into_nodes();
     }

@@ -476,7 +476,11 @@ fn header(ui: &mut Ui, app: &mut App, note: &mut OpenNote, tab: TabId) {
             TextEdit::singleline(&mut draft)
                 .id(id)
                 .hint_text("Untitled")
-                .font(egui::FontId::proportional(TITLE_SIZE + 6.0))
+                .font(crate::theme::font(
+                    ui.ctx(),
+                    TITLE_SIZE,
+                    crate::theme::Weight::Semibold,
+                ))
                 .frame(egui::Frame::NONE)
                 .desired_width(f32::INFINITY),
         )
@@ -525,7 +529,16 @@ fn header(ui: &mut Ui, app: &mut App, note: &mut OpenNote, tab: TabId) {
             );
         });
     }
-    ui.add_space(4.0);
+    // The legacy document header ends in a line across the whole page.
+    ui.add_space(8.0);
+    let palette = Palette::of(ui.ctx());
+    let y = ui.cursor().top();
+    ui.painter().hline(
+        ui.max_rect().x_range().expand(24.0),
+        y,
+        Stroke::new(1.0, palette.border),
+    );
+    ui.add_space(16.0);
 }
 
 /// What keeps the note's edits off the disk: another app's edit of the
@@ -562,7 +575,9 @@ fn file_notice(ui: &mut Ui, app: &mut App, tab: TabId) {
     }
 }
 
-/// A notice in the note with one button. Returns whether it was clicked.
+/// A notice in the note with one button, as the legacy alert: a warning
+/// icon, its title and text, and the button at its end. Returns whether
+/// the button was clicked.
 fn banner(ui: &mut Ui, title: &str, text: &str, problem: Option<&str>, button: &str) -> bool {
     let palette = Palette::of(ui.ctx());
     let builder = UiBuilder::new()
@@ -571,17 +586,43 @@ fn banner(ui: &mut Ui, title: &str, text: &str, problem: Option<&str>, button: &
     let clicked = ui
         .scope_builder(builder, |ui| {
             Frame::new()
+                .fill(palette.popover)
                 .stroke(Stroke::new(1.0, palette.border))
-                .corner_radius(radius(1.0))
-                .inner_margin(Margin::same(12))
+                .corner_radius(crate::theme::pill())
+                .inner_margin(Margin::symmetric(16, 12))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(RichText::new(title).strong());
-                    ui.label(text);
-                    if let Some(problem) = problem {
-                        ui.label(RichText::new(problem).color(palette.destructive));
-                    }
-                    ui.button(button).clicked()
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(16.0, 20.0), egui::Sense::hover());
+                        let icon =
+                            egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 16.0));
+                        crate::icons::paint(
+                            ui.painter(),
+                            crate::icons::WARNING,
+                            icon,
+                            palette.foreground,
+                            false,
+                        );
+                        let mut clicked = false;
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                            clicked = crate::common::Btn::new(button)
+                                .size(crate::common::Size::Sm)
+                                .show(ui)
+                                .clicked();
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                crate::common::field_label(ui, title);
+                                crate::common::description(ui, text);
+                                if let Some(problem) = problem {
+                                    ui.label(RichText::new(problem).color(palette.destructive));
+                                }
+                            });
+                        });
+                        clicked
+                    })
+                    .inner
                 })
                 .inner
         })
