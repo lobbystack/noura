@@ -12,7 +12,7 @@ use egui::{
 };
 
 use crate::{
-    FolderPicker,
+    FolderPicker, common,
     common::muted,
     theme::{Palette, TITLE_SIZE, radius},
 };
@@ -229,11 +229,11 @@ fn general(ui: &mut Ui, app: &mut App, settings: &Settings) {
     let preferences = *app.preferences();
     let mut appearance = preferences.appearance;
     field(ui, "Appearance", Role::RadioGroup, |ui| {
-        ui.horizontal(|ui| {
-            for choice in Appearance::ALL {
-                ui.radio_value(&mut appearance, choice, choice.title());
-            }
-        });
+        let options: Vec<_> = Appearance::ALL
+            .into_iter()
+            .map(|choice| (choice, choice.title()))
+            .collect();
+        common::segmented(ui, &options, &mut appearance);
     });
     if appearance != preferences.appearance {
         app.set_appearance(appearance);
@@ -307,11 +307,11 @@ fn editor(ui: &mut Ui, app: &mut App, spelling: bool) {
     let mut text_size = current.text_size;
     field(ui, "Text size", Role::RadioGroup, |ui| {
         muted(ui, "Changes the text in notes on this computer.");
-        ui.horizontal(|ui| {
-            for choice in TextSize::ALL {
-                ui.radio_value(&mut text_size, choice, choice.title());
-            }
-        });
+        let options: Vec<_> = TextSize::ALL
+            .into_iter()
+            .map(|choice| (choice, choice.title()))
+            .collect();
+        common::segmented(ui, &options, &mut text_size);
     });
     if text_size != current.text_size {
         app.set_text_size(text_size);
@@ -323,11 +323,11 @@ fn editor(ui: &mut Ui, app: &mut App, spelling: bool) {
             ui,
             "Changes how wide the text in notes runs on this computer.",
         );
-        ui.horizontal(|ui| {
-            for choice in LineWidth::ALL {
-                ui.radio_value(&mut line_width, choice, choice.title());
-            }
-        });
+        let options: Vec<_> = LineWidth::ALL
+            .into_iter()
+            .map(|choice| (choice, choice.title()))
+            .collect();
+        common::segmented(ui, &options, &mut line_width);
     });
     if line_width != current.line_width {
         app.set_line_width(line_width);

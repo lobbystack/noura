@@ -99,6 +99,8 @@ pub struct NouraUi {
     /// The tab the document area showed last frame.
     shown_tab: Option<TabId>,
     started: bool,
+    /// The title the window shows now.
+    title: String,
     /// This window's own salt for IDs in egui's memory. Every window draws
     /// with one egui context, so they share that memory.
     window: Id,
@@ -109,6 +111,7 @@ impl NouraUi {
         Self {
             app,
             picker,
+            title: String::new(),
             quitting: false,
             new_workspace: None,
             tree: tree::TreeView::default(),
@@ -303,6 +306,17 @@ impl NouraUi {
             return;
         }
         apply_preferences(ui.ctx(), &self.app);
+        // The window takes the open workspace's name, as the title bar
+        // and the Window menu show it.
+        let title = self
+            .app
+            .workspace()
+            .map_or_else(|| "Noura".to_owned(), |workspace| workspace.name());
+        if title != self.title {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
+        }
         let now = Instant::now();
         self.app.save_due_notes(now);
         if let Some(due) = self.app.next_note_save() {

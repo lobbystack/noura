@@ -140,3 +140,75 @@ pub(crate) fn new_workspace_form(state: &mut NouraUi, ui: &mut Ui) {
         }
     }
 }
+
+/// A row of joined buttons, one per option, with the chosen one raised:
+/// a choice of a few short options. Each is a radio button to screen
+/// readers. Returns whether you picked another option.
+pub(crate) fn segmented<T: Clone + PartialEq>(
+    ui: &mut Ui,
+    options: &[(T, &str)],
+    chosen: &mut T,
+) -> bool {
+    let palette = Palette::of(ui.ctx());
+    let mut picked = None;
+    Frame::new()
+        .fill(palette.muted)
+        .corner_radius(radius(1.0))
+        .inner_margin(Margin::same(2))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (value, label) in options {
+                    let selected = *chosen == *value;
+                    let galley = egui::WidgetText::from(*label).into_galley(
+                        ui,
+                        Some(egui::TextWrapMode::Extend),
+                        f32::INFINITY,
+                        egui::TextStyle::Button,
+                    );
+                    let size = egui::vec2(galley.size().x + 20.0, 26.0);
+                    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+                    response.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            Role::RadioButton,
+                            ui.is_enabled(),
+                            selected,
+                            *label,
+                        )
+                    });
+                    if ui.is_rect_visible(rect) {
+                        let painter = ui.painter();
+                        if selected {
+                            painter.rect_filled(rect, radius(0.8), palette.background);
+                        } else if response.hovered() {
+                            painter.rect_filled(rect, radius(0.8), palette.accent);
+                        }
+                        if response.has_focus() {
+                            painter.rect_stroke(
+                                rect,
+                                radius(0.8),
+                                Stroke::new(1.0, palette.ring),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                        let color = if selected {
+                            palette.foreground
+                        } else {
+                            palette.muted_foreground
+                        };
+                        painter.galley(rect.center() - galley.size() / 2.0, galley, color);
+                    }
+                    if response.clicked() && !selected {
+                        picked = Some(value.clone());
+                    }
+                }
+            });
+        });
+    match picked {
+        Some(value) => {
+            *chosen = value;
+            true
+        }
+        None => false,
+    }
+}

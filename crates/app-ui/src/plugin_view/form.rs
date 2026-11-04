@@ -22,14 +22,14 @@ use app_core::{
     date_time_fields, date_time_value, date_value,
 };
 use egui::{
-    Frame, Id, Key, Margin, RichText, Sense, Stroke, StrokeKind, TextEdit, TextStyle, TextWrapMode,
-    Ui, UiBuilder, WidgetInfo, WidgetText, accesskit::Role, text_edit::TextEditState, vec2,
+    Id, Key, Margin, RichText, TextEdit, Ui, UiBuilder, accesskit::Role, text_edit::TextEditState,
+    vec2,
 };
 
 use super::{Kit, boxed};
 use crate::{
-    common::primary_button,
-    theme::{Palette, SUPPORTING_SIZE, radius},
+    common::{self, primary_button},
+    theme::{Palette, SUPPORTING_SIZE},
 };
 
 /// What an input remembers between frames, in egui's memory under its ID.
@@ -181,65 +181,14 @@ pub(super) fn segmented(value: &InputValue, choices: &[Choice]) -> bool {
             .all(|choice| choice.label.chars().count() <= 14)
 }
 
-/// A row of joined buttons, one per choice, with the chosen one raised.
-/// Each is a radio button to screen readers. Returns the choice picked.
+/// A row of joined buttons, one per choice. Returns the choice picked.
 fn segments(ui: &mut Ui, choices: &[Choice], chosen: Option<&str>) -> Option<String> {
-    let palette = Palette::of(ui.ctx());
-    let mut picked = None;
-    Frame::new()
-        .fill(palette.muted)
-        .corner_radius(radius(1.0))
-        .inner_margin(Margin::same(2))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                for choice in choices {
-                    let selected = chosen == Some(choice.id.as_str());
-                    let galley = WidgetText::from(choice.label.as_str()).into_galley(
-                        ui,
-                        Some(TextWrapMode::Extend),
-                        f32::INFINITY,
-                        TextStyle::Button,
-                    );
-                    let size = vec2(galley.size().x + 20.0, 26.0);
-                    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-                    response.widget_info(|| {
-                        WidgetInfo::selected(
-                            Role::RadioButton,
-                            ui.is_enabled(),
-                            selected,
-                            choice.label.as_str(),
-                        )
-                    });
-                    if ui.is_rect_visible(rect) {
-                        let painter = ui.painter();
-                        if selected {
-                            painter.rect_filled(rect, radius(0.8), palette.background);
-                        } else if response.hovered() {
-                            painter.rect_filled(rect, radius(0.8), palette.accent);
-                        }
-                        if response.has_focus() {
-                            painter.rect_stroke(
-                                rect,
-                                radius(0.8),
-                                Stroke::new(1.0, palette.ring),
-                                StrokeKind::Inside,
-                            );
-                        }
-                        let color = if selected {
-                            palette.foreground
-                        } else {
-                            palette.muted_foreground
-                        };
-                        painter.galley(rect.center() - galley.size() / 2.0, galley, color);
-                    }
-                    if response.clicked() && !selected {
-                        picked = Some(choice.id.clone());
-                    }
-                }
-            });
-        });
-    picked
+    let options: Vec<(Option<&str>, &str)> = choices
+        .iter()
+        .map(|choice| (Some(choice.id.as_str()), choice.label.as_str()))
+        .collect();
+    let mut picked = chosen;
+    common::segmented(ui, &options, &mut picked).then(|| picked.unwrap_or_default().to_owned())
 }
 
 /// A labeled input.
