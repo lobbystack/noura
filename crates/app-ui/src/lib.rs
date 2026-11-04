@@ -10,6 +10,7 @@ mod common;
 mod dates;
 mod finder;
 mod folder_sync;
+pub mod fonts;
 mod icons;
 mod ignored_files;
 mod image_decoders;
@@ -286,11 +287,11 @@ impl NouraUi {
             self.started = true;
             theme::install(ui.ctx());
             // The desktop app registers a font system with the system's
-            // fonts first; without one, the editor uses egui's own.
-            editor_egui::register_font_system(
-                ui.ctx(),
-                editor_egui::fonts::default_font_database(),
-            );
+            // fonts behind Public Sans first; without one, the editor uses
+            // Public Sans and egui's own.
+            let mut fonts = editor_egui::fonts::default_font_database();
+            editor_egui::fonts::prefer_sans(&mut fonts, fonts::editor_faces());
+            editor_egui::register_font_system(ui.ctx(), fonts);
             let ctx = ui.ctx().clone();
             // Each window is its own viewport, which repaints on its own.
             let viewport = ctx.viewport_id();

@@ -130,13 +130,10 @@ impl Weight {
     }
 }
 
-/// Give `fonts` the medium and semibold weights of the interface font
-/// `key`, when it is a variable font: each weight is a font family of its
-/// own, with the proportional fonts behind it for missing glyphs.
-pub fn add_weights(fonts: &mut egui::FontDefinitions, key: &str) {
-    let Some(data) = fonts.font_data.get(key).cloned() else {
-        return;
-    };
+/// Give `fonts` the medium and semibold weights of the variable interface
+/// fonts `keys`: each weight is a font family of its own, the fonts at that
+/// weight first and the proportional fonts behind them for missing glyphs.
+pub fn add_weights(fonts: &mut egui::FontDefinitions, keys: &[&str]) {
     let fallbacks = fonts
         .families
         .get(&FontFamily::Proportional)
@@ -146,17 +143,24 @@ pub fn add_weights(fonts: &mut egui::FontDefinitions, key: &str) {
         let Some(name) = weight.family_name() else {
             continue;
         };
-        let mut tweak = data.tweak.clone();
-        tweak.coords.push("wght", weight.value());
-        let weighted = format!("{key}-{name}");
-        fonts.font_data.insert(
-            weighted.clone(),
-            std::sync::Arc::new(egui::FontData {
-                tweak,
-                ..(*data).clone()
-            }),
-        );
-        let mut family = vec![weighted];
+        let mut family = Vec::new();
+        for key in keys {
+            let Some(data) = fonts.font_data.get(*key).cloned() else {
+                continue;
+            };
+            // A later coordinate for an axis replaces an earlier one.
+            let mut tweak = data.tweak.clone();
+            tweak.coords.push("wght", weight.value());
+            let weighted = format!("{key}-{name}");
+            fonts.font_data.insert(
+                weighted.clone(),
+                std::sync::Arc::new(egui::FontData {
+                    tweak,
+                    ..(*data).clone()
+                }),
+            );
+            family.push(weighted);
+        }
         family.extend(fallbacks.iter().cloned());
         fonts.families.insert(FontFamily::Name(name.into()), family);
     }
@@ -173,10 +177,12 @@ pub fn font(ctx: &egui::Context, size: f32, weight: Weight) -> FontId {
     FontId::new(size, family)
 }
 
-/// Install the light and dark styles and follow the system appearance
+/// Install the interface font, the light and dark styles, and follow the
+/// system appearance
 /// until the app applies this device's choice. egui's own zoom keys stay
 /// off: zoom steps through `app-core`'s levels instead.
 pub fn install(ctx: &egui::Context) {
+    ctx.set_fonts(crate::fonts::definitions());
     ctx.set_style_of(Theme::Light, style(Palette::light(), Visuals::light()));
     ctx.set_style_of(Theme::Dark, style(Palette::dark(), Visuals::dark()));
     ctx.replace_widget_theme::<TextEditStyle>(Fields);

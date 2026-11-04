@@ -32,6 +32,14 @@ pub fn bundled_licenses() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// Whether the license list at `path` holds Public Sans's license, the
+/// SIL Open Font License, which must ship with the font.
+pub fn carries_font_license(path: &Path) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|text| {
+        text.contains("Public Sans") && text.contains("SIL OPEN FONT LICENSE Version 1.1")
+    })
+}
+
 /// The folder of plugins that ship with this copy of Noura, `plugins`
 /// among its resources, one plugin per subfolder. Builds without one ship
 /// no plugins.
@@ -81,5 +89,16 @@ mod tests {
             resources_dir(Path::new("C:/Program Files/Noura/noura.exe"), "windows"),
             Some(PathBuf::from("C:/Program Files/Noura"))
         );
+    }
+
+    #[test]
+    fn the_license_template_carries_the_font_s_license_and_the_check_finds_it() {
+        let template = include_str!("../packaging/about.hbs");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(LICENSES_FILE);
+        std::fs::write(&path, template).unwrap();
+        assert!(carries_font_license(&path));
+        std::fs::write(&path, "crates only").unwrap();
+        assert!(!carries_font_license(&path));
     }
 }

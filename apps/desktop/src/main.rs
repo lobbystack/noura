@@ -125,9 +125,10 @@ fn configure_event_loop(builder: &mut winit::event_loop::EventLoopBuilder<eframe
     let _ = builder;
 }
 
-/// The file of the system's interface font: San Francisco on macOS and
-/// Segoe UI on Windows. Linux keeps egui's own, as its desktops differ.
-fn system_ui_font() -> Option<Vec<u8>> {
+/// The system's interface font, San Francisco on macOS and Segoe UI on
+/// Windows, which draws what Public Sans lacks, such as ⌘ and ⇧. Linux
+/// keeps egui's own, as its desktops differ.
+fn system_symbols_font() -> Option<Vec<u8>> {
     let path = if cfg!(target_os = "macos") {
         PathBuf::from("/System/Library/Fonts/SFNS.ttf")
     } else if cfg!(target_os = "windows") {
@@ -145,23 +146,9 @@ fn system_ui_font() -> Option<Vec<u8>> {
     }
 }
 
-/// Draw Noura's interface in `bytes`, with egui's own fonts behind it for
-/// the glyphs it lacks.
-fn install_ui_font(ctx: &egui::Context, bytes: Vec<u8>) {
-    let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert(
-        "system-ui".to_owned(),
-        Arc::new(egui::FontData::from_owned(bytes)),
-    );
-    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
-        family.insert(0, "system-ui".to_owned());
-    }
-    app_ui::theme::add_weights(&mut fonts, "system-ui");
-    ctx.set_fonts(fonts);
-}
-
-/// Give the note editor its fonts, egui's own then the system's so text in
-/// other scripts finds glyphs, and the renderer resources it paints with.
+/// Give the note editor its fonts, Public Sans, the interface font, then
+/// egui's own and the system's so text in other scripts finds glyphs, and
+/// the renderer resources it paints with.
 fn register_editor(
     creation: &eframe::CreationContext<'_>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -169,12 +156,14 @@ fn register_editor(
         .wgpu_render_state
         .as_ref()
         .ok_or("Noura needs the wgpu renderer to draw notes")?;
+    if let Some(bytes) = system_symbols_font() {
+        app_ui::fonts::set_fallback(bytes);
+    }
+    // The interface draws in Public Sans, with the system's font behind it.
+    creation.egui_ctx.set_fonts(app_ui::fonts::definitions());
     let mut fonts = editor_egui::fonts::default_font_database();
     fonts.load_system_fonts();
-    if let Some(bytes) = system_ui_font() {
-        install_ui_font(&creation.egui_ctx, bytes.clone());
-        editor_egui::fonts::prefer_sans(&mut fonts, bytes);
-    }
+    editor_egui::fonts::prefer_sans(&mut fonts, app_ui::fonts::editor_faces());
     let font_system = editor_egui::register_font_system(&creation.egui_ctx, fonts);
     editor_egui::register_render_callback_resources(
         &render_state.device,
@@ -397,8 +386,15 @@ fn set_up_updates(
 }
 
 fn smoke_report(plugins: &str, updates: &Result<(), String>) -> String {
-    let licenses = licenses::bundled_licenses()
-        .map_or_else(|| "missing".to_owned(), |path| path.display().to_string());
+    let licenses = match licenses::bundled_licenses() {
+        None => "missing".to_owned(),
+        // The Open Font License travels with Public Sans, which the
+        // binary embeds.
+        Some(path) if !licenses::carries_font_license(&path) => {
+            "missing Public Sans's license".to_owned()
+        }
+        Some(path) => path.display().to_string(),
+    };
     let updates = match updates {
         Ok(()) => "on".to_owned(),
         Err(reason) => format!("off ({reason})"),
