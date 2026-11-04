@@ -4,8 +4,11 @@
 //! them to sRGB.
 
 use egui::{
-    Color32, CornerRadius, FontFamily, FontId, Margin, Rgba, Stroke, Style, TextStyle, Theme,
-    ThemePreference, Visuals, vec2,
+    Color32, CornerRadius, FontFamily, FontId, Margin, Rgba, Shadow, Stroke, Style, TextStyle,
+    Theme, ThemePreference, Visuals,
+    theme::{DefaultStyle, StyleProvider},
+    vec2,
+    widget_style::{StyleArgs, TextEditStyle, WidgetState},
 };
 
 /// The design tokens of one appearance.
@@ -89,10 +92,86 @@ pub fn radius(scale: f32) -> CornerRadius {
     CornerRadius::same((RADIUS * scale).round() as u8)
 }
 
+/// The radius of the legacy app's buttons and fields, `rounded-2xl`: a
+/// pill at every height they come in.
+pub fn pill() -> CornerRadius {
+    radius(1.8)
+}
+
 /// The UI type scale: supporting (12 px), body (14 px) and title (16 px).
 pub const SUPPORTING_SIZE: f32 = 12.0;
 pub const BODY_SIZE: f32 = 14.0;
 pub const TITLE_SIZE: f32 = 16.0;
+
+/// The weights the legacy app sets its labels and titles in, besides
+/// regular: `font-medium` and `font-semibold`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Weight {
+    Regular,
+    Medium,
+    Semibold,
+}
+
+impl Weight {
+    fn family_name(self) -> Option<&'static str> {
+        match self {
+            Self::Regular => None,
+            Self::Medium => Some("medium"),
+            Self::Semibold => Some("semibold"),
+        }
+    }
+
+    fn value(self) -> f32 {
+        match self {
+            Self::Regular => 400.0,
+            Self::Medium => 500.0,
+            Self::Semibold => 600.0,
+        }
+    }
+}
+
+/// Give `fonts` the medium and semibold weights of the interface font
+/// `key`, when it is a variable font: each weight is a font family of its
+/// own, with the proportional fonts behind it for missing glyphs.
+pub fn add_weights(fonts: &mut egui::FontDefinitions, key: &str) {
+    let Some(data) = fonts.font_data.get(key).cloned() else {
+        return;
+    };
+    let fallbacks = fonts
+        .families
+        .get(&FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    for weight in [Weight::Medium, Weight::Semibold] {
+        let Some(name) = weight.family_name() else {
+            continue;
+        };
+        let mut tweak = data.tweak.clone();
+        tweak.coords.push("wght", weight.value());
+        let weighted = format!("{key}-{name}");
+        fonts.font_data.insert(
+            weighted.clone(),
+            std::sync::Arc::new(egui::FontData {
+                tweak,
+                ..(*data).clone()
+            }),
+        );
+        let mut family = vec![weighted];
+        family.extend(fallbacks.iter().cloned());
+        fonts.families.insert(FontFamily::Name(name.into()), family);
+    }
+}
+
+/// The interface font at `size` in `weight`, or in the regular weight
+/// when the interface font has no weights.
+pub fn font(ctx: &egui::Context, size: f32, weight: Weight) -> FontId {
+    let family = weight
+        .family_name()
+        .map(|name| FontFamily::Name(name.into()))
+        .filter(|family| ctx.fonts(|fonts| fonts.definitions().families.contains_key(family)))
+        .unwrap_or(FontFamily::Proportional);
+    FontId::new(size, family)
+}
 
 /// Install the light and dark styles and follow the system appearance
 /// until the app applies this device's choice. egui's own zoom keys stay
@@ -100,6 +179,7 @@ pub const TITLE_SIZE: f32 = 16.0;
 pub fn install(ctx: &egui::Context) {
     ctx.set_style_of(Theme::Light, style(Palette::light(), Visuals::light()));
     ctx.set_style_of(Theme::Dark, style(Palette::dark(), Visuals::dark()));
+    ctx.replace_widget_theme::<TextEditStyle>(Fields);
     ctx.options_mut(|options| {
         options.theme_preference = ThemePreference::System;
         options.zoom_with_keyboard = false;
@@ -145,6 +225,14 @@ fn style(palette: Palette, mut visuals: Visuals) -> Style {
     visuals.selection.bg_fill = palette.ring.gamma_multiply(0.5);
     visuals.selection.stroke = Stroke::new(1.0, palette.foreground);
 
+    // Buttons are the legacy outline buttons: a pill with a hairline
+    // border, filled on hover.
+    let (fill, hover) = if palette == Palette::dark() {
+        (Color32::TRANSPARENT, palette.input.gamma_multiply(0.3))
+    } else {
+        (palette.background, palette.muted)
+    };
+    visuals.text_edit_bg_color = Some(palette.input.gamma_multiply(0.5));
     let widgets = &mut visuals.widgets;
     for state in [
         &mut widgets.noninteractive,
@@ -153,30 +241,59 @@ fn style(palette: Palette, mut visuals: Visuals) -> Style {
         &mut widgets.active,
         &mut widgets.open,
     ] {
-        state.corner_radius = radius(0.8);
+        state.corner_radius = pill();
         state.fg_stroke = Stroke::new(1.0, palette.foreground);
+        state.bg_stroke = Stroke::new(1.0, palette.border);
         state.expansion = 0.0;
     }
     widgets.noninteractive.bg_fill = palette.background;
     widgets.noninteractive.weak_bg_fill = palette.background;
-    widgets.noninteractive.bg_stroke = Stroke::new(1.0, palette.border);
-    // Buttons look like the legacy outline buttons.
-    widgets.inactive.bg_fill = palette.background;
-    widgets.inactive.weak_bg_fill = palette.background;
-    widgets.inactive.bg_stroke = Stroke::new(1.0, palette.input);
-    widgets.hovered.bg_fill = palette.accent;
-    widgets.hovered.weak_bg_fill = palette.accent;
-    widgets.hovered.bg_stroke = Stroke::new(1.0, palette.input);
-    widgets.active.bg_fill = palette.accent;
-    widgets.active.weak_bg_fill = palette.accent;
+    widgets.inactive.bg_fill = palette.input.gamma_multiply(0.9);
+    widgets.inactive.weak_bg_fill = fill;
+    widgets.hovered.bg_fill = palette.input;
+    widgets.hovered.weak_bg_fill = hover;
+    widgets.active.bg_fill = palette.input;
+    widgets.active.weak_bg_fill = hover;
     widgets.active.bg_stroke = Stroke::new(1.0, palette.ring);
-    widgets.open.bg_fill = palette.accent;
-    widgets.open.weak_bg_fill = palette.accent;
-    widgets.open.bg_stroke = Stroke::new(1.0, palette.input);
-    widgets.noninteractive.fg_stroke = Stroke::new(1.0, palette.foreground);
+    widgets.open.bg_fill = palette.muted;
+    widgets.open.weak_bg_fill = palette.muted;
 
     style.visuals = visuals;
     style
+}
+
+/// The legacy app's fields: a pill filled with `--input` at half
+/// strength and no border, ringed in `--ring` while it has the keyboard.
+struct Fields;
+
+impl StyleProvider<TextEditStyle> for Fields {
+    fn style(&mut self, args: &StyleArgs<'_>) -> TextEditStyle {
+        let mut style: TextEditStyle = DefaultStyle.style(args);
+        let palette = if args.style.visuals.dark_mode {
+            Palette::dark()
+        } else {
+            Palette::light()
+        };
+        let frame = &mut style.atom_layout.frame;
+        frame.corner_radius = pill();
+        frame.inner_margin = Margin::symmetric(10, 6);
+        if frame.fill != Color32::TRANSPARENT {
+            frame.fill = palette.input.gamma_multiply(0.5);
+        }
+        if args.state == WidgetState::Active {
+            frame.stroke = Stroke::new(1.0, palette.ring);
+            frame.shadow = Shadow {
+                offset: [0, 0],
+                blur: 0,
+                spread: 3,
+                color: palette.ring.gamma_multiply(0.3),
+            };
+        } else {
+            frame.stroke = Stroke::NONE;
+        }
+        style.hint_text_color = palette.muted_foreground;
+        style
+    }
 }
 
 /// Convert an OKLCH color (lightness 0 to 1, chroma, hue in degrees) to
@@ -249,8 +366,8 @@ mod tests {
     #[test]
     fn the_radius_scale_follows_the_legacy_tokens() {
         assert_eq!(
-            [radius(0.6), radius(0.8), radius(1.0), radius(1.4)],
-            [6, 8, 10, 14].map(CornerRadius::same)
+            [radius(0.6), radius(0.8), radius(1.0), radius(1.4), pill()],
+            [6, 8, 10, 14, 18].map(CornerRadius::same)
         );
     }
 }

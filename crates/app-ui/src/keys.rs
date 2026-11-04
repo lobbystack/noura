@@ -256,6 +256,31 @@ pub(crate) fn shortcut_text(shortcut: &Shortcut, platform: Platform) -> String {
     text + key_text(shortcut.key, is_mac)
 }
 
+/// A shortcut's keys one by one, as the legacy app showed each in its
+/// own key cap: `⇧`, `⌘`, `N` on macOS, and `Ctrl`, `Shift`, `N`
+/// elsewhere.
+pub(crate) fn shortcut_keys(shortcut: &Shortcut, platform: Platform) -> Vec<String> {
+    let is_mac = platform == Platform::MacOs;
+    let mut keys = Vec::new();
+    let mut add = |on: bool, symbol: &str, name: &str| {
+        if on {
+            keys.push(if is_mac { symbol } else { name }.to_owned());
+        }
+    };
+    if is_mac {
+        add(shortcut.ctrl, "\u{2303}", "Ctrl");
+        add(shortcut.alt, "\u{2325}", "Alt");
+        add(shortcut.shift, "\u{21e7}", "Shift");
+        add(shortcut.command, "\u{2318}", "Ctrl");
+    } else {
+        add(shortcut.command || shortcut.ctrl, "", "Ctrl");
+        add(shortcut.alt, "", "Alt");
+        add(shortcut.shift, "", "Shift");
+    }
+    keys.push(key_text(shortcut.key, is_mac).to_owned());
+    keys
+}
+
 /// Several shortcuts for one thing, as in `⌃⇥ or ⇧⌘]`.
 pub(crate) fn shortcuts_text(shortcuts: &[Shortcut], platform: Platform) -> String {
     shortcuts

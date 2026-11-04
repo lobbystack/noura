@@ -156,6 +156,7 @@ fn install_ui_font(ctx: &egui::Context, bytes: Vec<u8>) {
     if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
         family.insert(0, "system-ui".to_owned());
     }
+    app_ui::theme::add_weights(&mut fonts, "system-ui");
     ctx.set_fonts(fonts);
 }
 

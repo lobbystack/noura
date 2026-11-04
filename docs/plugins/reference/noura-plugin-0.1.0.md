@@ -1642,8 +1642,9 @@ What a page or a section shows while it holds nothing.
   and `activated` naming the calendar.
 
 - <a id="node_kind.heading"></a>`heading`: [`heading`](#heading)
-  <p>A page's or a section's title. Its children are buttons, which line
-  up at its end; the first button of a page heading stands out.
+  <p>A page's or a section's title. Its children are buttons and choice
+  inputs, which line up at its end, the first child first; a page
+  heading's first child, when a button, stands out.
 
 - <a id="node_kind.empty"></a>`empty`: [`empty-state`](#empty_state)
   <p>An empty page or section. Its children are buttons under its text.
@@ -1663,9 +1664,9 @@ What a page or a section shows while it holds nothing.
   <p>Indices into the view's node list. Panels and forms hold the nodes
   they lay out, lists their items, tables their rows, boards their
   columns, columns their cards, calendars their entries, menus their
-  items, and headings and empty states their buttons; a row, a card
-  or a button may hold one menu, and an item one menu or one name
-  field.
+  items, headings their buttons and choices, and empty states their
+  buttons; a row, a card or a button may hold one menu, and an item one
+  menu or one name field.
 
 
 #### <a id="target"></a>`record target`

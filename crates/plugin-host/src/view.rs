@@ -157,7 +157,8 @@ pub enum ViewKind {
         start: String,
         end: Option<String>,
     },
-    /// A page's or a section's title, whose children are its buttons.
+    /// A page's or a section's title, whose children are its buttons and
+    /// choice inputs.
     Heading {
         text: String,
         level: HeadingLevel,
@@ -618,7 +619,24 @@ fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
             }
             Ok(())
         }
-        NodeKind::Heading(_) | NodeKind::Empty(_) => {
+        // A heading holds its buttons and choices, such as a calendar's
+        // mode; an empty state only buttons.
+        NodeKind::Heading(_) => {
+            for child in children {
+                let choice = matches!(
+                    &child.kind,
+                    NodeKind::Input(input) if matches!(input.value, Value::Choice(_))
+                );
+                if !matches!(child.kind, NodeKind::Button(_)) && !choice {
+                    return misplaced(format!(
+                        "The {kind} {id} holds {}, which isn't a button or a choice.",
+                        child.id
+                    ));
+                }
+            }
+            Ok(())
+        }
+        NodeKind::Empty(_) => {
             for child in children {
                 if !matches!(child.kind, NodeKind::Button(_)) {
                     return misplaced(format!(

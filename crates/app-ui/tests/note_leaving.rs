@@ -270,7 +270,7 @@ fn trashing_the_open_note_saves_its_typing_and_the_next_tab_shows_its_own_text()
     });
     assert!(tab_labels(&harness).is_empty());
     assert_eq!(selected(&harness), None);
-    harness.get_by_label("Open a file from the sidebar.");
+    harness.get_by_label("No file open");
     assert!(
         harness
             .query_by_role_and_label(Role::MultilineTextInput, "Note text")

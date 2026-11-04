@@ -12,8 +12,8 @@
 
 use app_core::{App, CapabilityLine, Grant, PluginRow, UpdateCheck};
 use egui::{
-    Button, Checkbox, Frame, Id, Key, Margin, Modal, RichText, ScrollArea, Spinner, Stroke,
-    TextEdit, Ui, UiBuilder, accesskit::Role,
+    Button, Frame, Id, Key, Margin, Modal, RichText, ScrollArea, Spinner, Stroke, TextEdit, Ui,
+    UiBuilder, accesskit::Role,
 };
 
 /// What the install dialog says about a plugin from GitHub.
@@ -22,8 +22,9 @@ const UNREVIEWED: &str = "Nobody reviewed this plugin. Anyone can publish a rele
 
 use crate::{
     FolderPicker,
-    common::{muted, primary_button},
-    theme::{Palette, TITLE_SIZE, radius},
+    common::{Btn, Size, Variant, description, primary_button},
+    icons,
+    theme::{BODY_SIZE, Palette, TITLE_SIZE, Weight, font, radius},
 };
 
 /// What the install dialog remembers between frames.
@@ -35,58 +36,253 @@ pub(crate) struct InstallView {
     downloading: bool,
 }
 
-/// The Plugins section's content. `address` holds what you typed in the
-/// release address field.
+/// What the legacy app said each plugin that ships with Noura does.
+fn shipped_description(id: &str) -> Option<&'static str> {
+    Some(match id {
+        "ai" => "AI chat and provider settings",
+        "tasks" => "Tasks and due dates",
+        "projects" => "Project notes and task boards",
+        "calendar" => "Tasks by date",
+        _ => return None,
+    })
+}
+
+/// The line under a plugin's name: what it does, or else its version.
+fn plugin_summary(row: &PluginRow) -> String {
+    let id = row.id.rsplit(':').next().unwrap_or(&row.id);
+    match (
+        row.shipped.then(|| shipped_description(id)).flatten(),
+        &row.version,
+    ) {
+        (Some(text), _) => text.to_owned(),
+        (None, Some(version)) => format!("Version {version}"),
+        (None, None) => "Not installed on this computer".to_owned(),
+    }
+}
+
+/// The icon a plugin shows: its page's, or a puzzle piece.
+fn plugin_icon(row: &PluginRow) -> icons::Icon {
+    match row.id.rsplit(':').next().unwrap_or(&row.id) {
+        "ai" => icons::AI,
+        "tasks" => icons::TASKS,
+        "projects" => icons::PROJECTS,
+        "calendar" => icons::CALENDAR,
+        _ => icons::PUZZLE_PIECE,
+    }
+}
+
+/// The Plugins section's content: the list of plugins with their
+/// switches, or one plugin's details, then the ways to install another.
+/// `address` holds what you typed in the release address field.
 pub(crate) fn section(
     ui: &mut Ui,
     app: &mut App,
     picker: &mut dyn FolderPicker,
     address: &mut String,
 ) {
+    let rows = app.plugins();
+    let workspace_open = app.workspace().is_some();
+    let details = app
+        .settings()
+        .and_then(|settings| settings.plugin_details.clone());
+    if let Some(row) = details.and_then(|id| rows.iter().find(|row| row.id == id)) {
+        details_page(ui, app, row, workspace_open);
+        return;
+    }
+    if !workspace_open {
+        description(ui, "Open a workspace to manage plugins.");
+        ui.add_space(16.0);
+    }
+    if rows.is_empty() {
+        description(ui, "You haven't installed any plugins.");
+    }
+    let palette = Palette::of(ui.ctx());
+    let builder = UiBuilder::new().accessibility_role(Role::List);
+    let mut open = None;
+    ui.scope_builder(builder, |ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        for (index, row) in rows.iter().enumerate() {
+            if index > 0 {
+                let y = ui.cursor().top();
+                ui.painter()
+                    .hline(ui.max_rect().x_range(), y, Stroke::new(1.0, palette.border));
+            }
+            let builder = UiBuilder::new().accessibility_role(Role::ListItem);
+            ui.push_id(("plugin-row", &row.id), |ui| {
+                ui.scope_builder(builder, |ui| {
+                    if list_row(ui, app, row, workspace_open) {
+                        open = Some(row.id.clone());
+                    }
+                });
+            });
+        }
+    });
+    if let Some(id) = open {
+        app.show_plugin_details(Some(&id));
+    }
+    ui.add_space(32.0);
+    install_groups(ui, app, picker, address);
+}
+
+/// One plugin in the list: its icon, name and what it does, which open
+/// its details, and its switch. Returns whether you opened the details.
+fn list_row(ui: &mut Ui, app: &mut App, row: &PluginRow, workspace_open: bool) -> bool {
+    let palette = Palette::of(ui.ctx());
+    let mut enabled = row.enabled;
+    let mut open = false;
+    ui.add_space(16.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 16.0;
+        let width = ui.available_width() - 32.0 - 16.0;
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(width, 44.0), egui::Sense::click());
+        let label = format!("{} settings", row.name);
+        response.widget_info(|| egui::WidgetInfo::labeled(Role::Button, true, &label));
+        if ui.is_rect_visible(rect) {
+            let painter = ui.painter();
+            let icon = egui::Rect::from_center_size(
+                egui::pos2(rect.left() + 20.0, rect.center().y),
+                egui::vec2(20.0, 20.0),
+            );
+            icons::paint(
+                painter,
+                plugin_icon(row),
+                icon,
+                palette.muted_foreground,
+                false,
+            );
+            let name = painter.layout_no_wrap(
+                row.name.clone(),
+                font(ui.ctx(), BODY_SIZE, Weight::Medium),
+                palette.foreground,
+            );
+            let summary = painter.layout_no_wrap(
+                plugin_summary(row),
+                egui::FontId::proportional(BODY_SIZE),
+                palette.muted_foreground,
+            );
+            let left = rect.left() + 40.0 + 16.0;
+            painter.galley(egui::pos2(left, rect.top()), name, palette.foreground);
+            painter.galley(
+                egui::pos2(left, rect.top() + 24.0),
+                summary,
+                palette.muted_foreground,
+            );
+            let caret = egui::Rect::from_center_size(
+                egui::pos2(rect.right() - 8.0, rect.center().y),
+                egui::vec2(16.0, 16.0),
+            );
+            icons::paint(
+                painter,
+                icons::CARET_RIGHT,
+                caret,
+                palette.muted_foreground,
+                false,
+            );
+            if response.has_focus() {
+                crate::common::focus_ring(painter, rect.expand(2.0), radius(1.0), &palette);
+            }
+        }
+        open = response.clicked();
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let label = format!("Enable {}", row.name);
+            crate::common::switch(ui, &mut enabled, &label, workspace_open);
+        });
+    });
+    ui.add_space(16.0);
+    if enabled != row.enabled {
+        app.set_plugin_enabled(&row.id, enabled);
+    }
+    open
+}
+
+/// One plugin's page: back to the list, its name with its switch, then
+/// its version, source and what it may use.
+fn details_page(ui: &mut Ui, app: &mut App, row: &PluginRow, workspace_open: bool) {
+    let palette = Palette::of(ui.ctx());
+    if Btn::new("Plugins")
+        .icon(icons::BACK)
+        .variant(Variant::Ghost)
+        .size(Size::Sm)
+        .show(ui)
+        .clicked()
+    {
+        app.show_plugin_details(None);
+        return;
+    }
+    ui.add_space(24.0);
+    let mut enabled = row.enabled;
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 16.0;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(44.0, 44.0), egui::Sense::hover());
+        let icon = egui::Rect::from_center_size(rect.center(), egui::vec2(20.0, 20.0));
+        icons::paint(
+            ui.painter(),
+            plugin_icon(row),
+            icon,
+            palette.foreground,
+            false,
+        );
+        ui.vertical(|ui| {
+            ui.set_width(ui.available_width() - 48.0);
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.label(RichText::new(&row.name).font(font(ui.ctx(), TITLE_SIZE, Weight::Semibold)));
+            description(ui, &plugin_summary(row));
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            let label = format!("Enable {}", row.name);
+            crate::common::switch(ui, &mut enabled, &label, workspace_open);
+        });
+    });
+    if enabled != row.enabled {
+        app.set_plugin_enabled(&row.id, enabled);
+    }
+    ui.add_space(24.0);
+    ui.separator();
+    ui.add_space(24.0);
+    plugin(ui, app, row);
+}
+
+/// Installing from a folder and from a release on GitHub.
+fn install_groups(ui: &mut Ui, app: &mut App, picker: &mut dyn FolderPicker, address: &mut String) {
     let mut pick = false;
     group(ui, "Install from a folder", |ui| {
-        muted(
+        description(
             ui,
             "Choose a folder with a plugin.toml and the plugin's component. Noura reloads the \
              plugin when you save a new build there.",
         );
-        pick = ui.button("Install from folder\u{2026}").clicked();
+        pick = Btn::new("Install from folder\u{2026}").show(ui).clicked();
     });
     if pick && let Some(folder) = picker.pick_folder("Choose a plugin folder") {
         app.review_plugin_folder(folder);
     }
     let mut download = false;
     group(ui, "Install from GitHub", |ui| {
-        muted(
+        description(
             ui,
             "Paste the address of a plugin's release on GitHub. Noura shows what the plugin \
              asks for before it installs anything.",
         );
-        let field = ui
-            .add(
-                TextEdit::singleline(address)
-                    .hint_text("https://github.com/owner/plugin/releases/tag/v1.0.0")
-                    .desired_width(f32::INFINITY),
-            )
-            .accessible_name("Release address");
         let typed = !address.trim().is_empty();
-        download = typed && field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
-        download |= ui
-            .add_enabled(typed, Button::new("Install from GitHub\u{2026}"))
-            .clicked();
+        ui.horizontal(|ui| {
+            let field = ui
+                .add(
+                    TextEdit::singleline(address)
+                        .hint_text("https://github.com/owner/plugin/releases/tag/v1.0.0")
+                        .desired_width(ui.available_width() - 180.0),
+                )
+                .accessible_name("Release address");
+            download =
+                typed && field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
+            download |= Btn::new("Install from GitHub\u{2026}")
+                .enabled(typed)
+                .show(ui)
+                .clicked();
+        });
     });
     if download {
         app.review_plugin_release(address);
-    }
-    let rows = app.plugins();
-    if rows.is_empty() {
-        ui.add_space(8.0);
-        muted(ui, "You haven't installed any plugins.");
-    }
-    let workspace_open = app.workspace().is_some();
-    for row in rows {
-        ui.add_space(8.0);
-        plugin(ui, app, &row, workspace_open);
     }
 }
 
@@ -101,103 +297,90 @@ enum RowAction {
     Uninstall,
 }
 
-/// One plugin's row: what it is, where it came from, what it may use with
-/// a way to revoke each, and its switch.
-fn plugin(ui: &mut Ui, app: &mut App, row: &PluginRow, workspace_open: bool) {
-    let palette = Palette::of(ui.ctx());
-    let mut enabled = row.enabled;
+/// One plugin's details: where it came from, what it may use with a way
+/// to revoke each, a waiting update, and Uninstall.
+fn plugin(ui: &mut Ui, app: &mut App, row: &PluginRow) {
     let mut action = None;
     let builder = UiBuilder::new()
         .accessibility_role(Role::Group)
         .accessibility_label(&row.name);
     ui.push_id(("plugin-row", &row.id), |ui| {
         ui.scope_builder(builder, |ui| {
-            Frame::new()
-                .stroke(Stroke::new(1.0, palette.border))
-                .corner_radius(radius(1.0))
-                .inner_margin(Margin::same(12))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.label(RichText::new(&row.name).strong());
-                    if let Some(version) = &row.version {
-                        muted(ui, &format!("Version {version}"));
-                    }
-                    if row.shipped {
-                        muted(ui, "Ships with Noura");
-                    } else if let Some(release) = &row.release {
-                        muted(ui, "From GitHub, not reviewed");
-                        ui.add(egui::Label::new(release).selectable(true).wrap());
-                    } else if let Some(folder) = &row.folder {
-                        ui.add(egui::Label::new(folder).selectable(true).wrap());
-                    }
-                    if !row.installed {
-                        muted(
-                            ui,
-                            "This workspace turns it on. Install it on this computer to run \
+            ui.vertical(|ui| {
+                ui.set_width(ui.available_width());
+                if let Some(version) = &row.version {
+                    description(ui, &format!("Version {version}"));
+                }
+                if row.shipped {
+                    description(ui, "Ships with Noura");
+                } else if let Some(release) = &row.release {
+                    description(ui, "From GitHub, not reviewed");
+                    ui.add(egui::Label::new(release).selectable(true).wrap());
+                } else if let Some(folder) = &row.folder {
+                    ui.add(egui::Label::new(folder).selectable(true).wrap());
+                }
+                if !row.installed {
+                    description(
+                        ui,
+                        "This workspace turns it on. Install it on this computer to run \
                              it here.",
-                        );
-                    }
-                    if !row.approved.is_empty() {
-                        ui.add_space(4.0);
-                        ui.label("You allowed it to:");
-                        if let Some(grant) = grant_lines(ui, &row.approved, "Revoke") {
-                            action = Some(RowAction::Revoke(grant));
-                        }
-                    }
-                    if !row.revoked.is_empty() {
-                        ui.add_space(4.0);
-                        ui.label("You revoked:");
-                        if let Some(grant) = grant_lines(ui, &row.revoked, "Allow") {
-                            action = Some(RowAction::Allow(grant));
-                        }
-                    }
-                    if let Some(problem) = &row.problem {
-                        alert(ui, problem);
-                    }
-                    if row.failed && ui.button("Start again").clicked() {
-                        action = Some(RowAction::Restart);
-                    }
-                    if row.release.is_some() {
-                        if let Some(update) = release_update(ui, row) {
-                            action = Some(update);
-                        }
-                    } else if !row.update.is_empty() {
-                        ui.add_space(4.0);
-                        ui.label("A new build is waiting. It also asks to:");
-                        capabilities(ui, &row.update);
-                        ui.horizontal(|ui| {
-                            if ui.button("Allow and run the new build").clicked() {
-                                action = Some(RowAction::ApproveUpdate);
-                            }
-                            if ui.button("Keep the installed build").clicked() {
-                                action = Some(RowAction::DeclineUpdate);
-                            }
-                        });
-                    }
+                    );
+                }
+                if !row.approved.is_empty() {
                     ui.add_space(4.0);
+                    ui.label("You allowed it to:");
+                    if let Some(grant) = grant_lines(ui, &row.approved, "Revoke") {
+                        action = Some(RowAction::Revoke(grant));
+                    }
+                }
+                if !row.revoked.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label("You revoked:");
+                    if let Some(grant) = grant_lines(ui, &row.revoked, "Allow") {
+                        action = Some(RowAction::Allow(grant));
+                    }
+                }
+                if let Some(problem) = &row.problem {
+                    alert(ui, problem);
+                }
+                if row.failed && ui.button("Start again").clicked() {
+                    action = Some(RowAction::Restart);
+                }
+                if row.release.is_some() {
+                    if let Some(update) = release_update(ui, row) {
+                        action = Some(update);
+                    }
+                } else if !row.update.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label("A new build is waiting. It also asks to:");
+                    capabilities(ui, &row.update);
                     ui.horizontal(|ui| {
-                        if workspace_open {
-                            ui.add(Checkbox::new(&mut enabled, "On in this workspace"));
+                        if ui.button("Allow and run the new build").clicked() {
+                            action = Some(RowAction::ApproveUpdate);
                         }
-                        let checking = row.update_check == Some(UpdateCheck::Checking);
-                        if row.installed
-                            && row.release.is_some()
-                            && ui
-                                .add_enabled(!checking, Button::new("Check for updates"))
-                                .clicked()
-                        {
-                            action = Some(RowAction::CheckForUpdates);
-                        }
-                        if row.installed && ui.button("Uninstall").clicked() {
-                            action = Some(RowAction::Uninstall);
+                        if ui.button("Keep the installed build").clicked() {
+                            action = Some(RowAction::DeclineUpdate);
                         }
                     });
+                }
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let checking = row.update_check == Some(UpdateCheck::Checking);
+                    if row.installed
+                        && row.release.is_some()
+                        && ui
+                            .add_enabled(!checking, Button::new("Check for updates"))
+                            .clicked()
+                    {
+                        action = Some(RowAction::CheckForUpdates);
+                    }
+                    if row.installed && ui.button("Uninstall").clicked() {
+                        action = Some(RowAction::Uninstall);
+                    }
                 });
+            });
         });
     });
-    if enabled != row.enabled {
-        app.set_plugin_enabled(&row.id, enabled);
-    }
     match action {
         Some(RowAction::Revoke(grant)) => {
             app.revoke_plugin_grant(&row.id, &grant);
@@ -234,7 +417,7 @@ fn grant_lines(ui: &mut Ui, lines: &[CapabilityLine], verb: &str) -> Option<Gran
             ui.horizontal_wrapped(|ui| {
                 ui.label("\u{2022}");
                 ui.label(&line.description);
-                muted(ui, &line.name);
+                description(ui, &line.name);
                 let response = ui.small_button(verb);
                 let label = format!("{verb}: {}", line.description);
                 ui.ctx().accesskit_node_builder(response.id, |node| {
@@ -257,11 +440,11 @@ fn release_update(ui: &mut Ui, row: &PluginRow) -> Option<RowAction> {
         Some(UpdateCheck::Checking) => {
             ui.horizontal(|ui| {
                 ui.add(Spinner::new());
-                muted(ui, "Checking for updates\u{2026}");
+                description(ui, "Checking for updates\u{2026}");
             });
         }
         Some(UpdateCheck::Newest(version)) => {
-            muted(ui, &format!("Version {version} is the newest release."));
+            description(ui, &format!("Version {version} is the newest release."));
         }
         Some(UpdateCheck::Failed(problem)) => alert(ui, problem),
         None => {}
@@ -315,7 +498,7 @@ pub(crate) fn shipped_dialog(ui: &mut Ui, app: &mut App, view: &mut ShippedView)
                     .size(TITLE_SIZE)
                     .strong(),
             );
-            muted(
+            description(
                 ui,
                 "Noura ships these plugins. They run on this computer once you allow them, \
                  each with only what it lists here. To take something back later, open \
@@ -330,7 +513,7 @@ pub(crate) fn shipped_dialog(ui: &mut Ui, app: &mut App, view: &mut ShippedView)
                     ui.push_id(("shipped", &plugin.id), |ui| {
                         ui.scope_builder(builder, |ui| {
                             ui.label(RichText::new(&plugin.name).strong());
-                            muted(ui, &format!("Version {}", plugin.version));
+                            description(ui, &format!("Version {}", plugin.version));
                             if plugin.capabilities.is_empty() {
                                 ui.label("It asks for no capabilities.");
                             } else {
@@ -389,7 +572,7 @@ pub(crate) fn install_dialog(ui: &mut Ui, app: &mut App, view: &mut InstallView)
             };
             ui.label(RichText::new(title).size(TITLE_SIZE).strong());
             if install.problem.is_none() && !install.downloading {
-                muted(ui, &format!("Version {}", install.version));
+                description(ui, &format!("Version {}", install.version));
             }
             ui.add(egui::Label::new(&install.source).selectable(true).wrap());
             ui.add_space(8.0);
@@ -439,7 +622,7 @@ fn capability_list(ui: &mut Ui, lines: &[CapabilityLine]) {
     ui.label("It asks to:");
     capabilities(ui, lines);
     ui.add_space(4.0);
-    muted(
+    description(
         ui,
         "Noura runs none of its code until you install it, and gives it only these \
          capabilities.",
@@ -464,7 +647,7 @@ fn capabilities(ui: &mut Ui, lines: &[CapabilityLine]) {
         ui.horizontal_wrapped(|ui| {
             ui.label("\u{2022}");
             ui.label(&line.description);
-            muted(ui, &line.name);
+            description(ui, &line.name);
         });
     }
 }
@@ -482,12 +665,5 @@ fn alert(ui: &mut Ui, text: &str) {
 
 /// A titled group of controls.
 fn group(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
-    ui.add_space(8.0);
-    let builder = UiBuilder::new()
-        .accessibility_role(Role::Group)
-        .accessibility_label(title);
-    ui.scope_builder(builder, |ui| {
-        ui.label(RichText::new(title).strong());
-        add(ui);
-    });
+    crate::common::settings_group(ui, title, add);
 }

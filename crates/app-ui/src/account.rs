@@ -15,7 +15,7 @@ use app_core::sync::recovery::KIT_WARNING;
 use egui::{Button, RichText, TextEdit, Ui, UiBuilder, accesskit::Role};
 
 use crate::FolderPicker;
-use crate::common::{muted, primary_button};
+use crate::common::{description, primary_button};
 use crate::theme::{Palette, TITLE_SIZE};
 
 /// What the section remembers between frames.
@@ -31,14 +31,7 @@ pub(crate) struct AccountView {
 }
 
 fn group(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
-    ui.add_space(8.0);
-    let builder = UiBuilder::new()
-        .accessibility_role(Role::Group)
-        .accessibility_label(title);
-    ui.scope_builder(builder, |ui| {
-        ui.label(RichText::new(title).strong());
-        add(ui);
-    });
+    crate::common::settings_group(ui, title, add);
 }
 
 fn alert(ui: &mut Ui, text: &str) {
@@ -96,7 +89,7 @@ pub(crate) fn section(
     if screen.busy {
         ui.horizontal(|ui| {
             ui.spinner();
-            muted(ui, "Working on it.");
+            description(ui, "Working on it.");
         });
     }
     let mut download = None;
@@ -126,13 +119,13 @@ pub(crate) fn section(
                 fingerprint_line(ui, fingerprint);
                 match shown {
                     None => {
-                        muted(ui, "Waiting for your other device.");
+                        description(ui, "Waiting for your other device.");
                     }
                     Some(shown) => {
                         ui.label("Compare this code with the one on your other device:");
                         code(ui, shown);
                         if *confirmed {
-                            muted(ui, "Waiting for your other device to finish.");
+                            description(ui, "Waiting for your other device to finish.");
                         } else if ui.button("Codes match").clicked() {
                             actions.push(AccountAction::ConfirmCode);
                         }
@@ -141,7 +134,7 @@ pub(crate) fn section(
                 if ui.button("Cancel").clicked() {
                     actions.push(AccountAction::CancelSignIn);
                 }
-                muted(ui, "Lost every device and your recovery kit?");
+                description(ui, "Lost every device and your recovery kit?");
                 if ui.button("Reset devices").clicked() {
                     actions.push(AccountAction::StartReset);
                 }
@@ -207,7 +200,7 @@ pub(crate) fn section(
                 ui.label("Someone with access to your email started a new device list, so this computer no longer syncs. Your files stay on this computer.");
                 ui.label("The account's new fingerprint:");
                 fingerprint_line(ui, fingerprint);
-                muted(
+                description(
                     ui,
                     "If that was you, sign in as a new device and approve it from your new device. If it wasn't, secure your email first.",
                 );
@@ -226,7 +219,7 @@ pub(crate) fn section(
                     ui.label("Removed by the device with this fingerprint:");
                     fingerprint_line(ui, by);
                 }
-                muted(
+                description(
                     ui,
                     "To sync here again, sign in as a new device and approve it from a device you hold.",
                 );
@@ -276,12 +269,12 @@ fn workspaces_group(
             ui.horizontal(|ui| {
                 ui.label(&row.name);
                 if view.downloading == Some(row.workspace) {
-                    muted(ui, "Noura is downloading the workspace.");
+                    description(ui, "Noura is downloading the workspace.");
                     if ui.button("Cancel").clicked() {
                         actions.push(AccountAction::CancelDownload);
                     }
                 } else if let Some(folder) = &row.folder {
-                    muted(ui, &format!("In {}", folder.display()));
+                    description(ui, &format!("In {}", folder.display()));
                 } else if ui
                     .add_enabled(
                         !screen.busy && view.downloading.is_none(),
@@ -374,7 +367,7 @@ fn invitation_group(
                 fingerprint_line(ui, fingerprint);
                 match shown {
                     None => {
-                        muted(
+                        description(
                             ui,
                             &format!("Waiting for {inviter} to approve this computer."),
                         );
@@ -385,7 +378,10 @@ fn invitation_group(
                         ));
                         code(ui, shown);
                         if *confirmed {
-                            muted(ui, &format!("Waiting for {inviter}'s computer to finish."));
+                            description(
+                                ui,
+                                &format!("Waiting for {inviter}'s computer to finish."),
+                            );
                         } else if ui.button("Codes match").clicked() {
                             actions.push(AccountAction::ConfirmInvitationCode);
                         }
@@ -397,7 +393,7 @@ fn invitation_group(
             }
             InvitationStage::Joined { downloading } => {
                 if *downloading {
-                    muted(ui, "Noura is downloading the workspace.");
+                    description(ui, "Noura is downloading the workspace.");
                     if ui.button("Cancel").clicked() {
                         actions.push(AccountAction::CancelDownload);
                     }
@@ -434,7 +430,7 @@ fn signed_out(
         if response.changed() {
             actions.push(AccountAction::SetServer(server.clone()));
         }
-        muted(
+        description(
             ui,
             "Noura syncs through this server. Use https:// unless the server runs on this computer.",
         );
@@ -444,7 +440,7 @@ fn signed_out(
     });
     if screen.can_retry {
         group(ui, "Connect again", |ui| {
-            muted(
+            description(
                 ui,
                 if screen.reconnecting {
                     "This computer holds a device of your account. Noura keeps trying the server."
@@ -461,7 +457,7 @@ fn signed_out(
         });
     }
     group(ui, "Sign in", |ui| {
-        muted(
+        description(
             ui,
             "Your browser opens the server's sign-in page. Noura never sees your passkey.",
         );
@@ -477,7 +473,7 @@ fn signed_out(
         }
     });
     group(ui, "Recover with a kit", |ui| {
-        muted(
+        description(
             ui,
             "Lost every device? Open the recovery kit you exported and type its secret.",
         );
@@ -506,7 +502,7 @@ fn recovering(ui: &mut Ui, review: &RecoveryView, actions: &mut Vec<AccountActio
     group(ui, "Review your account", |ui| {
         ui.label("These changes happened after you exported the kit. Recover only if you recognize them.");
         if review.changes.is_empty() {
-            muted(ui, "Nothing changed since the kit.");
+            description(ui, "Nothing changed since the kit.");
         }
         for change in &review.changes {
             ui.label(change);
@@ -561,19 +557,19 @@ fn reset_groups(ui: &mut Ui, view: &SignedInView, actions: &mut Vec<AccountActio
                 ui.label(format!("Workspace {}", wait.workspace));
                 match &wait.code {
                     None => {
-                        muted(ui, "Waiting for an owner or admin.");
+                        description(ui, "Waiting for an owner or admin.");
                     }
                     Some(shown) => {
                         code(ui, shown);
                         if wait.confirmed {
-                            muted(ui, "Waiting for them to finish.");
+                            description(ui, "Waiting for them to finish.");
                         } else if ui.button("Codes match").clicked() {
                             actions.push(AccountAction::ConfirmResetWait(index));
                         }
                     }
                 }
                 if wait.set_up_again {
-                    muted(
+                    description(
                         ui,
                         "No other owner or admin? Close this workspace and start a new one from this folder. Members keep their files, and you invite them again.",
                     );
@@ -590,7 +586,7 @@ fn reset_groups(ui: &mut Ui, view: &SignedInView, actions: &mut Vec<AccountActio
             fingerprint_line(ui, &approval.fingerprint);
             match &approval.code {
                 None => {
-                    muted(ui, "Waiting for their device.");
+                    description(ui, "Waiting for their device.");
                 }
                 Some(shown) => {
                     ui.label("Compare this code with theirs, over a channel you both trust:");
@@ -651,7 +647,7 @@ fn signed_in_section(
                 fingerprint_line(ui, &approval.fingerprint);
                 match &approval.code {
                     None => {
-                        muted(ui, "Waiting for the new device to show its code.");
+                        description(ui, "Waiting for the new device to show its code.");
                     }
                     Some(shown) => {
                         ui.label("Compare this code with the one on the new device:");
@@ -694,7 +690,7 @@ fn signed_in_section(
                 };
                 ui.label(RichText::new(title).strong());
                 fingerprint_line(ui, &device.fingerprint);
-                muted(ui, &device.how);
+                description(ui, &device.how);
                 if !device.this_device && !device.removed {
                     let label = if device.recovery { "Revoke" } else { "Remove" };
                     if ui.button(label).clicked() {
@@ -788,7 +784,7 @@ fn signed_in_section(
         None => {
             ui.label(KIT_WARNING);
             if view.offer_kit {
-                muted(
+                description(
                     ui,
                     "Your devices changed. Export a new kit so it covers them.",
                 );

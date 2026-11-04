@@ -8,7 +8,7 @@ use app_core::App;
 use app_core::members::{FolderEntry, Id, Level, MembersAction, MembersScreen, Role, role_name};
 use egui::{Button, Modal, RichText, TextEdit, Ui, UiBuilder, accesskit};
 
-use crate::common::{muted, primary_button};
+use crate::common::{description, primary_button};
 use crate::theme::Palette;
 
 /// What the section remembers between frames.
@@ -92,7 +92,7 @@ fn draw(
     actions: &mut Vec<MembersAction>,
 ) {
     if let Some(why) = &screen.unavailable {
-        muted(ui, why);
+        description(ui, why);
         return;
     }
     if let Some(problem) = &screen.problem {
@@ -104,7 +104,7 @@ fn draw(
     if screen.busy {
         ui.horizontal(|ui| {
             ui.spinner();
-            muted(ui, "Working on it.");
+            description(ui, "Working on it.");
         });
     }
     let idle = !screen.busy;
@@ -216,7 +216,7 @@ fn draw(
     if !screen.invite_roles.is_empty() {
         ui.add_space(8.0);
         ui.label(RichText::new("Invitations").strong());
-        muted(
+        description(
             ui,
             "An invitation link works for 7 days. Send it over a channel you trust. Only the computer that made it can approve the new member.",
         );
@@ -226,7 +226,8 @@ fn draw(
                 TextEdit::singleline(&mut view.your_name)
                     .desired_width(200.0)
                     .hint_text("Your name"),
-            );
+            )
+            .accessible_name("Your name, as they see it");
         });
         ui.horizontal_wrapped(|ui| {
             for role in &screen.invite_roles {
@@ -242,7 +243,7 @@ fn draw(
             }
         });
         if screen.invitations.is_empty() {
-            muted(ui, "No open invitations.");
+            description(ui, "No open invitations.");
         }
         for invitation in &screen.invitations {
             group(ui, &invitation.label, |ui| {
@@ -258,7 +259,7 @@ fn draw(
                     }
                 });
                 if !invitation.sent_here {
-                    muted(
+                    description(
                         ui,
                         "Another computer sent this one. Only it can approve the new member.",
                     );
@@ -280,7 +281,7 @@ fn draw(
         }
     } else if screen.you == Some(Role::Owner) {
         ui.add_space(8.0);
-        muted(
+        description(
             ui,
             "To leave this workspace, make another member the owner first.",
         );
@@ -296,7 +297,7 @@ fn approvals(ui: &mut Ui, screen: &MembersScreen, actions: &mut Vec<MembersActio
     ui.add_space(8.0);
     ui.label(RichText::new("New members").strong());
     let Some(approval) = &screen.approval else {
-        muted(
+        description(
             ui,
             "Approve a device only after you check with the person you invited.",
         );
@@ -322,7 +323,7 @@ fn approvals(ui: &mut Ui, screen: &MembersScreen, actions: &mut Vec<MembersActio
         }
         match &approval.code {
             None => {
-                muted(ui, "Waiting for their computer to show its code.");
+                description(ui, "Waiting for their computer to show its code.");
             }
             Some(code) => {
                 ui.label("Compare this code with theirs on a call or another channel you trust:");

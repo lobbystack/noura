@@ -31,6 +31,29 @@ use crate::{
     theme::{Palette, radius},
 };
 
+/// A title over a group in the sidebar, as the legacy sidebar's section
+/// labels: 12 px medium in the faded foreground, after a caret.
+fn sidebar_label(ui: &mut Ui, text: &str) {
+    let palette = Palette::of(ui.ctx());
+    ui.horizontal(|ui| {
+        ui.set_height(32.0);
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.add_space(8.0);
+        let color = palette.foreground.gamma_multiply(0.7);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+        crate::icons::paint(ui.painter(), crate::icons::CARET_DOWN, rect, color, false);
+        ui.label(
+            RichText::new(text)
+                .font(crate::theme::font(
+                    ui.ctx(),
+                    crate::theme::SUPPORTING_SIZE,
+                    crate::theme::Weight::Medium,
+                ))
+                .color(color),
+        );
+    });
+}
+
 /// Where a plugin's view shows.
 #[derive(Debug, Clone, Copy, Hash)]
 enum Place<'a> {
@@ -64,6 +87,9 @@ struct Kit<'a> {
     /// The input being drawn is a one-line form's field, whose label is
     /// its placeholder.
     inline: bool,
+    /// The page's heading has a detail line, such as the month a
+    /// calendar shows, so a calendar grid adds no title of its own.
+    page_detail: bool,
 }
 
 impl Kit<'_> {
@@ -226,6 +252,7 @@ fn draw(
         entered: false,
         depth: 0,
         inline: false,
+        page_detail: false,
     };
     ui.push_id(("plugin-view", window, place), |ui| {
         node(ui, view.root(), &mut kit);
@@ -303,6 +330,15 @@ fn children(ui: &mut Ui, nodes: &[ViewNode], kit: &mut Kit) {
             });
             index += run;
         } else {
+            // A sidebar list that no text titles shows its own label as
+            // its title, as the legacy sidebar's Views did.
+            let titled = index > 0 && matches!(nodes[index - 1].kind, ViewKind::Text(_));
+            if let ViewKind::List { label, .. } = &nodes[index].kind
+                && matches!(kit.place, Place::Sidebar(_))
+                && !titled
+            {
+                sidebar_label(ui, label);
+            }
             self::node(ui, &nodes[index], kit);
             index += 1;
         }
@@ -329,6 +365,10 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
                 });
             }
             kit.depth -= 1;
+        }
+        ViewKind::Text(text) if matches!(kit.place, Place::Sidebar(_)) => {
+            // Text in the sidebar titles the list under it.
+            sidebar_label(ui, text);
         }
         ViewKind::Text(text) => {
             ui.label(text);

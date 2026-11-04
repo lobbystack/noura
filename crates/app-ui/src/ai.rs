@@ -14,7 +14,7 @@ use egui::{
 use zeroize::Zeroizing;
 
 use crate::{
-    common::{muted, primary_button},
+    common::{description, primary_button},
     theme::{Palette, TITLE_SIZE, radius},
 };
 
@@ -114,7 +114,7 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
         alert(ui, &problem);
         return;
     }
-    muted(
+    description(
         ui,
         "Providers and their settings stay on this computer, and their keys stay in its \
          credential store. A chat sends this workspace's content to a provider only once you \
@@ -129,7 +129,7 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
         alert(ui, problem);
     }
     if rows.is_empty() {
-        muted(ui, "No providers yet.");
+        description(ui, "No providers yet.");
     }
     for row in &rows {
         let builder = UiBuilder::new()
@@ -139,11 +139,11 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
             ui.scope_builder(builder, |ui| {
                 boxed(ui, |ui| {
                     ui.label(RichText::new(&row.name).strong());
-                    muted(ui, &format!("{}, {}", kind_name(app, &row.kind), row.model));
+                    description(ui, &format!("{}, {}", kind_name(app, &row.kind), row.model));
                     if let Some(endpoint) = &row.endpoint {
-                        muted(ui, endpoint);
+                        description(ui, endpoint);
                     }
-                    muted(
+                    description(
                         ui,
                         match (row.enabled, row.has_key) {
                             (true, true) => "On, with its key saved",
@@ -153,7 +153,7 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
                         },
                     );
                     if let Some(workspace) = &workspace {
-                        muted(
+                        description(
                             ui,
                             &if row.consented {
                                 format!("You allowed it to receive {workspace}'s content.")
@@ -239,7 +239,7 @@ fn provider_form(ui: &mut Ui, app: &mut App, form: &mut ProviderForm) -> bool {
                 .accessible_name("Kind");
             text_field(ui, "Model", &mut form.model, false);
             text_field(ui, "Endpoint (optional)", &mut form.endpoint, false);
-            muted(
+            description(
                 ui,
                 "Use an HTTPS address. Plain HTTP works only for a server on this computer, \
                  such as Ollama.",
@@ -256,7 +256,7 @@ fn provider_form(ui: &mut Ui, app: &mut App, form: &mut ProviderForm) -> bool {
                 &mut form.context_window,
                 false,
             );
-            muted(
+            description(
                 ui,
                 &format!(
                     "Noura summarizes a chat's earlier messages once they no longer fit. \
@@ -385,7 +385,7 @@ pub(crate) fn consent_prompt(ui: &mut Ui, app: &mut App, view: &mut ConsentView)
             ui.label(RichText::new(&title).size(TITLE_SIZE).strong());
             ui.add_space(4.0);
             ui.label(details(app, &prompt));
-            muted(
+            description(
                 ui,
                 "Noura asks again if you change the provider's kind, endpoint or model. To take \
                  this back, open Settings, then AI providers.",
@@ -455,7 +455,7 @@ pub(crate) fn tool_prompt(ui: &mut Ui, app: &mut App, view: &mut ToolPromptView)
                 prompt.tool, prompt.plugin_name
             ));
             if !prompt.description.trim().is_empty() {
-                muted(ui, &prompt.description);
+                description(ui, &prompt.description);
             }
             ui.add_space(8.0);
             ui.label("Input");
@@ -468,7 +468,7 @@ pub(crate) fn tool_prompt(ui: &mut Ui, app: &mut App, view: &mut ToolPromptView)
                         .accessible_name("Input");
                 });
             ui.add_space(8.0);
-            muted(
+            description(
                 ui,
                 "Your answer covers this call only. If you deny it, the tool doesn't run.",
             );

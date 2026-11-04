@@ -21,7 +21,8 @@ pub(crate) struct Icon {
 
 macro_rules! icons {
     ($($name:ident => $regular:ident, $fill:ident;)*) => {
-        $(pub(crate) const $name: Icon = Icon {
+        $(#[allow(dead_code)]
+        pub(crate) const $name: Icon = Icon {
             name: stringify!($name),
             regular: phosphor::$regular,
             fill: phosphor::$fill,
@@ -48,6 +49,40 @@ icons! {
     NEW_FOLDER => FOLDER_SIMPLE_PLUS_REGULAR, FOLDER_SIMPLE_PLUS_FILL;
     COLLAPSE => ARROWS_IN_LINE_VERTICAL_REGULAR, ARROWS_IN_LINE_VERTICAL_FILL;
     DONE => CHECK_CIRCLE_REGULAR, CHECK_CIRCLE_FILL;
+    PLUS => PLUS_REGULAR, PLUS_FILL;
+    CLOSE => X_REGULAR, X_FILL;
+    CARET_LEFT => CARET_LEFT_REGULAR, CARET_LEFT_FILL;
+    CALENDAR_BLANK => CALENDAR_BLANK_REGULAR, CALENDAR_BLANK_FILL;
+    TEXT_AA => TEXT_AA_REGULAR, TEXT_AA_FILL;
+    KEYBOARD => KEYBOARD_REGULAR, KEYBOARD_FILL;
+    USER_CIRCLE => USER_CIRCLE_REGULAR, USER_CIRCLE_FILL;
+    FOLDER_SIMPLE => FOLDER_SIMPLE_REGULAR, FOLDER_SIMPLE_FILL;
+    PUZZLE_PIECE => PUZZLE_PIECE_REGULAR, PUZZLE_PIECE_FILL;
+    PLUGS_CONNECTED => PLUGS_CONNECTED_REGULAR, PLUGS_CONNECTED_FILL;
+    ARROWS_CLOCKWISE => ARROWS_CLOCKWISE_REGULAR, ARROWS_CLOCKWISE_FILL;
+    USERS => USERS_REGULAR, USERS_FILL;
+    INFO => INFO_REGULAR, INFO_FILL;
+    SUN => SUN_REGULAR, SUN_FILL;
+    MOON => MOON_REGULAR, MOON_FILL;
+    DESKTOP => DESKTOP_REGULAR, DESKTOP_FILL;
+    ARROW_UP_RIGHT => ARROW_UP_RIGHT_REGULAR, ARROW_UP_RIGHT_FILL;
+    COPY => COPY_REGULAR, COPY_FILL;
+    CHECK => CHECK_REGULAR, CHECK_FILL;
+    WARNING => WARNING_REGULAR, WARNING_FILL;
+    CIRCLE => CIRCLE_REGULAR, CIRCLE_FILL;
+    KANBAN => KANBAN_REGULAR, KANBAN_FILL;
+    FILE => FILE_REGULAR, FILE_FILL;
+    SEND => PAPER_PLANE_TILT_REGULAR, PAPER_PLANE_TILT_FILL;
+    CHATS => CHATS_CIRCLE_REGULAR, CHATS_CIRCLE_FILL;
+    MORE => DOTS_THREE_REGULAR, DOTS_THREE_FILL;
+    TRASH => TRASH_REGULAR, TRASH_FILL;
+    FOLDER_PLUS => FOLDER_PLUS_REGULAR, FOLDER_PLUS_FILL;
+    REVEAL => ARROW_SQUARE_OUT_REGULAR, ARROW_SQUARE_OUT_FILL;
+    UPLOAD => UPLOAD_SIMPLE_REGULAR, UPLOAD_SIMPLE_FILL;
+    STOP => STOP_REGULAR, STOP_FILL;
+    RETRY => ARROW_COUNTER_CLOCKWISE_REGULAR, ARROW_COUNTER_CLOCKWISE_FILL;
+    SPINNER => SPINNER_REGULAR, SPINNER_FILL;
+    BACK => ARROW_LEFT_REGULAR, ARROW_LEFT_FILL;
 }
 
 /// Draw `icon` in `rect`, in `color`, filled when `filled`.
@@ -136,6 +171,41 @@ mod tests {
             NEW_NOTE,
             NEW_FOLDER,
             COLLAPSE,
+            DONE,
+            PLUS,
+            CLOSE,
+            CARET_LEFT,
+            CALENDAR_BLANK,
+            TEXT_AA,
+            KEYBOARD,
+            USER_CIRCLE,
+            FOLDER_SIMPLE,
+            PUZZLE_PIECE,
+            PLUGS_CONNECTED,
+            ARROWS_CLOCKWISE,
+            USERS,
+            INFO,
+            SUN,
+            MOON,
+            DESKTOP,
+            ARROW_UP_RIGHT,
+            COPY,
+            CHECK,
+            WARNING,
+            CIRCLE,
+            KANBAN,
+            FILE,
+            SEND,
+            CHATS,
+            MORE,
+            TRASH,
+            FOLDER_PLUS,
+            REVEAL,
+            UPLOAD,
+            STOP,
+            RETRY,
+            SPINNER,
+            BACK,
         ] {
             for paths in [icon.regular, icon.fill] {
                 let image = render(paths, 24).expect(icon.name);

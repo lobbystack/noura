@@ -9,7 +9,7 @@ A view is a flat list of nodes, because WIT has no recursive types. The first no
 A node's `kind` sets what Noura draws:
 
 - Layout and text: `panel`, `text` and `markdown`.
-- Headings and empty states: `heading`, a page's or a section's title with an optional `icon` and its buttons at its end, and `empty`, what an empty page or section shows, with its buttons under its text. A page heading's first button stands out.
+- Headings and empty states: `heading`, a page's or a section's title with an optional `icon` and its buttons and choice inputs at its end, and `empty`, what an empty page or section shows, with its buttons under its text. A page heading's first child stands out when it is a button.
 - Controls: `button`, `input` (a single or multi-line text, a checkbox, a choice, a date or a date and time), `form` and `name-field`.
 - Collections: `list` with `item` children, `virtual-list`, `table` with `row` children, `board` with `board-column` and `card` children, and `calendar` with `entry` children.
 - Menus: `menu`, `menu-item` and `separator`, the only child of an item, a row, a card or a button.

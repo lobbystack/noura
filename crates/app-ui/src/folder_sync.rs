@@ -8,18 +8,11 @@ use app_core::App;
 use app_core::folder_sync::{FolderSyncAction, FolderSyncPhase, HeldChoice};
 use egui::{RichText, Ui, UiBuilder, accesskit::Role};
 
-use crate::common::{muted, primary_button};
+use crate::common::{description, primary_button};
 use crate::theme::Palette;
 
 fn group(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
-    ui.add_space(8.0);
-    let builder = UiBuilder::new()
-        .accessibility_role(Role::Group)
-        .accessibility_label(title);
-    ui.scope_builder(builder, |ui| {
-        ui.label(RichText::new(title).strong());
-        add(ui);
-    });
+    crate::common::settings_group(ui, title, add);
 }
 
 fn alert(ui: &mut Ui, text: &str) {
@@ -100,7 +93,7 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
     if screen.busy {
         ui.horizontal(|ui| {
             ui.spinner();
-            muted(ui, "Working on it.");
+            description(ui, "Working on it.");
         });
     }
     if let Some(notice) = &screen.restore {
@@ -203,7 +196,7 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
                 }
                 match &screen.last_success {
                     Some(when) => ui.label(format!("Last synced {when}.")),
-                    None => muted(ui, "This computer hasn't finished a sync yet."),
+                    None => description(ui, "This computer hasn't finished a sync yet."),
                 };
                 ui.horizontal(|ui| {
                     if paused {
@@ -225,7 +218,7 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
             };
             group(ui, &title, |ui| {
                 if screen.conflicts.is_empty() {
-                    muted(ui, "No file has versions from two computers.");
+                    description(ui, "No file has versions from two computers.");
                 }
                 for conflict in &screen.conflicts {
                     ui.label(format!(

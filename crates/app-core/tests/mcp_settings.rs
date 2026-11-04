@@ -84,9 +84,11 @@ fn the_section_shows_a_configuration_with_the_binary_and_the_workspace_folder_an
         [
             "Name and location",
             "Plugins",
-            "Sync",
-            "Members",
-            "AI tools"
+            "AI",
+            "External tools",
+            "Sync and devices",
+            "People",
+            "Ignored files"
         ]
     );
     assert_eq!(app.settings().unwrap().section, settings_section::AI_TOOLS);

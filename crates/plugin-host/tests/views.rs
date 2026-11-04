@@ -1140,7 +1140,7 @@ fn headings_and_empty_states_hold_their_buttons() {
 }
 
 #[test]
-fn a_heading_with_more_than_buttons_or_without_text_is_refused() {
+fn a_heading_with_more_than_buttons_and_choices_or_without_text_is_refused() {
     let holds_text = View::from_nodes(vec![
         node("root", NodeKind::Panel(None), vec![1]),
         node("title", heading("Tasks"), vec![2]),
@@ -1149,7 +1149,7 @@ fn a_heading_with_more_than_buttons_or_without_text_is_refused() {
     .expect_err("text in a heading");
     assert_eq!(
         holds_text.to_string(),
-        "The heading title holds line, which isn't a button."
+        "The heading title holds line, which isn't a button or a choice."
     );
 
     let blank = View::from_nodes(vec![

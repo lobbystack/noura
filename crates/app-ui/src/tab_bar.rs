@@ -13,7 +13,7 @@ use egui::{
 use crate::theme::{BODY_SIZE, Palette, radius};
 
 /// The height of the tab bar.
-pub(crate) const BAR_HEIGHT: f32 = 40.0;
+pub(crate) const BAR_HEIGHT: f32 = 36.0;
 const TAB_HEIGHT: f32 = 28.0;
 /// The widest a tab's name draws before it's cut short.
 const NAME_WIDTH: f32 = 160.0;
@@ -222,7 +222,7 @@ fn draw_tab(ui: &mut Ui, tab: &Shown, active: bool, tab_stop: bool, palette: &Pa
         NAME_WIDTH,
         FontId::proportional(BODY_SIZE),
     );
-    let size = vec2(10.0 + galley.size().x + 6.0 + CLOSE_SIZE + 6.0, TAB_HEIGHT);
+    let size = vec2(10.0 + galley.size().x + 4.0 + CLOSE_SIZE + 4.0, TAB_HEIGHT);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let sense = if tab_stop {
         Sense::click()
@@ -244,7 +244,7 @@ fn draw_tab(ui: &mut Ui, tab: &Shown, active: bool, tab_stop: bool, palette: &Pa
     let response = response.on_hover_text(&label);
 
     let close_rect = Rect::from_center_size(
-        pos2(rect.right() - 6.0 - CLOSE_SIZE / 2.0, rect.center().y),
+        pos2(rect.right() - 4.0 - CLOSE_SIZE / 2.0, rect.center().y),
         vec2(CLOSE_SIZE, CLOSE_SIZE),
     );
     let close = ui.interact(close_rect, id.with("close"), Sense::CLICK);
@@ -254,24 +254,28 @@ fn draw_tab(ui: &mut Ui, tab: &Shown, active: bool, tab_stop: bool, palette: &Pa
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         let hovered = response.hovered() || close.hovered();
+        if active {
+            // The legacy active tab: the page's fill, a hairline ring and
+            // a faint shadow under it.
+            painter.rect_filled(
+                rect.translate(vec2(0.0, 1.0)),
+                radius(1.0),
+                egui::Color32::from_black_alpha(13),
+            );
+        }
         if active || hovered {
-            painter.rect_filled(rect, radius(0.8), palette.background);
+            painter.rect_filled(rect, radius(1.0), palette.background);
         }
         if active {
             painter.rect_stroke(
                 rect,
-                radius(0.8),
+                radius(1.0),
                 Stroke::new(1.0, palette.border),
                 StrokeKind::Inside,
             );
         }
         if response.has_focus() {
-            painter.rect_stroke(
-                rect.shrink(1.0),
-                radius(0.7),
-                Stroke::new(1.0, palette.ring),
-                StrokeKind::Inside,
-            );
+            crate::common::focus_ring(painter, rect.shrink(1.0), radius(0.6), palette);
         }
         let color = if active || hovered {
             palette.foreground
@@ -282,13 +286,13 @@ fn draw_tab(ui: &mut Ui, tab: &Shown, active: bool, tab_stop: bool, palette: &Pa
             .anchor_size(pos2(rect.left() + 10.0, rect.center().y), galley.size());
         painter.galley(text.min, galley, color);
         if active || hovered {
-            if close.hovered() {
-                painter.rect_filled(close_rect, radius(0.4), palette.muted);
-            }
-            let cross = close_rect.shrink(4.5);
-            let stroke = Stroke::new(1.25, palette.muted_foreground);
-            painter.line_segment([cross.left_top(), cross.right_bottom()], stroke);
-            painter.line_segment([cross.right_top(), cross.left_bottom()], stroke);
+            let color = if close.hovered() {
+                palette.foreground
+            } else {
+                palette.muted_foreground.gamma_multiply(0.6)
+            };
+            let cross = Rect::from_center_size(close_rect.center(), vec2(14.0, 14.0));
+            crate::icons::paint(painter, crate::icons::CLOSE, cross, color, false);
         }
     }
     DrawnTab {

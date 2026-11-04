@@ -29,7 +29,7 @@ pub(crate) fn update_settings(ui: &mut Ui, app: &mut App) {
     muted(
         ui,
         &format!(
-            "You have version {version}. Noura downloads new versions in the background, and \
+            "You have version {version}. noura downloads new versions in the background, and \
              you choose when to restart."
         ),
     );

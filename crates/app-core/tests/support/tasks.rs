@@ -127,11 +127,17 @@ pub fn selected(app: &App) -> Option<String> {
     }
 }
 
-/// The text of the page's text node `id`.
+/// The text of the page's text node `id`, or the detail line of its
+/// heading `id`.
 pub fn text(app: &App, id: &str) -> Option<String> {
     let view = page(app);
     match &find(view.root(), id)?.kind {
         ViewKind::Text(text) => Some(text.clone()),
+        // The page heading names the view in its detail line.
+        ViewKind::Heading {
+            detail: Some(detail),
+            ..
+        } => Some(detail.clone()),
         _ => None,
     }
 }
@@ -271,6 +277,11 @@ pub fn due_text(app: &App, id: &str) -> Option<String> {
     let view = due_view(app);
     match &find(view.root(), id)?.kind {
         ViewKind::Text(text) => Some(text.clone()),
+        // The page heading names the view in its detail line.
+        ViewKind::Heading {
+            detail: Some(detail),
+            ..
+        } => Some(detail.clone()),
         _ => None,
     }
 }

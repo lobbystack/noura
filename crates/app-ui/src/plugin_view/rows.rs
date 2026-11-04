@@ -656,12 +656,13 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
         }
         // The background goes first, so the checkbox and a name field show
         // on a selected or hovered row.
+        let sidebar = matches!(kit.place, super::Place::Sidebar(_));
         paint_row(
             ui,
             rect,
             &response,
             row,
-            is_selected,
+            (is_selected, sidebar),
             columns.is_some(),
             &palette,
         );
@@ -950,12 +951,16 @@ fn name_field_in(ui: &mut Ui, rect: Rect, row: &Row, field: &ViewNode, kit: &mut
 
 /// A row's background, focus ring and, for a list, its label and detail,
 /// unless a name field shows in the item's place.
+/// Paint a row's fill and its text. `(selected, sidebar)` says whether
+/// it is the selected row, and whether it sits in the sidebar, where rows
+/// are the legacy sidebar's small pills: 12 px text, and medium while
+/// selected, with a count at the end.
 fn paint_row(
     ui: &Ui,
     rect: Rect,
     response: &Response,
     row: &Row,
-    selected: bool,
+    (selected, sidebar): (bool, bool),
     table: bool,
     palette: &Palette,
 ) {
@@ -963,17 +968,53 @@ fn paint_row(
         return;
     }
     let painter = ui.painter();
-    let inner = rect.shrink2(vec2(2.0, 1.0));
+    let inner = rect.shrink2(vec2(if sidebar { 0.0 } else { 2.0 }, 1.0));
+    let corner = if sidebar {
+        crate::theme::pill()
+    } else {
+        radius(0.6)
+    };
     if selected || response.hovered() {
-        painter.rect_filled(inner, radius(0.6), palette.accent);
+        let fill = if sidebar {
+            palette.sidebar_accent
+        } else {
+            palette.accent
+        };
+        painter.rect_filled(inner, corner, fill);
     }
     if response.has_focus() {
-        painter.rect_stroke(
-            inner,
-            radius(0.6),
-            Stroke::new(1.0, palette.ring),
-            StrokeKind::Inside,
+        crate::common::focus_ring(painter, inner, corner, palette);
+    }
+    if sidebar && !table && row.name_field.is_none() {
+        let weight = if selected {
+            crate::theme::Weight::Medium
+        } else {
+            crate::theme::Weight::Regular
+        };
+        let font = crate::theme::font(ui.ctx(), SUPPORTING_SIZE, weight);
+        let count = row.detail.as_deref().map(|detail| {
+            painter.layout_no_wrap(
+                detail.to_owned(),
+                crate::theme::font(ui.ctx(), SUPPORTING_SIZE, crate::theme::Weight::Medium),
+                palette.foreground,
+            )
+        });
+        let count_width = count.as_ref().map_or(0.0, |galley| galley.size().x + 12.0);
+        let label = egui::WidgetText::from(egui::RichText::new(&row.label).font(font)).into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            inner.width() - 12.0 - 12.0 - count_width,
+            egui::TextStyle::Small,
         );
+        let at = Align2::LEFT_CENTER
+            .anchor_size(pos2(inner.left() + 12.0, rect.center().y), label.size());
+        painter.galley(at.min, label, palette.foreground);
+        if let Some(count) = count {
+            let at = Align2::RIGHT_CENTER
+                .anchor_size(pos2(inner.right() - 8.0, rect.center().y), count.size());
+            painter.galley(at.min, count, palette.foreground);
+        }
+        return;
     }
     if table {
         painter.line_segment(

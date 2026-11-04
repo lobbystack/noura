@@ -347,15 +347,16 @@ fn tabs_fit_the_title_bar_row_with_no_scrollbar_and_still_scroll() {
     let first = tab_rect(&harness, &names[0]);
     let last = tab_rect(&harness, "Inbox");
     // The row starts where the window's content does, here the harness's
-    // margin, and the tabs sit in its 40 points.
+    // margin, and the tabs sit in its 36 points, as the legacy title bar
+    // row's.
     let row_top = harness
         .get_by_role_and_label(Role::Splitter, "Resize panel")
         .rect()
         .top();
     assert!(first.top() > row_top, "{first:?} under {row_top}");
-    assert!(first.bottom() < row_top + 40.0, "{first:?} under {row_top}");
+    assert!(first.bottom() < row_top + 36.0, "{first:?} under {row_top}");
     assert!(
-        (first.center().y - (row_top + 20.0)).abs() <= 1.0,
+        (first.center().y - (row_top + 18.0)).abs() <= 1.0,
         "{first:?} under {row_top}"
     );
     assert!(
@@ -391,7 +392,7 @@ fn tabs_fit_the_title_bar_row_with_no_scrollbar_and_still_scroll() {
     // the tabs. Nothing paints there.
     harness.hover_at(egui::pos2(600.0, 28.0));
     harness.run_steps(3);
-    let under_the_tabs = egui::Rect::from_x_y_ranges(0.0..=1100.0, first.bottom()..=row_top + 39.0);
+    let under_the_tabs = egui::Rect::from_x_y_ranges(0.0..=1100.0, first.bottom()..=row_top + 35.0);
     let bars = painted_inside(&harness, under_the_tabs);
     assert!(bars.is_empty(), "painted under the tabs: {bars:?}");
     assert!(

@@ -106,6 +106,19 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App) {
     let builder = UiBuilder::new()
         .accessibility_role(Role::Navigation)
         .accessibility_label("Pages");
+    // The title bar row runs across the rail's top, under the window's
+    // buttons.
+    let title = Rect::from_min_size(
+        ui.max_rect().min,
+        vec2(ui.max_rect().width(), crate::common::TITLE_BAR_HEIGHT),
+    );
+    crate::common::title_bar_area(ui, title, "rail");
+    ui.painter().hline(
+        title.x_range(),
+        title.bottom() - 0.5,
+        Stroke::new(1.0, palette.sidebar_border),
+    );
+    ui.add_space(crate::common::TITLE_BAR_HEIGHT);
     ui.scope_builder(builder, |ui| {
         ui.add_space(12.0);
         for (index, (page_id, title)) in pages.iter().enumerate() {
@@ -187,20 +200,15 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App) {
             if ui.is_rect_visible(rect) {
                 let painter = ui.painter();
                 if is_current || response.hovered() {
-                    painter.rect_filled(rect, radius(1.2), palette.sidebar_accent);
+                    painter.rect_filled(rect, radius(1.4), palette.sidebar_accent);
                 }
                 if response.has_focus() {
-                    painter.rect_stroke(
-                        rect,
-                        radius(1.2),
-                        Stroke::new(1.0, palette.ring),
-                        egui::StrokeKind::Inside,
-                    );
+                    crate::common::focus_ring(painter, rect, radius(1.4), &palette);
                 }
-                let mut color = if is_current {
+                let mut color = if is_current || response.hovered() {
                     palette.foreground
                 } else {
-                    palette.muted_foreground
+                    palette.foreground.gamma_multiply(0.7)
                 };
                 if dragging {
                     color = color.gamma_multiply(0.4);
@@ -284,18 +292,18 @@ fn foot_button(
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         if response.hovered() {
-            painter.rect_filled(rect, radius(1.2), palette.sidebar_accent);
+            painter.rect_filled(rect, radius(1.4), palette.sidebar_accent);
         }
         if response.has_focus() {
-            painter.rect_stroke(
-                rect,
-                radius(1.2),
-                Stroke::new(1.0, palette.ring),
-                egui::StrokeKind::Inside,
-            );
+            crate::common::focus_ring(painter, rect, radius(1.4), &palette);
         }
+        let color = if response.hovered() {
+            palette.foreground
+        } else {
+            palette.foreground.gamma_multiply(0.7)
+        };
         let square = Rect::from_center_size(rect.center(), vec2(ICON_SIZE, ICON_SIZE));
-        icons::paint(painter, icon, square, palette.muted_foreground, false);
+        icons::paint(painter, icon, square, color, false);
     }
     let tooltip = match &shortcut {
         Some(shortcut) => format!("{label} ({shortcut})"),

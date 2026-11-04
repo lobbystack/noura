@@ -7,7 +7,7 @@ use crate::{
     AboutLink, LoginItem, Notice, NoticeKind, OpenAtLogin, Settings, SettingsGroup,
     SettingsSection, THIRD_PARTY_LICENSES,
     diagnostics::{self, WorkspaceHealth},
-    settings::{is_web_link, settings_section},
+    settings::{is_web_link, section_keywords, section_rank, section_showing, settings_section},
 };
 
 /// The folder and file names in a path, split at both kinds of slash.
@@ -30,6 +30,7 @@ impl App {
     /// nothing registered `id`. When Settings is open already, it shows
     /// the section `id`.
     pub fn open_settings_at(&mut self, id: &str) {
+        let id = section_showing(id);
         if self.settings.is_some() {
             self.select_settings_section(id);
             return;
@@ -45,7 +46,10 @@ impl App {
             open_at_login: OpenAtLogin::read(self.login_item.as_ref()),
             notice: None,
             manifest_revision,
+            query: String::new(),
+            plugin_details: None,
         });
+        self.follow_settings_section();
         if self.mcp_test != crate::McpTest::Testing {
             self.mcp_test = crate::McpTest::NotRun;
         }
@@ -59,12 +63,50 @@ impl App {
 
     pub fn close_settings(&mut self) {
         if self.settings.take().is_some() {
+            self.close_ignored_files();
             self.listeners.emit(Change::Settings);
+        }
+    }
+
+    /// Search settings for `query`: the section list keeps only the
+    /// sections whose title or keywords hold it.
+    pub fn set_settings_query(&mut self, query: &str) {
+        if let Some(settings) = &mut self.settings
+            && settings.query != query
+        {
+            query.clone_into(&mut settings.query);
+            self.listeners.emit(Change::Settings);
+        }
+    }
+
+    /// Show the details of the plugin `id` in Plugins, in place of the
+    /// list, or the list again with `None`.
+    pub fn show_plugin_details(&mut self, id: Option<&str>) {
+        if let Some(settings) = &mut self.settings
+            && settings.plugin_details.as_deref() != id
+        {
+            settings.plugin_details = id.map(str::to_owned);
+            self.listeners.emit(Change::Settings);
+        }
+    }
+
+    /// Open the page the shown section draws, and close the one it no
+    /// longer shows: Ignored files reads its list when it shows.
+    fn follow_settings_section(&mut self) {
+        let showing = self
+            .settings
+            .as_ref()
+            .is_some_and(|settings| settings.section == settings_section::IGNORED_FILES);
+        if showing && self.ignored_files.is_none() {
+            self.open_ignored_files();
+        } else if !showing {
+            self.close_ignored_files();
         }
     }
 
     /// Show the section `id` in the open Settings.
     pub fn select_settings_section(&mut self, id: &str) {
+        let id = section_showing(id);
         if self.settings_section(id).is_none() {
             return;
         }
@@ -73,6 +115,8 @@ impl App {
         {
             settings.section = id.to_owned();
             settings.notice = None;
+            settings.plugin_details = None;
+            self.follow_settings_section();
             self.listeners.emit(Change::Settings);
         }
     }
@@ -89,13 +133,47 @@ impl App {
                 title.clone_into(&mut section.title);
                 section.group = group;
             }
-            None => self.settings_sections.push(SettingsSection {
-                id: id.to_owned(),
-                title: title.to_owned(),
-                group,
-            }),
+            None => {
+                let section = SettingsSection {
+                    id: id.to_owned(),
+                    title: title.to_owned(),
+                    group,
+                    keywords: section_keywords(id).to_owned(),
+                };
+                // A known section goes before the first known section
+                // that follows it; any other goes last.
+                let index = section_rank(id)
+                    .and_then(|rank| {
+                        self.settings_sections.iter().position(|known| {
+                            section_rank(&known.id).is_some_and(|known| known > rank)
+                        })
+                    })
+                    .unwrap_or(self.settings_sections.len());
+                self.settings_sections.insert(index, section);
+            }
         }
         self.listeners.emit(Change::Settings);
+    }
+
+    /// The sections Search settings shows for what it holds, by group:
+    /// every section while it is empty.
+    pub fn matching_settings_sections(&self) -> Vec<(SettingsGroup, Vec<&SettingsSection>)> {
+        let query = self
+            .settings
+            .as_ref()
+            .map(|settings| settings.query.as_str())
+            .unwrap_or_default();
+        self.settings_sections()
+            .into_iter()
+            .map(|(group, sections)| {
+                let sections = sections
+                    .into_iter()
+                    .filter(|section| section.matches(query))
+                    .collect::<Vec<_>>();
+                (group, sections)
+            })
+            .filter(|(_, sections)| !sections.is_empty())
+            .collect()
     }
 
     /// Settings' sections by group, in the order Settings lists them.

@@ -61,6 +61,14 @@ fn open_settings_section(harness: &mut Ui, section: &str) {
     harness.run();
 }
 
+/// Open the details of the plugin `name` from the Plugins list.
+fn open_plugin_details(harness: &mut Ui, name: &str) {
+    dialog(harness, "Settings")
+        .get_by_role_and_label(Role::Button, &format!("{name} settings"))
+        .click();
+    harness.run();
+}
+
 #[test]
 fn a_plugin_page_in_settings_draws_its_nodes_and_its_button_reaches_the_plugin() {
     let Some(probe) = plugins::built("probe_plugin") else {
@@ -164,6 +172,7 @@ fn a_plugin_that_kept_failing_shows_as_failed_with_a_button_that_starts_it_again
         settle(&mut harness);
     }
     open_settings_section(&mut harness, "Plugins");
+    open_plugin_details(&mut harness, "Misbehave");
 
     let row = dialog(&harness, "Settings").get_by_role_and_label(Role::Group, "Misbehave");
     assert!(
@@ -201,6 +210,7 @@ fn the_plugins_page_lists_what_a_plugin_may_use_and_revokes_one_at_a_time() {
         install_and_enable(app_data, &folder, "hello");
     });
     open_settings_section(&mut harness, "Plugins");
+    open_plugin_details(&mut harness, "Hello");
     let read = "Read the files and folders in your workspace.";
 
     dialog(&harness, "Settings")
@@ -255,6 +265,7 @@ fn the_plugins_page_lists_each_network_host_and_command_target_and_revokes_a_hos
         install_and_enable(app_data, &folder, "probe");
     });
     open_settings_section(&mut harness, "Plugins");
+    open_plugin_details(&mut harness, "Probe");
     let host = "Connect to api.example.com.";
     let target = "Run the commands the tasks plugin offers.";
 
@@ -325,6 +336,7 @@ fn the_plugins_page_shows_a_shipped_plugin_and_what_it_may_use() {
     settle(&mut harness);
 
     open_settings_section(&mut harness, "Plugins");
+    open_plugin_details(&mut harness, "Hello");
 
     let row = dialog(&harness, "Settings").get_by_role_and_label(Role::Group, "Hello");
     let shown = labels(&row);

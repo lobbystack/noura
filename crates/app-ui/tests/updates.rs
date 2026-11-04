@@ -94,7 +94,7 @@ fn app_with(source: &FakeSource, app_data: &std::path::Path) -> App {
     app
 }
 
-/// The window with Settings open on its Updates section.
+/// The window with Settings open on General, which shows Updates.
 fn section(mut app: App) -> Harness<'static, NouraUi> {
     app.open_settings_at(settings_section::UPDATES);
     let ui = NouraUi::new(app, Box::new(FakePicker::default()));
@@ -102,12 +102,12 @@ fn section(mut app: App) -> Harness<'static, NouraUi> {
         .with_size([1000.0, 700.0])
         .build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), ui);
     harness.step();
-    let updates = harness
+    let general = harness
         .get_by_role_and_label(Role::Navigation, "Settings sections")
-        .get_by_role_and_label(Role::Button, "Updates");
+        .get_by_role_and_label(Role::Button, "General");
     assert_eq!(
-        updates.accesskit_node().toggled(),
-        Some(egui::accesskit::Toggled::True)
+        general.accesskit_node().aria_current(),
+        Some(egui::accesskit::AriaCurrent::Page)
     );
     harness
 }

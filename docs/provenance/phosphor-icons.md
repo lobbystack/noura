@@ -12,7 +12,7 @@ Noura's interface icons are Phosphor's. The legacy app drew the same icons throu
 
 ## Destination
 
-`crates/app-ui/src/icons/phosphor.rs` holds the path data of these icons, in both weights: Tray, Files, Checks, Calendar, Sparkle, FolderOpen, MagnifyingGlass, GearSix, Folder, FileText, FilePdf, CaretRight, CaretDown, NotePencil, FolderSimplePlus, ArrowsInLineVertical, Plus, X, CaretLeft, CheckCircle and CalendarBlank.
+`crates/app-ui/src/icons/phosphor.rs` holds the path data of these icons, in both weights: Tray, Files, Checks, Calendar, Sparkle, FolderOpen, MagnifyingGlass, GearSix, Folder, FileText, FilePdf, CaretRight, CaretDown, NotePencil, FolderSimplePlus, ArrowsInLineVertical, Plus, X, CaretLeft, CheckCircle, CalendarBlank, TextAa, Keyboard, UserCircle, FolderSimple, PuzzlePiece, PlugsConnected, ArrowsClockwise, Users, Info, Sun, Moon, Desktop, ArrowUpRight, Copy, Check, Warning, Circle, Kanban, File, PaperPlaneTilt, ChatsCircle, DotsThree, Trash, FolderPlus, ArrowSquareOut, UploadSimple, Stop, ArrowCounterClockwise, Spinner and ArrowLeft.
 
 ## Modifications
 

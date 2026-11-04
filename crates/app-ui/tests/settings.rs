@@ -14,7 +14,7 @@ use app_ui::theme::Palette;
 use editor_egui::SpellChecker;
 use egui::{
     Key, Modifiers, Theme,
-    accesskit::{Role, Toggled},
+    accesskit::{AriaCurrent, Role, Toggled},
 };
 use egui_kittest::{
     Harness,
@@ -140,9 +140,7 @@ fn the_rail_s_settings_button_opens_settings_with_its_sections_by_group() {
                     "General".to_owned(),
                     "Editor".to_owned(),
                     "Keyboard shortcuts".to_owned(),
-                    "Sync account".to_owned(),
-                    "AI providers".to_owned(),
-                    "Web search".to_owned()
+                    "Account".to_owned()
                 ]
             ),
             (
@@ -150,23 +148,25 @@ fn the_rail_s_settings_button_opens_settings_with_its_sections_by_group() {
                 vec![
                     "Name and location".to_owned(),
                     "Plugins".to_owned(),
-                    "Sync".to_owned(),
-                    "Members".to_owned()
+                    "AI".to_owned(),
+                    "Sync and devices".to_owned(),
+                    "People".to_owned(),
+                    "Ignored files".to_owned()
                 ]
             ),
-            (
-                "App".to_owned(),
-                vec!["About Noura".to_owned(), "Updates".to_owned()]
-            ),
+            ("App".to_owned(), vec!["About noura".to_owned()]),
         ]
     );
     // General shows first, and has the keyboard focus.
     let general = section(&harness, "General");
-    assert_eq!(general.accesskit_node().toggled(), Some(Toggled::True));
+    assert_eq!(
+        general.accesskit_node().aria_current(),
+        Some(AriaCurrent::Page)
+    );
     assert!(general.is_focused());
     assert_eq!(
-        section(&harness, "Editor").accesskit_node().toggled(),
-        Some(Toggled::False)
+        section(&harness, "Editor").accesskit_node().aria_current(),
+        None
     );
 
     harness.key_press(Key::Escape);
@@ -189,7 +189,12 @@ fn controls(harness: &Ui) -> Vec<(Role, Option<String>)> {
         .query_all(egui_kittest::kittest::By::new().predicate(|node| {
             matches!(
                 node.role(),
-                Role::Button | Role::CheckBox | Role::RadioButton | Role::TextInput | Role::Link
+                Role::Button
+                    | Role::CheckBox
+                    | Role::Switch
+                    | Role::RadioButton
+                    | Role::TextInput
+                    | Role::Link
             )
         }))
         .map(|node| (node.accesskit_node().role(), node.accesskit_node().label()))
@@ -209,12 +214,11 @@ fn every_section_and_control_carries_a_label() {
         "General",
         "Editor",
         "Keyboard shortcuts",
-        "AI providers",
-        "Web search",
+        "AI",
         "Name and location",
         "Plugins",
-        "About Noura",
-        "Updates",
+        "Ignored files",
+        "About noura",
     ] {
         choose_section(&mut harness, title);
         let controls = controls(&harness);
@@ -267,14 +271,7 @@ fn settings_works_from_the_keyboard() {
     harness.run();
     harness.key_press(Key::Enter);
     harness.run();
-    for (label, role) in [
-        ("Dark", Role::RadioButton),
-        ("Zoom in", Role::Button),
-        (
-            "Open Noura when you sign in to this computer",
-            Role::CheckBox,
-        ),
-    ] {
+    for (label, role) in [("Dark", Role::RadioButton), ("Open at login", Role::Switch)] {
         harness.get_by_role_and_label(role, label).focus();
         harness.run();
         harness.key_press(Key::Space);
@@ -282,7 +279,6 @@ fn settings_works_from_the_keyboard() {
     }
     let preferences = *harness.state().app().preferences();
     assert_eq!(preferences.appearance, app_core::Appearance::Dark);
-    assert_eq!(preferences.zoom, 110);
     assert!(*login.0.lock().unwrap());
 }
 
@@ -376,35 +372,23 @@ fn appearance_applies_at_once_and_match_system_follows_the_system() {
 }
 
 #[test]
-fn zoom_buttons_scale_the_window() {
+fn zoom_commands_scale_the_window() {
     let Opened {
         mut harness,
         folders: _folders,
         ..
     } = opened();
-    open_settings(&mut harness);
+    let run = |harness: &mut Ui, id: &str| {
+        harness.state_mut().run_menu_command(id, Instant::now());
+        harness.run();
+    };
 
-    harness
-        .get_by_role_and_label(Role::Button, "Zoom in")
-        .click();
-    harness.run();
+    run(&mut harness, command_id::ZOOM_IN);
     assert_eq!(harness.ctx.zoom_factor(), 1.1);
-    harness.get_by_label("110%");
-
-    harness
-        .get_by_role_and_label(Role::Button, "Zoom out")
-        .click();
-    harness.run();
-    harness
-        .get_by_role_and_label(Role::Button, "Zoom out")
-        .click();
-    harness.run();
+    run(&mut harness, command_id::ZOOM_OUT);
+    run(&mut harness, command_id::ZOOM_OUT);
     assert_eq!(harness.ctx.zoom_factor(), 0.9);
-
-    harness
-        .get_by_role_and_label(Role::Button, "Actual size")
-        .click();
-    harness.run();
+    run(&mut harness, command_id::ZOOM_RESET);
     assert_eq!(harness.ctx.zoom_factor(), 1.0);
 }
 
@@ -417,7 +401,7 @@ fn about_links_open_in_the_browser_and_diagnostics_reach_the_clipboard() {
         ..
     } = opened();
     open_settings(&mut harness);
-    choose_section(&mut harness, "About Noura");
+    choose_section(&mut harness, "About noura");
     harness.get_by_label(app_core::VERSION);
     harness.get_by_label("MIT, free and open source");
 
@@ -460,7 +444,7 @@ fn about_opens_the_license_list_the_package_ships() {
     );
     settle(&mut harness);
     open_settings(&mut harness);
-    choose_section(&mut harness, "About Noura");
+    choose_section(&mut harness, "About noura");
 
     harness
         .get_by_role_and_label(Role::Link, "Third-party licenses")
@@ -575,8 +559,10 @@ fn about_from_the_menu_opens_settings_on_its_about_section() {
     );
     harness.run();
     assert_eq!(
-        section(&harness, "About Noura").accesskit_node().toggled(),
-        Some(Toggled::True)
+        section(&harness, "About noura")
+            .accesskit_node()
+            .aria_current(),
+        Some(AriaCurrent::Page)
     );
     harness.get_by_label(VERSION);
 }
@@ -591,8 +577,8 @@ fn settings_lists_every_shortcut_by_area() {
     assert_eq!(
         section(&harness, "Keyboard shortcuts")
             .accesskit_node()
-            .toggled(),
-        Some(Toggled::True)
+            .aria_current(),
+        Some(AriaCurrent::Page)
     );
 
     let anywhere = dialog(&harness).get_by_role_and_label(Role::List, "Anywhere");
@@ -657,7 +643,7 @@ fn turning_spell_check_off_stops_checking_the_open_note() {
 
     open_settings(&mut harness);
     choose_section(&mut harness, "Editor");
-    let check = dialog(&harness).get_by_role_and_label(Role::CheckBox, "Check spelling");
+    let check = dialog(&harness).get_by_role_and_label(Role::Switch, "Check spelling");
     assert_eq!(check.accesskit_node().toggled(), Some(Toggled::True));
     check.click();
     harness.run();
@@ -695,7 +681,7 @@ fn without_a_system_spell_checker_settings_offers_no_spell_check() {
 
     assert!(
         dialog(&harness)
-            .query_by_role_and_label(Role::CheckBox, "Check spelling")
+            .query_by_role_and_label(Role::Switch, "Check spelling")
             .is_none()
     );
 }

@@ -32,9 +32,9 @@ impl SettingsGroup {
 
 /// The IDs of the kernel's sections.
 pub mod settings_section {
-    /// Appearance, zoom and Open at login.
+    /// Updates, Appearance and Open at login.
     pub const GENERAL: &str = "general";
-    /// Text size.
+    /// Text size, line width and spelling.
     pub const EDITOR: &str = "editor";
     /// Every shortcut by area.
     pub const SHORTCUTS: &str = "shortcuts";
@@ -49,19 +49,30 @@ pub mod settings_section {
     /// The sync account: the server, this computer's sign-in, your devices
     /// and the recovery kit.
     pub const SYNC_ACCOUNT: &str = "sync-account";
-    /// The AI providers on this device, their keys, and your consent for
-    /// the open workspace.
+    /// The AI providers on this device, their keys, your consent for the
+    /// open workspace, and the Brave Search key for web search.
     pub const AI: &str = "ai-providers";
-    /// The Brave Search key on this device, and your web consent for the
-    /// open workspace.
+    /// Web search, which the AI section shows. Opening it opens AI.
     pub const WEB_SEARCH: &str = "web-search";
+    /// The patterns of files the workspace leaves out.
+    pub const IGNORED_FILES: &str = "ignored-files";
     /// The version, license, links and Copy diagnostics.
     pub const ABOUT: &str = "about";
-    /// Check for updates, and where updating stands.
+    /// Check for updates, which General shows. Opening it opens General.
     pub const UPDATES: &str = "updates";
     /// The MCP configuration that connects AI tools outside Noura, which
     /// shows once a client offers the MCP server.
     pub const AI_TOOLS: &str = "ai-tools";
+}
+
+/// The section that shows `id`: General shows Updates, and AI shows Web
+/// search.
+pub(crate) fn section_showing(id: &str) -> &str {
+    match id {
+        settings_section::UPDATES => settings_section::GENERAL,
+        settings_section::WEB_SEARCH => settings_section::AI,
+        id => id,
+    }
 }
 
 /// One section of Settings.
@@ -70,9 +81,67 @@ pub struct SettingsSection {
     pub id: String,
     pub title: String,
     pub group: SettingsGroup,
+    /// Other words Search settings finds the section by.
+    pub keywords: String,
 }
 
-/// The sections every Noura has, in the order they register.
+impl SettingsSection {
+    /// Whether Search settings shows this section for `query`: its title
+    /// or keywords hold the query, ignoring case and outer spaces.
+    pub fn matches(&self, query: &str) -> bool {
+        let query = query.trim().to_lowercase();
+        format!("{} {}", self.title, self.keywords)
+            .to_lowercase()
+            .contains(&query)
+    }
+}
+
+/// Where the kernel's sections and the sections later areas register by
+/// a known ID go, in the order Settings lists them. Other sections follow
+/// these in their group, in the order they register.
+const SECTION_ORDER: [&str; 12] = [
+    settings_section::GENERAL,
+    settings_section::EDITOR,
+    settings_section::SHORTCUTS,
+    settings_section::SYNC_ACCOUNT,
+    settings_section::WORKSPACE,
+    settings_section::PLUGINS,
+    settings_section::AI,
+    settings_section::AI_TOOLS,
+    settings_section::SYNC,
+    settings_section::MEMBERS,
+    settings_section::IGNORED_FILES,
+    settings_section::ABOUT,
+];
+
+/// Where the section `id` goes among the known sections, if it is one.
+pub(crate) fn section_rank(id: &str) -> Option<usize> {
+    SECTION_ORDER.iter().position(|known| *known == id)
+}
+
+/// The words Search settings finds a kernel section by, as the legacy
+/// app listed them.
+pub(crate) fn section_keywords(id: &str) -> &'static str {
+    match id {
+        settings_section::GENERAL => {
+            "appearance theme dark light system startup login updates version"
+        }
+        settings_section::EDITOR => "text size font line width spelling spellcheck",
+        settings_section::SHORTCUTS => "keys",
+        settings_section::SYNC_ACCOUNT => "sign in log out disconnect server",
+        settings_section::WORKSPACE => "rename folder path",
+        settings_section::PLUGINS => "notes tasks calendar projects folders sync",
+        settings_section::AI => "providers models api keys permissions consent web search brave",
+        settings_section::AI_TOOLS => "mcp claude cursor assistant model context protocol",
+        settings_section::SYNC => "encryption recovery conflicts join devices",
+        settings_section::MEMBERS => "invitations roles sharing access members",
+        settings_section::IGNORED_FILES => "ignore gitignore exclude hidden files",
+        settings_section::ABOUT => "version license privacy terms",
+        _ => "",
+    }
+}
+
+/// The sections every Noura has, in the order Settings lists them.
 pub(crate) fn kernel_sections() -> Vec<SettingsSection> {
     [
         (
@@ -92,17 +161,7 @@ pub(crate) fn kernel_sections() -> Vec<SettingsSection> {
         ),
         (
             settings_section::SYNC_ACCOUNT,
-            "Sync account",
-            SettingsGroup::ThisComputer,
-        ),
-        (
-            settings_section::AI,
-            "AI providers",
-            SettingsGroup::ThisComputer,
-        ),
-        (
-            settings_section::WEB_SEARCH,
-            "Web search",
+            "Account",
             SettingsGroup::ThisComputer,
         ),
         (
@@ -115,20 +174,30 @@ pub(crate) fn kernel_sections() -> Vec<SettingsSection> {
             "Plugins",
             SettingsGroup::Workspace,
         ),
-        (settings_section::SYNC, "Sync", SettingsGroup::Workspace),
+        (settings_section::AI, "AI", SettingsGroup::Workspace),
         (
-            settings_section::MEMBERS,
-            "Members",
+            settings_section::SYNC,
+            "Sync and devices",
             SettingsGroup::Workspace,
         ),
-        (settings_section::ABOUT, "About Noura", SettingsGroup::App),
-        (settings_section::UPDATES, "Updates", SettingsGroup::App),
+        (
+            settings_section::MEMBERS,
+            "People",
+            SettingsGroup::Workspace,
+        ),
+        (
+            settings_section::IGNORED_FILES,
+            "Ignored files",
+            SettingsGroup::Workspace,
+        ),
+        (settings_section::ABOUT, "About noura", SettingsGroup::App),
     ]
     .into_iter()
     .map(|(id, title, group)| SettingsSection {
         id: id.to_owned(),
         title: title.to_owned(),
         group,
+        keywords: section_keywords(id).to_owned(),
     })
     .collect()
 }
@@ -147,6 +216,11 @@ pub struct Settings {
     /// The revision of the workspace manifest when Settings read it, so a
     /// rename never overwrites an outside edit made since.
     pub(crate) manifest_revision: Option<String>,
+    /// What Search settings holds. The section list shows only the
+    /// sections that match it.
+    pub query: String,
+    /// The plugin whose details Plugins shows in place of its list.
+    pub plugin_details: Option<String>,
 }
 
 /// Noura's version, as this build reports it.

@@ -11,15 +11,14 @@ use egui::{
 };
 
 use crate::{
-    common::muted,
     icons, plugin_view,
-    theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, radius},
+    theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, Weight, font, radius},
 };
 
 /// The size of the greeting at the top.
-const GREETING_SIZE: f32 = 22.0;
-/// The widest the Inbox's column grows.
-const COLUMN_WIDTH: f32 = 720.0;
+const GREETING_SIZE: f32 = 16.0;
+/// The widest the Inbox's column grows, padding included.
+const COLUMN_WIDTH: f32 = 672.0 - 48.0;
 /// The space between the Inbox's parts.
 const GAP: f32 = 20.0;
 
@@ -56,6 +55,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, window: Id) {
 fn page(ui: &mut Ui, app: &mut App, window: Id, inbox: &Inbox) -> Option<Follow> {
     let mut follow = None;
     heading(ui, inbox.greeting, 0, GREETING_SIZE);
+    ui.add_space(4.0);
     if !inbox.needs_attention.is_empty() {
         ui.add_space(GAP);
         follow = follow.or(needs_attention(ui, inbox));
@@ -70,7 +70,12 @@ fn page(ui: &mut Ui, app: &mut App, window: Id, inbox: &Inbox) -> Option<Follow>
 
 /// Draw `text` as a heading at `level`, counted from 0 for the page's own.
 fn heading(ui: &mut Ui, text: &str, level: usize, size: f32) {
-    let response = ui.label(RichText::new(text).size(size).strong());
+    let weight = if level == 0 {
+        Weight::Semibold
+    } else {
+        Weight::Medium
+    };
+    let response = ui.label(RichText::new(text).font(font(ui.ctx(), size, weight)));
     ui.ctx().accesskit_node_builder(response.id, |node| {
         node.set_role(Role::Heading);
         node.set_level(level);
@@ -85,7 +90,7 @@ fn rows<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     Frame::new()
         .stroke(Stroke::new(1.0, palette.border))
         .corner_radius(radius(1.0))
-        .inner_margin(Margin::symmetric(16, 10))
+        .inner_margin(Margin::symmetric(16, 12))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             add(ui)
@@ -191,7 +196,14 @@ fn recent(ui: &mut Ui, inbox: &Inbox) -> Option<Follow> {
     });
     ui.add_space(8.0);
     if inbox.recent.is_empty() {
-        rows(ui, |ui| muted(ui, "No notes yet."));
+        rows(ui, |ui| {
+            let palette = Palette::of(ui.ctx());
+            ui.label(
+                RichText::new("No notes yet.")
+                    .size(BODY_SIZE)
+                    .color(palette.muted_foreground),
+            );
+        });
         return None;
     }
     let palette = Palette::of(ui.ctx());

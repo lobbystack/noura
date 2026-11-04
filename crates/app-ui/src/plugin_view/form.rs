@@ -95,7 +95,16 @@ pub(super) fn form(
         let ready = required
             .iter()
             .all(|input| holds_text(ui, node, input, kit));
-        let pressed = primary_button(ui, submit, ready).clicked();
+        let pressed = if single {
+            common::Btn::new(submit)
+                .variant(common::Variant::Default)
+                .size(common::Size::Sm)
+                .enabled(ready)
+                .show(ui)
+                .clicked()
+        } else {
+            primary_button(ui, submit, ready).clicked()
+        };
         if (pressed || entered) && ready {
             let mut fields = Vec::new();
             let mut whole = true;

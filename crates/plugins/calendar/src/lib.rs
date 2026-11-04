@@ -222,13 +222,22 @@ fn page() -> Vec<Node> {
     let shown = all.and_then(|all| within(all, &now, first, count));
 
     let mut view = View::panel("root", None);
-    view.page_heading(View::ROOT, "title", "Calendar", None, Some(Icon::Calendar));
-    let (previous, next) = mode.steps();
-    view.button(View::ROOT, "previous", previous);
-    view.button(View::ROOT, "today", "Today");
-    view.button(View::ROOT, "next", next);
+    // The heading names the month under the title, with the mode, then
+    // Previous, Today and Next at its end, as the legacy page header did.
+    let month = focus.strftime("%B %Y").to_string();
+    let heading = view.page_heading(
+        View::ROOT,
+        "title",
+        "Calendar",
+        Some(&month),
+        Some(Icon::Calendar),
+    );
     let modes: Vec<(&str, &str)> = Mode::ALL.iter().map(|(_, id, name)| (*id, *name)).collect();
-    view.choice_input(View::ROOT, "mode", "View", &modes, Some(mode.id()));
+    view.choice_input(heading, "mode", "View", &modes, Some(mode.id()));
+    let (previous, next) = mode.steps();
+    view.button(heading, "previous", previous);
+    view.button(heading, "today", "Today");
+    view.button(heading, "next", next);
     if let Some(notice) = &state.notice {
         view.text(View::ROOT, "notice", notice);
     }

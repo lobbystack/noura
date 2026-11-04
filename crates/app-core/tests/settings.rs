@@ -103,9 +103,7 @@ fn settings_lists_its_sections_under_this_computer_workspace_and_app() {
                     "General".to_owned(),
                     "Editor".to_owned(),
                     "Keyboard shortcuts".to_owned(),
-                    "Sync account".to_owned(),
-                    "AI providers".to_owned(),
-                    "Web search".to_owned()
+                    "Account".to_owned()
                 ]
             ),
             (
@@ -113,14 +111,13 @@ fn settings_lists_its_sections_under_this_computer_workspace_and_app() {
                 vec![
                     "Name and location".to_owned(),
                     "Plugins".to_owned(),
-                    "Sync".to_owned(),
-                    "Members".to_owned()
+                    "AI".to_owned(),
+                    "Sync and devices".to_owned(),
+                    "People".to_owned(),
+                    "Ignored files".to_owned()
                 ]
             ),
-            (
-                "App".to_owned(),
-                vec!["About Noura".to_owned(), "Updates".to_owned()]
-            ),
+            ("App".to_owned(), vec!["About noura".to_owned()]),
         ]
     );
     assert_eq!(
@@ -148,8 +145,10 @@ fn later_areas_add_their_sections_to_a_group_and_settings_shows_them() {
             vec![
                 "Name and location".to_owned(),
                 "Plugins".to_owned(),
-                "Sync".to_owned(),
-                "Members".to_owned(),
+                "AI".to_owned(),
+                "Sync and devices".to_owned(),
+                "People".to_owned(),
+                "Ignored files".to_owned(),
                 "External tools".to_owned()
             ]
         )
@@ -167,6 +166,80 @@ fn later_areas_add_their_sections_to_a_group_and_settings_shows_them() {
         shown_section(&app).as_deref(),
         Some(settings_section::ABOUT)
     );
+}
+
+#[test]
+fn updates_and_web_search_open_the_sections_that_show_them() {
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app();
+
+    app.open_settings_at(settings_section::UPDATES);
+    assert_eq!(
+        shown_section(&app).as_deref(),
+        Some(settings_section::GENERAL)
+    );
+    app.select_settings_section(settings_section::WEB_SEARCH);
+    assert_eq!(shown_section(&app).as_deref(), Some(settings_section::AI));
+}
+
+#[test]
+fn search_settings_keeps_the_sections_whose_title_or_keywords_match() {
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app();
+    app.open_settings();
+
+    app.set_settings_query("  THEME ");
+    let found: Vec<_> = app
+        .matching_settings_sections()
+        .into_iter()
+        .map(|(group, sections)| {
+            (
+                group,
+                sections
+                    .into_iter()
+                    .map(|section| section.title.clone())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [(SettingsGroup::ThisComputer, vec!["General".to_owned()])]
+    );
+
+    app.set_settings_query("gitignore");
+    assert_eq!(
+        app.matching_settings_sections()[0].1[0].title,
+        "Ignored files"
+    );
+
+    app.set_settings_query("nothing like this");
+    assert!(app.matching_settings_sections().is_empty());
+
+    app.set_settings_query("");
+    assert_eq!(app.matching_settings_sections(), app.settings_sections());
+    app.close_settings();
+    app.open_settings();
+    assert_eq!(app.settings().unwrap().query, "");
+}
+
+#[test]
+fn the_ignored_files_section_reads_the_list_while_it_shows() {
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app();
+    app.open_settings();
+    assert_eq!(app.ignored_files(), None);
+
+    app.select_settings_section(settings_section::IGNORED_FILES);
+    assert!(app.ignored_files().is_some());
+
+    app.select_settings_section(settings_section::ABOUT);
+    assert_eq!(app.ignored_files(), None);
+
+    app.open_settings_at(settings_section::IGNORED_FILES);
+    assert!(app.ignored_files().is_some());
+    app.close_settings();
+    assert_eq!(app.ignored_files(), None);
 }
 
 #[test]
@@ -392,4 +465,25 @@ fn only_web_links_reach_the_browser() {
         );
     }
     assert_eq!(system.calls(), []);
+}
+
+#[test]
+fn plugins_shows_one_plugin_s_details_until_you_go_back_or_leave() {
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app();
+    app.open_settings_at(settings_section::PLUGINS);
+    assert_eq!(app.settings().unwrap().plugin_details, None);
+
+    app.show_plugin_details(Some("tasks"));
+    assert_eq!(
+        app.settings().unwrap().plugin_details.as_deref(),
+        Some("tasks")
+    );
+    app.show_plugin_details(None);
+    assert_eq!(app.settings().unwrap().plugin_details, None);
+
+    app.show_plugin_details(Some("tasks"));
+    app.select_settings_section(settings_section::ABOUT);
+    app.select_settings_section(settings_section::PLUGINS);
+    assert_eq!(app.settings().unwrap().plugin_details, None);
 }

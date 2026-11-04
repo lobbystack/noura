@@ -844,8 +844,9 @@ interface ui {
     // keyboard and open it by double-click or Enter, which send `selected`
     // and `activated` naming the calendar.
     entry(calendar-entry),
-    // A page's or a section's title. Its children are buttons, which line
-    // up at its end; the first button of a page heading stands out.
+    // A page's or a section's title. Its children are buttons and choice
+    // inputs, which line up at its end, the first child first; a page
+    // heading's first child, when a button, stands out.
     heading(heading),
     // An empty page or section. Its children are buttons under its text.
     empty(empty-state),
@@ -858,9 +859,9 @@ interface ui {
     // Indices into the view's node list. Panels and forms hold the nodes
     // they lay out, lists their items, tables their rows, boards their
     // columns, columns their cards, calendars their entries, menus their
-    // items, and headings and empty states their buttons; a row, a card
-    // or a button may hold one menu, and an item one menu or one name
-    // field.
+    // items, headings their buttons and choices, and empty states their
+    // buttons; a row, a card or a button may hold one menu, and an item one
+    // menu or one name field.
     children: list<u32>,
   }
 

@@ -10,7 +10,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     ai::{alert, boxed, text_field},
-    common::{muted, primary_button},
+    common::{description, primary_button},
     theme::TITLE_SIZE,
 };
 
@@ -29,7 +29,7 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut WebSettingsView) {
         alert(ui, &problem);
         return;
     }
-    muted(
+    description(
         ui,
         "The AI can search the web with Brave Search and read the pages it finds. Add your own \
          Brave Search API key. Noura keeps it in this computer's credential store.",
@@ -46,7 +46,7 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut WebSettingsView) {
     ui.scope_builder(builder, |ui| {
         boxed(ui, |ui| {
             ui.label(RichText::new("Brave Search key").strong());
-            muted(
+            description(
                 ui,
                 if row.has_key {
                     "Your key is saved."
@@ -81,16 +81,16 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut WebSettingsView) {
         boxed(ui, |ui| {
             ui.label(RichText::new("This workspace").strong());
             let Some(workspace) = &workspace else {
-                muted(ui, "Open a workspace to allow web search there.");
+                description(ui, "Open a workspace to allow web search there.");
                 return;
             };
             if row.consented {
-                muted(ui, &format!("The AI can search the web in {workspace}."));
+                description(ui, &format!("The AI can search the web in {workspace}."));
                 if ui.button("Turn off for this workspace").clicked() {
                     changed = Some(app.revoke_web_consent());
                 }
             } else {
-                muted(
+                description(
                     ui,
                     &format!("The AI can't search the web in {workspace} yet."),
                 );
@@ -143,7 +143,7 @@ pub(crate) fn consent_prompt(ui: &mut Ui, app: &mut App, view: &mut WebConsentVi
                  too, when the AI asks them to.",
                 prompt.workspace
             ));
-            muted(
+            description(
                 ui,
                 "Noura doesn't ask again before each search. To take this back, open Settings, \
                  then Web search.",

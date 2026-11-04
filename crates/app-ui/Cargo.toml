@@ -9,7 +9,7 @@ rust-version.workspace = true
 app-core = { version = "0.2.0", path = "../app-core" }
 # Parses the Markdown that plugins hand Noura, as the editor does.
 comrak.workspace = true
-egui = { workspace = true, features = ["default_fonts"] }
+egui = { workspace = true, features = ["default_fonts", "experimental"] }
 # The date picker, and the decoders that draw images in notes: PNG, JPEG
 # and BMP through `image`, GIF and WebP through their loaders. No loader
 # reads files or the network itself. egui_extras' `svg` feature stays off,

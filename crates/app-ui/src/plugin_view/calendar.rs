@@ -158,8 +158,21 @@ pub(super) fn calendar(
     let builder = UiBuilder::new()
         .accessibility_role(Role::Heading)
         .accessibility_label(heading.as_str());
+    // A page heading that names the period already shows the month, as
+    // the legacy page header did; the grid's own heading then only names
+    // it for screen readers. A day keeps its date over its hours.
+    let titled = kit.page_detail && mode != CalendarMode::Day;
     ui.scope_builder(builder, |ui| {
-        ui.label(RichText::new(&heading).size(TITLE_SIZE).strong());
+        if titled {
+            let (_, response) = ui.allocate_exact_size(vec2(0.0, 0.0), egui::Sense::hover());
+            response.widget_info(|| egui::WidgetInfo::labeled(Role::Label, true, &heading));
+        } else {
+            ui.label(RichText::new(&heading).font(crate::theme::font(
+                ui.ctx(),
+                TITLE_SIZE,
+                crate::theme::Weight::Semibold,
+            )));
+        }
     });
     let builder = UiBuilder::new()
         .accessibility_role(Role::Grid)
@@ -376,7 +389,7 @@ fn month(ui: &Ui, grid: &Grid, top_left: egui::Pos2, width: f32) -> Vec<Row> {
     let mut rows = Vec::new();
 
     let header = Rect::from_min_size(top_left, vec2(width, MONTH_HEADER_HEIGHT));
-    painter.rect_filled(header, radius(0.0), palette.muted);
+    painter.rect_filled(header, radius(0.0), palette.muted.gamma_multiply(0.4));
     let cells = grid.days[..7]
         .iter()
         .enumerate()
@@ -430,19 +443,19 @@ fn month(ui: &Ui, grid: &Grid, top_left: egui::Pos2, width: f32) -> Vec<Row> {
                     Rect::from_min_size(pos2(left(day_index % 7), top), vec2(column, height));
                 let in_month = day.date.month() == grid.focus.month();
                 if !in_month {
-                    painter.rect_filled(rect, radius(0.0), palette.muted);
+                    painter.rect_filled(rect, radius(0.0), palette.muted.gamma_multiply(0.2));
                 }
                 painter.rect_stroke(
                     rect,
                     radius(0.0),
-                    Stroke::new(1.0, palette.border),
+                    Stroke::new(1.0, palette.border.gamma_multiply(0.5)),
                     StrokeKind::Inside,
                 );
                 day_number(
                     ui,
                     grid,
                     day.date,
-                    pos2(rect.left() + 18.0, top + 16.0),
+                    pos2(rect.left() + 18.0, top + 18.0),
                     in_month,
                 );
                 let mut y = top + DAY_NUMBER_HEIGHT;

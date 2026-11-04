@@ -23,16 +23,18 @@ fn the_switcher_lists_recent_workspaces_and_opens_another() {
     harness.run();
     assert!(
         harness
-            .get_by_role_and_label(Role::Button, "Second")
+            .get_by_role_and_label(Role::MenuItem, "Second")
             .accesskit_node()
             .is_disabled()
     );
-    harness.get_by_role_and_label(Role::Button, "Open folder…");
-    harness.get_by_role_and_label(Role::Button, "New workspace…");
+    harness.get_by_role_and_label(Role::MenuItem, "Open folder…");
+    harness.get_by_role_and_label(Role::MenuItem, "New workspace…");
     harness.get_by_label("Remove from recents");
     assert!(harness.unnamed_widgets().is_empty());
 
-    harness.get_by_role_and_label(Role::Button, "First").click();
+    harness
+        .get_by_role_and_label(Role::MenuItem, "First")
+        .click();
     settle(&mut harness);
 
     harness.get_by_role_and_label(Role::Button, "Switch workspace. Current workspace: First");
@@ -64,7 +66,9 @@ fn another_workspace_opens_with_its_tree_scrolled_to_the_top() {
         .get_by_role_and_label(Role::Button, "Switch workspace. Current workspace: Second")
         .click();
     harness.run();
-    harness.get_by_role_and_label(Role::Button, "First").click();
+    harness
+        .get_by_role_and_label(Role::MenuItem, "First")
+        .click();
     settle(&mut harness);
 
     harness.get_by_role_and_label(Role::TreeItem, "First 000.txt");
@@ -115,7 +119,7 @@ fn new_workspace_from_the_switcher_asks_for_a_name_then_a_folder() {
     harness.run();
 
     harness
-        .get_by_role_and_label(Role::Button, "New workspace…")
+        .get_by_role_and_label(Role::MenuItem, "New workspace…")
         .click();
     harness.run();
     harness

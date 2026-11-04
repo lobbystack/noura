@@ -24,7 +24,7 @@ impl App {
         self.mcp = Some(McpServer { program, probe });
         self.register_settings_section(
             settings_section::AI_TOOLS,
-            "AI tools",
+            "External tools",
             SettingsGroup::Workspace,
         );
     }

@@ -75,7 +75,6 @@ pub struct NouraUi {
     /// The New workspace form, while it is open.
     new_workspace: Option<common::NewWorkspace>,
     tree: tree::TreeView,
-    ignored: ignored_files::IgnoredFilesView,
     settings: settings::SettingsView,
     plugin_install: plugins::InstallView,
     shipped_plugins: plugins::ShippedView,
@@ -115,7 +114,6 @@ impl NouraUi {
             quitting: false,
             new_workspace: None,
             tree: tree::TreeView::default(),
-            ignored: ignored_files::IgnoredFilesView::default(),
             settings: settings::SettingsView::default(),
             plugin_install: plugins::InstallView::default(),
             shipped_plugins: plugins::ShippedView::default(),
@@ -283,6 +281,7 @@ impl NouraUi {
 
     /// Draw one frame.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
+        common::track_focus_visible(ui.ctx());
         if !self.started {
             self.started = true;
             theme::install(ui.ctx());

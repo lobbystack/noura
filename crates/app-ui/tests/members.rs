@@ -223,10 +223,12 @@ fn an_admin_invites_editors_and_viewers_with_a_name() {
             .is_none(),
         "only the owner invites admins"
     );
-    harness.get_by_role(accesskit::Role::TextInput).click();
+    harness
+        .get_by_role_and_label(accesskit::Role::TextInput, "Your name, as they see it")
+        .click();
     harness.run();
     harness
-        .get_by_role(accesskit::Role::TextInput)
+        .get_by_role_and_label(accesskit::Role::TextInput, "Your name, as they see it")
         .type_text("Cleo");
     harness.run();
     harness
