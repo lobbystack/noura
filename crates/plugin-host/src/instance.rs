@@ -45,7 +45,7 @@ pub use bindings::noura::plugin::ai::{
     ToolDefinition as AiToolDefinition, ToolResult as AiToolResult, WebPage as AiWebPage,
     WebResult as AiWebResult,
 };
-pub use bindings::noura::plugin::navigation::Placement;
+pub use bindings::noura::plugin::navigation::{Placement, SettingsSection};
 pub(crate) use bindings::noura::plugin::types::Error as CallError;
 pub use bindings::noura::plugin::ui::{
     Calendar, CalendarEntry, CalendarMode, Check, Choice, Column, ColumnPress, EmptyState, Event,
@@ -461,6 +461,10 @@ impl navigation::Host for HostState {
 
     fn open_page(&mut self, page: String) -> Result<(), types::Error> {
         self.navigation()?.open_page(&page).map_err(wit_error)
+    }
+
+    fn open_settings(&mut self, section: navigation::SettingsSection) -> Result<(), types::Error> {
+        self.navigation()?.open_settings(section).map_err(wit_error)
     }
 
     fn trash_object(&mut self, id: String) -> Result<(), types::Error> {

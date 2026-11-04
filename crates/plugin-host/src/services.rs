@@ -253,15 +253,18 @@ pub trait DeviceClock: Send + Sync {
     fn now(&self) -> ClockReading;
 }
 
-/// Opens objects and a plugin's own pages in the window you acted in, and
-/// moves objects to the trash there, for plugins that hold the `views`
-/// capability.
+/// Opens objects, a plugin's own pages and Settings in the window you
+/// acted in, and moves objects to the trash there, for plugins that hold
+/// the `views` capability.
 pub trait Navigation: Send + Sync {
     /// Open the object with the stable ID `id` in the note editor.
     fn open_object(&self, id: &str, placement: crate::Placement) -> Result<(), ServiceError>;
 
     /// Show the plugin's own page `page`.
     fn open_page(&self, page: &str) -> Result<(), ServiceError>;
+
+    /// Open Settings on `section`.
+    fn open_settings(&self, section: crate::SettingsSection) -> Result<(), ServiceError>;
 
     /// Move the object with the stable ID `id`, of one of the plugin's own
     /// types, to the trash as the file tree's Move to Trash does. The host

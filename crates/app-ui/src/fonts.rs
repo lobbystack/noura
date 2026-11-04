@@ -90,10 +90,7 @@ mod tests {
         for bytes in editor_faces() {
             let data = FontData::from_static(bytes);
             let axes = data.variation_axes();
-            assert!(
-                axes.iter().any(|axis| axis.tag.to_string() == "wght"),
-                "{axes:?}"
-            );
+            assert!(axes.iter().any(|axis| axis.tag == "wght"), "{axes:?}");
         }
         let fonts = definitions();
         assert_eq!(

@@ -1,4 +1,4 @@
-# Open pages and objects
+# Open pages, objects and Settings
 
 The `navigation` interface shows things in the window you acted in. Import it from `noura:plugin/navigation@0.1.0`. It needs the `views` capability, and `trashObject` needs `object-types` too.
 
@@ -8,6 +8,7 @@ Noura acts only for a call that answers something you did: an event in one of th
 
 - `openObject(id, placement)`: open the object with this stable ID in the note editor, with its properties panel beside its body. `preview` opens it in the preview tab, as a click in the file tree does; `new-tab` opens a tab that stays.
 - `openPage(page)`: show the plugin's own page with this ID.
+- `openSettings(section)`: open Settings on `plugins`, `ai` or `sync`, as an "Open AI settings" button does.
 - `trashObject(id)`: move an object of the plugin's own types to the trash, as Move to Trash in the file tree does. Noura first saves what you typed in it and closes its tabs.
 
 ## Example

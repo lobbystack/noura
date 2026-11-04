@@ -1029,7 +1029,7 @@ const UNKNOWN_KIND: &str = r#"
       (case "input" $input) (case "name-field" $name-field) (case "menu" string) (case "menu-item" $menu-item)
       (case "separator") (case "board" string) (case "board-column" string)
       (case "card" $item) (case "calendar" $calendar) (case "entry" $calendar-entry)
-      (case "heading" $heading) (case "empty" $empty-state)))
+      (case "heading" $heading) (case "empty" $empty-state) (case "split" u32)))
     (export $node-kind "node-kind" (type $node-kind'))
     (type $node' (record
       (field "id" string) (field "kind" $node-kind) (field "children" (list u32))))
@@ -1158,4 +1158,42 @@ fn a_heading_with_more_than_buttons_and_choices_or_without_text_is_refused() {
     ])
     .expect_err("a blank empty state");
     assert!(blank.to_string().contains("label"), "{blank}");
+}
+
+#[test]
+fn a_split_holds_two_panels_and_a_first_pane_of_a_drawable_width() {
+    let split = |width: u32, children: Vec<Node>| {
+        let mut nodes = vec![
+            node("root", NodeKind::Panel(None), vec![1]),
+            node("panes", NodeKind::Split(width), Vec::new()),
+        ];
+        for (index, child) in children.into_iter().enumerate() {
+            nodes[1].children.push(u32::try_from(index + 2).unwrap());
+            nodes.push(child);
+        }
+        View::from_nodes(nodes)
+    };
+    let panel = |id: &str| node(id, NodeKind::Panel(None), Vec::new());
+
+    let view = split(384, vec![panel("list"), panel("detail")]).expect("a split of two panels");
+    let panes = &view.root().children[0];
+    assert_eq!(panes.kind, ViewKind::Split { first_width: 384 });
+    assert_eq!(panes.children.len(), 2);
+
+    let one = split(384, vec![panel("list")]).expect_err("one pane");
+    assert_eq!(
+        one.to_string(),
+        "The split panes holds 1 nodes and 1 panels; it holds two panels."
+    );
+    let text = split(
+        384,
+        vec![
+            panel("list"),
+            node("line", NodeKind::Text("Hi".into()), vec![]),
+        ],
+    )
+    .expect_err("text for a pane");
+    assert!(text.to_string().contains("two panels"), "{text}");
+    let narrow = split(100, vec![panel("list"), panel("detail")]).expect_err("too narrow");
+    assert!(narrow.to_string().contains("160 to 640"), "{narrow}");
 }

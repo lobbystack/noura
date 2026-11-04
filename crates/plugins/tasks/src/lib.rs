@@ -332,17 +332,32 @@ fn page() -> Vec<Node> {
         state.renaming = None;
         state.rename_problem = None;
     }
+    // The list on the left and the selected task on the right, as the
+    // legacy Tasks page drew them.
+    let (list_pane, detail_pane) = view.split(View::ROOT, "panes", LIST_WIDTH);
+    let selected = state.selected.clone().and_then(|selected| {
+        shown
+            .iter()
+            .take(MOST_SHOWN)
+            .find(|task| task.id == selected)
+    });
+    match selected {
+        Some(task) => selected_task(&mut view, detail_pane, task, &now, &projects),
+        None => {
+            view.empty_state(
+                detail_pane,
+                "no-selection",
+                "Select a task",
+                None,
+                Some(Icon::Tasks),
+            );
+        }
+    }
     if shown.is_empty() {
-        view.empty_state(
-            View::ROOT,
-            "empty",
-            "No tasks here",
-            None,
-            Some(Icon::Tasks),
-        );
+        view.empty_state(list_pane, "empty", "No tasks here", None, Some(Icon::Tasks));
         return view.into_nodes();
     }
-    let list = view.list(View::ROOT, "tasks", "Task list");
+    let list = view.list(list_pane, "tasks", "Task list");
     let in_project = match &state.choice {
         Choice::Project(id) => Some(id.as_str()),
         _ => None,
@@ -356,23 +371,54 @@ fn page() -> Vec<Node> {
         let renaming = state.renaming.as_deref() == Some(task.id.as_str());
         menus::add(&mut view, item, task, renaming);
     }
-    if let Some(selected) = state.selected.as_ref().filter(|selected| {
-        shown
-            .iter()
-            .take(MOST_SHOWN)
-            .any(|task| task.id == **selected)
-    }) {
-        view.select(list, selected);
+    if let Some(selected) = selected {
+        view.select(list, &selected.id);
     }
     if shown.len() > MOST_SHOWN {
         view.text(
-            View::ROOT,
+            list_pane,
             "more",
             &format!("Showing the first {MOST_SHOWN} tasks. Narrow the list with the filters."),
         );
     }
     view.into_nodes()
 }
+
+/// How wide the list pane is, as the legacy Tasks page's.
+const LIST_WIDTH: u32 = 384;
+
+/// The selected task in the right pane: its title, its status, priority,
+/// due date and project, and Open, which shows it in the note editor.
+fn selected_task(
+    view: &mut View,
+    pane: u32,
+    task: &Task,
+    now: &Now,
+    projects: &[(String, String)],
+) {
+    let heading = view.section_heading(pane, "selected-title", &task.title, None);
+    view.button(heading, OPEN_SELECTED, "Open");
+    let mut lines = vec![
+        format!("Status: {}", label(&STATUSES, &task.status)),
+        format!("Priority: {}", label(&PRIORITIES, &task.priority)),
+    ];
+    if let Some(due) = task.due {
+        lines.push(format!("Due: {}", views::due_label(due, now)));
+    }
+    if let Some((_, title)) = task
+        .project
+        .as_deref()
+        .and_then(|project| projects.iter().find(|(id, _)| id == project))
+    {
+        lines.push(format!("Project: {title}"));
+    }
+    for (index, line) in lines.iter().enumerate() {
+        view.text(pane, &format!("selected-line-{index}"), line);
+    }
+}
+
+/// The button that opens the selected task in the note editor.
+const OPEN_SELECTED: &str = "open-selected";
 
 /// A task's quieter detail: its due date, its project unless the list is
 /// that project's, and its priority unless it is medium.
@@ -547,6 +593,14 @@ fn start_naming() {
 fn handle(event: Event) {
     match event {
         Event::Pressed(node) if node == "new-task" => start_naming(),
+        Event::Pressed(node) if node == OPEN_SELECTED => {
+            let selected = state().selected.clone();
+            if let Some(id) = selected
+                && let Err(error) = navigation::open_object(&id, Placement::Preview)
+            {
+                state().notice = Some(format!("Couldn't open the task: {}", reason(&error)));
+            }
+        }
         Event::Pressed(node) if node == FILTERS_TOGGLE => {
             let mut state = state();
             if state.filters_shown || state.filters.active() {

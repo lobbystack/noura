@@ -98,12 +98,14 @@ pub mod clock {
     pub use crate::noura::plugin::clock::{Reading, now};
 }
 
-/// Opening an object in the note editor, or one of the plugin's own
-/// pages, in the window you acted in, and moving an object of the
-/// plugin's own types to the trash there. Needs the `views` capability,
+/// Opening an object in the note editor, one of the plugin's own pages or
+/// a section of Settings in the window you acted in, and moving an object
+/// of the plugin's own types to the trash there. Needs the `views` capability,
 /// and works only in answer to something you did.
 pub mod navigation {
-    pub use crate::noura::plugin::navigation::{Placement, open_object, open_page, trash_object};
+    pub use crate::noura::plugin::navigation::{
+        Placement, SettingsSection, open_object, open_page, open_settings, trash_object,
+    };
 }
 
 /// Chats with the AI providers you set up in Settings, which Noura keeps
@@ -562,6 +564,16 @@ impl View {
             icon,
         };
         self.add(parent, id, NodeKind::Empty(empty))
+    }
+
+    /// Add two panes side by side, the first `first_width` points wide
+    /// (160 to 640) with a line on its right, the second taking the rest.
+    /// Returns the two panels, to add each pane's nodes to.
+    pub fn split(&mut self, parent: u32, id: &str, first_width: u32) -> (u32, u32) {
+        let split = self.add(parent, id, NodeKind::Split(first_width));
+        let first = self.add(split, &format!("{id}-first"), NodeKind::Panel(None));
+        let second = self.add(split, &format!("{id}-second"), NodeKind::Panel(None));
+        (first, second)
     }
 
     /// Add a list you select items in. Add its items with

@@ -172,7 +172,15 @@ pub enum ViewKind {
         detail: Option<String>,
         icon: Option<Icon>,
     },
+    /// Two panes side by side, the first `first_width` points wide,
+    /// whose children are the two panels.
+    Split {
+        first_width: u32,
+    },
 }
+
+/// The narrowest and widest a split's first pane may be, in points.
+pub const SPLIT_WIDTHS: std::ops::RangeInclusive<u32> = 160..=640;
 
 /// Why a node list or a virtual list's rows can't be drawn. The message
 /// names the rule and the node, for the error shown in place of the view.
@@ -326,6 +334,7 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Entry(_) => "entry",
         NodeKind::Heading(_) => "heading",
         NodeKind::Empty(_) => "empty state",
+        NodeKind::Split(_) => "split",
     }
 }
 
@@ -351,6 +360,12 @@ fn check_node(node: &Node) -> Result<(), ViewError> {
         NodeKind::Heading(heading) if blank(&heading.text) => Err(unlabeled()),
         NodeKind::Empty(empty) if blank(&empty.title) => Err(unlabeled()),
         NodeKind::Heading(_) | NodeKind::Empty(_) => Ok(()),
+        NodeKind::Split(width) if !SPLIT_WIDTHS.contains(width) => invalid(format!(
+            "The split {id}'s first pane is {width} points wide; it must be {} to {}.",
+            SPLIT_WIDTHS.start(),
+            SPLIT_WIDTHS.end()
+        )),
+        NodeKind::Split(_) => Ok(()),
         NodeKind::Button(label)
         | NodeKind::Menu(label)
         | NodeKind::Board(label)
@@ -636,6 +651,18 @@ fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
             }
             Ok(())
         }
+        NodeKind::Split(_) => {
+            let count = parent.children.len();
+            let panels = children
+                .filter(|child| matches!(child.kind, NodeKind::Panel(_)))
+                .count();
+            if count != 2 || panels != 2 {
+                return misplaced(format!(
+                    "The split {id} holds {count} nodes and {panels} panels; it holds two panels."
+                ));
+            }
+            Ok(())
+        }
         NodeKind::Empty(_) => {
             for child in children {
                 if !matches!(child.kind, NodeKind::Button(_)) {
@@ -839,6 +866,9 @@ fn build(
             title: empty.title.clone(),
             detail: empty.detail.clone().filter(|detail| !blank(detail)),
             icon: empty.icon,
+        },
+        NodeKind::Split(width) => ViewKind::Split {
+            first_width: *width,
         },
     };
     let children: Vec<ViewNode> = node

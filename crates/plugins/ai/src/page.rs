@@ -8,12 +8,15 @@ use plugin_sdk::{
         self, Chat, Message, MessageKind, MessageStatus, Provider, Request, Retention, Run,
         RunStatus, ToolDefinition,
     },
+    navigation::{self, SettingsSection},
 };
 
 use crate::{State, reason, web};
 
 /// The node IDs events name.
 const NEW_CHAT_BUTTON: &str = "new-chat";
+/// The empty state's button that opens Settings on AI.
+const OPEN_AI_SETTINGS: &str = "open-ai-settings";
 const CHATS: &str = "chats";
 const COMPOSER: &str = "composer";
 const PROVIDER: &str = "provider";
@@ -90,13 +93,14 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
     if busy {
         view.button(View::ROOT, STOP, "Stop");
     } else if providers.is_empty() {
-        view.empty_state(
+        let empty = view.empty_state(
             View::ROOT,
             "no-providers",
             "Connect an AI provider",
-            Some("Add a provider and its key in Settings, under AI providers, to start a chat."),
+            Some("Add a provider and its key to start chatting."),
             Some(Icon::Sparkle),
         );
+        view.button(empty, OPEN_AI_SETTINGS, "Open AI settings");
     } else {
         if stopped_before_answering(&messages) {
             view.button(View::ROOT, RESUME, "Resume");
@@ -472,6 +476,11 @@ pub(crate) fn sidebar(state: &State) -> Vec<Node> {
 /// Something you did on the page or in its sidebar section.
 pub(crate) fn handle(state: &mut State, event: Event) {
     match event {
+        Event::Pressed(node) if node == OPEN_AI_SETTINGS => {
+            if let Err(error) = navigation::open_settings(SettingsSection::Ai) {
+                state.notice = Some(reason(&error));
+            }
+        }
         Event::Pressed(node) if node == NEW_CHAT_BUTTON => {
             state.chat = None;
             state.notice = None;

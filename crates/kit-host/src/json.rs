@@ -126,6 +126,7 @@ fn kind(kind: &ViewKind) -> Value {
             "empty",
             json!({ "title": title, "detail": detail, "icon": icon.map(icon_name) }),
         ),
+        ViewKind::Split { first_width } => tagged("split", json!(first_width)),
     }
 }
 

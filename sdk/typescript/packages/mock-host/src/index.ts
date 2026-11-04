@@ -80,6 +80,7 @@ export interface Provider {
 export type Opening =
 	| { kind: 'object'; id: string; placement: 'preview' | 'new-tab' }
 	| { kind: 'page'; page: string }
+	| { kind: 'settings'; section: 'plugins' | 'ai' | 'sync' }
 	| { kind: 'trash'; id: string };
 
 export interface MockHostOptions {
@@ -535,6 +536,10 @@ export class MockHost {
 				openPage: (page: string) => {
 					navigation();
 					this.openings.push({ kind: 'page', page });
+				},
+				openSettings: (section: 'plugins' | 'ai' | 'sync') => {
+					navigation();
+					this.openings.push({ kind: 'settings', section });
 				},
 				trashObject: (id: string) => {
 					const store = objectsFor(id);

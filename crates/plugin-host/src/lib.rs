@@ -40,8 +40,8 @@ pub use instance::{
     AiWebResult, Calendar, CalendarEntry, CalendarMode, Check, Choice, Column, ColumnPress,
     Command, EmptyState, Event, Field, Form, Heading, HeadingLevel, Icon, InboxSection, Input,
     Item, ItemList, MenuItem, Move, NameField, Naming, Node, NodeKind, ObjectType, Page, Placement,
-    PluginError, Registration, Services, SortOrder, Submission, Table, Target, Tool, Value,
-    VirtualList, VirtualRow,
+    PluginError, Registration, Services, SettingsSection, SortOrder, Submission, Table, Target,
+    Tool, Value, VirtualList, VirtualRow,
 };
 pub use manifest::{
     Capability, Grant, INTERFACE_VERSIONS, MANIFEST_FILE, Platform, PluginManifest, read_manifest,

@@ -608,6 +608,22 @@ Where an object opens.
   others, which stays open.
 
 
+#### <a id="settings_section"></a>`enum settings-section`
+
+A section of Settings a plugin may open.
+
+##### Enum Cases
+
+- <a id="settings_section.plugins"></a>`plugins`
+  <p>Plugins, where you turn plugins on and off.
+
+- <a id="settings_section.ai"></a>`ai`
+  <p>AI, where you add AI providers and choose what they may read.
+
+- <a id="settings_section.sync"></a>`sync`
+  <p>Sync and devices.
+
+
 ----
 
 ### Functions
@@ -637,6 +653,19 @@ Show the plugin's own page with this ID.
 ##### Return values
 
 - <a id="open_page.0"></a> result<_, [`error`](#error)>
+
+#### <a id="open_settings"></a>`open-settings: func`
+
+Open Settings on `section`, as a page's "Open AI settings" button
+does.
+
+##### Params
+
+- <a id="open_settings.section"></a>`section`: [`settings-section`](#settings_section)
+
+##### Return values
+
+- <a id="open_settings.0"></a> result<_, [`error`](#error)>
 
 #### <a id="trash_object"></a>`trash-object: func`
 
@@ -1649,6 +1678,12 @@ What a page or a section shows while it holds nothing.
 - <a id="node_kind.empty"></a>`empty`: [`empty-state`](#empty_state)
   <p>An empty page or section. Its children are buttons under its text.
 
+- <a id="node_kind.split"></a>`split`: `u32`
+  <p>Two panes side by side, each scrolling on its own: the first this
+  many points wide, from 160 to 640, with a line on its right, and the
+  second taking the rest of the width. Its children are the two panes,
+  each a panel.
+
 
 #### <a id="node"></a>`record node`
 
@@ -1664,9 +1699,9 @@ What a page or a section shows while it holds nothing.
   <p>Indices into the view's node list. Panels and forms hold the nodes
   they lay out, lists their items, tables their rows, boards their
   columns, columns their cards, calendars their entries, menus their
-  items, headings their buttons and choices, and empty states their
-  buttons; a row, a card or a button may hold one menu, and an item one
-  menu or one name field.
+  items, headings their buttons and choices, empty states their
+  buttons, and splits their two panels; a row, a card or a button may
+  hold one menu, and an item one menu or one name field.
 
 
 #### <a id="target"></a>`record target`

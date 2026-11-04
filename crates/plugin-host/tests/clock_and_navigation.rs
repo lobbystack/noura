@@ -59,6 +59,10 @@ impl Navigation for Opener {
         self.answer(format!("page {page}"))
     }
 
+    fn open_settings(&self, section: plugin_host::SettingsSection) -> Result<(), ServiceError> {
+        self.answer(format!("settings {section:?}"))
+    }
+
     fn trash_object(&self, id: &str) -> Result<(), ServiceError> {
         self.answer(format!("trash {id}"))
     }

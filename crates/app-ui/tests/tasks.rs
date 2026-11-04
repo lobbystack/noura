@@ -794,3 +794,33 @@ fn rename_shows_the_name_in_a_field_in_the_row_and_enter_saves_it() {
             .is_none()
     );
 }
+
+#[test]
+fn the_page_shows_the_list_beside_the_selected_task_or_select_a_task() {
+    let Some(Opened {
+        mut harness,
+        _folders,
+        ..
+    }) = opened()
+    else {
+        return;
+    };
+    harness
+        .get_by_role_and_label(Role::ListBox, "Views")
+        .get_by_role_and_label(Role::ListBoxOption, "All")
+        .click();
+    wait_until(&mut harness, |harness| {
+        task_list(harness).contains(&"Read the manual".to_owned())
+    });
+    harness.get_by_label("Select a task");
+
+    harness
+        .get_by_role_and_label(Role::ListBox, "Task list")
+        .get_by_role_and_label(Role::ListBoxOption, "Read the manual")
+        .click();
+    wait_until(&mut harness, |harness| {
+        harness.query_by_label("Priority: High").is_some()
+    });
+    assert!(harness.query_by_label("Select a task").is_none());
+    harness.get_by_role_and_label(Role::Heading, "Read the manual");
+}

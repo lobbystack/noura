@@ -648,3 +648,38 @@ fn a_long_input_scrolls_and_keeps_deny_and_allow_once_in_view() {
     }
     assert_eq!(focused(harness).as_deref(), Some("Deny"));
 }
+
+#[test]
+fn without_a_provider_the_page_offers_open_ai_settings_which_opens_settings_on_ai() {
+    let Some(component) = plugins::built("ai_plugin") else {
+        return;
+    };
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    let plugin = plugins::folder(parent.path(), MANIFEST, "ai_plugin.wasm", &component);
+    plugins::install_and_enable(app_data.path(), &plugin, "ai");
+    let system = FakeSystem::new(Platform::current());
+    let mut harness = harness_with(app_data.path(), FakePicker::default(), system);
+    settle(&mut harness);
+    open_page(&mut harness, "AI");
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::Button, "Open AI settings")
+            .is_some()
+    });
+    harness.get_by_label("Connect an AI provider");
+
+    harness
+        .get_by_role_and_label(Role::Button, "Open AI settings")
+        .click();
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::Dialog, "Settings")
+            .is_some()
+    });
+    assert_eq!(
+        harness.state().app().settings().unwrap().section,
+        app_core::settings_section::AI
+    );
+}

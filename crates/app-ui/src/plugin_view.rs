@@ -31,6 +31,61 @@ use crate::{
     theme::{Palette, radius},
 };
 
+/// Two panes side by side, as the legacy Tasks page's list and detail:
+/// they fill the rest of the page from edge to edge, the first
+/// `first_width` points wide with a line on its right, and each scrolls on
+/// its own. A pane's panel draws no box.
+fn split(ui: &mut Ui, node: &ViewNode, first_width: u32, kit: &mut Kit) {
+    let palette = Palette::of(ui.ctx());
+    // The page keeps 24 points around its contents; the panes run past
+    // them to the page's edges, as the legacy panes did.
+    let available = ui.available_rect_before_wrap();
+    let height = ui
+        .clip_rect()
+        .bottom()
+        .min(available.bottom() + 24.0)
+        .max(available.top() + 240.0)
+        - available.top();
+    let rect = egui::Rect::from_min_size(
+        available.min - egui::vec2(24.0, 0.0),
+        egui::vec2(available.width() + 48.0, height),
+    );
+    ui.allocate_rect(rect, egui::Sense::hover());
+    let first = (first_width as f32).min(rect.width() / 2.0);
+    let line = rect.left() + first;
+    ui.painter()
+        .vline(line, rect.y_range(), Stroke::new(1.0, palette.border));
+    let panes = [
+        egui::Rect::from_min_max(rect.min, egui::pos2(line, rect.bottom())),
+        egui::Rect::from_min_max(egui::pos2(line + 1.0, rect.top()), rect.max),
+    ];
+    for (index, (pane, child)) in panes.into_iter().zip(&node.children).enumerate() {
+        let mut pane_ui = ui.new_child(
+            UiBuilder::new()
+                .max_rect(pane)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        egui::ScrollArea::vertical()
+            .id_salt((&node.id, index))
+            .auto_shrink(false)
+            .show(&mut pane_ui, |ui| {
+                Frame::new().inner_margin(Margin::same(8)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let builder = UiBuilder::new().accessibility_role(Role::Group);
+                    let builder = match &child.kind {
+                        ViewKind::Panel { label: Some(label) } => {
+                            builder.accessibility_label(label)
+                        }
+                        _ => builder,
+                    };
+                    ui.push_id(&child.id, |ui| {
+                        ui.scope_builder(builder, |ui| children(ui, &child.children, kit));
+                    });
+                });
+            });
+    }
+}
+
 /// A title over a group in the sidebar, as the legacy sidebar's section
 /// labels: 12 px medium in the faded foreground, after a caret.
 fn sidebar_label(ui: &mut Ui, text: &str) {
@@ -416,6 +471,7 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             rows::list(ui, node, &options, kit);
         }
         ViewKind::Board { label } => board::board(ui, node, label, kit),
+        ViewKind::Split { first_width } => split(ui, node, *first_width, kit),
         ViewKind::Calendar { label, mode, date } => {
             calendar::calendar(ui, node, label, *mode, date, kit);
         }
