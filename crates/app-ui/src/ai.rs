@@ -1,15 +1,13 @@
-//! What the kernel draws for AI: the AI providers section of Settings,
-//! where you add providers, keep their keys in the credential store and
-//! consent for the open workspace, the prompt that asks before a provider
+//! What the kernel draws for AI: the AI section of Settings, where you
+//! connect a provider by pasting its key, which goes to the credential
+//! store, and consent for the open workspace, the prompt that asks before a provider
 //! receives the workspace's content, and the prompt that asks before a
 //! tool call the model wants runs. Plugins draw none of them, so no
 //! plugin can show a prompt that grants consent, allow its own tool calls
 //! or read a key.
 
-use app_core::{AiConsentPrompt, AiProviderInput, AiProviderRow, App, DEFAULT_CONTEXT_WINDOW};
-use egui::{
-    Button, ComboBox, Frame, Id, Margin, RichText, Stroke, TextEdit, Ui, UiBuilder, accesskit::Role,
-};
+use app_core::{AiConsentPrompt, AiProviderInput, AiProviderRow, App};
+use egui::{Button, Frame, Id, Margin, RichText, Stroke, TextEdit, Ui, UiBuilder, accesskit::Role};
 use zeroize::Zeroizing;
 
 use crate::{
@@ -17,13 +15,40 @@ use crate::{
     theme::{Palette, TITLE_SIZE, radius},
 };
 
-/// What the AI providers section remembers between frames.
+/// What the AI section remembers between frames.
 #[derive(Default)]
 pub(crate) struct AiSettingsView {
-    /// The provider form, while you add or edit one.
-    form: Option<ProviderForm>,
+    /// The provider row you opened, by its kind, or [`CUSTOM`].
+    open: Option<String>,
+    /// The key being pasted in the open row. It leaves memory when the
+    /// row closes or the key saves.
+    key: Zeroizing<String>,
+    /// Local or custom's fields.
+    custom: CustomForm,
     /// Why the last change to a provider didn't go in.
     problem: Option<String>,
+}
+
+/// The row for providers that need an address: Ollama and servers that
+/// speak OpenAI's interface.
+const CUSTOM: &str = "custom";
+
+/// Local or custom's fields: only what such a provider needs.
+#[derive(Default)]
+struct CustomForm {
+    /// A server that speaks OpenAI's interface rather than Ollama.
+    compatible: bool,
+    address: String,
+    model: String,
+    key: Zeroizing<String>,
+}
+
+/// The name Settings shows for a provider kind.
+fn kind_name<'a>(app: &App, kind: &'a str) -> &'a str {
+    app.ai_provider_kinds()
+        .iter()
+        .find(|(known, _)| *known == kind)
+        .map_or(kind, |(_, name)| name)
 }
 
 /// A change to one provider, by its ID.
@@ -45,70 +70,8 @@ impl Change {
     }
 }
 
-/// A provider being added or edited.
-struct ProviderForm {
-    /// The provider being edited, or none for a new one.
-    id: Option<String>,
-    name: String,
-    kind: String,
-    model: String,
-    endpoint: String,
-    /// A new key. It leaves memory when the form closes.
-    key: Zeroizing<String>,
-    /// The context window in tokens, as you typed it.
-    context_window: String,
-    enabled: bool,
-    /// Whether the provider has a key already.
-    has_key: bool,
-    /// Why the last save didn't go in.
-    problem: Option<String>,
-}
-
-impl ProviderForm {
-    fn new(kind: &str) -> Self {
-        Self {
-            id: None,
-            name: String::new(),
-            kind: kind.to_owned(),
-            model: String::new(),
-            endpoint: String::new(),
-            key: Zeroizing::new(String::new()),
-            context_window: String::new(),
-            enabled: true,
-            has_key: false,
-            problem: None,
-        }
-    }
-
-    fn of(row: &AiProviderRow) -> Self {
-        Self {
-            id: Some(row.id.clone()),
-            name: row.name.clone(),
-            kind: row.kind.clone(),
-            model: row.model.clone(),
-            endpoint: row.endpoint.clone().unwrap_or_default(),
-            key: Zeroizing::new(String::new()),
-            context_window: row
-                .context_window
-                .map(|window| window.to_string())
-                .unwrap_or_default(),
-            enabled: row.enabled,
-            has_key: row.has_key,
-            problem: None,
-        }
-    }
-}
-
-/// The name Settings shows for a provider kind.
-fn kind_name<'a>(app: &App, kind: &'a str) -> &'a str {
-    app.ai_provider_kinds()
-        .iter()
-        .find(|(known, _)| *known == kind)
-        .map_or(kind, |(_, name)| name)
-}
-
 /// A section's title with an optional button at its end, then a line
-/// under it, as the legacy AI settings drew Providers & models.
+/// under it, as the legacy AI settings drew its sections.
 fn section_title(ui: &mut Ui, title: &str, text: Option<&str>, add: impl FnOnce(&mut Ui)) {
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
@@ -132,122 +95,259 @@ fn row_line(ui: &mut Ui) {
         .hline(ui.max_rect().x_range(), y, Stroke::new(1.0, palette.border));
 }
 
-/// The AI section of Settings: the providers and models on this
-/// computer, then what each may read in the open workspace.
+/// A row you open and close: its name, a badge at its end and a caret.
+/// Returns whether you clicked it.
+fn provider_row(
+    ui: &mut Ui,
+    name: &str,
+    badge_text: Option<(&str, BadgeLook)>,
+    open: bool,
+) -> bool {
+    let palette = Palette::of(ui.ctx());
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 48.0), egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(Role::Button, true, name));
+    ui.ctx()
+        .accesskit_node_builder(response.id, |node| node.set_expanded(open));
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        if response.hovered() {
+            painter.rect_filled(
+                rect,
+                crate::theme::radius(1.0),
+                palette.muted.gamma_multiply(0.5),
+            );
+        }
+        if response.has_focus() {
+            crate::common::focus_ring(painter, rect, crate::theme::radius(1.0), &palette);
+        }
+        let title = painter.layout_no_wrap(
+            name.to_owned(),
+            crate::theme::font(
+                ui.ctx(),
+                crate::theme::BODY_SIZE,
+                crate::theme::Weight::Medium,
+            ),
+            palette.foreground,
+        );
+        painter.galley(
+            egui::pos2(rect.left() + 8.0, rect.center().y - title.size().y / 2.0),
+            title,
+            palette.foreground,
+        );
+        let caret = egui::Rect::from_center_size(
+            egui::pos2(rect.right() - 16.0, rect.center().y),
+            egui::vec2(16.0, 16.0),
+        );
+        let icon = if open {
+            crate::icons::CARET_DOWN
+        } else {
+            crate::icons::CARET_RIGHT
+        };
+        crate::icons::paint(painter, icon, caret, palette.muted_foreground, false);
+    }
+    if let Some((text, look)) = badge_text {
+        let galley = ui.painter().layout_no_wrap(
+            text.to_owned(),
+            crate::theme::font(
+                ui.ctx(),
+                crate::theme::SUPPORTING_SIZE,
+                crate::theme::Weight::Medium,
+            ),
+            palette.foreground,
+        );
+        let width = galley.size().x + 16.0;
+        let badge_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.right() - 32.0 - width / 2.0, rect.center().y),
+            egui::vec2(width, 20.0),
+        );
+        let mut badge_ui = ui.new_child(UiBuilder::new().max_rect(badge_rect));
+        badge(&mut badge_ui, text, look);
+    }
+    response.clicked()
+}
+
+/// The open row's key field: its title with a key icon, what to paste,
+/// the field and Save key, then Remove key once it is connected. Returns
+/// whether you saved the key.
+fn key_field(
+    ui: &mut Ui,
+    name: &str,
+    key: &mut Zeroizing<String>,
+    connected: bool,
+    remove: &mut bool,
+) -> bool {
+    let mut save = false;
+    Frame::new()
+        .inner_margin(Margin {
+            left: 8,
+            right: 8,
+            top: 0,
+            bottom: 16,
+        })
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 8.0;
+            ui.horizontal(|ui| {
+                let palette = Palette::of(ui.ctx());
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                crate::icons::paint(
+                    ui.painter(),
+                    crate::icons::KEY,
+                    rect,
+                    palette.foreground,
+                    false,
+                );
+                crate::common::field_label(ui, name);
+            });
+            description(ui, "Paste a key you created with the provider.");
+            ui.horizontal(|ui| {
+                let field = ui
+                    .add(
+                        TextEdit::singleline(&mut **key)
+                            .password(true)
+                            .hint_text("sk-...")
+                            .desired_width(ui.available_width() - 100.0),
+                    )
+                    .accessible_name("API key");
+                save |= field.lost_focus()
+                    && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                    && !key.trim().is_empty();
+                save |= Btn::new("Save key")
+                    .variant(Variant::Default)
+                    .enabled(!key.trim().is_empty())
+                    .show(ui)
+                    .clicked();
+            });
+            if connected {
+                *remove = Btn::new("Remove key")
+                    .variant(Variant::Ghost)
+                    .size(Size::Sm)
+                    .show(ui)
+                    .clicked();
+            }
+        });
+    save
+}
+
+/// The AI section of Settings: the providers Noura connects to, each
+/// opening a key field, then Local or custom, then what each provider
+/// may read in the open workspace.
 pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
     if let Some(problem) = app.ai_settings_problem() {
         alert(ui, &problem);
         return;
     }
     let rows = app.ai_providers();
+    let choices = app.ai_provider_choices();
     let workspace = app.workspace().map(|workspace| workspace.name());
-    let mut edit = None;
     let mut change = None;
-    let mut add = false;
     ui.spacing_mut().item_spacing.y = 8.0;
-    section_title(ui, "Providers & models", None, |ui| {
-        if view.form.is_none() {
-            add = Btn::new("Add provider")
-                .variant(Variant::Default)
-                .size(Size::Sm)
-                .show(ui)
-                .clicked();
-        }
-    });
+    section_title(ui, "Providers", None, |_| {});
     if let Some(problem) = &view.problem {
         alert(ui, problem);
     }
-    if rows.is_empty() {
-        ui.add_space(8.0);
-        ui.vertical_centered(|ui| {
-            ui.label(RichText::new("No AI providers").font(crate::theme::font(
-                ui.ctx(),
-                TITLE_SIZE,
-                crate::theme::Weight::Medium,
-            )));
-        });
-        ui.add_space(8.0);
-    }
-    for (index, row) in rows.iter().enumerate() {
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let mut toggled = None;
+    let mut connect = None;
+    for (index, choice) in choices.iter().enumerate() {
         if index > 0 {
             row_line(ui);
         }
+        let open = view.open.as_deref() == Some(choice.kind);
         let builder = UiBuilder::new()
             .accessibility_role(Role::Group)
-            .accessibility_label(&row.name);
-        ui.push_id(("ai-provider", &row.id), |ui| {
+            .accessibility_label(choice.name);
+        ui.push_id(("ai-provider", choice.kind), |ui| {
             ui.scope_builder(builder, |ui| {
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 2.0;
-                        ui.horizontal(|ui| {
-                            crate::common::field_label(ui, &row.name);
-                            let (text, look) = if row.enabled {
-                                ("Enabled", BadgeLook::Secondary)
-                            } else {
-                                ("Disabled", BadgeLook::Outline)
-                            };
-                            badge(ui, text, look);
-                        });
-                        crate::common::muted(
-                            ui,
-                            &format!("{} \u{b7} {}", kind_name(app, &row.kind), row.model),
-                        );
-                        if let Some(endpoint) = &row.endpoint {
-                            crate::common::muted(ui, endpoint);
-                        }
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        if Btn::new("Remove")
-                            .variant(Variant::Ghost)
-                            .size(Size::Sm)
-                            .show(ui)
-                            .clicked()
-                        {
-                            change = Some(Change::Remove(row.id.clone()));
-                        }
-                        if row.has_key
-                            && Btn::new("Remove key")
-                                .variant(Variant::Ghost)
-                                .size(Size::Sm)
-                                .show(ui)
-                                .clicked()
-                        {
-                            change = Some(Change::RemoveKey(row.id.clone()));
-                        }
-                        if Btn::new("Edit").size(Size::Sm).show(ui).clicked() {
-                            edit = Some(ProviderForm::of(row));
-                        }
-                        if row.has_key {
-                            badge(ui, "Key set", BadgeLook::Secondary);
-                        } else {
-                            badge(ui, "No key", BadgeLook::Outline);
-                        }
-                    });
-                });
-                ui.add_space(8.0);
+                let status = if choice.connected {
+                    ("Connected", BadgeLook::Secondary)
+                } else {
+                    ("Not connected", BadgeLook::Outline)
+                };
+                if provider_row(ui, choice.name, Some(status), open) {
+                    toggled = Some(choice.kind.to_owned());
+                }
+                if open {
+                    let mut remove = false;
+                    if key_field(
+                        ui,
+                        choice.name,
+                        &mut view.key,
+                        choice.connected,
+                        &mut remove,
+                    ) {
+                        connect = Some(choice.kind);
+                    }
+                    if remove && let Some(id) = &choice.provider {
+                        change = Some(Change::RemoveKey(id.clone()));
+                    }
+                }
             });
         });
     }
-    if add {
-        let kind = app
-            .ai_provider_kinds()
-            .first()
-            .map_or("openai", |(kind, _)| kind);
-        view.form = Some(ProviderForm::new(kind));
-    }
-    if let Some(form) = edit {
-        view.form = Some(form);
-    }
-    if let Some(form) = &mut view.form {
-        ui.add_space(8.0);
-        if provider_form(ui, app, form) {
-            view.form = None;
+    // Local or custom, last: providers that need an address.
+    row_line(ui);
+    let custom_rows: Vec<&AiProviderRow> = rows
+        .iter()
+        .filter(|row| {
+            !choices
+                .iter()
+                .any(|choice| choice.provider.as_deref() == Some(row.id.as_str()))
+        })
+        .collect();
+    let open = view.open.as_deref() == Some(CUSTOM);
+    let builder = UiBuilder::new()
+        .accessibility_role(Role::Group)
+        .accessibility_label("Local or custom");
+    ui.scope_builder(builder, |ui| {
+        let count = (!custom_rows.is_empty()).then(|| format!("{} set up", custom_rows.len()));
+        let status = count.as_deref().map(|text| (text, BadgeLook::Secondary));
+        if provider_row(ui, "Local or custom", status, open) {
+            toggled = Some(CUSTOM.to_owned());
+        }
+        if open {
+            for row in &custom_rows {
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(&row.name).size(crate::theme::BODY_SIZE));
+                    crate::common::muted(ui, &row.model);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let label = format!("Remove {}", row.name);
+                        let response = Btn::new("Remove")
+                            .variant(Variant::Ghost)
+                            .size(Size::Sm)
+                            .show(ui);
+                        ui.ctx().accesskit_node_builder(response.id, |node| {
+                            node.set_label(label);
+                        });
+                        if response.clicked() {
+                            change = Some(Change::Remove(row.id.clone()));
+                        }
+                    });
+                });
+            }
+            if custom_form(ui, app, &mut view.custom, &mut view.problem) {
+                view.open = None;
+            }
+        }
+    });
+    if let Some(kind) = connect {
+        match app.connect_ai_provider(kind, &view.key) {
+            Ok(_) => {
+                view.problem = None;
+                view.key = Zeroizing::new(String::new());
+                view.open = None;
+            }
+            Err(error) => view.problem = Some(error.message),
         }
     }
+    if let Some(kind) = toggled {
+        view.key = Zeroizing::new(String::new());
+        view.open = (view.open.as_deref() != Some(kind.as_str())).then_some(kind);
+    }
 
+    ui.spacing_mut().item_spacing.y = 8.0;
     ui.add_space(32.0);
     section_title(
         ui,
@@ -257,7 +357,7 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
     );
     match &workspace {
         _ if rows.is_empty() => {
-            description(ui, "Add a provider first.");
+            description(ui, "Connect a provider first.");
         }
         None => {
             description(ui, "Open a workspace to choose what it shares.");
@@ -324,114 +424,109 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
     }
 }
 
-/// The form for a new or edited provider. Returns whether it closed.
-fn provider_form(ui: &mut Ui, app: &mut App, form: &mut ProviderForm) -> bool {
-    let title = if form.id.is_some() {
-        "Edit provider"
-    } else {
-        "Add provider"
-    };
+/// Local or custom's form: Ollama or a server that speaks OpenAI's
+/// interface, its address, its model and, for the latter, its key.
+/// Returns whether it saved.
+fn custom_form(
+    ui: &mut Ui,
+    app: &mut App,
+    form: &mut CustomForm,
+    problem: &mut Option<String>,
+) -> bool {
+    let mut saved = false;
     let builder = UiBuilder::new()
         .accessibility_role(Role::Form)
-        .accessibility_label(title);
-    let mut closed = false;
+        .accessibility_label("Add a local or custom provider");
     ui.scope_builder(builder, |ui| {
-        boxed(ui, |ui| {
-            ui.label(RichText::new(title).strong());
-            text_field(ui, "Name", &mut form.name, false);
-            ui.label("Kind");
-            ComboBox::from_id_salt("ai-provider-kind")
-                .selected_text(kind_name(app, &form.kind).to_owned())
-                .show_ui(ui, |ui| {
-                    for (kind, name) in app.ai_provider_kinds() {
-                        ui.selectable_value(&mut form.kind, (*kind).to_owned(), *name);
-                    }
-                })
-                .response
-                .accessible_name("Kind");
-            text_field(ui, "Model", &mut form.model, false);
-            text_field(ui, "Endpoint (optional)", &mut form.endpoint, false);
-            description(
-                ui,
-                "Use an HTTPS address. Plain HTTP works only for a server on this computer, \
-                 such as Ollama.",
-            );
-            let key_label = if form.has_key {
-                "New key (leave empty to keep the saved one)"
-            } else {
-                "Key"
-            };
-            text_field(ui, key_label, &mut form.key, true);
-            text_field(
-                ui,
-                "Context window in tokens (optional)",
-                &mut form.context_window,
-                false,
-            );
-            description(
-                ui,
-                &format!(
-                    "Noura summarizes a chat's earlier messages once they no longer fit. \
-                     Without a number, it counts on {} tokens.",
-                    thousands(DEFAULT_CONTEXT_WINDOW)
-                ),
-            );
-            ui.checkbox(&mut form.enabled, "Turn this provider on");
-            if let Some(problem) = &form.problem {
-                alert(ui, problem);
-            }
-            ui.horizontal(|ui| {
-                let ready = !form.model.trim().is_empty() && !form.name.trim().is_empty();
-                if primary_button(ui, "Save provider", ready).clicked() {
-                    let endpoint = form.endpoint.trim();
-                    let window = form.context_window.replace([',', ' '], "");
-                    let context_window = match window.parse::<u32>() {
-                        _ if window.is_empty() => None,
-                        Ok(window) if window > 0 => Some(window),
-                        _ => {
-                            form.problem = Some(
-                                "Give the context window as a whole number of tokens, such as \
-                                 8192."
-                                    .to_owned(),
-                            );
-                            return;
-                        }
-                    };
-                    let saved = app.save_ai_provider(AiProviderInput {
-                        id: form.id.clone(),
-                        name: form.name.clone(),
-                        kind: form.kind.clone(),
-                        model: form.model.clone(),
-                        endpoint: (!endpoint.is_empty()).then(|| endpoint.to_owned()),
-                        enabled: form.enabled,
-                        key: (!form.key.trim().is_empty()).then(|| (*form.key).clone()),
-                        context_window,
-                    });
-                    match saved {
-                        Ok(_) => closed = true,
-                        Err(error) => form.problem = Some(error.message),
-                    }
+        Frame::new()
+            .inner_margin(Margin {
+                left: 8,
+                right: 8,
+                top: 8,
+                bottom: 16,
+            })
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 8.0;
+                let mut compatible = form.compatible;
+                let builder = UiBuilder::new()
+                    .accessibility_role(Role::RadioGroup)
+                    .accessibility_label("Server");
+                ui.scope_builder(builder, |ui| {
+                    crate::common::segmented(
+                        ui,
+                        &[(false, "Ollama"), (true, "OpenAI-compatible")],
+                        &mut compatible,
+                    );
+                });
+                form.compatible = compatible;
+                let hint = if form.compatible {
+                    "https://"
+                } else {
+                    "http://localhost:11434/v1/"
+                };
+                ui.add(
+                    TextEdit::singleline(&mut form.address)
+                        .hint_text(hint)
+                        .desired_width(f32::INFINITY),
+                )
+                .accessible_name("Address");
+                ui.add(
+                    TextEdit::singleline(&mut form.model)
+                        .hint_text("Model")
+                        .desired_width(f32::INFINITY),
+                )
+                .accessible_name("Model");
+                if form.compatible {
+                    ui.add(
+                        TextEdit::singleline(&mut *form.key)
+                            .password(true)
+                            .hint_text("sk-...")
+                            .desired_width(f32::INFINITY),
+                    )
+                    .accessible_name("API key");
                 }
-                if ui.button("Cancel").clicked() {
-                    closed = true;
+                let ready = !form.model.trim().is_empty()
+                    && (!form.compatible || !form.address.trim().is_empty());
+                if Btn::new("Save provider")
+                    .variant(Variant::Default)
+                    .enabled(ready)
+                    .show(ui)
+                    .clicked()
+                {
+                    let (kind, name) = if form.compatible {
+                        ("openai", "Custom")
+                    } else {
+                        ("ollama", "Ollama")
+                    };
+                    let address = form.address.trim();
+                    let endpoint = match address {
+                        "" => Some("http://localhost:11434/v1/".to_owned()),
+                        address => Some(address.to_owned()),
+                    };
+                    let key = (form.compatible && !form.key.trim().is_empty())
+                        .then(|| (*form.key).clone());
+                    let result = app.save_ai_provider(AiProviderInput {
+                        id: None,
+                        name: name.to_owned(),
+                        kind: kind.to_owned(),
+                        model: form.model.trim().to_owned(),
+                        endpoint,
+                        enabled: true,
+                        key,
+                        context_window: None,
+                    });
+                    match result {
+                        Ok(_) => {
+                            *form = CustomForm::default();
+                            *problem = None;
+                            saved = true;
+                        }
+                        Err(error) => *problem = Some(error.message),
+                    }
                 }
             });
-        });
     });
-    closed
-}
-
-/// `number` with a comma between each group of three digits.
-fn thousands(number: u32) -> String {
-    let digits = number.to_string();
-    let mut grouped = String::new();
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(digit);
-    }
-    grouped
+    saved
 }
 
 /// A labeled one-line text field. A secret one hides what you type.

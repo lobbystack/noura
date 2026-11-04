@@ -293,8 +293,33 @@ fn noura_s_prompt_names_the_provider_starts_on_deny_and_escape_denies() {
     assert_eq!(opened.provider.requests.load(Ordering::SeqCst), 1);
 }
 
+/// Scroll the node `role` labeled `label` in the group `group` into view,
+/// then click it, as a click there does.
+fn click_in(harness: &mut Ui, group: (Role, &str), role: Role, label: &str) {
+    harness
+        .get_by_role_and_label(group.0, group.1)
+        .get_by_role_and_label(role, label)
+        .scroll_to_me();
+    run(harness);
+    harness
+        .get_by_role_and_label(group.0, group.1)
+        .get_by_role_and_label(role, label)
+        .click();
+    run(harness);
+}
+
+/// Scroll the field into view, focus it and type `text`.
+fn type_in(harness: &mut Ui, group: (Role, &str), role: Role, label: &str, text: &str) {
+    click_in(harness, group, role, label);
+    harness
+        .get_by_role_and_label(group.0, group.1)
+        .get_by_role_and_label(role, label)
+        .type_text(text);
+    run(harness);
+}
+
 #[test]
-fn the_provider_form_labels_each_field_and_hides_the_key() {
+fn a_listed_provider_connects_with_a_pasted_key_and_consent_stays_per_provider() {
     let Some(mut opened) = opened(false) else {
         return;
     };
@@ -306,102 +331,68 @@ fn the_provider_form_labels_each_field_and_hides_the_key() {
     run(harness);
     assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
 
+    // Each provider Noura connects to shows with whether it's connected.
+    let openai = harness.get_by_role_and_label(Role::Group, "OpenAI");
+    assert!(
+        texts(openai.query_all(By::new().role(Role::Label))).contains(&"Not connected".to_owned())
+    );
+    harness.get_by_role_and_label(Role::Group, "Anthropic");
+    harness.get_by_role_and_label(Role::Group, "Local or custom");
+
+    // Opening it shows one key field and Save key.
+    let openai = (Role::Group, "OpenAI");
+    click_in(harness, openai, Role::Button, "OpenAI");
+    harness.get_by_label("Paste a key you created with the provider.");
+    type_in(
+        harness,
+        openai,
+        Role::PasswordInput,
+        "API key",
+        "sk-ui-test-key",
+    );
+    click_in(harness, openai, Role::Button, "Save key");
+
+    let openai = harness.get_by_role_and_label(Role::Group, "OpenAI");
+    assert!(texts(openai.query_all(By::new().role(Role::Label))).contains(&"Connected".to_owned()));
+    let row = harness
+        .state()
+        .app()
+        .ai_providers()
+        .into_iter()
+        .find(|row| row.kind == "openai")
+        .expect("OpenAI is set up");
+    assert!(row.has_key && row.enabled);
+    assert_eq!(row.model, "gpt-4.1-mini");
+    assert!(
+        !all_labels(harness)
+            .iter()
+            .any(|label| label.contains("sk-ui-test-key"))
+    );
+
+    // Consent stays per provider and per workspace.
     let local = harness.get_by_role_and_label(Role::Group, "Local in this workspace");
     let shown = texts(local.query_all(By::new().role(Role::Label)));
     assert!(shown.contains(&"It can't receive Garden's content yet.".to_owned()));
     assert!(shown.contains(&"Not granted".to_owned()), "{shown:?}");
-    local.get_by_role_and_label(Role::Button, "Grant").click();
-    run(harness);
+    let consent = (Role::Group, "Local in this workspace");
+    click_in(harness, consent, Role::Button, "Grant");
     let local = harness.get_by_role_and_label(Role::Group, "Local in this workspace");
     let shown = texts(local.query_all(By::new().role(Role::Label)));
     assert!(shown.contains(&"You allowed it to receive Garden's content.".to_owned()));
     assert!(shown.contains(&"Granted".to_owned()), "{shown:?}");
     local.get_by_role_and_label(Role::Button, "Revoke");
 
-    harness
-        .get_by_role_and_label(Role::Button, "Add provider")
-        .click();
-    run(harness);
-    harness
-        .get_by_role_and_label(Role::Form, "Add provider")
-        .get_by_role_and_label(Role::TextInput, "Endpoint (optional)");
-    for (role, field, text) in [
-        (Role::TextInput, "Name", "Cloud"),
-        (Role::TextInput, "Model", "gpt-test"),
-        (Role::PasswordInput, "Key", "sk-ui-test-key"),
-    ] {
-        harness
-            .get_by_role_and_label(Role::Form, "Add provider")
-            .get_by_role_and_label(role, field)
-            .focus();
-        run(harness);
-        harness
-            .get_by_role_and_label(Role::Form, "Add provider")
-            .get_by_role_and_label(role, field)
-            .type_text(text);
-        run(harness);
-    }
-    harness
-        .get_by_role_and_label(Role::Form, "Add provider")
-        .get_by_role_and_label(Role::Button, "Save provider")
-        .click_accesskit();
-    run(harness);
-
-    let cloud = harness.get_by_role_and_label(Role::Group, "Cloud");
-    let shown = texts(cloud.query_all(By::new().role(Role::Label)));
+    // A connected provider offers Remove key.
+    click_in(harness, (Role::Group, "OpenAI"), Role::Button, "OpenAI");
+    click_in(harness, (Role::Group, "OpenAI"), Role::Button, "Remove key");
+    let openai = harness.get_by_role_and_label(Role::Group, "OpenAI");
     assert!(
-        shown.contains(&"Enabled".to_owned()) && shown.contains(&"Key set".to_owned()),
-        "{shown:?}"
+        texts(openai.query_all(By::new().role(Role::Label))).contains(&"Not connected".to_owned())
     );
-    assert!(
-        !all_labels(harness)
-            .iter()
-            .any(|label| label.contains("sk-ui-test-key"))
-    );
-    assert_eq!(context_window(harness, "Cloud"), None);
-}
-
-const CONTEXT_WINDOW: &str = "Context window in tokens (optional)";
-
-/// Open the form for a new provider and fill in `fields`.
-fn add_provider(harness: &mut Ui, fields: &[(&str, &str)]) {
-    harness
-        .get_by_role_and_label(Role::Button, "Add provider")
-        .click();
-    run(harness);
-    for (field, text) in fields {
-        harness
-            .get_by_role_and_label(Role::Form, "Add provider")
-            .get_by_role_and_label(Role::TextInput, field)
-            .focus();
-        run(harness);
-        harness
-            .get_by_role_and_label(Role::Form, "Add provider")
-            .get_by_role_and_label(Role::TextInput, field)
-            .type_text(text);
-        run(harness);
-    }
-    harness
-        .get_by_role_and_label(Role::Form, "Add provider")
-        .get_by_role_and_label(Role::Button, "Save provider")
-        .click_accesskit();
-    run(harness);
-}
-
-/// The context window of the provider `name`, as Noura saved it.
-fn context_window(harness: &Ui, name: &str) -> Option<u32> {
-    harness
-        .state()
-        .app()
-        .ai_providers()
-        .into_iter()
-        .find(|row| row.name == name)
-        .expect("the provider is saved")
-        .context_window
 }
 
 #[test]
-fn the_provider_form_takes_a_context_window_with_or_without_commas() {
+fn local_or_custom_takes_only_an_address_a_model_and_for_a_custom_server_a_key() {
     let Some(mut opened) = opened(false) else {
         return;
     };
@@ -411,46 +402,55 @@ fn the_provider_form_takes_a_context_window_with_or_without_commas() {
         .app_mut()
         .open_settings_at("ai-providers");
     run(harness);
-
-    // Text or zero saves nothing, and the form says what it takes.
-    for window in ["lots", "0"] {
-        add_provider(
-            harness,
-            &[
-                ("Name", "Cloud"),
-                ("Model", "gpt-test"),
-                (CONTEXT_WINDOW, window),
-            ],
-        );
-        let form = harness.get_by_role_and_label(Role::Form, "Add provider");
-        assert!(
-            texts(form.query_all(By::new().role(Role::Label))).contains(
-                &"Give the context window as a whole number of tokens, such as 8192.".to_owned()
-            ),
-            "{window}"
-        );
-        assert!(
-            harness
-                .query_by_role_and_label(Role::Group, "Cloud")
-                .is_none()
-        );
-        harness
-            .get_by_role_and_label(Role::Form, "Add provider")
-            .get_by_role_and_label(Role::Button, "Cancel")
-            .click_accesskit();
-        run(harness);
-    }
-
-    add_provider(
+    click_in(
         harness,
-        &[
-            ("Name", "Cloud"),
-            ("Model", "gpt-test"),
-            (CONTEXT_WINDOW, "16,384"),
-        ],
+        (Role::Group, "Local or custom"),
+        Role::Button,
+        "Local or custom",
     );
-    harness.get_by_role_and_label(Role::Group, "Cloud");
-    assert_eq!(context_window(harness, "Cloud"), Some(16_384));
+    let form = || "Add a local or custom provider";
+    // Ollama needs no key.
+    assert!(
+        harness
+            .get_by_role_and_label(Role::Form, form())
+            .query_by_role_and_label(Role::PasswordInput, "API key")
+            .is_none()
+    );
+    click_in(
+        harness,
+        (Role::Form, form()),
+        Role::RadioButton,
+        "OpenAI-compatible",
+    );
+    for (role, field, text) in [
+        (Role::TextInput, "Address", "https://models.example.com/v1/"),
+        (Role::TextInput, "Model", "house-model"),
+        (Role::PasswordInput, "API key", "sk-custom"),
+    ] {
+        type_in(harness, (Role::Form, form()), role, field, text);
+    }
+    click_in(harness, (Role::Form, form()), Role::Button, "Save provider");
+
+    let custom = harness
+        .state()
+        .app()
+        .ai_providers()
+        .into_iter()
+        .find(|row| row.name == "Custom")
+        .expect("the custom provider is saved");
+    assert_eq!(
+        (
+            custom.kind.as_str(),
+            custom.model.as_str(),
+            custom.endpoint.as_deref()
+        ),
+        (
+            "openai",
+            "house-model",
+            Some("https://models.example.com/v1/")
+        )
+    );
+    assert!(custom.has_key);
 }
 
 const TASKS_MANIFEST: &str = include_str!("../../plugins/tasks/plugin.toml");

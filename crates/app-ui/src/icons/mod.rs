@@ -84,6 +84,7 @@ icons! {
     SPINNER => SPINNER_REGULAR, SPINNER_FILL;
     BACK => ARROW_LEFT_REGULAR, ARROW_LEFT_FILL;
     FAILED => X_CIRCLE_REGULAR, X_CIRCLE_FILL;
+    KEY => KEY_REGULAR, KEY_FILL;
 }
 
 /// Draw `icon` in `rect`, in `color`, filled when `filled`.
@@ -208,6 +209,7 @@ mod tests {
             SPINNER,
             BACK,
             FAILED,
+            KEY,
         ] {
             for paths in [icon.regular, icon.fill] {
                 let image = render(paths, 24).expect(icon.name);

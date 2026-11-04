@@ -10,7 +10,8 @@ use local_core::AiStreamer;
 
 use super::{App, Change};
 use crate::{
-    AiConsentPrompt, AiProviderInput, AiProviderRow, AiToolPrompt, AppError, ai::provider_kinds,
+    AiConsentPrompt, AiProviderChoice, AiProviderInput, AiProviderRow, AiToolPrompt, AppError,
+    ai::{provider_choices, provider_kinds},
 };
 
 impl App {
@@ -24,6 +25,63 @@ impl App {
     /// Settings shows.
     pub fn ai_provider_kinds(&self) -> &'static [(&'static str, &'static str)] {
         provider_kinds()
+    }
+
+    /// The providers you connect with only a key, each with whether it is
+    /// connected.
+    pub fn ai_provider_choices(&self) -> Vec<AiProviderChoice> {
+        provider_choices(&self.ai_providers())
+    }
+
+    /// Connect the provider of `kind`, one of [`Self::ai_provider_choices`],
+    /// with `key`: the key goes to this computer's credential store, and a
+    /// provider you hadn't set up gets the kind's default model and turns
+    /// on. A provider you had keeps its settings. Returns its ID.
+    pub fn connect_ai_provider(&mut self, kind: &str, key: &str) -> Result<String, AppError> {
+        let Some(choice) = self
+            .ai_provider_choices()
+            .into_iter()
+            .find(|choice| choice.kind == kind)
+        else {
+            return Err(AppError::new(
+                "provider_kind_invalid",
+                "Noura doesn't connect to that provider with a key.",
+            ));
+        };
+        if key.trim().is_empty() {
+            return Err(AppError::new(
+                "provider_key_missing",
+                "Paste the provider's key.",
+            ));
+        }
+        let rows = self.ai_providers();
+        let input = match choice
+            .provider
+            .as_ref()
+            .and_then(|id| rows.iter().find(|row| row.id == *id))
+        {
+            Some(row) => AiProviderInput {
+                id: Some(row.id.clone()),
+                name: row.name.clone(),
+                kind: row.kind.clone(),
+                model: row.model.clone(),
+                endpoint: None,
+                enabled: row.enabled,
+                key: Some(key.to_owned()),
+                context_window: row.context_window,
+            },
+            None => AiProviderInput {
+                id: Some(choice.kind.to_owned()),
+                name: choice.name.to_owned(),
+                kind: choice.kind.to_owned(),
+                model: choice.default_model.to_owned(),
+                endpoint: None,
+                enabled: true,
+                key: Some(key.to_owned()),
+                context_window: None,
+            },
+        };
+        self.save_ai_provider(input)
     }
 
     /// Why Noura can't read its AI provider settings on this computer, if
