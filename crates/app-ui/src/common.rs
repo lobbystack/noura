@@ -3,8 +3,8 @@
 
 use app_core::NoticeKind;
 use egui::{
-    Button, Color32, Frame, Id, Key, Margin, Response, RichText, Sense, Spinner, Stroke, TextEdit,
-    Ui, UiBuilder, Widget, WidgetInfo, accesskit::Role, vec2,
+    Color32, Frame, Id, Key, Margin, Response, RichText, Sense, Spinner, Stroke, TextEdit, Ui,
+    UiBuilder, Widget, WidgetInfo, accesskit::Role, vec2,
 };
 
 use crate::{
@@ -40,8 +40,9 @@ pub(crate) fn muted(ui: &mut Ui, text: &str) -> Response {
     )
 }
 
-/// The current notice, if any, with Remove from recents when the notice
-/// offers it.
+/// The current notice, if any, as the legacy toast in the window's
+/// bottom right corner: its icon, title and message, with Remove from
+/// recents when the notice offers it, and Dismiss.
 pub(crate) fn notice(state: &mut NouraUi, ui: &mut Ui) {
     let Some(notice) = state.app.notice().cloned() else {
         return;
@@ -50,36 +51,77 @@ pub(crate) fn notice(state: &mut NouraUi, ui: &mut Ui) {
     let palette = Palette::of(ui.ctx());
     // A problem interrupts a screen reader; a finished action waits its
     // turn.
-    let (role, title_color) = match notice.kind {
-        NoticeKind::Problem => (Role::Alert, palette.destructive),
-        NoticeKind::Done => (Role::Status, palette.foreground),
+    let (role, icon) = match notice.kind {
+        NoticeKind::Problem => (Role::Alert, icons::FAILED),
+        NoticeKind::Done => (Role::Status, icons::DONE),
     };
-    let builder = UiBuilder::new().accessibility_role(role);
-    ui.scope_builder(builder, |ui| {
-        Frame::new()
-            .stroke(Stroke::new(1.0, palette.border))
-            .corner_radius(radius(1.0))
-            .inner_margin(Margin::same(12))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(RichText::new(&notice.title).strong().color(title_color));
-                if !notice.message.is_empty() {
-                    ui.label(&notice.message);
-                }
-                ui.horizontal(|ui| {
-                    if let Some(workspace_id) = &notice.remove_recent
-                        && ui
-                            .add_enabled(!busy, Button::new("Remove from recents"))
-                            .clicked()
-                    {
-                        state.app.remove_recent(workspace_id);
-                    }
-                    if ui.button("Dismiss").clicked() {
-                        state.app.dismiss_notice();
-                    }
-                });
+    egui::Area::new(Id::unique("notice"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::RIGHT_BOTTOM, [-24.0, -24.0])
+        .show(ui.ctx(), |ui| {
+            let builder = UiBuilder::new().accessibility_role(role);
+            ui.scope_builder(builder, |ui| {
+                Frame::new()
+                    .fill(palette.popover)
+                    .stroke(Stroke::new(1.0, palette.border))
+                    .corner_radius(radius(0.8))
+                    .inner_margin(Margin::same(16))
+                    .shadow(egui::Shadow {
+                        offset: [0, 4],
+                        blur: 12,
+                        spread: 0,
+                        color: Color32::from_black_alpha(26),
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(356.0 - 32.0);
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            let (rect, _) =
+                                ui.allocate_exact_size(vec2(16.0, 20.0), Sense::hover());
+                            let square =
+                                egui::Rect::from_center_size(rect.center(), vec2(16.0, 16.0));
+                            icons::paint(ui.painter(), icon, square, palette.foreground, false);
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                ui.label(RichText::new(&notice.title).font(font(
+                                    ui.ctx(),
+                                    BODY_SIZE,
+                                    Weight::Medium,
+                                )));
+                                if !notice.message.is_empty() {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(&notice.message).size(SUPPORTING_SIZE),
+                                        )
+                                        .wrap(),
+                                    );
+                                }
+                                ui.add_space(6.0);
+                                ui.horizontal(|ui| {
+                                    if let Some(workspace_id) = &notice.remove_recent
+                                        && Btn::new("Remove from recents")
+                                            .variant(Variant::Default)
+                                            .size(Size::Sm)
+                                            .enabled(!busy)
+                                            .show(ui)
+                                            .clicked()
+                                    {
+                                        state.app.remove_recent(workspace_id);
+                                    }
+                                    if Btn::new("Dismiss")
+                                        .variant(Variant::Ghost)
+                                        .size(Size::Sm)
+                                        .show(ui)
+                                        .clicked()
+                                    {
+                                        state.app.dismiss_notice();
+                                    }
+                                });
+                            });
+                        });
+                    });
             });
-    });
+        });
 }
 
 /// The New workspace form: a name, then a folder.

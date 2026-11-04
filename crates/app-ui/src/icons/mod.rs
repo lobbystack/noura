@@ -83,6 +83,7 @@ icons! {
     RETRY => ARROW_COUNTER_CLOCKWISE_REGULAR, ARROW_COUNTER_CLOCKWISE_FILL;
     SPINNER => SPINNER_REGULAR, SPINNER_FILL;
     BACK => ARROW_LEFT_REGULAR, ARROW_LEFT_FILL;
+    FAILED => X_CIRCLE_REGULAR, X_CIRCLE_FILL;
 }
 
 /// Draw `icon` in `rect`, in `color`, filled when `filled`.
@@ -206,6 +207,7 @@ mod tests {
             RETRY,
             SPINNER,
             BACK,
+            FAILED,
         ] {
             for paths in [icon.regular, icon.fill] {
                 let image = render(paths, 24).expect(icon.name);
