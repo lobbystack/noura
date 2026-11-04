@@ -80,7 +80,7 @@ pub(crate) fn render() -> Vec<Node> {
     view.input(
         form,
         &input,
-        "Add a task for today",
+        "Add a task for today\u{2026}",
         Value::Text(String::new()),
     );
     view.require(form, &input);

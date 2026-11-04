@@ -271,7 +271,7 @@ fn add_form(app: &app_core::App) -> AddForm {
     else {
         panic!("the add form's input isn't text: {:?}", input.kind);
     };
-    assert_eq!(input_label, "Task");
+    assert_eq!(input_label, "Add a task for today\u{2026}");
     AddForm {
         label: label.clone(),
         submit: submit.clone(),

@@ -127,8 +127,8 @@ pub fn selected(app: &App) -> Option<String> {
     }
 }
 
-/// The text of the page's text node `id`, or the detail line of its
-/// heading `id`.
+/// The text of the page's text node `id`, the detail line of its heading
+/// `id`, or the title of its empty state `id`.
 pub fn text(app: &App, id: &str) -> Option<String> {
     let view = page(app);
     match &find(view.root(), id)?.kind {
@@ -138,6 +138,8 @@ pub fn text(app: &App, id: &str) -> Option<String> {
             detail: Some(detail),
             ..
         } => Some(detail.clone()),
+        // An empty state reads as its title.
+        ViewKind::Empty { title, .. } => Some(title.clone()),
         _ => None,
     }
 }
@@ -282,6 +284,8 @@ pub fn due_text(app: &App, id: &str) -> Option<String> {
             detail: Some(detail),
             ..
         } => Some(detail.clone()),
+        // An empty state reads as its title.
+        ViewKind::Empty { title, .. } => Some(title.clone()),
         _ => None,
     }
 }
