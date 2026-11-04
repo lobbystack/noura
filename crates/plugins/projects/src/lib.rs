@@ -202,8 +202,8 @@ fn page() -> Vec<Node> {
         view.empty_state(
             View::ROOT,
             "empty",
-            "No projects yet",
-            Some("A project gathers the tasks and notes of one piece of work."),
+            "No projects",
+            Some("Organize work with projects."),
             Some(Icon::Folder),
         );
         return view.into_nodes();

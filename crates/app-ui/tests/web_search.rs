@@ -81,6 +81,12 @@ fn the_key_field_hides_the_key_and_noura_s_prompt_names_brave_search_and_what_le
         labels_in(&harness, "This workspace")
             .contains(&"The AI can't search the web in Garden yet.".to_owned())
     );
+    // Web search sits under the providers in the AI section.
+    harness
+        .get_by_role_and_label(Role::Group, "This workspace")
+        .get_by_role_and_label(Role::Button, "Allow for this workspace")
+        .scroll_to_me();
+    run(&mut harness);
     harness
         .get_by_role_and_label(Role::Group, "This workspace")
         .get_by_role_and_label(Role::Button, "Allow for this workspace")

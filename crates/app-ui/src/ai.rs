@@ -14,7 +14,7 @@ use egui::{
 use zeroize::Zeroizing;
 
 use crate::{
-    common::{description, primary_button},
+    common::{BadgeLook, Btn, Size, Variant, badge, description, primary_button},
     theme::{Palette, TITLE_SIZE, radius},
 };
 
@@ -108,107 +108,220 @@ fn kind_name<'a>(app: &App, kind: &'a str) -> &'a str {
         .map_or(kind, |(_, name)| name)
 }
 
-/// The AI providers section of Settings.
+/// A section's title with an optional button at its end, then a line
+/// under it, as the legacy AI settings drew Providers & models.
+fn section_title(ui: &mut Ui, title: &str, text: Option<&str>, add: impl FnOnce(&mut Ui)) {
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            crate::common::field_label(ui, title);
+            if let Some(text) = text {
+                crate::common::muted(ui, text);
+            }
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), add);
+    });
+    ui.add_space(16.0);
+    ui.separator();
+}
+
+/// A divider between two rows of a section's list.
+fn row_line(ui: &mut Ui) {
+    let palette = Palette::of(ui.ctx());
+    let y = ui.cursor().top();
+    ui.painter()
+        .hline(ui.max_rect().x_range(), y, Stroke::new(1.0, palette.border));
+}
+
+/// The AI section of Settings: the providers and models on this
+/// computer, then what each may read in the open workspace.
 pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
     if let Some(problem) = app.ai_settings_problem() {
         alert(ui, &problem);
         return;
     }
-    description(
-        ui,
-        "Providers and their settings stay on this computer, and their keys stay in its \
-         credential store. A chat sends this workspace's content to a provider only once you \
-         allow it here or when Noura asks.",
-    );
-    ui.add_space(8.0);
     let rows = app.ai_providers();
     let workspace = app.workspace().map(|workspace| workspace.name());
     let mut edit = None;
     let mut change = None;
+    let mut add = false;
+    ui.spacing_mut().item_spacing.y = 8.0;
+    section_title(ui, "Providers & models", None, |ui| {
+        if view.form.is_none() {
+            add = Btn::new("Add provider")
+                .variant(Variant::Default)
+                .size(Size::Sm)
+                .show(ui)
+                .clicked();
+        }
+    });
     if let Some(problem) = &view.problem {
         alert(ui, problem);
     }
     if rows.is_empty() {
-        description(ui, "No providers yet.");
+        ui.add_space(8.0);
+        ui.vertical_centered(|ui| {
+            ui.label(RichText::new("No AI providers").font(crate::theme::font(
+                ui.ctx(),
+                TITLE_SIZE,
+                crate::theme::Weight::Medium,
+            )));
+        });
+        ui.add_space(8.0);
     }
-    for row in &rows {
+    for (index, row) in rows.iter().enumerate() {
+        if index > 0 {
+            row_line(ui);
+        }
         let builder = UiBuilder::new()
             .accessibility_role(Role::Group)
             .accessibility_label(&row.name);
         ui.push_id(("ai-provider", &row.id), |ui| {
             ui.scope_builder(builder, |ui| {
-                boxed(ui, |ui| {
-                    ui.label(RichText::new(&row.name).strong());
-                    description(ui, &format!("{}, {}", kind_name(app, &row.kind), row.model));
-                    if let Some(endpoint) = &row.endpoint {
-                        description(ui, endpoint);
-                    }
-                    description(
-                        ui,
-                        match (row.enabled, row.has_key) {
-                            (true, true) => "On, with its key saved",
-                            (true, false) => "On, without a key",
-                            (false, true) => "Off, with its key saved",
-                            (false, false) => "Off, without a key",
-                        },
-                    );
-                    if let Some(workspace) = &workspace {
-                        description(
-                            ui,
-                            &if row.consented {
-                                format!("You allowed it to receive {workspace}'s content.")
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.horizontal(|ui| {
+                            crate::common::field_label(ui, &row.name);
+                            let (text, look) = if row.enabled {
+                                ("Enabled", BadgeLook::Secondary)
                             } else {
-                                format!("It can't receive {workspace}'s content yet.")
-                            },
+                                ("Disabled", BadgeLook::Outline)
+                            };
+                            badge(ui, text, look);
+                        });
+                        crate::common::muted(
+                            ui,
+                            &format!("{} \u{b7} {}", kind_name(app, &row.kind), row.model),
                         );
-                    }
-                    ui.horizontal(|ui| {
-                        if workspace.is_some() && row.enabled {
-                            if row.consented {
-                                if ui.button("Revoke for this workspace").clicked() {
-                                    change = Some(Change::Revoke(row.id.clone()));
-                                }
-                            } else if ui.button("Allow for this workspace").clicked() {
-                                change = Some(Change::Allow(row.id.clone()));
-                            }
+                        if let Some(endpoint) = &row.endpoint {
+                            crate::common::muted(ui, endpoint);
                         }
-                        if ui.button("Edit").clicked() {
-                            edit = Some(ProviderForm::of(row));
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        if Btn::new("Remove")
+                            .variant(Variant::Ghost)
+                            .size(Size::Sm)
+                            .show(ui)
+                            .clicked()
+                        {
+                            change = Some(Change::Remove(row.id.clone()));
                         }
-                        if row.has_key && ui.button("Remove key").clicked() {
+                        if row.has_key
+                            && Btn::new("Remove key")
+                                .variant(Variant::Ghost)
+                                .size(Size::Sm)
+                                .show(ui)
+                                .clicked()
+                        {
                             change = Some(Change::RemoveKey(row.id.clone()));
                         }
-                        if ui.button("Remove").clicked() {
-                            change = Some(Change::Remove(row.id.clone()));
+                        if Btn::new("Edit").size(Size::Sm).show(ui).clicked() {
+                            edit = Some(ProviderForm::of(row));
+                        }
+                        if row.has_key {
+                            badge(ui, "Key set", BadgeLook::Secondary);
+                        } else {
+                            badge(ui, "No key", BadgeLook::Outline);
                         }
                     });
                 });
+                ui.add_space(8.0);
             });
         });
-        ui.add_space(4.0);
     }
-    if let Some(change) = change {
-        view.problem = change.apply(app).err().map(|error| error.message);
+    if add {
+        let kind = app
+            .ai_provider_kinds()
+            .first()
+            .map_or("openai", |(kind, _)| kind);
+        view.form = Some(ProviderForm::new(kind));
     }
     if let Some(form) = edit {
         view.form = Some(form);
     }
-    ui.add_space(8.0);
-    match &mut view.form {
+    if let Some(form) = &mut view.form {
+        ui.add_space(8.0);
+        if provider_form(ui, app, form) {
+            view.form = None;
+        }
+    }
+
+    ui.add_space(32.0);
+    section_title(
+        ui,
+        "Workspace permissions",
+        Some("Grant access to send content from this workspace to a provider for AI requests."),
+        |_| {},
+    );
+    match &workspace {
+        _ if rows.is_empty() => {
+            description(ui, "Add a provider first.");
+        }
         None => {
-            if ui.button("Add provider").clicked() {
-                let kind = app
-                    .ai_provider_kinds()
-                    .first()
-                    .map_or("openai", |(kind, _)| kind);
-                view.form = Some(ProviderForm::new(kind));
+            description(ui, "Open a workspace to choose what it shares.");
+        }
+        Some(workspace) => {
+            for (index, row) in rows.iter().enumerate() {
+                if index > 0 {
+                    row_line(ui);
+                }
+                let label = format!("{} in this workspace", row.name);
+                let builder = UiBuilder::new()
+                    .accessibility_role(Role::Group)
+                    .accessibility_label(&label);
+                ui.push_id(("ai-consent", &row.id), |ui| {
+                    ui.scope_builder(builder, |ui| {
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                crate::common::field_label(ui, &row.name);
+                                crate::common::muted(
+                                    ui,
+                                    &if row.consented {
+                                        format!("You allowed it to receive {workspace}'s content.")
+                                    } else {
+                                        format!("It can't receive {workspace}'s content yet.")
+                                    },
+                                );
+                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.spacing_mut().item_spacing.x = 8.0;
+                                    if !row.enabled {
+                                        return;
+                                    }
+                                    if row.consented {
+                                        if Btn::new("Revoke").size(Size::Sm).show(ui).clicked() {
+                                            change = Some(Change::Revoke(row.id.clone()));
+                                        }
+                                        badge(ui, "Granted", BadgeLook::Secondary);
+                                    } else {
+                                        if Btn::new("Grant")
+                                            .variant(Variant::Default)
+                                            .size(Size::Sm)
+                                            .show(ui)
+                                            .clicked()
+                                        {
+                                            change = Some(Change::Allow(row.id.clone()));
+                                        }
+                                        badge(ui, "Not granted", BadgeLook::Outline);
+                                    }
+                                },
+                            );
+                        });
+                        ui.add_space(8.0);
+                    });
+                });
             }
         }
-        Some(form) => {
-            if provider_form(ui, app, form) {
-                view.form = None;
-            }
-        }
+    }
+    if let Some(change) = change {
+        view.problem = change.apply(app).err().map(|error| error.message);
     }
 }
 

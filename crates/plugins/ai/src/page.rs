@@ -12,9 +12,6 @@ use plugin_sdk::{
 
 use crate::{State, reason, web};
 
-/// The title a chat has until its first message names it.
-const NEW_CHAT: &str = "New chat";
-
 /// The node IDs events name.
 const NEW_CHAT_BUTTON: &str = "new-chat";
 const CHATS: &str = "chats";
@@ -51,7 +48,7 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
     let mut messages = Vec::new();
     match state.chat.clone().map(|id| ai::read_chat(&id)) {
         None => {
-            view.page_heading(View::ROOT, "title", NEW_CHAT, None, Some(Icon::Sparkle));
+            view.page_heading(View::ROOT, "title", "AI", None, Some(Icon::Sparkle));
         }
         Some(Ok((read, read_messages))) => {
             chat = Some(read);
@@ -63,7 +60,7 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
             if matches!(error, plugin_sdk::Error::NotFound(_)) {
                 state.chat = None;
             }
-            view.page_heading(View::ROOT, "title", NEW_CHAT, None, Some(Icon::Sparkle));
+            view.page_heading(View::ROOT, "title", "AI", None, Some(Icon::Sparkle));
             view.text(View::ROOT, "chat-problem", &reason(&error));
         }
     }

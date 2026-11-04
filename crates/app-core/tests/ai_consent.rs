@@ -241,7 +241,7 @@ fn consent_lapses_when_noura_s_ai_policy_version_changes() {
     });
     assert!(!app.ai_providers()[0].consented);
     ai::wait_until(&mut app, "the message box shows", |app| {
-        ai::buttons(app).is_empty() && ai::lines(app).contains(&"New chat".to_owned())
+        ai::buttons(app).is_empty() && ai::lines(app).contains(&"AI".to_owned())
     });
     ai::send(&mut app, "Hello", &id);
     assert!(app.ai_consent_prompt().is_some());

@@ -306,21 +306,17 @@ fn the_provider_form_labels_each_field_and_hides_the_key() {
     run(harness);
     assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
 
-    let local = harness.get_by_role_and_label(Role::Group, "Local");
-    assert!(
-        texts(local.query_all(By::new().role(Role::Label)))
-            .contains(&"It can't receive Garden's content yet.".to_owned())
-    );
-    local
-        .get_by_role_and_label(Role::Button, "Allow for this workspace")
-        .click();
+    let local = harness.get_by_role_and_label(Role::Group, "Local in this workspace");
+    let shown = texts(local.query_all(By::new().role(Role::Label)));
+    assert!(shown.contains(&"It can't receive Garden's content yet.".to_owned()));
+    assert!(shown.contains(&"Not granted".to_owned()), "{shown:?}");
+    local.get_by_role_and_label(Role::Button, "Grant").click();
     run(harness);
-    let local = harness.get_by_role_and_label(Role::Group, "Local");
-    assert!(
-        texts(local.query_all(By::new().role(Role::Label)))
-            .contains(&"You allowed it to receive Garden's content.".to_owned())
-    );
-    local.get_by_role_and_label(Role::Button, "Revoke for this workspace");
+    let local = harness.get_by_role_and_label(Role::Group, "Local in this workspace");
+    let shown = texts(local.query_all(By::new().role(Role::Label)));
+    assert!(shown.contains(&"You allowed it to receive Garden's content.".to_owned()));
+    assert!(shown.contains(&"Granted".to_owned()), "{shown:?}");
+    local.get_by_role_and_label(Role::Button, "Revoke");
 
     harness
         .get_by_role_and_label(Role::Button, "Add provider")
@@ -352,9 +348,10 @@ fn the_provider_form_labels_each_field_and_hides_the_key() {
     run(harness);
 
     let cloud = harness.get_by_role_and_label(Role::Group, "Cloud");
+    let shown = texts(cloud.query_all(By::new().role(Role::Label)));
     assert!(
-        texts(cloud.query_all(By::new().role(Role::Label)))
-            .contains(&"On, with its key saved".to_owned())
+        shown.contains(&"Enabled".to_owned()) && shown.contains(&"Key set".to_owned()),
+        "{shown:?}"
     );
     assert!(
         !all_labels(harness)

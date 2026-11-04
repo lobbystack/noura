@@ -330,16 +330,27 @@ fn children(ui: &mut Ui, nodes: &[ViewNode], kit: &mut Kit) {
             });
             index += run;
         } else {
-            // A sidebar list that no text titles shows its own label as
-            // its title, as the legacy sidebar's Views did.
-            let titled = index > 0 && matches!(nodes[index - 1].kind, ViewKind::Text(_));
-            if let ViewKind::List { label, .. } = &nodes[index].kind
-                && matches!(kit.place, Place::Sidebar(_))
-                && !titled
-            {
-                sidebar_label(ui, label);
+            let sidebar = matches!(kit.place, Place::Sidebar(_));
+            // In the sidebar, text over a list titles it, and a list that
+            // no text titles shows its own label as its title, as the
+            // legacy sidebar's Views and Folders did.
+            let list_next = matches!(
+                nodes.get(index + 1).map(|node| &node.kind),
+                Some(ViewKind::List { .. })
+            );
+            match &nodes[index].kind {
+                ViewKind::Text(text) if sidebar && list_next => {
+                    sidebar_label(ui, text);
+                }
+                ViewKind::List { label, .. } => {
+                    let titled = index > 0 && matches!(nodes[index - 1].kind, ViewKind::Text(_));
+                    if sidebar && !titled {
+                        sidebar_label(ui, label);
+                    }
+                    self::node(ui, &nodes[index], kit);
+                }
+                _ => self::node(ui, &nodes[index], kit),
             }
-            self::node(ui, &nodes[index], kit);
             index += 1;
         }
     }
@@ -367,8 +378,17 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             kit.depth -= 1;
         }
         ViewKind::Text(text) if matches!(kit.place, Place::Sidebar(_)) => {
-            // Text in the sidebar titles the list under it.
-            sidebar_label(ui, text);
+            // Other text in the sidebar is a muted line, as the legacy
+            // sidebar's "No chats yet."
+            let palette = Palette::of(ui.ctx());
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                ui.label(
+                    RichText::new(text)
+                        .size(crate::theme::BODY_SIZE)
+                        .color(palette.muted_foreground),
+                );
+            });
         }
         ViewKind::Text(text) => {
             ui.label(text);

@@ -208,37 +208,80 @@ fn recent(ui: &mut Ui, inbox: &Inbox) -> Option<Follow> {
     }
     let palette = Palette::of(ui.ctx());
     let mut follow = None;
-    rows(ui, |ui| {
-        for note in &inbox.recent {
-            // Notes that share a title show their paths to tell them apart.
-            let response = ui
-                .horizontal_wrapped(|ui| {
-                    let response = ui.link(RichText::new(&note.title).size(BODY_SIZE));
-                    if note.shares_title {
-                        ui.label(
-                            RichText::new(&note.relative_path)
-                                .size(SUPPORTING_SIZE)
-                                .color(palette.muted_foreground),
+    // The legacy list: a bordered card of 40 px rows with lines between,
+    // each filling on hover.
+    Frame::new()
+        .stroke(Stroke::new(1.0, palette.border))
+        .corner_radius(radius(1.0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let count = inbox.recent.len();
+            for (index, note) in inbox.recent.iter().enumerate() {
+                let (rect, response) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::click());
+                // Notes that share a title show their paths to tell them
+                // apart.
+                let label = if note.shares_title {
+                    format!("{}, {}", note.title, note.relative_path)
+                } else {
+                    note.title.clone()
+                };
+                response.widget_info(|| egui::WidgetInfo::labeled(Role::Link, true, &label));
+                let path = note.relative_path.clone();
+                ui.ctx().accesskit_node_builder(response.id, |node| {
+                    node.set_description(path);
+                });
+                if ui.is_rect_visible(rect) {
+                    let painter = ui.painter();
+                    if response.hovered() {
+                        let corner = egui::CornerRadius {
+                            nw: if index == 0 { 10 } else { 0 },
+                            ne: if index == 0 { 10 } else { 0 },
+                            sw: if index + 1 == count { 10 } else { 0 },
+                            se: if index + 1 == count { 10 } else { 0 },
+                        };
+                        painter.rect_filled(rect.shrink(1.0), corner, palette.accent);
+                    }
+                    if index > 0 {
+                        painter.hline(
+                            rect.x_range(),
+                            rect.top(),
+                            Stroke::new(1.0, palette.border.gamma_multiply(0.6)),
                         );
                     }
-                    response
-                })
-                .inner;
-            let label = if note.shares_title {
-                format!("{}, {}", note.title, note.relative_path)
-            } else {
-                note.title.clone()
-            };
-            let path = note.relative_path.clone();
-            ui.ctx().accesskit_node_builder(response.id, |node| {
-                node.set_label(label);
-                node.set_description(path);
-            });
-            let response = response.on_hover_text(&note.relative_path);
-            if let Some(how) = opened_as(ui, &response) {
-                follow = Some(Follow::Note(note.relative_path.clone(), how));
+                    let title = painter.layout_no_wrap(
+                        note.title.clone(),
+                        egui::FontId::proportional(BODY_SIZE),
+                        palette.foreground,
+                    );
+                    let at = pos2(rect.left() + 16.0, rect.center().y - title.size().y / 2.0);
+                    let end = at.x + title.size().x;
+                    painter.galley(at, title, palette.foreground);
+                    if note.shares_title {
+                        let path = painter.layout_no_wrap(
+                            note.relative_path.clone(),
+                            egui::FontId::proportional(SUPPORTING_SIZE),
+                            palette.muted_foreground,
+                        );
+                        let at = pos2(end + 8.0, rect.center().y - path.size().y / 2.0);
+                        let shown = Rect::from_min_size(at, path.size());
+                        painter.galley(at, path, palette.muted_foreground);
+                        // The path reads on its own too, as the legacy
+                        // label beside the title did.
+                        let label = ui.interact(shown, response.id.with("path"), Sense::hover());
+                        let text = note.relative_path.clone();
+                        label.widget_info(|| egui::WidgetInfo::labeled(Role::Label, true, &text));
+                    }
+                    if response.has_focus() {
+                        crate::common::focus_ring(painter, rect.shrink(2.0), radius(0.8), &palette);
+                    }
+                }
+                let response = response.on_hover_text(&note.relative_path);
+                if let Some(how) = opened_as(ui, &response) {
+                    follow = Some(Follow::Note(note.relative_path.clone(), how));
+                }
             }
-        }
-    });
+        });
     follow
 }

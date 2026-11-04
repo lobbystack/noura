@@ -1005,3 +1005,47 @@ pub(crate) const BACKDROP: Color32 = Color32::from_black_alpha(77);
 pub(crate) fn dialog_title(ui: &mut Ui, text: &str) -> Response {
     ui.label(RichText::new(text).font(font(ui.ctx(), crate::theme::TITLE_SIZE, Weight::Medium)))
 }
+
+/// How a [`badge`] looks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BadgeLook {
+    /// The light fill.
+    Secondary,
+    /// A hairline border.
+    Outline,
+}
+
+/// The legacy badge: a 20 px pill with 12 px medium text.
+pub(crate) fn badge(ui: &mut Ui, text: &str, look: BadgeLook) -> Response {
+    let palette = Palette::of(ui.ctx());
+    let galley = ui.painter().layout_no_wrap(
+        text.to_owned(),
+        font(ui.ctx(), SUPPORTING_SIZE, Weight::Medium),
+        palette.foreground,
+    );
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(galley.size().x + 16.0, 20.0), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(Role::Label, true, text));
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        match look {
+            BadgeLook::Secondary => {
+                painter.rect_filled(rect, pill(), palette.secondary);
+            }
+            BadgeLook::Outline => {
+                painter.rect_stroke(
+                    rect,
+                    pill(),
+                    Stroke::new(1.0, palette.border),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
+        painter.galley(
+            rect.center() - galley.size() / 2.0,
+            galley,
+            palette.foreground,
+        );
+    }
+    response
+}
