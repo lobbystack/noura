@@ -61,9 +61,9 @@ pub use exports::noura::plugin::tools::Tool;
 pub use exports::noura::plugin::view::Page;
 pub use noura::plugin::types::{Error, PropertyError};
 pub use noura::plugin::ui::{
-    Calendar, CalendarEntry, CalendarMode, Check, Choice, Column, ColumnPress, Event, Field, Form,
-    Input, Item, ItemList, MenuItem, Move, NameField, Naming, Node, NodeKind, SortOrder,
-    Submission, Table, Target, Value, VirtualList, VirtualRow,
+    Calendar, CalendarEntry, CalendarMode, Check, Choice, Column, ColumnPress, EmptyState, Event,
+    Field, Form, Heading, HeadingLevel, Icon, Input, Item, ItemList, MenuItem, Move, NameField,
+    Naming, Node, NodeKind, SortOrder, Submission, Table, Target, Value, VirtualList, VirtualRow,
 };
 
 /// Reading the open workspace. Needs the `workspace-read` capability.
@@ -499,6 +499,69 @@ impl View {
     /// unless you give it a [`menu`](Self::menu), which it then opens.
     pub fn button(&mut self, parent: u32, id: &str, label: &str) -> u32 {
         self.add(parent, id, NodeKind::Button(label.to_owned()))
+    }
+
+    /// Add a page's title, with `detail` under it, such as the period
+    /// the page shows. Buttons you add to it line up at its end, and the
+    /// first one stands out.
+    pub fn page_heading(
+        &mut self,
+        parent: u32,
+        id: &str,
+        text: &str,
+        detail: Option<&str>,
+        icon: Option<Icon>,
+    ) -> u32 {
+        self.heading(parent, id, text, HeadingLevel::Page, detail, icon)
+    }
+
+    /// Add a section's title, with `detail` beside it. Buttons you add to
+    /// it line up at its end.
+    pub fn section_heading(
+        &mut self,
+        parent: u32,
+        id: &str,
+        text: &str,
+        icon: Option<Icon>,
+    ) -> u32 {
+        self.heading(parent, id, text, HeadingLevel::Section, None, icon)
+    }
+
+    fn heading(
+        &mut self,
+        parent: u32,
+        id: &str,
+        text: &str,
+        level: HeadingLevel,
+        detail: Option<&str>,
+        icon: Option<Icon>,
+    ) -> u32 {
+        let heading = Heading {
+            text: text.to_owned(),
+            level,
+            detail: detail.map(str::to_owned),
+            icon,
+        };
+        self.add(parent, id, NodeKind::Heading(heading))
+    }
+
+    /// Add what an empty page or section shows: its title, a line that
+    /// says what to do, and an icon. Buttons you add to it show under
+    /// its text.
+    pub fn empty_state(
+        &mut self,
+        parent: u32,
+        id: &str,
+        title: &str,
+        detail: Option<&str>,
+        icon: Option<Icon>,
+    ) -> u32 {
+        let empty = EmptyState {
+            title: title.to_owned(),
+            detail: detail.map(str::to_owned),
+            icon,
+        };
+        self.add(parent, id, NodeKind::Empty(empty))
     }
 
     /// Add a list you select items in. Add its items with

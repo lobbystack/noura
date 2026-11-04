@@ -741,6 +741,41 @@ interface ui {
     end: option<string>,
   }
 
+  // An icon Noura draws beside a heading or in an empty state.
+  enum icon {
+    calendar,
+    done,
+    folder,
+    note,
+    sparkle,
+    tasks,
+  }
+
+  // How prominent a heading is.
+  enum heading-level {
+    // The page's title, at the top of the page.
+    page,
+    // A section's title.
+    section,
+  }
+
+  record heading {
+    text: string,
+    level: heading-level,
+    // A line under a page heading or beside a section heading, such as
+    // the period a page shows.
+    detail: option<string>,
+    icon: option<icon>,
+  }
+
+  // What a page or a section shows while it holds nothing.
+  record empty-state {
+    title: string,
+    // A line under the title that says what to do.
+    detail: option<string>,
+    icon: option<icon>,
+  }
+
   variant node-kind {
     // Lays out its children from top to bottom. The label names the panel
     // for screen readers.
@@ -809,6 +844,11 @@ interface ui {
     // keyboard and open it by double-click or Enter, which send `selected`
     // and `activated` naming the calendar.
     entry(calendar-entry),
+    // A page's or a section's title. Its children are buttons, which line
+    // up at its end; the first button of a page heading stands out.
+    heading(heading),
+    // An empty page or section. Its children are buttons under its text.
+    empty(empty-state),
   }
 
   record node {
@@ -817,9 +857,10 @@ interface ui {
     kind: node-kind,
     // Indices into the view's node list. Panels and forms hold the nodes
     // they lay out, lists their items, tables their rows, boards their
-    // columns, columns their cards, calendars their entries, and menus
-    // their items; a row, a card or a button may hold one menu, and an
-    // item one menu or one name field.
+    // columns, columns their cards, calendars their entries, menus their
+    // items, and headings and empty states their buttons; a row, a card
+    // or a button may hold one menu, and an item one menu or one name
+    // field.
     children: list<u32>,
   }
 

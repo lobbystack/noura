@@ -1496,6 +1496,58 @@ covers, in this device's time zone.
   timed entry 30 minutes.
 
 
+#### <a id="icon"></a>`enum icon`
+
+An icon Noura draws beside a heading or in an empty state.
+
+##### Enum Cases
+
+- <a id="icon.calendar"></a>`calendar`
+- <a id="icon.done"></a>`done`
+- <a id="icon.folder"></a>`folder`
+- <a id="icon.note"></a>`note`
+- <a id="icon.sparkle"></a>`sparkle`
+- <a id="icon.tasks"></a>`tasks`
+
+#### <a id="heading_level"></a>`enum heading-level`
+
+How prominent a heading is.
+
+##### Enum Cases
+
+- <a id="heading_level.page"></a>`page`
+  <p>The page's title, at the top of the page.
+
+- <a id="heading_level.section"></a>`section`
+  <p>A section's title.
+
+
+#### <a id="heading"></a>`record heading`
+
+
+
+##### Record Fields
+
+- <a id="heading.text"></a>`text`: `string`
+- <a id="heading.level"></a>`level`: [`heading-level`](#heading_level)
+- <a id="heading.detail"></a>`detail`: option<`string`>
+  <p>A line under a page heading or beside a section heading, such as
+  the period a page shows.
+
+- <a id="heading.icon"></a>`icon`: option<[`icon`](#icon)>
+
+#### <a id="empty_state"></a>`record empty-state`
+
+What a page or a section shows while it holds nothing.
+
+##### Record Fields
+
+- <a id="empty_state.title"></a>`title`: `string`
+- <a id="empty_state.detail"></a>`detail`: option<`string`>
+  <p>A line under the title that says what to do.
+
+- <a id="empty_state.icon"></a>`icon`: option<[`icon`](#icon)>
+
 #### <a id="node_kind"></a>`variant node-kind`
 
 
@@ -1589,6 +1641,13 @@ covers, in this device's time zone.
   keyboard and open it by double-click or Enter, which send `selected`
   and `activated` naming the calendar.
 
+- <a id="node_kind.heading"></a>`heading`: [`heading`](#heading)
+  <p>A page's or a section's title. Its children are buttons, which line
+  up at its end; the first button of a page heading stands out.
+
+- <a id="node_kind.empty"></a>`empty`: [`empty-state`](#empty_state)
+  <p>An empty page or section. Its children are buttons under its text.
+
 
 #### <a id="node"></a>`record node`
 
@@ -1603,9 +1662,10 @@ covers, in this device's time zone.
 - <a id="node.children"></a>`children`: list<`u32`>
   <p>Indices into the view's node list. Panels and forms hold the nodes
   they lay out, lists their items, tables their rows, boards their
-  columns, columns their cards, calendars their entries, and menus
-  their items; a row, a card or a button may hold one menu, and an
-  item one menu or one name field.
+  columns, columns their cards, calendars their entries, menus their
+  items, and headings and empty states their buttons; a row, a card
+  or a button may hold one menu, and an item one menu or one name
+  field.
 
 
 #### <a id="target"></a>`record target`

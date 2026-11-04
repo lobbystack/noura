@@ -3,7 +3,7 @@
 //! the answer streaming in, Stop, Resume, and the message box.
 
 use plugin_sdk::{
-    Event, Node, Value, View,
+    Event, Icon, Node, Value, View,
     ai::{
         self, Chat, Message, MessageKind, MessageStatus, Provider, Request, Retention, Run,
         RunStatus, ToolDefinition,
@@ -51,7 +51,7 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
     let mut messages = Vec::new();
     match state.chat.clone().map(|id| ai::read_chat(&id)) {
         None => {
-            view.text(View::ROOT, "title", NEW_CHAT);
+            view.page_heading(View::ROOT, "title", NEW_CHAT, None, Some(Icon::Sparkle));
         }
         Some(Ok((read, read_messages))) => {
             chat = Some(read);
@@ -63,7 +63,7 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
             if matches!(error, plugin_sdk::Error::NotFound(_)) {
                 state.chat = None;
             }
-            view.text(View::ROOT, "title", NEW_CHAT);
+            view.page_heading(View::ROOT, "title", NEW_CHAT, None, Some(Icon::Sparkle));
             view.text(View::ROOT, "chat-problem", &reason(&error));
         }
     }
@@ -93,10 +93,12 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
     if busy {
         view.button(View::ROOT, STOP, "Stop");
     } else if providers.is_empty() {
-        view.text(
+        view.empty_state(
             View::ROOT,
             "no-providers",
-            "Add an AI provider in Settings, under AI providers, to start a chat.",
+            "Connect an AI provider",
+            Some("Add a provider and its key in Settings, under AI providers, to start a chat."),
+            Some(Icon::Sparkle),
         );
     } else {
         if stopped_before_answering(&messages) {
@@ -189,14 +191,15 @@ fn stopped_before_answering(messages: &[Message]) -> bool {
 /// The chat's title, and how long Noura keeps it when that isn't until
 /// you delete it.
 fn draw_title(view: &mut View, chat: &Chat) {
-    view.text(View::ROOT, "title", &chat.title);
-    if chat.retention == Retention::Ephemeral {
-        view.text(
-            View::ROOT,
-            "retention",
-            "Noura moves this chat to the trash 30 days after it started.",
-        );
-    }
+    let detail = (chat.retention == Retention::Ephemeral)
+        .then_some("Noura moves this chat to the trash 30 days after it started.");
+    view.page_heading(
+        View::ROOT,
+        "title",
+        &chat.title,
+        detail,
+        Some(Icon::Sparkle),
+    );
 }
 
 /// The menu of a chat in the sidebar: rename it, or choose how long Noura

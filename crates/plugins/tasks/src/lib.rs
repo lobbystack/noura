@@ -27,7 +27,7 @@ use std::{
 
 use jiff::civil::Date;
 use plugin_sdk::{
-    Command, Error, Event, InboxSection, Node, ObjectType, Page, Plugin, Tool, Value, View,
+    Command, Error, Event, Icon, InboxSection, Node, ObjectType, Page, Plugin, Tool, Value, View,
     navigation::{self, Placement},
     objects::{self, Changes, NewObject},
     workspace,
@@ -78,6 +78,8 @@ struct State {
     added: u32,
     /// Why the last task the field added couldn't be created.
     add_problem: Option<String>,
+    /// The filters show under the heading.
+    filters_shown: bool,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -96,6 +98,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     rename_problem: None,
     added: 0,
     add_problem: None,
+    filters_shown: false,
 });
 
 fn state() -> std::sync::MutexGuard<'static, State> {
@@ -262,7 +265,11 @@ fn view_name(choice: &Choice, projects: &[(String, String)]) -> String {
     }
 }
 
-/// The Tasks page: the view's name, New task, the filters and the list.
+/// The button that shows and hides the filters.
+const FILTERS_TOGGLE: &str = "toggle-filters";
+
+/// The Tasks page: its heading with the view's name, New task and the
+/// filters' button, the filters while they show, and the list.
 fn page() -> Vec<Node> {
     let now = Now::read();
     let projects = projects();
@@ -279,8 +286,18 @@ fn page() -> Vec<Node> {
         }
     };
     let mut state = state();
-    view.text(View::ROOT, "view", &view_name(&state.choice, &projects));
-    view.button(View::ROOT, "new-task", "New task");
+    let heading = view.page_heading(
+        View::ROOT,
+        "view",
+        "Tasks",
+        Some(&view_name(&state.choice, &projects)),
+        Some(Icon::Tasks),
+    );
+    view.button(heading, "new-task", "New task");
+    // Filters that narrow the view stay in sight.
+    let shown = state.filters_shown || state.filters.active();
+    let toggle = if shown { "Hide filters" } else { "Filters" };
+    view.button(heading, FILTERS_TOGGLE, toggle);
     if state.naming {
         view.name_field(View::ROOT, "new-task-name", "New task name", "");
         if let Some(problem) = &state.naming_problem {
@@ -293,7 +310,9 @@ fn page() -> Vec<Node> {
     if let Some(problem) = &state.rename_problem {
         view.text(View::ROOT, "rename-problem", problem);
     }
-    filters(&mut view, &state.filters, &projects, &folders(&all));
+    if shown {
+        filters(&mut view, &state.filters, &projects, &folders(&all));
+    }
     let mut shown: Vec<Task> = all
         .into_iter()
         .filter(|task| views::holds(&state.choice, task, &now) && state.filters.keep(task, &now))
@@ -314,7 +333,13 @@ fn page() -> Vec<Node> {
         state.rename_problem = None;
     }
     if shown.is_empty() {
-        view.text(View::ROOT, "empty", "No tasks here");
+        view.empty_state(
+            View::ROOT,
+            "empty",
+            "No tasks here",
+            Some("Tasks you add or that fall in this view show here."),
+            Some(Icon::Done),
+        );
         return view.into_nodes();
     }
     let list = view.list(View::ROOT, "tasks", "Task list");
@@ -522,6 +547,15 @@ fn start_naming() {
 fn handle(event: Event) {
     match event {
         Event::Pressed(node) if node == "new-task" => start_naming(),
+        Event::Pressed(node) if node == FILTERS_TOGGLE => {
+            let mut state = state();
+            if state.filters_shown || state.filters.active() {
+                state.filters_shown = false;
+                state.filters = Filters::NONE;
+            } else {
+                state.filters_shown = true;
+            }
+        }
         // A name reaches the field's plugin once; another for a field
         // that closed names nothing.
         Event::Named(naming)

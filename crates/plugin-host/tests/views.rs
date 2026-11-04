@@ -7,8 +7,9 @@
 mod support;
 
 use plugin_host::{
-    CalendarMode, Check, ColumnPress, Event, Field, Item, Move, Naming, PluginError, RunningPlugin,
-    Services, Submission, Target, Value, View, ViewKind, ViewNode, VirtualRow, check_rows,
+    CalendarMode, Check, ColumnPress, EmptyState, Event, Field, Heading, HeadingLevel, Icon, Item,
+    Move, Naming, Node, NodeKind, PluginError, RunningPlugin, Services, Submission, Target, Value,
+    View, ViewKind, ViewNode, VirtualRow, check_rows,
 };
 use support::plugins;
 
@@ -1009,6 +1010,17 @@ const UNKNOWN_KIND: &str = r#"
     (type $calendar-entry' (record
       (field "title" string) (field "start" string) (field "end" (option string))))
     (export $calendar-entry "calendar-entry" (type $calendar-entry'))
+    (type $icon' (enum "calendar" "done" "folder" "note" "sparkle" "tasks"))
+    (export $icon "icon" (type $icon'))
+    (type $heading-level' (enum "page" "section"))
+    (export $heading-level "heading-level" (type $heading-level'))
+    (type $heading' (record
+      (field "text" string) (field "level" $heading-level)
+      (field "detail" (option string)) (field "icon" (option $icon))))
+    (export $heading "heading" (type $heading'))
+    (type $empty-state' (record
+      (field "title" string) (field "detail" (option string)) (field "icon" (option $icon))))
+    (export $empty-state "empty-state" (type $empty-state'))
     (type $node-kind' (variant
       (case "panel" (option string)) (case "text" string)
       (case "markdown" string) (case "button" string)
@@ -1016,7 +1028,8 @@ const UNKNOWN_KIND: &str = r#"
       (case "table" $table) (case "row" (list string)) (case "form" $form)
       (case "input" $input) (case "name-field" $name-field) (case "menu" string) (case "menu-item" $menu-item)
       (case "separator") (case "board" string) (case "board-column" string)
-      (case "card" $item) (case "calendar" $calendar) (case "entry" $calendar-entry)))
+      (case "card" $item) (case "calendar" $calendar) (case "entry" $calendar-entry)
+      (case "heading" $heading) (case "empty" $empty-state)))
     (export $node-kind "node-kind" (type $node-kind'))
     (type $node' (record
       (field "id" string) (field "kind" $node-kind) (field "children" (list u32))))
@@ -1068,3 +1081,81 @@ const UNKNOWN_KIND: &str = r#"
   (instance $view-instance (instantiate $view))
   (export "noura:plugin/view@0.1.0" (instance $view-instance)))
 "#;
+
+fn node(id: &str, kind: NodeKind, children: Vec<u32>) -> Node {
+    Node {
+        id: id.into(),
+        kind,
+        children,
+    }
+}
+
+fn heading(text: &str) -> NodeKind {
+    NodeKind::Heading(Heading {
+        text: text.into(),
+        level: HeadingLevel::Page,
+        detail: Some("Today".into()),
+        icon: Some(Icon::Tasks),
+    })
+}
+
+fn empty(title: &str) -> NodeKind {
+    NodeKind::Empty(EmptyState {
+        title: title.into(),
+        detail: Some("  ".into()),
+        icon: Some(Icon::Done),
+    })
+}
+
+#[test]
+fn headings_and_empty_states_hold_their_buttons() {
+    let view = View::from_nodes(vec![
+        node("root", NodeKind::Panel(None), vec![1, 3]),
+        node("title", heading("Tasks"), vec![2]),
+        node("new", NodeKind::Button("New task".into()), vec![]),
+        node("none", empty("No tasks here"), vec![]),
+    ])
+    .expect("the view is valid");
+
+    let root = view.root();
+    assert_eq!(
+        root.children[0].kind,
+        ViewKind::Heading {
+            text: "Tasks".into(),
+            level: HeadingLevel::Page,
+            detail: Some("Today".into()),
+            icon: Some(Icon::Tasks),
+        }
+    );
+    assert_eq!(root.children[0].children[0].id, "new");
+    // A detail of only spaces says nothing.
+    assert_eq!(
+        root.children[1].kind,
+        ViewKind::Empty {
+            title: "No tasks here".into(),
+            detail: None,
+            icon: Some(Icon::Done),
+        }
+    );
+}
+
+#[test]
+fn a_heading_with_more_than_buttons_or_without_text_is_refused() {
+    let holds_text = View::from_nodes(vec![
+        node("root", NodeKind::Panel(None), vec![1]),
+        node("title", heading("Tasks"), vec![2]),
+        node("line", NodeKind::Text("Hi".into()), vec![]),
+    ])
+    .expect_err("text in a heading");
+    assert_eq!(
+        holds_text.to_string(),
+        "The heading title holds line, which isn't a button."
+    );
+
+    let blank = View::from_nodes(vec![
+        node("root", NodeKind::Panel(None), vec![1]),
+        node("none", empty(" "), vec![]),
+    ])
+    .expect_err("a blank empty state");
+    assert!(blank.to_string().contains("label"), "{blank}");
+}

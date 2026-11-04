@@ -30,7 +30,7 @@ use std::{
 };
 
 use plugin_sdk::{
-    Command, Error, Event, Node, ObjectType, Page, Plugin, Tool, View,
+    Command, Error, Event, Icon, Node, ObjectType, Page, Plugin, Tool, View,
     navigation::{self, Placement},
     objects,
 };
@@ -170,7 +170,8 @@ fn page() -> Vec<Node> {
         }
     };
     let state = state();
-    view.button(View::ROOT, "new-project", "New project");
+    let heading = view.page_heading(View::ROOT, "title", "Projects", None, Some(Icon::Folder));
+    view.button(heading, "new-project", "New project");
     if state.naming {
         view.name_field(View::ROOT, "new-project-name", "New project name", "");
         if let Some(problem) = &state.naming_problem {
@@ -198,7 +199,13 @@ fn page() -> Vec<Node> {
         Err(Refused::Changed | Refused::Other(_)) => None,
     };
     if projects.is_empty() {
-        view.text(View::ROOT, "empty", "No projects yet");
+        view.empty_state(
+            View::ROOT,
+            "empty",
+            "No projects yet",
+            Some("A project gathers the tasks and notes of one piece of work."),
+            Some(Icon::Folder),
+        );
         return view.into_nodes();
     }
     let list = view.list(View::ROOT, "projects", "Projects");

@@ -81,13 +81,17 @@ pub(super) fn form(
     (label, submit, required): (&str, &str, &[String]),
     kit: &mut Kit,
 ) {
-    boxed(ui, Role::Form, Some(label), |ui| {
-        let outer = std::mem::take(&mut kit.entered);
-        for child in &node.children {
-            super::node(ui, child, kit);
-        }
-        let entered = std::mem::replace(&mut kit.entered, outer);
-        ui.add_space(8.0);
+    let single = matches!(
+        node.children.as_slice(),
+        [ViewNode {
+            kind: ViewKind::Input {
+                value: InputValue::Text(_),
+                ..
+            },
+            ..
+        }]
+    );
+    let submit_with = |ui: &mut Ui, kit: &mut Kit, entered: bool| {
         let ready = required
             .iter()
             .all(|input| holds_text(ui, node, input, kit));
@@ -103,6 +107,36 @@ pub(super) fn form(
                 }));
             }
         }
+    };
+    if single {
+        // One text field and its button on one line, the field's label
+        // as its placeholder.
+        let builder = UiBuilder::new()
+            .accessibility_role(Role::Form)
+            .accessibility_label(label);
+        ui.scope_builder(builder, |ui| {
+            ui.horizontal(|ui| {
+                let outer = std::mem::take(&mut kit.entered);
+                let inline = std::mem::replace(&mut kit.inline, true);
+                let button = ui.spacing().interact_size.x + 24.0;
+                ui.allocate_ui(vec2(ui.available_width() - button, 32.0), |ui| {
+                    super::node(ui, &node.children[0], kit);
+                });
+                kit.inline = inline;
+                let entered = std::mem::replace(&mut kit.entered, outer);
+                submit_with(ui, kit, entered);
+            });
+        });
+        return;
+    }
+    boxed(ui, Role::Form, Some(label), |ui| {
+        let outer = std::mem::take(&mut kit.entered);
+        for child in &node.children {
+            super::node(ui, child, kit);
+        }
+        let entered = std::mem::replace(&mut kit.entered, outer);
+        ui.add_space(8.0);
+        submit_with(ui, kit, entered);
     });
 }
 
@@ -263,12 +297,18 @@ pub(super) fn input(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             });
         }
         InputValue::Text(_) | InputValue::Multiline(_) => {
-            ui.label(RichText::new(label).strong());
+            if !kit.inline {
+                ui.label(RichText::new(label).strong());
+            }
             let multiline = matches!(value, InputValue::Multiline(_));
             let field = if multiline {
                 TextEdit::multiline(&mut draft.text)
                     .desired_rows(3)
                     .lock_focus(false)
+            } else if kit.inline {
+                TextEdit::singleline(&mut draft.text)
+                    .hint_text(label.as_str())
+                    .margin(Margin::symmetric(12, 7))
             } else {
                 TextEdit::singleline(&mut draft.text)
             };

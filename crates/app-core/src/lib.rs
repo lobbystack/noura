@@ -148,8 +148,8 @@ pub use pdf::{PdfDrawFailure, PdfRenderHold};
 pub use plugin_host::fake_github;
 pub use plugin_host::{
     CalendarMode, Check as PluginCheck, Choice, Column, ColumnPress, Event as PluginEvent, Field,
-    Grant, Move as PluginMove, Naming as PluginNaming, SortOrder, Submission, Target,
-    Value as InputValue, View, ViewKind, ViewNode, VirtualRow,
+    Grant, HeadingLevel, Icon as PluginIcon, Move as PluginMove, Naming as PluginNaming, SortOrder,
+    Submission, Target, Value as InputValue, View, ViewKind, ViewNode, VirtualRow,
 };
 pub use plugin_inputs::{date_time_fields, date_time_value, date_value};
 pub use plugins::{

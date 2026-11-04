@@ -6,7 +6,7 @@
 //! date.
 
 use plugin_sdk::{
-    Event, InboxSection, Node, Value, View,
+    Event, Icon, InboxSection, Node, Value, View,
     navigation::{self, Placement},
     objects::{self, NewObject},
 };
@@ -72,11 +72,30 @@ pub(crate) fn render() -> Vec<Node> {
         view.text(View::ROOT, "due-notice", notice);
     }
     drop(state);
+    let state = self::state();
+    let form = view.form(View::ROOT, ADD, "Add a task for today", "Add");
+    // Each task added starts a new field, so the field you typed in
+    // clears; one that failed keeps what you typed.
+    let input = format!("today-name-{}", state.added);
+    view.input(
+        form,
+        &input,
+        "Add a task for today",
+        Value::Text(String::new()),
+    );
+    view.require(form, &input);
+    if let Some(problem) = &state.add_problem {
+        view.text(View::ROOT, "add-problem", problem);
+    }
+    drop(state);
+    let heading = view.section_heading(View::ROOT, "due-heading", "Due today", Some(Icon::Done));
+    view.button(heading, ALL_TASKS, "All tasks");
+    let card = view.add_panel(View::ROOT, "due-card", None);
     if due.is_empty() {
-        view.text(View::ROOT, "nothing-due", "Nothing due today.");
+        view.text(card, "nothing-due", "Nothing due today.");
     } else {
-        view.text(View::ROOT, "due-count", &count(due.len()));
-        let list = view.list(View::ROOT, LIST, "Due today");
+        view.text(card, "due-count", &count(due.len()));
+        let list = view.list(card, LIST, "Due today");
         view.open_on_click(list);
         for task in shown {
             let due = task.due.map(|due| views::due_label(due, &now));
@@ -85,17 +104,6 @@ pub(crate) fn render() -> Vec<Node> {
                 view.warn(item, "Overdue");
             }
         }
-    }
-    view.button(View::ROOT, ALL_TASKS, "All tasks");
-    let state = self::state();
-    let form = view.form(View::ROOT, ADD, "Add a task for today", "Add");
-    // Each task added starts a new field, so the field you typed in
-    // clears; one that failed keeps what you typed.
-    let input = format!("today-name-{}", state.added);
-    view.input(form, &input, "Task", Value::Text(String::new()));
-    view.require(form, &input);
-    if let Some(problem) = &state.add_problem {
-        view.text(View::ROOT, "add-problem", problem);
     }
     view.into_nodes()
 }

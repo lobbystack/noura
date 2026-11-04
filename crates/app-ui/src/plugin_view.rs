@@ -16,6 +16,7 @@ mod board;
 mod calendar;
 mod drag;
 mod form;
+mod heading;
 mod menu;
 mod rows;
 
@@ -60,6 +61,9 @@ struct Kit<'a> {
     entered: bool,
     /// How many panels the node being drawn sits in.
     depth: usize,
+    /// The input being drawn is a one-line form's field, whose label is
+    /// its placeholder.
+    inline: bool,
 }
 
 impl Kit<'_> {
@@ -203,6 +207,7 @@ fn draw(
         link: None,
         entered: false,
         depth: 0,
+        inline: false,
     };
     ui.push_id(("plugin-view", window, place), |ui| {
         node(ui, view.root(), &mut kit);
@@ -297,8 +302,8 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
                     builder = builder.accessibility_label(label);
                 }
                 ui.scope_builder(builder, |ui| {
-                    ui.spacing_mut().item_spacing.y = 12.0;
-                    children(ui, &node.children, kit);
+                    ui.set_width(ui.available_width());
+                    ui.vertical(|ui| children(ui, &node.children, kit));
                 });
             } else {
                 boxed(ui, Role::Group, label.as_deref(), |ui| {
@@ -316,6 +321,8 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             }
         }
         ViewKind::Button { label } => menu::button(ui, node, label, kit),
+        ViewKind::Heading { .. } => heading::heading(ui, node, kit),
+        ViewKind::Empty { .. } => heading::empty(ui, node, kit),
         ViewKind::List {
             label,
             reorder,

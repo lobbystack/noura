@@ -4,11 +4,12 @@
 
 use app_core::{PluginEvent, ViewKind, ViewNode};
 use egui::{
-    Align, Button, Event, Key, Layout, Modifiers, Popup, PopupKind, Pos2, Response, Ui,
-    accesskit::HasPopup, containers::menu::menu_style,
+    Align, Button, Event, Key, Layout, Modifiers, Popup, PopupKind, Pos2, Response, RichText,
+    Stroke, Ui, accesskit::HasPopup, containers::menu::menu_style,
 };
 
 use super::Kit;
+use crate::theme::{Palette, SUPPORTING_SIZE, radius};
 
 /// What happened to an open menu this frame.
 pub(super) enum Outcome {
@@ -108,19 +109,48 @@ struct Opened {
 /// A button. One that holds a menu opens it on a press, the context-menu
 /// key or Shift-F10, and sends the chosen item; any other sends its press.
 pub(super) fn button(ui: &mut Ui, node: &ViewNode, label: &str, kit: &mut Kit) {
+    styled_button(ui, node, label, Look::Plain, kit);
+}
+
+/// How a plugin's button looks.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Look {
+    Plain,
+    /// The one action that stands out, as a page heading's first button.
+    Primary,
+    /// Muted text, as a section heading's buttons.
+    Quiet,
+}
+
+/// A plugin's button drawn the way `look` says.
+pub(super) fn styled_button(ui: &mut Ui, node: &ViewNode, label: &str, look: Look, kit: &mut Kit) {
+    let palette = Palette::of(ui.ctx());
+    let widget = match look {
+        Look::Plain => Button::new(label),
+        Look::Primary => Button::new(RichText::new(label).color(palette.primary_foreground))
+            .fill(palette.primary)
+            .stroke(Stroke::NONE)
+            .corner_radius(radius(3.0)),
+        Look::Quiet => Button::new(
+            RichText::new(label)
+                .size(SUPPORTING_SIZE)
+                .color(palette.muted_foreground),
+        )
+        .frame(false),
+    };
     let menu = node
         .children
         .first()
         .filter(|child| matches!(child.kind, ViewKind::Menu { .. }));
     let Some(menu) = menu else {
-        if ui.button(label).clicked() {
+        if ui.add(widget).clicked() {
             kit.events.push(PluginEvent::Pressed(node.id.clone()));
         }
         return;
     };
     let id = kit.id(&node.id);
     let mut opened: Option<Opened> = ui.data(|data| data.get_temp(id));
-    let response = ui.add(Button::new(label));
+    let response = ui.add(widget);
     let from_keys =
         ui.input(|input| input.key_pressed(Key::Enter) || input.key_pressed(Key::Space));
     if response.has_focus() && opened.is_none() && menu_key(ui, true) {

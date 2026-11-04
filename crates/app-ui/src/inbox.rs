@@ -4,20 +4,20 @@
 
 use std::time::Duration;
 
-use app_core::{App, FileLink, Inbox, InboxSection, OpenAs};
+use app_core::{App, FileLink, Inbox, InboxSection, OpenAs, ViewKind};
 use egui::{
-    Align, Frame, Id, Label, Layout, Margin, Rect, Response, RichText, Stroke, Ui, UiBuilder,
-    accesskit::Role, pos2, vec2,
+    Align, Frame, Id, Label, Layout, Margin, Rect, Response, RichText, Sense, Stroke, Ui,
+    UiBuilder, accesskit::Role, pos2, vec2,
 };
 
 use crate::{
     common::muted,
-    plugin_view,
+    icons, plugin_view,
     theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, TITLE_SIZE, radius},
 };
 
 /// The widest the Inbox's column grows.
-const COLUMN_WIDTH: f32 = 640.0;
+const COLUMN_WIDTH: f32 = 720.0;
 /// The space between the Inbox's parts.
 const GAP: f32 = 20.0;
 
@@ -151,8 +151,18 @@ fn needs_attention(ui: &mut Ui, inbox: &Inbox) -> Option<Follow> {
 /// A plugin's section: the view it drew, or why it couldn't load or draw,
 /// in its own place. What you do there goes back to the plugin.
 fn plugin_section(ui: &mut Ui, app: &mut App, window: Id, section: &InboxSection) {
-    heading(ui, &section.title, 1, BODY_SIZE);
-    ui.add_space(8.0);
+    // A section that draws its own heading, with its icon and buttons,
+    // gets no other.
+    let own_heading = section.content.as_ref().is_ok_and(|view| {
+        view.root()
+            .children
+            .iter()
+            .any(|child| matches!(child.kind, ViewKind::Heading { .. }))
+    });
+    if !own_heading {
+        heading(ui, &section.title, 1, BODY_SIZE);
+        ui.add_space(8.0);
+    }
     let empty = section
         .content
         .as_ref()
@@ -165,10 +175,21 @@ fn plugin_section(ui: &mut Ui, app: &mut App, window: Id, section: &InboxSection
 }
 
 fn recent(ui: &mut Ui, inbox: &Inbox) -> Option<Follow> {
-    heading(ui, "Recent", 1, BODY_SIZE);
+    ui.horizontal(|ui| {
+        let palette = Palette::of(ui.ctx());
+        let (rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+        icons::paint(
+            ui.painter(),
+            icons::NEW_NOTE,
+            rect,
+            palette.muted_foreground,
+            false,
+        );
+        heading(ui, "Recent", 1, BODY_SIZE);
+    });
     ui.add_space(8.0);
     if inbox.recent.is_empty() {
-        muted(ui, "No notes yet.");
+        rows(ui, |ui| muted(ui, "No notes yet."));
         return None;
     }
     let palette = Palette::of(ui.ctx());

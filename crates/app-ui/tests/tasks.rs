@@ -606,7 +606,7 @@ fn add_stays_disabled_until_you_type_a_name_and_the_field_clears_after_adding() 
 
     harness
         .get_by_role_and_label(Role::Form, "Add a task for today")
-        .get_by_role_and_label(Role::TextInput, "Task")
+        .get_by_role_and_label(Role::TextInput, "Add a task for today")
         .focus();
     run(&mut harness);
     type_text(&mut harness, "   ");
@@ -627,7 +627,7 @@ fn add_stays_disabled_until_you_type_a_name_and_the_field_clears_after_adding() 
     assert!(text.contains(&format!("due: {today}")), "{text}");
     let field = harness
         .get_by_role_and_label(Role::Form, "Add a task for today")
-        .get_by_role_and_label(Role::TextInput, "Task");
+        .get_by_role_and_label(Role::TextInput, "Add a task for today");
     assert_eq!(field.value().unwrap_or_default(), "");
     assert!(add_button(&harness).accesskit_node().is_disabled());
 

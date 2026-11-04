@@ -4,8 +4,9 @@
 //! holding its children.
 
 use app_core::{
-    CalendarMode, Choice, Column, ColumnPress, Field, InputValue, PluginCheck, PluginEvent,
-    PluginMove, PluginNaming, SortOrder, Submission, Target, ViewKind, ViewNode,
+    CalendarMode, Choice, Column, ColumnPress, Field, HeadingLevel, InputValue, PluginCheck,
+    PluginEvent, PluginIcon, PluginMove, PluginNaming, SortOrder, Submission, Target, ViewKind,
+    ViewNode,
 };
 use serde_json::{Value, json};
 
@@ -100,6 +101,42 @@ fn kind(kind: &ViewKind) -> Value {
             "entry",
             json!({ "title": title, "start": start, "end": end }),
         ),
+        ViewKind::Heading {
+            text,
+            level,
+            detail,
+            icon,
+        } => tagged(
+            "heading",
+            json!({
+                "text": text,
+                "level": match level {
+                    HeadingLevel::Page => "page",
+                    HeadingLevel::Section => "section",
+                },
+                "detail": detail,
+                "icon": icon.map(icon_name),
+            }),
+        ),
+        ViewKind::Empty {
+            title,
+            detail,
+            icon,
+        } => tagged(
+            "empty",
+            json!({ "title": title, "detail": detail, "icon": icon.map(icon_name) }),
+        ),
+    }
+}
+
+fn icon_name(icon: PluginIcon) -> &'static str {
+    match icon {
+        PluginIcon::Calendar => "calendar",
+        PluginIcon::Done => "done",
+        PluginIcon::Folder => "folder",
+        PluginIcon::Note => "note",
+        PluginIcon::Sparkle => "sparkle",
+        PluginIcon::Tasks => "tasks",
     }
 }
 

@@ -15,7 +15,10 @@
 
 use std::collections::HashSet;
 
-use crate::{CalendarEntry, CalendarMode, Choice, Column, Node, NodeKind, Value, VirtualRow};
+use crate::{
+    CalendarEntry, CalendarMode, Choice, Column, HeadingLevel, Icon, Node, NodeKind, Value,
+    VirtualRow,
+};
 
 /// The most nodes a view may hold.
 pub const MAX_NODES: usize = 10_000;
@@ -153,6 +156,20 @@ pub enum ViewKind {
         title: String,
         start: String,
         end: Option<String>,
+    },
+    /// A page's or a section's title, whose children are its buttons.
+    Heading {
+        text: String,
+        level: HeadingLevel,
+        detail: Option<String>,
+        icon: Option<Icon>,
+    },
+    /// What an empty page or section shows, whose children are its
+    /// buttons.
+    Empty {
+        title: String,
+        detail: Option<String>,
+        icon: Option<Icon>,
     },
 }
 
@@ -306,6 +323,8 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Card(_) => "card",
         NodeKind::Calendar(_) => "calendar",
         NodeKind::Entry(_) => "entry",
+        NodeKind::Heading(_) => "heading",
+        NodeKind::Empty(_) => "empty state",
     }
 }
 
@@ -328,6 +347,9 @@ fn check_node(node: &Node) -> Result<(), ViewError> {
             invalid(format!("The row {id} has no cell with text."))
         }
         NodeKind::Row(_) => Ok(()),
+        NodeKind::Heading(heading) if blank(&heading.text) => Err(unlabeled()),
+        NodeKind::Empty(empty) if blank(&empty.title) => Err(unlabeled()),
+        NodeKind::Heading(_) | NodeKind::Empty(_) => Ok(()),
         NodeKind::Button(label)
         | NodeKind::Menu(label)
         | NodeKind::Board(label)
@@ -596,6 +618,17 @@ fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
             }
             Ok(())
         }
+        NodeKind::Heading(_) | NodeKind::Empty(_) => {
+            for child in children {
+                if !matches!(child.kind, NodeKind::Button(_)) {
+                    return misplaced(format!(
+                        "The {kind} {id} holds {}, which isn't a button.",
+                        child.id
+                    ));
+                }
+            }
+            Ok(())
+        }
         NodeKind::Calendar(_) => {
             for child in children {
                 if !matches!(child.kind, NodeKind::Entry(_)) {
@@ -777,6 +810,17 @@ fn build(
             title: entry.title.clone(),
             start: entry.start.clone(),
             end: entry.end.clone(),
+        },
+        NodeKind::Heading(heading) => ViewKind::Heading {
+            text: heading.text.clone(),
+            level: heading.level,
+            detail: heading.detail.clone().filter(|detail| !blank(detail)),
+            icon: heading.icon,
+        },
+        NodeKind::Empty(empty) => ViewKind::Empty {
+            title: empty.title.clone(),
+            detail: empty.detail.clone().filter(|detail| !blank(detail)),
+            icon: empty.icon,
         },
     };
     let children: Vec<ViewNode> = node
