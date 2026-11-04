@@ -205,6 +205,11 @@ pub fn choose(app: &mut App, list: &str, item: &str) {
     super::settle(app);
 }
 
+/// Open the page's filters, which stay hidden until you ask for them.
+pub fn show_filters(app: &mut App) {
+    send(app, PluginEvent::Pressed("toggle-filters".to_owned()));
+}
+
 /// Send `event` to the page and wait for the plugin to draw.
 pub fn send(app: &mut App, event: PluginEvent) {
     app.send_plugin_event(PAGE, &event);

@@ -163,6 +163,7 @@ fn two_project_files_with_one_id_show_as_one_project_in_the_panel_the_filters_an
         lists[1].items,
         [(format!("project:{garden}"), "Garden".to_owned(), None)]
     );
+    tasks::show_filters(&mut app);
     let page = tasks::page(&app);
     let Some(ViewKind::Input { choices, .. }) =
         find(page.root(), "filter-project").map(|node| &node.kind)
