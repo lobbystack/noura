@@ -39,7 +39,10 @@ fn split(ui: &mut Ui, node: &ViewNode, first_width: u32, kit: &mut Kit) {
     let palette = Palette::of(ui.ctx());
     // The page keeps 24 points around its contents; the panes run past
     // them to the page's edges, as the legacy panes did.
-    let available = ui.available_rect_before_wrap();
+    // The gap above it is empty, so the panes start where the content
+    // above them ends.
+    let mut available = ui.available_rect_before_wrap();
+    available.min.y -= ui.spacing().item_spacing.y;
     let height = ui
         .clip_rect()
         .bottom()

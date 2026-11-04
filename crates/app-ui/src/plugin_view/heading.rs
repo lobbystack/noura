@@ -123,7 +123,9 @@ pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             let width = ui.max_rect().x_range().expand(24.0);
             ui.painter()
                 .hline(width, y, egui::Stroke::new(1.0, palette.border));
-            ui.add_space(24.0);
+            // What follows starts at the line, as under the legacy header.
+            let gap = y - ui.cursor().top();
+            ui.add_space(gap.max(0.0));
         }
     });
 }
