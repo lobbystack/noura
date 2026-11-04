@@ -471,6 +471,11 @@ fn header(ui: &mut Ui, app: &mut App, note: &mut OpenNote, tab: TabId) {
     let problem = session.name_problem().map(str::to_owned);
     let id = name_field_id(tab);
     let mut draft = note.name.clone().unwrap_or_else(|| shown.clone());
+    // The legacy document header: the name on one 20 px line, 8 px from
+    // the top, then a line across the page.
+    ui.add_space(-16.0);
+    let interact = ui.spacing().interact_size.y;
+    ui.spacing_mut().interact_size.y = 20.0;
     let response = ui
         .add(
             TextEdit::singleline(&mut draft)
@@ -485,6 +490,7 @@ fn header(ui: &mut Ui, app: &mut App, note: &mut OpenNote, tab: TabId) {
                 .desired_width(f32::INFINITY),
         )
         .accessible_name("File name");
+    ui.spacing_mut().interact_size.y = interact;
     if response.changed() {
         note.name = Some(draft);
     }
