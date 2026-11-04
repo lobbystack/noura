@@ -36,3 +36,17 @@ pub fn default_font_database() -> fontdb::Database {
     }
     db
 }
+
+/// Make the font in `bytes`, such as the system's interface font, the
+/// family `db` shapes proportional text with.
+pub fn prefer_sans(db: &mut fontdb::Database, bytes: Vec<u8>) {
+    let ids = db.load_font_source(fontdb::Source::Binary(std::sync::Arc::new(bytes)));
+    let family = ids
+        .first()
+        .and_then(|id| db.face(*id))
+        .and_then(|face| face.families.first().map(|(family, _)| family.clone()));
+    if let Some(family) = family {
+        db.set_sans_serif_family(family.clone());
+        db.set_serif_family(family);
+    }
+}

@@ -10,6 +10,7 @@ mod common;
 mod dates;
 mod finder;
 mod folder_sync;
+mod icons;
 mod ignored_files;
 mod image_decoders;
 mod image_view;

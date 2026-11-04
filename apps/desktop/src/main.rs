@@ -125,6 +125,40 @@ fn configure_event_loop(builder: &mut winit::event_loop::EventLoopBuilder<eframe
     let _ = builder;
 }
 
+/// The file of the system's interface font: San Francisco on macOS and
+/// Segoe UI on Windows. Linux keeps egui's own, as its desktops differ.
+fn system_ui_font() -> Option<Vec<u8>> {
+    let path = if cfg!(target_os = "macos") {
+        PathBuf::from("/System/Library/Fonts/SFNS.ttf")
+    } else if cfg!(target_os = "windows") {
+        let windows = std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into());
+        Path::new(&windows).join("Fonts").join("segoeui.ttf")
+    } else {
+        return None;
+    };
+    match std::fs::read(&path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) => {
+            tracing::warn!(%error, "the system's interface font could not be read");
+            None
+        }
+    }
+}
+
+/// Draw Noura's interface in `bytes`, with egui's own fonts behind it for
+/// the glyphs it lacks.
+fn install_ui_font(ctx: &egui::Context, bytes: Vec<u8>) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "system-ui".to_owned(),
+        Arc::new(egui::FontData::from_owned(bytes)),
+    );
+    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+        family.insert(0, "system-ui".to_owned());
+    }
+    ctx.set_fonts(fonts);
+}
+
 /// Give the note editor its fonts, egui's own then the system's so text in
 /// other scripts finds glyphs, and the renderer resources it paints with.
 fn register_editor(
@@ -136,6 +170,10 @@ fn register_editor(
         .ok_or("Noura needs the wgpu renderer to draw notes")?;
     let mut fonts = editor_egui::fonts::default_font_database();
     fonts.load_system_fonts();
+    if let Some(bytes) = system_ui_font() {
+        install_ui_font(&creation.egui_ctx, bytes.clone());
+        editor_egui::fonts::prefer_sans(&mut fonts, bytes);
+    }
     let font_system = editor_egui::register_font_system(&creation.egui_ctx, fonts);
     editor_egui::register_render_callback_resources(
         &render_state.device,

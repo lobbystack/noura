@@ -7,14 +7,14 @@ use std::time::Instant;
 
 use app_core::{App, CommandSource, FILES_PAGE, INBOX_PAGE, OpenAs, command_id};
 use egui::{
-    Align, Align2, Color32, DragAndDrop, FontId, Id, Key, Layout, Modifiers, Pos2, Rect, Sense,
-    Shape, Stroke, Ui, UiBuilder, WidgetInfo,
+    Align, Align2, Color32, DragAndDrop, FontId, Id, Key, Layout, Modifiers, Rect, Sense, Stroke,
+    Ui, UiBuilder, WidgetInfo,
     accesskit::{Action, AriaCurrent, HasPopup, Role},
     pos2, vec2,
 };
 
 use crate::{
-    keys,
+    icons, keys,
     theme::{Palette, radius},
 };
 
@@ -22,6 +22,8 @@ use crate::{
 pub(crate) const RAIL_WIDTH: f32 = 56.0;
 const ITEM_SIZE: f32 = 36.0;
 const ITEM_GAP: f32 = 4.0;
+/// The side of a rail icon.
+const ICON_SIZE: f32 = 20.0;
 
 /// The Settings button's ID, so focus can return to it when Settings
 /// closes.
@@ -46,61 +48,48 @@ pub(crate) fn has_focus(ctx: &egui::Context, app: &App) -> bool {
         .is_some_and(|focused| app.rail().iter().any(|page| item_id(&page.id) == focused))
 }
 
-/// Draw a page's symbol in `rect`: an outline icon for the kernel pages,
-/// or else the first letter of its title. egui's bundled fonts have no
-/// icon glyphs.
-fn paint_symbol(painter: &egui::Painter, page_id: &str, title: &str, rect: Rect, color: Color32) {
-    let center = rect.center();
-    let at = |x: f32, y: f32| center + vec2(x, y);
-    let stroke = Stroke::new(1.5, color);
-    let outline = |points: Vec<Pos2>| {
-        painter.add(Shape::closed_line(points, stroke));
-    };
-    match page_id {
-        // A folder.
-        FILES_PAGE => outline(vec![
-            at(-8.0, -6.0),
-            at(-3.0, -6.0),
-            at(-1.0, -4.0),
-            at(8.0, -4.0),
-            at(8.0, 6.0),
-            at(-8.0, 6.0),
-        ]),
-        // A tray.
-        INBOX_PAGE => {
-            outline(vec![
-                at(-8.0, -6.0),
-                at(8.0, -6.0),
-                at(8.0, 6.0),
-                at(-8.0, 6.0),
-            ]);
-            painter.add(Shape::line(
-                vec![
-                    at(-8.0, 1.0),
-                    at(-3.0, 1.0),
-                    at(-2.0, 3.0),
-                    at(2.0, 3.0),
-                    at(3.0, 1.0),
-                    at(8.0, 1.0),
-                ],
-                stroke,
-            ));
-        }
-        _ => {
-            let letter: String = title
-                .chars()
-                .next()
-                .map(|letter| letter.to_uppercase().collect())
-                .unwrap_or_default();
-            painter.text(
-                center,
-                Align2::CENTER_CENTER,
-                letter,
-                FontId::proportional(16.0),
-                color,
-            );
-        }
+/// The icon of a page: the kernel's pages and the plugins Noura ships
+/// have their own. Another plugin's page shows its title's first letter.
+fn page_icon(page_id: &str) -> Option<icons::Icon> {
+    let shipped = |page| page_id.ends_with(&format!(":{page}"));
+    Some(match page_id {
+        FILES_PAGE => icons::FILES,
+        INBOX_PAGE => icons::INBOX,
+        _ if shipped("tasks") => icons::TASKS,
+        _ if shipped("calendar") => icons::CALENDAR,
+        _ if shipped("projects") => icons::PROJECTS,
+        _ if shipped("ai") => icons::AI,
+        _ => return None,
+    })
+}
+
+/// Draw a page's symbol in `rect`: its icon, filled while it shows, or
+/// else the first letter of its title.
+fn paint_symbol(
+    painter: &egui::Painter,
+    page_id: &str,
+    title: &str,
+    rect: Rect,
+    color: Color32,
+    current: bool,
+) {
+    if let Some(icon) = page_icon(page_id) {
+        let square = Rect::from_center_size(rect.center(), vec2(ICON_SIZE, ICON_SIZE));
+        icons::paint(painter, icon, square, color, current);
+        return;
     }
+    let letter: String = title
+        .chars()
+        .next()
+        .map(|letter| letter.to_uppercase().collect())
+        .unwrap_or_default();
+    painter.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        letter,
+        FontId::proportional(16.0),
+        color,
+    );
 }
 
 pub(crate) fn show(ui: &mut Ui, app: &mut App) {
@@ -216,7 +205,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App) {
                 if dragging {
                     color = color.gamma_multiply(0.4);
                 }
-                paint_symbol(painter, page_id, title, rect, color);
+                paint_symbol(painter, page_id, title, rect, color, is_current);
                 if let Some(gap) = hovering {
                     let y = if gap == index {
                         rect.top() - ITEM_GAP / 2.0
@@ -279,7 +268,7 @@ fn foot_button(
     id: Id,
     label: &str,
     command: &str,
-    paint: impl FnOnce(&egui::Painter, Rect, Stroke),
+    icon: icons::Icon,
 ) -> egui::Response {
     let shortcut = shortcut_text(app, command);
     let rect = ui.allocate_space(vec2(ITEM_SIZE, ITEM_SIZE)).1;
@@ -305,7 +294,8 @@ fn foot_button(
                 egui::StrokeKind::Inside,
             );
         }
-        paint(painter, rect, Stroke::new(1.5, palette.muted_foreground));
+        let square = Rect::from_center_size(rect.center(), vec2(ICON_SIZE, ICON_SIZE));
+        icons::paint(painter, icon, square, palette.muted_foreground, false);
     }
     let tooltip = match &shortcut {
         Some(shortcut) => format!("{label} ({shortcut})"),
@@ -322,12 +312,7 @@ fn search_button(ui: &mut Ui, app: &App) -> egui::Response {
         Id::unique("rail-search"),
         "Search",
         command_id::COMMAND_PALETTE,
-        |painter, rect, stroke| {
-            // A magnifying glass.
-            let center = rect.center() + vec2(-1.5, -1.5);
-            painter.circle_stroke(center, 5.5, stroke);
-            painter.line_segment([center + vec2(4.0, 4.0), center + vec2(8.0, 8.0)], stroke);
-        },
+        icons::SEARCH,
     )
 }
 
@@ -339,16 +324,6 @@ fn settings_button(ui: &mut Ui, app: &App) -> egui::Response {
         settings_button_id(),
         "Settings",
         command_id::SETTINGS,
-        |painter, rect, stroke| {
-            // A ring with eight teeth.
-            let center = rect.center();
-            painter.circle_stroke(center, 3.0, stroke);
-            painter.circle_stroke(center, 6.5, stroke);
-            for tooth in 0..8 {
-                let angle = std::f32::consts::FRAC_PI_4 * tooth as f32;
-                let direction = vec2(angle.cos(), angle.sin());
-                painter.line_segment([center + direction * 6.5, center + direction * 9.0], stroke);
-            }
-        },
+        icons::SETTINGS,
     )
 }

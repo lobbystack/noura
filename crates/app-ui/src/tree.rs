@@ -9,8 +9,8 @@ use app_core::{
 };
 use egui::{
     Align, Align2, Event, EventFilter, FontId, Id, Key, LayerId, Layout, Modifiers, Order, Popup,
-    PopupKind, Pos2, Rect, Response, ScrollArea, Sense, Shape, Stroke, StrokeKind, TextEdit,
-    TextWrapMode, Ui, UiBuilder, WidgetInfo, WidgetText,
+    PopupKind, Pos2, Rect, Response, ScrollArea, Sense, Stroke, StrokeKind, TextEdit, TextWrapMode,
+    Ui, UiBuilder, WidgetInfo, WidgetText,
     accesskit::{Action, Role},
     containers::menu::menu_style,
     pos2,
@@ -19,11 +19,14 @@ use egui::{
     vec2,
 };
 
-use crate::theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, radius};
+use crate::{
+    icons,
+    theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, radius},
+};
 
 /// The height of one row.
 pub const ROW_HEIGHT: f32 = 28.0;
-const INDENT: f32 = 12.0;
+const INDENT: f32 = 16.0;
 
 /// What the tree remembers between frames.
 #[derive(Default)]
@@ -185,13 +188,13 @@ fn header(ui: &mut Ui, app: &mut App) -> bool {
         let collapsed = section_heading(ui, app, (ui.available_width() - actions).max(0.0));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = spacing;
-            if icon_button(ui, "Collapse all", Icon::CollapseAll).clicked() {
+            if icon_button(ui, "Collapse all", icons::COLLAPSE).clicked() {
                 app.collapse_all();
             }
-            if icon_button(ui, "New folder", Icon::NewFolder).clicked() {
+            if icon_button(ui, "New folder", icons::NEW_FOLDER).clicked() {
                 app.new_folder(None);
             }
-            if icon_button(ui, "New note", Icon::NewNote).clicked() {
+            if icon_button(ui, "New note", icons::NEW_NOTE).clicked() {
                 app.new_note(None);
             }
         });
@@ -223,13 +226,20 @@ fn section_heading(ui: &mut Ui, app: &mut App, width: f32) -> bool {
                 StrokeKind::Inside,
             );
         }
-        painter.add(chevron(
-            pos2(rect.left() + 10.0, rect.center().y),
-            !collapsed,
-            &palette,
-        ));
+        let caret = if collapsed {
+            icons::CARET_RIGHT
+        } else {
+            icons::CARET_DOWN
+        };
+        if response.hovered() || collapsed {
+            let caret_rect = Rect::from_center_size(
+                pos2(rect.right() - 10.0, rect.center().y),
+                vec2(12.0, 12.0),
+            );
+            icons::paint(painter, caret, caret_rect, palette.muted_foreground, false);
+        }
         painter.text(
-            pos2(rect.left() + 20.0, rect.center().y),
+            pos2(rect.left() + 12.0, rect.center().y),
             Align2::LEFT_CENTER,
             title,
             FontId::proportional(SUPPORTING_SIZE),
@@ -245,16 +255,9 @@ fn section_heading(ui: &mut Ui, app: &mut App, width: f32) -> bool {
 /// The size of the header's buttons.
 const ICON_SIZE: f32 = 24.0;
 
-#[derive(Clone, Copy)]
-enum Icon {
-    NewNote,
-    NewFolder,
-    CollapseAll,
-}
-
 /// A small button that shows an icon and names itself for screen readers
 /// and in its tooltip.
-fn icon_button(ui: &mut Ui, label: &str, icon: Icon) -> Response {
+fn icon_button(ui: &mut Ui, label: &str, icon: icons::Icon) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(ICON_SIZE, ICON_SIZE), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), label));
     let palette = Palette::of(ui.ctx());
@@ -271,39 +274,8 @@ fn icon_button(ui: &mut Ui, label: &str, icon: Icon) -> Response {
                 StrokeKind::Inside,
             );
         }
-        let stroke = Stroke::new(1.2, palette.muted_foreground);
-        let c = rect.center();
-        match icon {
-            Icon::NewNote => {
-                let page = Rect::from_center_size(c, vec2(10.0, 13.0));
-                painter.rect_stroke(page, 1.0, stroke, StrokeKind::Middle);
-                painter.line_segment([c + vec2(-2.5, 0.0), c + vec2(2.5, 0.0)], stroke);
-                painter.line_segment([c + vec2(0.0, -2.5), c + vec2(0.0, 2.5)], stroke);
-            }
-            Icon::NewFolder => {
-                let body = Rect::from_center_size(c + vec2(0.0, 1.0), vec2(14.0, 10.0));
-                painter.rect_stroke(body, 1.0, stroke, StrokeKind::Middle);
-                painter.line_segment(
-                    [
-                        body.left_top() + vec2(1.0, -2.0),
-                        body.left_top() + vec2(5.0, -2.0),
-                    ],
-                    stroke,
-                );
-                let plus = body.center();
-                painter.line_segment([plus + vec2(-2.5, 0.0), plus + vec2(2.5, 0.0)], stroke);
-                painter.line_segment([plus + vec2(0.0, -2.5), plus + vec2(0.0, 2.5)], stroke);
-            }
-            Icon::CollapseAll => {
-                painter.line_segment([c + vec2(-6.0, 0.0), c + vec2(6.0, 0.0)], stroke);
-                for direction in [-1.0, 1.0] {
-                    let tip = c + vec2(0.0, 2.0 * direction);
-                    let back = 4.0 * direction;
-                    painter.line_segment([tip + vec2(-3.5, back), tip], stroke);
-                    painter.line_segment([tip + vec2(3.5, back), tip], stroke);
-                }
-            }
-        }
+        let square = Rect::from_center_size(rect.center(), vec2(16.0, 16.0));
+        icons::paint(painter, icon, square, palette.muted_foreground, false);
     }
     response.on_hover_text(label)
 }
@@ -1019,16 +991,32 @@ fn draw_row(
             StrokeKind::Inside,
         );
     }
-    let left = inner.left() + 6.0 + row.depth as f32 * INDENT;
+    let left = inner.left() + 8.0 + row.depth as f32 * INDENT;
     let center_y = rect.center().y;
+    let icon = match row.expanded {
+        Some(true) => icons::FOLDER_OPEN,
+        Some(false) => icons::FOLDER,
+        None if row.relative_path.to_ascii_lowercase().ends_with(".pdf") => icons::PDF,
+        None => icons::NOTE,
+    };
+    let icon_rect = Rect::from_center_size(pos2(left + 8.0, center_y), vec2(16.0, 16.0));
+    icons::paint(painter, icon, icon_rect, palette.muted_foreground, false);
+    let mut right = inner.right() - 4.0;
     if let Some(expanded) = row.expanded {
-        painter.add(chevron(pos2(left + 5.0, center_y), expanded, palette));
+        let caret = if expanded {
+            icons::CARET_DOWN
+        } else {
+            icons::CARET_RIGHT
+        };
+        let caret_rect = Rect::from_center_size(pos2(right - 8.0, center_y), vec2(14.0, 14.0));
+        icons::paint(painter, caret, caret_rect, palette.muted_foreground, false);
+        right -= 20.0;
     }
     if state.renaming {
         return response;
     }
-    let text_left = left + 16.0;
-    let width = (inner.right() - text_left - 4.0).max(0.0);
+    let text_left = left + 24.0;
+    let width = (right - text_left).max(0.0);
     let galley = WidgetText::from(row.name.as_str()).into_galley(
         ui,
         Some(TextWrapMode::Truncate),
@@ -1063,23 +1051,4 @@ fn row_description(row: &TreeRow, drop_target: bool) -> Option<String> {
         parts.push(DROP_TARGET);
     }
     (!parts.is_empty()).then(|| parts.join(", "))
-}
-
-/// A small triangle: pointing right for a closed folder, down for an open one.
-fn chevron(center: Pos2, expanded: bool, palette: &Palette) -> Shape {
-    let size = 3.5;
-    let points = if expanded {
-        vec![
-            center + vec2(-size, -size * 0.5),
-            center + vec2(size, -size * 0.5),
-            center + vec2(0.0, size * 0.75),
-        ]
-    } else {
-        vec![
-            center + vec2(-size * 0.5, -size),
-            center + vec2(-size * 0.5, size),
-            center + vec2(size * 0.75, 0.0),
-        ]
-    };
-    Shape::convex_polygon(points, palette.muted_foreground, Stroke::NONE)
 }
