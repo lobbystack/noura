@@ -97,7 +97,7 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
             View::ROOT,
             "no-providers",
             "Connect an AI provider",
-            Some("Add a provider and its key to start chatting."),
+            None,
             Some(Icon::Sparkle),
         );
         view.button(empty, OPEN_AI_SETTINGS, "Open AI settings");
@@ -193,7 +193,7 @@ fn stopped_before_answering(messages: &[Message]) -> bool {
 /// you delete it.
 fn draw_title(view: &mut View, chat: &Chat) {
     let detail = (chat.retention == Retention::Ephemeral)
-        .then_some("Noura moves this chat to the trash 30 days after it started.");
+        .then_some("This chat moves to the trash 30 days after it started.");
     view.page_heading(
         View::ROOT,
         "title",
@@ -288,10 +288,10 @@ fn draw_message(view: &mut View, message: &Message, run: Option<&Run>, providers
                 MessageStatus::Interrupted
                     if message.error_code.as_deref() == Some("plugin-disabled") =>
                 {
-                    Some("You turned off the plugin that offers this tool, so the call didn't run.")
+                    Some("You turned off this tool's plugin, so the call didn't run.")
                 }
                 MessageStatus::Interrupted => {
-                    Some("Noura stopped before this call finished, and won't run it on its own.")
+                    Some("Noura stopped before this call finished and won't rerun it.")
                 }
                 MessageStatus::Failed => Some("This call failed."),
             };
@@ -303,7 +303,7 @@ fn draw_message(view: &mut View, message: &Message, run: Option<&Run>, providers
             let denied = serde_json::from_str::<serde_json::Value>(&message.content)
                 .is_ok_and(|result| result["denied"] == true);
             let line = if denied {
-                "You didn't allow this call, so it didn't run.".to_owned()
+                "You denied this call, so it didn't run.".to_owned()
             } else {
                 format!("Result: {}", message.content)
             };
@@ -374,21 +374,17 @@ fn draw_run_status(view: &mut View, run: &Run, providers: &[Provider], state: &S
         .find(|known| known.id == run.provider)
         .map_or(run.provider.as_str(), |known| known.name.as_str());
     let line = match run.status {
-        RunStatus::WaitingForConsent => Some(format!(
-            "Noura is asking you whether {name} may receive this workspace's content."
-        )),
-        RunStatus::WaitingForApproval => {
-            Some("Noura is asking you whether to run a tool the model wants to use.".to_owned())
+        RunStatus::WaitingForConsent => {
+            Some(format!("Waiting for your answer on sending to {name}."))
         }
-        RunStatus::Denied => Some(format!(
-            "You didn't let {name} receive this workspace's content, so Noura sent nothing."
-        )),
+        RunStatus::WaitingForApproval => Some("Waiting for your answer on a tool call.".to_owned()),
+        RunStatus::Denied => Some(format!("You denied {name}, so nothing was sent.")),
         RunStatus::Failed => run
             .failure
             .as_ref()
             .map(|failure| format!("The answer failed: {}", failure.message)),
         RunStatus::Interrupted => {
-            Some("You turned off a plugin this answer relied on, so the answer stopped.".to_owned())
+            Some("You turned off a plugin this answer relied on, so it stopped.".to_owned())
         }
         RunStatus::Streaming | RunStatus::Completed | RunStatus::Cancelled => None,
     };

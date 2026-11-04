@@ -72,7 +72,7 @@ fn a_workspace_that_doesnt_sync_offers_to_turn_it_on() {
         ..FolderSyncScreen::default()
     });
     let mut harness = harness(app_data.path(), sync.clone());
-    harness.get_by_label("This workspace doesn't sync. Its files stay on this computer.");
+    harness.get_by_label("This workspace doesn't sync.");
     harness
         .get_by_role_and_label(Role::Button, "Turn on sync")
         .click();
@@ -120,9 +120,7 @@ fn a_server_out_of_reach_says_so_and_asks_for_no_sign_in() {
         ..FolderSyncScreen::default()
     });
     let harness = harness(app_data.path(), sync);
-    harness.get_by_label(
-        "Noura can't reach the sync server. It keeps trying, and your files stay on this computer.",
-    );
+    harness.get_by_label("Can't reach the sync server. Noura keeps trying.");
     assert!(
         harness
             .query_by_label_contains("Sign in to a sync account")
@@ -166,15 +164,15 @@ fn a_running_sync_shows_its_status_and_pauses() {
         ..FolderSyncScreen::default()
     });
     let mut harness = harness(app_data.path(), sync.clone());
-    harness.get_by_label("Sync is on.");
-    harness.get_by_label("2 changes wait to upload.");
-    harness.get_by_label("Last synced 2026-10-24 14:05.");
+    harness.get_by_label("Sync is on");
+    harness.get_by_label("2 changes to upload");
+    harness.get_by_label("Last synced 2026-10-24 14:05");
     harness.get_by_role_and_label(
         Role::Alert,
         "The sync server can't be reached. Your changes wait on this computer.",
     );
     harness.get_by_role_and_label(Role::Group, "1 conflict");
-    harness.get_by_label("Notes/Plan.md has versions from two computers. Choose the one to keep:");
+    harness.get_by_label("Notes/Plan.md has two versions. Keep:");
     harness.get_by_label("Notes/CON: its name doesn't work on every computer");
     harness
         .get_by_role_and_label(Role::Button, "Keep the version from device abababab")
@@ -204,9 +202,9 @@ fn a_paused_sync_says_so_and_resumes() {
         ..FolderSyncScreen::default()
     });
     let mut harness = harness(app_data.path(), sync.clone());
-    harness.get_by_label("Sync is paused. Your changes wait on this computer until you resume.");
-    harness.get_by_label("1 change waits to upload.");
-    harness.get_by_label("This computer hasn't finished a sync yet.");
+    harness.get_by_label("Sync is paused");
+    harness.get_by_label("1 change to upload");
+    harness.get_by_label("Not synced yet");
     harness.get_by_role_and_label(Role::Group, "No conflicts");
     harness
         .get_by_role_and_label(Role::Button, "Resume sync")
@@ -244,7 +242,7 @@ fn versions_held_after_a_lost_journal_wait_for_a_choice() {
     });
     let mut harness = harness(app_data.path(), sync.clone());
     harness.get_by_role_and_label(Role::Group, "Versions to check");
-    harness.get_by_label("Plan.md differs from the synced version. Choose which to keep:");
+    harness.get_by_label("Plan.md differs from the synced version:");
     harness
         .get_by_role_and_label(Role::Button, "Keep both")
         .click();
@@ -257,7 +255,7 @@ fn versions_held_after_a_lost_journal_wait_for_a_choice() {
         }]
     );
     harness.get_by_label(
-        "Private has a .noura-domain file, so its files wait here. Syncing them shows them to 3 people in this workspace:",
+        "Private has a .noura-domain file. Syncing its files shows them to 3 people in this workspace:",
     );
     harness.get_by_label("Private/Secret.md");
     harness
@@ -302,11 +300,11 @@ fn a_held_removal_and_unreadable_versions_show() {
     let harness = harness(app_data.path(), sync);
     harness.get_by_role_and_label(
         Role::Alert,
-        "A device left your account. Sync holds your changes until this workspace records it and changes its key.",
+        "A device left your account. Your changes wait until the workspace changes its key.",
     );
     harness.get_by_role_and_label(
         Role::Alert,
-        "A device left an account here, but this workspace is at its limit of 512 devices. The device keeps reading new changes until someone leaves.",
+        "A device left, but this workspace has 512 devices, its limit. That device reads new changes until someone leaves.",
     );
     harness.get_by_role_and_label(Role::Group, "Versions that couldn't be read");
     harness.get_by_label("Plan.md: a version from device abababab couldn't be read, so this computer keeps the last version that could.");
@@ -399,11 +397,9 @@ fn changes_waiting_for_space_replace_the_uploaded_line() {
         ..FolderSyncScreen::default()
     });
     let harness = harness(app_data.path(), sync);
-    harness.get_by_label("2 changes stay on this computer until the workspace has space.");
+    harness.get_by_label("2 changes wait for space");
     assert!(
-        harness
-            .query_by_label("Every change is uploaded.")
-            .is_none(),
+        harness.query_by_label("All changes uploaded").is_none(),
         "the change hasn't reached the server"
     );
 }

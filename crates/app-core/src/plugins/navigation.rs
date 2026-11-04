@@ -35,7 +35,7 @@ pub(crate) enum Opening {
 pub(crate) type Openings = Arc<Mutex<Vec<(WindowKey, Opening)>>>;
 
 /// Why a plugin's request outside a call that answers you opens nothing.
-const REFUSED: &str = "Noura opens things only in answer to something you did.";
+const REFUSED: &str = "Noura opens things only when you act.";
 
 /// One running plugin's navigation service.
 pub(crate) struct Navigator {
@@ -68,9 +68,7 @@ impl Navigator {
 
     fn request(&self, opening: Opening) -> Result<(), ServiceError> {
         let refusal = match opening {
-            Opening::Trash(_) => {
-                "Noura moves things to the trash only in answer to something you did."
-            }
+            Opening::Trash(_) => "Noura trashes things only when you act.",
             Opening::Object { .. } | Opening::Page(_) | Opening::Settings(_) => REFUSED,
         };
         let origin = *self

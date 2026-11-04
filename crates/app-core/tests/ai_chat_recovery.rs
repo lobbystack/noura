@@ -247,9 +247,8 @@ fn a_tool_call_reopens_as_completed_only_beside_its_own_result_and_never_runs_ag
     let mut app = stopped.relaunch(&provider);
 
     ai::wait_until(&mut app, "the calls read as Noura left them", |app| {
-        ai::lines(app).contains(
-            &"Noura stopped before this call finished, and won't run it on its own.".to_owned(),
-        )
+        ai::lines(app)
+            .contains(&"Noura stopped before this call finished and won't rerun it.".to_owned())
     });
     let status = |call: &str| {
         let text = stopped

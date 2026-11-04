@@ -69,8 +69,7 @@ fn a_missing_last_workspace_says_why_and_try_again_opens_it_once_it_is_back() {
 
     harness.get_by_label("Can\u{2019}t open the workspace");
     harness.get_by_label(&format!(
-        "The folder {saved_path} isn't there. If it's on a drive that isn't connected, \
-         connect the drive and try again."
+        "{saved_path} isn't there. Connect its drive and try again."
     ));
     harness.get_by_role_and_label(Role::Button, "Open folder…");
     harness.get_by_role_and_label(Role::Button, "Field notes");

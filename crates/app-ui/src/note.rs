@@ -387,7 +387,7 @@ fn properties_notice(ui: &mut Ui, app: &App, tab: TabId) {
     else {
         return;
     };
-    let title = "The properties at the top of this file have an error";
+    let title = "Properties can\u{2019}t be read";
     let palette = Palette::of(ui.ctx());
     let builder = UiBuilder::new()
         .accessibility_role(Role::Alert)
@@ -400,7 +400,7 @@ fn properties_notice(ui: &mut Ui, app: &App, tab: TabId) {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(RichText::new(title).strong());
-                ui.label(format!("{reason} Fix them in the text below."));
+                ui.label(reason);
             });
     });
     ui.add_space(8.0);
@@ -502,7 +502,7 @@ fn file_notice(ui: &mut Ui, app: &mut App, tab: TabId) {
         let compare = banner(
             ui,
             "This file changed in another app",
-            "Your text is still here. Compare both versions and choose one.",
+            "Your text is still here.",
             None,
             "Compare",
         );
@@ -514,7 +514,7 @@ fn file_notice(ui: &mut Ui, app: &mut App, tab: TabId) {
         let restore = banner(
             ui,
             "This file was deleted",
-            "Your text is still here. You can put the file back.",
+            "Your text is still here.",
             problem.as_deref(),
             "Restore",
         );
@@ -659,7 +659,6 @@ fn conflict_review(ui: &mut Ui, app: &mut App, tab: TabId) {
                     TITLE_SIZE,
                     crate::theme::Weight::Medium,
                 )));
-                ui.label("Both versions are kept until you choose.");
                 if let Some(problem) = &problem {
                     ui.label(RichText::new(problem).color(palette.destructive));
                 }

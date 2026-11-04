@@ -152,7 +152,7 @@ describe.each(HOSTS)(
 			expect(await probe(host, 'open-page')).toEqual({
 				error: {
 					tag: 'failed',
-					val: 'Noura opens things only in answer to something you did.',
+					val: 'Noura opens things only when you act.',
 				},
 			});
 		});

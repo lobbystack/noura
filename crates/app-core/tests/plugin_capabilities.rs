@@ -96,8 +96,7 @@ fn a_plugin_opens_its_page_only_in_the_window_you_acted_in_and_never_while_it_dr
     assert_eq!(
         plugins::texts(&app, "plugin:probe:opens"),
         Ok(vec![
-            "draw open error failed Noura opens things only in answer to something you did."
-                .to_owned()
+            "draw open error failed Noura opens things only when you act.".to_owned()
         ])
     );
     assert_ne!(app.current_page(), events_page);

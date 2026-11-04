@@ -385,7 +385,7 @@ impl App {
             tracing::warn!(%error, "the third-party license list didn't open");
             self.settings_notice(
                 "Couldn't open the license list",
-                "Noura couldn't open the list of third-party licenses it ships with.",
+                "Couldn't open the third-party licenses.",
                 NoticeKind::Problem,
             );
         }

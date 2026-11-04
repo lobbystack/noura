@@ -415,7 +415,7 @@ export class MockHost {
 				val: {
 					code: 'web_search_key_missing',
 					message:
-						'Add a Brave Search key in Settings, under Web search, to search the web.',
+						'Add a Brave Search key in Settings > AI to search the web.',
 				},
 			};
 		};
@@ -426,14 +426,14 @@ export class MockHost {
 			}
 			throw {
 				tag: 'failed',
-				val: "This chat isn't saved until its first message goes out, so it can't change yet.",
+				val: "Send a first message to save this chat.",
 			};
 		};
 		const run = (id: string) => this.runs.get(id) ?? notFound(id);
 		// Noura opens and trashes things only in answer to an event in one
 		// of the plugin's views or a command you ran from the palette.
 		const navigation = (
-			refusal = 'Noura opens things only in answer to something you did.',
+			refusal = 'Noura opens things only when you act.',
 		) => {
 			if (!this.declares('views')) {
 				refused('views');
@@ -544,7 +544,7 @@ export class MockHost {
 				trashObject: (id: string) => {
 					const store = objectsFor(id);
 					navigation(
-						'Noura moves things to the trash only in answer to something you did.',
+						'Noura trashes things only when you act.',
 					);
 					const object = store.get(id);
 					store.delete(id, object.revision);

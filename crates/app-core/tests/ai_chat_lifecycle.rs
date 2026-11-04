@@ -140,7 +140,7 @@ fn a_new_chat_stays_until_you_delete_it_and_switches_to_30_days_and_back() {
     });
     assert!(
         ai::lines(&chatting.app)
-            .contains(&"Noura moves this chat to the trash 30 days after it started.".to_owned())
+            .contains(&"This chat moves to the trash 30 days after it started.".to_owned())
     );
 
     ai::choose(&mut chatting.app, &format!("keep:{chat}:"));

@@ -71,13 +71,8 @@ fn section_icon(id: &str) -> Icon {
 /// The line under a section's title, where the legacy app had one.
 fn section_description(id: &str) -> Option<&'static str> {
     Some(match id {
-        settings_section::PLUGINS => "Turn features on or off for this workspace.",
-        settings_section::AI => {
-            "Connect an AI provider and review what it can read in this workspace."
-        }
         settings_section::IGNORED_FILES => {
-            "noura won\u{2019}t index or show files that match these patterns. They follow \
-             the same rules as .gitignore."
+            "noura hides files that match these, as .gitignore does."
         }
         _ => return None,
     })
@@ -412,7 +407,6 @@ fn field(ui: &mut Ui, title: &str, role: Role, add: impl FnOnce(&mut Ui)) {
 fn switch_field(
     ui: &mut Ui,
     title: &str,
-    text: &str,
     on: &mut bool,
     enabled: bool,
     problem: Option<&str>,
@@ -424,7 +418,6 @@ fn switch_field(
             ui.set_width(width);
             ui.spacing_mut().item_spacing.y = 4.0;
             field_label(ui, title);
-            description(ui, text);
             if let Some(problem) = problem {
                 let palette = Palette::of(ui.ctx());
                 let builder = UiBuilder::new().accessibility_role(Role::Alert);
@@ -477,7 +470,6 @@ fn general(ui: &mut Ui, app: &mut App, settings: &Settings) {
     if switch_field(
         ui,
         "Open at login",
-        "Start noura when you sign in to this computer.",
         &mut enabled,
         login.enabled.is_some(),
         login.problem.as_deref(),
@@ -492,10 +484,6 @@ fn editor(ui: &mut Ui, app: &mut App, spelling: bool) {
     let current = *app.preferences();
     let mut text_size = current.text_size;
     field(ui, "Text size", Role::RadioGroup, |ui| {
-        description(
-            ui,
-            "Changes the text in notes, tasks, and projects on this computer.",
-        );
         let options: Vec<_> = TextSize::ALL
             .into_iter()
             .map(|choice| (choice, choice.title()))
@@ -508,10 +496,6 @@ fn editor(ui: &mut Ui, app: &mut App, spelling: bool) {
 
     let mut line_width = current.line_width;
     field(ui, "Line width", Role::RadioGroup, |ui| {
-        description(
-            ui,
-            "Shorter lines are easier to read. Full width uses the whole window.",
-        );
         let options: Vec<_> = LineWidth::ALL
             .into_iter()
             .map(|choice| (choice, choice.title()))
@@ -524,28 +508,21 @@ fn editor(ui: &mut Ui, app: &mut App, spelling: bool) {
 
     if spelling {
         let mut spell_check = current.spell_check;
-        if switch_field(
-            ui,
-            "Check spelling",
-            "Underline misspelled words while you type.",
-            &mut spell_check,
-            true,
-            None,
-        ) {
+        if switch_field(ui, "Check spelling", &mut spell_check, true, None) {
             app.set_spell_check(spell_check);
         }
     }
 }
 
 /// The legacy empty state for a section that needs an open workspace.
-fn no_workspace(ui: &mut Ui, text: &str) {
-    common::empty_state(ui, None, "No workspace open", Some(text));
+fn no_workspace(ui: &mut Ui) {
+    common::empty_state(ui, None, "No workspace open", None);
 }
 
 /// The Ignored files section: the page `app-core` opened for it.
 fn ignored_files(ui: &mut Ui, app: &mut App, view: &mut SettingsView) {
     if app.workspace().is_none() {
-        no_workspace(ui, "Open a workspace to manage its files.");
+        no_workspace(ui);
         return;
     }
     crate::ignored_files::page(ui, app, &mut view.ignored);
@@ -553,7 +530,7 @@ fn ignored_files(ui: &mut Ui, app: &mut App, view: &mut SettingsView) {
 
 fn workspace(ui: &mut Ui, app: &mut App, view: &mut SettingsView) {
     let Some(workspace) = app.workspace() else {
-        no_workspace(ui, "Open a workspace to change its settings.");
+        no_workspace(ui);
         return;
     };
     let current = workspace.name();
@@ -578,10 +555,7 @@ fn workspace(ui: &mut Ui, app: &mut App, view: &mut SettingsView) {
                 .show(ui)
                 .clicked();
         });
-        description(
-            ui,
-            "Shown in the workspace switcher. The folder keeps its name.",
-        );
+        description(ui, "The folder keeps its name.");
     });
     field(ui, "Location", Role::Group, |ui| {
         let palette = Palette::of(ui.ctx());
@@ -616,23 +590,17 @@ fn workspace(ui: &mut Ui, app: &mut App, view: &mut SettingsView) {
 /// connection with its result.
 fn ai_tools(ui: &mut Ui, app: &mut App) {
     let Some(setup) = app.mcp_setup() else {
-        no_workspace(ui, "Open a workspace to connect an assistant to it.");
+        no_workspace(ui);
         return;
     };
     let palette = Palette::of(ui.ctx());
-    description(
-        ui,
-        "Connect an AI assistant that supports the Model Context Protocol, such as Claude \
-         Desktop or Cursor. It can then search this workspace, read notes, list projects, and \
-         create or update notes and tasks.",
-    );
+    description(ui, "For MCP assistants such as Claude Desktop or Cursor.");
     ui.add_space(16.0);
     common::alert(
         ui,
         icons::WARNING,
-        "The assistant changes files directly",
-        "noura doesn\u{2019}t ask for approval before an external tool edits notes or tasks. \
-         Only connect assistants you trust.",
+        "Assistants edit files directly",
+        "noura doesn\u{2019}t ask first. Connect only assistants you trust.",
         false,
     );
     ui.add_space(24.0);
@@ -650,7 +618,7 @@ fn ai_tools(ui: &mut Ui, app: &mut App) {
                 field_label(ui, "Configuration");
                 description(
                     ui,
-                    "Paste this into your assistant\u{2019}s MCP settings, then restart it.",
+                    "Paste into your assistant\u{2019}s MCP settings, then restart it.",
                 );
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Max), |ui| {

@@ -114,8 +114,7 @@ fn the_install_dialog_shows_the_release_with_a_warning_and_cancel_installs_nothi
         "Install Probe?",
         "Version 0.1.0",
         RELEASE,
-        "Nobody reviewed this plugin. Anyone can publish a release on GitHub, so install it \
-         if you trust its author.",
+        "Nobody reviewed this plugin. Install it only if you trust its author.",
         "Add pages to the rail and show panels in them.",
         "Connect to api.example.com.",
         "network",
@@ -208,10 +207,5 @@ fn a_plugin_from_github_checks_for_updates_from_its_row() {
 
     let row = dialog(harness, "Settings").get_by_role_and_label(Role::Group, "Probe");
     let shown = labels(&row);
-    assert!(
-        shown
-            .iter()
-            .any(|label| label == "Version 0.1.0 is the newest release."),
-        "{shown:?}"
-    );
+    assert!(shown.iter().any(|label| label == "Up to date"), "{shown:?}");
 }

@@ -376,7 +376,7 @@ enum Purpose {
 }
 
 /// Why a reset owner's Set up sync again stops at the server (§14).
-const ANOTHER_MANAGER: &str = "Another owner or admin of this workspace can accept your reset, so it stays open. Ask them to accept it.";
+const ANOTHER_MANAGER: &str = "Ask another owner or admin to accept your reset.";
 
 /// The next try at a server the stored device couldn't reach.
 #[derive(Clone, Copy)]
@@ -487,28 +487,28 @@ struct Driver {
 /// What a failed action tells you.
 /// What the screen says when the server answers `device_removed` but the
 /// account chain shows no such removal (§7).
-pub const UNVERIFIED_REMOVAL: &str = "The sync server says a device removed this computer, but your account's device list doesn't show it. Sync stopped, and this computer keeps its keys.";
+pub const UNVERIFIED_REMOVAL: &str = "The server says this computer was removed, but your device list disagrees. Sync stopped, and this computer keeps its keys.";
 
 fn message(error: &SyncError) -> String {
     match error {
         SyncError::Check("sync_restore_lost") => {
-            "The server's operator restored a backup that lacks what this kit names. Reset your devices to go on."
+            "The server was restored from a backup that lacks this kit's devices. Reset your devices to go on."
                 .into()
         }
         SyncError::Refused { code, .. } if code == "reset_code_invalid" => {
-            "That code didn't work. It works once, for 10 minutes. Check it, or ask for a new one."
+            "That code didn't work. Check it, or ask for a new one."
                 .into()
         }
         SyncError::Check("sync_recovery_kit_invalid") => {
-            "The secret doesn't open this kit, or the kit file changed. Check both and try again."
+            "The secret doesn't open this kit. Check both and try again."
                 .into()
         }
         SyncError::Refused { code, .. } if code == "offer_expired" => {
-            "The approval took longer than 10 minutes, so it stopped. Start it again from the new device."
+            "The approval timed out after 10 minutes. Start again from the new device."
                 .into()
         }
         SyncError::Check("sync_approval_mismatch") => {
-            "Another offer reached this device, so the approval stopped. Start it again from one of your devices."
+            "Another offer stopped the approval. Start again from one of your devices."
                 .into()
         }
         other => problem_text(other),
@@ -529,7 +529,7 @@ pub(crate) fn alert_text(alert: &DeviceAlert, short: &dyn Fn(&Id) -> String) -> 
             fingerprint(&card.fingerprint())
         ),
         DeviceAlert::UnverifiedWorkspace { workspace, .. } => format!(
-            "Noura can't verify workspace {} on this server, so it stays out of sync here.",
+            "Noura can't verify workspace {}, so it doesn't sync here.",
             short_id(workspace)
         ),
         DeviceAlert::Link {
@@ -603,7 +603,7 @@ pub(crate) fn recovery_view(account: Id, review: &RecoveryReview) -> RecoveryVie
             .iter()
             .map(|(workspace, code)| match *code {
                 "sync_restore_lost" => format!(
-                    "The server lost what your kit names in workspace {}, so the recovery leaves it out. An owner can set it up again.",
+                    "The server lost workspace {}, so recovery leaves it out. An owner can set it up again.",
                     short_id(workspace)
                 ),
                 _ => format!(
@@ -831,7 +831,7 @@ impl Driver {
                 }
             }
             _ => self.fail(&SyncError::Invalid(
-                "This device signed in but wasn't approved. Sign in again.".into(),
+                "This device wasn't approved. Sign in again.".into(),
             )),
         }
     }
@@ -1181,7 +1181,7 @@ impl Driver {
             }))
             .chain(refused.iter().map(|(account, _)| AlertEntry {
                 text: format!(
-                    "Noura stopped trusting the device list of account {}, so the workspaces you share with it wait. Check again once the operator repairs the server or that person resets their devices.",
+                    "Noura stopped trusting the device list of account {}, so shared workspaces wait until the server is repaired or they reset their devices.",
                     short_id(account)
                 ),
                 end_sessions: None,
@@ -2015,7 +2015,7 @@ impl Driver {
                 self.shared.update(|screen| screen.invitation = None);
                 Err(match error {
                     SyncError::Check("sync_approval_mismatch") => SyncError::Invalid(
-                        "The approval didn't match your invitation, so Noura stopped it. Ask for a new link.".into(),
+                        "The approval didn't match your invitation. Ask for a new link.".into(),
                     ),
                     other => other,
                 })
@@ -2442,7 +2442,7 @@ mod tests {
         );
         assert_eq!(
             text,
-            "Noura can't verify workspace cdcdcdcd on this server, so it stays out of sync here."
+            "Noura can't verify workspace cdcdcdcd, so it doesn't sync here."
         );
         let card = DeviceKeys::generate().unwrap().card(id(1));
         let text = alert_text(

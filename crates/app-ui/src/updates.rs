@@ -9,7 +9,7 @@ use egui::{
 use app_core::{App, UpdateStatus};
 
 use crate::{
-    common::{description, muted, primary_button},
+    common::{description, primary_button},
     theme::{Palette, radius},
 };
 
@@ -23,16 +23,10 @@ pub(crate) fn update_settings(ui: &mut Ui, app: &mut App) {
     let palette = Palette::of(ui.ctx());
 
     if let UpdateStatus::Unavailable { reason } = &status {
-        description(ui, &format!("You have version {version}. {reason}"));
+        description(ui, &format!("Version {version}. {reason}"));
         return;
     }
-    description(
-        ui,
-        &format!(
-            "You have version {version}. noura downloads new versions in the background, and \
-             you choose when to restart."
-        ),
-    );
+    description(ui, &format!("Version {version}"));
 
     if let UpdateStatus::Ready {
         version: ready,
@@ -133,11 +127,8 @@ pub(crate) fn restart_offer(ui: &mut Ui, app: &mut App) {
                     .show(ui, |ui| {
                         ui.set_max_width(320.0);
                         ui.label(RichText::new(format!("Noura {version} is ready")).strong());
-                        match &problem {
-                            Some(problem) => alert(ui, problem, &palette),
-                            None => {
-                                muted(ui, "Restart to finish updating.");
-                            }
+                        if let Some(problem) = &problem {
+                            alert(ui, problem, &palette);
                         }
                         ui.horizontal(|ui| {
                             if primary_button(ui, "Restart", !busy).clicked() {

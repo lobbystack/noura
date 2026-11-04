@@ -56,7 +56,7 @@ impl Asking {
 }
 
 fn asking_line() -> String {
-    "Noura is asking you whether Local may receive this workspace's content.".to_owned()
+    "Waiting for your answer on sending to Local.".to_owned()
 }
 
 #[test]
@@ -88,10 +88,7 @@ fn nothing_goes_to_a_provider_before_you_consent_in_noura_s_prompt() {
     support::settle(&mut asking.app);
     assert_eq!(asking.app.ai_consent_prompt(), None);
     ai::wait_until(&mut asking.app, "the page says you said no", |app| {
-        ai::lines(app).contains(
-            &"You didn't let Local receive this workspace's content, so Noura sent nothing."
-                .to_owned(),
-        )
+        ai::lines(app).contains(&"You denied Local, so nothing was sent.".to_owned())
     });
     assert_eq!(asking.provider.requests().len(), 0);
     assert!(ai::chat_files(&asking.fixture.root).is_empty());

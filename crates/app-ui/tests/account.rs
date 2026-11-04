@@ -229,7 +229,7 @@ fn a_listed_download_can_be_cancelled() {
         ..AccountScreen::default()
     });
     let mut harness = harness(app_data.path(), account.clone());
-    harness.get_by_label("Noura is downloading the workspace.");
+    harness.get_by_label("Downloading\u{2026}");
     harness
         .get_by_role_and_label(Role::Button, "Cancel")
         .click_accesskit();
@@ -270,9 +270,7 @@ fn a_device_waiting_for_its_server_says_noura_keeps_trying() {
         ..AccountScreen::default()
     });
     let mut harness = harness(app_data.path(), account.clone());
-    harness.get_by_label(
-        "This computer holds a device of your account. Noura keeps trying the server.",
-    );
+    harness.get_by_label("Noura keeps trying the server.");
     harness
         .get_by_role_and_label(Role::Button, "Try again")
         .click_accesskit();
@@ -368,7 +366,7 @@ fn after_a_removal_the_removed_devices_changes_show_with_their_undo() {
     harness.get_by_role_and_label(Role::Group, "Changes your removed devices made");
     harness.get_by_label(kept);
     harness.get_by_label(stuck);
-    harness.get_by_label("Your devices changed. Export a new kit so it covers them.");
+    harness.get_by_label("Your devices changed. Export a new kit.");
 }
 
 #[test]
@@ -518,7 +516,7 @@ fn the_export_screen_asks_you_to_keep_the_kit_and_secret_apart() {
     picker.answer(Some(folder.path()));
     let mut harness = harness_with(app_data.path(), account.clone(), picker);
     harness.get_by_label(KIT_WARNING);
-    harness.get_by_label("Your devices changed. Export a new kit so it covers them.");
+    harness.get_by_label("Your devices changed. Export a new kit.");
     harness
         .get_by_role_and_label(Role::Button, "Export recovery kit")
         .click_accesskit();
@@ -562,7 +560,7 @@ fn signing_out_the_last_device_warns_first() {
     let mut harness = harness(app_data.path(), account.clone());
     harness.get_by_role_and_label(
         Role::Alert,
-        "This is your account's last device. After you sign out, you need your recovery kit, or a reset of your devices, to read your synced data again.",
+        "This is your last device. After you sign out, you need your recovery kit or a device reset to read synced data.",
     );
     harness
         .get_by_role_and_label(Role::Button, "Stay signed in")
@@ -575,7 +573,7 @@ fn signing_out_the_last_device_warns_first() {
 fn a_device_that_couldnt_connect_offers_to_try_again() {
     let app_data = tempfile::tempdir().unwrap();
     let account = Arc::new(FakeAccount::default());
-    let problem = "This computer's session with the sync server ended. Sign in again with your browser, and this device keeps its keys.";
+    let problem = "Your sync session ended. Sign in again; this device keeps its keys.";
     account.show(AccountScreen {
         server: "https://sync.example.com".into(),
         problem: Some(problem.into()),
@@ -744,7 +742,7 @@ fn an_invitee_pastes_a_link_accepts_and_compares_the_code() {
     harness.run();
     harness.get_by_role_and_label(
         Role::Alert,
-        "This invitation link doesn't work. Ask the person who invited you for a new one.",
+        "This invitation link doesn't work. Ask for a new one.",
     );
 
     account.show(AccountScreen {
@@ -792,7 +790,7 @@ fn an_invitee_pastes_a_link_accepts_and_compares_the_code() {
         ..signed_in(SignedInView::default())
     });
     harness.run();
-    harness.get_by_label("Compare this code with Ana on a call or another channel you trust:");
+    harness.get_by_label("Compare this code with Ana over a channel you trust:");
     harness.get_by_label("1234 5678");
     harness
         .get_by_role_and_label(Role::Button, "Codes match")
@@ -875,11 +873,7 @@ fn the_reset_screens_ask_for_the_code_and_show_what_comes_next() {
     });
     let mut harness = harness(app_data.path(), account.clone());
     harness.run();
-    assert!(
-        harness
-            .query_by_label("Start over with this code")
-            .is_some()
-    );
+    assert!(harness.query_by_label("Start over").is_some());
 
     account.show(signed_in(SignedInView {
         account_fingerprint: ACCOUNT.into(),

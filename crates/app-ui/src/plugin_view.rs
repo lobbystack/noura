@@ -237,7 +237,7 @@ pub(crate) fn has_page_heading(app: &App, page_id: &str) -> bool {
 /// The plugin page `page_id` in the window whose ID salt is `window`.
 pub(crate) fn show(ui: &mut Ui, app: &mut App, window: Id, page_id: &str) {
     let Some(view) = app.plugin_view(page_id) else {
-        muted(ui, "The plugin that adds this page isn't running.");
+        muted(ui, "Its plugin isn't running.");
         return;
     };
     let (events, link) = draw(ui, app, window, Place::Page(page_id), &view);
@@ -284,7 +284,7 @@ pub(crate) fn show_section(
 /// salt is `window`. Events go back to the plugin by node ID.
 pub(crate) fn show_settings(ui: &mut Ui, app: &mut App, window: Id, section_id: &str) {
     let Some(view) = app.plugin_settings_view(section_id) else {
-        muted(ui, "The plugin that adds this page isn't running.");
+        muted(ui, "Its plugin isn't running.");
         return;
     };
     let (events, link) = draw(ui, app, window, Place::Settings(section_id), &view);

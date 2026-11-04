@@ -40,10 +40,10 @@ fn members_message(error: &SyncError) -> String {
             "Your role in this workspace doesn't allow that.".into()
         }
         SyncError::Refused { code, .. } if code == "invitation_limit" => {
-            "This workspace already has 100 open invitations. Revoke one to make room.".into()
+            "This workspace has 100 open invitations. Revoke one to make room.".into()
         }
         SyncError::Refused { code, .. } if code == "offer_expired" => {
-            "The approval took longer than 10 minutes, so it stopped. Choose Approve to start again.".into()
+            "The approval timed out after 10 minutes. Choose Approve to start again.".into()
         }
         other => crate::account::problem_text(other),
     }
@@ -212,7 +212,7 @@ impl Membership {
                     .await?;
                 self.screen.copy = Some(LinkText(created.url));
                 Some(format!(
-                    "Noura copied the {} invitation link. Send it over a channel you trust. Only this computer can approve the new member.",
+                    "Copied the {} invitation link. Send it over a channel you trust.",
                     role_name(role).to_lowercase()
                 ))
             }
@@ -225,7 +225,7 @@ impl Membership {
                 service
                     .revoke_invitation(&mut book, workspace, invitation)
                     .await?;
-                Some("You revoked the invitation. Its link no longer opens.".into())
+                Some("Invitation revoked".into())
             }
             MembersAction::SetRole { account, role } => {
                 sync.change_member(service, MemberChange::SetRole { account, role })
@@ -238,12 +238,12 @@ impl Membership {
             MembersAction::Remove(account) => {
                 sync.change_member(service, MemberChange::Remove(account))
                     .await?;
-                Some("You removed the member. They keep copies of files they already have.".into())
+                Some("Member removed. They keep files they already have.".into())
             }
             MembersAction::TransferOwner(account) => {
                 sync.change_member(service, MemberChange::TransferOwner(account))
                     .await?;
-                Some("You made them the owner. You're an admin now.".into())
+                Some("They're the owner. You're an admin now.".into())
             }
             MembersAction::Leave => {
                 let own = service.credentials().account;
@@ -251,8 +251,7 @@ impl Membership {
                     .await?;
                 self.screen = MembersScreen {
                     unavailable: Some(
-                        "You left this workspace. Its files stay on this computer as they are."
-                            .into(),
+                        "You left the workspace. Its files stay on this computer.".into(),
                     ),
                     ..MembersScreen::default()
                 };
@@ -293,9 +292,7 @@ impl Membership {
                 // section whether or not it commits.
                 self.screen.approval = None;
                 sync.approve_member(service, offer).await?;
-                Some(
-                    "You added the new member. Their computer downloads the workspace next.".into(),
-                )
+                Some("Member added".into())
             }
             MembersAction::CancelApproval => {
                 if let Some(offer) = self.offer.take() {
@@ -307,9 +304,7 @@ impl Membership {
             MembersAction::Restrict(path) => {
                 let path = path.trim().trim_matches('/').to_owned();
                 sync.restrict_folder(service, &path, &[]).await?;
-                Some(format!(
-                    "You restricted {path}. Only you read it for now. Noura moves its files in as sync runs."
-                ))
+                Some(format!("Restricted {path}. Only you can read it for now."))
             }
             MembersAction::Grant {
                 domain,
@@ -319,23 +314,24 @@ impl Membership {
                 let mut list = access_of(sync, domain)?;
                 list.insert(account, level);
                 sync.set_access(service, domain, &entries(&list)).await?;
-                Some("You gave them access. Their devices fetch the folder as sync runs.".into())
+                Some("Access granted".into())
             }
             MembersAction::TakeOff { domain, account } => {
                 let mut list = access_of(sync, domain)?;
                 list.remove(&account);
                 sync.set_access(service, domain, &entries(&list)).await?;
-                Some(
-                    "You took them off. Noura changes the folder's key, so they can't read what people write there next. Copies they already have stay with them.".into(),
-                )
+                Some("Taken off. They can't read new changes, but keep copies they have.".into())
             }
             MembersAction::HandOff { domain, account } => {
                 sync.hand_off_domain(service, domain, account).await?;
-                Some("You handed the folder over and took yourself off. Copies you already have stay on this computer.".into())
+                Some("Folder handed over. You keep copies you have.".into())
             }
             MembersAction::DeleteFolder(domain) => {
                 sync.delete_domain(service, domain).await?;
-                Some("You deleted the restriction. Each device keeps the files and holds them until you confirm where they go.".into())
+                Some(
+                    "Restriction deleted. Devices hold its files until you confirm where they go."
+                        .into(),
+                )
             }
             MembersAction::ConfirmMove(rid) => {
                 sync.confirm_move(rid);
@@ -345,7 +341,7 @@ impl Membership {
             MembersAction::ConfirmHeld(path) => {
                 sync.confirm_held(&path)?;
                 sync.round(service, 0).await?;
-                Some("You confirmed where those files go.".into())
+                Some("Confirmed".into())
             }
             MembersAction::DismissMovedIn => {
                 sync.dismiss_moved_in()?;

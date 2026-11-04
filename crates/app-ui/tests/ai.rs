@@ -250,8 +250,7 @@ fn noura_s_prompt_names_the_provider_starts_on_deny_and_escape_denies() {
     assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
     assert!(
         texts(dialog.query_all(By::new().role(Role::Label))).contains(
-            &"Your messages and the chat so far go from Garden to Local, which answers with \
-              llama3 (Ollama)."
+            &"Your messages and this chat go from Garden to Local, model llama3 (Ollama)."
                 .to_owned()
         )
     );
@@ -259,10 +258,7 @@ fn noura_s_prompt_names_the_provider_starts_on_deny_and_escape_denies() {
 
     press(harness, Key::Escape);
     wait_until(harness, |harness| {
-        all_labels(harness).contains(
-            &"You didn't let Local receive this workspace's content, so Noura sent nothing."
-                .to_owned(),
-        )
+        all_labels(harness).contains(&"You denied Local, so nothing was sent.".to_owned())
     });
     assert!(
         harness
@@ -372,13 +368,11 @@ fn a_listed_provider_connects_with_a_pasted_key_and_consent_stays_per_provider()
     // Consent stays per provider and per workspace.
     let local = harness.get_by_role_and_label(Role::Group, "Local in this workspace");
     let shown = texts(local.query_all(By::new().role(Role::Label)));
-    assert!(shown.contains(&"It can't receive Garden's content yet.".to_owned()));
     assert!(shown.contains(&"Not granted".to_owned()), "{shown:?}");
     let consent = (Role::Group, "Local in this workspace");
     click_in(harness, consent, Role::Button, "Grant");
     let local = harness.get_by_role_and_label(Role::Group, "Local in this workspace");
     let shown = texts(local.query_all(By::new().role(Role::Label)));
-    assert!(shown.contains(&"You allowed it to receive Garden's content.".to_owned()));
     assert!(shown.contains(&"Granted".to_owned()), "{shown:?}");
     local.get_by_role_and_label(Role::Button, "Revoke");
 
@@ -568,10 +562,7 @@ fn noura_s_tool_prompt_names_the_tool_its_plugin_and_input_and_escape_denies() {
     let dialog = harness.get_by_role_and_label(Role::AlertDialog, TOOL_PROMPT);
     assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
     let shown = texts(dialog.query_all(By::new().role(Role::Label)));
-    assert!(
-        shown.contains(&"The AI wants to run the tool create from Tasks.".to_owned()),
-        "{shown:?}"
-    );
+    assert!(shown.contains(&"create from Tasks".to_owned()), "{shown:?}");
     assert!(
         shown.contains(&"{\n  \"title\": \"Water the tomatoes\"\n}".to_owned()),
         "{shown:?}"
@@ -587,9 +578,7 @@ fn noura_s_tool_prompt_names_the_tool_its_plugin_and_input_and_escape_denies() {
             .is_none()
             && all_labels(harness).contains(&"Done.".to_owned())
     });
-    assert!(
-        all_labels(harness).contains(&"You didn't allow this call, so it didn't run.".to_owned())
-    );
+    assert!(all_labels(harness).contains(&"You denied this call, so it didn't run.".to_owned()));
     assert!(
         !tooled
             .workspace

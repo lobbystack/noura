@@ -57,7 +57,7 @@ impl App {
         self.system.copy_text(&configuration);
         self.settings_notice(
             "Configuration copied",
-            "Paste it into your AI tool's MCP settings, then restart the tool.",
+            "Paste it into your AI tool's MCP settings, then restart it.",
             NoticeKind::Done,
         );
     }

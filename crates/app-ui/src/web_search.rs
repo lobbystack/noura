@@ -31,8 +31,7 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut WebSettingsView) {
     }
     description(
         ui,
-        "The AI can search the web with Brave Search and read the pages it finds. Add your own \
-         Brave Search API key. Noura keeps it in this computer's credential store.",
+        "Uses your own Brave Search key, kept in this computer's credential store.",
     );
     ui.add_space(8.0);
     if let Some(problem) = &view.problem {
@@ -46,19 +45,8 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut WebSettingsView) {
     ui.scope_builder(builder, |ui| {
         boxed(ui, |ui| {
             ui.label(RichText::new("Brave Search key").strong());
-            description(
-                ui,
-                if row.has_key {
-                    "Your key is saved."
-                } else {
-                    "No key yet."
-                },
-            );
-            let label = if row.has_key {
-                "New key (leave empty to keep the saved one)"
-            } else {
-                "Key"
-            };
+            description(ui, if row.has_key { "Saved" } else { "No key" });
+            let label = if row.has_key { "New key" } else { "Key" };
             text_field(ui, label, &mut view.key, true);
             ui.horizontal(|ui| {
                 let ready = !view.key.trim().is_empty();
@@ -81,20 +69,17 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut WebSettingsView) {
         boxed(ui, |ui| {
             ui.label(RichText::new("This workspace").strong());
             let Some(workspace) = &workspace else {
-                description(ui, "Open a workspace to allow web search there.");
+                description(ui, "Open a workspace first.");
                 return;
             };
             if row.consented {
-                description(ui, &format!("The AI can search the web in {workspace}."));
-                if ui.button("Turn off for this workspace").clicked() {
+                description(ui, &format!("Allowed in {workspace}"));
+                if ui.button("Turn off").clicked() {
                     changed = Some(app.revoke_web_consent());
                 }
             } else {
-                description(
-                    ui,
-                    &format!("The AI can't search the web in {workspace} yet."),
-                );
-                if ui.button("Allow for this workspace").clicked() {
+                description(ui, &format!("Not allowed in {workspace}"));
+                if ui.button("Allow").clicked() {
                     changed = Some(app.ask_web_consent());
                 }
             }
@@ -137,20 +122,16 @@ pub(crate) fn consent_prompt(ui: &mut Ui, app: &mut App, view: &mut WebConsentVi
             )));
             ui.add_space(4.0);
             ui.label(format!(
-                "When a chat in {} uses the web, the search queries the AI writes go to {}, and \
-                 the addresses of the pages it reads go to the sites that host them. Both leave \
-                 this computer.",
+                "In {}, search queries go to {}, and page addresses go to the sites that host them.",
                 prompt.workspace, prompt.provider_name
             ));
             ui.label(format!(
-                "Plugins you allowed to send chats to AI providers can then search the web in {} \
-                 too, when the AI asks them to.",
+                "Plugins you let use AI can search the web in {} too.",
                 prompt.workspace
             ));
             description(
                 ui,
-                "Noura doesn't ask again before each search. To take this back, open Settings, \
-                 then Web search.",
+                "Noura won't ask before each search. Revoke it in Settings > AI.",
             );
             ui.add_space(12.0);
             ui.horizontal(|ui| {

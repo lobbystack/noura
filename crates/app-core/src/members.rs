@@ -28,15 +28,12 @@ use crate::sync::joining::InvitedRequest;
 use crate::sync::workspace::WorkspaceSync;
 
 /// What the section says while Noura keeps trying a server it can't reach.
-pub const UNREACHABLE: &str =
-    "Noura can't reach the sync server, so it can't list the members. It keeps trying.";
+pub const UNREACHABLE: &str = "Can't reach the sync server. Noura keeps trying.";
 /// What the section says on a computer without a sync account.
-pub const NEEDS_ACCOUNT: &str =
-    "Invite people to this workspace and choose what they can do. Sign in and turn on sync first.";
+pub const NEEDS_ACCOUNT: &str = "Sign in and turn on sync to invite people.";
 
 /// What the section says while the workspace doesn't sync.
-pub const NEEDS_SYNC: &str =
-    "Turn on sync for this workspace under Settings > Sync to invite people to it.";
+pub const NEEDS_SYNC: &str = "Turn on sync to invite people.";
 
 /// A role's name.
 pub fn role_name(role: Role) -> &'static str {
@@ -311,7 +308,7 @@ impl MembersScreen {
                         .accepted_by
                         .filter(|a| snapshot.former.contains_key(a))
                         .map(|_| {
-                            "This account was a member before. Once you approve it, it can read what members wrote while it was away.".to_owned()
+                            "A former member. Once approved, it can read what members wrote while it was away.".to_owned()
                         }),
                 })
                 .collect()
@@ -345,7 +342,7 @@ impl MembersScreen {
                 label: format!("{} invitation, accepted", role_name(request.role)),
                 fingerprint: fingerprint(&request.fingerprint),
                 returning: snapshot.former.contains_key(&request.card.account).then(|| {
-                    "This account was a member before. Once you approve it, it can read what members wrote while it was away.".to_owned()
+                    "A former member. Once approved, it can read what members wrote while it was away.".to_owned()
                 }),
             })
             .collect();
@@ -403,7 +400,7 @@ impl MembersScreen {
                         account: *id,
                         label: name(id),
                         returning: had_access(id).then(|| {
-                            "This account had access before. Grant it again and it can read what people wrote here while it was away.".to_owned()
+                            "Had access before. Granted again, it can read what was written while it was away.".to_owned()
                         }),
                     })
                     .collect()
@@ -458,10 +455,10 @@ impl MembersScreen {
         self.moved_in = match sync.moved_in() {
             [] => None,
             [(_, path)] => Some(format!(
-                "You moved {path} into a restricted folder. Its earlier versions stay in the log of the folder it left, and anyone who reads that log keeps them."
+                "You moved {path} into a restricted folder. Anyone who reads its old folder keeps its earlier versions."
             )),
             many => Some(format!(
-                "You moved {} files into a restricted folder. Their earlier versions stay in the log of the folder they left, and anyone who reads that log keeps them.",
+                "You moved {} files into a restricted folder. Anyone who reads their old folder keeps their earlier versions.",
                 many.len()
             )),
         };

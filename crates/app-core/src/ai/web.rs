@@ -368,30 +368,20 @@ fn web_failure(error: &CoreError) -> AiFailure {
 fn web_message<'a>(code: &str, error: Option<&'a CoreError>) -> &'a str {
     match code {
         "workspace_not_open" => "Open a workspace first.",
-        "web_search_key_missing" => {
-            "Add a Brave Search key in Settings, under Web search, to search the web."
-        }
-        "web_consent_required" => {
-            "Allow web search for this workspace in Settings, under Web search."
-        }
+        "web_search_key_missing" => "Add a Brave Search key in Settings > AI to search the web.",
+        "web_consent_required" => "Allow web search in Settings > AI.",
         "web_call_not_requested" => {
             "Noura searches the web or reads a page only when the model asks for that query or \
              address."
         }
-        "web_search_key_rejected" => {
-            "Brave Search didn't accept the key. Check it in Settings, under Web search."
-        }
-        "web_search_rate_limited" => {
-            "Brave Search's limit for your key was reached. Try again in a moment."
-        }
+        "web_search_key_rejected" => "Brave Search refused the key. Check it in Settings > AI.",
+        "web_search_rate_limited" => "Your Brave Search limit was reached. Try again in a moment.",
         "web_search_query_empty" => "The search needs a query.",
         "web_search_query_too_large" => "The search query is too long.",
         "web_search_result_limit_invalid" => "Ask for 1 to 10 results.",
         "web_url_not_https" => "Noura reads only pages with an HTTPS address.",
         "web_url_invalid" => "The address isn't a full HTTPS address.",
-        "web_url_unsafe_host" => {
-            "Noura doesn't read pages on this computer or on a local or private network."
-        }
+        "web_url_unsafe_host" => "Noura doesn't read pages on this computer or a private network.",
         "web_redirect_limit_exceeded" | "web_redirect_invalid" => {
             "The page sent Noura to too many other addresses."
         }
@@ -405,9 +395,7 @@ fn web_message<'a>(code: &str, error: Option<&'a CoreError>) -> &'a str {
         "web_request_timeout" => "The site took too long to answer. Try again.",
         "web_host_unresolved" => "Noura couldn't find the site.",
         "web_request_failed" => "Noura couldn't reach the site.",
-        "credential_store_error" => {
-            "Noura couldn't read the Brave Search key from this computer's credential store."
-        }
+        "credential_store_error" => "Couldn't read the Brave Search key from the credential store.",
         "web_settings_invalid" | "web_settings_error" => {
             "Noura can't read its web search settings on this computer."
         }

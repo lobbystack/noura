@@ -1439,7 +1439,7 @@ pub(crate) fn save_reason(error: &CoreError) -> String {
         "invalid_utf8" => "The file on disk isn't UTF-8 text Noura can read anymore.".to_owned(),
         "object_parse_failed" => "Noura can't read the file's properties anymore.".to_owned(),
         "revision_conflict" => "The file changed outside Noura while it was saving.".to_owned(),
-        "disk_full" => "The disk is full. Free up some space, then try again.".to_owned(),
+        "disk_full" => "The disk is full. Free some space and try again.".to_owned(),
         _ => match error.category {
             ErrorCategory::Permission => {
                 "Noura doesn't have permission to change this file.".to_owned()
@@ -1518,7 +1518,7 @@ mod tests {
             ),
             (
                 error("disk_full", ErrorCategory::Filesystem),
-                "The disk is full. Free up some space, then try again.",
+                "The disk is full. Free some space and try again.",
             ),
             (
                 error("raw_markdown_missing", ErrorCategory::Validation),

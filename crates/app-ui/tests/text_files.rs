@@ -20,7 +20,7 @@ use support::{FakePicker, create_workspace, harness, settle};
 
 type Ui = Harness<'static, app_ui::NouraUi>;
 
-const NOTICE: &str = "The properties at the top of this file have an error";
+const NOTICE: &str = "Properties can\u{2019}t be read";
 
 /// A workspace holding `files`, each a name and its text, with `open`
 /// opened from the tree.
@@ -98,7 +98,7 @@ fn a_note_with_broken_properties_shows_a_notice_above_its_text() {
     );
 
     harness.get_by_role_and_label(Role::Alert, NOTICE);
-    harness.get_by_label("The properties have an ID but no type. Fix them in the text below.");
+    harness.get_by_label("The properties have an ID but no type.");
     harness.get_by_role_and_label(Role::Document, "Note text");
     assert!(
         harness
@@ -236,7 +236,7 @@ fn properties_another_app_breaks_while_you_type_show_the_notice_above_the_whole_
     assert!(merged.contains("Typed. "), "{merged:?}");
     assert_eq!(merged.replace("Typed. ", ""), theirs);
     harness.get_by_role_and_label(Role::Alert, NOTICE);
-    harness.get_by_label("The properties aren\u{2019}t valid YAML. Fix them in the text below.");
+    harness.get_by_label("The properties aren\u{2019}t valid YAML.");
     assert!(
         harness
             .query_by_role_and_label(Role::Group, "Properties")

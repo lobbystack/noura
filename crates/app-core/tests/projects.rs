@@ -386,7 +386,7 @@ fn deleting_a_project_asks_first_then_trashes_only_its_file() {
     });
 }
 
-const TASKS_OFF: &str = "Tasks is off. Turn it on in Settings to see this project's tasks.";
+const TASKS_OFF: &str = "Turn on Tasks in Settings to see this project's tasks.";
 
 #[test]
 fn with_tasks_off_a_project_opens_with_its_status_and_overview_and_says_tasks_is_off() {
@@ -416,7 +416,7 @@ fn with_tasks_off_a_project_opens_with_its_status_and_overview_and_says_tasks_is
     );
     assert_eq!(
         text_of(view.root(), "dated-off").as_deref(),
-        Some("Tasks is off, so this list leaves out the project's tasks.")
+        Some("Tasks is off, so tasks are left out.")
     );
     assert!(find(view.root(), "board").is_none());
     // The project's own dates, notes and files still show.

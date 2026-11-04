@@ -2432,20 +2432,12 @@ fn public_message(message: ChatMessage) -> AiMessage {
 /// people. Neither ever holds a provider's own words, headers or a key.
 fn failure_of(error: &CoreError) -> AiFailure {
     let message = match error.code.as_str() {
-        "ai_consent_required" => {
-            "Noura needs your consent before this provider receives the workspace's content."
-        }
+        "ai_consent_required" => "This provider needs your consent first.",
         "provider_not_found" => "The provider isn't set up or turned on anymore.",
-        "credential_store_error" => {
-            "Noura couldn't read the provider's key from this computer's credential store."
-        }
-        "endpoint_insecure" => {
-            "Use an HTTPS address. Plain HTTP works only for a server on this computer."
-        }
-        "revision_conflict" => "The chat changed elsewhere, so Noura didn't save the answer.",
-        "provider_stream_incomplete" => {
-            "The provider stopped before it finished answering. Try again."
-        }
+        "credential_store_error" => "Couldn't read the provider's key from the credential store.",
+        "endpoint_insecure" => "Use HTTPS, or HTTP only for a server on this computer.",
+        "revision_conflict" => "The chat changed elsewhere, so the answer wasn't saved.",
+        "provider_stream_incomplete" => "The provider stopped early. Try again.",
         PLUGIN_DISABLED => "You turned off a plugin this answer relied on.",
         _ => match error.category {
             local_core::ErrorCategory::Provider | local_core::ErrorCategory::Transient => {
@@ -2518,9 +2510,7 @@ fn settings_error(error: CoreError) -> AppError {
     let message = match error.code.as_str() {
         "provider_invalid" => "Give the provider a model.".to_owned(),
         "provider_kind_invalid" => "Choose one of the kinds Noura offers.".to_owned(),
-        "credential_store_error" => {
-            "Noura couldn't reach this computer's credential store for the key.".to_owned()
-        }
+        "credential_store_error" => "Couldn't reach the credential store.".to_owned(),
         "credential_empty" => "Enter the key.".to_owned(),
         "provider_not_found" => "Turn the provider on first.".to_owned(),
         _ => error.message,
@@ -2533,10 +2523,7 @@ fn no_workspace() -> AppError {
 }
 
 fn unwritten() -> ServiceError {
-    ServiceError::Failed(
-        "This chat isn't saved until its first message goes out, so it can't change yet."
-            .to_owned(),
-    )
+    ServiceError::Failed("Send a first message to save this chat.".to_owned())
 }
 
 fn no_workspace_core() -> CoreError {

@@ -115,7 +115,7 @@ fn draw(
         let (question, button, action) = match &confirm {
             Confirm::Remove(account, who) => (
                 format!(
-                    "Remove {who}? Their devices stop syncing this workspace, and Noura changes its key. They keep copies of files they already have."
+                    "Remove {who}? They stop syncing and Noura changes the key. They keep files they already have."
                 ),
                 "Remove",
                 MembersAction::Remove(*account),
@@ -126,14 +126,14 @@ fn draw(
                 MembersAction::TransferOwner(*account),
             ),
             Confirm::Leave => (
-                "Leave this workspace? Your devices stop syncing it. Its files stay on this computer as they are."
+                "Leave this workspace? Your devices stop syncing it. Its files stay on this computer."
                     .to_owned(),
                 "Leave",
                 MembersAction::Leave,
             ),
             Confirm::TakeOff(domain, account, who) => (
                 format!(
-                    "Take {who} off this folder? Noura changes its key, so they can't read what people write there next. Copies they already have stay with them."
+                    "Take {who} off this folder? Noura changes its key, so they can't read new changes. They keep copies they have."
                 ),
                 "Take off",
                 MembersAction::TakeOff {
@@ -143,7 +143,7 @@ fn draw(
             ),
             Confirm::HandOff(domain, account, who) => (
                 format!(
-                    "Hand this folder to {who}? They become a manager, and you lose access. Copies you already have stay on this computer."
+                    "Hand this folder to {who}? They manage it and you lose access. You keep copies you have."
                 ),
                 "Hand over",
                 MembersAction::HandOff {
@@ -153,7 +153,7 @@ fn draw(
             ),
             Confirm::DeleteFolder(domain, folder) => (
                 format!(
-                    "Delete the restriction on {folder}? Each device keeps the files and holds them until you confirm where they go."
+                    "Delete the restriction on {folder}? Devices hold its files until you confirm where they go."
                 ),
                 "Delete restriction",
                 MembersAction::DeleteFolder(*domain),
@@ -221,16 +221,16 @@ fn draw(
         ui.label(RichText::new("Invitations").strong());
         description(
             ui,
-            "An invitation link works for 7 days. Send it over a channel you trust. Only the computer that made it can approve the new member.",
+            "A link works for 7 days. Send it over a channel you trust. Only this computer can approve the new member.",
         );
         ui.horizontal(|ui| {
-            ui.label("Your name, as they see it");
+            ui.label("Your name");
             ui.add(
                 TextEdit::singleline(&mut view.your_name)
                     .desired_width(200.0)
                     .hint_text("Your name"),
             )
-            .accessible_name("Your name, as they see it");
+            .accessible_name("Your name");
         });
         ui.horizontal_wrapped(|ui| {
             for role in &screen.invite_roles {
@@ -262,10 +262,7 @@ fn draw(
                     }
                 });
                 if !invitation.sent_here {
-                    description(
-                        ui,
-                        "Another computer sent this one. Only it can approve the new member.",
-                    );
+                    description(ui, "Only the computer that sent it can approve.");
                 }
                 if let Some(warning) = &invitation.returning {
                     alert(ui, warning);
@@ -284,10 +281,7 @@ fn draw(
         }
     } else if screen.you == Some(Role::Owner) {
         ui.add_space(8.0);
-        description(
-            ui,
-            "To leave this workspace, make another member the owner first.",
-        );
+        description(ui, "Make another member the owner first.");
     }
 }
 
@@ -300,10 +294,7 @@ fn approvals(ui: &mut Ui, screen: &MembersScreen, actions: &mut Vec<MembersActio
     ui.add_space(8.0);
     ui.label(RichText::new("New members").strong());
     let Some(approval) = &screen.approval else {
-        description(
-            ui,
-            "Approve a device only after you check with the person you invited.",
-        );
+        description(ui, "Check with the person you invited before you approve.");
         for request in &screen.requests {
             group(ui, &request.label, |ui| {
                 ui.label(&request.label);
@@ -326,10 +317,10 @@ fn approvals(ui: &mut Ui, screen: &MembersScreen, actions: &mut Vec<MembersActio
         }
         match &approval.code {
             None => {
-                description(ui, "Waiting for their computer to show its code.");
+                description(ui, "Waiting for their code\u{2026}");
             }
             Some(code) => {
-                ui.label("Compare this code with theirs on a call or another channel you trust:");
+                ui.label("Compare this code with theirs over a channel you trust:");
                 ui.add(
                     egui::Label::new(RichText::new(code).size(24.0).monospace().strong())
                         .selectable(true),

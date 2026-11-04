@@ -41,10 +41,10 @@ fn share_message(error: &SyncError) -> String {
             "Only owners and admins of this workspace can share notes.".into()
         }
         SyncError::Refused { code, .. } if code == "share_limit" => {
-            "This workspace already has 1,000 active links. Revoke one to make room.".into()
+            "This workspace has 1,000 active links. Revoke one to make room.".into()
         }
         SyncError::Refused { code, .. } if code == "not_found" => {
-            "That link no longer exists. Someone revoked it, or it expired.".into()
+            "That link was revoked or expired.".into()
         }
         other => crate::account::problem_text(other),
     }
@@ -128,20 +128,17 @@ impl Sharing {
             return Ok(());
         };
         let Some(sync) = folder.sync_mut() else {
-            self.screen.unavailable =
-                Some("Turn on sync for this workspace under Settings to share its notes.".into());
+            self.screen.unavailable = Some("Turn on sync to share notes.".into());
             return Ok(());
         };
         let Some(rid) = sync.rid_at(&note.path) else {
-            self.screen.unavailable =
-                Some("This note hasn't synced yet. Share it once sync uploads it.".into());
+            self.screen.unavailable = Some("Share this note once it syncs.".into());
             return Ok(());
         };
         let (workspace, domain) = (sync.workspace(), sync.domain());
         let Some(remote) = sync.remote_mut() else {
-            self.screen.unavailable = Some(
-                "This computer hasn't reached the sync server yet. Try again in a moment.".into(),
-            );
+            self.screen.unavailable =
+                Some("Can't reach the sync server yet. Try again in a moment.".into());
             return Ok(());
         };
         let snapshot = remote.policy().head_snapshot().clone();
@@ -189,8 +186,7 @@ impl Sharing {
                 service
                     .update_share(&mut book, token_hash, &title, markdown.as_bytes())
                     .await?;
-                self.screen.notice =
-                    Some("Link updated. People who open it now see the note as it is.".into());
+                self.screen.notice = Some("Link updated to the current note.".into());
             }
             ShareAction::Revoke(token_hash) => {
                 let expires_at = self
@@ -204,7 +200,7 @@ impl Sharing {
                 service
                     .revoke_share(&mut book, workspace, token_hash, expires_at)
                     .await?;
-                self.screen.notice = Some("Link revoked. It no longer opens.".into());
+                self.screen.notice = Some("Link revoked".into());
             }
             _ => {}
         }

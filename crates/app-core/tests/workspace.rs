@@ -452,10 +452,7 @@ fn restore_says_why_while_the_folder_is_missing_and_opens_it_once_it_is_back() {
     assert_eq!(error.code, "folder_missing");
     assert_eq!(
         error.message,
-        format!(
-            "The folder {saved_path} isn't there. If it's on a drive that isn't connected, \
-             connect the drive and try again."
-        )
+        format!("{saved_path} isn't there. Connect its drive and try again.")
     );
     assert!(!folder.exists(), "restore must not recreate the folder");
 
@@ -560,10 +557,7 @@ fn a_folder_that_fails_for_another_reason_is_not_called_a_permission_problem() {
 }
 
 fn missing_manifest_message(path: &str) -> String {
-    format!(
-        "The settings file .noura/workspace.yaml is missing from {path}. Noura left the \
-         folder as it was. Choose Open folder to use it as a new workspace."
-    )
+    format!("{path} has no .noura/workspace.yaml. Choose Open folder to make it a new workspace.")
 }
 
 /// Windows can hold a just-closed watcher handle on the folder for a moment.
@@ -637,8 +631,7 @@ fn a_folder_noura_cannot_write_to_says_so_and_stays_empty() {
     let opened = service.open_folder(&folder).err().unwrap();
     std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    let message =
-        format!("Noura doesn't have permission to add its .noura settings folder to {path}.");
+    let message = format!("Noura can't add its .noura folder to {path}.");
     assert_eq!(created.message, message);
     assert_eq!(opened.message, message);
     assert_eq!(walk(&folder), ["Kept.md"]);

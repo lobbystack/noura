@@ -25,7 +25,8 @@ use zeroize::Zeroizing;
 
 /// What the screens say when the server no longer takes this computer's
 /// session.
-pub(crate) const SESSION_ENDED: &str = "This computer's session with the sync server ended. Sign in again with your browser, and this device keeps its keys.";
+pub(crate) const SESSION_ENDED: &str =
+    "Your sync session ended. Sign in again; this device keeps its keys.";
 
 /// The sentence the screens show for `error`, for the errors a screen has
 /// no sentence of its own for. Protocol codes and system details stay out
@@ -34,15 +35,14 @@ pub(crate) fn problem_text(error: &crate::sync::SyncError) -> String {
     use crate::sync::SyncError;
     match error {
         SyncError::ProtocolUnsupported(_) => {
-            "This sync server runs a version of sync that Noura can't use. Update Noura, or ask the server's operator.".into()
+            "This sync server's version doesn't work with Noura. Update Noura or ask its operator."
+                .into()
         }
         SyncError::Refused { code, .. } => refused_text(code).into(),
         SyncError::Network(_) => "The sync server can't be reached. Try again in a moment.".into(),
-        SyncError::Check(_) => {
-            "Sync stopped because the server's answer failed a check. Your files stay on this computer.".into()
-        }
+        SyncError::Check(_) => "Sync stopped because the server's answer failed a check.".into(),
         SyncError::KeyMissing => {
-            "This workspace's key hasn't reached this computer yet. Another device sends it the next time it syncs.".into()
+            "This workspace's key arrives the next time another device syncs.".into()
         }
         SyncError::Invalid(text) => text.clone(),
         SyncError::SignIn(end) => end.to_string(),

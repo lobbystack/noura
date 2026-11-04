@@ -31,8 +31,7 @@ use super::{SyncClient, SyncError, SyncService, random};
 
 /// What the invitee sees for any link that doesn't open: a wrong secret, a
 /// tampered context, or an invitation that ended. It never says which.
-pub const INVITATION_UNUSABLE: &str =
-    "This invitation link doesn't work. Ask the person who invited you for a new one.";
+pub const INVITATION_UNUSABLE: &str = "This invitation link doesn't work. Ask for a new one.";
 
 fn unusable() -> SyncError {
     SyncError::Invalid(INVITATION_UNUSABLE.into())
@@ -465,11 +464,8 @@ impl SyncService {
         book: &InvitationBook,
         invitation: &Id,
     ) -> Result<Zeroizing<String>, SyncError> {
-        let missing = || {
-            SyncError::Invalid(
-                "Only the device that sent this invitation can copy its link.".into(),
-            )
-        };
+        let missing =
+            || SyncError::Invalid("Only the device that sent it can copy its link.".into());
         if !book.invitations.iter().any(|i| i.invitation == *invitation) {
             return Err(missing());
         }

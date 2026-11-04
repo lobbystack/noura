@@ -203,7 +203,7 @@ fn a_person_joins_from_a_pasted_link_through_the_approval() {
     );
     assert!(screen.requests.is_empty());
     assert!(screen.invitations.is_empty(), "the invitation ended");
-    assert!(screen.notice.unwrap().contains("added the new member"));
+    assert!(screen.notice.unwrap().contains("Member added"));
 
     // Ben chooses a folder, and the workspace downloads into it.
     wait(
@@ -388,9 +388,7 @@ fn an_invited_request_reaches_a_closed_section_and_outlives_its_ten_minutes() {
         || FolderSyncBackend::screen(&ana),
         |s| {
             s.attention.as_deref()
-                == Some(
-                    "Someone you invited waits for your approval. Open Settings > Members to answer.",
-                )
+                == Some("Someone you invited waits for approval in Settings > Members.")
         },
     );
     let first = wait(

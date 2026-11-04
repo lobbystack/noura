@@ -387,8 +387,7 @@ impl Updates {
             state.set(UpdateStatus::Installing { version });
         } else {
             state.set(UpdateStatus::Failed {
-                message: "Noura couldn't start installing. Quit Noura and open it again."
-                    .to_owned(),
+                message: "Couldn't start installing. Quit Noura and open it again.".to_owned(),
             });
         }
     }
@@ -476,7 +475,7 @@ impl State {
         {
             // The thread ended without a result, so it panicked.
             self.set(UpdateStatus::Failed {
-                message: "Noura couldn't finish updating. Try again later.".to_owned(),
+                message: "Couldn't finish updating. Try again later.".to_owned(),
             });
         }
         if changed {
@@ -529,7 +528,7 @@ impl State {
                 tracing::warn!(kind = ?error.kind, detail = %error.detail, "an update failed");
                 let message = match (error.kind, &self.status) {
                     (UpdateErrorKind::Unreachable, _) => {
-                        "Couldn't reach the update server. Check your connection.".to_owned()
+                        "Can't reach the update server. Check your connection.".to_owned()
                     }
                     (UpdateErrorKind::BadSignature, _) => "The download's signature didn't \
                          match Noura's key, so Noura deleted it."
@@ -538,7 +537,7 @@ impl State {
                         "Noura installed version {version} but couldn't restart. Quit Noura \
                          and open it again."
                     ),
-                    _ => "Noura couldn't update. Try again later.".to_owned(),
+                    _ => "Couldn't update. Try again later.".to_owned(),
                 };
                 self.set(UpdateStatus::Failed { message });
             }
@@ -570,8 +569,8 @@ fn unsaved_changes_problem(error: &AppError) -> String {
 
 fn unsaved_problem(failure: &WriteFailure) -> String {
     format!(
-        "Noura didn't restart, because it couldn't save \u{201c}{}\u{201d}. {} Save it again, \
-         or move it to the trash, then restart. If you quit Noura instead, you lose that change.",
+        "Noura didn't restart, because it couldn't save \u{201c}{}\u{201d}. {} Save it or trash \
+         it, then restart; quitting loses that change.",
         failure.file, failure.message
     )
 }

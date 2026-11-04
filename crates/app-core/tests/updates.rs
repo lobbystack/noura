@@ -363,7 +363,7 @@ fn an_unreachable_feed_fails_and_check_for_updates_tries_again() {
     assert_eq!(
         app.updates().status(),
         UpdateStatus::Failed {
-            message: "Couldn't reach the update server. Check your connection.".into()
+            message: "Can't reach the update server. Check your connection.".into()
         }
     );
 
@@ -472,8 +472,8 @@ fn a_failed_write_keeps_this_version_running_and_says_why() {
             notes: None,
             problem: Some(
                 "Noura didn't restart, because it couldn't save \u{201c}Notes/Plan.md\u{201d}. \
-                 Its folder was moved or deleted outside Noura. Save it again, or move it to \
-                 the trash, then restart. If you quit Noura instead, you lose that change."
+                 Its folder was moved or deleted outside Noura. Save it or trash it, then \
+                 restart; quitting loses that change."
                     .into()
             ),
         }
@@ -668,9 +668,8 @@ fn a_write_that_fails_while_the_update_installs_keeps_this_version_running_and_s
             notes: None,
             problem: Some(
                 "Noura didn't restart, because it couldn't save \u{201c}Notes/Plan.md\u{201d}. \
-                 The disk is full. Save it again, or move it to the trash, then restart. If you \
-                 quit Noura instead, you lose that change. Version 0.3.0 runs the next time \
-                 you open Noura."
+                 The disk is full. Save it or trash it, then restart; quitting loses that \
+                 change. Version 0.3.0 runs the next time you open Noura."
                     .into()
             ),
         }

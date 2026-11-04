@@ -100,7 +100,8 @@ fn reserve_kit(path: &Path) -> Result<std::fs::File, SyncError> {
 
 /// What the screen says when the chain took the new kit but its file
 /// couldn't be written (§12).
-pub const KIT_NOT_SAVED: &str = "Noura added a new recovery kit to your account but couldn't save its file, and an earlier kit no longer works. Export a kit again.";
+pub const KIT_NOT_SAVED: &str =
+    "Noura couldn't save the new kit's file, and the old kit no longer works. Export a kit again.";
 
 /// Opens a kit file with the secret you type, ignoring spaces, hyphens and
 /// letter case. A wrong secret or a tampered file reports
@@ -396,7 +397,7 @@ impl Recovery {
             .is_some_and(|stored| stored.reference_head.is_some())
         {
             return Err(SyncError::Invalid(
-                "This computer already holds a device of an account on this server. Sign in with it, or sign it out, before you recover.".into(),
+                "Sign in or sign out of the account on this server before you recover.".into(),
             ));
         }
         let keys = random(DeviceKeys::generate())?;

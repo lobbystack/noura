@@ -274,7 +274,7 @@ fn a_file_no_app_opens_says_so_and_opens_no_tab() {
         support::notice(&app),
         Some((
             "Couldn't open \u{201c}archive.zip\u{201d}".to_owned(),
-            "Noura couldn't find an app on this computer that opens this file.".to_owned()
+            "No app on this computer opens this file.".to_owned()
         ))
     );
 }

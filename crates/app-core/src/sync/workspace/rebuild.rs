@@ -180,8 +180,7 @@ impl WorkspaceSync {
             Err(error) => return Err(error),
             Ok(_) => {
                 return Err(SyncError::Invalid(
-                    "This folder syncs a workspace that's still open. Choose an empty folder."
-                        .into(),
+                    "That workspace is still open. Choose an empty folder.".into(),
                 ));
             }
         }

@@ -436,10 +436,7 @@ fn a_license_list_that_won_t_open_says_why() {
     let notice = app.settings().unwrap().notice.clone().unwrap();
     assert_eq!(notice.kind, NoticeKind::Problem);
     assert_eq!(notice.title, "Couldn't open the license list");
-    assert_eq!(
-        notice.message,
-        "Noura couldn't open the list of third-party licenses it ships with."
-    );
+    assert_eq!(notice.message, "Couldn't open the third-party licenses.");
 }
 
 #[test]

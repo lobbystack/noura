@@ -357,7 +357,7 @@ fn content(state: &mut NouraUi, ui: &mut Ui) {
                 ui,
                 Some(crate::icons::NEW_NOTE),
                 "No file open",
-                Some("Pick a file from the sidebar, or create a new note."),
+                Some("Pick a file from the sidebar."),
             );
             return;
         };
@@ -430,7 +430,6 @@ fn new_workspace_dialog(state: &mut NouraUi, ui: &mut Ui) {
             TITLE_SIZE,
             crate::theme::Weight::Medium,
         )));
-        muted(ui, "Name it, then choose its folder.");
         common::new_workspace_form(state, ui);
     });
     if modal.should_close() {

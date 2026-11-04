@@ -145,7 +145,7 @@ fn check_for_updates_says_when_noura_is_up_to_date() {
     let mut harness = section(app);
     harness.run();
 
-    dialog(&harness).get_by_label_contains("You have version 0.2.0.");
+    dialog(&harness).get_by_label("Version 0.2.0");
     dialog(&harness)
         .get_by_role_and_label(Role::Button, "Check for updates")
         .click();
@@ -202,7 +202,7 @@ fn a_failed_check_says_why() {
         .click();
     wait_for(
         &mut harness,
-        "Couldn't reach the update server. Check your connection.",
+        "Can't reach the update server. Check your connection.",
     );
     let check = harness.get_by_role_and_label(Role::Button, "Check for updates");
     assert!(!check.accesskit_node().is_disabled(), "you can try again");
@@ -216,7 +216,7 @@ fn a_build_without_updates_explains_and_offers_no_check() {
     let mut harness = section(app);
     harness.run();
 
-    harness.get_by_label("You have version 0.2.0. Install new versions from noura.app.");
+    harness.get_by_label("Version 0.2.0. Install new versions from noura.app.");
     assert!(harness.query_by_label("Check for updates").is_none());
 }
 
@@ -233,7 +233,6 @@ fn every_screen_offers_restart_until_you_choose_later() {
         .build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), ui);
 
     wait_for(&mut harness, "Noura 0.3.0 is ready");
-    harness.get_by_label("Restart to finish updating.");
     harness.get_by_role_and_label(Role::Button, "Restart");
     harness.get_by_role_and_label(Role::Button, "Later").click();
     harness.run();

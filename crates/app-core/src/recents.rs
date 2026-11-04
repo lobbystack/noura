@@ -61,10 +61,7 @@ impl RecentStore {
 
 fn save_failed(error: std::io::Error) -> AppError {
     tracing::warn!(%error, "the recent workspaces could not be saved");
-    AppError::new(
-        "recents_save_failed",
-        "Noura couldn't update the list of recent workspaces.",
-    )
+    AppError::new("recents_save_failed", "Couldn't update recent workspaces.")
 }
 
 #[cfg(test)]

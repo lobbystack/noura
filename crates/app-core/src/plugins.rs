@@ -747,7 +747,7 @@ impl Plugins {
             tracing::warn!(%error, "the plugin approvals weren't saved");
             AppError::new(
                 "plugin_approvals_unsaved",
-                "Noura couldn't save the plugin approvals in its app data.",
+                "Couldn't save the plugin approvals.",
             )
         })?;
         self.records = records;
@@ -1280,7 +1280,7 @@ impl Plugins {
         let Some(page) = record.release.clone() else {
             return Err(AppError::new(
                 "plugin_not_from_github",
-                "Only plugins installed from GitHub can check for updates there.",
+                "Only plugins from GitHub check for updates.",
             ));
         };
         if self.update_checks.get(id) == Some(&UpdateCheck::Checking) {
@@ -1802,7 +1802,7 @@ impl Plugins {
         node: &str,
         range: Range<u32>,
     ) -> Result<Vec<Option<VirtualRow>>, String> {
-        let gone = || "The plugin that adds this page isn't running.".to_owned();
+        let gone = || "Its plugin isn't running.".to_owned();
         let (plugin, page) = split_page_id(page_id).ok_or_else(gone)?;
         let running = self
             .running

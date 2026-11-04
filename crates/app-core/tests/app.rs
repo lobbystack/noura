@@ -99,8 +99,7 @@ fn a_missing_last_workspace_says_why_and_try_again_opens_it_once_it_is_back() {
         app.screen(),
         &Screen::Chooser {
             problem: Some(format!(
-                "The folder {saved_path} isn't there. If it's on a drive that isn't \
-                 connected, connect the drive and try again."
+                "{saved_path} isn't there. Connect its drive and try again."
             ))
         }
     );
@@ -298,8 +297,8 @@ fn a_last_workspace_that_lost_its_manifest_says_why_and_stays_as_it_was() {
         app.screen(),
         &Screen::Chooser {
             problem: Some(format!(
-                "The settings file .noura/workspace.yaml is missing from {saved_path}. Noura \
-                 left the folder as it was. Choose Open folder to use it as a new workspace."
+                "{saved_path} has no .noura/workspace.yaml. Choose Open folder to make it a new \
+                 workspace."
             ))
         }
     );

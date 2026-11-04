@@ -370,11 +370,7 @@ fn a_locked_pdf_asks_for_its_password_and_says_when_its_wrong() {
     wait_until(
         &mut harness,
         "the PDF says the password is wrong",
-        |harness| {
-            harness
-                .query_by_label("That password didn\u{2019}t open the PDF. Try again.")
-                .is_some()
-        },
+        |harness| harness.query_by_label("Wrong password").is_some(),
     );
 
     // And again after a wrong password, so you can type the next one.
@@ -483,7 +479,7 @@ fn an_embed_of_a_locked_pdf_says_so_and_opens_in_a_tab_that_asks_for_the_passwor
         "the embed says the PDF is locked",
         |harness| {
             harness
-                .query_by_label("This PDF is locked. Open it in a tab to enter its password.")
+                .query_by_label("Locked PDF. Open it in a tab to unlock it.")
                 .is_some()
         },
     );

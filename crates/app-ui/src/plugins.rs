@@ -17,8 +17,7 @@ use egui::{
 };
 
 /// What the install dialog says about a plugin from GitHub.
-const UNREVIEWED: &str = "Nobody reviewed this plugin. Anyone can publish a release on GitHub, \
-                          so install it if you trust its author.";
+const UNREVIEWED: &str = "Nobody reviewed this plugin. Install it only if you trust its author.";
 
 use crate::{
     FolderPicker,
@@ -90,11 +89,11 @@ pub(crate) fn section(
         return;
     }
     if !workspace_open {
-        description(ui, "Open a workspace to manage plugins.");
+        description(ui, "Open a workspace first.");
         ui.add_space(16.0);
     }
     if rows.is_empty() {
-        description(ui, "You haven't installed any plugins.");
+        description(ui, "No plugins installed");
     }
     let palette = Palette::of(ui.ctx());
     let builder = UiBuilder::new().accessibility_role(Role::List);
@@ -249,8 +248,7 @@ fn install_groups(ui: &mut Ui, app: &mut App, picker: &mut dyn FolderPicker, add
     group(ui, "Install from a folder", |ui| {
         description(
             ui,
-            "Choose a folder with a plugin.toml and the plugin's component. Noura reloads the \
-             plugin when you save a new build there.",
+            "A folder with a plugin.toml. Noura reloads each new build.",
         );
         pick = Btn::new("Install from folder\u{2026}").show(ui).clicked();
     });
@@ -259,11 +257,7 @@ fn install_groups(ui: &mut Ui, app: &mut App, picker: &mut dyn FolderPicker, add
     }
     let mut download = false;
     group(ui, "Install from GitHub", |ui| {
-        description(
-            ui,
-            "Paste the address of a plugin's release on GitHub. Noura shows what the plugin \
-             asks for before it installs anything.",
-        );
+        description(ui, "Noura shows what it asks for before installing.");
         let typed = !address.trim().is_empty();
         ui.horizontal(|ui| {
             let field = ui
@@ -320,11 +314,7 @@ fn plugin(ui: &mut Ui, app: &mut App, row: &PluginRow) {
                     ui.add(egui::Label::new(folder).selectable(true).wrap());
                 }
                 if !row.installed {
-                    description(
-                        ui,
-                        "This workspace turns it on. Install it on this computer to run \
-                             it here.",
-                    );
+                    description(ui, "On in this workspace, but not installed here.");
                 }
                 if !row.approved.is_empty() {
                     ui.add_space(4.0);
@@ -352,13 +342,13 @@ fn plugin(ui: &mut Ui, app: &mut App, row: &PluginRow) {
                     }
                 } else if !row.update.is_empty() {
                     ui.add_space(4.0);
-                    ui.label("A new build is waiting. It also asks to:");
+                    ui.label("The new build also asks to:");
                     capabilities(ui, &row.update);
                     ui.horizontal(|ui| {
-                        if ui.button("Allow and run the new build").clicked() {
+                        if ui.button("Allow and run").clicked() {
                             action = Some(RowAction::ApproveUpdate);
                         }
-                        if ui.button("Keep the installed build").clicked() {
+                        if ui.button("Keep current").clicked() {
                             action = Some(RowAction::DeclineUpdate);
                         }
                     });
@@ -443,8 +433,8 @@ fn release_update(ui: &mut Ui, row: &PluginRow) -> Option<RowAction> {
                 description(ui, "Checking for updates\u{2026}");
             });
         }
-        Some(UpdateCheck::Newest(version)) => {
-            description(ui, &format!("Version {version} is the newest release."));
+        Some(UpdateCheck::Newest(_)) => {
+            description(ui, "Up to date");
         }
         Some(UpdateCheck::Failed(problem)) => alert(ui, problem),
         None => {}
@@ -458,7 +448,7 @@ fn release_update(ui: &mut Ui, row: &PluginRow) -> Option<RowAction> {
     } else {
         ui.label("It also asks to:");
         capabilities(ui, &row.update);
-        format!("Allow and install version {newer}")
+        "Allow and install".to_owned()
     };
     ui.horizontal(|ui| {
         if ui.button(install).clicked() {
@@ -466,7 +456,7 @@ fn release_update(ui: &mut Ui, row: &PluginRow) -> Option<RowAction> {
         }
         let keep = match &row.version {
             Some(version) => format!("Keep version {version}"),
-            None => "Keep the installed version".to_owned(),
+            None => "Keep current".to_owned(),
         };
         if ui.button(keep).clicked() {
             action = Some(RowAction::DeclineUpdate);
@@ -502,9 +492,7 @@ pub(crate) fn shipped_dialog(ui: &mut Ui, app: &mut App, view: &mut ShippedView)
             );
             description(
                 ui,
-                "Noura ships these plugins. They run on this computer once you allow them, \
-                 each with only what it lists here. To take something back later, open \
-                 Settings, then Plugins.",
+                "Each runs with only what it lists. Revoke it in Settings > Plugins.",
             );
             ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                 for plugin in &plugins {
@@ -631,8 +619,7 @@ fn capability_list(ui: &mut Ui, lines: &[CapabilityLine]) {
     ui.add_space(4.0);
     description(
         ui,
-        "Noura runs none of its code until you install it, and gives it only these \
-         capabilities.",
+        "It runs only once installed, with only these capabilities.",
     );
 }
 

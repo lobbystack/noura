@@ -352,7 +352,7 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
     section_title(
         ui,
         "Workspace permissions",
-        Some("Grant access to send content from this workspace to a provider for AI requests."),
+        Some("A granted provider receives this workspace's content."),
         |_| {},
     );
     match &workspace {
@@ -360,9 +360,9 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
             description(ui, "Connect a provider first.");
         }
         None => {
-            description(ui, "Open a workspace to choose what it shares.");
+            description(ui, "Open a workspace first.");
         }
-        Some(workspace) => {
+        Some(_) => {
             for (index, row) in rows.iter().enumerate() {
                 if index > 0 {
                     row_line(ui);
@@ -375,18 +375,7 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
                     ui.scope_builder(builder, |ui| {
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
-                            ui.vertical(|ui| {
-                                ui.spacing_mut().item_spacing.y = 2.0;
-                                crate::common::field_label(ui, &row.name);
-                                crate::common::muted(
-                                    ui,
-                                    &if row.consented {
-                                        format!("You allowed it to receive {workspace}'s content.")
-                                    } else {
-                                        format!("It can't receive {workspace}'s content yet.")
-                                    },
-                                );
-                            });
+                            crate::common::field_label(ui, &row.name);
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -598,8 +587,7 @@ pub(crate) fn consent_prompt(ui: &mut Ui, app: &mut App, view: &mut ConsentView)
             ui.label(details(app, &prompt));
             description(
                 ui,
-                "Noura asks again if you change the provider's kind, endpoint or model. To take \
-                 this back, open Settings, then AI providers.",
+                "Noura asks again if its kind, endpoint or model changes. Revoke it in Settings > AI.",
             );
             ui.add_space(12.0);
             ui.horizontal(|ui| {
@@ -665,10 +653,7 @@ pub(crate) fn tool_prompt(ui: &mut Ui, app: &mut App, view: &mut ToolPromptView)
                 crate::theme::Weight::Medium,
             )));
             ui.add_space(4.0);
-            ui.label(format!(
-                "The AI wants to run the tool {} from {}.",
-                prompt.tool, prompt.plugin_name
-            ));
+            ui.label(format!("{} from {}", prompt.tool, prompt.plugin_name));
             if !prompt.description.trim().is_empty() {
                 description(ui, &prompt.description);
             }
@@ -682,11 +667,6 @@ pub(crate) fn tool_prompt(ui: &mut Ui, app: &mut App, view: &mut ToolPromptView)
                     ui.add(egui::Label::new(RichText::new(&prompt.input).monospace()).wrap())
                         .accessible_name("Input");
                 });
-            ui.add_space(8.0);
-            description(
-                ui,
-                "Your answer covers this call only. If you deny it, the tool doesn't run.",
-            );
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 let deny = ui.add(Button::new("Deny"));
@@ -718,7 +698,7 @@ fn details(app: &App, prompt: &AiConsentPrompt) -> String {
         .map(|endpoint| format!(" at {endpoint}"))
         .unwrap_or_default();
     format!(
-        "Your messages and the chat so far go from {} to {}, which answers with {} ({}){address}.",
+        "Your messages and this chat go from {} to {}, model {} ({}){address}.",
         prompt.workspace,
         prompt.provider_name,
         prompt.model,

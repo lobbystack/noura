@@ -230,15 +230,13 @@ pub fn restore_notice(status: &Status) -> Option<RestoreNotice> {
     }
     if status.rollback.is_some() {
         return Some(RestoreNotice {
-            line: "The server went back to an older state and reported no restore. Sync stopped here until its operator marks the restore.".to_owned(),
+            line: "The server went back to an older state without reporting a restore, so sync stopped.".to_owned(),
             ..RestoreNotice::default()
         });
     }
     if status.chain_gap {
         return Some(RestoreNotice {
-            line:
-                "The server skipped part of a device's changes. Sync waits here until they arrive."
-                    .to_owned(),
+            line: "Sync waits for changes the server skipped.".to_owned(),
             ..RestoreNotice::default()
         });
     }
@@ -247,7 +245,7 @@ pub fn restore_notice(status: &Status) -> Option<RestoreNotice> {
         || !status.written_again.is_empty()
         || !status.to_review.is_empty();
     shows.then(|| RestoreNotice {
-        line: "The server reports a restore from a backup. Noura checked what it holds and kept syncing."
+        line: "The server was restored from a backup. Noura checked it and kept syncing."
             .to_owned(),
         written_again: status.written_again.clone(),
         to_review: status.to_review.clone(),
@@ -261,25 +259,25 @@ pub fn lost_notice(lost: &crate::sync::workspace::restore::Lost, owner: bool) ->
     let short = |id: &Id| id.to_hex().chars().take(8).collect::<String>();
     let (line, reset_devices, set_up_again) = match lost {
         Lost::OwnAccount => (
-            "The server's operator restored a backup that lacks your latest devices. Sync stopped here. Reset your devices to go on.".to_owned(),
+            "The server was restored from a backup that lacks your latest devices. Reset your devices to go on.".to_owned(),
             true,
             false,
         ),
         Lost::MemberAccount(account) => (
             format!(
-                "The server's operator restored a backup that lacks devices of account {}. Sync stopped here until that person resets their devices and an owner or admin accepts the reset.",
+                "The server was restored from a backup that lacks devices of account {}. Sync waits until they reset their devices and an owner or admin accepts.",
                 short(account)
             ),
             false,
             false,
         ),
         Lost::Policy | Lost::Epoch | Lost::Envelope | Lost::Checkpoints | Lost::FinalHead(_) => (
-            "The server's operator restored a backup that lacks part of this workspace's history. Sync stopped here. An owner can set the workspace up again.".to_owned(),
+            "The server was restored from a backup that lacks part of this workspace. An owner can set it up again.".to_owned(),
             false,
             owner,
         ),
         Lost::Server => (
-            "This server lost your account. Sync stopped here. You can turn sync on for this folder as a new workspace.".to_owned(),
+            "This server lost your account. Turn on sync to start this folder as a new workspace.".to_owned(),
             false,
             true,
         ),
@@ -336,7 +334,7 @@ pub fn ended_line(ended: &crate::sync::workspace::Ended) -> String {
         "took this computer's access to the workspace"
     };
     format!(
-        "{who} {what}, from device {}. Sync stopped. Your files stay on this computer as they are.",
+        "{who} {what}, from device {}. Sync stopped. Your files stay here.",
         short(&ended.by_device)
     )
 }

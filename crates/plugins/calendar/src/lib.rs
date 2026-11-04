@@ -255,10 +255,7 @@ fn page() -> Vec<Node> {
         view.text(
             View::ROOT,
             "too-many",
-            &format!(
-                "This period has {} entries. The calendar shows the first 5,000.",
-                entries.len()
-            ),
+            &format!("Showing the first 5,000 of {} entries.", entries.len()),
         );
     }
     let grid = view.calendar(

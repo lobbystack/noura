@@ -189,15 +189,11 @@ fn password_form(
     ui.vertical_centered(|ui| {
         ui.add_space(ui.available_height() / 4.0);
         ui.label(RichText::new("This PDF is locked").strong());
-        muted(ui, "Enter its password to read it.");
         ui.add_space(8.0);
         if wrong {
             let builder = UiBuilder::new().accessibility_role(Role::Alert);
             ui.scope_builder(builder, |ui| {
-                ui.label(
-                    RichText::new("That password didn\u{2019}t open the PDF. Try again.")
-                        .color(palette.destructive),
-                );
+                ui.label(RichText::new("Wrong password").color(palette.destructive));
             });
             ui.add_space(4.0);
         }

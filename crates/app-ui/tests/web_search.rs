@@ -45,7 +45,7 @@ fn the_key_field_hides_the_key_and_noura_s_prompt_names_brave_search_and_what_le
     harness.state_mut().app_mut().open_settings_at("web-search");
     run(&mut harness);
 
-    assert!(labels_in(&harness, "Brave Search key").contains(&"No key yet.".to_owned()));
+    assert!(labels_in(&harness, "Brave Search key").contains(&"No key".to_owned()));
     harness
         .get_by_role_and_label(Role::Group, "Brave Search key")
         .get_by_role_and_label(Role::PasswordInput, "Key")
@@ -62,13 +62,10 @@ fn the_key_field_hides_the_key_and_noura_s_prompt_names_brave_search_and_what_le
         .click_accesskit();
     run(&mut harness);
 
-    assert!(labels_in(&harness, "Brave Search key").contains(&"Your key is saved.".to_owned()));
+    assert!(labels_in(&harness, "Brave Search key").contains(&"Saved".to_owned()));
     harness
         .get_by_role_and_label(Role::Group, "Brave Search key")
-        .get_by_role_and_label(
-            Role::PasswordInput,
-            "New key (leave empty to keep the saved one)",
-        );
+        .get_by_role_and_label(Role::PasswordInput, "New key");
     assert_eq!(system.credentials.secrets(), [KEY.to_owned()]);
     assert!(
         all_labels(&harness)
@@ -77,19 +74,16 @@ fn the_key_field_hides_the_key_and_noura_s_prompt_names_brave_search_and_what_le
     );
 
     // Allowing opens Noura's prompt, which starts on Deny.
-    assert!(
-        labels_in(&harness, "This workspace")
-            .contains(&"The AI can't search the web in Garden yet.".to_owned())
-    );
+    assert!(labels_in(&harness, "This workspace").contains(&"Not allowed in Garden".to_owned()));
     // Web search sits under the providers in the AI section.
     harness
         .get_by_role_and_label(Role::Group, "This workspace")
-        .get_by_role_and_label(Role::Button, "Allow for this workspace")
+        .get_by_role_and_label(Role::Button, "Allow")
         .scroll_to_me();
     run(&mut harness);
     harness
         .get_by_role_and_label(Role::Group, "This workspace")
-        .get_by_role_and_label(Role::Button, "Allow for this workspace")
+        .get_by_role_and_label(Role::Button, "Allow")
         .click();
     run(&mut harness);
     let dialog = harness.get_by_role_and_label(Role::AlertDialog, TITLE);
@@ -100,19 +94,14 @@ fn the_key_field_hides_the_key_and_noura_s_prompt_names_brave_search_and_what_le
         .collect();
     assert!(
         said.contains(
-            &"When a chat in Garden uses the web, the search queries the AI writes go to Brave \
-              Search, and the addresses of the pages it reads go to the sites that host them. \
-              Both leave this computer."
+            &"In Garden, search queries go to Brave Search, and page addresses go to the sites \
+              that host them."
                 .to_owned()
         ),
         "{said:?}"
     );
     assert!(
-        said.contains(
-            &"Plugins you allowed to send chats to AI providers can then search the web in \
-              Garden too, when the AI asks them to."
-                .to_owned()
-        ),
+        said.contains(&"Plugins you let use AI can search the web in Garden too.".to_owned()),
         "{said:?}"
     );
     assert_eq!(focused(&harness).as_deref(), Some("Deny"));
@@ -128,7 +117,7 @@ fn the_key_field_hides_the_key_and_noura_s_prompt_names_brave_search_and_what_le
 
     harness
         .get_by_role_and_label(Role::Group, "This workspace")
-        .get_by_role_and_label(Role::Button, "Allow for this workspace")
+        .get_by_role_and_label(Role::Button, "Allow")
         .click();
     run(&mut harness);
     harness
@@ -137,15 +126,12 @@ fn the_key_field_hides_the_key_and_noura_s_prompt_names_brave_search_and_what_le
         .click();
     run(&mut harness);
     assert!(harness.state_mut().app_mut().web_search().consented);
-    assert!(
-        labels_in(&harness, "This workspace")
-            .contains(&"The AI can search the web in Garden.".to_owned())
-    );
+    assert!(labels_in(&harness, "This workspace").contains(&"Allowed in Garden".to_owned()));
 
     // Turning it off takes the consent back.
     harness
         .get_by_role_and_label(Role::Group, "This workspace")
-        .get_by_role_and_label(Role::Button, "Turn off for this workspace")
+        .get_by_role_and_label(Role::Button, "Turn off")
         .click();
     run(&mut harness);
     assert!(!harness.state_mut().app_mut().web_search().consented);

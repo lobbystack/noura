@@ -27,10 +27,10 @@ use crate::{
 };
 
 /// What a task section says while the Tasks plugin is off.
-const TASKS_OFF: &str = "Tasks is off. Turn it on in Settings to see this project's tasks.";
+const TASKS_OFF: &str = "Turn on Tasks in Settings to see this project's tasks.";
 
 /// What the board says when a move met a task that changed since.
-const MOVE_CHANGED: &str = "Could not move the task. The task changed while you were viewing it.";
+const MOVE_CHANGED: &str = "The task changed, so it didn't move.";
 
 /// What a project's panel remembers between calls.
 #[derive(Debug, Default)]
@@ -282,11 +282,7 @@ fn this_month(view: &mut View, project: &Project, listed: &Result<Vec<Task>, Ref
         }
     }
     if matches!(listed, Err(Refused::Off)) {
-        view.text(
-            section,
-            "dated-off",
-            "Tasks is off, so this list leaves out the project's tasks.",
-        );
+        view.text(section, "dated-off", "Tasks is off, so tasks are left out.");
     }
 }
 
@@ -305,11 +301,7 @@ fn name_and_place<'a>(path: &'a str, folder: &str) -> (&'a str, Option<&'a str>)
 fn notes_and_files(view: &mut View, project: &Project) {
     let notes_section = section(view, "notes", "Notes");
     let Some(folder) = project.folder() else {
-        view.text(
-            notes_section,
-            "notes-none",
-            "This project's file isn't in a folder, so it has no notes or files.",
-        );
+        view.text(notes_section, "notes-none", "This project has no folder.");
         return;
     };
     let mut entries: Vec<workspace::Entry> = match workspace::list_entries() {
@@ -526,8 +518,7 @@ fn delete(project: &str) {
         Err(error) => {
             let notice = match error {
                 Error::RevisionConflict(_) => {
-                    "The project changed elsewhere, so Noura kept it. Showing the latest version."
-                        .to_owned()
+                    "The project changed elsewhere. Showing the latest version.".to_owned()
                 }
                 other => format!("Couldn't delete the project: {}", reason(&other)),
             };

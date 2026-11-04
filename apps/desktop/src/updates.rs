@@ -41,13 +41,13 @@ pub fn availability(
     match os {
         // Only an AppImage can replace itself. A .deb belongs to the
         // package manager.
-        "linux" if appimage.is_none() => Err(
-            "Packages from your package manager don't update themselves. Download new versions from noura.app.",
-        ),
+        "linux" if appimage.is_none() => {
+            Err("Package manager builds don't update themselves. Get new versions from noura.app.")
+        }
         // Outside an app bundle the updater would replace the folder that
         // holds the executable.
         "macos" if !in_app_bundle(executable) => {
-            Err("This copy doesn't update itself. Install Noura from noura.app to get updates.")
+            Err("This copy doesn't update itself. Get updates from noura.app.")
         }
         _ => Ok(()),
     }
@@ -402,7 +402,7 @@ mod tests {
         }
     }
 
-    const UNREACHABLE: &str = "Couldn't reach the update server. Check your connection.";
+    const UNREACHABLE: &str = "Can't reach the update server. Check your connection.";
 
     /// A feed offering `version` from the server at `base`, with
     /// `signature` for its bundle, in the shape

@@ -101,7 +101,7 @@ pub(crate) fn section(
         AccountPhase::SignedOut => signed_out(ui, &screen, view, &mut actions),
         AccountPhase::SigningIn { user_code } => {
             group(ui, "Signing in", |ui| {
-                ui.label("Your browser shows the sync server's sign-in page. Sign in there, check that it shows this code, and approve it:");
+                ui.label("Sign in on the server's page in your browser, check that it shows this code, and approve:");
                 code(ui, user_code);
                 if ui.button("Cancel").clicked() {
                     actions.push(AccountAction::CancelSignIn);
@@ -114,7 +114,9 @@ pub(crate) fn section(
             confirmed,
         } => {
             group(ui, "Approve this computer", |ui| {
-                ui.label("On a device you already use, open Settings, then Sync account, and approve this computer's request.");
+                ui.label(
+                    "On a device you already use, approve this request in Settings > Sync account.",
+                );
                 ui.label("This computer's fingerprint:");
                 fingerprint_line(ui, fingerprint);
                 match shown {
@@ -122,7 +124,7 @@ pub(crate) fn section(
                         description(ui, "Waiting for your other device.");
                     }
                     Some(shown) => {
-                        ui.label("Compare this code with the one on your other device:");
+                        ui.label("Compare with the code on your other device:");
                         code(ui, shown);
                         if *confirmed {
                             description(ui, "Waiting for your other device to finish.");
@@ -149,10 +151,7 @@ pub(crate) fn section(
                 ui.data_mut(|data| data.insert_temp(id, typed.clone()));
                 ui.horizontal(|ui| {
                     let ready = !typed.trim().is_empty();
-                    if ui
-                        .add_enabled(ready, Button::new("Start over with this code"))
-                        .clicked()
-                    {
+                    if ui.add_enabled(ready, Button::new("Start over")).clicked() {
                         actions.push(AccountAction::ConfirmReset(typed.clone()));
                     }
                     if ui.button("Cancel").clicked() {
@@ -163,7 +162,7 @@ pub(crate) fn section(
         }
         AccountPhase::KitLost => {
             group(ui, "This kit can't recover your account", |ui| {
-                ui.label("The server's operator restored a backup that lacks the devices your kit names. Reset your devices to go on.");
+                ui.label("The server was restored from a backup that lacks your kit's devices. Reset your devices to go on.");
                 ui.horizontal(|ui| {
                     if primary_button(ui, "Reset devices", !screen.busy).clicked() {
                         actions.push(AccountAction::StartReset);
@@ -176,7 +175,7 @@ pub(crate) fn section(
         }
         AccountPhase::ChainStopped => {
             group(ui, "Sync stopped for your account", |ui| {
-                ui.label("The server's list of your devices doesn't match what this computer accepted, which can follow a restore from a backup. Reset your devices to go on. Your files stay on this computer.");
+                ui.label("The server's device list doesn't match this computer's, perhaps after a backup restore. Reset your devices to go on.");
                 ui.horizontal(|ui| {
                     if primary_button(ui, "Reset devices", !screen.busy).clicked() {
                         actions.push(AccountAction::StartReset);
@@ -197,12 +196,12 @@ pub(crate) fn section(
         }
         AccountPhase::Retired { fingerprint } => {
             group(ui, "Your account's devices were reset", |ui| {
-                ui.label("Someone with access to your email started a new device list, so this computer no longer syncs. Your files stay on this computer.");
+                ui.label("Someone with access to your email started a new device list, so this computer stopped syncing.");
                 ui.label("The account's new fingerprint:");
                 fingerprint_line(ui, fingerprint);
                 description(
                     ui,
-                    "If that was you, sign in as a new device and approve it from your new device. If it wasn't, secure your email first.",
+                    "If that was you, sign in as a new device. If not, secure your email first.",
                 );
                 if ui
                     .add_enabled(!screen.busy, Button::new("Sign in as a new device"))
@@ -214,14 +213,14 @@ pub(crate) fn section(
         }
         AccountPhase::Removed { by } => {
             group(ui, "This computer was removed", |ui| {
-                ui.label("A device of your account removed this computer, so it no longer syncs. Your files stay on this computer.");
+                ui.label("A device of your account removed this computer, so it stopped syncing.");
                 if !by.is_empty() {
                     ui.label("Removed by the device with this fingerprint:");
                     fingerprint_line(ui, by);
                 }
                 description(
                     ui,
-                    "To sync here again, sign in as a new device and approve it from a device you hold.",
+                    "To sync again, sign in as a new device and approve it from another one.",
                 );
                 if ui
                     .add_enabled(!screen.busy, Button::new("Sign in as a new device"))
@@ -269,7 +268,7 @@ fn workspaces_group(
             ui.horizontal(|ui| {
                 ui.label(&row.name);
                 if view.downloading == Some(row.workspace) {
-                    description(ui, "Noura is downloading the workspace.");
+                    description(ui, "Downloading\u{2026}");
                     if ui.button("Cancel").clicked() {
                         actions.push(AccountAction::CancelDownload);
                     }
@@ -374,7 +373,7 @@ fn invitation_group(
                     }
                     Some(shown) => {
                         ui.label(format!(
-                            "Compare this code with {inviter} on a call or another channel you trust:"
+                            "Compare this code with {inviter} over a channel you trust:"
                         ));
                         code(ui, shown);
                         if *confirmed {
@@ -393,12 +392,12 @@ fn invitation_group(
             }
             InvitationStage::Joined { downloading } => {
                 if *downloading {
-                    description(ui, "Noura is downloading the workspace.");
+                    description(ui, "Downloading\u{2026}");
                     if ui.button("Cancel").clicked() {
                         actions.push(AccountAction::CancelDownload);
                     }
                 } else {
-                    ui.label("You joined. Choose an empty folder for its files, or the folder you synced before the owner set this workspace up again.");
+                    ui.label("You joined. Choose an empty folder, or the one you synced before the owner set it up again.");
                     if ui
                         .add_enabled(!screen.busy, Button::new("Choose a folder"))
                         .clicked()
@@ -418,10 +417,7 @@ fn signed_out(
     view: &mut AccountView,
     actions: &mut Vec<AccountAction>,
 ) {
-    description(
-        ui,
-        "You only need an account for sync and sharing. Everything else works without one.",
-    );
+    description(ui, "An account is only for sync and sharing.");
     ui.add_space(16.0);
     group(ui, "Server address", |ui| {
         let server = view.server.get_or_insert_with(|| screen.server.clone());
@@ -435,10 +431,7 @@ fn signed_out(
         if response.changed() {
             actions.push(AccountAction::SetServer(server.clone()));
         }
-        description(
-            ui,
-            "Noura syncs through this server. Use https:// unless the server runs on this computer.",
-        );
+        description(ui, "Use https:// unless the server runs on this computer.");
         if let Some(problem) = &screen.server_problem {
             alert(ui, problem);
         }
@@ -448,9 +441,9 @@ fn signed_out(
             description(
                 ui,
                 if screen.reconnecting {
-                    "This computer holds a device of your account. Noura keeps trying the server."
+                    "Noura keeps trying the server."
                 } else {
-                    "This computer holds a device of your account that couldn't connect."
+                    "This computer couldn't connect."
                 },
             );
             if ui
@@ -462,10 +455,7 @@ fn signed_out(
         });
     }
     group(ui, "Sign in", |ui| {
-        description(
-            ui,
-            "Your browser opens the server's sign-in page. Noura never sees your passkey.",
-        );
+        description(ui, "Noura never sees your passkey.");
         let ready = screen.server_problem.is_none() && !screen.server.trim().is_empty();
         if ui
             .add_enabled(
@@ -478,10 +468,7 @@ fn signed_out(
         }
     });
     group(ui, "Recover with a kit", |ui| {
-        description(
-            ui,
-            "Lost every device? Open the recovery kit you exported and type its secret.",
-        );
+        description(ui, "Open the kit you exported and type its secret.");
         ui.add(TextEdit::singleline(&mut view.kit_path).desired_width(320.0))
             .accessible_name("Kit file");
         ui.add(
@@ -505,7 +492,7 @@ fn signed_out(
 
 fn recovering(ui: &mut Ui, review: &RecoveryView, actions: &mut Vec<AccountAction>) {
     group(ui, "Review your account", |ui| {
-        ui.label("These changes happened after you exported the kit. Recover only if you recognize them.");
+        ui.label("These changed after you exported the kit. Recover only if you recognize them.");
         if review.changes.is_empty() {
             description(ui, "Nothing changed since the kit.");
         }
@@ -515,7 +502,7 @@ fn recovering(ui: &mut Ui, review: &RecoveryView, actions: &mut Vec<AccountActio
     });
     if !review.members.is_empty() {
         group(ui, "Workspaces your kit doesn't list", |ui| {
-            ui.label("Noura checked these workspaces against your account. Recover only if you know every member:");
+            ui.label("Recover only if you know every member:");
             for line in &review.members {
                 ui.label(line);
             }
@@ -552,12 +539,12 @@ fn reset_groups(ui: &mut Ui, view: &SignedInView, actions: &mut Vec<AccountActio
         group(ui, "You reset your devices", |ui| {
             ui.label("This account's new fingerprint:");
             fingerprint_line(ui, shown);
-            ui.label("Approve your other devices again, and export a new recovery kit.");
+            ui.label("Approve your other devices again and export a new kit.");
         });
     }
     if !view.reset_waits.is_empty() {
         group(ui, "Workspaces that have to accept the reset", |ui| {
-            ui.label("An owner or admin of each workspace accepts it. Compare the code with them.");
+            ui.label("An owner or admin of each one accepts it after comparing a code with you.");
             for (index, wait) in view.reset_waits.iter().enumerate() {
                 ui.label(format!("Workspace {}", wait.workspace));
                 match &wait.code {
@@ -576,7 +563,7 @@ fn reset_groups(ui: &mut Ui, view: &SignedInView, actions: &mut Vec<AccountActio
                 if wait.set_up_again {
                     description(
                         ui,
-                        "No other owner or admin? Close this workspace and start a new one from this folder. Members keep their files, and you invite them again.",
+                        "No other owner or admin? Start this workspace over from this folder. Members keep their files, and you invite them again.",
                     );
                     if ui.button("Set up sync again").clicked() {
                         actions.push(AccountAction::SetUpAfterReset(index));
@@ -594,7 +581,7 @@ fn reset_groups(ui: &mut Ui, view: &SignedInView, actions: &mut Vec<AccountActio
                     description(ui, "Waiting for their device.");
                 }
                 Some(shown) => {
-                    ui.label("Compare this code with theirs, over a channel you both trust:");
+                    ui.label("Compare this code with theirs over a channel you trust:");
                     code(ui, shown);
                     if ui.button("Codes match, accept").clicked() {
                         actions.push(AccountAction::ConfirmAcceptReset);
@@ -652,10 +639,10 @@ fn signed_in_section(
                 fingerprint_line(ui, &approval.fingerprint);
                 match &approval.code {
                     None => {
-                        description(ui, "Waiting for the new device to show its code.");
+                        description(ui, "Waiting for the new device\u{2019}s code\u{2026}");
                     }
                     Some(shown) => {
-                        ui.label("Compare this code with the one on the new device:");
+                        ui.label("Compare with the code on the new device:");
                         code(ui, shown);
                         if ui.button("Codes match").clicked() {
                             actions.push(AccountAction::ConfirmApproval);
@@ -667,7 +654,7 @@ fn signed_in_section(
                 }
             }
             None => {
-                ui.label("These devices wait for your approval. Approve only a device you're signing in yourself.");
+                ui.label("Approve only a device you're signing in yourself.");
                 for (index, request) in view.requests.iter().enumerate() {
                     ui.horizontal(|ui| {
                         fingerprint_line(ui, &request.fingerprint);
@@ -707,12 +694,10 @@ fn signed_in_section(
     });
     if let Some(removal) = &view.removal {
         group(ui, "Remove a device", |ui| {
-            ui.label("This removes the device with this fingerprint from your account. It can't read anything written after.");
+            ui.label("This removes the device with this fingerprint. It can't read anything written after.");
             fingerprint_line(ui, &removal.fingerprint);
             if !removal.with_it.is_empty() {
-                ui.label(
-                    "These devices go with it, because it approved them. Keep any you recognize:",
-                );
+                ui.label("Devices it approved go too. Keep any you recognize:");
                 for (device, fingerprint, keepable) in &removal.with_it {
                     let mut keep = removal.keep.contains(device);
                     if ui
@@ -738,7 +723,7 @@ fn signed_in_section(
     }
     if !view.removed_changes.is_empty() {
         group(ui, "Changes your removed devices made", |ui| {
-            ui.label("Removing a device leaves its workspace changes in place. Check each one:");
+            ui.label("Their workspace changes stay. Check each one:");
             for change in &view.removed_changes {
                 ui.label(change);
             }
@@ -746,7 +731,7 @@ fn signed_in_section(
     }
     if !view.added_members.is_empty() {
         group(ui, "Members added since your kit", |ui| {
-            ui.label("These accounts joined your workspaces after you exported the kit. Check that you know each one:");
+            ui.label("These joined after you exported the kit. Check that you know each one:");
             for line in &view.added_members {
                 ui.label(line);
             }
@@ -754,7 +739,9 @@ fn signed_in_section(
     }
     if let Some(replacement) = &view.kit_replacement {
         group(ui, "Replace your recovery kit", |ui| {
-            ui.label("Your current kit recovered these devices. A new kit removes them, unless you keep the ones you hold:");
+            ui.label(
+                "Your kit recovered these devices. A new kit removes them unless you keep them:",
+            );
             for (device, fingerprint) in &replacement.devices {
                 let mut keep = replacement.keep.contains(device);
                 if ui
@@ -789,10 +776,7 @@ fn signed_in_section(
         None => {
             ui.label(KIT_WARNING);
             if view.offer_kit {
-                description(
-                    ui,
-                    "Your devices changed. Export a new kit so it covers them.",
-                );
+                description(ui, "Your devices changed. Export a new kit.");
             }
             if ui.button("Export recovery kit").clicked()
                 && let Some(folder) = picker.pick_folder("Choose where to save the recovery kit")
@@ -806,10 +790,10 @@ fn signed_in_section(
             if confirm.last_device {
                 alert(
                     ui,
-                    "This is your account's last device. After you sign out, you need your recovery kit, or a reset of your devices, to read your synced data again.",
+                    "This is your last device. After you sign out, you need your recovery kit or a device reset to read synced data.",
                 );
             }
-            ui.label("Signing out stops sync on this computer and leaves your files as they are.");
+            ui.label("Sync stops on this computer. Your files stay as they are.");
             ui.horizontal(|ui| {
                 if ui.button("Sign out").clicked() {
                     actions.push(AccountAction::ConfirmSignOut);

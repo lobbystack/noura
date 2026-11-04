@@ -33,10 +33,12 @@ use crate::sync::{Secrets, SyncError, SyncService};
 /// How many text review lines Settings lists.
 const TEXT_REVIEW_LINES: usize = 32;
 /// What Settings says after a device reports `sync_text_conflict`.
-const TEXT_CONFLICT: &str = "A collaborator's version of a note disagreed with this computer's records, so Noura rebuilt the note. Check it below.";
+const TEXT_CONFLICT: &str =
+    "Noura rebuilt a note a collaborator's version disagreed with. Check it below.";
 
 /// What Settings says while a restricted folder waits for a new key.
-const KEY_STOP: &str = "This computer can't open the key of a restricted folder, so that folder waits for another device to send a new one. Everything else keeps syncing.";
+const KEY_STOP: &str =
+    "A restricted folder waits for another device to send its key. Everything else syncs.";
 
 /// One line of Settings for a text review entry, unless the note has its
 /// own entry with a choice.
@@ -127,13 +129,13 @@ fn folder_message(error: &SyncError) -> String {
             "The sync server can't be reached. Your changes wait on this computer.".into()
         }
         SyncError::Check("sync_reseal_limit") => {
-            "The server keeps refusing a change, so this computer stopped sending changes. Your files keep them.".into()
+            "The server keeps refusing a change, so sending stopped.".into()
         }
         SyncError::Check("sync_journal_rollback") => {
-            "This folder's sync records are older than this computer expected, so sync stopped here.".into()
+            "This folder's sync records are out of date, so sync stopped.".into()
         }
         SyncError::Check("sync_folder_not_connected") => {
-            "This folder is a copy of a synced folder. Turn on sync to connect it.".into()
+            "This folder copies a synced folder. Turn on sync to connect it.".into()
         }
         other => crate::account::problem_text(other),
     }
@@ -144,17 +146,13 @@ fn approvals_attention(invited: usize, devices: usize) -> Option<String> {
     match (invited, devices) {
         (0, 0) => None,
         (0, 1) => Some(
-            "A new device of your account waits for your approval. Open Settings > Sync account to answer.".into(),
+            "A new device of your account waits for approval in Settings > Sync account.".into(),
         ),
-        (0, _) => Some(
-            "New devices of your account wait for your approval. Open Settings > Sync account to answer.".into(),
-        ),
-        (1, _) => Some(
-            "Someone you invited waits for your approval. Open Settings > Members to answer.".into(),
-        ),
-        _ => Some(
-            "People you invited wait for your approval. Open Settings > Members to answer.".into(),
-        ),
+        (0, _) => {
+            Some("New devices of your account wait for approval in Settings > Sync account.".into())
+        }
+        (1, _) => Some("Someone you invited waits for approval in Settings > Members.".into()),
+        _ => Some("People you invited wait for approval in Settings > Members.".into()),
     }
 }
 
@@ -164,10 +162,10 @@ fn attention(waiting: usize, moved_in: usize) -> Option<String> {
     match (waiting, moved_in) {
         (0, 0) => None,
         (0, _) => Some(
-            "Earlier versions of a file you moved into a restricted folder stayed in the folder it left. Open Settings > Members to read more.".into(),
+            "Earlier versions of a file you restricted stay in its old folder. See Settings > Members.".into(),
         ),
         _ => Some(
-            "Files wait for you before they reach more people. Open Settings > Members to decide.".into(),
+            "Files wait for you before reaching more people, in Settings > Members.".into(),
         ),
     }
 }
@@ -422,7 +420,7 @@ impl Folder {
         if let Some(sync) = self.sync.as_mut().filter(|s| s.workspace() == workspace) {
             if !sync.check_access_again(service).await? {
                 return Err(SyncError::Invalid(
-                    "This computer can't read that workspace yet. Try again in a moment.".into(),
+                    "Can't read that workspace yet. Try again in a moment.".into(),
                 ));
             }
             self.last_error = None;
@@ -721,7 +719,7 @@ impl Folder {
                         if let Some((workspace, other)) = same {
                             if !self.holds_no_files() {
                                 return Err(SyncError::Invalid(format!(
-                                    "Your account already has a workspace named {other}. Download it into an empty folder from Settings > Sync account, or rename this workspace to keep both."
+                                    "Your account already has a workspace named {other}. Rename this one to keep both."
                                 )));
                             }
                             return self.download(service, workspace, app_data).await;

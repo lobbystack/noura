@@ -106,7 +106,7 @@ fn the_section_shows_the_configuration_a_copy_button_and_a_warning() {
     let escaped = root.replace('\\', "\\\\");
     assert!(configuration.contains(&escaped), "{configuration}");
     assert!(configuration.contains("\"--workspace\""), "{configuration}");
-    harness.get_by_label_contains("doesn\u{2019}t ask for approval");
+    harness.get_by_label_contains("Connect only assistants you trust");
 
     harness
         .get_by_role_and_label(Role::Group, "Configuration")

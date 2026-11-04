@@ -28,17 +28,17 @@ fn alert(ui: &mut Ui, text: &str) {
 /// How many changes wait, in words.
 pub(crate) fn pending_text(pending: usize) -> String {
     match pending {
-        0 => "Every change is uploaded.".to_owned(),
-        1 => "1 change waits to upload.".to_owned(),
-        n => format!("{n} changes wait to upload."),
+        0 => "All changes uploaded".to_owned(),
+        1 => "1 change to upload".to_owned(),
+        n => format!("{n} changes to upload"),
     }
 }
 
 /// How many changes wait for space, in words.
 pub(crate) fn waiting_text(waiting: usize) -> String {
     match waiting {
-        1 => "1 change stays on this computer until the workspace has space.".to_owned(),
-        n => format!("{n} changes stay on this computer until the workspace has space."),
+        1 => "1 change waits for space".to_owned(),
+        n => format!("{n} changes wait for space"),
     }
 }
 
@@ -59,7 +59,7 @@ fn set_up_again(ui: &mut Ui, busy: bool, actions: &mut Vec<FolderSyncAction>) {
     let asked = ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
     group(ui, "Start this workspace over", |ui| {
         ui.label(
-            "If a member says the server lost part of this workspace, you can start it over from this folder. You invite the members again. Restricted folders, share links and history start over.",
+            "If the server lost part of this workspace, start it over from this folder. You invite members again, and restricted folders, share links and history reset.",
         );
         if !asked {
             if primary_button(ui, "Set up sync again", !busy).clicked() {
@@ -69,7 +69,7 @@ fn set_up_again(ui: &mut Ui, busy: bool, actions: &mut Vec<FolderSyncAction>) {
         }
         alert(
             ui,
-            "This closes the workspace on the server for every member. Their files stay on their computers.",
+            "It closes on the server for every member. Their files stay on their computers.",
         );
         ui.horizontal(|ui| {
             if primary_button(ui, "Close it and set up again", !busy).clicked() {
@@ -128,20 +128,16 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
     }
     match screen.phase {
         FolderSyncPhase::Unavailable => {
-            ui.label(
-                "Sync keeps an end-to-end encrypted copy of this workspace on your other devices. Sign in to turn it on.",
-            );
+            ui.label("Sync is end-to-end encrypted. Sign in to turn it on.");
         }
         FolderSyncPhase::Unreachable => {
-            ui.label(
-                "Noura can't reach the sync server. It keeps trying, and your files stay on this computer.",
-            );
+            ui.label("Can't reach the sync server. Noura keeps trying.");
         }
         FolderSyncPhase::Off => {
-            ui.label("This workspace doesn't sync. Its files stay on this computer.");
+            ui.label("This workspace doesn't sync.");
             if !screen.on_account.is_empty() {
                 group(ui, "Download a workspace here", |ui| {
-                    ui.label("This folder is empty, and your account has these workspaces:");
+                    ui.label("Your account has these workspaces:");
                     for (workspace, name) in &screen.on_account {
                         let button = format!("Download {name}");
                         if primary_button(ui, &button, !screen.busy).clicked() {
@@ -167,20 +163,20 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
             if screen.removal_hold {
                 alert(
                     ui,
-                    "A device left your account. Sync holds your changes until this workspace records it and changes its key.",
+                    "A device left your account. Your changes wait until the workspace changes its key.",
                 );
             }
             if screen.removal_over_limit {
                 alert(
                     ui,
-                    "A device left an account here, but this workspace is at its limit of 512 devices. The device keeps reading new changes until someone leaves.",
+                    "A device left, but this workspace has 512 devices, its limit. That device reads new changes until someone leaves.",
                 );
             }
             group(ui, "Status", |ui| {
                 ui.label(if paused {
-                    "Sync is paused. Your changes wait on this computer until you resume."
+                    "Sync is paused"
                 } else {
-                    "Sync is on."
+                    "Sync is on"
                 });
                 if screen.pending > 0 || screen.waiting_for_space == 0 {
                     ui.label(pending_text(screen.pending));
@@ -192,11 +188,11 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
                     ui.label(usage);
                 }
                 if screen.over_quota {
-                    ui.label("This workspace is full. New changes stay on this computer until you delete files.");
+                    ui.label("Workspace full. New changes wait until you delete files.");
                 }
                 match &screen.last_success {
-                    Some(when) => ui.label(format!("Last synced {when}.")),
-                    None => description(ui, "This computer hasn't finished a sync yet."),
+                    Some(when) => ui.label(format!("Last synced {when}")),
+                    None => description(ui, "Not synced yet"),
                 };
                 ui.horizontal(|ui| {
                     if paused {
@@ -217,14 +213,8 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
                 n => format!("{n} conflicts"),
             };
             group(ui, &title, |ui| {
-                if screen.conflicts.is_empty() {
-                    description(ui, "No file has versions from two computers.");
-                }
                 for conflict in &screen.conflicts {
-                    ui.label(format!(
-                        "{} has versions from two computers. Choose the one to keep:",
-                        conflict.path
-                    ));
+                    ui.label(format!("{} has two versions. Keep:", conflict.path));
                     ui.horizontal_wrapped(|ui| {
                         for branch in &conflict.branches {
                             if ui.button(&branch.label).clicked() {
@@ -267,10 +257,7 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
             if !screen.held.is_empty() {
                 group(ui, "Versions to check", |ui| {
                     for held in &screen.held {
-                        ui.label(format!(
-                            "{} differs from the synced version. Choose which to keep:",
-                            held.path
-                        ));
+                        ui.label(format!("{} differs from the synced version:", held.path));
                         ui.horizontal_wrapped(|ui| {
                             for (label, choice) in [
                                 ("Keep the synced version", HeldChoice::KeepLive),
@@ -297,7 +284,7 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
                             root.folder.as_str()
                         };
                         ui.label(format!(
-                            "{folder} has a .noura-domain file, so its files wait here. Syncing them shows them to {}:",
+                            "{folder} has a .noura-domain file. Syncing its files shows them to {}:",
                             people_text(root.people)
                         ));
                         for file in &root.files {
@@ -373,7 +360,7 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
         FolderSyncPhase::AccountLost => {}
         FolderSyncPhase::NotConnected => {
             ui.label(
-                "This folder is a copy of a synced folder. Connect it to sync it, and Noura checks each file against the synced workspace before it uploads anything.",
+                "This folder copies a synced folder. Noura checks each file before it uploads anything.",
             );
             if primary_button(ui, "Connect this folder", !screen.busy).clicked() {
                 actions.push(FolderSyncAction::Connect);
@@ -391,12 +378,9 @@ mod tests {
 
     #[test]
     fn the_pending_count_reads_as_words() {
-        assert_eq!(pending_text(0), "Every change is uploaded.");
-        assert_eq!(pending_text(1), "1 change waits to upload.");
-        assert_eq!(pending_text(3), "3 changes wait to upload.");
-        assert_eq!(
-            waiting_text(1),
-            "1 change stays on this computer until the workspace has space."
-        );
+        assert_eq!(pending_text(0), "All changes uploaded");
+        assert_eq!(pending_text(1), "1 change to upload");
+        assert_eq!(pending_text(3), "3 changes to upload");
+        assert_eq!(waiting_text(1), "1 change waits for space");
     }
 }

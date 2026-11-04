@@ -117,7 +117,7 @@ fn admin_screen() -> MembersScreen {
             InvitationEntry {
                 sent_here: false,
                 returning: Some(
-                    "This account was a member before. Once you approve it, it can read what members wrote while it was away.".into(),
+                    "A former member. Once approved, it can read what members wrote while it was away.".into(),
                 ),
                 ..invitation(
                     ACCEPTED,
@@ -179,10 +179,10 @@ fn invitations_show_their_role_and_status_and_leave_once_they_end() {
             .is_none(),
         "only the computer that sent it copies its link"
     );
-    accepted.get_by_label("Another computer sent this one. Only it can approve the new member.");
+    accepted.get_by_label("Only the computer that sent it can approve.");
     accepted.get_by_role_and_label(
         accesskit::Role::Alert,
-        "This account was a member before. Once you approve it, it can read what members wrote while it was away.",
+        "A former member. Once approved, it can read what members wrote while it was away.",
     );
     accepted
         .get_by_role_and_label(accesskit::Role::Button, "Revoke")
@@ -194,11 +194,11 @@ fn invitations_show_their_role_and_status_and_leave_once_they_end() {
     // approved or expired.
     members.show(MembersScreen {
         invitations: Vec::new(),
-        notice: Some("You revoked the invitation. Its link no longer opens.".into()),
+        notice: Some("Invitation revoked".into()),
         ..admin_screen()
     });
     harness.run();
-    harness.get_by_label("You revoked the invitation. Its link no longer opens.");
+    harness.get_by_label("Invitation revoked");
     harness.get_by_label("No open invitations.");
     assert!(
         harness
@@ -224,11 +224,11 @@ fn an_admin_invites_editors_and_viewers_with_a_name() {
         "only the owner invites admins"
     );
     harness
-        .get_by_role_and_label(accesskit::Role::TextInput, "Your name, as they see it")
+        .get_by_role_and_label(accesskit::Role::TextInput, "Your name")
         .click();
     harness.run();
     harness
-        .get_by_role_and_label(accesskit::Role::TextInput, "Your name, as they see it")
+        .get_by_role_and_label(accesskit::Role::TextInput, "Your name")
         .type_text("Cleo");
     harness.run();
     harness
@@ -294,7 +294,7 @@ fn roles_change_and_a_removal_asks_first() {
     );
     let confirm = harness.get_by_role_and_label(accesskit::Role::Group, "Confirm");
     confirm.get_by_label(
-        "Remove Account 03030303? Their devices stop syncing this workspace, and Noura changes its key. They keep copies of files they already have.",
+        "Remove Account 03030303? They stop syncing and Noura changes the key. They keep files they already have.",
     );
     confirm
         .get_by_role_and_label(accesskit::Role::Button, "Remove")
@@ -304,11 +304,11 @@ fn roles_change_and_a_removal_asks_first() {
 
     members.show(MembersScreen {
         members: admin_screen().members[..3].to_vec(),
-        notice: Some("You removed the member. They keep copies of files they already have.".into()),
+        notice: Some("Member removed. They keep files they already have.".into()),
         ..admin_screen()
     });
     harness.run();
-    harness.get_by_label("You removed the member. They keep copies of files they already have.");
+    harness.get_by_label("Member removed. They keep files they already have.");
     assert!(
         harness
             .query_by_role_and_label(accesskit::Role::Group, "Account 03030303, viewer, 1 device")
@@ -366,7 +366,7 @@ fn the_owner_transfers_ownership_before_leaving() {
     });
     let mut harness = harness(app_data.path(), members.clone());
     members.taken();
-    harness.get_by_label("To leave this workspace, make another member the owner first.");
+    harness.get_by_label("Make another member the owner first.");
     harness.get_by_role_and_label(accesskit::Role::Button, "Invite an admin");
     let ben =
         harness.get_by_role_and_label(accesskit::Role::Group, "Account 02020202, editor, 1 device");
@@ -400,7 +400,7 @@ fn folders_screen() -> MembersScreen {
             candidates: vec![FolderCandidate {
                 account: CLEO,
                 label: "Account 03030303".into(),
-                returning: Some("This account had access before. Grant it again and it can read what people wrote here while it was away.".into()),
+                returning: Some("Had access before. Granted again, it can read what was written while it was away.".into()),
             }],
             deletable: true,
         }],
@@ -463,7 +463,7 @@ fn taking_a_member_off_a_folder_says_their_copies_stay_and_a_returning_grant_war
 
     harness.get_by_role_and_label(
         accesskit::Role::Alert,
-        "This account had access before. Grant it again and it can read what people wrote here while it was away.",
+        "Had access before. Granted again, it can read what was written while it was away.",
     );
     harness
         .get_by_role_and_label(accesskit::Role::Group, "Pay")
@@ -471,7 +471,7 @@ fn taking_a_member_off_a_folder_says_their_copies_stay_and_a_returning_grant_war
         .click();
     harness.run();
     assert!(members.taken().is_empty(), "it asks first");
-    harness.get_by_label_contains("Copies they already have stay with them.");
+    harness.get_by_label_contains("They keep copies they have.");
     harness
         .get_by_role_and_label(accesskit::Role::Group, "Confirm")
         .get_by_role_and_label(accesskit::Role::Button, "Take off")
@@ -508,7 +508,8 @@ fn a_grant_reaches_the_backend() {
     );
 }
 
-const RETURNING: &str = "This account was a member before. Once you approve it, it can read what members wrote while it was away.";
+const RETURNING: &str =
+    "A former member. Once approved, it can read what members wrote while it was away.";
 const FINGERPRINT: &str = "0a1b 2c3d 4e5f 6071";
 
 /// The inviting computer lists the invited device, warns about a member
@@ -546,7 +547,7 @@ fn the_inviting_computer_approves_a_new_member_after_the_code() {
         ..admin_screen()
     });
     harness.run();
-    harness.get_by_label("Waiting for their computer to show its code.");
+    harness.get_by_label("Waiting for their code\u{2026}");
     assert!(
         harness
             .query_by_role_and_label(accesskit::Role::Button, "Codes match")
