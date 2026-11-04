@@ -75,6 +75,15 @@ else
 	echo "actool not found; macOS falls back to the flat icon.icns" >&2
 fi
 
+# The Rust desktop app packages the same icons.
+desktop_icons="$root/apps/desktop/icons"
+for icon in 32x32.png 64x64.png 128x128.png 128x128@2x.png icon.icns icon.ico; do
+	cp "$icons_dir/$icon" "$desktop_icons/$icon"
+done
+if [ -f "$root/src-tauri/Assets.car" ]; then
+	cp "$root/src-tauri/Assets.car" "$desktop_icons/Assets.car"
+fi
+
 # 4. Web assets: the glyph on transparency.
 for dest in "$root/apps/app/static" "$root/apps/website/static"; do
 	magick "$root/assets/brand/noura-icon-1024.png" -resize 48x48 "$dest/favicon.png"

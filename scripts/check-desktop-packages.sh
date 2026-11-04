@@ -118,6 +118,13 @@ case "$(uname -s)" in
     PAGER=cat hdiutil attach -nobrowse -readonly -mountpoint "$work/mount" "$dmg" < <(yes)
     cp -R "$work/mount/Noura.app" "$work/Applications/"
     hdiutil detach "$work/mount"
+    # macOS 26 draws the layered icon the asset catalog holds.
+    contents="$work/Applications/Noura.app/Contents"
+    if [ ! -f "$contents/Resources/Assets.car" ] ||
+      [ "$(plutil -extract CFBundleIconName raw "$contents/Info.plist")" != AppIcon ]; then
+      echo "::error::$(basename "$dmg") doesn't ship the layered app icon."
+      exit 1
+    fi
     check "$(basename "$dmg")" on "$work/Applications/Noura.app/Contents/MacOS/noura"
     ;;
   MINGW* | MSYS* | CYGWIN*)
