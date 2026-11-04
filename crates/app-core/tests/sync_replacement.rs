@@ -476,6 +476,10 @@ async fn a_reader_of_the_skipped_epoch_writes_a_gone_rotators_record_and_profile
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_rewrite_whose_cover_the_server_cant_return_writes_nothing_and_waits_for_review() {
     let mut pair = of_accounts().await;
+    // The forged refusal below answers every push, and a checkpoint whose
+    // random wait ended would go out before the rewrite and take it.
+    pair.sync_b
+        .set_checkpoint_wait(Duration::from_secs(100 * 365 * 24 * 3600));
     desktop_rotates(&mut pair).await;
     pair.b.write("Plan.md", b"# Plan, under epoch 2\n");
     pair.sync_b
