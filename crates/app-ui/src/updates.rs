@@ -9,7 +9,7 @@ use egui::{
 use app_core::{App, UpdateStatus};
 
 use crate::{
-    common::{muted, primary_button},
+    common::{description, muted, primary_button},
     theme::{Palette, radius},
 };
 
@@ -23,10 +23,10 @@ pub(crate) fn update_settings(ui: &mut Ui, app: &mut App) {
     let palette = Palette::of(ui.ctx());
 
     if let UpdateStatus::Unavailable { reason } = &status {
-        muted(ui, &format!("You have version {version}. {reason}"));
+        description(ui, &format!("You have version {version}. {reason}"));
         return;
     }
-    muted(
+    description(
         ui,
         &format!(
             "You have version {version}. noura downloads new versions in the background, and \
@@ -48,7 +48,7 @@ pub(crate) fn update_settings(ui: &mut Ui, app: &mut App) {
                 ui.set_width(ui.available_width());
                 ui.label(RichText::new(format!("Version {ready} is ready")).strong());
                 if let Some(notes) = notes {
-                    muted(ui, notes);
+                    description(ui, notes);
                 }
                 if let Some(problem) = problem {
                     alert(ui, problem, &palette);
@@ -90,7 +90,7 @@ pub(crate) fn update_settings(ui: &mut Ui, app: &mut App) {
         let builder = UiBuilder::new().accessibility_role(Role::Status);
         ui.scope_builder(builder, |ui| {
             if let Some(text) = text {
-                muted(ui, &text);
+                description(ui, &text);
             }
         });
     });

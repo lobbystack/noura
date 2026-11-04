@@ -31,7 +31,8 @@ use crate::sync::workspace::WorkspaceSync;
 pub const UNREACHABLE: &str =
     "Noura can't reach the sync server, so it can't list the members. It keeps trying.";
 /// What the section says on a computer without a sync account.
-pub const NEEDS_ACCOUNT: &str = "Members need a sync account. Sign in under Settings > Sync account, then turn on sync for this workspace.";
+pub const NEEDS_ACCOUNT: &str =
+    "Invite people to this workspace and choose what they can do. Sign in and turn on sync first.";
 
 /// What the section says while the workspace doesn't sync.
 pub const NEEDS_SYNC: &str =

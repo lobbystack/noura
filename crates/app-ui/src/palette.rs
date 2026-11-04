@@ -22,7 +22,7 @@ use crate::{
 };
 
 const WIDTH: f32 = 576.0 - 16.0;
-const LIST_HEIGHT: f32 = 340.0;
+const LIST_HEIGHT: f32 = 288.0;
 /// A row with one line: a command, or a file name with its folder beside
 /// it.
 pub(crate) const ROW_HEIGHT: f32 = 32.0;

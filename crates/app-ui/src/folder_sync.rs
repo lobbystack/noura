@@ -129,7 +129,7 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
     match screen.phase {
         FolderSyncPhase::Unavailable => {
             ui.label(
-                "Sign in to a sync account in Settings, then Sync account, to sync this workspace with your other computers.",
+                "Sync keeps an end-to-end encrypted copy of this workspace on your other devices. Sign in to turn it on.",
             );
         }
         FolderSyncPhase::Unreachable => {

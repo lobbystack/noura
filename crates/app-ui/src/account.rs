@@ -418,6 +418,11 @@ fn signed_out(
     view: &mut AccountView,
     actions: &mut Vec<AccountAction>,
 ) {
+    description(
+        ui,
+        "You only need an account for sync and sharing. Everything else works without one.",
+    );
+    ui.add_space(16.0);
     group(ui, "Server address", |ui| {
         let server = view.server.get_or_insert_with(|| screen.server.clone());
         let response = ui
