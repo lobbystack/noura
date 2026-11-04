@@ -136,14 +136,20 @@ fn wait_for<State>(harness: &mut Harness<'static, State>, label: &str) {
 fn check_for_updates_says_when_noura_is_up_to_date() {
     let app_data = tempfile::tempdir().unwrap();
     let source = FakeSource::default();
-    let mut harness = section(app_with(&source, app_data.path()));
+    // The clock says 9:15 in the morning in Toronto.
+    let system = support::FakeSystem::new(app_core::Platform::current());
+    system.set_now("2026-11-04T14:15:00Z");
+    let mut app = App::launch_with(app_data.path(), system);
+    let far_future = Instant::now() + Duration::from_secs(60 * 60);
+    app.enable_updates("0.2.0", Arc::new(source.clone()), far_future);
+    let mut harness = section(app);
     harness.run();
 
     dialog(&harness).get_by_label_contains("You have version 0.2.0.");
     dialog(&harness)
         .get_by_role_and_label(Role::Button, "Check for updates")
         .click();
-    wait_for(&mut harness, "Noura is up to date.");
+    wait_for(&mut harness, "Up to date as of 9:15 AM.");
 
     assert_eq!(*source.log.lock().unwrap(), ["check"]);
     assert!(harness.unnamed_widgets().is_empty());

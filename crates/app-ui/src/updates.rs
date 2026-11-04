@@ -77,7 +77,15 @@ pub(crate) fn update_settings(ui: &mut Ui, app: &mut App) {
         }
         let text = match &status {
             UpdateStatus::Checking => Some("Checking for updates…".to_owned()),
-            UpdateStatus::UpToDate => Some("Noura is up to date.".to_owned()),
+            // As the legacy app said: Up to date as of 9:15 AM.
+            UpdateStatus::UpToDate => Some(match app.updates().checked_at() {
+                Some(at) => {
+                    let names = crate::dates::DateNames::of(app.locale().as_deref());
+                    let time = at.to_zoned(app.time_zone()).time();
+                    format!("Up to date as of {}.", names.time(time))
+                }
+                None => "noura is up to date.".to_owned(),
+            }),
             UpdateStatus::Downloading { version } => {
                 Some(format!("Downloading version {version}…"))
             }

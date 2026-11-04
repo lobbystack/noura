@@ -166,12 +166,19 @@ struct State {
     offer_hidden: bool,
     /// The status or the offer changed, and the windows haven't heard yet.
     changed: bool,
+    /// When the last check found Noura up to date.
+    checked_at: Option<jiff::Timestamp>,
+    /// The clock that time comes from.
+    clock: Clock,
 }
+
+/// Where [`Updates`] reads the time: the system's clock, which tests fix.
+pub(crate) type Clock = Arc<dyn Fn() -> jiff::Timestamp + Send + Sync>;
 
 impl Updates {
     /// The update service for the windows `notify` wakes, waiting for
     /// `writes` before a restart.
-    pub(crate) fn new(writes: PendingWrites, notify: Notify) -> Self {
+    pub(crate) fn new(writes: PendingWrites, notify: Notify, clock: Clock) -> Self {
         Self(Arc::new(Shared {
             state: Mutex::new(State {
                 current_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -185,6 +192,8 @@ impl Updates {
                 events: None,
                 offer_hidden: false,
                 changed: false,
+                checked_at: None,
+                clock,
             }),
             writes,
             notify,
@@ -210,6 +219,11 @@ impl Updates {
 
     pub fn status(&self) -> UpdateStatus {
         self.read(|state| state.status.clone())
+    }
+
+    /// When the last check found Noura up to date, for Up to date as of.
+    pub fn checked_at(&self) -> Option<jiff::Timestamp> {
+        self.read(|state| state.checked_at)
     }
 
     /// The running app's version.
@@ -475,7 +489,10 @@ impl State {
     fn apply(&mut self, event: Event) {
         match event {
             Event::Downloading(version) => self.set(UpdateStatus::Downloading { version }),
-            Event::UpToDate => self.set(UpdateStatus::UpToDate),
+            Event::UpToDate => {
+                self.checked_at = Some((self.clock)());
+                self.set(UpdateStatus::UpToDate);
+            }
             Event::Ready(update) => {
                 let status = UpdateStatus::Ready {
                     version: update.version().to_owned(),

@@ -950,3 +950,23 @@ fn a_note_that_cant_save_stops_restart_and_asks() {
         "old"
     );
 }
+
+#[test]
+fn a_check_that_finds_noura_up_to_date_notes_when_it_ran_by_the_system_s_clock() {
+    let source = FakeSource::default();
+    let app_data = tempfile::tempdir().unwrap();
+    let system = support::FakeSystem::new();
+    system.set_clock("2026-11-04T14:15:00Z", "America/Toronto");
+    let mut app = App::launch_with(app_data.path(), system);
+    let launched = Instant::now();
+    app.enable_updates("0.2.0", Arc::new(source.clone()), launched);
+    assert_eq!(app.updates().checked_at(), None);
+
+    settle(&mut app, launched + Duration::from_secs(5));
+
+    assert_eq!(app.updates().status(), UpdateStatus::UpToDate);
+    assert_eq!(
+        app.updates().checked_at(),
+        Some("2026-11-04T14:15:00Z".parse().unwrap())
+    );
+}
