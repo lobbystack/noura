@@ -21,12 +21,12 @@ use egui::{
 
 use crate::{
     icons,
-    theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, radius},
+    theme::{Palette, SUPPORTING_SIZE, radius},
 };
 
 /// The height of one row.
 pub const ROW_HEIGHT: f32 = 28.0;
-const INDENT: f32 = 16.0;
+const INDENT: f32 = 12.0;
 
 /// What the tree remembers between frames.
 #[derive(Default)]
@@ -209,41 +209,35 @@ fn section_heading(ui: &mut Ui, app: &mut App, width: f32) -> bool {
     let title = "Files";
     let collapsed = app.is_section_collapsed(FILES_SECTION);
     let palette = Palette::of(ui.ctx());
-    let (rect, response) = ui.allocate_exact_size(vec2(width, ICON_SIZE), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 32.0), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(Role::Button, true, title));
     ui.ctx()
         .accesskit_node_builder(response.id, |node| node.set_expanded(!collapsed));
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         if response.hovered() {
-            painter.rect_filled(rect, radius(0.6), palette.sidebar_accent);
+            painter.rect_filled(rect, crate::theme::pill(), palette.sidebar_accent);
         }
         if response.has_focus() {
-            painter.rect_stroke(
-                rect,
-                radius(0.6),
-                Stroke::new(1.0, palette.ring),
-                StrokeKind::Inside,
-            );
+            crate::common::focus_ring(painter, rect, crate::theme::pill(), &palette);
         }
+        // The legacy section label: a caret, then the title in 12 px
+        // medium, faded.
         let caret = if collapsed {
             icons::CARET_RIGHT
         } else {
             icons::CARET_DOWN
         };
-        if response.hovered() || collapsed {
-            let caret_rect = Rect::from_center_size(
-                pos2(rect.right() - 10.0, rect.center().y),
-                vec2(12.0, 12.0),
-            );
-            icons::paint(painter, caret, caret_rect, palette.muted_foreground, false);
-        }
+        let color = palette.foreground.gamma_multiply(0.7);
+        let caret_rect =
+            Rect::from_center_size(pos2(rect.left() + 14.0, rect.center().y), vec2(12.0, 12.0));
+        icons::paint(painter, caret, caret_rect, color, false);
         painter.text(
-            pos2(rect.left() + 12.0, rect.center().y),
+            pos2(rect.left() + 24.0, rect.center().y),
             Align2::LEFT_CENTER,
             title,
-            FontId::proportional(SUPPORTING_SIZE),
-            palette.muted_foreground,
+            crate::theme::font(ui.ctx(), SUPPORTING_SIZE, crate::theme::Weight::Medium),
+            color,
         );
     }
     if response.clicked() {
@@ -253,7 +247,7 @@ fn section_heading(ui: &mut Ui, app: &mut App, width: f32) -> bool {
 }
 
 /// The size of the header's buttons.
-const ICON_SIZE: f32 = 24.0;
+const ICON_SIZE: f32 = 28.0;
 
 /// A small button that shows an icon and names itself for screen readers
 /// and in its tooltip.
@@ -263,16 +257,11 @@ fn icon_button(ui: &mut Ui, label: &str, icon: icons::Icon) -> Response {
     let palette = Palette::of(ui.ctx());
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
-        if response.hovered() || response.has_focus() {
-            painter.rect_filled(rect, radius(0.6), palette.sidebar_accent);
+        if response.hovered() {
+            painter.rect_filled(rect, crate::theme::pill(), palette.sidebar_accent);
         }
         if response.has_focus() {
-            painter.rect_stroke(
-                rect,
-                radius(0.6),
-                Stroke::new(1.0, palette.ring),
-                StrokeKind::Inside,
-            );
+            crate::common::focus_ring(painter, rect, crate::theme::pill(), &palette);
         }
         let square = Rect::from_center_size(rect.center(), vec2(16.0, 16.0));
         icons::paint(painter, icon, square, palette.muted_foreground, false);
@@ -882,16 +871,21 @@ fn rename_field(
             .set_char_range(Some(CCursorRange::two(CCursor::new(0), CCursor::new(end))));
         state.store(ui.ctx(), id);
     }
-    let inner = rect.shrink2(vec2(4.0, 2.0));
-    let left = inner.left() + 6.0 + row.depth as f32 * INDENT + 12.0;
-    let text_rect =
-        Rect::from_min_max(pos2(left, inner.top()), pos2(inner.right(), inner.bottom()));
+    // The legacy rename field: 24 px high where the name was, after the
+    // icon, with 12 px text.
+    let left = rect.left() + 8.0 + row.depth as f32 * INDENT + 24.0 - 6.0;
+    let text_rect = Rect::from_min_max(
+        pos2(left, rect.center().y - 12.0),
+        pos2(rect.right() - 8.0, rect.center().y + 12.0),
+    );
     let response = ui
         .put(
             text_rect,
             TextEdit::singleline(&mut field.text)
                 .id(id)
-                .font(FontId::proportional(BODY_SIZE))
+                .font(FontId::proportional(SUPPORTING_SIZE))
+                .margin(vec2(6.0, 4.0))
+                .min_size(vec2(0.0, 24.0))
                 .desired_width(text_rect.width()),
         )
         .accessible_name(format!("New name for {}", row.name));
@@ -979,17 +973,22 @@ fn draw_row(
         return response;
     }
     let painter = ui.painter();
-    let inner = rect.shrink2(vec2(4.0, 1.0));
+    // The legacy tree's rows: small pills, 12 px names, a folder's caret
+    // at the end.
+    let inner = rect.shrink2(vec2(0.0, 1.0));
+    let corner = crate::theme::pill();
     if state.selected || response.hovered() || state.drop_target {
-        painter.rect_filled(inner, radius(0.6), palette.sidebar_accent);
+        painter.rect_filled(inner, corner, palette.sidebar_accent);
     }
-    if response.has_focus() || state.drop_target {
+    if state.drop_target {
         painter.rect_stroke(
             inner,
-            radius(0.6),
-            Stroke::new(1.0, palette.ring),
+            corner,
+            Stroke::new(2.0, palette.ring),
             StrokeKind::Inside,
         );
+    } else if response.has_focus() {
+        crate::common::focus_ring(painter, inner, corner, palette);
     }
     let left = inner.left() + 8.0 + row.depth as f32 * INDENT;
     let center_y = rect.center().y;
@@ -1001,16 +1000,17 @@ fn draw_row(
     };
     let icon_rect = Rect::from_center_size(pos2(left + 8.0, center_y), vec2(16.0, 16.0));
     icons::paint(painter, icon, icon_rect, palette.muted_foreground, false);
-    let mut right = inner.right() - 4.0;
+    let mut right = inner.right() - 12.0;
     if let Some(expanded) = row.expanded {
         let caret = if expanded {
             icons::CARET_DOWN
         } else {
             icons::CARET_RIGHT
         };
-        let caret_rect = Rect::from_center_size(pos2(right - 8.0, center_y), vec2(14.0, 14.0));
+        right = inner.right() - 10.0;
+        let caret_rect = Rect::from_center_size(pos2(right - 8.0, center_y), vec2(16.0, 16.0));
         icons::paint(painter, caret, caret_rect, palette.muted_foreground, false);
-        right -= 20.0;
+        right -= 16.0 + 8.0;
     }
     if state.renaming {
         return response;
@@ -1021,7 +1021,7 @@ fn draw_row(
         ui,
         Some(TextWrapMode::Truncate),
         width,
-        FontId::proportional(BODY_SIZE),
+        FontId::proportional(SUPPORTING_SIZE),
     );
     let text_rect = Align2::LEFT_CENTER.anchor_size(pos2(text_left, center_y), galley.size());
     let color = if row.not_downloaded || state.dragged {
