@@ -215,8 +215,22 @@ fn style(palette: Palette, mut visuals: Visuals) -> Style {
     visuals.panel_fill = palette.background;
     visuals.window_fill = palette.popover;
     visuals.window_stroke = Stroke::new(1.0, palette.border);
-    visuals.window_corner_radius = radius(1.4);
-    visuals.menu_corner_radius = radius(0.8);
+    // Dialogs and menus take the legacy popover shapes: 24 px dialogs,
+    // 18 px menus, a hairline ring and a soft shadow.
+    visuals.window_corner_radius = CornerRadius::same(24);
+    visuals.menu_corner_radius = pill();
+    visuals.window_shadow = Shadow {
+        offset: [0, 20],
+        blur: 25,
+        spread: 0,
+        color: Color32::from_black_alpha(26),
+    };
+    visuals.popup_shadow = Shadow {
+        offset: [0, 10],
+        blur: 15,
+        spread: 0,
+        color: Color32::from_black_alpha(26),
+    };
     visuals.extreme_bg_color = palette.background;
     visuals.faint_bg_color = palette.muted;
     visuals.code_bg_color = palette.muted;

@@ -67,7 +67,7 @@ fn a_missing_last_workspace_says_why_and_try_again_opens_it_once_it_is_back() {
     let mut harness = harness(app_data.path(), FakePicker::default());
     settle(&mut harness);
 
-    harness.get_by_label("Can't open the workspace");
+    harness.get_by_label("Can\u{2019}t open the workspace");
     harness.get_by_label(&format!(
         "The folder {saved_path} isn't there. If it's on a drive that isn't connected, \
          connect the drive and try again."
@@ -128,7 +128,7 @@ fn removing_the_workspace_that_failed_clears_the_problem_and_try_again() {
     rename_with_retry(&last, &parent.path().join("Away"));
     let mut harness = harness(app_data.path(), FakePicker::default());
     settle(&mut harness);
-    harness.get_by_label("Can't open the workspace");
+    harness.get_by_label("Can\u{2019}t open the workspace");
 
     harness.get_by_role_and_label(Role::Button, "Last").click();
     settle(&mut harness);
@@ -137,7 +137,11 @@ fn removing_the_workspace_that_failed_clears_the_problem_and_try_again() {
         .click();
     harness.run();
 
-    assert!(harness.query_by_label("Can't open the workspace").is_none());
+    assert!(
+        harness
+            .query_by_label("Can\u{2019}t open the workspace")
+            .is_none()
+    );
     assert!(harness.query_by_label("Try again").is_none());
     harness.get_by_label("Open a folder");
     harness.get_by_role_and_label(Role::Button, "Older");
