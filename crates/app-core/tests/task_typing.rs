@@ -1,16 +1,16 @@
 //! Seam 1: a task opens in the note editor, so typing in its body follows
 //! the same saves as a note: it survives chunks of typing across saves, a
-//! change in the Tasks panel in the middle of typing, and an outside edit
-//! of other text. Each test reads the file.
+//! change in the Tasks page's right pane in the middle of typing, and an
+//! outside edit of other text. Each test reads the file.
 
 mod support;
 
 use std::time::{Duration, Instant};
 
-use app_core::{App, Field, InputValue, PluginEvent, SAVE_PAUSE, TabId};
+use app_core::{App, InputValue, SAVE_PAUSE, TabId};
 use support::{
     Fixture, open_from_tree, settle, settle_saves,
-    tasks::{A, find, property, task_file, with_tasks},
+    tasks::{A, pane_change, pane_input, property, select_in_pane, task_file, with_tasks},
 };
 
 const PATH: &str = "tasks/Plan trip.md";
@@ -42,33 +42,23 @@ fn body(fixture: &Fixture) -> String {
     text.split_once("\n---\n").unwrap().1.to_owned()
 }
 
-fn shown(app: &mut App, tab: TabId, node: &str) -> Option<InputValue> {
-    let view = app.plugin_panel(tab)?.ok()?;
-    match &find(view.root(), node)?.kind {
-        app_core::ViewKind::Input { value, .. } => Some(value.clone()),
-        _ => None,
-    }
+fn shown(app: &mut App, node: &str) -> Option<InputValue> {
+    pane_input(app, node).map(|(value, _)| value)
 }
 
-/// Wait until the panel shows the task's `status`.
-fn wait_for_panel(app: &mut App, tab: TabId, node: &str, id: &str) {
+/// Wait until the Tasks page's right pane shows the task's `node` as `id`.
+fn wait_for_panel(app: &mut App, _tab: TabId, node: &str, id: &str) {
     let value = InputValue::Choice(Some(id.to_owned()));
     let deadline = Instant::now() + Duration::from_secs(20);
-    while shown(app, tab, node).as_ref() != Some(&value) {
-        assert!(Instant::now() < deadline, "the panel never showed {id}");
+    while shown(app, node).as_ref() != Some(&value) {
+        assert!(Instant::now() < deadline, "the pane never showed {id}");
         app.poll();
         std::thread::sleep(Duration::from_millis(5));
     }
 }
 
-fn change(app: &mut App, tab: TabId, node: &str, id: &str) {
-    app.send_panel_event(
-        tab,
-        &PluginEvent::Changed(Field {
-            node: node.to_owned(),
-            value: InputValue::Choice(Some(id.to_owned())),
-        }),
-    );
+fn change(app: &mut App, _tab: TabId, node: &str, id: &str) {
+    pane_change(app, node, InputValue::Choice(Some(id.to_owned())));
     settle(app);
 }
 
@@ -110,6 +100,9 @@ fn changing_a_task_s_properties_while_typing_keeps_both() {
         return;
     };
     let tab = open_from_tree(&mut app, PATH);
+    // The task shows in the Tasks page's right pane too, where its fields
+    // change.
+    select_in_pane(&mut app, &format!("task_{A}"));
     wait_for_panel(&mut app, tab, "status", "todo");
 
     // Far enough ahead that no save starts on its own before the change.
@@ -133,7 +126,7 @@ fn changing_a_task_s_properties_while_typing_keeps_both() {
         "Notes.\npack bags and passport"
     );
     assert!(!app.note(tab).unwrap().is_unsaved());
-    // The panel is Noura's own, so nothing says another app edited the task.
+    // The pane is Noura's own, so nothing says another app edited the task.
     assert!(app.notice().is_none());
 }
 

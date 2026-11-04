@@ -1996,7 +1996,8 @@ The types the plugin registers when it starts.
 
 The nodes of the properties panel for the object with this ID. A
 panel can't hold a virtual list, since nothing fetches its rows:
-Noura shows why in the panel's place.
+Noura shows why in the panel's place. A root panel with no children
+shows no panel, and the body takes the editor's whole width.
 
 ##### Params
 

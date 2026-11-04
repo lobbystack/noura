@@ -591,6 +591,9 @@ impl App {
         self.session
             .plugins()
             .panel(object_type, object_id, session.revision())
+            // A panel with nothing in its root shows nothing beside the
+            // body, as before the plugin's first answer.
+            .filter(|view| !matches!(view, Ok(view) if view.root().children.is_empty()))
     }
 
     /// Press the button `node_id` in the plugin's properties panel of the

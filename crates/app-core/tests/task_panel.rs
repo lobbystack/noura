@@ -1,17 +1,18 @@
-//! Seam 1: a task opens in the note editor with the Tasks properties
-//! panel beside its body: status, priority, a due date you set and clear,
-//! and a project picker with No project and every project. Each change in
-//! the panel, and each check in a Tasks list, writes against the revision
-//! it showed: after an outside edit the write fails, the file keeps the
+//! Seam 1: a task selected on the Tasks page shows its fields in the
+//! page's right pane: status, priority, a due date you set and clear, and
+//! a project picker with No project and every project. Each change in the
+//! pane, and each check in a Tasks list, writes against the revision it
+//! showed: after an outside edit the write fails, the file keeps the
 //! outside bytes, and the latest version shows.
 
 mod support;
 
-use app_core::{App, Choice, Field, InputValue, PluginCheck, PluginEvent, TabId, ViewKind};
+use app_core::{App, Choice, InputValue, PluginCheck, PluginEvent, ViewKind};
 use support::{
-    Fixture, open_from_tree, settle,
+    Fixture, settle,
     tasks::{
-        self, A, B, C, H, find, project_file, property, rows, send, task_file, text, with_tasks,
+        self, A, B, C, H, find, pane_change, pane_input, pane_text, project_file, property, rows,
+        select_in_pane, send, task_file, text, with_tasks,
     },
 };
 
@@ -32,39 +33,38 @@ fn workspace() -> Fixture {
     ])
 }
 
-/// An input of the panel the Tasks plugin draws for the task open in
-/// `tab`: its value and its choices, once the panel shows one.
-fn input(app: &App, tab: TabId, node: &str) -> Option<(InputValue, Vec<Choice>)> {
-    let view = app.plugin_panel(tab)?.ok()?;
-    match &find(view.root(), node)?.kind {
-        ViewKind::Input { value, choices, .. } => Some((value.clone(), choices.clone())),
-        _ => None,
-    }
+/// The task the right pane shows, standing for it in the calls below.
+#[derive(Clone, Copy)]
+struct Pane;
+
+/// Select the task `path` holds on the Tasks page, so its fields show.
+fn open_in_pane(app: &mut App, path: &str) -> Pane {
+    let id = match path {
+        "tasks/Paint the fence.md" => format!("task_{A}"),
+        other => panic!("no task at {other}"),
+    };
+    select_in_pane(app, &id);
+    Pane
 }
 
-fn panel_text(app: &App, tab: TabId, node: &str) -> Option<String> {
-    let view = app.plugin_panel(tab)?.ok()?;
-    match &find(view.root(), node)?.kind {
-        ViewKind::Text(text) => Some(text.clone()),
-        _ => None,
-    }
+/// An input of the right pane: its value and its choices, once it shows.
+fn input(app: &App, _pane: Pane, node: &str) -> Option<(InputValue, Vec<Choice>)> {
+    pane_input(app, node)
 }
 
-/// Wait until the panel's input `node` holds `value`.
-fn wait_for(app: &mut App, tab: TabId, node: &str, value: InputValue) {
-    support::plugins::wait_until(app, &format!("the panel's {node} shows {value:?}"), |app| {
-        input(app, tab, node).is_some_and(|(shown, _)| shown == value)
+fn panel_text(app: &App, _pane: Pane, node: &str) -> Option<String> {
+    pane_text(app, node)
+}
+
+/// Wait until the pane's input `node` holds `value`.
+fn wait_for(app: &mut App, pane: Pane, node: &str, value: InputValue) {
+    support::plugins::wait_until(app, &format!("the pane's {node} shows {value:?}"), |app| {
+        input(app, pane, node).is_some_and(|(shown, _)| shown == value)
     });
 }
 
-fn change(app: &mut App, tab: TabId, node: &str, value: InputValue) {
-    app.send_panel_event(
-        tab,
-        &PluginEvent::Changed(Field {
-            node: node.to_owned(),
-            value,
-        }),
-    );
+fn change(app: &mut App, _pane: Pane, node: &str, value: InputValue) {
+    pane_change(app, node, value);
     settle(app);
 }
 
@@ -80,14 +80,14 @@ fn ids(choices: &[Choice]) -> Vec<(String, String)> {
 }
 
 #[test]
-fn a_task_opens_with_status_priority_due_date_and_a_project_picker_beside_its_body() {
+fn a_selected_task_shows_status_priority_due_date_and_a_project_picker() {
     let fixture = workspace();
     let mut app = fixture.app();
     let Some(_folder) = with_tasks(&mut app) else {
         return;
     };
 
-    let tab = open_from_tree(&mut app, "tasks/Paint the fence.md");
+    let tab = open_in_pane(&mut app, "tasks/Paint the fence.md");
     wait_for(&mut app, tab, "status", choice("todo"));
 
     let pairs = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
@@ -133,12 +133,10 @@ fn a_task_opens_with_status_priority_due_date_and_a_project_picker_beside_its_bo
             (&kitchen, "Kitchen")
         ])
     );
-    // The body shows in the note editor.
-    assert_eq!(app.note(tab).unwrap().text(), "Notes.\n");
 }
 
 #[test]
-fn two_project_files_with_one_id_show_as_one_project_in_the_panel_the_filters_and_the_sidebar() {
+fn two_project_files_with_one_id_show_as_one_project_in_the_pane_the_filters_and_the_sidebar() {
     let garden = format!("project_{H}");
     let fixture = Fixture::new(&[
         (
@@ -173,7 +171,7 @@ fn two_project_files_with_one_id_show_as_one_project_in_the_panel_the_filters_an
     let filters: Vec<String> = choices.iter().map(|choice| choice.id.clone()).collect();
     assert_eq!(filters, ["any", "none", &format!("is:{garden}")]);
 
-    let tab = open_from_tree(&mut app, "tasks/Paint the fence.md");
+    let tab = open_in_pane(&mut app, "tasks/Paint the fence.md");
     wait_for(&mut app, tab, "project", choice(&garden));
     let (_, projects) = input(&app, tab, "project").unwrap();
     assert_eq!(
@@ -186,13 +184,13 @@ fn two_project_files_with_one_id_show_as_one_project_in_the_panel_the_filters_an
 }
 
 #[test]
-fn each_change_in_the_panel_writes_the_task_and_keeps_its_body() {
+fn each_change_in_the_pane_writes_the_task_and_keeps_its_body() {
     let fixture = workspace();
     let mut app = fixture.app();
     let Some(_folder) = with_tasks(&mut app) else {
         return;
     };
-    let tab = open_from_tree(&mut app, "tasks/Paint the fence.md");
+    let tab = open_in_pane(&mut app, "tasks/Paint the fence.md");
     wait_for(&mut app, tab, "status", choice("todo"));
     let read = || fixture.read("tasks/Paint the fence.md");
 
@@ -251,12 +249,12 @@ fn a_task_keeps_its_project_when_the_project_is_renamed_and_moved() {
     let Some(_folder) = with_tasks(&mut app) else {
         return;
     };
-    let tab = open_from_tree(&mut app, "tasks/Paint the fence.md");
+    let tab = open_in_pane(&mut app, "tasks/Paint the fence.md");
     wait_for(&mut app, tab, "project", choice(&garden));
 
     app.start_rename("projects/Garden/Garden.md");
     assert!(app.commit_rename("Allotment"));
-    support::plugins::wait_until(&mut app, "the panel shows the new name", |app| {
+    support::plugins::wait_until(&mut app, "the pane shows the new name", |app| {
         input(app, tab, "project").is_some_and(|(value, choices)| {
             value == choice(&garden)
                 && ids(&choices).contains(&(garden.clone(), "Allotment".to_owned()))
@@ -276,13 +274,13 @@ fn a_task_keeps_its_project_when_the_project_is_renamed_and_moved() {
 }
 
 #[test]
-fn after_an_outside_edit_a_panel_change_fails_and_the_panel_shows_the_latest_version() {
+fn after_an_outside_edit_a_pane_change_fails_and_the_pane_shows_the_latest_version() {
     let fixture = workspace();
     let mut app = fixture.app();
     let Some(_folder) = with_tasks(&mut app) else {
         return;
     };
-    let tab = open_from_tree(&mut app, "tasks/Paint the fence.md");
+    let tab = open_in_pane(&mut app, "tasks/Paint the fence.md");
     wait_for(&mut app, tab, "status", choice("todo"));
     let outside = task_file(
         A,
@@ -294,7 +292,7 @@ fn after_an_outside_edit_a_panel_change_fails_and_the_panel_shows_the_latest_ver
     change(&mut app, tab, "status", choice("done"));
 
     assert_eq!(fixture.read("tasks/Paint the fence.md"), outside);
-    support::plugins::wait_until(&mut app, "the panel shows the latest version", |app| {
+    support::plugins::wait_until(&mut app, "the pane shows the latest version", |app| {
         input(app, tab, "priority").is_some_and(|(value, _)| value == choice("low"))
             && panel_text(app, tab, "notice").as_deref() == Some(CHANGED_ELSEWHERE)
     });

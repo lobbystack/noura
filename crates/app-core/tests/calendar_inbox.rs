@@ -8,9 +8,7 @@
 
 mod support;
 
-use app_core::{
-    App, Field, INBOX_PAGE, InputValue, OpenAs, PluginEvent, Target, ViewKind, ViewNode,
-};
+use app_core::{App, INBOX_PAGE, InputValue, OpenAs, PluginEvent, Target, ViewKind, ViewNode};
 use support::{
     FakeSystem, Fixture,
     calendar::{self, with_calendar},
@@ -217,19 +215,18 @@ fn a_task_due_today_shows_on_the_calendar_and_in_the_inbox_and_opens() {
     wait_until(&mut app, "the task opens", |app| {
         app.active_tab().is_some_and(|tab| tab.title() == "Dentist")
     });
-    let tab = app.active_tab().unwrap().id();
-    wait_until(&mut app, "the task's panel draws", |app| {
-        app.plugin_panel(tab)
-            .and_then(Result::ok)
-            .is_some_and(|view| tasks::find(view.root(), "due").is_some())
+    // Its due date goes in from the Tasks page's right pane.
+    app.open_page(tasks::PAGE, OpenAs::Preview);
+    support::settle(&mut app);
+    let created = fixture.read("tasks/Dentist.md");
+    tasks::select_in_pane(&mut app, &local_object_id(&created));
+    wait_until(&mut app, "the task's fields show", |app| {
+        tasks::pane_input(app, "due").is_some()
     });
-
-    app.send_panel_event(
-        tab,
-        &PluginEvent::Changed(Field {
-            node: "due".to_owned(),
-            value: InputValue::Date(Some("2026-10-21".to_owned())),
-        }),
+    tasks::pane_change(
+        &mut app,
+        "due",
+        InputValue::Date(Some("2026-10-21".to_owned())),
     );
     support::settle(&mut app);
     let bytes = fixture.read("tasks/Dentist.md");
@@ -264,11 +261,9 @@ fn a_task_due_today_shows_on_the_calendar_and_in_the_inbox_and_opens() {
     );
     let tab = tab.id();
     assert_eq!(app.note(tab).unwrap().text(), "");
-    wait_until(&mut app, "the task opens beside its panel", |app| {
-        app.plugin_panel(tab)
-            .and_then(Result::ok)
-            .is_some_and(|view| tasks::find(view.root(), "due").is_some())
-    });
+    // As in the legacy app, nothing shows beside the task's text.
+    support::settle(&mut app);
+    assert!(app.plugin_panel(tab).is_none());
 }
 
 fn local_object_id(bytes: &[u8]) -> String {

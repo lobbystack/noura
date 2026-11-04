@@ -12,11 +12,11 @@ use std::{
 };
 
 use app_core::sync::workspace::presence::SelectionRange;
-use app_core::{App, ConflictChoice, OpenAs, PluginView, Property, PropertyValue, TabId};
+use app_core::{App, ConflictChoice, OpenAs, PluginView, TabId};
 use editor_egui::{Editor, MdConfig, RemoteCursor, SpellChecker};
 use egui::{
-    Button, Color32, Event, Frame, Grid, Id, Key, Margin, Modifiers, Panel, RichText, ScrollArea,
-    Stroke, TextEdit, Ui, UiBuilder,
+    Button, Color32, Event, Frame, Id, Key, Margin, Modifiers, Panel, RichText, ScrollArea, Stroke,
+    TextEdit, Ui, UiBuilder,
     accesskit::{Action, NodeId, Role},
     text::{CCursor, CCursorRange},
     text_edit::TextEditState,
@@ -52,8 +52,6 @@ struct OpenNote {
     name: Option<String>,
     /// Move the keyboard to the name field on the next frame.
     focus_name: bool,
-    /// What each property's field holds while you edit it.
-    drafts: HashMap<String, String>,
     /// The widget to hand the keyboard back to after the editor's first
     /// frame: a note opened from the keyboard, as with Enter in the file
     /// tree, leaves the keyboard where it was. A click puts the caret in
@@ -83,17 +81,13 @@ impl NoteView {
         self.drawn = None;
     }
 
-    /// Whether a name or property field holds typing that hasn't gone to
-    /// the note yet.
+    /// Whether a name field holds typing that hasn't gone to the note yet.
     pub(crate) fn has_drafts(&self) -> bool {
-        self.notes
-            .values()
-            .any(|note| note.name.is_some() || !note.drafts.is_empty())
+        self.notes.values().any(|note| note.name.is_some())
     }
 
-    /// Hand what the name and property fields hold to their notes, as
-    /// leaving the fields does: the name renames the file, and each
-    /// property's value goes in. A command, closing the window and quitting
+    /// Hand what the name fields hold to their notes, as leaving the
+    /// fields does: the name renames the file. A command, closing the window and quitting
     /// do this first, since they can close a note before its fields lose
     /// the keyboard.
     pub(crate) fn commit_drafts(&mut self, app: &mut App) {
@@ -148,62 +142,19 @@ impl NoteView {
             if note.name.is_some() && left(name_field_id(*tab)) {
                 commit_name(app, *tab, note);
             }
-            let keys: Vec<String> = note
-                .drafts
-                .keys()
-                .filter(|key| left(property_field_id(*tab, key)))
-                .cloned()
-                .collect();
-            for key in keys {
-                commit_property(app, *tab, note, &key);
-            }
         }
     }
 }
 
-/// Hand the typing in the note's name and property fields to the note.
+/// Hand the typing in the note's name field to the note.
 fn commit(app: &mut App, tab: TabId, note: &mut OpenNote) {
     commit_name(app, tab, note);
-    let keys: Vec<String> = note.drafts.keys().cloned().collect();
-    for key in keys {
-        commit_property(app, tab, note, &key);
-    }
 }
 
 /// Rename the note's file to what its name field holds.
 fn commit_name(app: &mut App, tab: TabId, note: &mut OpenNote) {
     if let Some(typed) = note.name.take() {
         app.rename_note(tab, &typed);
-    }
-}
-
-/// Give the property `key` the value its field holds.
-fn commit_property(app: &mut App, tab: TabId, note: &mut OpenNote, key: &str) {
-    let Some(typed) = note.drafts.remove(key) else {
-        return;
-    };
-    let property = app
-        .note(tab)
-        .and_then(|session| session.properties())
-        .and_then(|properties| properties.into_iter().find(|property| property.key == key));
-    if let Some(value) = property.and_then(|property| typed_value(&property, &typed)) {
-        app.set_note_property(tab, key, value);
-    }
-}
-
-/// The value `typed` gives the property, or `None` when the property
-/// keeps its value: `typed` is the value it has, or no number where the
-/// property holds one.
-fn typed_value(property: &Property, typed: &str) -> Option<PropertyValue> {
-    if property.read_only {
-        return None;
-    }
-    match &property.value {
-        PropertyValue::Text(text) => (typed != text).then(|| PropertyValue::Text(typed.to_owned())),
-        PropertyValue::Number(number) => (typed != number.to_string())
-            .then(|| PropertyValue::number(typed))
-            .flatten(),
-        _ => None,
     }
 }
 
@@ -226,10 +177,6 @@ fn cursor_color(index: u8) -> Color32 {
 
 fn name_field_id(tab: TabId) -> Id {
     Id::unique(("note-name", tab))
-}
-
-fn property_field_id(tab: TabId, key: &str) -> Id {
-    Id::unique(("note-property", tab, key))
 }
 
 /// Draw the note in `tab`, or why it couldn't open, in the window whose ID
@@ -267,7 +214,6 @@ pub(crate) fn show(
             whole_file,
             name: None,
             focus_name: false,
-            drafts: HashMap::new(),
             give_focus_back: if clicked {
                 None
             } else {
@@ -383,22 +329,21 @@ pub(crate) fn show(
     header(ui, app, note, tab);
     properties_notice(ui, app, tab);
     file_notice(ui, app, tab);
-    let palette = Palette::of(ui.ctx());
-    let panel = Panel::right(("note-properties", tab))
-        .resizable(true)
-        .default_size(PROPERTIES_WIDTH)
-        .frame(
-            Frame::new()
-                .fill(palette.background)
-                .stroke(Stroke::new(1.0, palette.border))
-                .inner_margin(Margin::same(12)),
-        );
-    // An object of a running plugin's type shows the plugin's panel in
-    // place of the kernel's.
+    // As in the legacy app, a note shows no properties beside its text. A
+    // plugin's object, such as a project, may still show its plugin's
+    // panel.
     if let Some(view) = app.plugin_panel(tab) {
-        panel.show(ui, |ui| plugin_panel(ui, app, window, tab, &view));
-    } else if let Some(properties) = app.note(tab).and_then(|session| session.properties()) {
-        panel.show(ui, |ui| properties_panel(ui, app, note, tab, &properties));
+        let palette = Palette::of(ui.ctx());
+        Panel::right(("note-properties", tab))
+            .resizable(true)
+            .default_size(PROPERTIES_WIDTH)
+            .frame(
+                Frame::new()
+                    .fill(palette.background)
+                    .stroke(Stroke::new(1.0, palette.border))
+                    .inner_margin(Margin::same(12)),
+            )
+            .show(ui, |ui| plugin_panel(ui, app, window, tab, &view));
     }
     body(ui, app, note, tab);
     // An embed's Open in tab button opens its PDF at the page its link
@@ -894,127 +839,6 @@ fn plugin_panel(ui: &mut Ui, app: &mut App, window: Id, tab: TabId, view: &Plugi
                 crate::plugin_view::show_panel(ui, app, window, tab, view);
             });
     });
-}
-
-/// The note's frontmatter: ID, type, created and updated read-only, and
-/// strings, numbers, booleans and dates edited in place.
-fn properties_panel(
-    ui: &mut Ui,
-    app: &mut App,
-    note: &mut OpenNote,
-    tab: TabId,
-    properties: &[Property],
-) {
-    let builder = UiBuilder::new()
-        .accessibility_role(Role::Group)
-        .accessibility_label("Properties");
-    ui.scope_builder(builder, |ui| {
-        ui.label(RichText::new("Properties").strong());
-        ui.add_space(4.0);
-        ScrollArea::vertical()
-            .id_salt(("note-properties-scroll", tab))
-            .show(ui, |ui| {
-                Grid::new(("note-properties-grid", tab))
-                    .num_columns(2)
-                    .spacing([12.0, 6.0])
-                    .show(ui, |ui| {
-                        for property in properties {
-                            muted(ui, &property.key);
-                            if let Some(value) = property_value(ui, note, tab, property) {
-                                app.set_note_property(tab, &property.key, value);
-                            }
-                            ui.end_row();
-                        }
-                    });
-            });
-    });
-}
-
-/// Draw one property's value. Returns the new value once an edit is done.
-fn property_value(
-    ui: &mut Ui,
-    note: &mut OpenNote,
-    tab: TabId,
-    property: &Property,
-) -> Option<PropertyValue> {
-    let key = &property.key;
-    if property.read_only {
-        let text = match &property.value {
-            PropertyValue::Text(text) | PropertyValue::Date(text) | PropertyValue::Other(text) => {
-                text.clone()
-            }
-            PropertyValue::Number(number) => number.to_string(),
-            PropertyValue::Bool(value) => value.to_string(),
-        };
-        // Selectable and copyable, but not editable.
-        ui.add(
-            TextEdit::singleline(&mut text.as_str())
-                .frame(Frame::NONE)
-                .desired_width(f32::INFINITY),
-        )
-        .accessible_name(key.clone());
-        return None;
-    }
-    match &property.value {
-        PropertyValue::Bool(value) => {
-            let mut checked = *value;
-            let response = ui.checkbox(&mut checked, "").accessible_name(key.clone());
-            response.changed().then_some(PropertyValue::Bool(checked))
-        }
-        PropertyValue::Date(text) => {
-            let mut date: jiff::civil::Date = text.parse().ok()?;
-            let response = ui.add(
-                egui_extras::DatePickerButton::new(&mut date)
-                    .id_salt(key)
-                    .show_icon(false)
-                    .calendar_week(false),
-            );
-            response.accessible_name(key.clone());
-            let picked = date.to_string();
-            (picked != *text).then_some(PropertyValue::Date(picked))
-        }
-        PropertyValue::Text(text) => {
-            let typed = text_field(ui, note, tab, key, text)?;
-            typed_value(property, &typed)
-        }
-        PropertyValue::Number(number) => {
-            let typed = text_field(ui, note, tab, key, &number.to_string())?;
-            typed_value(property, &typed)
-        }
-        PropertyValue::Other(_) => None,
-    }
-}
-
-/// A one-line field for a property. Returns what you typed once you press
-/// Enter or leave the field, and nothing after Escape.
-fn text_field(
-    ui: &mut Ui,
-    note: &mut OpenNote,
-    tab: TabId,
-    key: &str,
-    value: &str,
-) -> Option<String> {
-    let mut draft = note
-        .drafts
-        .get(key)
-        .cloned()
-        .unwrap_or_else(|| value.to_owned());
-    let response = ui
-        .add(
-            TextEdit::singleline(&mut draft)
-                .id(property_field_id(tab, key))
-                .desired_width(f32::INFINITY),
-        )
-        .accessible_name(key.to_owned());
-    if response.changed() {
-        note.drafts.insert(key.to_owned(), draft);
-    }
-    if !response.lost_focus() {
-        return None;
-    }
-    let escape = ui.input(|input| input.key_pressed(Key::Escape));
-    let typed = note.drafts.remove(key)?;
-    (!escape).then_some(typed)
 }
 
 /// The prompt when a note couldn't save before something closed: Try

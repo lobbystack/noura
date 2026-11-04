@@ -18,7 +18,7 @@ use support::{
     FakeSystem, Fixture,
     calendar::{self, find, grid, page, press, select, show, texts_under, titles, with_calendar},
     plugins::wait_until,
-    tasks::{self, with_tasks},
+    tasks::with_tasks,
     write,
 };
 
@@ -286,7 +286,7 @@ fn previous_next_and_today_move_the_range_and_switching_modes_keeps_the_focused_
 }
 
 #[test]
-fn selecting_an_entry_shows_its_panel_and_open_shows_its_task_with_the_tasks_panel() {
+fn selecting_an_entry_shows_its_panel_and_open_shows_its_task_in_the_note_editor() {
     let (fixture, system) = week();
     let mut app = fixture.app_with(system);
     let Some(_tasks) = with_tasks(&mut app) else {
@@ -334,11 +334,13 @@ fn selecting_an_entry_shows_its_panel_and_open_shows_its_task_with_the_tasks_pan
     let tab = app.active_tab().expect("a tab shows");
     assert_eq!(tab.title(), "Standup");
     let tab = tab.id();
-    wait_until(&mut app, "the Tasks panel shows beside the task", |app| {
-        app.plugin_panel(tab)
-            .and_then(Result::ok)
-            .is_some_and(|view| tasks::find(view.root(), "status").is_some())
-    });
+    wait_until(
+        &mut app,
+        "the task's text shows in the note editor",
+        |app| app.note(tab).is_some(),
+    );
+    // As in the legacy app, nothing shows beside the task's text.
+    assert!(app.plugin_panel(tab).is_none());
     // The Calendar page keeps its own tab.
     assert!(
         app.tabs()

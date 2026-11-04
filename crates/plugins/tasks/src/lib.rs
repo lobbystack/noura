@@ -1,9 +1,8 @@
 //! The Tasks plugin. It registers the `task` object type with today's v1
-//! fields, draws a task's properties panel beside its body in the note
-//! editor, and adds the Tasks page: the views Today, Upcoming, All and
+//! fields, and adds the Tasks page: the views Today, Upcoming, All and
 //! Completed and one per project and per folder in the sidebar, filters,
 //! and a list of tasks you check off, each with a menu to open, rename,
-//! check off or trash it. New task names a task before its file exists.
+//! check off or trash it, beside the selected task's fields. New task names a task before its file exists.
 //! The Inbox's Due today section lists what is due by tonight and adds a
 //! task due today in one step. Other plugins list and change tasks through
 //! its `create`, `update`, `complete`, `reopen` and `list` commands, which
@@ -761,16 +760,16 @@ fn set_done(id: &str, revision: &str, done: bool) -> Option<String> {
 }
 
 /// A task's properties panel: status, priority, due date and project.
-fn panel(id: &str) -> Vec<Node> {
-    let mut view = View::panel("task", Some("Task"));
-    task_fields(&mut view, View::ROOT, id, "", &mut state());
-    view.into_nodes()
+/// A task opened in the note editor shows no panel beside its text, as in
+/// the legacy app: its fields are in the Tasks page's right pane.
+fn panel(_id: &str) -> Vec<Node> {
+    View::panel("task", Some("Task")).into_nodes()
 }
 
 /// The fields of the task `id` under `parent`: its notice, status,
 /// priority, due date and project, each node ID starting with `prefix`.
-/// The properties panel and the Tasks page's right pane both draw them,
-/// and [`panel_event`] takes their changes. `state` is the plugin's
+/// The Tasks page's right pane draws them, and [`panel_event`] takes
+/// their changes. `state` is the plugin's
 /// state, which the caller holds.
 fn task_fields(view: &mut View, parent: u32, id: &str, prefix: &str, state: &mut State) {
     let node = |name: &str| format!("{prefix}{name}");
