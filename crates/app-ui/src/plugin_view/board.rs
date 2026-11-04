@@ -11,7 +11,7 @@
 
 use app_core::{PluginEvent, PluginMove, Target, ViewKind, ViewNode};
 use egui::{
-    Align2, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Ui, UiBuilder, WidgetInfo,
+    Align2, Pos2, Rect, Response, Sense, Stroke, Ui, UiBuilder, WidgetInfo,
     accesskit::{Action, HasPopup, Role},
     pos2, vec2,
 };
@@ -24,11 +24,11 @@ use crate::theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, radius};
 
 /// A column's width and the space between columns.
 const COLUMN_WIDTH: f32 = 256.0;
-const COLUMN_GAP: f32 = 8.0;
+const COLUMN_GAP: f32 = 0.0;
 /// The height of a column's header.
 const HEADER_HEIGHT: f32 = 36.0;
 /// The space around and between a column's cards.
-const PADDING: f32 = 6.0;
+const PADDING: f32 = 1.0;
 /// A card's height with a label alone, and with a detail under it.
 const CARD_HEIGHT: f32 = 40.0;
 const CARD_WITH_DETAIL_HEIGHT: f32 = 58.0;
@@ -496,18 +496,16 @@ fn paint_column(ui: &Ui, rect: Rect, body: Rect, column: &Column, palette: &Pale
     if !ui.is_rect_visible(rect) {
         return;
     }
+    // The legacy board: flat columns between hairlines, each header over
+    // a line.
     let painter = ui.painter();
-    painter.rect_filled(body, radius(1.0), palette.muted);
-    painter.rect_stroke(
-        rect,
-        radius(1.0),
-        Stroke::new(1.0, palette.border),
-        StrokeKind::Inside,
-    );
-    painter.line_segment(
-        [body.left_top(), body.right_top()],
-        Stroke::new(1.0, palette.border),
-    );
+    let line = Stroke::new(1.0, palette.border.gamma_multiply(0.6));
+    painter.rect_filled(rect, radius(0.0), palette.background);
+    painter.line_segment([rect.left_top(), rect.left_bottom()], line);
+    painter.line_segment([rect.right_top(), rect.right_bottom()], line);
+    painter.line_segment([rect.left_top(), rect.right_top()], line);
+    painter.line_segment([rect.left_bottom(), rect.right_bottom()], line);
+    painter.line_segment([body.left_top(), body.right_top()], line);
     let count = text(
         ui,
         &column.cards.len().to_string(),
@@ -518,11 +516,16 @@ fn paint_column(ui: &Ui, rect: Rect, body: Rect, column: &Column, palette: &Pale
     let header_mid = rect.top() + HEADER_HEIGHT / 2.0;
     let at = Align2::RIGHT_CENTER.anchor_size(pos2(rect.right() - 12.0, header_mid), count.size());
     painter.galley(at.min, count, palette.muted_foreground);
-    let title = text(
-        ui,
-        column.label,
-        COLUMN_WIDTH - 36.0 - count_width,
+    let title = egui::WidgetText::from(egui::RichText::new(column.label).font(crate::theme::font(
+        ui.ctx(),
         SUPPORTING_SIZE,
+        crate::theme::Weight::Medium,
+    )))
+    .into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        COLUMN_WIDTH - 36.0 - count_width,
+        egui::TextStyle::Small,
     );
     let at = Align2::LEFT_CENTER.anchor_size(pos2(rect.left() + 12.0, header_mid), title.size());
     painter.galley(at.min, title, palette.muted_foreground);
@@ -544,7 +547,7 @@ fn paint_card(
     }
     let painter = ui.painter();
     let fill = if selected || response.hovered() {
-        palette.accent
+        palette.muted.gamma_multiply(0.7)
     } else {
         palette.background
     };
@@ -553,23 +556,26 @@ fn paint_card(
     } else {
         (fill, palette.foreground)
     };
-    painter.rect(
-        rect,
-        radius(0.6),
-        fill,
-        Stroke::new(1.0, palette.border),
-        StrokeKind::Inside,
+    painter.rect_filled(rect, radius(0.0), fill);
+    painter.line_segment(
+        [rect.left_bottom(), rect.right_bottom()],
+        Stroke::new(1.0, palette.border.gamma_multiply(0.4)),
     );
     if response.has_focus() {
-        painter.rect_stroke(
-            rect.shrink(1.0),
-            radius(0.6),
-            Stroke::new(1.0, palette.ring),
-            StrokeKind::Inside,
-        );
+        crate::common::focus_ring(painter, rect.shrink(1.0), radius(0.0), palette);
     }
     let width = rect.width() - 24.0;
-    let label = text(ui, card.label, width, BODY_SIZE);
+    let label = egui::WidgetText::from(egui::RichText::new(card.label).font(crate::theme::font(
+        ui.ctx(),
+        BODY_SIZE,
+        crate::theme::Weight::Medium,
+    )))
+    .into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        width,
+        egui::TextStyle::Body,
+    );
     let label_top = rect.top() + 10.0;
     painter.galley(pos2(rect.left() + 12.0, label_top), label, foreground);
     if let Some(detail) = card.detail {
