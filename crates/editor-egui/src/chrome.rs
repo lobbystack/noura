@@ -535,12 +535,19 @@ impl Editor {
                 for (tool, enabled) in [
                     (tool(Command::Undo, Icon::Undo, "Undo"), can_undo),
                     (tool(Command::Redo, Icon::Redo, "Redo"), can_redo),
-                    (tool(Command::Find, Icon::Find, "Find"), true),
                 ] {
                     if self.tool_button(ui, &tool, false, enabled) {
                         run = Some(tool.command);
                     }
                 }
+                // Find sits at the toolbar's end, as in Noura's legacy
+                // editor.
+                let find = tool(Command::Find, Icon::Find, "Find");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.tool_button(ui, &find, false, true) {
+                        run = Some(find.command);
+                    }
+                });
             });
         });
         ui.separator();
