@@ -269,8 +269,22 @@ fn draw(ui: &mut Ui, node: &ViewNode, mode: CalendarMode, grid: &Grid, kit: &mut
     }
     let mut select = keyboard.filter(|_| moved);
 
-    let top_left = ui.cursor().min;
-    let width = ui.available_width();
+    // On a page the grid runs past the page's 24 point margins to its
+    // edges, as the legacy calendar did.
+    let bleed = if matches!(kit.place, super::Place::Page(_)) {
+        24.0
+    } else {
+        0.0
+    };
+    // Under a page header that names the period, the grid starts at the
+    // header's line, over the gaps its unseen title leaves.
+    let lift = if bleed > 0.0 && kit.page_detail && mode != CalendarMode::Day {
+        2.0 * ui.spacing().item_spacing.y
+    } else {
+        0.0
+    };
+    let top_left = ui.cursor().min - egui::vec2(bleed, lift);
+    let width = ui.available_width() + 2.0 * bleed;
     let rows = match mode {
         CalendarMode::Month => month(ui, grid, top_left, width),
         CalendarMode::Week | CalendarMode::Day => hours(ui, grid, top_left, width),
@@ -278,7 +292,8 @@ fn draw(ui: &mut Ui, node: &ViewNode, mode: CalendarMode, grid: &Grid, kit: &mut
     let whole = rows
         .iter()
         .fold(Rect::NOTHING, |whole, row| whole.union(row.rect));
-    ui.allocate_rect(whole, Sense::hover());
+    // The part in the page's margins doesn't widen the page.
+    ui.allocate_rect(whole.shrink2(egui::vec2(bleed, 0.0)), Sense::hover());
 
     let palette = Palette::of(ui.ctx());
     let selected_entry = state.selected.as_ref().map(|(id, _)| id.as_str());
