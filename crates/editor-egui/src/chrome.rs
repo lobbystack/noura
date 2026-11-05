@@ -184,12 +184,27 @@ fn glyph_button(ui: &mut Ui, glyph: &Glyph, selected: Option<bool>, enabled: boo
         Glyph::Text(text) => text.clone(),
         Glyph::Icon(_) => RichText::new(""),
     };
-    let mut button = Button::new(text).min_size(vec2(28.0, 24.0));
+    let mut button = Button::new(text);
     button = match selected {
         Some(selected) => button.selected(selected).frame_when_inactive(selected),
         None => button.frame_when_inactive(false),
     };
-    let response = ui.add_enabled(enabled, button);
+    // Every button is one size whatever its glyph, as the legacy toolbar's
+    // were: an inline format 36 by 28 points, any other button 28 square.
+    let size = if matches!(glyph, Glyph::Text(text) if INLINE_GLYPHS.contains(&text.text())) {
+        vec2(36.0, 28.0)
+    } else {
+        vec2(28.0, 28.0)
+    };
+    let response = ui
+        .scope(|ui| {
+            // No padding or row height of its own, so the glyph can't make
+            // the button any bigger than its size.
+            ui.spacing_mut().button_padding = vec2(0.0, 0.0);
+            ui.spacing_mut().interact_size.y = size.y;
+            ui.add_enabled(enabled, button.min_size(size))
+        })
+        .inner;
     if let Glyph::Icon(icon) = glyph {
         let visuals = ui
             .style()
@@ -219,6 +234,9 @@ fn tool(command: Command, glyph: impl Into<Glyph>, name: &'static str) -> Tool {
         name,
     }
 }
+
+/// The glyphs of the inline formats, whose buttons are wider.
+const INLINE_GLYPHS: [&str; 4] = ["B", "I", "U", "S"];
 
 /// The inline formats, which both toolbars offer.
 fn inline_tools() -> [Tool; 4] {
