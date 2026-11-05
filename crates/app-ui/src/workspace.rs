@@ -165,6 +165,15 @@ fn plugin_section(state: &mut NouraUi, ui: &mut Ui) {
     }) else {
         return;
     };
+    // A page without a section of its own leaves the file tree where it
+    // is on every other page.
+    let empty = state
+        .app
+        .plugin_sidebar(&page_id)
+        .is_none_or(|view| view.is_ok_and(|view| view.root().children.is_empty()));
+    if empty {
+        return;
+    }
     let drawn = ScrollArea::vertical()
         .id_salt(("plugin-sidebar", &page_id))
         .max_height(ui.available_height() / 2.0)

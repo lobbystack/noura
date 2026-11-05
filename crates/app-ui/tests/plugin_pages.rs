@@ -191,3 +191,27 @@ fn a_relaunch_stays_on_a_plugin_page() {
         assert_eq!(tabs(&harness).len(), 1);
     }
 }
+
+/// The top of the file tree's Files heading.
+fn files_heading_top(harness: &Ui) -> f32 {
+    harness
+        .get_by_role_and_label(Role::Button, "Files")
+        .rect()
+        .top()
+}
+
+#[test]
+fn a_page_without_a_sidebar_section_leaves_the_file_tree_where_it_was() {
+    let Some(folders) = workspace() else {
+        return;
+    };
+    let mut harness = launch(folders.app_data.path());
+    let top = files_heading_top(&harness);
+
+    open_page(&mut harness, "Calendar");
+    wait_until(&mut harness, "Calendar draws", |harness| {
+        page_drew(harness, "Calendar")
+    });
+
+    assert_eq!(files_heading_top(&harness), top);
+}
