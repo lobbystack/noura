@@ -57,11 +57,12 @@ pub(crate) fn page(ui: &mut Ui, app: &mut App, view: &mut IgnoredFilesView) {
     }
     let mut add = false;
     ui.horizontal(|ui| {
+        let button = Btn::new("Add").enabled(!view.pattern.trim().is_empty());
         let field = ui
             .add(
                 TextEdit::singleline(&mut view.pattern)
                     .hint_text("drafts/")
-                    .desired_width(ui.available_width() - 64.0),
+                    .desired_width(button.room_before(ui)),
             )
             .accessible_name("Pattern to ignore");
         if !view.focused {
@@ -69,10 +70,7 @@ pub(crate) fn page(ui: &mut Ui, app: &mut App, view: &mut IgnoredFilesView) {
             field.request_focus();
         }
         add |= field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
-        add |= Btn::new("Add")
-            .enabled(!view.pattern.trim().is_empty())
-            .show(ui)
-            .clicked();
+        add |= button.show(ui).clicked();
     });
     if let Some(problem) = &list.problem {
         let builder = UiBuilder::new().accessibility_role(Role::Alert);

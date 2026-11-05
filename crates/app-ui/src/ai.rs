@@ -7,12 +7,12 @@
 //! or read a key.
 
 use app_core::{AiConsentPrompt, AiProviderInput, AiProviderRow, App};
-use egui::{Button, Frame, Id, Margin, RichText, Stroke, TextEdit, Ui, UiBuilder, accesskit::Role};
+use egui::{Frame, Id, Margin, RichText, Stroke, TextEdit, Ui, UiBuilder, accesskit::Role};
 use zeroize::Zeroizing;
 
 use crate::{
-    common::{BadgeLook, Btn, Size, Variant, badge, description, primary_button},
-    theme::{Palette, TITLE_SIZE, radius},
+    common::{BadgeLook, Btn, Size, Variant, badge, description},
+    theme::{Palette, radius},
 };
 
 /// What the AI section remembers between frames.
@@ -72,16 +72,13 @@ impl Change {
 
 /// A section's title with an optional button at its end, then a line
 /// under it, as the legacy AI settings drew its sections.
-fn section_title(ui: &mut Ui, title: &str, text: Option<&str>, add: impl FnOnce(&mut Ui)) {
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 4.0;
-            crate::common::field_label(ui, title);
-            if let Some(text) = text {
-                crate::common::muted(ui, text);
-            }
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), add);
+fn section_title(ui: &mut Ui, title: &str, text: Option<&str>) {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 4.0;
+        crate::common::field_label(ui, title);
+        if let Some(text) = text {
+            crate::common::muted(ui, text);
+        }
     });
     ui.add_space(16.0);
     ui.separator();
@@ -202,22 +199,21 @@ fn key_field(
             });
             description(ui, "Paste a key you created with the provider.");
             ui.horizontal(|ui| {
+                let button = Btn::new("Save key")
+                    .variant(Variant::Default)
+                    .enabled(!key.trim().is_empty());
                 let field = ui
                     .add(
                         TextEdit::singleline(&mut **key)
                             .password(true)
                             .hint_text("sk-...")
-                            .desired_width(ui.available_width() - 100.0),
+                            .desired_width(button.room_before(ui)),
                     )
                     .accessible_name("API key");
                 save |= field.lost_focus()
                     && ui.input(|input| input.key_pressed(egui::Key::Enter))
                     && !key.trim().is_empty();
-                save |= Btn::new("Save key")
-                    .variant(Variant::Default)
-                    .enabled(!key.trim().is_empty())
-                    .show(ui)
-                    .clicked();
+                save |= button.show(ui).clicked();
             });
             if connected {
                 *remove = Btn::new("Remove key")
@@ -243,7 +239,7 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
     let workspace = app.workspace().map(|workspace| workspace.name());
     let mut change = None;
     ui.spacing_mut().item_spacing.y = 8.0;
-    section_title(ui, "Providers", None, |_| {});
+    section_title(ui, "Providers", None);
     if let Some(problem) = &view.problem {
         alert(ui, problem);
     }
@@ -353,7 +349,6 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
         ui,
         "Workspace permissions",
         Some("A granted provider receives this workspace's content."),
-        |_| {},
     );
     match &workspace {
         _ if rows.is_empty() => {
@@ -578,30 +573,26 @@ pub(crate) fn consent_prompt(ui: &mut Ui, app: &mut App, view: &mut ConsentView)
             .accessibility_label(&title);
         ui.scope_builder(builder, |ui| {
             ui.set_width(440.0);
-            ui.label(RichText::new(&title).font(crate::theme::font(
-                ui.ctx(),
-                TITLE_SIZE,
-                crate::theme::Weight::Medium,
-            )));
+            crate::common::dialog_title(ui, &title);
             ui.add_space(4.0);
             ui.label(details(app, &prompt));
             description(
                 ui,
                 "Noura asks again if its kind, endpoint or model changes. Revoke it in Settings > AI.",
             );
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                let deny = ui.add(Button::new("Deny"));
-                if opened {
-                    deny.request_focus();
-                }
-                if deny.clicked() {
-                    answer = Some(false);
-                }
-                if primary_button(ui, "Allow", true).clicked() {
-                    answer = Some(true);
-                }
-            });
+            let pressed = crate::common::dialog_footer(
+                ui,
+                vec![Btn::new("Deny"), Btn::new("Allow").variant(Variant::Default)],
+            );
+            if opened {
+                pressed[0].request_focus();
+            }
+            if pressed[0].clicked() {
+                answer = Some(false);
+            }
+            if pressed[1].clicked() {
+                answer = Some(true);
+            }
         });
     });
     if answer.is_none() && modal.should_close() {
@@ -647,11 +638,7 @@ pub(crate) fn tool_prompt(ui: &mut Ui, app: &mut App, view: &mut ToolPromptView)
             .accessibility_label(title);
         ui.scope_builder(builder, |ui| {
             ui.set_width(440.0);
-            ui.label(RichText::new(title).font(crate::theme::font(
-                ui.ctx(),
-                TITLE_SIZE,
-                crate::theme::Weight::Medium,
-            )));
+            crate::common::dialog_title(ui, title);
             ui.add_space(4.0);
             ui.label(format!("{} from {}", prompt.tool, prompt.plugin_name));
             if !prompt.description.trim().is_empty() {
@@ -667,19 +654,22 @@ pub(crate) fn tool_prompt(ui: &mut Ui, app: &mut App, view: &mut ToolPromptView)
                     ui.add(egui::Label::new(RichText::new(&prompt.input).monospace()).wrap())
                         .accessible_name("Input");
                 });
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                let deny = ui.add(Button::new("Deny"));
-                if opened {
-                    deny.request_focus();
-                }
-                if deny.clicked() {
-                    answer = Some(false);
-                }
-                if primary_button(ui, "Allow once", true).clicked() {
-                    answer = Some(true);
-                }
-            });
+            let pressed = crate::common::dialog_footer(
+                ui,
+                vec![
+                    Btn::new("Deny"),
+                    Btn::new("Allow once").variant(Variant::Default),
+                ],
+            );
+            if opened {
+                pressed[0].request_focus();
+            }
+            if pressed[0].clicked() {
+                answer = Some(false);
+            }
+            if pressed[1].clicked() {
+                answer = Some(true);
+            }
         });
     });
     if answer.is_none() && modal.should_close() {

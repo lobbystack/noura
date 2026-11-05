@@ -93,14 +93,15 @@ fn trash_dialog(state: &mut NouraUi, ui: &mut Ui) {
             ui.spacing_mut().item_spacing.y = 6.0;
             common::dialog_title(ui, &question.title);
             common::description(ui, &question.message);
-            ui.add_space(18.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                confirm = Btn::new("Move to Trash")
-                    .variant(Variant::Destructive)
-                    .show(ui)
-                    .clicked();
-                cancel = Btn::new("Cancel").show(ui).clicked();
-            });
+            let pressed = common::dialog_footer(
+                ui,
+                vec![
+                    Btn::new("Cancel"),
+                    Btn::new("Move to Trash").variant(Variant::Destructive),
+                ],
+            );
+            cancel = pressed[0].clicked();
+            confirm = pressed[1].clicked();
         });
     if confirm {
         state.app.confirm_trash();

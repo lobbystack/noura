@@ -127,7 +127,10 @@ pub(super) fn form(
             ui.horizontal(|ui| {
                 let outer = std::mem::take(&mut kit.entered);
                 let inline = std::mem::replace(&mut kit.inline, true);
-                let button = ui.spacing().interact_size.x + 24.0;
+                // The field leaves the button exactly its room, so the row
+                // never runs past the column the rest of the view fills.
+                let button = common::Btn::new(submit).size(common::Size::Sm).measure(ui)
+                    + ui.spacing().item_spacing.x;
                 ui.allocate_ui(vec2(ui.available_width() - button, 32.0), |ui| {
                     super::node(ui, &node.children[0], kit);
                 });
@@ -213,7 +216,11 @@ pub(super) fn input(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
     let id = kit.id(&node.id);
     let mut draft = Draft::load(ui, id, value);
     let before = draft.shown.clone();
-    ui.add_space(4.0);
+    // The gap above an input in a column; in a row, such as a heading's
+    // end, it would push the input sideways.
+    if !ui.layout().is_horizontal() {
+        ui.add_space(4.0);
+    }
     match value {
         InputValue::Checkbox(_) => {
             let mut checked = matches!(draft.shown, InputValue::Checkbox(true));

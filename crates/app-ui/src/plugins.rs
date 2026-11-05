@@ -21,7 +21,7 @@ const UNREVIEWED: &str = "Nobody reviewed this plugin. Install it only if you tr
 
 use crate::{
     FolderPicker,
-    common::{Btn, Size, Variant, description, primary_button},
+    common::{Btn, Size, Variant, description},
     icons,
     theme::{BODY_SIZE, Palette, TITLE_SIZE, Weight, font, radius},
 };
@@ -260,19 +260,17 @@ fn install_groups(ui: &mut Ui, app: &mut App, picker: &mut dyn FolderPicker, add
         description(ui, "Noura shows what it asks for before installing.");
         let typed = !address.trim().is_empty();
         ui.horizontal(|ui| {
+            let button = Btn::new("Install from GitHub\u{2026}").enabled(typed);
             let field = ui
                 .add(
                     TextEdit::singleline(address)
                         .hint_text("https://github.com/owner/plugin/releases/tag/v1.0.0")
-                        .desired_width(ui.available_width() - 180.0),
+                        .desired_width(button.room_before(ui)),
                 )
                 .accessible_name("Release address");
             download =
                 typed && field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
-            download |= Btn::new("Install from GitHub\u{2026}")
-                .enabled(typed)
-                .show(ui)
-                .clicked();
+            download |= button.show(ui).clicked();
         });
     });
     if download {
@@ -513,8 +511,11 @@ pub(crate) fn shipped_dialog(ui: &mut Ui, app: &mut App, view: &mut ShippedView)
                     });
                 }
             });
-            ui.add_space(12.0);
-            let button = primary_button(ui, "Allow and continue", true);
+            let button = crate::common::dialog_footer(
+                ui,
+                vec![Btn::new("Allow and continue").variant(Variant::Default)],
+            )
+            .remove(0);
             if opened {
                 button.request_focus();
             }
@@ -583,22 +584,21 @@ pub(crate) fn install_dialog(ui: &mut Ui, app: &mut App, view: &mut InstallView)
                     }
                     None => capability_list(ui, &install.capabilities),
                 }
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    let label = if install.problem.is_some() {
-                        "Close"
-                    } else {
-                        "Cancel"
-                    };
-                    let cancel_button = ui.add(Button::new(label));
-                    if opened || downloaded {
-                        cancel_button.request_focus();
-                    }
-                    cancel = cancel_button.clicked();
-                    if install.problem.is_none() && !install.downloading {
-                        approve = primary_button(ui, "Install", true).clicked();
-                    }
-                });
+                let label = if install.problem.is_some() {
+                    "Close"
+                } else {
+                    "Cancel"
+                };
+                let mut buttons = vec![Btn::new(label)];
+                if install.problem.is_none() && !install.downloading {
+                    buttons.push(Btn::new("Install").variant(Variant::Default));
+                }
+                let pressed = crate::common::dialog_footer(ui, buttons);
+                if opened || downloaded {
+                    pressed[0].request_focus();
+                }
+                cancel = pressed[0].clicked();
+                approve = pressed.get(1).is_some_and(egui::Response::clicked);
             });
         });
     if approve {

@@ -8,7 +8,7 @@ use app_core::App;
 use app_core::members::{FolderEntry, Id, Level, MembersAction, MembersScreen, Role, role_name};
 use egui::{Button, RichText, TextEdit, Ui, UiBuilder, accesskit};
 
-use crate::common::{description, primary_button};
+use crate::common::description;
 use crate::theme::Palette;
 
 /// What the section remembers between frames.
@@ -165,16 +165,22 @@ fn draw(
                 ui.set_width(380.0);
                 group(ui, "Confirm", |ui| {
                     ui.label(question);
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if primary_button(ui, button, idle).clicked() {
-                            actions.push(action);
-                            view.confirm = None;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            view.confirm = None;
-                        }
-                    });
+                    let pressed = crate::common::dialog_footer(
+                        ui,
+                        vec![
+                            crate::common::Btn::new("Cancel"),
+                            crate::common::Btn::new(button)
+                                .variant(crate::common::Variant::Default)
+                                .enabled(idle),
+                        ],
+                    );
+                    if pressed[1].clicked() {
+                        actions.push(action);
+                        view.confirm = None;
+                    }
+                    if pressed[0].clicked() {
+                        view.confirm = None;
+                    }
                 });
             },
         );

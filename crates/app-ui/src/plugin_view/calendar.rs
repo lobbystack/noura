@@ -276,10 +276,11 @@ fn draw(ui: &mut Ui, node: &ViewNode, mode: CalendarMode, grid: &Grid, kit: &mut
     } else {
         0.0
     };
-    // Under a page header that names the period, the grid starts at the
-    // header's line, over the gaps its unseen title leaves.
+    // Under a page header that names the period, the grid starts just
+    // under the header's line, over the gaps its unseen title leaves, and
+    // leaves the line itself as on every other page.
     let lift = if bleed > 0.0 && kit.page_detail && mode != CalendarMode::Day {
-        2.0 * ui.spacing().item_spacing.y
+        2.0 * ui.spacing().item_spacing.y - 1.0
     } else {
         0.0
     };

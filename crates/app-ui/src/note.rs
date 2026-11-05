@@ -15,7 +15,7 @@ use app_core::sync::workspace::presence::SelectionRange;
 use app_core::{App, ConflictChoice, OpenAs, PluginView, TabId};
 use editor_egui::{Editor, MdConfig, RemoteCursor, SpellChecker};
 use egui::{
-    Button, Color32, Event, Frame, Id, Key, Margin, Modifiers, Panel, RichText, ScrollArea, Stroke,
+    Color32, Event, Frame, Id, Key, Margin, Modifiers, Panel, RichText, ScrollArea, Stroke,
     TextEdit, Ui, UiBuilder,
     accesskit::{Action, NodeId, Role},
     text::{CCursor, CCursorRange},
@@ -416,11 +416,11 @@ fn header(ui: &mut Ui, app: &mut App, note: &mut OpenNote, tab: TabId) {
     let problem = session.name_problem().map(str::to_owned);
     let id = name_field_id(tab);
     let mut draft = note.name.clone().unwrap_or_else(|| shown.clone());
-    // The legacy document header: the name on one 20 px line, 8 px from
-    // the top, then a line across the page.
-    ui.add_space(-16.0);
+    // The legacy document header: 48 px tall, the name on one 24 px line
+    // in its middle, then a line across the page.
+    ui.add_space(-12.0);
     let interact = ui.spacing().interact_size.y;
-    ui.spacing_mut().interact_size.y = 20.0;
+    ui.spacing_mut().interact_size.y = 24.0;
     let response = ui
         .add(
             TextEdit::singleline(&mut draft)
@@ -481,7 +481,7 @@ fn header(ui: &mut Ui, app: &mut App, note: &mut OpenNote, tab: TabId) {
         });
     }
     // The legacy document header ends in a line across the whole page.
-    ui.add_space(8.0);
+    ui.add_space(4.0);
     let palette = Palette::of(ui.ctx());
     let y = ui.cursor().top();
     ui.painter().hline(
@@ -489,7 +489,7 @@ fn header(ui: &mut Ui, app: &mut App, note: &mut OpenNote, tab: TabId) {
         y,
         Stroke::new(1.0, palette.border),
     );
-    ui.add_space(16.0);
+    ui.add_space(8.0);
 }
 
 /// What keeps the note's edits off the disk: another app's edit of the
@@ -622,29 +622,22 @@ fn conflict_review(ui: &mut Ui, app: &mut App, tab: TabId) {
                     .accessibility_label(title);
                 ui.scope_builder(builder, |ui| {
                     ui.set_width(360.0);
-                    ui.label(RichText::new(title).font(crate::theme::font(
-                        ui.ctx(),
-                        TITLE_SIZE,
-                        crate::theme::Weight::Medium,
-                    )));
-                    ui.label(text);
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        let cancel_button = ui.button("Cancel");
-                        let continue_button = ui.add(
-                            Button::new(
-                                RichText::new("Continue").color(palette.primary_foreground),
-                            )
-                            .fill(palette.primary),
-                        );
-                        let ids = [cancel_button.id, continue_button.id];
-                        if !ui.memory(|memory| memory.focused().is_some_and(|id| ids.contains(&id)))
-                        {
-                            continue_button.request_focus();
-                        }
-                        cancel = cancel_button.clicked();
-                        confirm = continue_button.clicked();
-                    });
+                    crate::common::dialog_title(ui, title);
+                    crate::common::description(ui, text);
+                    let pressed = crate::common::dialog_footer(
+                        ui,
+                        vec![
+                            crate::common::Btn::new("Cancel"),
+                            crate::common::Btn::new("Continue")
+                                .variant(crate::common::Variant::Default),
+                        ],
+                    );
+                    let ids = [pressed[0].id, pressed[1].id];
+                    if !ui.memory(|memory| memory.focused().is_some_and(|id| ids.contains(&id))) {
+                        pressed[1].request_focus();
+                    }
+                    cancel = pressed[0].clicked();
+                    confirm = pressed[1].clicked();
                 });
                 return;
             }
@@ -654,11 +647,7 @@ fn conflict_review(ui: &mut Ui, app: &mut App, tab: TabId) {
             ui.scope_builder(builder, |ui| {
                 let width = (ui.ctx().content_rect().width() - 96.0).clamp(360.0, 960.0);
                 ui.set_width(width);
-                ui.label(RichText::new("Choose a version").font(crate::theme::font(
-                    ui.ctx(),
-                    TITLE_SIZE,
-                    crate::theme::Weight::Medium,
-                )));
+                crate::common::dialog_title(ui, "Choose a version");
                 if let Some(problem) = &problem {
                     ui.label(RichText::new(problem).color(palette.destructive));
                 }
@@ -680,16 +669,18 @@ fn conflict_review(ui: &mut Ui, app: &mut App, tab: TabId) {
                         height,
                     );
                 });
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    let keep_button = ui.button("Keep editing");
-                    let file_button = ui.button("Use the file\u{2019}s version");
-                    let mine_button = ui.add(
-                        Button::new(
-                            RichText::new("Use my version").color(palette.primary_foreground),
-                        )
-                        .fill(palette.primary),
+                {
+                    let pressed = crate::common::dialog_footer(
+                        ui,
+                        vec![
+                            crate::common::Btn::new("Keep editing"),
+                            crate::common::Btn::new("Use the file\u{2019}s version"),
+                            crate::common::Btn::new("Use my version")
+                                .variant(crate::common::Variant::Default),
+                        ],
                     );
+                    let (keep_button, file_button, mine_button) =
+                        (&pressed[0], &pressed[1], &pressed[2]);
                     // The keyboard stays in the review, starting on Keep
                     // editing, so nothing typed reaches the note behind it.
                     let ids = [keep_button.id, file_button.id, mine_button.id];
@@ -703,7 +694,7 @@ fn conflict_review(ui: &mut Ui, app: &mut App, tab: TabId) {
                     if mine_button.clicked() {
                         chosen = Some(ConflictChoice::Mine);
                     }
-                });
+                }
             });
         },
     );
@@ -846,7 +837,6 @@ pub(crate) fn unsaved_prompt(ui: &mut Ui, app: &mut App) {
     let Some(prompt) = app.unsaved_prompt().cloned() else {
         return;
     };
-    let palette = Palette::of(ui.ctx());
     let mut retry = false;
     let mut keep = false;
     let mut discard = false;
@@ -856,22 +846,21 @@ pub(crate) fn unsaved_prompt(ui: &mut Ui, app: &mut App) {
             .accessibility_label(prompt.title.clone());
         ui.scope_builder(builder, |ui| {
             ui.set_width(360.0);
-            ui.label(RichText::new(&prompt.title).font(crate::theme::font(
-                ui.ctx(),
-                TITLE_SIZE,
-                crate::theme::Weight::Medium,
-            )));
-            ui.label(&prompt.message);
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let discard_button = ui.add(Button::new(
-                    RichText::new("Discard changes").color(palette.destructive),
-                ));
-                let keep_button = ui.button("Keep editing");
-                let try_again = ui.add(
-                    Button::new(RichText::new("Try again").color(palette.primary_foreground))
-                        .fill(palette.primary),
+            crate::common::dialog_title(ui, &prompt.title);
+            crate::common::description(ui, &prompt.message);
+            {
+                let pressed = crate::common::dialog_footer(
+                    ui,
+                    vec![
+                        crate::common::Btn::new("Discard changes")
+                            .variant(crate::common::Variant::Destructive),
+                        crate::common::Btn::new("Keep editing"),
+                        crate::common::Btn::new("Try again")
+                            .variant(crate::common::Variant::Default),
+                    ],
                 );
+                let (discard_button, keep_button, try_again) =
+                    (&pressed[0], &pressed[1], &pressed[2]);
                 // The keyboard stays in the prompt, starting on Try again,
                 // so nothing typed reaches the note behind it.
                 let ids = [discard_button.id, keep_button.id, try_again.id];
@@ -881,7 +870,7 @@ pub(crate) fn unsaved_prompt(ui: &mut Ui, app: &mut App) {
                 discard = discard_button.clicked();
                 keep = keep_button.clicked();
                 retry = try_again.clicked();
-            });
+            }
         });
     });
     if retry {

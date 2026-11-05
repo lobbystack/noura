@@ -1,7 +1,7 @@
 //! Page and section headings, and what an empty page or section shows.
 
 use app_core::{HeadingLevel, PluginIcon, ViewKind, ViewNode};
-use egui::{Align, Layout, Rect, RichText, Sense, Ui, UiBuilder, accesskit::Role, vec2};
+use egui::{Align, Layout, RichText, Sense, Ui, UiBuilder, accesskit::Role, vec2};
 
 use super::{
     Kit,
@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     icons,
-    theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, TITLE_SIZE, Weight, font, radius},
+    theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, Weight, font},
 };
 
 fn icon(icon: PluginIcon) -> icons::Icon {
@@ -141,51 +141,18 @@ pub(super) fn empty(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
     else {
         return;
     };
-    let palette = Palette::of(ui.ctx());
     // The title names it, so the group adds no name of its own.
     let builder = UiBuilder::new().accessibility_role(Role::Group);
     ui.scope_builder(builder, |ui| {
-        ui.add_space(48.0);
-        ui.vertical_centered(|ui| {
-            ui.spacing_mut().item_spacing.y = 8.0;
-            if let Some(symbol) = symbol {
-                let (rect, _) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::hover());
-                ui.painter().rect_filled(rect, radius(1.4), palette.muted);
-                let glyph = Rect::from_center_size(rect.center(), vec2(20.0, 20.0));
-                icons::paint(
-                    ui.painter(),
-                    icon(*symbol),
-                    glyph,
-                    palette.foreground,
-                    false,
-                );
-                ui.add_space(8.0);
-            }
-            ui.label(RichText::new(title).font(font(ui.ctx(), TITLE_SIZE, Weight::Medium)));
-            if let Some(detail) = detail {
-                ui.scope(|ui| {
-                    ui.set_max_width(384.0);
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(detail)
-                                .size(BODY_SIZE)
-                                .color(palette.muted_foreground),
-                        )
-                        .wrap(),
-                    );
-                });
-            }
-            if !node.children.is_empty() {
-                ui.add_space(8.0);
-                for child in &node.children {
-                    if let ViewKind::Button { label } = &child.kind {
-                        ui.push_id(&child.id, |ui| {
-                            styled_button(ui, child, label, Look::Primary, kit);
-                        });
-                    }
+        let controls = (!node.children.is_empty()).then_some(|ui: &mut Ui| {
+            for child in &node.children {
+                if let ViewKind::Button { label } = &child.kind {
+                    ui.push_id(&child.id, |ui| {
+                        styled_button(ui, child, label, Look::Primary, kit);
+                    });
                 }
             }
         });
-        ui.add_space(48.0);
+        crate::common::empty_state_with(ui, symbol.map(icon), title, detail.as_deref(), controls);
     });
 }

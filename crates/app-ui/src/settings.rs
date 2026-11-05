@@ -541,19 +541,16 @@ fn workspace(ui: &mut Ui, app: &mut App, view: &mut SettingsView) {
         let name = view.name.get_or_insert_with(|| current.clone());
         ui.horizontal(|ui| {
             let trimmed = name.trim().to_owned();
-            let button_width = 80.0;
+            let button = Btn::new("Rename").enabled(!trimmed.is_empty() && trimmed != current);
             let response = ui
                 .add(
                     TextEdit::singleline(name)
-                        .desired_width(ui.available_width() - button_width - 8.0)
+                        .desired_width(button.room_before(ui))
                         .char_limit(120),
                 )
                 .accessible_name("Workspace name");
             rename |= response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
-            rename |= Btn::new("Rename")
-                .enabled(!trimmed.is_empty() && trimmed != current)
-                .show(ui)
-                .clicked();
+            rename |= button.show(ui).clicked();
         });
         description(ui, "The folder keeps its name.");
     });

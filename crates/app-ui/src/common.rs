@@ -312,6 +312,32 @@ impl<'a> Btn<'a> {
         self
     }
 
+    /// What's left of the row for a field before this button, so the two
+    /// end exactly at the row's end.
+    pub(crate) fn room_before(&self, ui: &Ui) -> f32 {
+        (ui.available_width() - self.measure(ui) - ui.spacing().item_spacing.x).max(0.0)
+    }
+
+    /// How wide the button draws, so a row can leave it room.
+    pub(crate) fn measure(&self, ui: &Ui) -> f32 {
+        let height = self.size.height();
+        let (pad, pad_icon, gap) = self.size.padding();
+        if self.icon_only {
+            return self.width.unwrap_or(height);
+        }
+        let font = font(ui.ctx(), self.size.text_size(), Weight::Medium);
+        let text = ui
+            .painter()
+            .layout_no_wrap(self.text.to_owned(), font, Color32::PLACEHOLDER)
+            .size()
+            .x;
+        let natural = match self.icon {
+            Some(_) => pad_icon + self.size.icon_size() + gap + text + pad,
+            None => pad * 2.0 + text,
+        };
+        self.width.unwrap_or(natural).max(natural.min(height))
+    }
+
     pub(crate) fn show(self, ui: &mut Ui) -> Response {
         let palette = Palette::of(ui.ctx());
         let dark = ui.visuals().dark_mode;
@@ -699,17 +725,17 @@ pub(crate) fn description(ui: &mut Ui, text: &str) -> Response {
 /// The legacy empty state: an optional icon in a 40 px tile, a title and
 /// a description, centered with room around them.
 pub(crate) fn empty_state(ui: &mut Ui, icon: Option<Icon>, title: &str, text: Option<&str>) {
-    empty_state_with(ui, icon, title, text, |_| {});
+    empty_state_with(ui, icon, title, text, None::<fn(&mut Ui)>);
 }
 
 /// [`empty_state`] with controls under the description, such as a
-/// button that fixes what is missing.
+/// plugin's buttons. The gap before them shows only when there are some.
 pub(crate) fn empty_state_with(
     ui: &mut Ui,
     icon: Option<Icon>,
     title: &str,
     text: Option<&str>,
-    add: impl FnOnce(&mut Ui),
+    controls: Option<impl FnOnce(&mut Ui)>,
 ) {
     let palette = Palette::of(ui.ctx());
     ui.vertical_centered(|ui| {
@@ -740,8 +766,10 @@ pub(crate) fn empty_state_with(
                 );
             });
         }
-        ui.add_space(8.0);
-        add(ui);
+        if let Some(controls) = controls {
+            ui.add_space(8.0);
+            controls(ui);
+        }
         ui.add_space(48.0);
     });
 }
@@ -1046,6 +1074,22 @@ pub(crate) const BACKDROP: Color32 = Color32::from_black_alpha(77);
 /// A legacy dialog's title: 16 px medium.
 pub(crate) fn dialog_title(ui: &mut Ui, text: &str) -> Response {
     ui.label(RichText::new(text).font(font(ui.ctx(), crate::theme::TITLE_SIZE, Weight::Medium)))
+}
+
+/// The legacy dialog footer: 24 points under what the dialog says, its
+/// buttons in a row at its end, 8 points apart, in the order given, so the
+/// keyboard meets them left to right. Returns each button's response.
+pub(crate) fn dialog_footer(ui: &mut Ui, buttons: Vec<Btn<'_>>) -> Vec<Response> {
+    ui.add_space((24.0 - ui.spacing().item_spacing.y).max(0.0));
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let widths: f32 = buttons.iter().map(|button| button.measure(ui)).sum();
+        let gaps = 8.0 * buttons.len().saturating_sub(1) as f32;
+        // The space before the first button is followed by one more gap.
+        ui.add_space((ui.available_width() - widths - gaps - 8.0).max(0.0));
+        buttons.into_iter().map(|button| button.show(ui)).collect()
+    })
+    .inner
 }
 
 /// How a [`badge`] looks.

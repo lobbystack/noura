@@ -5,13 +5,12 @@
 //! plugin can show a prompt that grants web consent or read the key.
 
 use app_core::App;
-use egui::{Button, Id, RichText, Ui, UiBuilder, accesskit::Role};
+use egui::{Id, RichText, Ui, UiBuilder, accesskit::Role};
 use zeroize::Zeroizing;
 
 use crate::{
     ai::{alert, boxed, text_field},
     common::{description, primary_button},
-    theme::TITLE_SIZE,
 };
 
 /// What the Web search section remembers between frames.
@@ -115,11 +114,7 @@ pub(crate) fn consent_prompt(ui: &mut Ui, app: &mut App, view: &mut WebConsentVi
             .accessibility_label(&title);
         ui.scope_builder(builder, |ui| {
             ui.set_width(440.0);
-            ui.label(RichText::new(&title).font(crate::theme::font(
-                ui.ctx(),
-                TITLE_SIZE,
-                crate::theme::Weight::Medium,
-            )));
+            crate::common::dialog_title(ui, &title);
             ui.add_space(4.0);
             ui.label(format!(
                 "In {}, search queries go to {}, and page addresses go to the sites that host them.",
@@ -133,19 +128,22 @@ pub(crate) fn consent_prompt(ui: &mut Ui, app: &mut App, view: &mut WebConsentVi
                 ui,
                 "Noura won't ask before each search. Revoke it in Settings > AI.",
             );
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                let deny = ui.add(Button::new("Deny"));
-                if opened {
-                    deny.request_focus();
-                }
-                if deny.clicked() {
-                    answer = Some(false);
-                }
-                if primary_button(ui, "Allow", true).clicked() {
-                    answer = Some(true);
-                }
-            });
+            let pressed = crate::common::dialog_footer(
+                ui,
+                vec![
+                    crate::common::Btn::new("Deny"),
+                    crate::common::Btn::new("Allow").variant(crate::common::Variant::Default),
+                ],
+            );
+            if opened {
+                pressed[0].request_focus();
+            }
+            if pressed[0].clicked() {
+                answer = Some(false);
+            }
+            if pressed[1].clicked() {
+                answer = Some(true);
+            }
         });
     });
     if answer.is_none() && modal.should_close() {

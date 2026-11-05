@@ -215,3 +215,89 @@ fn a_page_without_a_sidebar_section_leaves_the_file_tree_where_it_was() {
 
     assert_eq!(files_heading_top(&harness), top);
 }
+
+/// The rect of the button labelled `label`.
+fn button_rect(harness: &Ui, label: &str) -> egui::Rect {
+    harness.get_by_role_and_label(Role::Button, label).rect()
+}
+
+/// Each page's header is the same header: its buttons sit on one line at
+/// one height, and a control drawn inside the header's row adds no gap of
+/// its own.
+#[test]
+fn every_page_header_puts_its_buttons_on_the_same_line() {
+    let Some(folders) = workspace() else {
+        return;
+    };
+    let mut harness = launch(folders.app_data.path());
+    let mut tops = Vec::new();
+    for (page, button) in [
+        ("Tasks", "New task"),
+        ("Calendar", "Today"),
+        ("Projects", "New project"),
+    ] {
+        open_page(&mut harness, page);
+        wait_until(&mut harness, "the page draws", |harness| {
+            page_drew(harness, page)
+        });
+        let rect = button_rect(&harness, button);
+        tops.push((page, rect.top(), rect.height()));
+        if page == "Calendar" {
+            // Month, Week and Day sit as far from the arrows as the arrows
+            // from Today.
+            let day = harness
+                .get_by_role_and_label(Role::RadioButton, "Day")
+                .rect();
+            let previous = button_rect(&harness, "Previous month");
+            assert_eq!(
+                previous.left() - day.right(),
+                rect.left() - previous.right()
+            );
+        }
+    }
+    assert!(
+        tops.iter()
+            .all(|(_, top, height)| (*top, *height) == (tops[0].1, tops[0].2)),
+        "{tops:?}"
+    );
+}
+
+/// The rail lists Noura's own pages in the legacy order, whichever plugin
+/// started first.
+#[test]
+fn the_rail_lists_noura_s_pages_in_one_order() {
+    let Some(folders) = workspace() else {
+        return;
+    };
+    let harness = launch(folders.app_data.path());
+    let pages = labels(
+        harness
+            .get_by_role_and_label(Role::Navigation, "Pages")
+            .query_all_by_role(Role::Link),
+    );
+    assert_eq!(pages, ["Inbox", "Files", "Tasks", "Calendar", "Projects"]);
+}
+
+/// The Inbox's sections share one column: what one section draws at its
+/// end lines up with the others'.
+#[test]
+fn the_inbox_sections_end_on_one_edge() {
+    let Some(folders) = workspace() else {
+        return;
+    };
+    let mut harness = launch(folders.app_data.path());
+    open_page(&mut harness, "Inbox");
+    wait_until(&mut harness, "both sections draw", |harness| {
+        harness
+            .query_by_role_and_label(Role::Button, "All tasks")
+            .is_some()
+            && harness
+                .query_by_role_and_label(Role::Button, "Calendar")
+                .is_some()
+    });
+    let ends: Vec<f32> = ["Add", "All tasks", "Calendar"]
+        .iter()
+        .map(|label| button_rect(&harness, label).right())
+        .collect();
+    assert!(ends.iter().all(|end| *end == ends[0]), "{ends:?}");
+}
