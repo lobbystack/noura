@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import {
+	pageRouteFor,
+	pageTabObjectId,
+	pageTabRoute,
 	parseStoredTabs,
 	remapTabPaths,
 	tabHref,
@@ -103,5 +106,39 @@ describe('saved tabs', () => {
 		expect(
 			parseStoredTabs(JSON.stringify({ tabs: [], activeId: 'gone' })),
 		).toEqual({ tabs: [], activeId: null });
+	});
+});
+
+describe('page tabs', () => {
+	test('a page tab goes to its page and keeps its place across reloads', () => {
+		const calendar = tab({
+			objectId: pageTabObjectId('/calendar'),
+			objectType: 'page',
+			title: 'Calendar',
+			href: '/calendar?week=2026-09-28',
+		});
+		expect(pageTabRoute(calendar)).toBe('/calendar');
+		expect(tabHref(calendar)).toBe('/calendar?week=2026-09-28');
+		expect(tabPath(calendar)).toBeNull();
+		const stored = parseStoredTabs(
+			JSON.stringify({ tabs: [calendar], activeId: calendar.id }),
+		);
+		expect(stored.tabs).toEqual([calendar]);
+	});
+
+	test('app pages get a tab; documents and Files do not', () => {
+		const at = (path: string) => pageRouteFor(new URL(path, 'http://x'));
+		expect(at('/inbox')).toBe('/inbox');
+		expect(at('/tasks?view=upcoming')).toBe('/tasks');
+		expect(at('/calendar')).toBe('/calendar');
+		expect(at('/tasks?selected=task_01')).toBeNull();
+		expect(at('/files')).toBeNull();
+		expect(at('/pdf?path=a.pdf')).toBeNull();
+		expect(at('/settings')).toBeNull();
+	});
+
+	test('document tabs are not page tabs', () => {
+		expect(pageTabRoute(tab({ objectId: 'note_01' }))).toBeNull();
+		expect(pageTabRoute(tab({ objectId: 'raw:page:odd.md' }))).toBeNull();
 	});
 });

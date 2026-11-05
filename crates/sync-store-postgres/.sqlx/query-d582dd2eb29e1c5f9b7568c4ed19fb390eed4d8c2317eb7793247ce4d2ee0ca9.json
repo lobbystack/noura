@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO reset_codes (account, code_hash, expires_at) VALUES ($1, $2, $3)\n             ON CONFLICT (account) DO UPDATE\n             SET code_hash = excluded.code_hash, expires_at = excluded.expires_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d582dd2eb29e1c5f9b7568c4ed19fb390eed4d8c2317eb7793247ce4d2ee0ca9"
+}

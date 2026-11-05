@@ -1,0 +1,63 @@
+[package]
+name = "plugin-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+# Runs plugins on Wasmtime's Pulley interpreter as well as Cranelift's native
+# code, so a future mobile host never needs to generate native code.
+pulley = ["wasmtime/pulley"]
+# A stand-in for GitHub's release servers, which tests send plugin
+# downloads to. Never enabled in a shipped build.
+test-hooks = []
+
+[dependencies]
+# Names each component's bytes in the compiled code cache.
+blake3.workspace = true
+# Reads this computer's clock and time zone for plugins when the app
+# passes no clock of its own.
+jiff.workspace = true
+# Plugins' network requests and release downloads go through its web
+# access boundary.
+local-core = { version = "0.2.0", path = "../local-core" }
+# Waits a bounded time for a plugin that another plugin's command call
+# needs.
+parking_lot.workspace = true
+semver.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+# Checks each downloaded release archive against the SHA-256 digest GitHub
+# lists for it.
+sha2.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+tracing.workspace = true
+# Reads the GitHub release addresses you paste.
+url.workspace = true
+wasmtime.workspace = true
+# The workspace format's date and date-time rules, which input values
+# follow, and the envelope and schemas of the object types plugins register.
+workspace-format = { version = "0.2.0", path = "../workspace-format" }
+# Reads the release archives plugins install from, and writes them for the
+# stand-in release server.
+zip.workspace = true
+
+# process_memory: proc_pid_rusage on macOS, sysconf on Linux, and
+# GetProcessMemoryInfo on Windows.
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+libc.workspace = true
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Memory", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
+[dev-dependencies]
+egui = { workspace = true, features = ["default_fonts"] }
+egui_kittest.workspace = true
+libc.workspace = true
+plugin-host = { path = ".", features = ["test-hooks"] }
+serde_json.workspace = true
+tempfile.workspace = true
+wasmtime = { workspace = true, features = ["wat"] }
+# Writes hand-made test components as WebAssembly binaries.
+wat = "1.262.0"

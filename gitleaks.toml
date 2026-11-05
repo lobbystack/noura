@@ -9,6 +9,7 @@ useDefault = true
 description = "Deterministic workspace-format conformance fixtures and test vectors"
 paths = [
 	'''(^|/)docs/workspace-format/fixtures/.*''',
+	'''(^|/)crates/sync-key-envelope/tests/vectors/.*''',
 ]
 
 [[allowlists]]
@@ -16,4 +17,10 @@ description = "Synthetic age identity in the recovery fixture regenerator (test-
 regexTarget = "match"
 regexes = [
 	'''AGE-SECRET-KEY-1GQ9778VQXMMJVE8SK7J6VT8UJ4HDQAJUVSFCWCM02D8GEWQ72PVQ2Y5J33''',
+]
+
+[[allowlists]]
+description = "The cipher's name in the sync spec, which reads as a key after the word key"
+regexes = [
+	'''^XChaCha20-Poly1305$''',
 ]

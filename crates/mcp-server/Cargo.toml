@@ -6,8 +6,14 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+app-core = { version = "0.2.0", path = "../app-core" }
+# Reads `--workspace <path>` as an OsString, so a path that isn't UTF-8
+# reaches the workspace service, which refuses it with a clear error.
+lexopt.workspace = true
 local-core = { version = "0.2.0", path = "../local-core" }
-rmcp.workspace = true
+# The client side starts the configured command as an AI tool does, for
+# Settings' Test connection.
+rmcp = { workspace = true, features = ["client", "transport-child-process"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -21,4 +27,3 @@ path = "src/main.rs"
 
 [dev-dependencies]
 tempfile.workspace = true
-zeroize.workspace = true

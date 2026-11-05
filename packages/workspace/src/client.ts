@@ -53,6 +53,7 @@ import type {
 	DraftReconcileResult,
 	FolderEntry,
 	FinishChatAssistantInput,
+	ImportResult,
 	FinishChatToolCallInput,
 	ManifestUpdateInput,
 	MutationResult,
@@ -105,7 +106,32 @@ export interface CoreTransport {
 		handler: (frame: T) => void,
 	): Promise<void>;
 	subscribe(handler: (event: CoreEvent) => void): Promise<() => void>;
+	/** Drags of files from the system file manager over the window. */
+	subscribeFileDrops?(
+		handler: (event: FileDropEvent) => void,
+	): Promise<() => void>;
 }
+
+/**
+ * A drag of files from outside the app. Positions are in CSS pixels from the
+ * top-left of the page. The native host keeps the dropped paths; the page
+ * copies a drop into a folder by its `dropId`.
+ */
+export type FileDropEvent =
+	| { type: 'over'; x: number; y: number }
+	| { type: 'leave' }
+	| {
+			type: 'drop';
+			dropId: number;
+			x: number;
+			y: number;
+			/**
+			 * Set when every dropped item is already in the open workspace, as
+			 * when a row dragged out of the file tree comes back. Move these
+			 * paths instead of copying the drop.
+			 */
+			workspacePaths: string[] | null;
+	  };
 
 export {
 	installPendingDraftCloseGuard,
@@ -332,6 +358,26 @@ export interface FileService {
 	reveal(input: { relativePath: string }): Promise<void>;
 	/** Open a file with the system's default app. Refuses apps and scripts. */
 	openWithDefaultApp(input: { relativePath: string }): Promise<void>;
+	/**
+	 * Hear about files dragged over the window from the file manager.
+	 * Resolves to a function that stops listening.
+	 */
+	subscribeDrops(handler: (event: FileDropEvent) => void): Promise<() => void>;
+	/**
+	 * Copy the files of a drop into `folder` ('' is the top of the
+	 * workspace). Taken names get a number; nothing is overwritten.
+	 */
+	importDrop(input: { dropId: number; folder: string }): Promise<ImportResult>;
+	/**
+	 * Start a native drag of these files so the file manager gets a copy.
+	 * Call it while the mouse button is still down.
+	 */
+	dragOut(input: {
+		relativePaths: string[];
+		/** PNG shown under the pointer, at `imageScale` pixels per point. */
+		image?: number[];
+		imageScale?: number;
+	}): Promise<void>;
 }
 
 export interface GenericObjectService {
@@ -373,6 +419,10 @@ export interface AppCapabilities {
 	workspaceFolders: boolean;
 	/** An MCP client can reach the open workspace through this app. */
 	mcp: boolean;
+	/** Files dragged in from the file manager land in the file tree. */
+	fileDrops: boolean;
+	/** Rows dragged out of the file tree become files in the file manager. */
+	dragOut: boolean;
 }
 
 /**
@@ -387,6 +437,8 @@ const NATIVE_CAPABILITIES: AppCapabilities = {
 	systemTrash: true,
 	workspaceFolders: true,
 	mcp: true,
+	fileDrops: false,
+	dragOut: false,
 };
 
 export interface AppService {
@@ -396,6 +448,13 @@ export interface AppService {
 	 */
 	diagnostics(): Promise<string>;
 	capabilities(): Promise<AppCapabilities>;
+	/**
+	 * Match the native window's background to the app's theme, so repaints
+	 * don't flash the other color.
+	 */
+	setTheme(input: { dark: boolean }): Promise<void>;
+	/** Zoom the whole window; 1 is actual size. */
+	setZoom(input: { factor: number }): Promise<void>;
 }
 
 export interface ManifestService {
@@ -719,6 +778,8 @@ export function createNouraClient(
 					'app_capabilities',
 				)),
 			}),
+			setTheme: (input) => transport.request('app_set_theme', { input }),
+			setZoom: (input) => transport.request('app_set_zoom', { input }),
 		},
 		objects: objectService,
 		manifest: manifestService,
@@ -759,6 +820,10 @@ export function createNouraClient(
 			reveal: (input) => transport.request('files_reveal', { input }),
 			openWithDefaultApp: (input) =>
 				transport.request('files_open_default', { input }),
+			subscribeDrops: (handler) =>
+				transport.subscribeFileDrops?.(handler) ?? Promise.resolve(() => {}),
+			importDrop: (input) => transport.request('files_import_drop', { input }),
+			dragOut: (input) => transport.request('files_drag_out', { input }),
 		},
 		notes: {
 			...noteObjects,

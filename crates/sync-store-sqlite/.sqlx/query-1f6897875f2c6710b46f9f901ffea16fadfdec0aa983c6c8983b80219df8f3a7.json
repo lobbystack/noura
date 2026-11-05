@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT owner, creation_digest, creation_response, policy_revision, policy_head\n             FROM workspaces WHERE workspace = ?1 AND closed = 0",
+  "describe": {
+    "columns": [
+      {
+        "name": "owner",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "owner"
+          }
+        }
+      },
+      {
+        "name": "creation_digest",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "creation_digest"
+          }
+        }
+      },
+      {
+        "name": "creation_response",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "creation_response"
+          }
+        }
+      },
+      {
+        "name": "policy_revision",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "policy_revision"
+          }
+        }
+      },
+      {
+        "name": "policy_head",
+        "ordinal": 4,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "policy_head"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1f6897875f2c6710b46f9f901ffea16fadfdec0aa983c6c8983b80219df8f3a7"
+}

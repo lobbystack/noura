@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { page } from '$app/state';
 	import { onMount } from 'svelte';
 	import { subscribeAppMenu, type AppMenuCommand } from '@noura/workspace';
 	import {
@@ -14,8 +13,13 @@
 	import { getAppPlatform } from '$lib/platform';
 	import { plugins } from '$lib/plugins.svelte';
 	import { getSettingsDialog } from '$lib/settings.svelte';
+	import {
+		isSectionCollapsed,
+		nextZoom,
+		preferences,
+		toggleSection,
+	} from '$lib/preferences.svelte';
 	import { routePlugin } from '$lib/plugin-routes';
-	import { showsFileTree } from '$lib/sidebar-modules';
 	import { closeActiveTab, cycleTab } from '$lib/tab-actions';
 	import { useSidebar } from '$lib/components/ui/sidebar/index.js';
 
@@ -50,8 +54,8 @@
 				break;
 			case 'new-folder':
 				// The new folder opens for renaming in the tree, so show the tree.
-				if (!showsFileTree(page.url.pathname)) await goto('/files');
 				if (!sidebar.open) sidebar.setOpen(true);
+				if (isSectionCollapsed('files')) toggleSection('files');
 				await createFolder();
 				break;
 			case 'quick-open':
@@ -69,6 +73,15 @@
 			case 'toggle-sidebar':
 				sidebar.toggle();
 				break;
+			case 'zoom-in':
+				preferences.update({ zoom: nextZoom(preferences.zoom, 1) });
+				break;
+			case 'zoom-out':
+				preferences.update({ zoom: nextZoom(preferences.zoom, -1) });
+				break;
+			case 'zoom-reset':
+				preferences.update({ zoom: 1 });
+				break;
 			case 'next-tab':
 				await cycleTab(1);
 				break;
@@ -82,6 +95,8 @@
 		if (event.defaultPrevented || event.repeat) return;
 		const command = shortcutCommand(event, os);
 		if (!command) return;
+		// A browser zooms the page itself.
+		if (command.startsWith('zoom-') && getAppPlatform() === 'web') return;
 		event.preventDefault();
 		void run(command, 'key');
 	}

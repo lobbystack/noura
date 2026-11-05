@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE server SET restore_generation = GREATEST(restore_generation + 1, $1)\n         WHERE id = 1 RETURNING restore_generation",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "restore_generation",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "server",
+            "name": "restore_generation"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "25858b264897290155454b968b9ce8e8992e2971045f413f08059372dc7cc686"
+}

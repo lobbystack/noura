@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT blob FROM blob_listings WHERE workspace = $1 AND domain = $2 AND seq = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "blob",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "blob_listings",
+            "name": "blob"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a332a55f5f8bec9ba01256d4f058c652b98481fe72aaf3af5c65d582878b63a1"
+}

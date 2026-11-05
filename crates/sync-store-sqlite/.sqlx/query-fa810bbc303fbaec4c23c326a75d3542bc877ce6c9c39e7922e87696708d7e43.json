@@ -1,0 +1,110 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT offer_digest, commit_digest, candidate_card_digest, approver, account, offer,\n                    nc, expires_at\n             FROM approval_offers WHERE offer_digest = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "offer_digest",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "approval_offers",
+            "name": "offer_digest"
+          }
+        }
+      },
+      {
+        "name": "commit_digest",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "approval_offers",
+            "name": "commit_digest"
+          }
+        }
+      },
+      {
+        "name": "candidate_card_digest",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "approval_offers",
+            "name": "candidate_card_digest"
+          }
+        }
+      },
+      {
+        "name": "approver",
+        "ordinal": 3,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "approval_offers",
+            "name": "approver"
+          }
+        }
+      },
+      {
+        "name": "account",
+        "ordinal": 4,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "approval_offers",
+            "name": "account"
+          }
+        }
+      },
+      {
+        "name": "offer",
+        "ordinal": 5,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "approval_offers",
+            "name": "offer"
+          }
+        }
+      },
+      {
+        "name": "nc",
+        "ordinal": 6,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "approval_offers",
+            "name": "nc"
+          }
+        }
+      },
+      {
+        "name": "expires_at",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_offers",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "fa810bbc303fbaec4c23c326a75d3542bc877ce6c9c39e7922e87696708d7e43"
+}

@@ -15,4 +15,9 @@ serde_yaml_ng.workspace = true
 thiserror.workspace = true
 ts-rs.workspace = true
 ulid.workspace = true
-slug.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+# The sync crates turn this on in the app. Tests run with it, so canonical
+# bytes can't come to depend on how `serde_json` keeps its maps.
+serde_json = { workspace = true, features = ["preserve_order"] }

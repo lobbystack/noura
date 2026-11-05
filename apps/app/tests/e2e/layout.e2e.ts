@@ -9,15 +9,17 @@ test.describe('layout at a normal window width', () => {
 	}) => {
 		await page.goto('/tasks?view=all');
 		await page.getByRole('button', { name: 'New task' }).click();
+		await page.keyboard.type('Layout check');
+		await page.keyboard.press('Enter');
 		const toolbar = page.getByRole('toolbar', { name: 'Formatting' });
 		await expect(toolbar).toBeVisible();
 		const overflow = await toolbar.evaluate(
 			(element) => element.scrollWidth - element.clientWidth,
 		);
 		expect(overflow).toBeLessThanOrEqual(0);
-		await expect(
-			toolbar.getByRole('button', { name: /Find and replace/ }),
-		).toBeInViewport({ ratio: 1 });
+		await expect(toolbar.getByRole('button', { name: /^Find/ })).toBeInViewport(
+			{ ratio: 1 },
+		);
 		await expect(page.getByLabel('Status', { exact: true })).toHaveText(
 			'To do',
 		);
@@ -43,7 +45,7 @@ test.describe('layout at a normal window width', () => {
 			await app.newNote(`A long note name ${index}`);
 		await page
 			.getByRole('navigation', { name: 'Sections' })
-			.getByRole('link', { name: 'Home' })
+			.getByRole('link', { name: 'Inbox' })
 			.click();
 		const bar = page.getByRole('tablist', { name: 'Open files' });
 		const box = await bar.evaluate((element: HTMLElement) => {

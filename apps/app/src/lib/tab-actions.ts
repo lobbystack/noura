@@ -1,6 +1,8 @@
 import { goto } from '$app/navigation';
 import { page } from '$app/state';
 import { tabHref, tabsStore } from './tabs.svelte';
+import { pageTabRoute } from './tabs';
+import { FILES_ROUTE } from './navigation-targets';
 import { saveBeforeLeaving } from './editor/unsaved-changes';
 
 /** Show a tab's document. */
@@ -9,6 +11,14 @@ export async function activateTab(id: string): Promise<void> {
 	if (!tab) return;
 	tabsStore.setActive(id);
 	await goto(tabHref(tab));
+}
+
+/** Open an app page such as Calendar in its own tab and show it. */
+export async function openPageInNewTab(
+	route: string,
+	title: string,
+): Promise<void> {
+	await activateTab(tabsStore.openPage(route, title));
 }
 
 /**
@@ -27,11 +37,14 @@ export async function closeTab(id: string): Promise<void> {
 }
 
 async function removeTab(id: string): Promise<void> {
+	const closing = tabsStore.tabs.find((tab) => tab.id === id);
 	const wasActive = tabsStore.activeId === id;
 	tabsStore.close(id);
 	if (!wasActive) return;
 	const next = tabsStore.active;
 	if (next) await goto(tabHref(next));
+	// Staying on a page would open its tab again; show Files, empty, instead.
+	else if (closing && pageTabRoute(closing)) await goto(FILES_ROUTE);
 	else await goto(page.url.pathname);
 }
 

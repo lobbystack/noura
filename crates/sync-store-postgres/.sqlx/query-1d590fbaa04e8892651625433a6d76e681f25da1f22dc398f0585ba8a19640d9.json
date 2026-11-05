@@ -1,0 +1,55 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT e.seq AS \"seq!\", e.record_type AS \"record_type!\", e.record AS \"record!\"\n             FROM operations o\n             JOIN entries e ON e.workspace = o.workspace AND e.domain = o.domain AND e.seq = o.seq\n             WHERE o.workspace = $1 AND o.domain = $2 AND o.device = $3 AND o.counter >= $4\n             ORDER BY o.counter LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "seq!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "entries",
+            "name": "seq"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "record_type!",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "entries",
+            "name": "record_type"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "record!",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "entries",
+            "name": "record"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1d590fbaa04e8892651625433a6d76e681f25da1f22dc398f0585ba8a19640d9"
+}

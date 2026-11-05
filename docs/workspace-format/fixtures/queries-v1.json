@@ -1,5 +1,5 @@
 {
-	"description": "Workspace read queries. The native index (crates/local-core/tests/query_conformance.rs) and the browser worker (packages/browser-workspace/src/query-conformance.test.ts) must give the same answers for these files.",
+	"description": "Workspace read queries. The native index (crates/local-core/tests/query_conformance.rs) must give these answers for these files. Queries name the property they filter on, since the index knows no object type's fields. The calendar cases over these files live with the Calendar plugin, in crates/plugins/calendar/fixtures/calendar-v1.json.",
 	"files": [
 		{
 			"path": "Tasks/ship.md",
@@ -56,14 +56,16 @@
 			]
 		},
 		{
-			"query": { "type": "task", "status": "todo" },
+			"query": { "type": "task", "property": { "name": "status", "value": "todo" } },
 			"expected": [
 				"task_01k00000000000000000000003",
 				"task_01k00000000000000000000001"
 			]
 		},
 		{
-			"query": { "project": "project_01k00000000000000000000010" },
+			"query": {
+				"property": { "name": "project", "value": "project_01k00000000000000000000010" }
+			},
 			"expected": ["task_01k00000000000000000000001"]
 		},
 		{
@@ -83,14 +85,21 @@
 	],
 	"summaryQueries": [
 		{
-			"query": { "type": "task", "statusNot": "done", "order": "due-asc" },
+			"query": {
+				"type": "task",
+				"propertyNot": { "name": "status", "value": "done" },
+				"orderBy": "due"
+			},
 			"expected": [
 				"task_01k00000000000000000000003",
 				"task_01k00000000000000000000001"
 			]
 		},
 		{
-			"query": { "dueOnOrBefore": "2026-09-04", "order": "due-asc" },
+			"query": {
+				"dateOnOrBefore": { "name": "due", "value": "2026-09-04" },
+				"orderBy": "due"
+			},
 			"expected": [
 				"task_01k00000000000000000000002",
 				"task_01k00000000000000000000001"
@@ -102,32 +111,6 @@
 				"note_01k00000000000000000000020",
 				"task_01k00000000000000000000002"
 			]
-		}
-	],
-	"calendarQueries": [
-		{
-			"start": "2026-09-04T00:00:00Z",
-			"end": "2026-09-05T00:00:00Z",
-			"expected": [
-				["project_01k00000000000000000000010", "start"],
-				["note_01k00000000000000000000030", "due"],
-				["note_01k00000000000000000000030", "due"],
-				["task_01k00000000000000000000001", "due"],
-				["task_01k00000000000000000000003", "start"]
-			]
-		},
-		{
-			"start": "2026-09-05",
-			"end": "2026-09-06",
-			"expected": [
-				["project_01k00000000000000000000010", "start"],
-				["note_01k00000000000000000000020", "date"]
-			]
-		},
-		{
-			"start": "2026-09-05T00:00:00Z",
-			"end": "2026-09-04T00:00:00Z",
-			"error": "invalid_calendar_range"
 		}
 	],
 	"entries": [

@@ -1,0 +1,18 @@
+id = "ai"
+name = "AI"
+version = "0.1.0"
+interface-version = "0.1.0"
+entry = "ai_plugin.wasm"
+platforms = ["desktop"]
+
+# The chat and chat-message types, and the panel beside a chat file.
+[[capabilities]]
+name = "object-types"
+
+# The AI page and its list of chats.
+[[capabilities]]
+name = "views"
+
+# Chats with the providers you set up, once you consent.
+[[capabilities]]
+name = "ai"

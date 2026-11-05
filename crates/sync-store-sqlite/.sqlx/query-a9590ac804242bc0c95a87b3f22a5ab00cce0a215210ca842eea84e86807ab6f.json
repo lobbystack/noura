@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO rewrap_requests (workspace, domain, epoch, device, key_seq)\n             VALUES (?1, ?2, ?3, ?4, ?5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "a9590ac804242bc0c95a87b3f22a5ab00cce0a215210ca842eea84e86807ab6f"
+}

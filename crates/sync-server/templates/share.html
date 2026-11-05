@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Shared note{% endblock %}
+{% block content %}
+<section class="share" data-share>
+<p data-share-status>Opening the shared note…</p>
+<noscript><p>Turn on JavaScript to read this note. Your browser decrypts it, so the server never sees it.</p></noscript>
+<p class="share-warning" data-share-warning hidden></p>
+<article class="share-note" data-share-note hidden>
+<h1 data-share-title></h1>
+<div data-share-body></div>
+</article>
+</section>
+{% endblock %}

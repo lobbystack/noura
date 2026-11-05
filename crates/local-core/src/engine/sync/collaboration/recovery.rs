@@ -437,9 +437,7 @@ impl WorkspaceEngine {
                 (None, Some(trash)) if markdown::revision(&trash) == intent.next.revision => {}
                 _ => return Err(invalid("collaboration_external_change")),
             }
-            if let Ok(mut writes) = self.self_writes.lock() {
-                writes.insert(intent.next.path.clone(), "<deleted>".into());
-            }
+            self.expect_own_write(&intent.next.path, None);
         } else if let Some(previous_path) = intent.previous_path.as_deref() {
             let source_path = self.sync_file_path(previous_path)?;
             let destination_path = self.sync_file_path(&intent.next.path)?;
@@ -456,10 +454,8 @@ impl WorkspaceEngine {
                     if markdown::revision(&destination) == intent.next.revision => {}
                 _ => return Err(invalid("collaboration_external_change")),
             }
-            if let Ok(mut writes) = self.self_writes.lock() {
-                writes.insert(previous_path.into(), "<deleted>".into());
-                writes.insert(intent.next.path.clone(), intent.next.revision.clone());
-            }
+            self.expect_own_write(previous_path, None);
+            self.expect_own_write(&intent.next.path, Some(&intent.next.revision));
         } else {
             let current = read_optional(&self.sync_file_path(&intent.next.path)?)?
                 .ok_or_else(|| invalid("collaboration_file_missing"))?;
@@ -539,16 +535,10 @@ impl WorkspaceEngine {
                 &(digest, &next.revision),
             )?;
         }
-        if let Ok(mut writes) = self.self_writes.lock() {
-            writes.insert(
-                next.path.clone(),
-                if next.deleted {
-                    "<deleted>".into()
-                } else {
-                    next.revision.clone()
-                },
-            );
-        }
+        self.expect_own_write(
+            &next.path,
+            (!next.deleted).then_some(next.revision.as_str()),
+        );
         self.sync_write(
             &intent_path(&next.object_id)?,
             &Option::<DocumentIntent>::None,

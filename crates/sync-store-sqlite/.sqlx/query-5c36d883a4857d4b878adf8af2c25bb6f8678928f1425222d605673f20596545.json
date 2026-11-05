@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM rewrap_requests WHERE workspace = ?1 AND domain = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "5c36d883a4857d4b878adf8af2c25bb6f8678928f1425222d605673f20596545"
+}

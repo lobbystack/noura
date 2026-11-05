@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO key_sequences (workspace, key_seq) VALUES (?1, 1)\n             ON CONFLICT (workspace) DO UPDATE SET key_seq = key_seq + 1\n             RETURNING key_seq",
+  "describe": {
+    "columns": [
+      {
+        "name": "key_seq",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "key_sequences",
+            "name": "key_seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7a84f906c09a7260183fc2b326a363d9f02dae108cadf173f5615d31c640b40b"
+}

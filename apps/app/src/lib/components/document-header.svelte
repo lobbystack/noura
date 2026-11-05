@@ -2,8 +2,8 @@
 	import { normalizeFileName, splitFileName } from '$lib/editor/rename';
 
 	/**
-	 * The header of every Markdown document: the folder path and the file
-	 * name, which is the title. Editing the name renames the file when the
+	 * The header of every Markdown document: the file name, which is the
+	 * title. Editing the name renames the file when the
 	 * edit is committed (Enter or leaving the field); typing never renames.
 	 */
 	let {
@@ -24,7 +24,6 @@
 	} = $props();
 
 	const parts = $derived(splitFileName(relativePath));
-	const crumbs = $derived(parts.folder ? parts.folder.split('/') : []);
 	const markdown = $derived(parts.extension.toLowerCase() === '.md');
 	/** What is being typed; null while the field shows the file name. */
 	let draft = $state<string | null>(null);
@@ -108,19 +107,7 @@
 
 <svelte:window onkeydown={renameShortcut} />
 
-<header class="flex min-h-16 flex-col justify-center gap-0.5 px-6 py-2">
-	{#if crumbs.length > 0}
-		<nav aria-label="Folder" class="min-w-0">
-			<ol class="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
-				{#each crumbs as crumb, index (index)}
-					<li class="truncate">{crumb}</li>
-					{#if index < crumbs.length - 1}
-						<li aria-hidden="true">/</li>
-					{/if}
-				{/each}
-			</ol>
-		</nav>
-	{/if}
+<header class="flex min-h-12 flex-col justify-center px-6 py-2">
 	<div class="flex min-w-0 items-baseline">
 		<input
 			{@attach focusName}

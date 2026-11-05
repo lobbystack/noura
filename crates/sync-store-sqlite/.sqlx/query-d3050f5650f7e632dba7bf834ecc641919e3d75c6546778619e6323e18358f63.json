@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM blob_segments WHERE workspace = ?1 AND blob = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "d3050f5650f7e632dba7bf834ecc641919e3d75c6546778619e6323e18358f63"
+}

@@ -46,7 +46,7 @@ const localRouteMemory: RouteMemory = {
 
 /**
  * Remembers the page each workspace was on and reopens it once when the
- * workspace opens. The app starts on Home, so the first Home visit for a
+ * workspace opens. The app starts on the Inbox, so the first Inbox visit for a
  * workspace is replaced by its last page; every later navigation is saved.
  */
 export class LastRoute {
@@ -57,7 +57,7 @@ export class LastRoute {
 	/** Call after each navigation. Returns a route to go to instead, if any. */
 	arrived(workspaceId: string | null | undefined, url: URL): string | null {
 		if (!workspaceId) return null;
-		// `/` only forwards to Home; wait for where it lands.
+		// `/` only forwards to the Inbox; wait for where it lands.
 		if (url.pathname === '/') return null;
 		if (!this.#restored.has(workspaceId)) {
 			this.#restored.add(workspaceId);

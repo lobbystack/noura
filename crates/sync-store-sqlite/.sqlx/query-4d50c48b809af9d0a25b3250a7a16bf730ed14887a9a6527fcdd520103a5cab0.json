@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO rids (workspace, rid, domain) VALUES (?1, ?2, ?3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "4d50c48b809af9d0a25b3250a7a16bf730ed14887a9a6527fcdd520103a5cab0"
+}

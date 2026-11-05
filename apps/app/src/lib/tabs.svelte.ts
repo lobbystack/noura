@@ -1,5 +1,8 @@
 import { browser } from '$app/environment';
 import {
+	PAGE_TABS,
+	pageRouteFor,
+	pageTabObjectId,
 	parseStoredTabs,
 	remapTabPaths,
 	tabsUnderPath,
@@ -20,6 +23,8 @@ class TabsStore {
 	#workspaceId: string | null | undefined;
 	tabs = $state<Tab[]>([]);
 	activeId = $state<string | null>(null);
+	/** The document tab that was on screen before a page tab took over. */
+	#lastDocumentId: string | null = null;
 	/** Documents to open as normal tabs instead of previews (a double-click). */
 	#keepOnOpen = new Set<string>();
 
@@ -58,6 +63,92 @@ class TabsStore {
 		} else {
 			this.tabs = [...this.tabs, tab];
 		}
+		this.activeId = tab.id;
+		this.#save();
+		return tab.id;
+	}
+
+	/**
+	 * Open an app page such as Calendar in a tab of its own that stays open,
+	 * or switch to the one already open.
+	 */
+	openPage(route: string, title: string) {
+		const existing = this.tabs.find(
+			(tab) => tab.objectId === pageTabObjectId(route),
+		);
+		if (existing) {
+			this.#rememberDocument();
+			this.activeId = existing.id;
+			this.keep(existing.id);
+			this.#save();
+			return existing.id;
+		}
+		return this.#addPage(route, title, route, false);
+	}
+
+	/**
+	 * Arriving on an app page shows it as a tab: its open tab, or a preview
+	 * tab that the next thing you open replaces. The tab remembers where you
+	 * are in the page, such as the Tasks view.
+	 */
+	followPage(url: URL) {
+		const route = pageRouteFor(url);
+		if (route === null) return;
+		const href = `${url.pathname}${url.search}`;
+		const tab = this.tabs.find(
+			(candidate) => candidate.objectId === pageTabObjectId(route),
+		);
+		if (!tab) {
+			this.#addPage(route, PAGE_TABS[route]!, href, true);
+			return;
+		}
+		if (this.activeId === tab.id && tab.href === href) return;
+		this.#rememberDocument();
+		this.activeId = tab.id;
+		this.tabs = this.tabs.map((candidate) =>
+			candidate.id === tab.id ? { ...candidate, href } : candidate,
+		);
+		this.#save();
+	}
+
+	#rememberDocument() {
+		const active = this.active;
+		if (active && active.objectType !== 'page')
+			this.#lastDocumentId = active.id;
+	}
+
+	/**
+	 * The document to show on Files: the active tab when it is a document,
+	 * otherwise the document that was on screen before a page tab.
+	 */
+	get documentTab(): Tab | undefined {
+		const active = this.active;
+		if (active && active.objectType !== 'page') return active;
+		return (
+			this.tabs.find((tab) => tab.id === this.#lastDocumentId) ??
+			this.tabs.findLast((tab) => tab.objectType !== 'page')
+		);
+	}
+
+	#addPage(route: string, title: string, href: string, preview: boolean) {
+		this.#rememberDocument();
+		const tab: Tab = {
+			id: crypto.randomUUID(),
+			objectId: pageTabObjectId(route),
+			objectType: 'page',
+			title,
+			preview,
+			href,
+		};
+		const previewIndex = preview
+			? this.tabs.findIndex((candidate) => candidate.preview)
+			: -1;
+		this.tabs =
+			previewIndex >= 0
+				? this.tabs.map((candidate, index) =>
+						index === previewIndex ? tab : candidate,
+					)
+				: [...this.tabs, tab];
 		this.activeId = tab.id;
 		this.#save();
 		return tab.id;

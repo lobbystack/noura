@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO recorded_accounts (workspace, account) VALUES (?1, ?2)\n                 ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "208cc1b94c8523afae448103b6a5818c8c3b77c23e3b35bde0fc828292df2fb1"
+}

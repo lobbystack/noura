@@ -1,4 +1,8 @@
 <script lang="ts">
+	import SidebarSectionLabel from '$lib/components/sidebar/sidebar-section-label.svelte';
+	import TaskNameInput from '$lib/components/task-name-input.svelte';
+	import { createTask as createNamedTask } from '$lib/task-actions';
+	import { isSectionCollapsed } from '$lib/preferences.svelte';
 	import { choiceLabel } from '$lib/property-labels';
 	import { getRouteSidebar } from '$lib/route-sidebar.svelte';
 	const routeSidebar = getRouteSidebar();
@@ -229,15 +233,22 @@
 		})();
 	});
 
-	async function createTask() {
-		if (!selected || !(await flushPendingDrafts())) return;
-		const result = await getNouraClient().tasks.create({
-			title: 'New task',
-			properties: { project: selected.id, status: 'todo', priority: 'medium' },
+	/** A new project task is being named; it exists only once named. */
+	let draftingTask = $state(false);
+
+	async function createTask(title: string): Promise<boolean> {
+		if (!selected || !(await flushPendingDrafts())) return false;
+		const created = await createNamedTask(title, {
+			project: selected.id,
+			status: 'todo',
+			priority: 'medium',
 		});
+		if (!created) return false;
+		draftingTask = false;
 		await refreshProjection();
-		selectedTask = result.value as Task;
-		tabsStore.open(selectedTask.id, 'task', selectedTask.title);
+		selectedTask = created;
+		tabsStore.open(created.id, 'task', created.title);
+		return true;
 	}
 
 	async function openTask(task: Task) {
@@ -310,66 +321,68 @@
 
 {#snippet projectSidebar()}
 	<Sidebar.SidebarGroup>
-		<Sidebar.SidebarGroupLabel
-			>Projects <span class="ml-2 font-normal">{summaries.length}</span
-			></Sidebar.SidebarGroupLabel
+		<SidebarSectionLabel section="projects.list"
+			>Projects <span class="ml-1 font-normal">{summaries.length}</span
+			></SidebarSectionLabel
 		>
 		<Sidebar.SidebarGroupAction
 			onclick={() => void create()}
 			aria-label="New project"
 			title="New project"><Plus /></Sidebar.SidebarGroupAction
 		>
-		<Sidebar.SidebarGroupContent>
-			{#if loading}
-				<div class="flex flex-col gap-1">
-					{#each [0, 1, 2] as item (item)}<Skeleton
-							class="h-12 w-full"
-						/>{/each}
-				</div>
-			{:else if summaries.length === 0}
-				<EmptyState
-					icon={FolderOpen}
-					title="No projects"
-					description="Organize work with projects."
-					actionLabel="New project"
-					onAction={create}
-				/>
-			{:else}
-				<nav aria-label="Projects">
-					<Sidebar.SidebarMenu>
-						{#each summaries as summary (summary.project.id)}
-							<Sidebar.SidebarMenuItem>
-								<Sidebar.SidebarMenuButton
-									size="lg"
-									isActive={selectedId === summary.project.id}
-									onclick={() => void select(summary.project)}
-									title={summary.project.title}
-								>
-									<div class="min-w-0 flex-1">
-										<span class="block truncate text-xs font-medium"
-											>{summary.project.title}</span
-										>
-										<span class="text-xs text-muted-foreground"
-											>{summary.taskCount} task{summary.taskCount === 1
-												? ''
-												: 's'}</span
-										>
-									</div>
-									<Badge
-										class="max-w-20 shrink-0 truncate"
-										variant={statusVariant(summary.project.properties.status)}
-										>{statusLabel(
-											summary.project.properties.status,
-											'planned',
-										)}</Badge
+		{#if !isSectionCollapsed('projects.list')}
+			<Sidebar.SidebarGroupContent>
+				{#if loading}
+					<div class="flex flex-col gap-1">
+						{#each [0, 1, 2] as item (item)}<Skeleton
+								class="h-12 w-full"
+							/>{/each}
+					</div>
+				{:else if summaries.length === 0}
+					<EmptyState
+						icon={FolderOpen}
+						title="No projects"
+						description="Organize work with projects."
+						actionLabel="New project"
+						onAction={create}
+					/>
+				{:else}
+					<nav aria-label="Projects">
+						<Sidebar.SidebarMenu>
+							{#each summaries as summary (summary.project.id)}
+								<Sidebar.SidebarMenuItem>
+									<Sidebar.SidebarMenuButton
+										size="lg"
+										isActive={selectedId === summary.project.id}
+										onclick={() => void select(summary.project)}
+										title={summary.project.title}
 									>
-								</Sidebar.SidebarMenuButton>
-							</Sidebar.SidebarMenuItem>
-						{/each}
-					</Sidebar.SidebarMenu>
-				</nav>
-			{/if}
-		</Sidebar.SidebarGroupContent>
+										<div class="min-w-0 flex-1">
+											<span class="block truncate text-xs font-medium"
+												>{summary.project.title}</span
+											>
+											<span class="text-xs text-muted-foreground"
+												>{summary.taskCount} task{summary.taskCount === 1
+													? ''
+													: 's'}</span
+											>
+										</div>
+										<Badge
+											class="max-w-20 shrink-0 truncate"
+											variant={statusVariant(summary.project.properties.status)}
+											>{statusLabel(
+												summary.project.properties.status,
+												'planned',
+											)}</Badge
+										>
+									</Sidebar.SidebarMenuButton>
+								</Sidebar.SidebarMenuItem>
+							{/each}
+						</Sidebar.SidebarMenu>
+					</nav>
+				{/if}
+			</Sidebar.SidebarGroupContent>
+		{/if}
 	</Sidebar.SidebarGroup>
 {/snippet}
 
@@ -416,7 +429,7 @@
 						<div class="flex items-center justify-between px-4 py-3">
 							<span class="text-sm font-medium">Project tasks</span><Button
 								size="sm"
-								onclick={() => void createTask()}
+								onclick={() => (draftingTask = true)}
 								><Plus data-icon="inline-start" />Add task</Button
 							>
 						</div>
@@ -424,6 +437,15 @@
 						<div
 							class="min-h-0 flex-1 overflow-y-auto divide-y divide-border/60"
 						>
+							{#if draftingTask}
+								<div class="px-4 py-2">
+									<TaskNameInput
+										label="New task name"
+										oncommit={createTask}
+										oncancel={() => (draftingTask = false)}
+									/>
+								</div>
+							{/if}
 							{#each tasks as task (task.id)}<button
 									class="w-full px-4 py-3 text-left hover:bg-muted/50 {selectedTask?.id ===
 									task.id
@@ -435,9 +457,11 @@
 									><span class="text-xs text-muted-foreground"
 										>{statusLabel(task.properties.status, 'todo')}</span
 									></button
-								>{:else}<p class="p-4 text-sm text-muted-foreground">
-									No tasks in this project.
-								</p>{/each}
+								>{:else}{#if !draftingTask}<p
+										class="p-4 text-sm text-muted-foreground"
+									>
+										No tasks in this project.
+									</p>{/if}{/each}
 						</div>
 					</section>
 					<section class="flex min-w-0 flex-1">

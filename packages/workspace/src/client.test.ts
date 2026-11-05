@@ -82,6 +82,8 @@ describe('typed client', () => {
 			systemTrash: true,
 			workspaceFolders: true,
 			mcp: true,
+			fileDrops: false,
+			dragOut: false,
 		});
 		expect(
 			(mock as CoreTransport & { calls: Array<Record<string, unknown>> }).calls,

@@ -1,0 +1,1013 @@
+//! `MdEdit` orchestration — split into an early keyboard-input phase and a
+//! later draw phase .
+//!
+//! - [`MdEdit::handle_input`] runs early, processes keyboard + internal
+//!   events and mutates the buffer.
+//! - [`MdEdit::show`] runs during draw, registers the widget for pointer
+//!   hit-test, processes pointer events, renders, draws cursor / selection /
+//!   touch handles, and consumes a pending scroll-to-cursor.
+
+use comrak::nodes::AstNode;
+use editor_core::buffer::{self, Buffer};
+use editor_core::offset_types::{Grapheme, RangeExt as _};
+use egui::os::OperatingSystem;
+use egui::{Context, EventFilter, Id, Pos2, Rect, Sense, Stroke, Ui, UiBuilder};
+
+use crate::ScrollTarget;
+use crate::palette::ThemeExt as _;
+
+use super::MdEdit;
+use super::input::{Bound, Event, Location, Region};
+use super::widget::block::drag::{BlockBox, BlockDragAction, TouchReorder};
+
+/// Hand-off between [`MdEdit::pre_render`] and [`MdEdit::post_render`].
+pub struct PreRenderState {
+    focused: bool,
+    /// Painter slot reserved before block rendering so the selection
+    /// highlight paints *behind* the block content drawn afterwards
+    /// (bullets, quote bars, checkboxes — painted immediately, not via
+    /// the deferred glyph callback). Filled in `post_render`.
+    selection_shape: egui::layers::ShapeIdx,
+}
+
+impl MdEdit {
+    /// Input phase: consume keyboard events, drain the internal event queue,
+    /// and mutate the buffer. Called early — before any sibling widget's
+    /// draw — so `consume_key` happens in priority order with other widgets.
+    ///
+    /// Callers that want to intercept specific key chords (e.g. a chat
+    /// composer treating `Cmd+Enter` as "send") should call `consume_key`
+    /// themselves *before* invoking this function; otherwise the keys fall
+    /// through to `translate_egui_keyboard_event` (plain `Enter` becomes
+    /// `Event::Newline`).
+    pub fn handle_input(&mut self, ctx: &Context, id: Id) -> buffer::Response {
+        let focused = ctx.memory(|m| m.has_focus(id));
+        let prior_entered_atom = self.renderer.entered_atom;
+        self.end_dropped_composition(ctx, focused);
+
+        // Deferred block reorder
+        let move_resp = match self.pending_block_move.take() {
+            Some((section_range, insert_offset)) => {
+                self.renderer.move_block(section_range, insert_offset)
+            }
+            None => buffer::Response::default(),
+        };
+
+        let ast = self.renderer.take_ast();
+
+        let mut ops = Vec::new();
+        // Some events (Undo, Redo) mutate state directly inside
+        // `calc_operations` instead of pushing to `ops`. Their `Response`
+        // must be merged with the queued-op response so reparse & cache
+        // invalidation fire when undo changes the text.
+        let mut direct_resp = buffer::Response::default();
+        // Undo/redo restore the selection exactly, possibly into folded
+        // contents (undoing an auto-unfold restores both the tag and the
+        // triggering selection); the fold check below stands down for the
+        // frame so undo isn't immediately re-undone.
+        let mut undo_redo = false;
+
+        ast.with_root(|root| {
+            for event in std::mem::take(&mut self.event.internal_events) {
+                undo_redo |= matches!(event, Event::Undo | Event::Redo);
+                direct_resp |= self.calc_operations(ctx, root, event, &mut ops);
+            }
+
+            if focused {
+                let filter = EventFilter {
+                    tab: true,
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    escape: false,
+                };
+                let key_events: Vec<egui::Event> = ctx.input(|r| r.filtered_events(&filter));
+                for e in key_events {
+                    if let Some(edit_event) = self.translate_egui_keyboard_event(e, root) {
+                        undo_redo |= matches!(edit_event, Event::Undo | Event::Redo);
+                        direct_resp |= self.calc_operations(ctx, root, edit_event, &mut ops);
+                    }
+                }
+            }
+        });
+        self.renderer.put_ast(ast);
+
+        self.renderer.buffer.queue(ops);
+        let mut buf_resp = direct_resp;
+        buf_resp |= self.renderer.buffer.update();
+        buf_resp |= move_resp; // a deferred reorder reports its text/selection edit
+
+        if buf_resp.text_updated {
+            self.renderer.bump_text_seq();
+            self.renderer.parse();
+        }
+
+        let edited = buf_resp.text_updated || buf_resp.selection_user_moved;
+        buf_resp |= self.renderer.unfold_after_edit(edited, undo_redo);
+
+        // An entered atom stays revealed only while the selection remains
+        // within it; the range is re-resolved against the (possibly edited)
+        // AST each frame so it tracks the atom rather than going stale.
+        if let Some(prev) = self.renderer.entered_atom {
+            let ast = self.renderer.take_ast();
+            let sel = self.renderer.buffer.current.selection;
+            let entered = ast.with_root(|root| {
+                root.descendants().find_map(|node| {
+                    use comrak::nodes::NodeValue;
+                    if !matches!(node.data.borrow().value, NodeValue::Link(_)) {
+                        return None;
+                    }
+                    let range = self.renderer.node_range(node);
+                    (range.contains_range(&sel, true, true) && range.intersects(&prev, true))
+                        .then_some(range)
+                })
+            });
+            self.renderer.put_ast(ast);
+            self.renderer.entered_atom = entered;
+        }
+
+        self.sync_reveal_selection(ctx, id, prior_entered_atom);
+
+        if buf_resp.text_updated || buf_resp.selection_user_moved {
+            self.cursor_last_interact = Some(ctx.input(|i| i.time));
+        }
+
+        buf_resp
+    }
+
+    /// Gives the editor the keyboard, ending any composition: egui
+    /// interrupts the input method's composition on every focus request,
+    /// and the platform drops its marked text.
+    pub fn request_focus(&mut self, ctx: &Context, id: Id) {
+        ctx.memory_mut(|m| m.request_focus(id));
+        self.renderer.doc.end_composition();
+    }
+
+    /// Ends a composition the input method dropped without saying so. egui
+    /// turns the input method off in a pass where no widget asks for it,
+    /// as when the editor loses the keyboard or isn't shown, and interrupts
+    /// the composition when a widget asks for the keyboard. The platform
+    /// then drops its marked text and sends no empty composition or commit:
+    /// winit sends only `Ime::Disabled`, which egui-winit ignores. So the
+    /// composition ends here, as a cancel would, once the editor lost the
+    /// keyboard or didn't hold the input method in the previous pass.
+    fn end_dropped_composition(&mut self, ctx: &Context, focused: bool) {
+        if self.renderer.doc.composition().is_none() {
+            return;
+        }
+        let pass = ctx.cumulative_pass_nr();
+        let held = self.ime_pass.is_some_and(|held| held + 1 >= pass);
+        if !focused || !held {
+            self.renderer.doc.end_composition();
+        }
+    }
+
+    /// Apply an edit from a platform text system (UIKit) now, outside the
+    /// frame, so its next query reads the result. The frame that follows does
+    /// not report this change back as its own.
+    pub fn apply_platform_event(&mut self, event: Event) -> buffer::Response {
+        self.apply_platform(event, true)
+    }
+
+    /// [`Self::apply_platform_event`], revealing the caret afterwards only
+    /// if `reveal`: a selection the platform writes mid-gesture is under
+    /// the finger already, and a reveal would fight the gesture's scroll.
+    pub fn apply_platform(&mut self, event: Event, reveal: bool) -> buffer::Response {
+        let ctx = self.renderer.ctx.clone();
+        let ast = self.renderer.take_ast();
+        let undo_redo = matches!(event, Event::Undo | Event::Redo);
+        let mut ops = Vec::new();
+        let mut resp = ast.with_root(|root| self.calc_operations(&ctx, root, event, &mut ops));
+        self.renderer.put_ast(ast);
+        self.renderer.buffer.queue(ops);
+        resp |= self.renderer.buffer.update();
+        if resp.text_updated {
+            self.renderer.bump_text_seq();
+            self.renderer.parse();
+        }
+        // The frame's own edits get this in `show`; a platform's edit is
+        // applied here, before that frame sees anything to unfold for.
+        let edited = resp.text_updated || resp.selection_user_moved;
+        resp |= self.renderer.unfold_after_edit(edited, undo_redo);
+        if reveal && (resp.text_updated || resp.selection_user_moved) {
+            self.pending_scroll = Some(ScrollTarget::Cursor);
+            self.cursor_last_interact = Some(ctx.input(|i| i.time));
+        }
+        ctx.request_repaint();
+        resp
+    }
+
+    /// The edit a paste of `text` makes: a URL over a selection links it.
+    pub fn paste_event(&mut self, text: String) -> Option<Event> {
+        let ast = self.renderer.take_ast();
+        let event = ast
+            .with_root(|root| self.translate_egui_keyboard_event(egui::Event::Paste(text), root));
+        self.renderer.put_ast(ast);
+        event
+    }
+
+    /// Sync `reveal_selection` to the buffer selection, bumping `reveal_seq`
+    /// (and requesting a repaint) when it or `entered_atom` changed. Runs in
+    /// `handle_input` and again after [`Self::pre_render`] applies
+    /// pointer/tap ops, so the frame that reports a selection change also
+    /// paints its reveal — iOS queries caret and selection geometry
+    /// synchronously on that report.
+    fn sync_reveal_selection(
+        &mut self,
+        ctx: &Context,
+        id: Id,
+        prior_entered_atom: Option<(Grapheme, Grapheme)>,
+    ) {
+        let new_reveal_selection = (!self.renderer.readonly && ctx.memory(|m| m.has_focus(id)))
+            .then_some(self.renderer.buffer.current.selection);
+        if self.renderer.reveal_selection != new_reveal_selection
+            || prior_entered_atom != self.renderer.entered_atom
+        {
+            self.renderer.reveal_selection = new_reveal_selection;
+            self.renderer.reveal_seq = self
+                .renderer
+                .ws_seq
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            ctx.request_repaint();
+        }
+    }
+
+    /// Draw the document inline at `rect`: pointer + context menu via
+    /// [`MdEdit::pre_render`], paint every block, then cursor /
+    /// selection / IME / scroll-to-cursor / text callback via
+    /// [`MdEdit::post_render`].
+    pub fn show(&mut self, ui: &mut Ui, rect: Rect, id: Id) {
+        // The renderer lays out at `self.width`, not the passed rect — set it
+        // here so a bare `MdEdit` renders the rect it's given. (At width 0
+        // every block is skipped as too-narrow: no glyphs, and no fragments
+        // for the cursor to resolve against.) A single-line field lays out on
+        // one effectively unbounded line; the rect clips the overflow and
+        // `single_line_scroll` shifts the layout to keep the cursor in view.
+        let layout_width = if self.renderer.single_line {
+            100_000.0
+        } else {
+            rect.width()
+        };
+        self.renderer.set_width(layout_width);
+        let ast = self.renderer.take_ast();
+        ast.with_root(|root| self.show_parsed(ui, rect, id, root));
+        self.renderer.put_ast(ast);
+    }
+
+    /// [`Self::show`] with the parse of the text.
+    fn show_parsed<'ast>(&mut self, ui: &mut Ui, rect: Rect, id: Id, root: &'ast AstNode<'ast>) {
+        // A multi-line field shorter than its content (the chat composer at
+        // max height) scrolls vertically: wheel here, cursor-follow at the
+        // bottom of this fn. `height` is memoized — computing it early is free.
+        let height = self.renderer.height(root);
+        let overflow = if self.renderer.single_line {
+            0.0
+        } else {
+            (height - rect.height()).max(0.0)
+        };
+        if overflow > 0.0 && ui.rect_contains_pointer(rect) {
+            let delta = ui.input_mut(|i| std::mem::take(&mut i.smooth_scroll_delta.y));
+            self.overflow_scroll -= delta;
+        }
+        self.overflow_scroll = self.overflow_scroll.clamp(0.0, overflow);
+
+        let origin = rect.min - egui::vec2(self.single_line_scroll, self.overflow_scroll);
+        // Composer entry point (chat).
+        let pre = self.pre_render(ui, rect, id, root);
+
+        self.renderer.fragments.clear();
+        self.renderer.block_boxes.clear();
+        self.renderer.in_progress_block_drag = self.in_progress_block_drag;
+        self.renderer.bounds.wrap_lines.clear();
+        self.renderer.text_areas.clear();
+        self.renderer.deco_lines.clear();
+        self.renderer.touch_targets.clear();
+        let render_rect = Rect::from_min_size(rect.min, egui::Vec2::new(rect.width(), height));
+        ui.scope_builder(UiBuilder::new().max_rect(render_rect), |ui| {
+            // Clip the (possibly overflowing) layout to the field.
+            if self.renderer.single_line || overflow > 0.0 {
+                ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+            }
+            self.renderer.show_block(ui, root, origin);
+        });
+        self.renderer.fragments.sort_by_key(|f| f.source_range);
+
+        self.handle_block_drag(ui, root);
+        self.post_render(ui, rect, id, pre, root);
+        self.draw_dragged_overlay(ui, root);
+        if overflow > 0.0 {
+            self.show_overflow_scrollbar(ui, rect, id, height, overflow);
+        }
+
+        // Keep the cursor inside the rect: fragments (and so `cursor_line`)
+        // are in shifted screen coords, so edge overshoot maps 1:1 onto a
+        // scroll correction. Converges within a frame or two — hence repaint.
+        if self.renderer.single_line {
+            let sel_end = self
+                .in_progress_selection
+                .unwrap_or(self.renderer.buffer.current.selection)
+                .1;
+            let pad = 8.0;
+            let mut scroll = self.single_line_scroll;
+            if let Some([top, _]) = self.cursor_line(sel_end) {
+                let (left, right) = (rect.left() + pad, (rect.right() - pad).max(rect.left()));
+                if top.x > right {
+                    scroll += top.x - right;
+                } else if top.x < left {
+                    scroll -= left - top.x;
+                }
+            }
+            let scroll = scroll.max(0.0);
+            if scroll != self.single_line_scroll {
+                self.single_line_scroll = scroll;
+                ui.ctx().request_repaint();
+            }
+        }
+
+        // The same correction vertically for a bounded multi-line field, but
+        // only when the buffer / rect changed or a drag-selection is in
+        // flight — a wheel scroll can move the cursor out of view.
+        let follow = (
+            self.renderer.buffer.current.seq,
+            self.renderer.buffer.current.selection,
+            rect,
+        );
+        if !self.renderer.single_line
+            && (follow != self.overflow_follow || self.in_progress_selection.is_some())
+        {
+            self.overflow_follow = follow;
+            let sel_end = self
+                .in_progress_selection
+                .unwrap_or(self.renderer.buffer.current.selection)
+                .1;
+            let mut scroll = self.overflow_scroll;
+            if let Some([top, bot]) = self.cursor_line(sel_end) {
+                if bot.y > rect.bottom() {
+                    scroll += bot.y - rect.bottom();
+                } else if top.y < rect.top() {
+                    scroll -= rect.top() - top.y;
+                }
+            }
+            let scroll = scroll.clamp(0.0, overflow);
+            if scroll != self.overflow_scroll {
+                self.overflow_scroll = scroll;
+                ui.ctx().request_repaint();
+            }
+        }
+    }
+
+    /// Overlay scrollbar on the right edge of an overflowing bounded field.
+    /// Same grab semantics as the document bar; paint/fade matches Files.
+    fn show_overflow_scrollbar(
+        &mut self,
+        ui: &mut Ui,
+        rect: Rect,
+        id: Id,
+        height: f32,
+        overflow: f32,
+    ) {
+        use crate::style::overlay_scroll;
+        const MIN_THUMB: f32 = 12.0;
+        let track = Rect::from_min_max(
+            Pos2::new(
+                rect.max.x - overlay_scroll::BAR_WIDTH - overlay_scroll::BAR_INSET,
+                rect.min.y,
+            ),
+            Pos2::new(rect.max.x - overlay_scroll::BAR_INSET, rect.max.y),
+        );
+        let thumb_h = (track.height() * rect.height() / height).max(MIN_THUMB);
+        let movable = track.height() - thumb_h;
+        let thumb_at = |scroll: f32| {
+            Rect::from_min_size(
+                Pos2::new(track.min.x, track.min.y + movable * (scroll / overflow)),
+                egui::Vec2::new(track.width(), thumb_h),
+            )
+        };
+
+        // Same as the document bar: no hit while hidden, so a faded thumb
+        // cannot jump-scroll or steal composer drags.
+        let overlay_id = id.with("overflow_overlay");
+        let bar_live = overlay_scroll::is_shown(ui, overlay_id);
+        if bar_live {
+            let resp = ui.interact(
+                track,
+                id.with("overflow_scrollbar"),
+                Sense::click_and_drag(),
+            );
+            if movable > 0.0
+                && let Some(pos) = resp.interact_pointer_pos()
+            {
+                let on_thumb = thumb_at(self.overflow_scroll).contains(pos);
+                if (resp.drag_started() || resp.clicked()) && !on_thumb {
+                    let target = (pos.y - track.min.y - thumb_h / 2.0).clamp(0.0, movable);
+                    self.overflow_scroll = target / movable * overflow;
+                } else if resp.dragged() && !resp.drag_started() {
+                    self.overflow_scroll = (self.overflow_scroll
+                        + resp.drag_delta().y / movable * overflow)
+                        .clamp(0.0, overflow);
+                }
+                ui.ctx().request_repaint();
+            }
+            let bar_held = resp.hovered() || resp.dragged() || resp.is_pointer_button_down_on();
+            if overlay_scroll::tick(ui, overlay_id, self.overflow_scroll, bar_held) {
+                overlay_scroll::paint(ui, track, thumb_at(self.overflow_scroll), bar_held);
+            }
+        } else if overlay_scroll::tick(ui, overlay_id, self.overflow_scroll, false) {
+            overlay_scroll::paint(ui, track, thumb_at(self.overflow_scroll), false);
+        }
+    }
+
+    /// Consume the marker's [`BlockDragAction`] for the frame and, on
+    /// release, commit the reorder via [`MdEdit::move_block`].
+    pub(crate) fn handle_block_drag<'ast>(&mut self, ui: &mut Ui, root: &'ast AstNode<'ast>) {
+        match self.renderer.block_drag_action.take() {
+            Some(BlockDragAction::Started(drag)) => {
+                self.in_progress_block_drag = Some(drag);
+                // Highlight the dragged section during a desktop drag. Skipped
+                // on touch: the highlight sits under the float's cutout (so
+                // it's invisible anyway), and on iOS UIKit would draw it
+                // natively *over* the cutout — messy rects at the source. The
+                // post-move selection comes from `move_block` regardless.
+                // Shift extends the existing selection — works through a
+                // click-that-becomes-a-tiny-drag, so a bare shift+click
+                // respects the modifier too.
+                if !self.renderer.touch_mode {
+                    let shift = ui.input(|i| i.modifiers.shift);
+                    let region = if shift {
+                        let sel = self.renderer.buffer.current.selection;
+                        let lo = sel.start().min(drag.section_range.start());
+                        let hi = sel.end().max(drag.section_range.end());
+                        (lo, hi)
+                    } else {
+                        drag.section_range
+                    };
+                    self.renderer.render_events.push(Event::Select {
+                        region: region.into(),
+                    });
+                }
+            }
+            Some(BlockDragAction::Dragged(_)) => {}
+            Some(BlockDragAction::Released(pointer)) => {
+                if let Some(drag) = self.in_progress_block_drag.take()
+                    && let Some(gap) = self.renderer.drop_gap_for(&drag, pointer)
+                {
+                    // deferred move (applied next frame in `handle_input`)
+                    self.pending_block_move = Some((drag.section_range, gap.insert_offset));
+                    ui.ctx().request_repaint();
+                }
+            }
+            None => {}
+        }
+        if self.in_progress_block_drag.is_some() {
+            self.auto_scroll_to_drag_pointer(ui, root);
+            ui.ctx().request_repaint();
+        }
+    }
+
+    /// Edge-scroll while a block drag is in flight: reveal the pointer
+    /// padded by `row_height` on each side. The pointer y is clamped to
+    /// the viewport so dragging past the toolbar / window edge still
+    /// scrolls at full rate.
+    fn auto_scroll_to_drag_pointer<'ast>(&mut self, ui: &mut Ui, root: &'ast AstNode<'ast>) {
+        let Some(pointer) = self.drag_pointer(ui) else {
+            return;
+        };
+        let viewport = ui.clip_rect();
+        let viewport_y = (pointer.y - viewport.min.y).clamp(0.0, viewport.height());
+        let pad = self.renderer.layout.row_height;
+
+        use crate::scroll_content::DocScrollContent;
+        use crate::widgets::affine_scroll::{Align, Reveal};
+
+        let content = DocScrollContent::for_frame(&self.renderer, root, viewport.height());
+        let Some(top) = self
+            .scroll_area
+            .state
+            .offset_at_viewport_y(&content, viewport_y - pad)
+        else {
+            return;
+        };
+        let Some(bottom) = self
+            .scroll_area
+            .state
+            .offset_at_viewport_y(&content, viewport_y + pad)
+        else {
+            return;
+        };
+        self.scroll_area
+            .reveal(&content, Reveal { top, bottom }, Align::Nearest);
+    }
+
+    /// Drop indicator + source cutout + floating card. Must run after
+    /// `post_render` so its paint and second glyph callback composite
+    /// above the main text — same ordering trick `show_completions` uses.
+    pub(crate) fn draw_dragged_overlay<'a>(
+        &mut self,
+        ui: &mut Ui,
+        root: &'a comrak::nodes::AstNode<'a>,
+    ) {
+        let Some(drag) = self.in_progress_block_drag else {
+            return;
+        };
+        let Some(p) = self.drag_pointer(ui) else {
+            return;
+        };
+        let theme = self.renderer.ctx.get_lb_theme();
+        let primary = theme.bg().get_color(theme.prefs().primary);
+
+        // Drop-gap indicator: soft capsule with a hollow leading dot.
+        if let Some(gap) = self.renderer.drop_gap_for(&drag, p) {
+            let (x0, x1) = self
+                .renderer
+                .block_boxes
+                .iter()
+                .filter(|b| b.parent_start == drag.parent_start)
+                .fold((f32::MAX, f32::MIN), |(a, b), bx| {
+                    (a.min(bx.rect.left()), b.max(bx.rect.right()))
+                });
+            if x0 <= x1 {
+                // Start in the gutter so the dot isn't hidden by markers.
+                let x0 = x0 - self.renderer.layout.indent;
+                let y = gap.y as f32;
+                let dot = 4.0;
+                let half = 1.25;
+                let painter = ui.painter();
+                painter.rect_filled(
+                    egui::Rect::from_min_max(Pos2::new(x0, y - 3.0), Pos2::new(x1, y + 3.0)),
+                    egui::CornerRadius::same(3),
+                    primary.gamma_multiply(0.18),
+                );
+                painter.rect_filled(
+                    egui::Rect::from_min_max(
+                        Pos2::new(x0 + dot, y - half),
+                        Pos2::new(x1, y + half),
+                    ),
+                    egui::CornerRadius::same(1),
+                    primary,
+                );
+                painter.circle_filled(Pos2::new(x0 + dot, y), dot, primary);
+                painter.circle_filled(Pos2::new(x0 + dot, y), dot - 1.5, theme.neutral_bg());
+            }
+        }
+
+        let Some(src_rect) = self.renderer.section_rect(drag.section_range) else {
+            return;
+        };
+        // Vertical pad covers content that overflows the section rect
+        // (taller cursor row, code/spoiler outlines).
+        let vpad = self.renderer.layout.block_spacing / 2.0;
+        let card_rect = src_rect.expand2(egui::Vec2::new(0.0, vpad));
+        let hole = src_rect.expand2(egui::Vec2::new(0.0, vpad));
+
+        // Fill tracks the editor background (pure black on OLED); border
+        // matches link preview cards.
+        let card_corner = egui::CornerRadius::same(4);
+        let fill = theme.neutral_bg();
+        let stroke_color = theme.neutral_bg_tertiary();
+
+        // Source slot: an empty ghost of the card.
+        ui.painter().rect_filled(hole, card_corner, fill);
+        ui.painter().rect_stroke(
+            hole,
+            card_corner,
+            Stroke::new(0.5_f32, stroke_color),
+            egui::epaint::StrokeKind::Inside,
+        );
+
+        // Floating card translated so the grab-point stays under the
+        // pointer regardless of mid-drag scroll.
+        let offset = (p - src_rect.left_top()) - drag.grab_offset;
+        let card = card_rect.translate(offset);
+        ui.painter().rect_filled(card, card_corner, fill);
+        ui.painter().rect_stroke(
+            card,
+            card_corner,
+            Stroke::new(0.5_f32, stroke_color),
+            egui::epaint::StrokeKind::Inside,
+        );
+
+        // Re-draw the span translated; submit a second callback above
+        // the main text. Discard the fragments/block_boxes the float
+        // produces — keeping them would corrupt hit-testing.
+        let frag_len = self.renderer.fragments.len();
+        let box_len = self.renderer.block_boxes.len();
+        let section = drag.section_range;
+        // Top-most items in the span; descendants paint via `show_block`.
+        let in_span: Vec<BlockBox> = self
+            .renderer
+            .block_boxes
+            .iter()
+            .filter(|b| {
+                b.node_range.start() >= section.start() && b.node_range.end() <= section.end()
+            })
+            .copied()
+            .collect();
+        let constituents: Vec<(egui::Rect, (Grapheme, Grapheme))> = in_span
+            .iter()
+            .filter(|b| {
+                !in_span.iter().any(|o| {
+                    o.node_range != b.node_range
+                        && o.node_range.start() <= b.node_range.start()
+                        && b.node_range.end() <= o.node_range.end()
+                })
+            })
+            .map(|b| (b.rect, b.node_range))
+            .collect();
+        self.renderer.painting_drag_float = true;
+        ui.push_id("md_block_drag_float", |ui| {
+            for (rect, nr) in &constituents {
+                if let Some(node) = root
+                    .descendants()
+                    .find(|n| self.renderer.node_range(n) == *nr)
+                {
+                    self.renderer.show_block(ui, node, rect.min + offset);
+                }
+            }
+        });
+        self.renderer.painting_drag_float = false;
+        let floating_text = std::mem::take(&mut self.renderer.text_areas);
+        let floating_deco = std::mem::take(&mut self.renderer.deco_lines);
+        self.renderer.fragments.truncate(frag_len);
+        self.renderer.block_boxes.truncate(box_len);
+
+        if !floating_text.is_empty() {
+            ui.painter().add(egui_wgpu::Callback::new_paint_callback(
+                ui.clip_rect(),
+                crate::GlyphonRendererCallback::new(floating_text),
+            ));
+        }
+        for d in floating_deco {
+            d.paint(ui.painter());
+        }
+    }
+
+    /// Per-frame setup that runs before block rendering: dark-mode +
+    /// viewport snapshot, pointer hit-test, context menu, pointer →
+    /// selection. Returns the focus state for [`MdEdit::post_render`].
+    pub fn pre_render<'a>(
+        &mut self,
+        ui: &mut Ui,
+        rect: Rect,
+        id: Id,
+        root: &'a comrak::nodes::AstNode<'a>,
+    ) -> PreRenderState {
+        self.renderer.dark_mode = ui.style().visuals.dark_mode;
+        self.renderer.set_viewport_height(ui.clip_rect().height());
+        let prior_entered_atom = self.renderer.entered_atom;
+
+        ui.ctx().check_for_id_clash(id, rect, "");
+        let prev_focused = ui.memory(|m| m.has_focus(id));
+        let response = ui.interact(
+            rect,
+            id,
+            if self.renderer.touch_mode {
+                Sense::click()
+            } else {
+                Sense::click_and_drag()
+            },
+        );
+        // interact surrenders focus if anything was clicked, even a child —
+        // restore if we thought we were focused at entry
+        if prev_focused && !ui.memory(|m| m.has_focus(id)) {
+            self.request_focus(ui.ctx(), id);
+        }
+        let focused = ui.memory(|m| m.has_focus(id));
+        if focused && !prev_focused {
+            self.cursor_last_interact = Some(ui.ctx().input(|i| i.time));
+        }
+
+        let response_properly_clicked = response.clicked_by(egui::PointerButton::Primary);
+        if response.hovered() || response_properly_clicked {
+            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::Text);
+        }
+
+        // Per-fragment interacts must come after the editor's main
+        // interact above so they sit on top in z-order.
+        self.renderer.interact_fragments(ui);
+        self.renderer.handle_link_interactions(root, ui);
+        self.renderer.handle_spoiler_interactions(root, ui);
+        self.renderer.handle_image_load_buttons(root, ui);
+        self.renderer.handle_fold_interactions(ui);
+
+        let mut ops = Vec::new();
+
+        // image / link taps → open (cmd) or select (touch)
+        self.handle_image_interactions(root, ui, id, &mut ops);
+        self.handle_link_menu_taps(root, ui, id, &mut ops);
+
+        // --- pointer → selection change ---------------------------------------
+        // Reads last-frame fragments to resolve pos → offset. Skipped
+        // when fragments is empty (first frame / empty doc) — the
+        // click will land next frame once render populates them.
+        let modifiers = ui.ctx().input(|i| i.modifiers);
+        let have_galleys = !self.renderer.fragments.is_empty();
+        if have_galleys && let Some(pos) = response.interact_pointer_pos() {
+            let location = Location::Pos(crate::input::pos(pos));
+
+            // deliberate order; double click is also click
+            let region_opt: Option<Region> =
+                if response.double_clicked() || response.triple_clicked() {
+                    // egui triple click detection is flaky; treat non-empty
+                    // selection double-click as triple-click (paragraph).
+                    if self.renderer.buffer.current.selection.is_empty() {
+                        Some(Region::BoundAt {
+                            bound: Bound::Word,
+                            location,
+                            backwards: true,
+                        })
+                    } else {
+                        Some(Region::BoundAt {
+                            bound: Bound::Paragraph,
+                            location,
+                            backwards: true,
+                        })
+                    }
+                } else if response.clicked() && modifiers.shift {
+                    Some(Region::ToLocation(location))
+                } else if response.clicked() && self.scroll_area.momentum_cancel_press() {
+                    None
+                } else if matches!(self.touch_reorder, TouchReorder::Armed { .. }) {
+                    // An armed reorder owns the gesture: swallow both the release
+                    // click and egui's touch long-press (a `secondary_clicked`
+                    // below), so it can't also place the cursor or open a menu.
+                    None
+                } else if response.clicked() {
+                    Some(Region::Location(location))
+                } else if response.drag_stopped() {
+                    std::mem::take(&mut self.in_progress_selection).map(Region::from)
+                } else if response.dragged() && modifiers.shift {
+                    self.in_progress_selection =
+                        Some(self.region_to_range(Region::ToLocation(location)));
+                    self.pending_scroll = Some(ScrollTarget::Cursor);
+                    None
+                } else if response.dragged() {
+                    if response.drag_started() {
+                        // capture drag origin on first frame so auto-scroll doesn't pull it
+                        let drag_origin = ui
+                            .ctx()
+                            .input(|i| i.pointer.press_origin())
+                            .unwrap_or_default();
+                        self.in_progress_selection = Some(self.region_to_range(Region::Location(
+                            Location::Pos(crate::input::pos(drag_origin)),
+                        )));
+                    }
+                    let offset = self.location_to_char_offset(location);
+                    if let Some(sel) = &mut self.in_progress_selection {
+                        sel.1 = offset;
+                    }
+                    self.pending_scroll = Some(ScrollTarget::Cursor);
+                    None
+                } else {
+                    None
+                };
+
+            // iOS handles cursor placement via virtual-keyboard FFI
+            if !cfg!(target_os = "ios")
+                && let Some(region) = region_opt
+            {
+                self.request_focus(ui.ctx(), id);
+                self.calc_operations(ui.ctx(), root, Event::Select { region }, &mut ops);
+            }
+        }
+
+        self.renderer.buffer.queue(ops);
+        let pointer_resp = self.renderer.buffer.update();
+        if pointer_resp.text_updated || pointer_resp.selection_user_moved {
+            self.cursor_last_interact = Some(ui.ctx().input(|i| i.time));
+        }
+        // Pointer only emits Select ops (no text change), so no re-parse
+        // needed — but reveal must reflect the applied ops (and any
+        // `entered_atom` a menu "Edit" set) in this frame's paint: iOS
+        // queries geometry as soon as the change is reported.
+        self.sync_reveal_selection(ui.ctx(), id, prior_entered_atom);
+
+        self.renderer.in_progress_selection = self.in_progress_selection;
+
+        // Reserved before block content so the highlight sits behind it;
+        // see the `selection_shape` field.
+        let selection_shape = ui.painter().add(egui::Shape::Noop);
+
+        PreRenderState {
+            focused,
+            selection_shape,
+        }
+    }
+
+    /// Per-frame teardown that runs after block rendering: cursor /
+    /// selection / IME, touch handles, scroll-to-cursor consumption,
+    /// focus lock, glyphon text-callback submission, draining of
+    /// internal events.
+    pub fn post_render<'ast>(
+        &mut self,
+        ui: &mut Ui,
+        rect: Rect,
+        id: Id,
+        pre: PreRenderState,
+        root: &'ast AstNode<'ast>,
+    ) {
+        let focused = pre.focused;
+
+        // Clip subsequent overlay paints (selection, cursor) to the editor rect
+        // so they don't bleed over toolbars or sidebars. Restored before
+        // returning so a caller passing its own `ui` (e.g. the chat composer)
+        // isn't left with a narrowed clip that swallows its later paints.
+        let entry_clip = ui.clip_rect();
+        ui.set_clip_rect(rect.intersect(entry_clip));
+
+        // cursor / selection — iOS draws natively
+        if ui.ctx().os() != OperatingSystem::IOS && !self.renderer.readonly {
+            let selection = self
+                .in_progress_selection
+                .unwrap_or(self.renderer.buffer.current.selection);
+            let theme = self.renderer.ctx.get_lb_theme();
+            let color = theme.bg().get_color(theme.prefs().primary);
+
+            // Fill the reserved slot so the highlight paints behind the
+            // markers (drawn during block render); the cursor stays on top.
+            let sel_color = color.lerp_to_gamma(theme.neutral_bg(), 0.7);
+            let shapes: Vec<egui::Shape> = self
+                .range_rects(selection)
+                .into_iter()
+                .map(|r| egui::Shape::rect_filled(r, 2.0, sel_color))
+                .collect();
+            ui.painter()
+                .set(pre.selection_shape, egui::Shape::Vec(shapes));
+
+            // Collaborators' selections and cursors, each in their color.
+            for cursor in &self.remote_cursors {
+                let range = (
+                    cursor.anchor.min(cursor.head),
+                    cursor.anchor.max(cursor.head),
+                );
+                if range.0 != range.1 {
+                    let fill = cursor.color.gamma_multiply(0.25);
+                    for rect in self.range_rects(range) {
+                        ui.painter().rect_filled(rect, 2.0, fill);
+                    }
+                }
+                self.show_offset(ui, cursor.head, cursor.color, None);
+            }
+            for (index, cursor) in self.remote_cursors.iter().enumerate() {
+                let Some([top, bottom]) = self.cursor_line(cursor.head) else {
+                    continue;
+                };
+                // Screen readers and tests hear of each collaborator's
+                // cursor as a node at its place.
+                let id = ui.scope_id().with(("remote-cursor", index));
+                let _ = ui.new_child(
+                    egui::UiBuilder::new()
+                        .scope_id(id)
+                        .max_rect(egui::Rect::from_two_pos(top, bottom))
+                        .accessibility_role(egui::accesskit::Role::Caret)
+                        .sense(egui::Sense::empty()),
+                );
+                ui.ctx().accesskit_node_builder(id, |node| {
+                    node.set_role(egui::accesskit::Role::Caret);
+                    node.set_label("A collaborator's cursor");
+                });
+            }
+
+            let now = ui.ctx().input(|i| i.time);
+            if self.in_progress_selection.is_some()
+                || (focused && self.cursor_last_interact.is_none())
+            {
+                self.cursor_last_interact = Some(now);
+            }
+            let blink = focused.then(|| now - self.cursor_last_interact.unwrap_or(now));
+            let caret_color = theme.bright.get_color(theme.prefs().primary);
+            // While an input method composes, the caret sits in the marked
+            // text and its candidate window opens under it.
+            let marked = self.renderer.marked_geometry();
+            let ime_rect = match &marked {
+                Some(marked) => {
+                    let [top, bot] = marked.caret;
+                    crate::widgets::paint_caret(
+                        ui,
+                        top.x,
+                        egui::Rangef::new(top.y, bot.y),
+                        caret_color,
+                    );
+                    Some(marked.candidates)
+                }
+                None => {
+                    self.show_offset(ui, selection.1, caret_color, blink);
+                    self.cursor_line(selection.1)
+                        .map(|[top, bot]| Rect::from_min_max(top, bot))
+                }
+            };
+            if focused && let Some(cursor_rect) = ime_rect {
+                ui.output_mut(|o| {
+                    o.ime = Some(egui::output::IMEOutput {
+                        purpose: egui::IMEPurpose::Normal,
+                        rect,
+                        cursor_rect,
+                        should_interrupt_composition: false,
+                    });
+                });
+                self.ime_pass = Some(ui.ctx().cumulative_pass_nr());
+            }
+        }
+
+        // FindMatch is consumed by the caller (it owns find state).
+        if matches!(self.pending_scroll, Some(ScrollTarget::Cursor)) {
+            self.pending_scroll = None;
+            self.scroll_to_cursor(rect, root);
+        }
+
+        // lock focus filter so arrow keys / tab / shift+enter keep reaching us
+        if focused {
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    id,
+                    EventFilter {
+                        tab: true,
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
+                        escape: true,
+                    },
+                );
+            });
+        }
+
+        // Submit the shaped editor text as one glyphon callback. The caller
+        // draws any overlays (find-match highlights, etc.) and then calls
+        // show_completions, which submits its own callback on a later layer.
+        let text_areas = std::mem::take(&mut self.renderer.text_areas);
+        if !text_areas.is_empty() {
+            // The callback rect is `clip_rect`, not `max_rect`: this `ui` is
+            // inside the editor's `ScrollArea + Frame`, and its `max_rect`
+            // scrolls off-screen once the user passes one viewport-height.
+            // `egui_wgpu` clamps the callback rect to the screen, and a
+            // zero-area result silently drops the callback — no text paints.
+            ui.painter().add(egui_wgpu::Callback::new_paint_callback(
+                ui.clip_rect(),
+                crate::GlyphonRendererCallback::new(text_areas),
+            ));
+        }
+
+        // strikethroughs and underlines painted on top of text
+        for deco in std::mem::take(&mut self.renderer.deco_lines) {
+            deco.paint(ui.painter());
+        }
+
+        // A reorder selects the dragged section; its handles would clutter
+        // the floating card, so suppress them while a drag is in flight.
+        let has_selection_handles = (!self.renderer.buffer.current.selection.is_empty()
+            || self.in_progress_selection.is_some())
+            && self.in_progress_block_drag.is_none();
+        if ui.ctx().os() == OperatingSystem::Android && has_selection_handles {
+            // Handles hang past the editor `rect`; draw under the entry clip so
+            // a tight surface (the chat composer) doesn't clip them off.
+            ui.set_clip_rect(entry_clip);
+            self.show_selection_handles(ui);
+        }
+
+        // drain renderer's interactive-element events into the edit queue for next frame
+        self.event
+            .internal_events
+            .append(&mut self.renderer.render_events);
+
+        ui.set_clip_rect(entry_clip);
+    }
+
+    /// Height of one line of body text — the composer's single-line (starting)
+    /// content height, before any vertical padding the caller wraps it in.
+    pub fn row_height(&self) -> f32 {
+        self.renderer.layout.row_height
+    }
+
+    /// Measure the rendered height at the given `width` without drawing.
+    /// Chat composers call this between `handle_input` and `show` to size
+    /// the composer bubble for this frame — otherwise the bubble tracks
+    /// content a frame late. The parse is cheap (~µs); `height()` is
+    /// memoized by `LayoutCache`, so the subsequent `show` re-uses the
+    /// cached work.
+    pub fn measure_height(&mut self, width: f32) -> f32 {
+        self.renderer.set_width(width);
+        let ast = self.renderer.take_ast();
+        let height = ast.with_root(|root| self.renderer.height(root));
+        self.renderer.put_ast(ast);
+        height
+    }
+
+    /// Reset the buffer to empty state. Chat composers call this after
+    /// capturing outgoing text in response to `handle_input` returning
+    /// `true`.
+    pub fn clear(&mut self) {
+        self.set_text("");
+    }
+
+    /// Replace the buffer contents wholesale. The chat composer uses this to
+    /// prefill for message editing.
+    pub fn set_text(&mut self, text: &str) {
+        self.renderer.buffer = Buffer::from(text);
+        self.renderer.bump_text_seq();
+        self.in_progress_selection = None;
+        self.in_progress_handle = None;
+        self.event.internal_events.clear();
+        // A platform text system asks about the new text before the next
+        // frame: its units come from bounds, and nothing may answer from the
+        // old text's layout.
+        self.renderer.parse();
+        self.renderer.fragments.clear();
+    }
+}

@@ -1,0 +1,1184 @@
+// The first version of Noura's plugin interface. Tickets before the first
+// release extend this package; once a release ships it, a change needs a new
+// version and the host keeps loading plugins built against this one.
+package noura:plugin@0.1.0;
+
+// What a capability interface returns when it refuses or fails a call.
+interface types {
+  // A property whose value doesn't fit its object type's schema.
+  record property-error {
+    // The property's name.
+    property: string,
+    // What is wrong, as the workspace format's validation codes say:
+    // `wrong_type`, `not_allowed`, `invalid_date` or `invalid_reference`.
+    code: string,
+  }
+
+  variant error {
+    // The plugin doesn't hold the capability this call needs: its manifest
+    // doesn't declare it, or you revoked it. Holds the capability's name,
+    // such as `workspace-read`. The host ran nothing for the call. A write
+    // to an object whose type the plugin didn't register, a note for one,
+    // returns this too, naming `object-types`: the capability covers the
+    // plugin's own types only.
+    capability-not-declared(string),
+    // A file or folder name that a WIT string can't hold, such as one that
+    // isn't valid UTF-8. Noura never passes a changed copy of a name.
+    unsupported-path,
+    // The path isn't a workspace-relative path with `/` between its parts:
+    // it is empty, absolute, holds `.`, `..` or `\`, or names a folder
+    // Noura keeps to itself, such as `.noura`. Holds the path.
+    invalid-path(string),
+    // Nothing in the workspace has this path or ID. Holds the path or ID.
+    not-found(string),
+    // The host couldn't finish the call. Holds a message for the plugin's
+    // author.
+    failed(string),
+    // Noura refused a network request before connecting: the URL isn't
+    // HTTPS, its host or a redirect's host isn't one the plugin may reach,
+    // or the host is a local or private address. Holds the reason.
+    network-refused(string),
+    // The manifest's `commands` capability doesn't name this command, or
+    // its plugin, among its targets. Holds the target, as
+    // `plugin/command`.
+    target-not-declared(string),
+    // The target plugin isn't running in this workspace, or doesn't offer
+    // that command to other plugins. Holds the target, as
+    // `plugin/command`.
+    target-unavailable(string),
+    // The target plugin is busy: the call would come back into a plugin
+    // that is waiting for this one, or the target stayed busy with another
+    // call. Holds the target plugin's ID.
+    busy(string),
+    // The object's file changed since the plugin read it: it no longer
+    // holds the content revision the write carried. Nothing was written.
+    // Holds the object's ID.
+    revision-conflict(string),
+    // More than one file holds this stable ID, as after a copy in another
+    // app, so writes by ID stop until only one file does. Holds the ID.
+    identity-conflict(string),
+    // A property doesn't fit the object type's schema. Nothing was
+    // written.
+    invalid-property(property-error),
+    // Something already has the path the write asked for. Holds the path.
+    already-exists(string),
+  }
+}
+
+// Reads the open workspace. Needs the `workspace-read` capability.
+interface workspace {
+  use types.{error};
+
+  enum entry-kind {
+    file,
+    folder,
+  }
+
+  // One file or folder in the workspace.
+  record entry {
+    // The workspace-relative path, with `/` between its parts.
+    path: string,
+    kind: entry-kind,
+    // The stable ID of a file that holds a Noura object. It stays the same
+    // when the file moves or is renamed.
+    object-id: option<string>,
+    // The object's type, such as `note`.
+    object-type: option<string>,
+    // The revision of the file's content, once Noura has read the file.
+    revision: option<string>,
+  }
+
+  // A file's bytes and the revision of those bytes.
+  record file {
+    path: string,
+    bytes: list<u8>,
+    revision: string,
+  }
+
+  // A Noura object, read by its stable ID.
+  record object {
+    id: string,
+    object-type: string,
+    // The object's title: its file name without the extension.
+    title: string,
+    // Where the object's file is now.
+    path: string,
+    // The Markdown after the frontmatter.
+    body: string,
+    // The frontmatter's other properties, as a JSON object.
+    properties: string,
+    revision: string,
+  }
+
+  // Every file and folder in the workspace, by path. An item whose name a
+  // WIT string can't hold appears as `unsupported-path` in its place.
+  list-entries: func() -> result<list<result<entry, error>>, error>;
+
+  // The file at a workspace-relative path.
+  read-file: func(path: string) -> result<file, error>;
+
+  // The object with this stable ID, wherever its file is now.
+  read-object: func(id: string) -> result<object, error>;
+
+  // The object the file at a workspace-relative path holds. It reads a
+  // file whose ID another file shares too, as after a copy in another app,
+  // which `read-object` refuses. A file that holds no object returns
+  // `not-found`.
+  read-object-at: func(path: string) -> result<object, error>;
+}
+
+// Requests to the HTTPS hosts the manifest's `network` capability lists.
+interface network {
+  use types.{error};
+
+  enum method {
+    get,
+    head,
+    post,
+    put,
+    patch,
+    delete,
+  }
+
+  record header {
+    name: string,
+    value: string,
+  }
+
+  record request {
+    method: method,
+    // An `https` URL on a host the manifest lists.
+    url: string,
+    headers: list<header>,
+    body: list<u8>,
+  }
+
+  record response {
+    status: u16,
+    // The URL that answered, after any redirects.
+    url: string,
+    headers: list<header>,
+    body: list<u8>,
+  }
+
+  // Send `request` and wait for the answer. Noura follows up to three
+  // redirects, each to a host the manifest lists. It refuses a URL that
+  // isn't HTTPS, any other host, and a local or private address with
+  // `network-refused`, before it connects. The time spent waiting doesn't
+  // count toward the call's deadline.
+  fetch: func(request: request) -> result<response, error>;
+}
+
+// Runs commands that other plugins offer. Needs the `commands` capability
+// with the command, or its plugin, among its `targets`.
+interface command-calls {
+  use types.{error};
+
+  // Run the command `command` of the plugin `plugin`. It runs in that
+  // plugin, with that plugin's capabilities, so it can change that
+  // plugin's objects for you. `input` and the answer are text, often
+  // JSON, in the form the command documents. The command's own failure
+  // comes back as `failed`.
+  call: func(plugin: string, command: string, input: string) -> result<string, error>;
+}
+
+// The time on this device. Needs no capability. Plugins have no other
+// clock: Noura doesn't link WASI's.
+interface clock {
+  record reading {
+    // The instant now in RFC 3339, in UTC, such as `2026-10-21T13:30:00Z`.
+    instant: string,
+    // This device's time zone, where each of your days starts and ends:
+    // an IANA name such as `America/Toronto`, or, when the device's zone
+    // has none, its offset from UTC now, such as `-04:00`.
+    time-zone: string,
+  }
+
+  // The instant now and this device's time zone.
+  now: func() -> reading;
+}
+
+// Shows things in the window you acted in, and moves objects to the trash
+// there. Needs the `views` capability. Noura acts once the call returns,
+// and only for a call that answers something you did: an event in one of
+// the plugin's views or panels, or a command you ran from the command
+// palette. Any other call gets `failed`.
+interface navigation {
+  use types.{error};
+
+  // Where an object opens.
+  enum placement {
+    // In its own tab if it has one, otherwise in the preview tab, as a
+    // click in the file tree opens a file.
+    preview,
+    // In its own tab if it has one, otherwise in a new tab after the
+    // others, which stays open.
+    new-tab,
+  }
+
+  // Open the object with this stable ID in the note editor, with its
+  // properties panel beside its body.
+  open-object: func(id: string, placement: placement) -> result<_, error>;
+
+  // Show the plugin's own page with this ID.
+  open-page: func(page: string) -> result<_, error>;
+
+  // Move the object with this stable ID, one of the plugin's own types,
+  // to the trash, as Move to Trash in the file tree does: Noura first
+  // saves what you typed in it, then sends its file to the system trash,
+  // or to the workspace's trash folder when the system has none, closes
+  // its tabs and tells you where the file went. Needs the `object-types`
+  // capability too.
+  trash-object: func(id: string) -> result<_, error>;
+}
+
+// Chats with the AI providers you set up in Settings. Needs the `ai`
+// capability. Providers, their keys and your consent stay on this device,
+// and no call returns a key. Before a request carries this workspace's
+// content to a provider, Noura asks you in a prompt of its own whether
+// that provider may receive it, and it asks again after you change the
+// provider's kind, endpoint or model.
+//
+// A chat is a folder of Markdown files in the workspace, `chat.md` and one
+// file per message, in the workspace format's chat layout. Noura writes
+// them, and each write is on disk before the call that made it returns.
+//
+// Each request starts with Noura's instructions for the model, followed
+// by the body of the workspace's `AGENTS.md` when it has one. When a
+// chat's messages no longer fit the provider's context window, Noura
+// first asks the provider to summarize the earlier ones, writes the
+// summary to the chat as a context summary, and from then on sends the
+// summary in their place. Their files stay in the chat.
+//
+// `web-search` and `web-fetch` let the model search the web with Brave
+// Search and read pages. Noura sends each request for the plugin, so the
+// plugin opens no connection of its own. They work once you add your
+// Brave Search key in Settings and allow web search for the workspace in
+// Noura's own prompt, which is a separate choice from a provider's
+// consent. Noura asks nothing per call.
+//
+// Noura sends a search or a page read only to answer the model. One of
+// the plugin's runs must have completed with a call to the `web_search`
+// tool whose `query` argument matches, or to `web_fetch` whose `url`
+// argument matches, and still wait for `answer-tools`. Any other call
+// fails with `web_call_not_requested`, and nothing leaves the device.
+interface ai {
+  use types.{error};
+
+  // A provider you set up and turned on in Settings.
+  record provider {
+    // Unique among your providers.
+    id: string,
+    // The name you gave it.
+    name: string,
+    // The kind of service, such as `openai`, `anthropic` or `ollama`.
+    kind: string,
+    // The model it answers with.
+    model: string,
+  }
+
+  // How long Noura keeps a chat.
+  enum retention {
+    // Until you delete it. New chats start this way.
+    permanent,
+    // Noura moves the chat's folder to the trash 30 days after the chat
+    // started, but only while every file in it is one Noura wrote and
+    // nothing changed since the 30 days ended.
+    ephemeral,
+  }
+
+  // A chat, as its `chat.md` holds it.
+  record chat {
+    id: string,
+    title: string,
+    // When it last changed, in RFC 3339.
+    updated: string,
+    // The revision of its `chat.md`, which `rename-chat` and
+    // `set-retention` carry. Empty for a chat whose files Noura hasn't
+    // written yet.
+    revision: string,
+    retention: retention,
+  }
+
+  enum message-kind {
+    user,
+    assistant,
+    tool-call,
+    tool-result,
+    context-summary,
+  }
+
+  enum message-status {
+    in-progress,
+    completed,
+    interrupted,
+    cancelled,
+    failed,
+  }
+
+  // A message of a chat.
+  record message {
+    id: string,
+    kind: message-kind,
+    status: message-status,
+    // Markdown, or JSON text for a tool call or a tool result.
+    content: string,
+    // The provider and model that wrote an assistant message.
+    provider: option<string>,
+    model: option<string>,
+    // Why a failed or interrupted message ended, as a code such as
+    // `provider_request_failed`.
+    error-code: option<string>,
+    // When Noura wrote it, in RFC 3339.
+    created: string,
+    // The tool a tool call or a tool result names.
+    tool-name: option<string>,
+  }
+
+  // A tool the model may ask to call.
+  record tool-definition {
+    // Lowercase letters, digits, hyphens and underscores.
+    name: string,
+    // What the tool does, for the model.
+    description: string,
+    // A JSON Schema, as JSON text, for the tool's arguments.
+    input-schema: string,
+  }
+
+  // A tool call the model asked for.
+  record tool-call {
+    // The model's ID for the call, which the call's result names.
+    id: string,
+    name: string,
+    // The arguments, as JSON text.
+    arguments: string,
+  }
+
+  // A tool's answer to a call, for the model.
+  record tool-result {
+    // The ID of the call it answers.
+    call-id: string,
+    name: string,
+    // The answer, as JSON text.
+    content: string,
+  }
+
+  // A message you wrote in a chat, for a provider to answer.
+  record request {
+    // The chat's ID.
+    chat: string,
+    // The provider's ID.
+    provider: string,
+    // What you wrote, in Markdown.
+    message: string,
+    // The tools the model may ask to call.
+    tools: list<tool-definition>,
+  }
+
+  enum run-status {
+    // Noura is asking you whether the provider may receive this
+    // workspace's content. Nothing is written or sent yet.
+    waiting-for-consent,
+    // You said no. Nothing was written or sent.
+    denied,
+    // The answer is streaming in.
+    streaming,
+    // The answer is complete. When the model asked for tools,
+    // `tool-calls` lists them.
+    completed,
+    // You stopped it, or revoked the provider's consent. The answer so
+    // far stays in the chat as a cancelled message.
+    cancelled,
+    // The provider or Noura failed. `failure` says why.
+    failed,
+    // Noura is asking you whether to run one of the run's tool calls,
+    // after `run-tools`.
+    waiting-for-approval,
+    // A plugin the run relied on was turned off: the plugin that sent it,
+    // or one whose tools it offered. Its failure's code is
+    // `plugin-disabled`, and the answer so far stays in the chat as an
+    // interrupted message.
+    interrupted,
+  }
+
+  // Why a run failed, in public words. It never holds the provider's own
+  // answer, its headers or a key.
+  record failure {
+    // A stable code, such as `provider_request_failed`.
+    code: string,
+    message: string,
+  }
+
+  // A message you sent and its answer, as it streams in.
+  record run {
+    id: string,
+    chat: string,
+    provider: string,
+    status: run-status,
+    // The answer so far, in Markdown.
+    text: string,
+    // The ID of the assistant message the answer goes to, once Noura wrote
+    // it.
+    message: option<string>,
+    // Whether Noura wrote your message to the chat. A run you denied or
+    // stopped while it waited, or one that failed before the write, leaves
+    // your message unwritten, so the plugin can give it back to you.
+    message-written: bool,
+    tool-calls: list<tool-call>,
+    failure: option<failure>,
+  }
+
+  // The providers you set up and turned on.
+  providers: func() -> result<list<provider>, error>;
+
+  // The workspace's chats, the one changed last first.
+  chats: func() -> result<list<chat>, error>;
+
+  // A chat and its messages, oldest first. An answer or a tool call that
+  // a crash or a quit left in progress, with no run of this session
+  // behind it, reads as interrupted, and Noura writes it so: a tool call
+  // reads as completed only when the chat holds its result, from the
+  // same run, with the same call ID and tool name. Noura never runs such
+  // a call again by itself.
+  read-chat: func(id: string) -> result<tuple<chat, list<message>>, error>;
+
+  // Start a chat, titled `New chat` until its first message names it.
+  // Noura writes the chat's files once its first message goes out, so a
+  // chat whose first message you don't let go out leaves no file. Until
+  // then `read-chat` shows it with no messages, and `chats` doesn't list
+  // it.
+  create-chat: func() -> result<chat, error>;
+
+  // Give the chat a new title. Fails with `revision-conflict` when its
+  // `chat.md` no longer holds `expected-revision`, as after an edit in
+  // another app, and then writes nothing.
+  rename-chat: func(id: string, title: string, expected-revision: string) -> result<chat, error>;
+
+  // Keep the chat until you delete it, or have Noura move it to the
+  // trash 30 days after it started. Fails with `revision-conflict` as
+  // `rename-chat` does.
+  set-retention: func(id: string, retention: retention, expected-revision: string) -> result<chat, error>;
+
+  // The tools that the plugins on in this workspace register under their
+  // `tools` capability, for a request to offer the model. Each is named
+  // `<plugin>__<tool>`, such as `tasks__create`.
+  workspace-tools: func() -> result<list<tool-definition>, error>;
+
+  // Send `request`. Noura writes your message and an in-progress answer to
+  // the chat before the request leaves this computer, then the answer
+  // streams in: `read-run` shows it so far, and Noura draws the plugin's views
+  // again as text arrives. The answer and its status are on disk before
+  // the run shows as completed, cancelled or failed. The first message of
+  // a chat titled `New chat` gives the chat its title. Without your
+  // consent for this workspace and provider, the run waits while Noura
+  // asks you. A chat answers one message at a time.
+  send: func(request: request) -> result<run, error>;
+
+  // Answer the tool calls of a completed run with `results`, one per call,
+  // and stream the model's next answer into the same run. Noura wrote each
+  // call to the chat as in progress before the run showed as completed,
+  // and it writes each result and completes its call before the next
+  // request leaves this computer. `tools` are the tools the model may ask
+  // to call next.
+  answer-tools: func(run: string, results: list<tool-result>, tools: list<tool-definition>) -> result<run, error>;
+
+  // Run the tool calls of a completed run that name workspace tools, one
+  // at a time, then stream the model's next answer into the same run.
+  // For each call Noura asks you, in a prompt of its own that names the
+  // tool, its plugin and its input, and runs the call in that plugin only
+  // if you allow that one call. Meanwhile the run is
+  // `waiting-for-approval`. Each call's result goes to the chat after the
+  // call: the tool's answer, `{"denied":true}` when you deny the call or
+  // close the prompt, or an `error` object. Stop, or opening another
+  // workspace, denies the calls still waiting and ends the run. The next
+  // request offers the tools the run offered whose plugins are still on.
+  run-tools: func(run: string) -> result<run, error>;
+
+  // Answer the chat's last message of yours again, as after a crash or a
+  // quit stopped its answer, with `provider` and `tools`. Noura writes no
+  // new message of yours, and asks for your consent as `send` does.
+  resume: func(chat: string, provider: string, tools: list<tool-definition>) -> result<run, error>;
+
+  // The run with this ID, as it stands now. `read-run`, `stop` and
+  // `answer-tools` reach only the plugin's own runs: another plugin's run
+  // is `not-found`.
+  read-run: func(id: string) -> result<run, error>;
+
+  // Stop a run. The provider request ends, and the answer so far stays as
+  // a cancelled message.
+  stop: func(id: string) -> result<_, error>;
+
+  // A page a web search found.
+  record web-result {
+    title: string,
+    // The page's `https` address.
+    url: string,
+    // The lines of the page Brave Search shows, as plain text.
+    snippet: string,
+  }
+
+  // A web page, as text.
+  record web-page {
+    // The `https` address that answered, after any redirects.
+    url: string,
+    // The page's media type: `text/html`, `application/xhtml+xml`,
+    // `text/plain` or `text/markdown`.
+    content-type: string,
+    // The page's text. An HTML page loses its markup, keeps emphasis as
+    // Markdown does and lists its links as numbered footnotes.
+    text: string,
+    // Whether Noura cut the text at its size limit.
+    truncated: bool,
+  }
+
+  // Why a web search or a page read failed.
+  variant web-error {
+    // Noura refused the call as it refuses this interface's other calls,
+    // such as `capability-not-declared` with `ai` for a plugin that
+    // doesn't hold it.
+    refused(error),
+    // Noura or the web refused or failed. The code says why, such as
+    // `web_search_key_missing`, `web_consent_required`,
+    // `web_call_not_requested`, `web_search_key_rejected`,
+    // `web_search_rate_limited`, `web_url_not_https` or
+    // `web_url_unsafe_host`. The failure never holds the key or what
+    // Brave Search or the site answered.
+    failed(failure),
+  }
+
+  // Whether the model may search the web and read pages in this
+  // workspace: you added a Brave Search key and allowed web search for the
+  // workspace. Offer the model web tools only then.
+  web-ready: func() -> result<bool, error>;
+
+  // Search the web with Brave Search for `query`, for at most
+  // `max-results` results, from 1 to 10. Without a limit Noura asks for
+  // 10. Noura leaves out results without an `https` address. The query
+  // must be one the model asked for in a `web_search` call.
+  web-search: func(query: string, max-results: option<u32>) -> result<list<web-result>, web-error>;
+
+  // Read the page at `url`, an `https` address on a public host that the
+  // model asked for in a `web_fetch` call. Noura follows up to three
+  // redirects, checks every address each host resolves to, and refuses a
+  // local or private address before it connects. It reads only HTML and
+  // plain text, up to 5 MiB, and cuts the text at 1 MiB. It gives up on a
+  // page after 15 seconds, turning it into text included, and refuses a
+  // page whose elements nest more than 1,024 deep. The time spent waiting
+  // doesn't count toward the call's deadline.
+  web-fetch: func(url: string) -> result<web-page, web-error>;
+}
+
+// UI as data. WIT has no recursive types, so a view is a flat list of nodes
+// whose `children` hold indices into the list. The first node is the root.
+//
+// Every label must hold more than spaces: Noura reads it to screen readers.
+interface ui {
+  // A line in a list: a label and an optional quieter detail after it, on
+  // the same line. A board's card shows the detail under the label.
+  record item {
+    label: string,
+    detail: option<string>,
+    // A checkbox before the label, checked or not, which you check or
+    // uncheck by click or the space bar. Each change sends `checked`, and
+    // the box then shows what the plugin draws. Only list and virtual
+    // list items show one: a card holding one breaks the rules.
+    checked: option<bool>,
+    // A short warning after the label, such as `Overdue`, in the color
+    // Noura shows problems in. Screen readers read it with the label.
+    // Only list and virtual list items show one.
+    warning: option<string>,
+  }
+
+  // A list you select items in.
+  record item-list {
+    // Names the list for screen readers.
+    label: string,
+    // Whether you can drag its items to new positions. A drop sends
+    // `moved`, and the list then shows the items in the order the plugin
+    // draws them.
+    reorder: bool,
+    // The node ID of the item the list shows selected, such as the view
+    // you're in. When the plugin draws another one than it drew before,
+    // or none, the list's selection moves there; otherwise the item you
+    // selected last stays selected.
+    selected: option<string>,
+    // Whether one click opens an item, as a link does: a click sends
+    // `selected` when the item wasn't selected, then `activated`. The
+    // arrow keys still only select. Enter and a double-click open an item
+    // in every list.
+    opens-on-click: bool,
+  }
+
+  // A one-line field that names something: a new task, or a rename. It
+  // takes the keyboard each time it appears, holding `value`. Enter, or
+  // leaving the field, sends `named` with what it holds, and Escape sends
+  // `cancelled`, as does leaving it empty or holding the name it started
+  // from. A name still in the field when its window closes is sent first,
+  // even one sent before that the plugin kept in the field, as after a
+  // create that failed.
+  record name-field {
+    // Names the field for screen readers, and shows in it while it's
+    // empty.
+    label: string,
+    // The name the field starts from: empty for something new, the
+    // current name for a rename.
+    value: string,
+  }
+
+  // A list of items fetched as they scroll into view, so it can hold more
+  // rows than a view holds nodes. Noura calls the view's `rows` for them.
+  record virtual-list {
+    // Names the list for screen readers.
+    label: string,
+    // How many rows the list holds, at most 1,000,000.
+    rows: u32,
+  }
+
+  // One row of a virtual list, as `rows` returns it.
+  record virtual-row {
+    // Unique within the list. Events name the row by this ID.
+    id: string,
+    item: item,
+  }
+
+  enum sort-order {
+    ascending,
+    descending,
+  }
+
+  // A table's column.
+  record column {
+    // Unique within the table. A header press names the column by it.
+    id: string,
+    // The header's text.
+    title: string,
+    // Shows that the table is sorted by this column, and in which order.
+    sorted: option<sort-order>,
+  }
+
+  record table {
+    // Names the table for screen readers.
+    label: string,
+    columns: list<column>,
+  }
+
+  record form {
+    // Names the form for screen readers.
+    label: string,
+    // The label of the button that submits the form.
+    submit: string,
+    // The node IDs of text inputs inside the form that must hold more
+    // than spaces before you can submit it. The submit button shows
+    // disabled until they do.
+    required: list<string>,
+  }
+
+  // What an input holds. The case sets the kind of input Noura draws.
+  variant value {
+    // A single line of text.
+    text(string),
+    // Several lines of text.
+    multiline(string),
+    checkbox(bool),
+    // The ID of the chosen option, or none.
+    choice(option<string>),
+    // A date as `YYYY-MM-DD`, the workspace format's date, or none.
+    date(option<string>),
+    // A date and time in RFC 3339 with an explicit offset, such as
+    // `2026-10-21T09:30:00-04:00`, or none.
+    date-time(option<string>),
+  }
+
+  // One option of a single-choice input.
+  record choice {
+    // Unique within the input. The input's value names the option by it.
+    id: string,
+    label: string,
+  }
+
+  record input {
+    label: string,
+    value: value,
+    // The options of a choice input. Other inputs have none.
+    choices: list<choice>,
+  }
+
+  record menu-item {
+    label: string,
+    // A disabled item shows but can't be chosen.
+    enabled: bool,
+  }
+
+  // The period a calendar grid shows.
+  enum calendar-mode {
+    // Six weeks from the Sunday on or before the first of the month.
+    month,
+    // Sunday to Saturday, with a row of all-day entries above the hours.
+    week,
+    // One day, with a row of all-day entries above the hours.
+    day,
+  }
+
+  record calendar {
+    // Names the grid for screen readers.
+    label: string,
+    mode: calendar-mode,
+    // A day of the period to show, as `YYYY-MM-DD`.
+    date: string,
+  }
+
+  // A dated entry in a calendar grid. Noura draws it on each day it
+  // covers, in this device's time zone.
+  record calendar-entry {
+    title: string,
+    // An all-day entry's first day as `YYYY-MM-DD`, or a timed entry's
+    // start in RFC 3339 with an offset.
+    start: string,
+    // The end, in the form of the start: the day after an all-day
+    // entry's last day, or a timed entry's end. Without an end, or with
+    // one not after the start, an all-day entry takes its first day and a
+    // timed entry 30 minutes.
+    end: option<string>,
+  }
+
+  variant node-kind {
+    // Lays out its children from top to bottom. The label names the panel
+    // for screen readers.
+    panel(option<string>),
+    // A line of plain text.
+    text(string),
+    // Markdown, drawn by Noura. Images show as their description and never
+    // load from the network.
+    markdown(string),
+    // A button with this label. Presses come back by the node's ID. A
+    // button whose child is a menu opens the menu instead.
+    button(string),
+    // A list you select items in, by click or arrow keys. Its children
+    // are its items.
+    %list(item-list),
+    // An item of a list. Its only child may be a menu, which opens by
+    // right-click or from the keyboard, or a name field, which shows in
+    // the item's place, as for a rename.
+    item(item),
+    // A list whose rows come from the view's `rows`. It holds no children.
+    virtual-list(virtual-list),
+    // A table. Its children are its rows.
+    table(table),
+    // A table row: one cell per column, at least one of them with text.
+    // Screen readers name the row by its first cell with text. Its only
+    // child may be a menu.
+    row(list<string>),
+    // Lays out its children like a panel, with a submit button after them.
+    // Submitting, by the button or Enter in a single-line text input
+    // inside it, sends the value of every input inside it.
+    form(form),
+    // A labeled input. Changes come back by the node's ID.
+    input(input),
+    // A field that names something, which goes where an input goes or
+    // in a list item's place. What you name comes back by the node's ID.
+    name-field(name-field),
+    // A menu with this label, the child of an item, a row, a card or a
+    // button. Its children are menu items and separators, at least one
+    // item among them.
+    menu(string),
+    // A menu item. Choosing it sends its node ID.
+    menu-item(menu-item),
+    // A line between menu items.
+    separator,
+    // A board, named for screen readers by this label. Its children are
+    // its columns, at least one. You drag cards within a column and
+    // between the board's columns: a drop sends `moved`, and the board
+    // then shows the cards where the plugin draws them, so a move the
+    // plugin refuses puts the card back.
+    board(string),
+    // A column of a board, with this label in its header. Its children
+    // are its cards.
+    board-column(string),
+    // A card in a board column, with its detail under its label. You
+    // select a card by click or arrow keys and open it by double-click or
+    // Enter, which send `selected` and `activated` naming the board. Its
+    // only child may be a menu, which opens by right-click or from the
+    // keyboard.
+    card(item),
+    // A calendar grid of the period the record sets. Its children are its
+    // entries; it draws those in the period. Its mode and period change
+    // only when the plugin draws new ones, such as after a press of one
+    // of its own buttons.
+    calendar(calendar),
+    // An entry of a calendar grid. You select an entry by click or the
+    // keyboard and open it by double-click or Enter, which send `selected`
+    // and `activated` naming the calendar.
+    entry(calendar-entry),
+  }
+
+  record node {
+    // Unique within the view. Events name the node by this ID.
+    id: string,
+    kind: node-kind,
+    // Indices into the view's node list. Panels and forms hold the nodes
+    // they lay out, lists their items, tables their rows, boards their
+    // columns, columns their cards, calendars their entries, and menus
+    // their items; a row, a card or a button may hold one menu, and an
+    // item one menu or one name field.
+    children: list<u32>,
+  }
+
+  // An item of a list, a row of a table, a card of a board or an entry
+  // of a calendar grid.
+  record target {
+    // The node ID of the list, virtual list, table, board or calendar.
+    node: string,
+    // The item's, the row's, the card's or the entry's node ID, or a
+    // virtual list row's ID.
+    item: string,
+  }
+
+  // A card or a list item dragged to a new place. Nothing moves until the
+  // plugin draws it there.
+  record move {
+    // The node ID of the board or the list.
+    node: string,
+    // The node ID of the card or the item.
+    item: string,
+    // The node ID of the column the card was dropped in, or the list's
+    // own node ID.
+    to: string,
+    // Where it goes among that column's cards or the list's items,
+    // counted from 0 as if it had already left its old place.
+    position: u32,
+  }
+
+  // A header press in a table.
+  record column-press {
+    // The table's node ID.
+    node: string,
+    // The column's ID.
+    column: string,
+  }
+
+  // An input's value.
+  record field {
+    // The input's node ID.
+    node: string,
+    value: value,
+  }
+
+  record submission {
+    // The form's node ID.
+    node: string,
+    // Every input inside the form, in view order.
+    fields: list<field>,
+  }
+
+  // An item's checkbox, checked or unchecked.
+  record check {
+    // The node ID of the list or the virtual list.
+    node: string,
+    // The item's node ID, or a virtual list row's ID.
+    item: string,
+    // Whether the box is checked now.
+    checked: bool,
+  }
+
+  // A name typed in a name field.
+  record naming {
+    // The name field's node ID.
+    node: string,
+    // The name, without spaces at either end. It holds more than spaces
+    // and differs from the name the field started from.
+    name: string,
+  }
+
+  // Something you did in a view.
+  variant event {
+    // The button with this node ID was pressed.
+    pressed(string),
+    // An item, a row, a card or an entry was selected, by click or the
+    // keyboard.
+    selected(target),
+    // An item, a row, a card or an entry was opened, by double-click or
+    // Enter.
+    activated(target),
+    // A table's column header was pressed, so the plugin can sort.
+    sorted(column-press),
+    // An input's value changed.
+    changed(field),
+    // A form was submitted.
+    submitted(submission),
+    // The menu item with this node ID was chosen.
+    chosen(string),
+    // A card or a list item was dropped in a new place.
+    moved(move),
+    // An item's checkbox was checked or unchecked.
+    checked(check),
+    // A name field holds a new name: you pressed Enter in it or left it,
+    // or its window closed.
+    named(naming),
+    // A name field was left without a new name: you pressed Escape, or
+    // left it empty or holding the name it started from. Holds the
+    // field's node ID.
+    cancelled(string),
+  }
+}
+
+// Pages in Noura's rail, drawn from the plugin's nodes. Noura calls these
+// only when the manifest declares the `views` capability.
+interface view {
+  use ui.{node, event, virtual-row};
+
+  record page {
+    // Unique within the plugin.
+    id: string,
+    // The name the rail and the page's tab show.
+    title: string,
+  }
+
+  // The pages the plugin adds to the rail.
+  pages: func() -> list<page>;
+
+  // The nodes of a page's view.
+  render: func(page: string) -> list<node>;
+
+  // The nodes of the section a page adds to the sidebar, above the file
+  // tree, while the page shows: none for no section. The section can't
+  // hold a virtual list, and its node IDs don't repeat the page view's.
+  sidebar: func(page: string) -> list<node>;
+
+  // Rows `start` up to `start + count` of the virtual list with node ID
+  // `node` in a page's view, as they scroll into view. Return fewer when
+  // the list ends sooner.
+  rows: func(page: string, node: string, start: u32, count: u32) -> list<virtual-row>;
+
+  // Something happened in a page's view or its sidebar section. Noura
+  // draws the plugin's views again afterwards.
+  handle-event: func(page: string, event: event);
+}
+
+// Commands the plugin offers to the command palette and to other plugins.
+// Noura calls these only when the manifest declares the `commands`
+// capability.
+interface commands {
+  record command {
+    // Lowercase letters, digits and hyphens, starting with a letter, and
+    // unique within the plugin. Other plugins name it as
+    // `plugin/command` in their targets.
+    id: string,
+    // The name the command palette shows.
+    title: string,
+    // Whether the command palette lists it.
+    palette: bool,
+    // Whether other plugins that name it as a target may call it.
+    plugins: bool,
+  }
+
+  // The commands the plugin offers.
+  commands: func() -> list<command>;
+
+  // Run the command `id`. From the command palette `input` is empty; from
+  // another plugin it is what that plugin sent. The answer, or a message
+  // that says why the command failed, goes back to the plugin that called.
+  // Noura draws the plugin's views again afterwards.
+  run: func(id: string, input: string) -> result<string, string>;
+}
+
+// Sections in the Inbox, drawn from the plugin's nodes. Noura calls these
+// only when the manifest declares the `inbox-sections` capability.
+interface inbox {
+  use ui.{node, event};
+
+  record section {
+    // Unique within the plugin.
+    id: string,
+    // The heading the Inbox shows above the section.
+    title: string,
+  }
+
+  // The sections the plugin adds to the Inbox.
+  sections: func() -> list<section>;
+
+  // The nodes of a section. Noura draws the sections again when the
+  // workspace's files change.
+  render-section: func(section: string) -> list<node>;
+
+  // Something happened in a section. Noura draws the plugin's views again
+  // afterwards.
+  handle-section-event: func(section: string, event: event);
+}
+
+// The plugin's page in Settings, drawn from its nodes. Noura calls these
+// only when the manifest declares the `settings` capability. Noura keeps
+// no setting values for a plugin: the plugin keeps them in workspace files.
+interface settings {
+  use ui.{node, event};
+
+  // The title of the plugin's page in Settings, or none for no page.
+  page: func() -> option<string>;
+
+  // The nodes of the page.
+  render-settings: func() -> list<node>;
+
+  // Something happened on the page. Noura draws the plugin's views again
+  // afterwards.
+  handle-settings-event: func(event: event);
+}
+
+// Tools that AI assistants call through MCP. Noura calls these only when the
+// manifest declares the `tools` capability.
+interface tools {
+  record tool {
+    // Lowercase letters, digits, hyphens and underscores, starting with a
+    // letter, and unique within the plugin.
+    name: string,
+    // What the tool does, for the assistant.
+    description: string,
+    // A JSON Schema, as JSON text, that the tool's arguments must match.
+    // Noura checks each call's arguments against it before the plugin
+    // sees them.
+    input-schema: string,
+  }
+
+  // The tools the plugin offers.
+  tools: func() -> list<tool>;
+
+  // Run the tool `name` with arguments, as JSON text, that matched its
+  // schema. The answer, or a message that says why the tool failed, goes
+  // back to the assistant.
+  call-tool: func(name: string, arguments: string) -> result<string, string>;
+}
+
+// Objects of the types the plugin registered: Markdown files in the
+// workspace with a stable ID, properties its schema checks, and a body.
+// Needs the `object-types` capability. A call about any other type, a
+// note for one, returns `capability-not-declared("object-types")` and
+// reaches no file. Writes carry the content revision the plugin read,
+// and return once the file is durably on disk. Chats and their messages,
+// which the AI plugin registers, change only through the `ai` interface:
+// `create`, `update`, `move-to` and `delete` return `failed` for them and
+// reach no file, while `get` and `list` read them.
+interface objects {
+  use types.{error, property-error};
+
+  // An object as its file holds it now.
+  record object {
+    // The stable ID: the type, an underscore and a ULID. It stays the
+    // same when the file moves or is renamed.
+    id: string,
+    object-type: string,
+    // The object's title: its file name without the extension.
+    title: string,
+    // Where the object's file is now, relative to the workspace.
+    path: string,
+    // The Markdown after the frontmatter.
+    body: string,
+    // The frontmatter's other properties, as a JSON object.
+    properties: string,
+    // The revision of the file's content. Writes carry it.
+    revision: string,
+    // When the object was created and last changed, in RFC 3339, as its
+    // frontmatter says.
+    created: option<string>,
+    updated: option<string>,
+    // The first property, in the schema's order, that doesn't fit the
+    // type's schema. Noura leaves such a file as it is.
+    problem: option<property-error>,
+  }
+
+  // A new object.
+  record new-object {
+    // One of the plugin's own types.
+    object-type: string,
+    // The title, which names the file when `path` is none. With a path,
+    // the path's file name is the title and this one may be empty.
+    title: string,
+    // Where to write the file, relative to the workspace, ending in `.md`.
+    // Without it the file goes in a folder named after the type, as
+    // `recipes/<title>.md` for `recipe`, with a number added when the
+    // name is taken. A plugin that wants another layout passes the path.
+    path: option<string>,
+    // The Markdown after the frontmatter.
+    body: string,
+    // The properties, as a JSON object. The schema adds the defaults of
+    // the ones left out.
+    properties: string,
+  }
+
+  // What an update changes. The rest of the file keeps its bytes.
+  record changes {
+    // The new body, or none to keep it.
+    body: option<string>,
+    // Properties to set, as a JSON object.
+    properties: string,
+    // Properties to remove.
+    remove: list<string>,
+  }
+
+  // Create an object. Fails with `already-exists` when a file has the
+  // path.
+  create: func(object: new-object) -> result<object, error>;
+
+  // The object with this stable ID, read from its file.
+  get: func(id: string) -> result<object, error>;
+
+  // Every object of one of the plugin's types, read from their files. An
+  // object whose properties don't fit the schema comes with its `problem`.
+  %list: func(object-type: string) -> result<list<object>, error>;
+
+  // Change an object's body or properties. Fails with `revision-conflict`
+  // when the file no longer holds `expected-revision`.
+  update: func(id: string, expected-revision: string, changes: changes) -> result<object, error>;
+
+  // Move an object's file to `path`, which renames it when only the file
+  // name changes. The object keeps its ID.
+  move-to: func(id: string, expected-revision: string, path: string) -> result<object, error>;
+
+  // Move an object's file to the system trash, or to the workspace's
+  // trash folder when the system has none.
+  delete: func(id: string, expected-revision: string) -> result<_, error>;
+}
+
+// The object types the plugin adds, and the properties panel Noura shows
+// beside the body of each of their objects in the note editor. Noura
+// calls these only when the manifest declares the `object-types`
+// capability.
+interface object-types {
+  use ui.{node, event};
+
+  record object-type {
+    // A lowercase letter followed by lowercase letters or hyphens. Noura
+    // keeps its own types, such as `note`, holds `task` for the Tasks
+    // plugin and `project` for the Projects plugin, and a type another
+    // running plugin registered stays that plugin's.
+    name: string,
+    // The type's properties in the workspace format's schema
+    // declaration, as JSON.
+    schema: string,
+  }
+
+  // The types the plugin registers when it starts.
+  types: func() -> list<object-type>;
+
+  // The nodes of the properties panel for the object with this ID. A
+  // panel can't hold a virtual list, since nothing fetches its rows:
+  // Noura shows why in the panel's place.
+  render-panel: func(object: string) -> list<node>;
+
+  // Something happened in an object's properties panel. Noura draws the
+  // panel again afterwards.
+  handle-panel-event: func(object: string, event: event);
+}
+
+world plugin {
+  import workspace;
+  import objects;
+  import network;
+  import command-calls;
+  import clock;
+  import navigation;
+  import ai;
+  export view;
+  export object-types;
+  export commands;
+  export inbox;
+  export settings;
+  export tools;
+}

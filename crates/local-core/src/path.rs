@@ -30,7 +30,8 @@ pub fn validate_relative(path: &str, operation: &str) -> Result<PathBuf> {
         ));
     }
     let value = Path::new(path);
-    if value.is_absolute() {
+    // Windows doesn't call `/etc/hosts` absolute, since it names no drive.
+    if value.is_absolute() || value.has_root() {
         return Err(CoreError::validation(
             "absolute_path",
             "Absolute paths are not accepted",

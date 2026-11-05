@@ -13,6 +13,8 @@ function initial(): AppCapabilities {
 		systemTrash: native,
 		workspaceFolders: native,
 		mcp: native,
+		fileDrops: false,
+		dragOut: false,
 	};
 }
 

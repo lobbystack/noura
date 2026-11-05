@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT counter, digest, seq, policy_revision, generation FROM chain_heads\n             WHERE workspace = ?1 AND domain = ?2 AND device = ?3",
+  "describe": {
+    "columns": [
+      {
+        "name": "counter",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "chain_heads",
+            "name": "counter"
+          }
+        }
+      },
+      {
+        "name": "digest",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "chain_heads",
+            "name": "digest"
+          }
+        }
+      },
+      {
+        "name": "seq",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "chain_heads",
+            "name": "seq"
+          }
+        }
+      },
+      {
+        "name": "policy_revision",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "chain_heads",
+            "name": "policy_revision"
+          }
+        }
+      },
+      {
+        "name": "generation",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "chain_heads",
+            "name": "generation"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "a50018123e1a6233d6dccf16194e072c0d32f41f01466863ed55076e7a12e049"
+}

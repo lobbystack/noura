@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE domains\n             SET entries_since_checkpoint = ?3, weight_since_checkpoint = ?4, checkpoint_due = ?5,\n                 log_weight = ?6, crossing_seen = ?7\n             WHERE workspace = ?1 AND domain = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "9060138e65415f539dc49089b5f7afc6aa4bf30349cec2930d646d1c77a8ff1c"
+}

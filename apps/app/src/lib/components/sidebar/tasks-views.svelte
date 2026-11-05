@@ -1,4 +1,6 @@
 <script lang="ts">
+	import SidebarSectionLabel from './sidebar-section-label.svelte';
+	import { isSectionCollapsed } from '$lib/preferences.svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { tasksData } from '$lib/tasks-data.svelte';
@@ -56,64 +58,70 @@
 </script>
 
 <Sidebar.SidebarGroup>
-	<Sidebar.SidebarGroupLabel>Views</Sidebar.SidebarGroupLabel>
-	<Sidebar.SidebarGroupContent>
-		<Sidebar.SidebarMenu>
-			{#each VIEW_MODES as mode (mode)}
-				<Sidebar.SidebarMenuItem>
-					<Sidebar.SidebarMenuButton
-						isActive={currentMode === mode}
-						size="sm"
-						onclick={() => void goto(href({ view: mode }))}
-					>
-						{label(mode)}
-					</Sidebar.SidebarMenuButton>
-				</Sidebar.SidebarMenuItem>
-			{/each}
-		</Sidebar.SidebarMenu>
-	</Sidebar.SidebarGroupContent>
-</Sidebar.SidebarGroup>
-
-{#if tasksData.projects.length > 0}
-	<Sidebar.SidebarGroup>
-		<Sidebar.SidebarGroupLabel>Projects</Sidebar.SidebarGroupLabel>
+	<SidebarSectionLabel section="tasks.views">Views</SidebarSectionLabel>
+	{#if !isSectionCollapsed('tasks.views')}
 		<Sidebar.SidebarGroupContent>
 			<Sidebar.SidebarMenu>
-				{#each tasksData.projects as project (project.id)}
+				{#each VIEW_MODES as mode (mode)}
 					<Sidebar.SidebarMenuItem>
 						<Sidebar.SidebarMenuButton
-							isActive={currentProject === project.id}
+							isActive={currentMode === mode}
 							size="sm"
-							onclick={() =>
-								void goto(href({ view: 'project', project: project.id }))}
+							onclick={() => void goto(href({ view: mode }))}
 						>
-							<span class="truncate">{project.title}</span>
+							{label(mode)}
 						</Sidebar.SidebarMenuButton>
 					</Sidebar.SidebarMenuItem>
 				{/each}
 			</Sidebar.SidebarMenu>
 		</Sidebar.SidebarGroupContent>
+	{/if}
+</Sidebar.SidebarGroup>
+
+{#if tasksData.projects.length > 0}
+	<Sidebar.SidebarGroup>
+		<SidebarSectionLabel section="tasks.projects">Projects</SidebarSectionLabel>
+		{#if !isSectionCollapsed('tasks.projects')}
+			<Sidebar.SidebarGroupContent>
+				<Sidebar.SidebarMenu>
+					{#each tasksData.projects as project (project.id)}
+						<Sidebar.SidebarMenuItem>
+							<Sidebar.SidebarMenuButton
+								isActive={currentProject === project.id}
+								size="sm"
+								onclick={() =>
+									void goto(href({ view: 'project', project: project.id }))}
+							>
+								<span class="truncate">{project.title}</span>
+							</Sidebar.SidebarMenuButton>
+						</Sidebar.SidebarMenuItem>
+					{/each}
+				</Sidebar.SidebarMenu>
+			</Sidebar.SidebarGroupContent>
+		{/if}
 	</Sidebar.SidebarGroup>
 {/if}
 
 {#if currentFolder !== null || folderGroups.length > 0}
 	<Sidebar.SidebarGroup>
-		<Sidebar.SidebarGroupLabel>Folders</Sidebar.SidebarGroupLabel>
-		<Sidebar.SidebarGroupContent>
-			<Sidebar.SidebarMenu>
-				{#each folderGroups as [folder, count] (folder)}
-					<Sidebar.SidebarMenuItem>
-						<Sidebar.SidebarMenuButton
-							isActive={currentFolder === folder}
-							size="sm"
-							onclick={() => void goto(href({ view: 'folder', folder }))}
-						>
-							<span class="truncate">{folder || 'Top level'}</span>
-						</Sidebar.SidebarMenuButton>
-						<Sidebar.SidebarMenuBadge>{count}</Sidebar.SidebarMenuBadge>
-					</Sidebar.SidebarMenuItem>
-				{/each}
-			</Sidebar.SidebarMenu>
-		</Sidebar.SidebarGroupContent>
+		<SidebarSectionLabel section="tasks.folders">Folders</SidebarSectionLabel>
+		{#if !isSectionCollapsed('tasks.folders')}
+			<Sidebar.SidebarGroupContent>
+				<Sidebar.SidebarMenu>
+					{#each folderGroups as [folder, count] (folder)}
+						<Sidebar.SidebarMenuItem>
+							<Sidebar.SidebarMenuButton
+								isActive={currentFolder === folder}
+								size="sm"
+								onclick={() => void goto(href({ view: 'folder', folder }))}
+							>
+								<span class="truncate">{folder || 'Top level'}</span>
+							</Sidebar.SidebarMenuButton>
+							<Sidebar.SidebarMenuBadge>{count}</Sidebar.SidebarMenuBadge>
+						</Sidebar.SidebarMenuItem>
+					{/each}
+				</Sidebar.SidebarMenu>
+			</Sidebar.SidebarGroupContent>
+		{/if}
 	</Sidebar.SidebarGroup>
 {/if}

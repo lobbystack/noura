@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT length(bundle) AS \"length!: i64\" FROM epochs\n             WHERE workspace = ?1 AND domain = ?2 AND epoch = ?3",
+  "describe": {
+    "columns": [
+      {
+        "name": "length!: i64",
+        "ordinal": 0,
+        "type_info": "Null",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "b72f7bd49092ce84f868f69c2f77e6ed2f2972a4000ebac4721229bc73ca8f77"
+}

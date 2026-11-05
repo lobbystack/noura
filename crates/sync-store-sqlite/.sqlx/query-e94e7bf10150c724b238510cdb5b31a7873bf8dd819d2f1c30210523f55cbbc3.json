@@ -1,0 +1,206 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT d.head_seq, d.epoch, d.epoch_digest, d.epoch_policy_revision,\n                    d.retention_floor, d.checkpoint_seq, d.checkpoint_due,\n                    d.entries_since_checkpoint, d.weight_since_checkpoint, d.deleted,\n                    d.log_weight, d.usage_bytes, d.history_bytes, d.pruned_floor,\n                    d.crossing_seen, w.quota_crossings AS \"quota_crossings?\"\n             FROM domains d LEFT JOIN workspaces w ON w.workspace = d.workspace\n             WHERE d.workspace = ?1 AND d.domain = ?2",
+  "describe": {
+    "columns": [
+      {
+        "name": "head_seq",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "head_seq"
+          }
+        }
+      },
+      {
+        "name": "epoch",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "epoch"
+          }
+        }
+      },
+      {
+        "name": "epoch_digest",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "epoch_digest"
+          }
+        }
+      },
+      {
+        "name": "epoch_policy_revision",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "epoch_policy_revision"
+          }
+        }
+      },
+      {
+        "name": "retention_floor",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "retention_floor"
+          }
+        }
+      },
+      {
+        "name": "checkpoint_seq",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "checkpoint_seq"
+          }
+        }
+      },
+      {
+        "name": "checkpoint_due",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "checkpoint_due"
+          }
+        }
+      },
+      {
+        "name": "entries_since_checkpoint",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "entries_since_checkpoint"
+          }
+        }
+      },
+      {
+        "name": "weight_since_checkpoint",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "weight_since_checkpoint"
+          }
+        }
+      },
+      {
+        "name": "deleted",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "deleted"
+          }
+        }
+      },
+      {
+        "name": "log_weight",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "log_weight"
+          }
+        }
+      },
+      {
+        "name": "usage_bytes",
+        "ordinal": 11,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "usage_bytes"
+          }
+        }
+      },
+      {
+        "name": "history_bytes",
+        "ordinal": 12,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "history_bytes"
+          }
+        }
+      },
+      {
+        "name": "pruned_floor",
+        "ordinal": 13,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "pruned_floor"
+          }
+        }
+      },
+      {
+        "name": "crossing_seen",
+        "ordinal": 14,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "domains",
+            "name": "crossing_seen"
+          }
+        }
+      },
+      {
+        "name": "quota_crossings?",
+        "ordinal": 15,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "quota_crossings"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "e94e7bf10150c724b238510cdb5b31a7873bf8dd819d2f1c30210523f55cbbc3"
+}

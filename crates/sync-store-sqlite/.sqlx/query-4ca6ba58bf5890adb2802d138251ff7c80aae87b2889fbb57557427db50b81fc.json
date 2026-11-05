@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT workspace, domain, device, expires_at, share FROM shares WHERE token_hash = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "workspace",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "workspace"
+          }
+        }
+      },
+      {
+        "name": "domain",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "domain"
+          }
+        }
+      },
+      {
+        "name": "device",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "device"
+          }
+        }
+      },
+      {
+        "name": "expires_at",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "name": "share",
+        "ordinal": 4,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "share"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "4ca6ba58bf5890adb2802d138251ff7c80aae87b2889fbb57557427db50b81fc"
+}

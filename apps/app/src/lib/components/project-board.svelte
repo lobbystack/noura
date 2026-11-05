@@ -4,6 +4,8 @@
 	import { toast } from 'svelte-sonner';
 	import { tabsStore } from '$lib/tabs.svelte';
 	import { flushPendingDrafts } from '$lib/editor/pending-drafts.svelte';
+	import TaskNameInput from '$lib/components/task-name-input.svelte';
+	import { createTask } from '$lib/task-actions';
 	import TaskDetail from '$lib/components/task-detail.svelte';
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import * as Empty from '$lib/components/ui/empty/index.js';
@@ -56,13 +58,20 @@
 		tabsStore.open(task.id, 'task', task.title);
 	}
 
-	async function create() {
-		const result = await getNouraClient().tasks.create({
-			title: 'New task',
-			properties: { project: projectId, status: 'todo', priority: 'medium' },
+	/** A new task is being named; it exists only once named. */
+	let drafting = $state(false);
+
+	async function create(title: string): Promise<boolean> {
+		const created = await createTask(title, {
+			project: projectId,
+			status: 'todo',
+			priority: 'medium',
 		});
+		if (!created) return false;
+		drafting = false;
 		await onRefresh();
-		select(result.value as Task);
+		select(created);
+		return true;
 	}
 
 	async function moveTaskFromMenu(task: Task, status: string) {
@@ -181,10 +190,19 @@
 			</Empty.Description>
 		</Empty.Header>
 		<Empty.Content>
-			<Button onclick={create}>
-				<Plus data-icon="inline-start" />
-				Add task
-			</Button>
+			{#if drafting}
+				<TaskNameInput
+					label="New task name"
+					class="w-64"
+					oncommit={create}
+					oncancel={() => (drafting = false)}
+				/>
+			{:else}
+				<Button onclick={() => (drafting = true)}>
+					<Plus data-icon="inline-start" />
+					Add task
+				</Button>
+			{/if}
 		</Empty.Content>
 	</Empty.Root>
 {:else}

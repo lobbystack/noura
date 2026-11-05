@@ -1,6 +1,8 @@
 # Experimental encrypted checkpoint protocol
 
-This protocol is implemented for native and relay testing. The HTTP routes require `createApp(store, { checkpointTransitions: true, ... })`; production startup does not set this option. The discovery endpoint returns empty checkpoint and transition version lists by default. Native text checkpoint retrieval, invitation activation, rotation rebase, durable editing, native lifecycle mutations, and realtime delivery are experimental. Complete the cross-platform, sustained-load, and independent-review gates before enabling the routes for users.
+> The legacy app implements this protocol. The Rust product replaces it with [sync protocol version 2](sync-v2.md), which supports none of its records or data.
+
+This protocol is implemented for native and relay testing. The HTTP routes require `createApp(store, { checkpointTransitions: true, ... })`; production startup does not set this option. The discovery endpoint returns empty checkpoint and transition version lists by default. Native text checkpoint retrieval, invitation activation, rotation rebase, durable editing, native lifecycle mutations, and realtime delivery are experimental. Complete the cross-platform and sustained-load gates before enabling the routes for users.
 
 Rollout admission is separate from protocol continuity. With `checkpointTransitions: true, collaborationRollout: false`, the relay continues serving committed capabilities, transitions, checkpoints, existing live-text generations, and object activations for already-enrolled workspaces, but rejects new workspace capabilities with `sync.collaboration_rollout_disabled`. Since a valid object activation is bound to a stored signed workspace capability, this stops new workspace enrollment without downgrading existing generations or discarding local drafts.
 

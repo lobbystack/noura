@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE blobs SET delete_after = ?3\n             WHERE workspace = ?1 AND blob IN (\n               SELECT blob FROM blobs\n               WHERE workspace = ?1 AND domain = ?2 AND marked = 0\n                 AND (delete_after IS NULL OR delete_after > ?3)\n               LIMIT ?4\n             )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "d6b6a148bd90a99bae62a145672e57b512daf7687cf656b86061aee038e24b22"
+}

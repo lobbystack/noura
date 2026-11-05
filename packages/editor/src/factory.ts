@@ -15,7 +15,8 @@ import {
 	autocompletion,
 	type CompletionSource,
 } from '@codemirror/autocomplete';
-import { openSearchPanel, search, searchKeymap } from '@codemirror/search';
+import { search, searchKeymap } from '@codemirror/search';
+import { findExtension, openFind } from './find';
 import { classHighlighter } from '@lezer/highlight';
 import { GFM } from '@lezer/markdown';
 import {
@@ -546,13 +547,10 @@ export function createLiveMarkdownEditor(
 		previewClicks(options.openLink),
 		Prec.high(keymap.of(formattingKeymap)),
 		history(),
-		search({ top: true }),
-		keymap.of([
-			...defaultKeymap,
-			...historyKeymap,
-			...searchKeymap,
-			indentWithTab,
-		]),
+		options.find
+			? findExtension(options.find)
+			: [search({ top: true }), keymap.of(searchKeymap)],
+		keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
 		EditorView.updateListener.of((update) => {
 			const canonical = update.transactions.some(
 				(transaction) => transaction.annotation(canonicalUpdate) === true,
@@ -655,7 +653,7 @@ export function createLiveMarkdownEditor(
 			};
 		},
 		find: () => {
-			openSearchPanel(view);
+			openFind(view);
 		},
 	};
 }

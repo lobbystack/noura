@@ -1,0 +1,151 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f7f7f5;
+  --fg: #1d1d1b;
+  --muted: #5f5f5a;
+  --line: #d9d9d4;
+  --accent: #2f5d50;
+  --accent-fg: #ffffff;
+  --field: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #171716;
+    --fg: #ededea;
+    --muted: #a4a49e;
+    --line: #3a3a37;
+    --accent: #7fb8a6;
+    --accent-fg: #10201b;
+    --field: #22221f;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+main {
+  max-width: 26rem;
+  margin: 0 auto;
+  padding: 3rem 1rem;
+}
+
+.brand {
+  margin: 0 0 2rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+h1 {
+  margin: 0 0 1.5rem;
+  font-size: 1.6rem;
+  line-height: 1.2;
+}
+
+form {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0 0 1.75rem;
+}
+
+label {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+input {
+  width: 100%;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--field);
+  color: var(--fg);
+  font: inherit;
+}
+
+button {
+  padding: 0.65rem 1rem;
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.secondary,
+.passkey-ready button.link-button {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--line);
+}
+
+.status:empty {
+  display: none;
+}
+
+.status {
+  margin: 0;
+  color: var(--muted);
+}
+
+.aside {
+  color: var(--muted);
+}
+
+a {
+  color: var(--accent);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* The share viewer: a wider column for a note. */
+main:has(.share) {
+  max-width: 44rem;
+}
+
+.share-warning {
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: 6px;
+}
+
+.share-note h1 {
+  font-size: 1.4rem;
+}
+
+.share-note pre {
+  overflow-x: auto;
+  padding: 0.75rem;
+  border-radius: 6px;
+  background: var(--field);
+}
+
+.share-note blockquote {
+  margin: 0;
+  padding-left: 1rem;
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+}
+
+.share-note table {
+  border-collapse: collapse;
+}
+
+.share-note th,
+.share-note td {
+  padding: 0.25rem 0.75rem;
+  border: 1px solid var(--line);
+}

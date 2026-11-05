@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT floor FROM history_floors\n             WHERE workspace = $1 AND account = $2 AND domain = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "floor",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "history_floors",
+            "name": "floor"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "38d2622711ee0199e1a9d7b2a818431da5bb0c2fc611db958afbc745d773811b"
+}

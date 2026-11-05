@@ -1,0 +1,778 @@
+//! The key records of a push (§8, §9): `account_heads` changes, epoch
+//! bundles and envelopes, checked against the current state plus the
+//! records before them in the same push.
+//!
+//! A change whose heads bring a card into a domain owes, later in the same
+//! push, a current-epoch envelope for that card, when its signer could read
+//! the domain before the change; in a domain the signer couldn't read, only
+//! a change that also takes a card out commits without them, and the
+//! rotation it makes due wraps for the new card. A rotation owes an
+//! envelope for each of its recipients. Apart from those, the server takes
+//! a lone envelope only for an open re-wrap request, from at most a few
+//! wrapping devices, and none while the domain waits for a rotation.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+use sync_protocol::codec::Encode;
+use sync_protocol::keys::{check_replacement, recipients_digest};
+use sync_protocol::messages::{PolicyEntry, Receipt};
+use sync_protocol::policy::{PolicyChain, Snapshot};
+use sync_protocol::records::{Envelope, EpochBundle, PolicyChange, PolicyKind, Profile, Signed};
+use sync_protocol::types::Id;
+
+use super::{ENTRY_EPOCH, KEY_ENVELOPE, KEY_EPOCH};
+use crate::policy;
+use crate::{CheckpointInterval, EpochRow, Error, Refusal, Result, Session, WriteTxn, refuse};
+
+/// The key stream type of a re-wrap request (§26).
+pub(crate) const KEY_REWRAP: u8 = 5;
+
+/// The most lone envelopes one re-wrap request takes: the first few
+/// holders that answer within their wait (§9).
+pub(crate) const MAX_REWRAP_ANSWERS: usize = 3;
+
+/// What a push's records have done so far: the policy after its changes,
+/// and the envelopes it still owes, by domain, epoch and recipient, with
+/// the index of the record that needs each.
+pub(crate) struct PushState {
+    policy: Arc<PolicyChain>,
+    owed: BTreeMap<(Id, u64, Id), usize>,
+    /// The domains this push created, which take epoch 1 in it.
+    created: BTreeSet<Id>,
+    /// Each account a change brought into a domain, with the change's
+    /// digest, whose history floor the push sets (§9).
+    floors: Vec<(Id, Id, sync_protocol::types::Digest)>,
+    interval: CheckpointInterval,
+    quota: Option<u64>,
+    /// The store clock's time, in Unix seconds.
+    pub(crate) now: u64,
+}
+
+impl PushState {
+    pub(crate) fn new(
+        policy: Arc<PolicyChain>,
+        interval: CheckpointInterval,
+        quota: Option<u64>,
+        now: u64,
+    ) -> Self {
+        Self {
+            policy,
+            owed: BTreeMap::new(),
+            created: BTreeSet::new(),
+            floors: Vec::new(),
+            interval,
+            quota,
+            now,
+        }
+    }
+
+    /// The policy after the changes so far.
+    pub(crate) fn policy(&self) -> &Arc<PolicyChain> {
+        &self.policy
+    }
+
+    /// What [`Self::floors`] names: domain, account and the change.
+    pub(crate) fn floors(&self) -> impl Iterator<Item = &(Id, Id, sync_protocol::types::Digest)> {
+        self.floors.iter()
+    }
+
+    /// Whether a change of this push sets a floor in `domain`.
+    pub(crate) fn sets_floor(&self, domain: &Id) -> bool {
+        self.floors.iter().any(|(d, _, _)| d == domain)
+    }
+
+    /// The first record whose envelopes the push doesn't carry.
+    pub(crate) fn unmet(&self) -> Option<(usize, Refusal)> {
+        self.owed.values().min().map(|index| {
+            (
+                *index,
+                Refusal::new(
+                    "recipients_invalid",
+                    "the push lacks an envelope that a new reader of the domain needs",
+                ),
+            )
+        })
+    }
+}
+
+/// Commits an `account_heads` change (§8): the rules of §8 against the
+/// account chains the store holds, read after the policy lock, then the
+/// change and its entry in every domain's log, in domain-ID order.
+pub(crate) async fn apply_change(
+    txn: &mut impl WriteTxn,
+    state: &mut PushState,
+    session: Session,
+    workspace: Id,
+    index: usize,
+    change: &Signed<PolicyChange>,
+) -> Result<Vec<Receipt>> {
+    let current = state.policy.clone();
+    let prev = current.head_snapshot();
+    let accounts: BTreeSet<Id> = prev
+        .members
+        .keys()
+        .copied()
+        .chain(prev.former.keys().copied())
+        .chain(change.body.heads.iter().map(|h| h.account))
+        .collect();
+    let chains = policy::account_chains(txn, accounts).await?;
+    let next = current
+        .check(change, &chains)
+        .map_err(|e| refuse(e.server_code(), e.to_string()))?;
+    let raises = adds_someone(change, prev, &next);
+    crate::reset::check_accept_reset(txn, &current, workspace, change, state.now).await?;
+    if let PolicyKind::AddMember {
+        account,
+        role,
+        invitation,
+    } = &change.body.kind
+    {
+        if !prev.members.contains_key(account)
+            && txn.memberships(*account).await?.len() >= crate::create::MAX_MEMBERSHIPS
+        {
+            return Err(refuse(
+                "workspace_limit",
+                "the account already belongs to 1,000 workspaces",
+            ));
+        }
+        let signer = prev
+            .account_of(&change.body.signer)
+            .ok_or_else(|| refuse("forbidden", "the signer isn't a member device"))?;
+        crate::invitations::check_add_member(
+            txn,
+            workspace,
+            signer,
+            *account,
+            *role,
+            *invitation,
+            state.now,
+        )
+        .await?;
+    }
+
+    // The envelopes it owes the cards it brings in.
+    let read_before = |domain: &Id| {
+        prev.can_read(&session.device, domain)
+            || session.recovery.is_some_and(|r| prev.can_read(&r, domain))
+    };
+    for (domain, added) in &next.new_readers {
+        if !prev.domains.contains_key(domain) {
+            // A new domain's readers take epoch 1 in this push, from the
+            // device that signed the change (§9, Rotation).
+            for device in added {
+                state.owed.insert((*domain, 1, *device), index);
+            }
+            continue;
+        }
+        if read_before(domain) {
+            let row = txn
+                .domain(workspace, *domain)
+                .await?
+                .ok_or_else(|| Error::internal("a domain of the policy has no head row"))?;
+            for device in added {
+                state.owed.insert((*domain, row.epoch, *device), index);
+            }
+        } else if !next.rotations.contains(domain) {
+            return Err(refuse(
+                "forbidden",
+                "a device that can't read the domain records a head that brings cards in without making it due for rotation",
+            ));
+        }
+    }
+
+    state.created.extend(
+        next.domains
+            .keys()
+            .filter(|domain| !prev.domains.contains_key(domain)),
+    );
+    let revision = change.body.revision;
+    let digest = change.digest();
+    policy::store_change(txn, workspace, change).await?;
+    txn.set_policy_head(workspace, revision, digest).await?;
+    // Policy changes count toward usage for the workspace's whole life
+    // (§20), on the workspace domain's head row, which this push holds.
+    let length = i64::try_from(change.to_bytes().len()).unwrap_or(i64::MAX);
+    txn.add_usage(workspace, next.workspace_domain, length, 0)
+        .await?;
+    crate::retention::check_quota(txn, workspace, state.quota, if raises { length } else { 0 })
+        .await?;
+    if let PolicyKind::DeleteDomain { domain } = &change.body.kind {
+        txn.mark_domain_deleted(workspace, *domain).await?;
+    }
+    for (account, member) in &next.members {
+        txn.upsert_member(workspace, *account, member.role.code())
+            .await?;
+    }
+    for account in prev.members.keys() {
+        if !next.members.contains_key(account) {
+            txn.delete_member(workspace, *account).await?;
+        }
+    }
+    // A created domain's log starts with this change's entry (§8), which
+    // the loop below appends first since nothing else stands in the log.
+    for domain in next.domains.keys() {
+        if !prev.domains.contains_key(domain) {
+            txn.insert_domain(workspace, *domain).await?;
+        }
+    }
+    match &change.body.kind {
+        PolicyKind::AddMember {
+            account,
+            invitation,
+            ..
+        } => {
+            // An approved invitation ends: its link no longer opens.
+            txn.delete_invitation(*invitation).await?;
+            state.floors.push((next.workspace_domain, *account, digest));
+        }
+        PolicyKind::SetAccess { domain, access } => {
+            let before = prev.domains.get(domain).map(|d| &d.access);
+            for entry in access.iter() {
+                if !before.is_some_and(|list| list.contains_key(&entry.account)) {
+                    state.floors.push((*domain, entry.account, digest));
+                }
+            }
+        }
+        PolicyKind::SetRole { .. }
+        | PolicyKind::RemoveMember { .. }
+        | PolicyKind::TransferOwner { .. } => {
+            crate::invitations::end_ungrantable(txn, workspace, &next).await?;
+        }
+        _ => {}
+    }
+    let entry = PolicyEntry {
+        revision,
+        head: digest,
+    };
+    let mut receipts = Vec::with_capacity(next.domains.len());
+    for domain in next.domains.keys() {
+        let seq = crate::checkpoints::append_policy_entry(
+            txn,
+            state.interval,
+            workspace,
+            *domain,
+            &entry,
+            Some(prev),
+            &next,
+        )
+        .await?;
+        receipts.push(Receipt {
+            record_digest: digest,
+            domain: *domain,
+            seq,
+        });
+    }
+    let mut updated = (*current).clone();
+    updated
+        .append(change, &chains)
+        .map_err(|e| refuse(e.server_code(), e.to_string()))?;
+    state.policy = Arc::new(updated);
+    Ok(receipts)
+}
+
+/// Commits an epoch bundle (§9): a rotation that a committed change
+/// requires, with a `policy_revision` at or above the latest change that
+/// requires it, or a replacement that skips at least one epoch, each used
+/// by no device but its rotator and devices that lost read access through a
+/// change at or below the replacement's `policy_revision`. The rotating
+/// device must read the domain at that revision and now, and the
+/// recipients must be the domain's readers. The bundle owes an envelope for
+/// every recipient later in the push, and the server deletes the older
+/// epochs' envelopes and closes their re-wrap requests.
+pub(crate) async fn apply_epoch(
+    txn: &mut impl WriteTxn,
+    state: &mut PushState,
+    _session: Session,
+    workspace: Id,
+    index: usize,
+    bundle: &EpochBundle,
+) -> Result<Vec<Receipt>> {
+    let record = &bundle.epoch.0;
+    let body = &record.body;
+    let policy = state.policy.clone();
+    let snapshot = policy.head_snapshot();
+    let (head_revision, _) = policy.head();
+    let domain = body.domain;
+    if !snapshot.domains.contains_key(&domain) {
+        return Err(refuse("not_found", "no such domain"));
+    }
+    let row = txn
+        .domain(workspace, domain)
+        .await?
+        .ok_or_else(|| refuse("not_found", "no such domain"))?;
+    let at = (body.policy_revision <= head_revision)
+        .then(|| policy.at(body.policy_revision))
+        .flatten()
+        .ok_or_else(|| refuse("policy_stale", "the epoch names a revision above the head"))?;
+    if at.digest != body.policy_head {
+        return Err(refuse(
+            "policy_conflict",
+            "policy_head isn't the server's change at that revision",
+        ));
+    }
+    let rotator = body.rotating_device;
+    if !at.can_wrap(&rotator, &domain) || !snapshot.can_wrap(&rotator, &domain) {
+        return Err(refuse(
+            "forbidden",
+            "the rotating device couldn't read the domain at its revision or can't now",
+        ));
+    }
+    if row.epoch == 0 {
+        return apply_first_epoch(txn, state, workspace, bundle).await;
+    }
+    if body.epoch <= row.epoch {
+        return Err(refuse("epoch_conflict", "another rotation took this epoch"));
+    }
+    if body.epoch != row.epoch + 1 {
+        return Err(refuse(
+            "epoch_conflict",
+            "an epoch record comes one above the domain's latest",
+        ));
+    }
+    let replacement = sync_protocol::keys::makes_checkpoint_due(&row.epoch_digest, body);
+    if !replacement {
+        let due = policy.rotation_required(&domain, row.epoch_policy_revision, head_revision);
+        if due.is_none_or(|r| body.policy_revision < r) {
+            return Err(refuse(
+                "rotation_not_due",
+                "no committed change requires this domain to rotate at or below the epoch's revision",
+            ));
+        }
+    } else {
+        let named = txn
+            .epoch_by_digest(workspace, domain, body.previous)
+            .await?
+            .filter(|named| named.epoch < row.epoch)
+            .ok_or_else(|| {
+                refuse(
+                    "epoch_conflict",
+                    "previous names no epoch record of this domain below the latest",
+                )
+            })?;
+        if let Some(required) = policy.rotation_required(&domain, 0, head_revision)
+            && body.policy_revision < required
+        {
+            return Err(refuse(
+                "rotation_not_due",
+                "a replacement names a revision below the latest change that requires a rotation",
+            ));
+        }
+        check_skippable(txn, &policy, workspace, domain, &row, named.epoch, rotator).await?;
+        let users = skipped_users(txn, workspace, domain, named.epoch, row.epoch).await?;
+        check_replacement(&policy, body, named.epoch, row.epoch, &users).map_err(|_| {
+            refuse(
+                "epoch_conflict",
+                "a device other than a skipped epoch's rotator used it and kept read access",
+            )
+        })?;
+    }
+    let readers = snapshot.readers(&domain);
+    let listed: BTreeSet<Id> = bundle.recipients.iter().copied().collect();
+    if listed != readers
+        || at.readers(&domain) != readers
+        || body.recipients_digest != recipients_digest(&readers)
+    {
+        return Err(refuse(
+            "recipients_invalid",
+            "the epoch's recipients aren't the domain's readers",
+        ));
+    }
+
+    let bytes = record.to_bytes();
+    let digest = record.digest();
+    let seq = txn
+        .append_entry(workspace, domain, ENTRY_EPOCH, &bytes)
+        .await?;
+    // A replacement makes a checkpoint due at its entry, since the latest
+    // checkpoint may name the epoch it skips (§17).
+    crate::checkpoints::note_entry(
+        txn,
+        state.interval,
+        workspace,
+        domain,
+        seq,
+        bytes.len() as u64,
+        replacement,
+    )
+    .await?;
+    txn.insert_epoch(
+        workspace,
+        domain,
+        &EpochRow {
+            epoch: body.epoch,
+            seq,
+            digest,
+            previous: body.previous,
+            record: bytes.clone(),
+        },
+        body.policy_revision,
+        &bundle.to_bytes(),
+    )
+    .await?;
+    txn.append_key_entry(workspace, KEY_EPOCH, domain, body.epoch, None, &bytes)
+        .await?;
+    txn.drop_old_epochs(workspace, domain, body.epoch).await?;
+    // Bundles count toward usage for the workspace's whole life, except
+    // those of the epochs a replacement skips (§20).
+    let mut usage = bundle.to_bytes().len() as i64;
+    if replacement {
+        let named = txn
+            .epoch_by_digest(workspace, domain, body.previous)
+            .await?
+            .map_or(row.epoch, |named| named.epoch);
+        for skipped in (named + 1)..=row.epoch {
+            let length = txn
+                .epoch_bundle_length(workspace, domain, skipped)
+                .await?
+                .unwrap_or(0);
+            usage -= i64::try_from(length).unwrap_or(i64::MAX);
+        }
+    }
+    txn.add_usage(workspace, domain, usage, bytes.len() as i64)
+        .await?;
+    state
+        .owed
+        .retain(|(owed_domain, _, _), _| *owed_domain != domain);
+    for reader in readers {
+        state.owed.insert((domain, body.epoch, reader), index);
+    }
+    Ok(vec![Receipt {
+        record_digest: digest,
+        domain,
+        seq,
+    }])
+}
+
+/// Commits epoch 1 of a domain whose `create_domain` this push carries
+/// (§9): from the device that signed that change, at its revision, with no
+/// lineage, for the domain's readers. A domain gets no first epoch later,
+/// so one that a push left without it never takes a record.
+async fn apply_first_epoch(
+    txn: &mut impl WriteTxn,
+    state: &mut PushState,
+    workspace: Id,
+    bundle: &EpochBundle,
+) -> Result<Vec<Receipt>> {
+    let record = &bundle.epoch.0;
+    let body = &record.body;
+    let policy = state.policy.clone();
+    let snapshot = policy.head_snapshot();
+    let domain = body.domain;
+    let created = snapshot
+        .domains
+        .get(&domain)
+        .ok_or_else(|| refuse("not_found", "no such domain"))?;
+    if !state.created.contains(&domain) || body.epoch != 1 || !body.previous.is_zero() {
+        return Err(refuse(
+            "rotation_not_due",
+            "epoch 1 of a domain commits with its create_domain",
+        ));
+    }
+    if body.rotating_device != created.creator {
+        return Err(refuse(
+            "forbidden",
+            "epoch 1 comes from the device that signed the create_domain",
+        ));
+    }
+    if body.policy_revision != created.created_at {
+        return Err(refuse(
+            "policy_stale",
+            "epoch 1 names the create_domain's revision",
+        ));
+    }
+    if !body.lineage.0.is_empty() || !body.lineage_nonce.is_zero() {
+        return Err(refuse("bad_request", "epoch 1 carries no lineage"));
+    }
+    let readers = snapshot.readers(&domain);
+    let listed: BTreeSet<Id> = bundle.recipients.iter().copied().collect();
+    if listed != readers || body.recipients_digest != recipients_digest(&readers) {
+        return Err(refuse(
+            "recipients_invalid",
+            "the epoch's recipients aren't the domain's readers",
+        ));
+    }
+    let bytes = record.to_bytes();
+    let digest = record.digest();
+    let seq = txn
+        .append_entry(workspace, domain, ENTRY_EPOCH, &bytes)
+        .await?;
+    crate::checkpoints::note_entry(
+        txn,
+        state.interval,
+        workspace,
+        domain,
+        seq,
+        bytes.len() as u64,
+        false,
+    )
+    .await?;
+    txn.insert_epoch(
+        workspace,
+        domain,
+        &EpochRow {
+            epoch: 1,
+            seq,
+            digest,
+            previous: body.previous,
+            record: bytes.clone(),
+        },
+        body.policy_revision,
+        &bundle.to_bytes(),
+    )
+    .await?;
+    txn.append_key_entry(workspace, KEY_EPOCH, domain, 1, None, &bytes)
+        .await?;
+    txn.add_usage(
+        workspace,
+        domain,
+        bundle.to_bytes().len() as i64,
+        bytes.len() as i64,
+    )
+    .await?;
+    Ok(vec![Receipt {
+        record_digest: digest,
+        domain,
+        seq,
+    }])
+}
+
+/// Whether a change adds someone (§20): the kinds a workspace over its
+/// quota refuses. An `account_heads` change for its signer's own account
+/// always passes, so a lost device can be replaced.
+fn adds_someone(change: &Signed<PolicyChange>, prev: &Snapshot, next: &Snapshot) -> bool {
+    match &change.body.kind {
+        PolicyKind::AddMember { .. }
+        | PolicyKind::AcceptReset { .. }
+        | PolicyKind::CreateDomain { .. } => true,
+        PolicyKind::SetAccess { domain, access } => {
+            let before = prev.domains.get(domain).map(|d| &d.access);
+            access.iter().any(|entry| {
+                before
+                    .and_then(|list| list.get(&entry.account))
+                    .is_none_or(|level| level.code() < entry.level.code())
+            })
+        }
+        PolicyKind::AccountHeads => {
+            let signer = prev.account_of(&change.body.signer);
+            let own = change.body.heads.iter().all(|h| Some(h.account) == signer);
+            let added = next.devices.keys().any(|d| !prev.devices.contains_key(d));
+            let removed = prev.devices.keys().any(|d| !next.devices.contains_key(d));
+            !own && added && !removed
+        }
+        _ => false,
+    }
+}
+
+/// The storage rule for a replacement (§9, §30): honest rotations bound
+/// replacements, so it can't skip an epoch that was itself a replacement or
+/// that a device of the replacer's own account rotated, and it can't skip
+/// an epoch the floor passed, whose users pruning may have removed.
+async fn check_skippable(
+    txn: &mut impl WriteTxn,
+    policy: &PolicyChain,
+    workspace: Id,
+    domain: Id,
+    row: &crate::DomainRow,
+    named: u64,
+    rotator: Id,
+) -> Result<()> {
+    use sync_protocol::codec::Decode;
+    use sync_protocol::records::Epoch;
+    let snapshot = policy.head_snapshot();
+    let replacer = snapshot.account_of(&rotator);
+    let conflict = |message: &str| refuse("epoch_conflict", message);
+    let mut previous = txn
+        .epoch(workspace, domain, named)
+        .await?
+        .map(|e| e.digest)
+        .ok_or_else(|| Error::internal("a named epoch has no row"))?;
+    for epoch in (named + 1)..=row.epoch {
+        let Some(skipped) = txn.epoch(workspace, domain, epoch).await? else {
+            continue;
+        };
+        let record = Signed::<Epoch>::from_bytes(&skipped.record).map_err(Error::internal)?;
+        if record.body.previous != previous {
+            return Err(conflict("a replacement can't skip another replacement"));
+        }
+        if skipped.seq <= row.retention_floor {
+            return Err(conflict("the retention floor passed that epoch"));
+        }
+        // A device a link removed has left the account: the remover may
+        // replace what it signed at an older revision (§30).
+        let rotated_by = snapshot.account_of(&record.body.rotating_device);
+        if rotated_by.is_some() && rotated_by == replacer {
+            return Err(conflict(
+                "a replacement can't skip an epoch its own account rotated",
+            ));
+        }
+        previous = skipped.digest;
+    }
+    Ok(())
+}
+
+/// For each epoch in (`named`, `latest`], its rotator and the devices that
+/// signed an operation or a profile under it: what a replacement that
+/// skips those epochs must judge (§9).
+async fn skipped_users(
+    txn: &mut impl WriteTxn,
+    workspace: Id,
+    domain: Id,
+    named: u64,
+    latest: u64,
+) -> Result<BTreeMap<u64, (Id, BTreeSet<Id>)>> {
+    use sync_protocol::codec::Decode;
+    let mut profiles: Vec<Profile> = Vec::new();
+    for bytes in txn.profiles(workspace).await? {
+        profiles.push(
+            Signed::<Profile>::from_bytes(&bytes)
+                .map_err(Error::internal)?
+                .body,
+        );
+    }
+    let mut users = BTreeMap::new();
+    for epoch in (named + 1)..=latest {
+        let Some(row) = txn.epoch(workspace, domain, epoch).await? else {
+            continue;
+        };
+        let record = sync_protocol::records::Signed::<sync_protocol::records::Epoch>::from_bytes(
+            &row.record,
+        )
+        .map_err(Error::internal)?;
+        let next = match txn.epoch(workspace, domain, epoch + 1).await? {
+            Some(next) => next.seq,
+            None => u64::MAX,
+        };
+        let mut signers: BTreeSet<Id> = txn
+            .writers_between(workspace, domain, row.seq, next)
+            .await?
+            .into_iter()
+            .collect();
+        // Profiles live in the workspace domain.
+        signers.extend(
+            profiles
+                .iter()
+                .filter(|p| p.epoch == epoch)
+                .map(|p| p.signer),
+        );
+        users.insert(epoch, (record.body.rotating_device, signers));
+    }
+    Ok(users)
+}
+
+/// Takes an envelope (§9): from a device that reads the domain under the
+/// current policy, for a reader of the domain's current epoch whose card's
+/// X-Wing key it names. One that the push owes settles that debt; any
+/// other is a lone envelope, which the server takes only for an open
+/// re-wrap request, once per wrapping device and from at most a few, and
+/// none while the domain waits for a rotation.
+pub(crate) async fn apply_envelope(
+    txn: &mut impl WriteTxn,
+    state: &mut PushState,
+    _session: Session,
+    workspace: Id,
+    envelope: &Signed<Envelope>,
+) -> Result<()> {
+    let body = &envelope.body;
+    let policy = state.policy.clone();
+    let snapshot = policy.head_snapshot();
+    let (head_revision, _) = policy.head();
+    let domain = body.domain;
+    if !snapshot.domains.contains_key(&domain) {
+        return Err(refuse("not_found", "no such domain"));
+    }
+    let row = txn
+        .domain(workspace, domain)
+        .await?
+        .ok_or_else(|| refuse("not_found", "no such domain"))?;
+    if !snapshot.can_wrap(&body.wrapping_device, &domain) {
+        return Err(refuse(
+            "forbidden",
+            "the wrapping device can't read the domain",
+        ));
+    }
+    if body.epoch != row.epoch {
+        return Err(refuse(
+            "epoch_stale",
+            "an envelope wraps the domain's current epoch",
+        ));
+    }
+    let fits = snapshot
+        .devices
+        .get(&body.recipient)
+        .filter(|_| snapshot.can_read(&body.recipient, &domain))
+        .is_some_and(|device| device.card.hpke_digest() == body.recipient_hpke_digest);
+    if !fits {
+        return Err(refuse(
+            "recipients_invalid",
+            "the envelope's recipient isn't a reader of the domain with that key",
+        ));
+    }
+    let bytes = envelope.to_bytes();
+    if state
+        .owed
+        .remove(&(domain, body.epoch, body.recipient))
+        .is_some()
+    {
+        txn.append_key_entry(
+            workspace,
+            KEY_ENVELOPE,
+            domain,
+            body.epoch,
+            Some(body.recipient),
+            &bytes,
+        )
+        .await?;
+        return Ok(());
+    }
+    if policy
+        .rotation_required(&domain, row.epoch_policy_revision, head_revision)
+        .is_some()
+    {
+        return Err(refuse(
+            "rotation_pending",
+            "the domain waits for a rotation, so it takes no lone envelope",
+        ));
+    }
+    let request = txn
+        .rewrap_requests(workspace)
+        .await?
+        .into_iter()
+        .find(|r| r.domain == domain && r.epoch == body.epoch && r.device == body.recipient)
+        .ok_or_else(|| {
+            refuse(
+                "forbidden",
+                "a lone envelope answers only an open re-wrap request",
+            )
+        })?;
+    let answers = txn
+        .rewrap_answers(workspace, domain, body.epoch, body.recipient)
+        .await?;
+    if answers
+        .iter()
+        .any(|(wrapper, _)| *wrapper == body.wrapping_device)
+    {
+        return Err(refuse(
+            "forbidden",
+            "this device already answered the re-wrap request",
+        ));
+    }
+    if answers.len() >= MAX_REWRAP_ANSWERS {
+        return Err(refuse(
+            "forbidden",
+            "the re-wrap request already took its answers",
+        ));
+    }
+    let key_seq = txn
+        .append_key_entry(
+            workspace,
+            KEY_ENVELOPE,
+            domain,
+            body.epoch,
+            Some(body.recipient),
+            &bytes,
+        )
+        .await?;
+    txn.insert_rewrap_answer(workspace, &request, body.wrapping_device, key_seq)
+        .await
+}

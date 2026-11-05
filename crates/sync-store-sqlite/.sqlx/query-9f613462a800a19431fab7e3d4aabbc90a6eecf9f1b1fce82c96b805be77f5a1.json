@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS (\n                 SELECT 1 FROM checkpoints\n                 WHERE workspace = ?1 AND domain = ?2 AND covered_seq = ?3 AND digest = ?4\n             ) AS \"exists!: bool\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "exists!: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9f613462a800a19431fab7e3d4aabbc90a6eecf9f1b1fce82c96b805be77f5a1"
+}

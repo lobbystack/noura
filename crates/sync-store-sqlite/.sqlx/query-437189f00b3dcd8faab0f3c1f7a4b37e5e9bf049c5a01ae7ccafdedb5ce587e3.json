@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE shares SET share = ?1 WHERE token_hash = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "437189f00b3dcd8faab0f3c1f7a4b37e5e9bf049c5a01ae7ccafdedb5ce587e3"
+}

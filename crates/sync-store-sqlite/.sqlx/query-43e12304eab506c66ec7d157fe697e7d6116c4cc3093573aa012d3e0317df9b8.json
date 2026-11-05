@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT buckets FROM checkpoints WHERE workspace = ?1 AND domain = ?2 AND number = ?3",
+  "describe": {
+    "columns": [
+      {
+        "name": "buckets",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "checkpoints",
+            "name": "buckets"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "43e12304eab506c66ec7d157fe697e7d6116c4cc3093573aa012d3e0317df9b8"
+}

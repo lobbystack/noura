@@ -1,0 +1,37 @@
+{
+	"name": "noura-typescript-kit",
+	"version": "0.0.0",
+	"private": true,
+	"description": "The TypeScript author kit for Noura plugins: its @noura packages and their tests.",
+	"license": "MIT",
+	"type": "module",
+	"engines": {
+		"node": "^22.20.0 || ^24.12.0 || >=26"
+	},
+	"workspaces": [
+		"packages/plugin-types",
+		"packages/plugin-cli",
+		"packages/mock-host",
+		"packages/create-plugin"
+	],
+	"scripts": {
+		"build": "npm run build --workspaces",
+		"check": "tsc -p tsconfig.json && tsc -p packages/create-plugin/template",
+		"test": "vitest run",
+		"licenses": "license-checker-rseidelsohn --summary --excludePrivatePackages --excludePackagesStartingWith 'spdx-' --onlyAllow 'MIT;MIT-0;Apache-2.0;Apache-2.0*;Apache-2.0 WITH LLVM-exception;(Apache-2.0 WITH LLVM-exception);0BSD;BlueOak-1.0.0;BSD-2-Clause;BSD-3-Clause;BSL-1.0;ISC;Unicode-3.0;CC0-1.0;CDLA-Permissive-2.0;Zlib;MPL-2.0;OFL-1.1;Ubuntu-font-1.0'",
+		"advisories": "npm audit --audit-level=low",
+		"check:packed": "node scripts/check-packed.mjs"
+	},
+	"devDependencies": {
+		"@types/node": "24.19.2",
+		"fflate": "0.8.3",
+		"license-checker-rseidelsohn": "5.0.1",
+		"semver": "7.8.5",
+		"typescript": "7.0.2",
+		"vitest": "5.0.5"
+	},
+	"overrides": {
+		"glob": "^14.0.3",
+		"minimatch": "^11.0.3"
+	}
+}

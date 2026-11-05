@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM blobs WHERE workspace = ?1 AND blob = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "fb9b95833f38acb8fa43226f193b7db6e5f713c2389cc3c5a86a43128196c248"
+}

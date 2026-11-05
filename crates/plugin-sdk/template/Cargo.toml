@@ -1,0 +1,18 @@
+[package]
+name = "word-count"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+plugin-sdk = { path = "../noura/crates/plugin-sdk" }
+
+[profile.release]
+opt-level = "s"
+strip = "debuginfo"
+
+# Keeps this project out of any Cargo workspace above it.
+[workspace]

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM approval_requests WHERE workspace = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "f80de5c1ec230bb8e33b2cee05291949e1ba1baf2431091c8d648d352510c356"
+}

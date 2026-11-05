@@ -1,0 +1,44 @@
+# The Rust sync server on Dokploy. Nothing deploys it yet: the owner creates
+# the Compose service at the go-ahead, after the hosted database is wiped, and
+# that step records both. See "Deploy on Dokploy" in docs/self-hosting.md.
+#
+# The file names no secret and no hostname. Dokploy writes the service's
+# environment to a .env beside this file, and the domain and its certificate
+# live in Dokploy, which attaches Traefik to the service. Traefik reaches the
+# server over Dokploy's network, so the file publishes no port.
+services:
+  sync-server:
+    build:
+      context: ..
+      dockerfile: crates/sync-server/Dockerfile
+    image: noura-sync-server
+    restart: unless-stopped
+    # The server waits up to 30 seconds for requests in flight.
+    stop_grace_period: 40s
+    expose:
+      - '8080'
+    environment:
+      NOURA_PUBLIC_ORIGIN: ${NOURA_PUBLIC_ORIGIN:?set the server's HTTPS origin}
+      NOURA_ALLOWED_EMAILS: ${NOURA_ALLOWED_EMAILS:-}
+      NOURA_MAIL_FROM: ${NOURA_MAIL_FROM:-}
+      NOURA_SMTP_URL: ${NOURA_SMTP_URL:-}
+      NOURA_RESEND_API_KEY: ${NOURA_RESEND_API_KEY:-}
+      # Empty keeps SQLite in the volume. A URL needs the secret too.
+      NOURA_DATABASE_URL: ${NOURA_DATABASE_URL:-}
+      NOURA_SERVER_SECRET: ${NOURA_SERVER_SECRET:-}
+      # Traefik overwrites this header on every request.
+      NOURA_TRUSTED_PROXY_HEADER: ${NOURA_TRUSTED_PROXY_HEADER:-x-real-ip}
+    ulimits:
+      # Above the server's 1,024 connections.
+      nofile: 4096
+    volumes:
+      - sync-data:/data
+    healthcheck:
+      test: ['CMD', 'sync-server', 'healthcheck']
+      interval: 10s
+      timeout: 6s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  sync-data:

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE blobs SET marked = TRUE WHERE workspace = $1 AND blob = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "359ef2e151acee53df9709a68b812327b0739d7aecd14ba6a8e3fe93db867810"
+}

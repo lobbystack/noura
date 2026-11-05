@@ -1,5 +1,7 @@
 # Experimental native text collaboration
 
+> The legacy app implements this protocol. The Rust product replaces it with [sync protocol version 2](sync-v2.md), which supports none of its records or data.
+
 Production discovery advertises no live-text capability. This document describes the implemented protocol and durable records, not a completed collaboration release.
 
 Workspace capability version 1 is an immutable owner-signed record binding the workspace ID, collaboration protocol 1, minimum native client protocol 1, minimum relay protocol 1, and signing device. The experimental relay stores only the exact signed record and requires it before staging an access transition. Unknown fields, unsupported minimums, identity changes, and replacement attempts fail closed.

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM key_entries WHERE workspace = $1 AND key_seq = $2 AND record_type = 5",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a15f1f36b80154aa73891ed93745ca39392f10f8a8aff49fb4ea4f36b379fd39"
+}

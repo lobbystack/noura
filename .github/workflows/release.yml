@@ -1,12 +1,12 @@
 name: Release
 
-# Push a tag such as v0.2.0 to build signed installers for macOS, Windows, and
-# Linux. The tag must point to a commit on main that passed CI. The release
-# stays a draft until every platform uploads, so installed apps never see a
-# partial latest.json.
+# Push a tag such as v0.3.0 to build signed packages for macOS, Windows and
+# Linux with cargo-packager. The tag must point to a commit on main that
+# passed CI. The release stays a draft until every platform uploads, so
+# installed apps never see a partial latest.json.
 #
-# The build job reads the updater signing key from the `release` environment.
-# docs/releasing.md explains the one-time setup.
+# The build job reads the updater key and the Apple credentials from the
+# `release` environment. docs/releasing.md explains the one-time setup.
 on:
   push:
     tags: ['v*']
@@ -40,10 +40,9 @@ jobs:
         id: version
         run: |
           tag="${GITHUB_REF_NAME}"
-          app_version="$(jq -r .version src-tauri/tauri.conf.json)"
           cargo_version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
-          if [ "$tag" != "v$app_version" ] || [ "$app_version" != "$cargo_version" ]; then
-            echo "::error::Tag $tag must equal v<version>, and tauri.conf.json ($app_version) must match Cargo.toml ($cargo_version)."
+          if [ "$tag" != "v$cargo_version" ]; then
+            echo "::error::Tag $tag must equal v<version>, where Cargo.toml's [workspace.package] version is $cargo_version."
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -83,11 +82,9 @@ jobs:
     permissions:
       contents: write
     outputs:
-      release_id: ${{ steps.release.outputs.id }}
       tag: ${{ needs.verify.outputs.tag }}
     steps:
       - name: Create a draft release
-        id: release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.verify.outputs.tag }}
@@ -96,12 +93,12 @@ jobs:
             gh release create "$TAG" -R "$GITHUB_REPOSITORY" --draft --verify-tag \
               --title "noura ${TAG#v}" --generate-notes
           fi
-          echo "id=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json databaseId -q .databaseId)" >> "$GITHUB_OUTPUT"
 
   build:
     needs: create-release
-    # The `release` environment holds TAURI_SIGNING_PRIVATE_KEY. A required
-    # reviewer on that environment approves each release before it signs.
+    # The `release` environment holds the updater key and the Apple
+    # credentials. A required reviewer on that environment approves each
+    # release before it signs.
     environment: release
     permissions:
       contents: write
@@ -111,48 +108,59 @@ jobs:
         include:
           - os: macos-latest
             platform: macos
-            args: --target universal-apple-darwin
-            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin,wasm32-unknown-unknown
-            license-targets: --target aarch64-apple-darwin --target x86_64-apple-darwin
+            package-args: --universal
+            rust-targets: aarch64-apple-darwin x86_64-apple-darwin wasm32-wasip2
           - os: windows-latest
             platform: windows
-            args: ''
-            rust-targets: wasm32-unknown-unknown
-            license-targets: --target x86_64-pc-windows-msvc
-          # The oldest supported Ubuntu keeps the AppImage compatible with older glibc.
+            package-args: ''
+            rust-targets: wasm32-wasip2
+          # The oldest supported Ubuntu keeps the AppImage compatible with
+          # older glibc.
           - os: ubuntu-22.04
             platform: linux
-            args: ''
-            rust-targets: wasm32-unknown-unknown
-            license-targets: --target x86_64-unknown-linux-gnu
+            package-args: ''
+            rust-targets: wasm32-wasip2
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        with: { toolchain: '1.91', targets: '${{ matrix.rust-targets }}' }
+      # rustup reads the version and components from rust-toolchain.toml.
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        env:
+          RUST_TARGETS: ${{ matrix.rust-targets }}
+        run: |
+          rustup toolchain install
+          for target in $RUST_TARGETS; do rustup target add "$target"; done
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with: { key: release }
-      - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
-        with: { tool: wasm-bindgen-cli@0.2.127 }
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with: { bun-version: 1.3.14 }
-      - run: bun install --frozen-lockfile
-      - name: Install Linux desktop build dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      # tauri.release.conf.json bundles this file. The frontend build records
-      # which npm packages it ships; cargo metadata lists the linked crates.
-      - name: Generate the bundled third-party license file
+      # rav1d, which decodes AVIF images in notes, assembles its x86 code
+      # with NASM. The universal macOS build compiles for Intel too.
+      - name: Install NASM
         shell: bash
         run: |
-          bun run --cwd apps/app build
-          bun scripts/generate-third-party-licenses.ts \
-            --out src-tauri/THIRD_PARTY_LICENSES.txt ${{ matrix.license-targets }}
-      # Apple signing is optional. Without a Developer ID certificate the app is
-      # ad-hoc signed, and macOS asks users to approve it on first launch.
-      - name: Load Apple signing credentials when configured
+          case "$RUNNER_OS" in
+            Windows)
+              choco install nasm --no-progress -y
+              echo 'C:\Program Files\NASM' >> "$GITHUB_PATH"
+              ;;
+            macOS) brew install nasm ;;
+            *) sudo apt-get update && sudo apt-get install -y nasm ;;
+          esac
+      - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
+        with: { tool: 'cargo-packager@0.11.8,cargo-about@0.9.2' }
+      # libfuse2 runs AppImages, including the tools cargo-packager uses to
+      # build one. Xvfb and Mesa give the app a display and a GPU for the
+      # check before upload.
+      - name: Install the Linux packaging and display tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse2 xvfb mesa-vulkan-drivers libegl1 libxkbcommon-x11-0
+      # Apple signing is optional. Without a Developer ID certificate the app
+      # is signed ad hoc, and macOS asks people to approve it on first launch.
+      - name: Load the Apple signing credentials when configured
         if: runner.os == 'macOS'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -162,35 +170,85 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+          names=(APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID)
+          missing=()
+          for name in "${names[@]}"; do
             value="${!name}"
             if [ -n "$value" ]; then
               echo "::add-mask::$value"
               echo "$name=$value" >> "$GITHUB_ENV"
+            else
+              missing+=("$name")
             fi
           done
-      - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+          if [ "${#missing[@]}" -ne 0 ] && [ "${#missing[@]}" -ne "${#names[@]}" ]; then
+            echo "::error::Set all six Apple secrets or none. Missing: ${missing[*]}"
+            exit 1
+          fi
+          # cargo-packager reads the signing identity from its config. "-"
+          # signs ad hoc. Escape it as a TOML string.
+          identity="${APPLE_SIGNING_IDENTITY:--}"
+          identity="${identity//\\/\\\\}"
+          identity="${identity//\"/\\\"}"
+          printf '\n[package.metadata.packager.macos]\nsigning-identity = "%s"\n' "$identity" \
+            >> apps/desktop/Cargo.toml
+      # scripts/package-desktop.sh builds the plugins each package ships.
+      # cargo-packager signs and notarizes the app, then signs every package
+      # for the updater and writes a .sig beside each one.
+      - name: Build and sign the packages
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          releaseId: ${{ needs.create-release.outputs.release_id }}
-          tauriScript: bun run tauri
-          # tauri-action resolves --config from the repository root, while the
-          # tauri script runs inside src-tauri. An absolute path works for both.
-          args: --config ${{ github.workspace }}/src-tauri/tauri.release.conf.json ${{ matrix.args }}
-          uploadUpdaterJson: true
-          updaterJsonPreferNsis: true
-      - name: Attach the license file to the release
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.NOURA_UPDATER_PRIVATE_KEY }}
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ${{ secrets.NOURA_UPDATER_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$CARGO_PACKAGER_SIGN_PRIVATE_KEY" ]; then
+            echo "::error::The release environment has no NOURA_UPDATER_PRIVATE_KEY."
+            exit 1
+          fi
+          scripts/package-desktop.sh ${{ matrix.package-args }}
+      # Apple recommends notarizing the outermost container, so Gatekeeper
+      # accepts the downloaded disk image itself.
+      - name: Notarize the disk image
+        if: runner.os == 'macOS' && env.APPLE_ID != ''
+        run: |
+          dmg="$(ls target/universal-apple-darwin/release/*.dmg)"
+          xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$dmg"
+      - name: Check that Gatekeeper accepts the disk image and the app
+        if: runner.os == 'macOS' && env.APPLE_ID != ''
+        run: scripts/check-notarization.sh target/universal-apple-darwin/release/*.dmg
+      # A package that lacks a plugin or won't start never reaches the draft.
+      - name: Install each package and launch it
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a scripts/check-desktop-packages.sh
+          else
+            scripts/check-desktop-packages.sh
+          fi
+      - name: Upload the packages to the draft release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.create-release.outputs.tag }}
         run: |
-          name="third-party-licenses-${{ matrix.platform }}.txt"
-          cp src-tauri/THIRD_PARTY_LICENSES.txt "$name"
-          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "$name"
+          set -euo pipefail
+          version="${TAG#v}"
+          mkdir upload
+          shopt -s nullglob
+          for file in target/release/* target/*/release/*; do
+            case "$file" in
+              # The app archive has no version in its name; add one.
+              *.app.tar.gz) cp "$file" "upload/Noura_${version}_universal.app.tar.gz" ;;
+              *.app.tar.gz.sig) cp "$file" "upload/Noura_${version}_universal.app.tar.gz.sig" ;;
+              *.dmg | *.msi | *.msi.sig | *.deb | *.AppImage | *.AppImage.sig) cp "$file" upload/ ;;
+            esac
+          done
+          cp apps/desktop/packaging/THIRD_PARTY_LICENSES.html \
+            "upload/third-party-licenses-${{ matrix.platform }}.html"
+          ls -l upload
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber upload/*
 
   publish:
     needs: [create-release, build]
@@ -200,17 +258,19 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - name: Download the draft release and add stable download names
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Download the draft release, add stable names and write the update feed
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.create-release.outputs.tag }}
         run: |
           set -euo pipefail
           gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D dist
-          # A rerun finds the stable copies from the last attempt. Drop them so
-          # each pattern below matches one versioned file.
-          rm -f dist/Noura-*
-          test -s dist/latest.json
+          # A rerun finds the stable copies and the feed from the last
+          # attempt. Drop them so each pattern below matches one file.
+          rm -f dist/Noura-* dist/latest.json
 
           # The website links to releases/latest/download/<stable name>.
           stable() {
@@ -223,9 +283,13 @@ jobs:
           }
           mkdir stable
           stable '*_universal.dmg' Noura-macOS.dmg
-          stable '*-setup.exe' Noura-Windows-Setup.exe
+          stable '*.msi' Noura-Windows.msi
           stable '*.AppImage' Noura-Linux.AppImage
           stable '*_amd64.deb' Noura-Linux.deb
+
+          # Installed apps read latest.json from the latest release.
+          scripts/write-update-feed.sh "${TAG#v}" \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG" dist > stable/latest.json
       # Anyone can then check a download with
       # `gh attestation verify <file> -R lobbystack/noura`.
       - name: Attest build provenance
@@ -234,7 +298,7 @@ jobs:
           subject-path: |
             dist/*
             stable/*
-      - name: Upload stable names and publish
+      - name: Upload stable names and the feed, and publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.create-release.outputs.tag }}

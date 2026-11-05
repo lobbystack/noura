@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE server SET backup_stamp = 1 WHERE id = 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "e728c3cf6ee95bb21517a883e8e6966918ae7e55b71aba2a09f2548734477ae9"
+}

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO ended_invitations (invitation, expires_at) SELECT invitation, expires_at FROM invitations WHERE invitation = $1 ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "825903c966252f7dc62eaeb96314e86346f6c582d9dff620cfc48bfcef89fbae"
+}

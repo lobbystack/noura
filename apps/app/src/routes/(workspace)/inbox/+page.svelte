@@ -318,7 +318,7 @@
 				<Empty.Header>
 					<Empty.Title>Nothing here yet</Empty.Title>
 					<Empty.Description>
-						Turn on tasks, calendar or notes to see them on Home.
+						Turn on tasks, calendar or notes to see them in the Inbox.
 					</Empty.Description>
 				</Empty.Header>
 				<Empty.Content>

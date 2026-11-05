@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO accounts (account, genesis) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "30ae34531ae044235d4d85470d128966c669e859c0ba05e98054ae02846d1cb9"
+}

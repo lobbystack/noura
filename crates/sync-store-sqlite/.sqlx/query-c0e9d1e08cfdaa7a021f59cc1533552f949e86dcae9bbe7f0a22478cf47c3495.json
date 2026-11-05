@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO challenges (challenge_hash, account, expires_at) VALUES (?1, ?2, ?3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "c0e9d1e08cfdaa7a021f59cc1533552f949e86dcae9bbe7f0a22478cf47c3495"
+}

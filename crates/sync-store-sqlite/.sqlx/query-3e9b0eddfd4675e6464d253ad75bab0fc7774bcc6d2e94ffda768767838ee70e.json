@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT closed FROM workspaces WHERE workspace = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "closed",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "closed"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3e9b0eddfd4675e6464d253ad75bab0fc7774bcc6d2e94ffda768767838ee70e"
+}

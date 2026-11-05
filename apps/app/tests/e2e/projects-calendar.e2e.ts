@@ -52,16 +52,16 @@ test.describe('projects', () => {
 });
 
 test.describe('calendar', () => {
-	test('a task due today shows on the calendar and on Home, and opens', async ({
+	test('a task due today shows on the calendar and in the Inbox, and opens', async ({
 		app,
 		page,
 	}) => {
 		await page.goto('/tasks?view=all');
 		await page.getByRole('button', { name: 'New task' }).click();
-		const title = page.getByRole('textbox', { name: 'Task title' });
-		await title.click();
-		await page.keyboard.press('ControlOrMeta+a');
 		await page.keyboard.type('Dentist');
+		await page.keyboard.press('Enter');
+		const title = page.getByRole('textbox', { name: 'Task title' });
+		await expect(title).toHaveValue('Dentist');
 		await page.locator('input[type="date"]').fill(today());
 		await expect
 			.poll(async () => {
@@ -75,11 +75,11 @@ test.describe('calendar', () => {
 			.getByRole('navigation', { name: 'Sections' })
 			.getByRole('link', { name: 'Calendar' })
 			.click();
-		const entry = page.getByRole('main').getByText('Dentist');
+		const entry = page.getByRole('button', { name: 'task Dentist' });
 		await expect(entry).toBeVisible();
 		await page
 			.getByRole('navigation', { name: 'Sections' })
-			.getByRole('link', { name: 'Home' })
+			.getByRole('link', { name: 'Inbox' })
 			.click();
 		const upcoming = page.getByRole('region', { name: 'Next 7 days' });
 		await expect(upcoming.getByRole('link', { name: /Dentist/ })).toBeVisible();

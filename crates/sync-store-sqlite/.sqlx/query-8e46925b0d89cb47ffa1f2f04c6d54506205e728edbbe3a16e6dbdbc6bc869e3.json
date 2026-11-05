@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE domains SET checkpoint_seq = ?3 WHERE workspace = ?1 AND domain = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "8e46925b0d89cb47ffa1f2f04c6d54506205e728edbbe3a16e6dbdbc6bc869e3"
+}

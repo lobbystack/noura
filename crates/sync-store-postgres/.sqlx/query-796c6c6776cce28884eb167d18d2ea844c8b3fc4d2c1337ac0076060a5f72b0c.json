@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sessions SET recovery = NULL WHERE account = $1 AND device = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "796c6c6776cce28884eb167d18d2ea844c8b3fc4d2c1337ac0076060a5f72b0c"
+}

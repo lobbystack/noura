@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE domains SET pruned_floor = ?3 WHERE workspace = ?1 AND domain = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "b4f2d9d703ec57a879dd1d89f72534421a113e988c7cf018ba4685df6a8b21f4"
+}

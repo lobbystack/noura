@@ -1,0 +1,110 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT invitation, token_hash, workspace, role, inviter, accepted_by, expires_at, invite_context FROM invitations WHERE workspace = ?1 AND expires_at > ?2 ORDER BY invitation",
+  "describe": {
+    "columns": [
+      {
+        "name": "invitation",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "invitations",
+            "name": "invitation"
+          }
+        }
+      },
+      {
+        "name": "token_hash",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "invitations",
+            "name": "token_hash"
+          }
+        }
+      },
+      {
+        "name": "workspace",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "invitations",
+            "name": "workspace"
+          }
+        }
+      },
+      {
+        "name": "role",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "invitations",
+            "name": "role"
+          }
+        }
+      },
+      {
+        "name": "inviter",
+        "ordinal": 4,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "invitations",
+            "name": "inviter"
+          }
+        }
+      },
+      {
+        "name": "accepted_by",
+        "ordinal": 5,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "invitations",
+            "name": "accepted_by"
+          }
+        }
+      },
+      {
+        "name": "expires_at",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "invitations",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "name": "invite_context",
+        "ordinal": 7,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "invitations",
+            "name": "invite_context"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "e88376e26c46f84cb61893e34e95aafd76c0da9c100b4f5efea3f1e9eeea6799"
+}

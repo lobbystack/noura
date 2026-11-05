@@ -4,8 +4,12 @@
 	import { createPointerSelectionTracker } from '$lib/editor/pointer-selection';
 	import { recallView, rememberView } from '$lib/editor/view-memory';
 	import { preferences } from '$lib/preferences.svelte';
+	import { isFindShortcut } from '$lib/app-shortcuts';
+	import FindBar from '$lib/components/find-bar.svelte';
+	import { hostOs } from '$lib/host-os';
 	import type {
 		EditorSelectionState,
+		FindController,
 		LiveMarkdownEditor,
 		MarkdownFormat,
 	} from '@noura/editor/types';
@@ -64,6 +68,8 @@
 	} = $props();
 
 	let editor = $state.raw<LiveMarkdownEditor | null>(null);
+	let find = $state.raw<FindController | null>(null);
+	let findBar = $state<FindBar | null>(null);
 	let selection = $state.raw<EditorSelectionState | null>(null);
 	let selectingWithPointer = $state(false);
 	let mountFailed = $state(false);
@@ -108,6 +114,16 @@
 	let pressedInline = $derived(
 		inlineFormats.filter((name) => formats.has(name)),
 	);
+
+	// Find opens this editor's find panel even when the text isn't focused.
+	// Inside the text the editor's own keymap has already handled it.
+	let surfaceElement = $state<HTMLDivElement | null>(null);
+	function handleFindKey(event: KeyboardEvent) {
+		if (event.defaultPrevented || !isFindShortcut(event, hostOs())) return;
+		if (!editor || !surfaceElement?.checkVisibility()) return;
+		event.preventDefault();
+		editor.find();
+	}
 
 	const isMac =
 		typeof navigator !== 'undefined' &&
@@ -175,6 +191,11 @@
 					},
 					onSelectionChange: (next) => {
 						selection = next;
+					},
+					find: {
+						open: (controller) => (find = controller),
+						focus: () => findBar?.focus(),
+						close: () => (find = null),
 					},
 				});
 				const content = handle.view.contentDOM;
@@ -248,7 +269,9 @@
 	}
 </script>
 
-<div class="flex h-full min-h-0 flex-1 flex-col">
+<svelte:window onkeydown={handleFindKey} />
+
+<div bind:this={surfaceElement} class="flex h-full min-h-0 flex-1 flex-col">
 	{#if showToolbar && !readOnly}
 		<div
 			class="flex min-h-11 flex-wrap items-center gap-1 px-5 py-1.5"
@@ -343,73 +366,79 @@
 				size="icon-sm"
 				class="ml-auto"
 				onclick={() => editor?.find()}
-				aria-label="Find and replace ({mod}F)"><MagnifyingGlass /></Button
+				aria-label="Find ({mod}F)"><MagnifyingGlass /></Button
 			>
 		</div>
 		<Separator />
 	{/if}
 
-	<div class="relative min-h-0 flex-1 overflow-auto">
-		{#if mountFailed}
-			<textarea
-				class="live-md h-full w-full resize-none bg-transparent outline-none"
-				aria-label={label}
-				readonly={readOnly}
-				bind:value={fallbackText}
-				oninput={(event) => {
-					onchange?.();
-					onedit?.(event.currentTarget.value);
-				}}></textarea>
-		{:else}
-			<!-- CodeMirror's content element is the labelled text box. -->
-			<div class="live-md h-full" {@attach mountEditor}></div>
+	<div class="relative flex min-h-0 flex-1 flex-col">
+		{#if find}
+			<FindBar bind:this={findBar} controller={find} />
 		{/if}
-		{#if popoverOpen && selection?.anchor}
-			<Popover.Root bind:open={() => popoverOpen, () => undefined}>
-				<Popover.Trigger
-					aria-label="Selection formatting"
-					class="fixed size-px opacity-0"
-					style="left: {selection.anchor.left}px; top: {selection.anchor.top}px"
-				/>
-				<Popover.Content
-					side="top"
-					trapFocus={false}
-					onOpenAutoFocus={(event) => event.preventDefault()}
-					class="w-auto flex-row gap-1 p-1"
-					onpointerdown={(event) => event.preventDefault()}
-				>
-					<Button
-						variant="ghost"
-						size="icon-sm"
-						onclick={() => format('bold')}
-						aria-label="Bold selection"><TextB /></Button
+		<div class="relative min-h-0 flex-1 overflow-auto">
+			{#if mountFailed}
+				<textarea
+					class="live-md h-full w-full resize-none bg-transparent outline-none"
+					aria-label={label}
+					readonly={readOnly}
+					bind:value={fallbackText}
+					oninput={(event) => {
+						onchange?.();
+						onedit?.(event.currentTarget.value);
+					}}></textarea>
+			{:else}
+				<!-- CodeMirror's content element is the labelled text box. -->
+				<div class="live-md h-full" {@attach mountEditor}></div>
+			{/if}
+			{#if popoverOpen && selection?.anchor}
+				<Popover.Root bind:open={() => popoverOpen, () => undefined}>
+					<Popover.Trigger
+						aria-label="Selection formatting"
+						class="fixed size-px opacity-0"
+						style="left: {selection.anchor.left}px; top: {selection.anchor
+							.top}px"
+					/>
+					<Popover.Content
+						side="top"
+						trapFocus={false}
+						onOpenAutoFocus={(event) => event.preventDefault()}
+						class="w-auto flex-row gap-1 p-1"
+						onpointerdown={(event) => event.preventDefault()}
 					>
-					<Button
-						variant="ghost"
-						size="icon-sm"
-						onclick={() => format('italic')}
-						aria-label="Italic selection"><TextItalic /></Button
-					>
-					<Button
-						variant="ghost"
-						size="icon-sm"
-						onclick={() => format('underline')}
-						aria-label="Underline selection"><TextUnderline /></Button
-					>
-					<Button
-						variant="ghost"
-						size="icon-sm"
-						onclick={() => format('strikethrough')}
-						aria-label="Strike selection"><TextStrikethrough /></Button
-					>
-					<Button
-						variant="ghost"
-						size="icon-sm"
-						onclick={() => format('link')}
-						aria-label="Link selection"><LinkSimple /></Button
-					>
-				</Popover.Content>
-			</Popover.Root>
-		{/if}
+						<Button
+							variant="ghost"
+							size="icon-sm"
+							onclick={() => format('bold')}
+							aria-label="Bold selection"><TextB /></Button
+						>
+						<Button
+							variant="ghost"
+							size="icon-sm"
+							onclick={() => format('italic')}
+							aria-label="Italic selection"><TextItalic /></Button
+						>
+						<Button
+							variant="ghost"
+							size="icon-sm"
+							onclick={() => format('underline')}
+							aria-label="Underline selection"><TextUnderline /></Button
+						>
+						<Button
+							variant="ghost"
+							size="icon-sm"
+							onclick={() => format('strikethrough')}
+							aria-label="Strike selection"><TextStrikethrough /></Button
+						>
+						<Button
+							variant="ghost"
+							size="icon-sm"
+							onclick={() => format('link')}
+							aria-label="Link selection"><LinkSimple /></Button
+						>
+					</Popover.Content>
+				</Popover.Root>
+			{/if}
+		</div>
 	</div>
 </div>

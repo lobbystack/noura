@@ -1,0 +1,1896 @@
+//! Example-based regression and exact-behavior tests for the markdown
+//! editor. Unlike the property audit tables in [`super::render_props`] /
+//! [`super::edit_props`], each test here pins one specific input to one
+//! specific outcome (often a shipped bug fix). Render-side tests reuse the
+//! property `_check` helpers exposed by [`super::render_props`].
+
+use comrak::Arena;
+use editor_core::offset_types::{Grapheme, RangeExt};
+
+use super::super::input::{Advance, Bound, Event, Location, Region};
+use super::super::widget::utils::wrap_layout::FragmentContent;
+use super::harness::TestEditor;
+use super::render_props::{
+    assert_bg_rows_meet_within_inline_code, fragment_rect_disjoint_check_md,
+    galley_rect_in_render_area, glyph_in_render_area_check_md, render_frame, test_renderer,
+};
+
+// ── renderer ──
+
+/// An image the embedding app can't find lays out as a broken-image marker
+/// at the marker's size. The resolver is never asked to paint it, and the
+/// note's bytes stay as they were.
+#[test]
+fn an_image_the_app_cant_find_draws_the_broken_image_marker() {
+    use super::super::widget::utils::wrap_layout::EmbedKind;
+    use crate::resolvers::{EmbedResolver, EmbedState};
+
+    struct NothingFound;
+    impl EmbedResolver for NothingFound {
+        fn state(&self, _url: &str) -> EmbedState {
+            EmbedState::NotFound
+        }
+        fn show(&self, _: &mut egui::Ui, url: &str, _: egui::Rect, _: egui::CornerRadius) {
+            panic!("asked to paint {url}, which wasn't found");
+        }
+        fn prefetch(&self, _url: &str) {}
+        fn seq(&self) -> u64 {
+            0
+        }
+    }
+
+    let md = "![diagram](missing.png)\n\nfollow\n";
+    for embeds in [
+        Box::new(NothingFound) as Box<dyn crate::resolvers::EmbedResolver>,
+        Box::new(()),
+    ] {
+        let mut ws = TestEditor::with_embeds(md, embeds);
+        // Caret off the image so it collapses instead of revealing.
+        ws.push(Event::Select {
+            region: Region::Location(Location::Grapheme(Grapheme(27))),
+        });
+        ws.enter_frame();
+        ws.enter_frame();
+
+        let markers: Vec<_> = ws
+            .editor
+            .edit
+            .renderer
+            .fragments
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.content,
+                    FragmentContent::Embed {
+                        kind: EmbedKind::Missing,
+                        ..
+                    }
+                )
+            })
+            .collect();
+        assert_eq!(markers.len(), 1);
+        assert_eq!(markers[0].source_range, (Grapheme(0), Grapheme(23)));
+        assert!((markers[0].rect.width() - 48.0).abs() < 1.0);
+        assert!((markers[0].rect.height() - 48.0).abs() < 1.0);
+        assert_eq!(ws.editor.text(), md);
+    }
+}
+
+/// Image fragments allocate exactly the image's logical size — no
+/// doubled advance or padding.
+#[test]
+fn inline_image_advance_matches_rendered_width() {
+    use egui::Vec2;
+
+    let url = "https://placehold.co/180x120";
+    let (mut ws, embeds) =
+        { TestEditor::with_test_embeds(&format!("![]({url}) ![]({url})\n\nfollow\n")) };
+    ws.editor.edit.renderer.ctx.set_pixels_per_point(2.0);
+
+    // 180×120 rasterized at ppi=2 → a 360×240 px texture.
+    embeds.complete(url, Vec2::new(360.0, 240.0));
+
+    // Cursor off both images so they collapse rather than revealing.
+    ws.push(Event::Select {
+        region: Region::BetweenLocations {
+            start: Location::Grapheme(Grapheme(80)),
+            end: Location::Grapheme(Grapheme(80)),
+        },
+    });
+    ws.enter_frame();
+    ws.enter_frame();
+
+    let images: Vec<_> = ws
+        .editor
+        .edit
+        .renderer
+        .fragments
+        .iter()
+        .filter(|f| matches!(f.content, FragmentContent::Embed { .. }))
+        .collect();
+    assert_eq!(images.len(), 2);
+    for f in &images {
+        assert!(
+            (f.rect.width() - 180.0).abs() < 1.0,
+            "width: {}",
+            f.rect.width()
+        );
+        assert!(
+            (f.rect.height() - 120.0).abs() < 1.0,
+            "height: {}",
+            f.rect.height()
+        );
+    }
+}
+
+#[test]
+fn image_link_no_break_opportunities_wraps() {
+    // Real-world content from a user file (cb650r.md): a line
+    // that begins with `^^` and then immediately contains an
+    // image link, with no whitespace between, and with identifier-
+    // shaped (underscore/hyphen-heavy) alt text and URL. None of
+    // `_`, `-`, alphanumerics are UAX#14 break opportunities, so
+    // cosmic-text can produce a `ShapeWord` covering most of the
+    // line — walker must produce break points so the row wraps
+    // within the column instead of running off the right edge.
+    let md =
+        "^^![pasted_image_2025-07-28_00-51-47.png](imports/pasted_image_2025-07-28_00-51-47.png)\n";
+    for w in [200.0, 300.0, 400.0, 500.0, 600.0] {
+        // Reproduce without cursor on the line (reveal=false): the
+        // image renders just its alt text, which is itself a long
+        // identifier-heavy token. The user reports this case also
+        // fails in real usage.
+        glyph_in_render_area_check_md(md, w).unwrap_or_else(|e| panic!("width={}: {}", w, e));
+    }
+}
+
+/// Mobile edit-menu "Edit": with the selection exactly covering a collapsed
+/// image atom, `Event::EnterAtom` selects the image's URL — endpoints inside
+/// the syntax reveal the raw markdown, and the likeliest edit becomes
+/// type-to-replace. The only touch path in, since mobile has no arrow keys.
+/// A selection that isn't an image is a no-op.
+#[test]
+fn enter_atom_selects_image_url() {
+    let url = "https://example.com/i.png";
+    let mut ws = TestEditor::new(&format!("![alt]({url})\n"));
+    ws.enter_frame();
+    let img = ws.editor.edit.renderer.bounds.images[0];
+
+    // non-image selection: no-op
+    ws.push(Event::EnterAtom);
+    ws.enter_frame();
+    assert!(!ws.editor.edit.renderer.range_revealed_interior(img));
+
+    // tap-select the atom, then enter it
+    ws.push(Event::Select { region: img.into() });
+    ws.enter_frame();
+    assert!(
+        !ws.editor.edit.renderer.range_revealed_interior(img),
+        "selected, not revealed"
+    );
+    ws.push(Event::EnterAtom);
+    ws.enter_frame();
+
+    let sel = ws.editor.edit.renderer.buffer.current.selection;
+    assert_eq!(
+        &ws.editor.edit.renderer.buffer[sel], url,
+        "url selected: {sel:?}"
+    );
+    assert!(
+        ws.editor.edit.renderer.range_revealed_interior(img),
+        "source revealed"
+    );
+}
+
+/// Mobile edit-menu "Edit" on a labeled link: with the selection exactly
+/// covering `[title](url)`, `Event::EnterAtom` selects the destination —
+/// the hidden part, mirroring [`enter_atom_selects_image_url`].
+#[test]
+fn enter_atom_selects_link_destination() {
+    let url = "https://example.com";
+    let mut ws = TestEditor::new(&format!("some [title]({url}) text\n"));
+    ws.enter_frame();
+
+    let link = ((5).into(), (14 + url.len()).into());
+    assert_eq!(
+        &ws.editor.edit.renderer.buffer[link],
+        format!("[title]({url})")
+    );
+    ws.push(Event::Select {
+        region: link.into(),
+    });
+    ws.enter_frame();
+    ws.push(Event::EnterAtom);
+    ws.enter_frame();
+
+    let sel = ws.editor.edit.renderer.buffer.current.selection;
+    assert_eq!(
+        &ws.editor.edit.renderer.buffer[sel], url,
+        "destination selected: {sel:?}"
+    );
+}
+
+/// Mobile edit-menu "Edit" on a wikilink: with the selection exactly covering
+/// `[[target]]`, `Event::EnterAtom` selects the interior.
+#[test]
+fn enter_atom_selects_wikilink_interior() {
+    let mut ws = TestEditor::new("some [[target]] text\n");
+    ws.enter_frame();
+
+    let link = ((5).into(), (15).into());
+    assert_eq!(&ws.editor.edit.renderer.buffer[link], "[[target]]");
+    ws.push(Event::Select {
+        region: link.into(),
+    });
+    ws.enter_frame();
+    ws.push(Event::EnterAtom);
+    ws.enter_frame();
+
+    let sel = ws.editor.edit.renderer.buffer.current.selection;
+    assert_eq!(
+        &ws.editor.edit.renderer.buffer[sel], "target",
+        "interior selected: {sel:?}"
+    );
+}
+
+#[test]
+fn long_link_stays_inside_render_area() {
+    // Long links should wrap at UAX#14 break opportunities (`/`,
+    // `.`) inserted via the walker's zero-Glue between adjacent
+    // non-blank words; if there are no break opportunities the
+    // per-cluster glyph wrap should kick in.
+    let cases = [
+        // Auto-link with `/` break opportunities
+        "Click <https://example.com/very/long/path/to/resource> please.\n",
+        // Inline link with long display text and href
+        "[link text that is quite long](https://example.com/x)\n",
+        // Long display text mirrors URL (common auto-link form)
+        "[https://example.com/very/long/path](https://example.com/very/long/path)\n",
+        // Display text is one long un-broken token (needs per-cluster wrap)
+        "[verylongtokenwithnobreakers](https://example.com)\n",
+    ];
+    for md in cases {
+        for w in [200.0, 250.0, 300.0, 400.0] {
+            galley_rect_in_render_area(md, w)
+                .unwrap_or_else(|e| panic!("'{}' at width={}: {}", md.trim(), w, e));
+        }
+    }
+}
+
+/// Each captured block marker is selectable: its `line_own_prefix` is
+/// covered by exactly one `Spacer` fragment that hit-testing lands on, so
+/// a drag/double-click selects the whole marker (Part A).
+#[test]
+fn block_markers_are_selectable() {
+    use comrak::nodes::NodeValue;
+
+    type Pred = fn(&NodeValue) -> bool;
+    let cases: &[(&str, Pred)] = &[
+        ("- a\n", |v| matches!(v, NodeValue::Item(_))),
+        ("1. a\n", |v| matches!(v, NodeValue::Item(_))),
+        ("> a\n", |v| matches!(v, NodeValue::BlockQuote)),
+        ("- [ ] a\n", |v| matches!(v, NodeValue::TaskItem(_))),
+    ];
+    for (md, pred) in cases {
+        let mut r = test_renderer(md);
+        render_frame(&mut r, 800.0, None, |_| {});
+
+        let arena = Arena::new();
+        let root = r.reparse(&arena);
+        let node = root
+            .descendants()
+            .find(|n| pred(&n.data.borrow().value))
+            .unwrap_or_else(|| panic!("no matching container in {md:?}"));
+        let line = r.node_first_line(node);
+        let own = r.line_own_prefix(node, line);
+        assert!(!own.is_empty(), "{md:?}: marker own_prefix is empty");
+
+        let frag = r
+            .fragments
+            .iter()
+            .find(|f| f.source_range == own)
+            .unwrap_or_else(|| panic!("{md:?}: no fragment maps the marker {own:?}"));
+        assert!(
+            matches!(frag.content, FragmentContent::Spacer),
+            "{md:?}: marker fragment is not a Spacer"
+        );
+
+        // Hit-testing the marker's gutter lands on its fragment, so a
+        // drag / double-click selects the whole marker.
+        let idx = r.closest_fragment_at_pos(frag.rect.center()).unwrap();
+        assert_eq!(
+            r.fragments[idx].source_range, own,
+            "{md:?}: hit-test on marker did not resolve to the marker fragment"
+        );
+    }
+}
+
+/// Nested-list indentation is selectable per level: the gutter columns of a
+/// deeply-nested item tile contiguously from the block's left edge up to
+/// the marker, with no empty column behind the bullet. Each level owns its
+/// own column (its `line_own_prefix`), so the columns tile without gaps.
+#[test]
+fn nested_indent_columns_are_selectable() {
+    use comrak::nodes::NodeValue;
+
+    let md = "a\n* a\n  * a\n    * a\n";
+    let mut r = test_renderer(md);
+    render_frame(&mut r, 800.0, None, |_| {});
+
+    let arena = Arena::new();
+    let root = r.reparse(&arena);
+    let deepest = root
+        .descendants()
+        .filter(|n| matches!(n.data.borrow().value, NodeValue::Item(_)))
+        .max_by_key(|n| n.ancestors().count())
+        .expect("an item");
+    let marker = r.line_own_prefix(deepest, r.node_first_line(deepest));
+    let marker_rect = r
+        .fragments
+        .iter()
+        .find(|f| f.source_range == marker)
+        .expect("deepest marker fragment")
+        .rect;
+
+    // Gutter (Spacer) columns on the marker's row, left of the marker.
+    // Filter on `Spacer` content, not `atomic` — indentation columns are
+    // non-atomic (a click there places the cursor rather than selecting
+    // the column); only marker columns are atomic.
+    let mut row: Vec<_> = r
+        .fragments
+        .iter()
+        .filter(|f| {
+            matches!(f.content, FragmentContent::Spacer)
+                && !f.source_range.is_empty()
+                && (f.rect.min.y - marker_rect.min.y).abs() < 0.5
+                && f.rect.max.x <= marker_rect.max.x + 0.5
+        })
+        .map(|f| f.rect)
+        .collect();
+    row.sort_by(|a, b| a.min.x.partial_cmp(&b.min.x).unwrap());
+
+    assert!(
+        row.len() >= 3,
+        "expected 3 nested gutter columns, got {}",
+        row.len()
+    );
+    // They must tile contiguously up to the marker — no gap (the reported
+    // empty column right behind the bullet).
+    for pair in row.windows(2) {
+        assert!(
+            (pair[0].max.x - pair[1].min.x).abs() < 0.5,
+            "gap between gutter columns: {:?} then {:?}",
+            pair[0],
+            pair[1]
+        );
+    }
+    assert!(
+        (row.last().unwrap().max.x - marker_rect.max.x).abs() < 0.5,
+        "gutter columns don't reach the marker"
+    );
+}
+
+/// A sub-list indented past its marker (relative indent 1-3, the common
+/// 4-space style) captures its full marker — content doesn't begin with a
+/// leaked `* `. The exact document from the report; `own_prefix_len_item`.
+#[test]
+fn deep_indent_does_not_leak_marker() {
+    use comrak::nodes::NodeValue;
+
+    let md = "  * Lockbook\n      * Active Queue\n          * marketing\n";
+    let mut r = test_renderer(md);
+    render_frame(&mut r, 800.0, None, |_| {});
+
+    let arena = Arena::new();
+    let root = r.reparse(&arena);
+    let deepest = root
+        .descendants()
+        .filter(|n| matches!(n.data.borrow().value, NodeValue::Item(_)))
+        .max_by_key(|n| n.ancestors().count())
+        .expect("an item");
+
+    // Hidden prefix ends exactly where the item's content block begins.
+    let first_line = r.node_first_line(deepest);
+    let content_start = r.line_content(deepest, first_line).start();
+    let block_start = r.node_range(deepest.first_child().unwrap()).start();
+    assert_eq!(
+        content_start,
+        block_start,
+        "leaked: {:?}",
+        &r.buffer[(content_start, block_start)]
+    );
+    assert_eq!(&r.buffer[r.line_content(deepest, first_line)], "marketing");
+}
+
+#[test]
+fn reveal_toggle_preserves_content_coverage() {
+    // Move the cursor through every grapheme position of a doc with
+    // multiple inlines (each revealing in turn) and check that
+    // *every* non-whitespace text-bearing node manifests at every
+    // cursor position. Catches reveal-toggle render bugs where some
+    // inline disappears when the cursor enters/leaves it.
+    let md = ":smile: foo `code` bar *emph* baz\n";
+    let mut r = test_renderer(md);
+    let last = r.buffer.current.segs.last_cursor_position().0;
+    for cursor in 0..=last {
+        r.buffer.current.selection = (Grapheme(cursor), Grapheme(cursor));
+        r.reveal_selection = Some(r.buffer.current.selection);
+        r.reveal_seq = cursor as u64;
+        // Pick a few text nodes by hand and assert they manifest. The
+        // literal source positions (grapheme indices — every char is 1
+        // grapheme in this ASCII doc):
+        //   :smile: → (0,7)  foo → (8, 11)  code → (13, 17)
+        //   bar → (19, 22)   emph → (24, 28)  baz → (30, 33)
+        let covered = render_frame(&mut r, 400.0, None, |r| {
+            [(0, 7), (8, 11), (13, 17), (19, 22), (24, 28), (30, 33)]
+                .iter()
+                .all(|&(lo, hi)| {
+                    r.fragments
+                        .iter()
+                        .any(|f| f.source_range.0.0 < hi && f.source_range.1.0 > lo)
+                })
+        });
+        assert!(covered, "content uncovered at cursor offset {cursor}");
+    }
+}
+
+#[test]
+fn inline_code_wrap_bgs_meet_at_row_seam() {
+    // Long inline code that's wider than the column → wraps. Each
+    // visual row gets its own bg fragment; they should meet exactly
+    // at the row seam (bottom of upper = top of lower) because
+    // `row_spacing = 2 × inline_padding` is sized so the inline_pad
+    // each side extends fills the spacing exactly.
+    let md = "`one two three four five six seven eight nine ten`\n";
+    // Narrow width forces wrap.
+    assert_bg_rows_meet_within_inline_code(md, 200.0).unwrap();
+}
+
+#[test]
+fn heading_autolink_with_fold_stays_in_render_area() {
+    let md = "# **foo foo <https://x.test>** <!-- {\"fold\":true} -->\n";
+    for i in 0..40u32 {
+        let w = 250.0 + (i as f32) * 25.0;
+        glyph_in_render_area_check_md(md, w).unwrap_or_else(|e| panic!("width={w}: {e}"));
+    }
+}
+
+#[test]
+fn adjacent_inline_code_backgrounds_dont_overlap() {
+    // Two inline-code spans separated by a single space — both have
+    // a background. With `Fragment::rect` as the visual extent (bg
+    // padding included), the property collapses to "no two fragment
+    // rects overlap." The walker reserves the bg breathing room via
+    // `Pad` items emitted inside each backgrounded scope.
+    let cases = [
+        "`foo` `bar`\n",
+        "text `foo` text `bar` text\n",
+        // Same with `Highlight` (`==…==`) which is also backgrounded.
+        "==foo== ==bar==\n",
+        // Inline code immediately followed by `Highlight`.
+        "`foo`==bar==\n",
+        // Nested distinct colors: highlight wrapping inline code.
+        "==before `foo` after==\n",
+        // List item with inline code — regression for the user-
+        // observed "inline code in list item has no decoration".
+        "- contains `Code` between text\n",
+    ];
+    for md in &cases {
+        for w in [200.0, 400.0, 800.0] {
+            fragment_rect_disjoint_check_md(md, w)
+                .unwrap_or_else(|e| panic!("md={md:?} width={w}: {e}"));
+        }
+    }
+}
+
+// ── editor ──
+
+/// Regression for #4662: arrowing up off a folded heading must walk the
+/// cursor to the lines above it, not freeze.
+///
+/// Originally the fold tag revealed to its ~22-char source when the cursor
+/// landed on the heading line; on a narrow viewport that expansion wrapped
+/// the heading across rows and up-arrowing stuck inside the wrapped tag.
+/// The tag renders as a compact chip now, but the narrow width keeps the
+/// heading wrapping across rows, preserving the walk this test guards.
+/// (The property suite runs at the fixed 800px `SCREEN_SIZE`, where the
+/// heading never wraps and the original bug stayed hidden.)
+#[test]
+fn up_arrow_through_fold_tag() {
+    use super::super::input::Increment;
+    use egui::Vec2;
+    let up = || Event::Select {
+        region: Region::ToAdvance {
+            advance: Advance::By(Increment::Lines(1)),
+            backwards: true,
+            extend_selection: false,
+        },
+    };
+    let place = |g: usize| Event::Select {
+        region: Region::BetweenLocations {
+            start: Location::Grapheme(Grapheme(g)),
+            end: Location::Grapheme(Grapheme(g)),
+        },
+    };
+
+    // Narrow width so the revealed tag wraps the heading line.
+    let width = Vec2::new(320., 600.);
+    let doc = "above one\nabove two\n# H1 heading text here <!-- {\"fold\":true} -->\nbody";
+    // Start at the end of the fold tag (deepest into the wrapped rows).
+    let start = doc.find("-->").unwrap() + 3;
+
+    let mut ws = TestEditor::new(doc);
+    ws.enter_frame_at(width);
+    ws.push(place(start));
+    ws.enter_frame_at(width);
+
+    // The revealed heading wraps into many rows here, so press enough to
+    // walk all of them; each press must make progress (no fixpoint).
+    let mut trajectory = vec![ws.editor.edit.renderer.buffer.current.selection.1.0];
+    for _ in 0..30 {
+        ws.push(up());
+        ws.enter_frame_at(width);
+        trajectory.push(ws.editor.edit.renderer.buffer.current.selection.1.0);
+    }
+
+    // "above one" occupies offsets 0..=9; reaching it proves the cursor
+    // walked past the wrapped fold tag and the lines above it.
+    let landed = *trajectory.last().unwrap();
+    assert!(
+        landed <= 9,
+        "up-arrow got stuck before the first line; trajectory: {trajectory:?}",
+    );
+}
+
+/// Regression for #4665: arrowing up through a list of links must walk
+/// the cursor to the lines above, not freeze.
+///
+/// Same shape as [`up_arrow_through_fold_tag`]: a link renders as just
+/// its display text until the cursor lands on its line, then reveals to
+/// its full `[text](url)` source. On a narrow viewport that expansion
+/// wraps the link across visual rows, and up-arrowing then sticks on a
+/// soft-wrap boundary inside the link instead of reaching the row above.
+#[test]
+fn up_arrow_through_link_list() {
+    use super::super::input::Increment;
+    use egui::Vec2;
+    let up = || Event::Select {
+        region: Region::ToAdvance {
+            advance: Advance::By(Increment::Lines(1)),
+            backwards: true,
+            extend_selection: false,
+        },
+    };
+    let place = |g: usize| Event::Select {
+        region: Region::BetweenLocations {
+            start: Location::Grapheme(Grapheme(g)),
+            end: Location::Grapheme(Grapheme(g)),
+        },
+    };
+
+    // Width where a revealed link source wraps across rows.
+    let width = Vec2::new(480., 600.);
+    let doc = "above one\nabove two\n[link one](https://example.com/some/fairly/long/path/one)\n[link two](https://example.com/some/fairly/long/path/two)\n[link three](https://example.com/some/fairly/long/path/three)";
+    let start = doc.len();
+
+    let mut ws = TestEditor::new(doc);
+    ws.enter_frame_at(width);
+    ws.push(place(start));
+    ws.enter_frame_at(width);
+
+    let mut trajectory = vec![ws.editor.edit.renderer.buffer.current.selection.1.0];
+    for _ in 0..12 {
+        ws.push(up());
+        ws.enter_frame_at(width);
+        trajectory.push(ws.editor.edit.renderer.buffer.current.selection.1.0);
+    }
+
+    // The two "above" lines occupy offsets 0..=18; reaching them proves
+    // the cursor walked up past all three wrapped link lines.
+    let landed = *trajectory.last().unwrap();
+    assert!(
+        landed <= 18,
+        "up-arrow got stuck in the link list; trajectory: {trajectory:?}",
+    );
+}
+
+/// Selection-driven scroll-to-cursor must arm before `post_render` so
+/// reveal-driven height changes are followed by the scroll fix-up on
+/// the same frame. The buggy version armed it after the draw phase, so
+/// frame N+1 painted with shifted heights against the old offset and
+/// frame N+2's scroll catch-up flashed the user's view.
+///
+/// Sequence: scroll a tall doc to the bottom (anchor is well above the
+/// fenced code block), then move the cursor into the code block. Reveal
+/// expands the block by many rows, and the catch-up scroll lands the
+/// new offset on the same frame as the height change.
+#[test]
+fn scroll_stable_after_reveal_arrow() {
+    use super::super::scroll_content::DocScrollContent;
+    use crate::widgets::affine_scroll::Action;
+    let mut doc = String::new();
+    for _ in 0..40 {
+        doc.push_str("paragraph paragraph paragraph paragraph paragraph\n\n");
+    }
+    doc.push_str("```\n");
+    for _ in 0..30 {
+        doc.push_str("code line code line code line\n");
+    }
+    doc.push_str("```\n\n");
+    for _ in 0..30 {
+        doc.push_str("trailing paragraph trailing paragraph\n\n");
+    }
+    let mut ws = TestEditor::new(&doc);
+    ws.enter_frame();
+
+    {
+        let arena = comrak::Arena::new();
+        let root = ws.editor.edit.renderer.reparse(&arena);
+        let content = DocScrollContent::for_frame(
+            &ws.editor.edit.renderer,
+            root,
+            ws.editor.edit.scroll_area.state.viewport_height,
+        );
+        ws.editor
+            .edit
+            .scroll_area
+            .state
+            .handle(&content, Action::ScrollToBottom);
+    }
+    ws.enter_frame();
+
+    let cb_inside = doc.find("code line").unwrap() + 5;
+    ws.push(Event::Select {
+        region: Region::BetweenLocations {
+            start: Location::Grapheme(Grapheme(cb_inside)),
+            end: Location::Grapheme(Grapheme(cb_inside)),
+        },
+    });
+    ws.enter_frame();
+    let after_event = ws.editor.edit.scroll_area.stored_offset();
+    ws.enter_frame();
+    let after_idle = ws.editor.edit.scroll_area.stored_offset();
+
+    assert_eq!(
+        after_event, after_idle,
+        "scroll offset shifted on the idle frame after reveal-driven height change",
+    );
+}
+
+#[test]
+fn harness_smoke() {
+    let mut ws = TestEditor::new("hello world");
+    ws.enter_frame();
+    assert_eq!(ws.get_text(), "hello world");
+}
+
+/// Regression: completing an embed load must invalidate cached image
+/// heights. With `embeds_seq` correctly stamped, the height cache picks
+/// up the new image dims on the next read; without it, layout reuses
+/// the placeholder height.
+#[test]
+fn layout_cache_consistent_under_embed() {
+    const EPS: f32 = 0.5;
+    let (mut ws, embeds) = TestEditor::with_test_embeds("![alt](https://x.test/i.png)\n\nafter\n");
+    ws.enter_frame();
+
+    embeds.complete("https://x.test/i.png", egui::Vec2::new(300.0, 500.0));
+    ws.enter_frame();
+
+    let arena = comrak::Arena::new();
+    let root = ws.editor.edit.renderer.reparse(&arena);
+    let nodes: Vec<_> = root.descendants().collect();
+    let snapshot: Vec<_> = nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, n)| {
+            ws.editor
+                .edit
+                .renderer
+                .get_cached_node_height(n)
+                .map(|h| (i, h))
+        })
+        .collect();
+    ws.editor
+        .edit
+        .renderer
+        .layout_cache
+        .height
+        .borrow_mut()
+        .clear();
+    for (i, cached) in snapshot {
+        let fresh = ws.editor.edit.renderer.height(nodes[i]);
+        assert!(
+            (cached - fresh).abs() <= EPS,
+            "cached {} != fresh {} for node[{}]",
+            cached,
+            fresh,
+            i,
+        );
+    }
+}
+
+/// Regression: cursor entering a fenced code block flips its reveal
+/// state, growing its height. Cached height must reflect the new state
+/// rather than returning the pre-reveal value via a stale stamp.
+#[test]
+fn layout_cache_consistent_under_reveal() {
+    const EPS: f32 = 0.5;
+    let doc = "para\n\n```\nline\nline\nline\n```\n\npara\n";
+    let mut ws = TestEditor::new(doc);
+
+    // Cursor outside the code block.
+    ws.push(Event::Select {
+        region: Region::BetweenLocations {
+            start: Location::Grapheme(Grapheme(0)),
+            end: Location::Grapheme(Grapheme(0)),
+        },
+    });
+    ws.enter_frame();
+
+    // Cursor inside the code block — flips its reveal.
+    let cb_inside = doc.find("line").unwrap() + 2;
+    ws.push(Event::Select {
+        region: Region::BetweenLocations {
+            start: Location::Grapheme(Grapheme(cb_inside)),
+            end: Location::Grapheme(Grapheme(cb_inside)),
+        },
+    });
+    ws.enter_frame();
+
+    let arena = comrak::Arena::new();
+    let root = ws.editor.edit.renderer.reparse(&arena);
+    let nodes: Vec<_> = root.descendants().collect();
+    let snapshot: Vec<_> = nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, n)| {
+            ws.editor
+                .edit
+                .renderer
+                .get_cached_node_height(n)
+                .map(|h| (i, h))
+        })
+        .collect();
+    ws.editor
+        .edit
+        .renderer
+        .layout_cache
+        .height
+        .borrow_mut()
+        .clear();
+    for (i, cached) in snapshot {
+        let fresh = ws.editor.edit.renderer.height(nodes[i]);
+        assert!(
+            (cached - fresh).abs() <= EPS,
+            "cached height {} != fresh {} for node[{}]",
+            cached,
+            fresh,
+            i,
+        );
+    }
+}
+
+/// Regression: tapping the unfold button on a deeply nested list with
+/// the cursor offscreen below the fold used to "scroll to the bottom"
+/// of the doc. Mechanism: removing the fold tag (a Replace) OT-shifts
+/// the cursor's numeric offset; the editor mistook that for a user
+/// cursor move and triggered scroll-to-cursor, pulling the viewport
+/// toward the (offscreen) cursor near the doc end. Reproducer is the
+/// real-world doc shape that surfaced the bug.
+#[test]
+fn fold_toggle_does_not_jump_scroll_regression() {
+    use super::super::scroll_content::DocScrollContent;
+    use crate::widgets::affine_scroll::Action;
+    let doc = "* asdf\n  * asdf\n  * asdf\n  * asdf\n    * asdf\n      * asdf\n        * asdf\n      * asdf\n        * asdf\n          * asdf\n          * asdf\n        * asdf\n          * asdf\n            * asdf\n          * asdf\n* asdf\n    * asdf\n      * asdf\n          * asdf\n        * asdf\n      * asdf\n        * asdf\n        * asdf\n    * asdf<!-- {\"fold\":true} -->\n      * asdf\n        * asdf\n      * asdf\n    * asdf<!-- {\"fold\":true} -->\n      * asdf\n          * asdf\n            * asdf\n            * asdf\n        * asdf\n      * asdf\n      * asdf\n  * asdf<!-- {\"fold\":true} -->\n    * asdf\n      * asdf\n        * asdf\n      * asdf\n        * asdf\n          * asdf\n          * asdf\n        * asdf\n          * asdf\n            * asdf\n          * asdf\n    * asdf\n    * asdf\n      * asdf\n          * asdf\n        * asdf\n      * asdf\n        * asdf\n        * asdf\n    * asdf\n      * asdf\n        * asdf\n      * asdf\n    * asdf\n      * asdf\n          * asdf\n            * asdf\n            * asdf\n        * asdf\n      * asdf\n      * asdf\n      * asdf\n";
+    let fold_tag = "<!-- {\"fold\":true} -->";
+    let first_tag = doc.find(fold_tag).unwrap();
+    let target =
+        first_tag + fold_tag.len() + doc[first_tag + fold_tag.len()..].find(fold_tag).unwrap();
+
+    let mut ws = TestEditor::new(doc);
+    ws.editor.edit.renderer.touch_mode = true;
+    ws.enter_frame();
+
+    let cursor_pos = doc.len() - 5;
+    ws.push(Event::Select {
+        region: Region::BetweenLocations {
+            start: Location::Grapheme(Grapheme(cursor_pos)),
+            end: Location::Grapheme(Grapheme(cursor_pos)),
+        },
+    });
+    ws.enter_frame();
+    ws.enter_frame();
+
+    // Scroll back toward the middle so the cursor is offscreen below.
+    {
+        let arena = comrak::Arena::new();
+        let root = ws.editor.edit.renderer.reparse(&arena);
+        let content = DocScrollContent::for_frame(
+            &ws.editor.edit.renderer,
+            root,
+            ws.editor.edit.scroll_area.state.viewport_height,
+        );
+        ws.editor
+            .edit
+            .scroll_area
+            .state
+            .handle(&content, Action::ScrollByPixels(-800.0));
+    }
+    ws.enter_frame();
+    let before = ws.editor.edit.scroll_area.stored_offset();
+
+    // Unfold by removing the fold tag — same shape as `apply_fold`'s
+    // unfold path (no cursor adjustment).
+    ws.push(Event::Replace {
+        region: Region::BetweenLocations {
+            start: Location::Grapheme(Grapheme(target)),
+            end: Location::Grapheme(Grapheme(target + fold_tag.len())),
+        },
+        text: "".to_string(),
+        advance_cursor: false,
+    });
+    ws.enter_frame();
+    ws.enter_frame();
+    let after = ws.editor.edit.scroll_area.stored_offset();
+
+    assert_eq!(
+        before, after,
+        "unfold tap moved scroll: before={:?}, after={:?}",
+        before, after,
+    );
+}
+
+/// Every cursor offset renders, even in a deeply-nested list whose
+/// continuation line's indentation is redistributed across gutter columns.
+/// A column interior is reachable only by keyboard and reveals the node
+/// that *owns* that source (the outermost item, whose raw render covers the
+/// offset) — not the inner level whose visual column it is.
+#[test]
+fn cursor_renders_deep_nested_continuation() {
+    let md = "a\n* a\n  * a\n    * a\n      b\n";
+    let mut ws = TestEditor::new(md);
+    ws.enter_frame();
+    let last = ws
+        .editor
+        .edit
+        .renderer
+        .buffer
+        .current
+        .segs
+        .last_cursor_position();
+    let mut invisible = Vec::new();
+    for o in 0..=last.0 {
+        let g = Grapheme(o);
+        ws.push(Event::Select {
+            region: Region::BetweenLocations {
+                start: Location::Grapheme(g),
+                end: Location::Grapheme(g),
+            },
+        });
+        ws.enter_frame();
+        if ws.editor.edit.cursor_line(g).is_none() {
+            invisible.push(o);
+        }
+    }
+    assert!(
+        invisible.is_empty(),
+        "invisible cursor offsets: {invisible:?}"
+    );
+}
+
+/// A trailing whitespace-only line is reachable. Such a line gets absorbed
+/// into the outer list item's sourcepos (past all its child blocks) and
+/// renders via post-spacing, which strips it as the item's indentation
+/// prefix. Without a gutter fragment for that prefix the cursor there has
+/// no on-screen representation.
+#[test]
+fn cursor_renders_trailing_whitespace_line() {
+    for md in ["a\n ", "a\n* a\n  * a\n    * a\n      b\n "] {
+        let mut ws = TestEditor::new(md);
+        ws.enter_frame();
+        let last = ws
+            .editor
+            .edit
+            .renderer
+            .buffer
+            .current
+            .segs
+            .last_cursor_position();
+        let mut invisible = Vec::new();
+        for o in 0..=last.0 {
+            let g = Grapheme(o);
+            ws.push(Event::Select {
+                region: Region::BetweenLocations {
+                    start: Location::Grapheme(g),
+                    end: Location::Grapheme(g),
+                },
+            });
+            ws.enter_frame();
+            if ws.editor.edit.cursor_line(g).is_none() {
+                invisible.push(o);
+            }
+        }
+        assert!(
+            invisible.is_empty(),
+            "md={md:?}: invisible cursor offsets: {invisible:?}"
+        );
+    }
+}
+
+/// cmd+left/right treat the syntax|text boundary (text start) as an interior
+/// stop on a prefixed line. cmd+left walks content start → text start → source
+/// line start; cmd+right walks source line start → text start → row end. The
+/// outer endpoints are idempotent.
+#[test]
+fn cmd_line_jump_gutter() {
+    // `  * abc` → source line start 4, text start 8, row end 11;
+    //            indent col (4,6), marker col (6,8), content (8,11).
+    let mut ws = TestEditor::new("* a\n  * abc\n");
+    ws.enter_frame();
+
+    let jump = |ws: &mut TestEditor, from: usize, backwards: bool| -> usize {
+        ws.push(Event::Select {
+            region: Region::BetweenLocations {
+                start: Location::Grapheme(Grapheme(from)),
+                end: Location::Grapheme(Grapheme(from)),
+            },
+        });
+        ws.enter_frame();
+        ws.push(Event::Select {
+            region: Region::ToAdvance {
+                advance: Advance::To(Bound::Line),
+                backwards,
+                extend_selection: false,
+            },
+        });
+        ws.enter_frame();
+        ws.editor.edit.renderer.buffer.current.selection.1.0
+    };
+
+    // cmd+left: content → text start → source line start
+    assert_eq!(jump(&mut ws, 9, true), 8, "content cmd+left → text start");
+    assert_eq!(
+        jump(&mut ws, 8, true),
+        4,
+        "text start cmd+left → source line start"
+    );
+    assert_eq!(
+        jump(&mut ws, 4, true),
+        4,
+        "cmd+left idempotent at source line start"
+    );
+
+    // cmd+right: source line start → text start → row end
+    assert_eq!(
+        jump(&mut ws, 4, false),
+        8,
+        "source line start cmd+right → text start"
+    );
+    assert_eq!(
+        jump(&mut ws, 8, false),
+        11,
+        "text start cmd+right → wrap row end"
+    );
+    assert_eq!(
+        jump(&mut ws, 11, false),
+        11,
+        "cmd+right idempotent at wrap row end"
+    );
+
+    // a cursor mid-gutter resolves to the same two stops
+    assert_eq!(
+        jump(&mut ws, 6, true),
+        4,
+        "gutter cmd+left → source line start"
+    );
+    assert_eq!(jump(&mut ws, 6, false), 8, "gutter cmd+right → text start");
+}
+
+/// Gutter prefix units (markers, per-level indentation) are words, so word
+/// navigation and double-click treat each as a unit rather than splitting a
+/// marker into `*` + ` ` or dropping the indentation.
+#[test]
+fn gutter_columns_are_words() {
+    let mut ws = TestEditor::new("* a\n");
+    ws.enter_frame();
+    assert!(
+        ws.editor
+            .edit
+            .renderer
+            .bounds
+            .words
+            .contains(&(Grapheme(0), Grapheme(2))),
+        "marker should be a word: {:?}",
+        ws.editor.edit.renderer.bounds.words
+    );
+
+    // Nested: `  * a` → indentation column (6,8) and marker column (8,10).
+    let mut ws = TestEditor::new("a\n* a\n  * a\n");
+    ws.enter_frame();
+    let words = &ws.editor.edit.renderer.bounds.words;
+    assert!(
+        words.contains(&(Grapheme(6), Grapheme(8))),
+        "indent column not a word: {words:?}"
+    );
+    assert!(
+        words.contains(&(Grapheme(8), Grapheme(10))),
+        "marker column not a word: {words:?}"
+    );
+}
+
+/// Dragging across a bullet marker selects the whole marker and the
+/// selection is visibly highlighted. Two regressions guarded here:
+/// (1) the moving end resolved the gutter fragment to its range start,
+/// collapsing a marker-only drag to an empty selection; (2) `fragment_x`
+/// mis-snapped a marker whose range doesn't start at offset 0, so its
+/// highlight rect had zero width. The marker sits on the second line so
+/// its range starts past 0 (the case (2) missed).
+#[test]
+fn drag_across_marker_selects_it() {
+    let mut ws = TestEditor::new("a\n* a\n");
+    ws.enter_frame();
+    let edit = &mut ws.editor.edit;
+
+    // `* ` on line 2 spans graphemes 2..4 (after `a\n`).
+    let marker_range = (Grapheme(2), Grapheme(4));
+    let marker = edit
+        .renderer
+        .fragments
+        .iter()
+        .find(|f| f.source_range == marker_range)
+        .expect("marker gutter fragment")
+        .rect;
+
+    // Drag from the gutter's left edge to its right edge.
+    let y = marker.center().y;
+    let sel = edit.region_to_range(Region::BetweenLocations {
+        start: Location::Pos(crate::input::pos(egui::Pos2::new(marker.min.x + 1.0, y))),
+        end: Location::Pos(crate::input::pos(egui::Pos2::new(marker.max.x - 1.0, y))),
+    });
+    assert_eq!(sel, marker_range, "drag should select the whole marker");
+
+    let rects = edit.range_rects(sel);
+    assert!(!rects.is_empty(), "marker selection must be visible");
+    let widest = rects.iter().map(|r| r.width()).fold(0.0_f32, f32::max);
+    assert!(
+        widest > marker.width() * 0.5,
+        "marker highlight too narrow: {widest}"
+    );
+}
+
+/// Revealing a container's prefix swaps its gutter decoration for the raw
+/// marker in the same column; the content stays formatted. So the block's
+/// height — and the y of everything below it — must be identical revealed
+/// or not. A heading inside the quote makes any height regression large
+/// and obvious, and would also expose a stale cached height across the
+/// reveal flip.
+#[test]
+fn reveal_change_layout_consistent() {
+    let doc = "> # heading inside block quote\n\nfollowing paragraph.\n";
+    let mut ws = TestEditor::new(doc);
+
+    let following = doc.find("following").unwrap();
+
+    // (heading content top y, trailing paragraph top y) with the cursor at
+    // `cursor`. Source offset 4 starts the heading text (after `> # `) and 32
+    // starts "following paragraph"; both render the same whether or not the
+    // `>` prefix is revealed, so both y's must be reveal-invariant.
+    let layout = |ws: &mut TestEditor, cursor: usize| -> (f32, f32) {
+        ws.push(Event::Select {
+            region: Region::BetweenLocations {
+                start: Location::Grapheme(Grapheme(cursor)),
+                end: Location::Grapheme(Grapheme(cursor)),
+            },
+        });
+        ws.enter_frame();
+        let fragments = &ws.editor.edit.renderer.fragments;
+        let top_of = |offset: usize| {
+            fragments
+                .iter()
+                .find(|f| f.source_range.0.0 == offset)
+                .unwrap_or_else(|| panic!("no fragment starting at offset {offset}"))
+                .rect
+                .min
+                .y
+        };
+        (top_of(4), top_of(32))
+    };
+
+    // Cursor outside the quote reveals nothing. Offset 1 sits strictly
+    // inside the `> ` marker (between `>` and the space) — the interior
+    // position that reveals the blockquote syntax.
+    let (heading_plain, following_plain) = layout(&mut ws, following);
+    let (heading_revealed, following_revealed) = layout(&mut ws, 1);
+
+    assert!(
+        (heading_revealed - heading_plain).abs() < 0.5,
+        "revealing the prefix moved the heading: {heading_plain:.1} -> {heading_revealed:.1}"
+    );
+    assert!(
+        (following_revealed - following_plain).abs() < 0.5,
+        "revealing the prefix moved the trailing paragraph: \
+         {following_plain:.1} -> {following_revealed:.1}"
+    );
+}
+
+/// A revealed marker is right-aligned to its column's content edge by the
+/// laid-out marker width. Using the layout's available width (≫ the marker)
+/// instead pushes it far off the left edge, so the marker vanishes even
+/// though its fragments still exist. Asserts the marker renders on-screen,
+/// just left of the content.
+#[test]
+fn revealed_marker_on_screen() {
+    let mut ws = TestEditor::new("12. item\n");
+    ws.enter_frame();
+
+    // Offset 2 sits strictly inside the `12. ` marker, revealing it.
+    ws.push(Event::Select {
+        region: Region::BetweenLocations {
+            start: Location::Grapheme(Grapheme(2)),
+            end: Location::Grapheme(Grapheme(2)),
+        },
+    });
+    ws.enter_frame();
+
+    let fragments = &ws.editor.edit.renderer.fragments;
+    let marker = fragments
+        .iter()
+        .find(|f| f.source_range.0.0 == 0)
+        .expect("revealed marker fragment");
+    let content = fragments
+        .iter()
+        .find(|f| f.source_range.0.0 == 4)
+        .expect("content fragment");
+
+    assert!(
+        marker.rect.left() >= 0.0,
+        "marker off the left edge: left={}",
+        marker.rect.left()
+    );
+    assert!(
+        marker.rect.right() <= content.rect.left() + 0.5,
+        "marker overlaps content: marker right={} content left={}",
+        marker.rect.right(),
+        content.rect.left(),
+    );
+}
+
+/// A cursor in a container's leading indentation must not reveal its
+/// marker — only a cursor in the marker itself reveals. Here the inner
+/// item's line begins with the outer item's continuation indentation; a
+/// cursor there must not reveal the outer marker (on the line above).
+#[test]
+fn indentation_cursor_does_not_reveal_marker() {
+    let mut ws = TestEditor::new("- a\n  - b\n");
+    ws.enter_frame();
+
+    // Offset 5 is interior to the two-space indentation on line 2 (the
+    // outer item's continuation prefix), not any marker.
+    ws.push(Event::Select {
+        region: Region::BetweenLocations {
+            start: Location::Grapheme(Grapheme(5)),
+            end: Location::Grapheme(Grapheme(5)),
+        },
+    });
+    ws.enter_frame();
+
+    // The outer marker (offset 0) stays a decoration spacer, not raw glyphs.
+    let marker = ws
+        .editor
+        .edit
+        .renderer
+        .fragments
+        .iter()
+        .find(|f| f.source_range.0.0 == 0)
+        .expect("outer marker fragment");
+    assert!(
+        matches!(marker.content, FragmentContent::Spacer),
+        "cursor in indentation revealed the marker"
+    );
+}
+
+/// Async image loads must update `size()` atomically with their `seq`
+/// bump. The bug pattern: `seq` bumps when the worker completes, but
+/// `size()` reads from a `dims` map that's only populated by `show()`
+/// running with the loaded state. So the frame after the bump sees
+/// the cache cleared but `size()` still returns the placeholder,
+/// populates the height cache from placeholder dims, and the next
+/// frames are stuck with that stale value while `show()` paints with
+/// the real dims.
+///
+/// Asserts cached `height(image_paragraph)` matches a freshly-recomputed
+/// height after the editor has had two frames to settle past load
+/// completion.
+#[test]
+fn image_load_layout_consistent() {
+    use egui::Vec2;
+
+    // Wide image: 1600×100 → very short rendered height when fitted to
+    // the editor's content width. Placeholder is 200×200 → much taller.
+    // The delta makes a stale cache obviously wrong.
+    let url = "test://wide.png";
+    let (mut ws, embeds) =
+        { TestEditor::with_test_embeds(&format!("![image]({url})\n\nfollowing\n")) };
+
+    // Equivalent to a worker thread completing the load.
+    embeds.complete(url, Vec2::new(1600.0, 100.0));
+
+    // Two frames: first triggers `embeds_updated` and clears the cache;
+    // the second renders against the (potentially stale) populated cache.
+    ws.enter_frame();
+    ws.enter_frame();
+
+    let arena = comrak::Arena::new();
+    let root = ws.editor.edit.renderer.reparse(&arena);
+    let image_paragraph = root.children().next().expect("image paragraph");
+    let cached_height = ws.editor.edit.renderer.height(image_paragraph);
+    ws.editor
+        .edit
+        .renderer
+        .layout_cache
+        .height
+        .borrow_mut()
+        .clear();
+    let fresh_height = ws.editor.edit.renderer.height(image_paragraph);
+
+    assert!(
+        (cached_height - fresh_height).abs() < 1.0,
+        "image paragraph height stale after load: cached={cached_height} fresh={fresh_height}"
+    );
+}
+
+#[test]
+fn shift_tab_innermost_nested_list_one_level() {
+    let doc = "- a\n  - b\n    - c\n";
+    let mut ws = TestEditor::new(doc);
+    ws.enter_frame();
+
+    // Cursor on the innermost item's content ("c" is at offset 16).
+    let cursor = Grapheme(16);
+    ws.push(Event::Select {
+        region: Region::BetweenLocations {
+            start: Location::Grapheme(cursor),
+            end: Location::Grapheme(cursor),
+        },
+    });
+    ws.enter_frame();
+
+    ws.push(Event::Indent { deindent: true });
+    ws.enter_frame();
+
+    let after = ws.get_text().to_string();
+    assert_eq!(
+        after, "- a\n  - b\n  - c\n",
+        "expected one level out (`  - c`); got:\n{after:?}",
+    );
+}
+
+/// Regression tests for the user-reported "tab on item N causes item
+/// N+1 to look de-indented" scenarios. Both fail under the old
+/// grapheme-based `has_prefix_on_first_selected_line` check; both
+/// must be no-ops with the structural ancestor check.
+#[test]
+fn indent_no_op_when_already_inside_prior_container() {
+    let cases: &[(&str, &str, usize)] = &[
+        // 4-deep nested list, cursor on the 3rd row. Indenting it
+        // would make the 4th row appear to deindent (was nested in
+        // 3rd, now sibling).
+        (
+            "4-deep, cursor on 3rd row",
+            "* a\n  * b\n    * c\n      * d\n",
+            12,
+        ),
+        // Two siblings at over-indented level (col 6) inside a level-1
+        // item. The first sibling has no previous sibling at its
+        // level, so tab should be a no-op.
+        (
+            "two siblings at col 6, cursor on first",
+            "* a\n  * b\n      * c\n      * d\n",
+            12,
+        ),
+    ];
+    for (desc, input, cursor_offset) in cases {
+        let mut ws = TestEditor::new(input);
+        ws.enter_frame();
+        let cursor = Grapheme(*cursor_offset);
+        ws.push(Event::Select {
+            region: Region::BetweenLocations {
+                start: Location::Grapheme(cursor),
+                end: Location::Grapheme(cursor),
+            },
+        });
+        ws.enter_frame();
+        ws.push(Event::Indent { deindent: false });
+        ws.enter_frame();
+        let after = ws.get_text().to_string();
+        assert_eq!(
+            &after, input,
+            "case {desc:?}: expected no-op but got mutation:\n  before: {input:?}\n  after:  {after:?}",
+        );
+    }
+}
+
+/// Regression: toggling list style on an empty list-item line (e.g.
+/// `* ` then Cmd+Shift+9) used to insert a second marker on top of
+/// the existing one, producing `* * [ ] `. The fallback in
+/// `toggle_style` now strips an existing item marker first when the
+/// target style is a list.
+#[test]
+fn toggle_list_style_on_empty_item_switches() {
+    use crate::input::Bound;
+    use comrak::nodes::{ListType, NodeList, NodeValue};
+
+    let to_task = || Event::ToggleStyle {
+        region: Region::Bound {
+            bound: Bound::Paragraph,
+            backwards: false,
+        },
+        style: NodeValue::List(NodeList {
+            list_type: ListType::Bullet,
+            is_task_list: true,
+            ..Default::default()
+        }),
+    };
+    let to_ordered = || Event::ToggleStyle {
+        region: Region::Bound {
+            bound: Bound::Paragraph,
+            backwards: false,
+        },
+        style: NodeValue::List(NodeList {
+            list_type: ListType::Ordered,
+            ..Default::default()
+        }),
+    };
+
+    // (description, input, cursor, event, expected_text, expected_cursor)
+    let cases: &[(&str, &str, usize, Event, &str, usize)] = &[
+        ("empty bullet → task", "* ", 2, to_task(), "* [ ] ", 6),
+        ("empty bullet → ordered", "* ", 2, to_ordered(), "1. ", 3),
+        ("non-empty bullet → task", "* a", 3, to_task(), "* [ ] a", 7),
+        ("empty ordered → task", "1. ", 3, to_task(), "* [ ] ", 6),
+    ];
+    for (desc, input, cursor, ev, expected_text, expected_cursor) in cases {
+        let mut ws = TestEditor::new(input);
+        ws.enter_frame();
+        ws.push(Event::Select {
+            region: Region::BetweenLocations {
+                start: Location::Grapheme(Grapheme(*cursor)),
+                end: Location::Grapheme(Grapheme(*cursor)),
+            },
+        });
+        ws.enter_frame();
+        ws.push(ev.clone());
+        ws.enter_frame();
+        let got_text = ws.get_text().to_string();
+        let got_sel = ws.editor.edit.renderer.buffer.current.selection;
+        assert_eq!(
+            got_text, *expected_text,
+            "case {desc:?}: text input={input:?} got={got_text:?} expected={expected_text:?}",
+        );
+        assert_eq!(
+            got_sel,
+            (Grapheme(*expected_cursor), Grapheme(*expected_cursor)),
+            "case {desc:?}: cursor expected={expected_cursor} got={got_sel:?}",
+        );
+    }
+}
+
+/// Regression: changing the list type of a *nested* item used to read
+/// the wrong list. `unapply_block` walked the whole ancestor chain, so a
+/// nested task item under a bullet list matched the outer bullet list and
+/// the toggle removed the inner item's marker instead of converting it.
+/// It must stop at the nearest enclosing list (the inner task list) and,
+/// since that's a different type, perform a type change.
+#[test]
+fn toggle_bullet_on_nested_task_item_changes_type() {
+    use comrak::nodes::{ListType, NodeList, NodeValue};
+
+    let to_bullet = Event::ToggleStyle {
+        region: Region::Selection,
+        style: NodeValue::List(NodeList {
+            list_type: ListType::Bullet,
+            is_task_list: false,
+            ..Default::default()
+        }),
+    };
+
+    let doc = "* x\n  * [x] y";
+    let mut ws = TestEditor::new(doc);
+    ws.enter_frame();
+    // cursor inside "y"
+    let cursor = Grapheme(13);
+    ws.push(Event::Select {
+        region: Region::BetweenLocations {
+            start: Location::Grapheme(cursor),
+            end: Location::Grapheme(cursor),
+        },
+    });
+    ws.enter_frame();
+    ws.push(to_bullet);
+    ws.enter_frame();
+    assert_eq!(ws.get_text(), "* x\n  * y");
+}
+
+/// Regression for the user-reported "shift-tab then tab needs many
+/// undos with cursor-only steps". With per-frame undo units, the two
+/// commands are independent: one undo restores the post-shift-tab
+/// state; another restores the original.
+#[test]
+fn shift_tab_then_tab_undoes_in_two_steps() {
+    let doc = "* a\n  * b\n    * c\n    * d\n      * e\n";
+    let mut ws = TestEditor::new(doc);
+    ws.enter_frame();
+    let cursor = Grapheme(8);
+    ws.push(Event::Select {
+        region: Region::BetweenLocations {
+            start: Location::Grapheme(cursor),
+            end: Location::Grapheme(cursor),
+        },
+    });
+    ws.enter_frame();
+    ws.push(Event::Indent { deindent: true });
+    ws.enter_frame();
+    let post_shift_tab = ws.get_text().to_string();
+    ws.push(Event::Indent { deindent: false });
+    ws.enter_frame();
+    // Tab no longer reverses shift-tab (deindent drags children,
+    // indent doesn't); the point here is undo *granularity*.
+    ws.push(Event::Undo);
+    ws.enter_frame();
+    assert_eq!(ws.get_text(), post_shift_tab);
+    ws.push(Event::Undo);
+    ws.enter_frame();
+    assert_eq!(ws.get_text(), doc);
+}
+
+/// Repeated shift-tab on a parent item must not orphan its
+/// descendants — the user-reported "deindent the parent twice and
+/// the deepest line stops being a list item" bug. After each
+/// deindent, every line that was a list item should still be one.
+/// Repeated shift-tab on a parent item drags its descendants along —
+/// the reported "deindent twice and the deepest line becomes orphaned
+/// at over-indent" bug. Without the cascade, line 3 would stay at
+/// col 6 after line 2 reaches col 0.
+#[test]
+fn shift_tab_repeated_preserves_descendants() {
+    let mut ws = TestEditor::new("* a\n  * b\n    * c\n      * d\n");
+    ws.enter_frame();
+    let cursor = Grapheme(10); // line 2 ("    * c")
+    ws.push(Event::Select {
+        region: Region::BetweenLocations {
+            start: Location::Grapheme(cursor),
+            end: Location::Grapheme(cursor),
+        },
+    });
+    ws.enter_frame();
+    for _ in 0..2 {
+        ws.push(Event::Indent { deindent: true });
+        ws.enter_frame();
+    }
+    assert_eq!(ws.get_text(), "* a\n  * b\n* c\n  * d\n");
+}
+
+/// Shift-tab on a top-level container (no outer container of the
+/// same kind to escape into) is a no-op — for bq/alert just as for
+/// items. The bq case used to demote `> quote` to a paragraph.
+#[test]
+fn shift_tab_top_level_container_is_noop() {
+    let cases: &[(&str, &str, usize)] = &[
+        // (description, input, cursor_offset)
+        ("top-level item", "* a\n", 2),
+        ("top-level bq", "> quote\n", 4),
+        ("top-level bq, no space marker", ">quote\n", 3),
+        // Multi-line top-level bq, cursor on continuation — also
+        // a no-op since the bq has no outer bq to escape to.
+        ("multi-line top-level bq", "> foo\n> bar\n", 9),
+    ];
+    for (desc, input, cursor_offset) in cases {
+        let mut ws = TestEditor::new(input);
+        ws.enter_frame();
+        let cursor = Grapheme(*cursor_offset);
+        ws.push(Event::Select {
+            region: Region::BetweenLocations {
+                start: Location::Grapheme(cursor),
+                end: Location::Grapheme(cursor),
+            },
+        });
+        ws.enter_frame();
+        ws.push(Event::Indent { deindent: true });
+        ws.enter_frame();
+        let after = ws.get_text().to_string();
+        assert_eq!(
+            &after, input,
+            "case {desc:?}: expected no-op but got mutation:\n  before: {input:?}\n  after:  {after:?}",
+        );
+    }
+}
+
+/// Newline at the end of a nested list item must start the sibling at
+/// the prior item's actual source indentation, not a shallower depth
+/// reconstructed from ancestor marker widths.
+#[test]
+fn newline_preserves_nested_item_indentation() {
+    let mut ws = TestEditor::new("- a\n    - b\n");
+    ws.enter_frame();
+    let cursor = Grapheme(11); // end of "    - b"
+    ws.push(Event::Select {
+        region: Region::BetweenLocations {
+            start: Location::Grapheme(cursor),
+            end: Location::Grapheme(cursor),
+        },
+    });
+    ws.enter_frame();
+    ws.push(Event::Newline { shift: false });
+    ws.enter_frame();
+    assert_eq!(ws.get_text(), "- a\n    - b\n    - \n");
+}
+
+/// Shift-tab on an over-indented nested item pops it fully out one
+/// level (to its parent's column), not just by the marker width. The
+/// user-reported bug: `child indented four` (col 4 under a col-0
+/// parent whose content starts at col 2) only dropped to col 2,
+/// staying nested and re-parsing the following sibling as its child.
+/// It must reach col 0. (`asdf` then nests under the outdented item —
+/// standard markdown for a following line indented past it — but is
+/// no longer pushed a level deeper.)
+#[test]
+fn shift_tab_pops_overindented_item_full_level() {
+    let mut ws = TestEditor::new("- bullet parent\n    - child indented four\n    - asdf\n");
+    ws.enter_frame();
+    let cursor = Grapheme(22); // line 1 ("    - child indented four")
+    ws.push(Event::Select {
+        region: Region::BetweenLocations {
+            start: Location::Grapheme(cursor),
+            end: Location::Grapheme(cursor),
+        },
+    });
+    ws.enter_frame();
+    ws.push(Event::Indent { deindent: true });
+    ws.enter_frame();
+    assert_eq!(
+        ws.get_text(),
+        "- bullet parent\n- child indented four\n    - asdf\n"
+    );
+}
+
+/// Multi-line shift-tab: selecting a range that spans a parent and
+/// some of its descendants should still produce a coherent result.
+/// The cascade dedup makes already-shifted descendants no-op so they
+/// don't double-deindent.
+#[test]
+fn multi_line_shift_tab_preserves_structure() {
+    // Select lines 1-2 ("  * b" through "    * c") and shift-tab.
+    // Each gets one level off; descendant cascade applies once per
+    // unique line.
+    let mut ws = TestEditor::new("* a\n  * b\n    * c\n");
+    ws.enter_frame();
+    ws.push(Event::Select {
+        region: Region::BetweenLocations {
+            start: Location::Grapheme(Grapheme(4)),
+            end: Location::Grapheme(Grapheme(15)),
+        },
+    });
+    ws.enter_frame();
+    ws.push(Event::Indent { deindent: true });
+    ws.enter_frame();
+    assert_eq!(ws.get_text(), "* a\n* b\n  * c\n");
+}
+
+/// The chat connect step's masked key field: a standalone `MdEdit` with
+/// `plaintext + mask + single_line` must produce glyph fragments (the `*`s)
+/// on one unwrapped row, scrolled so a cursor at the end of an overlong key
+/// stays inside the rect.
+#[test]
+fn masked_plaintext_mdedit_renders_glyphs() {
+    use crate::MdEdit;
+    use crate::palette::{Mode, Theme, ThemeExt as _};
+
+    let ctx = crate::test_egui_ctx();
+    let mut edit = MdEdit::empty(ctx.clone());
+    edit.renderer.plaintext = true;
+    edit.renderer.mask = true;
+    edit.renderer.single_line = true;
+    // Long enough that a 300px field must overflow (~8px/char mono).
+    let key = "sk-test-".repeat(16);
+    edit.set_text(&key);
+
+    let rect = egui::Rect::from_min_size(egui::pos2(100., 100.), egui::vec2(300., 30.));
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::new(800., 600.));
+    let frame = |edit: &mut MdEdit| {
+        crate::tests::run_frame(
+            &ctx,
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            |ui| {
+                ui.ctx().set_lb_theme(Theme::default(Mode::Dark));
+                egui::CentralPanel::default().show(ui, |ui| {
+                    edit.show(ui, rect, egui::Id::unique("key_field"));
+                });
+            },
+        );
+    };
+    frame(&mut edit);
+
+    let glyph_frags: Vec<_> = edit
+        .renderer
+        .fragments
+        .iter()
+        .filter(|f| matches!(f.content, FragmentContent::Glyphs { .. }))
+        .collect();
+    assert!(
+        !glyph_frags.is_empty(),
+        "masked field produced no glyph fragments (invisible key)"
+    );
+    // The caret must resolve against the masked layout — this is what iOS's
+    // caretRect(for:) reads; None here is an invisible native cursor.
+    assert!(
+        edit.cursor_line(5.into()).is_some(),
+        "masked field has no caret line (invisible cursor)"
+    );
+    // Single line: every glyph fragment on one row, none wrapped below.
+    let tops: Vec<i32> = glyph_frags.iter().map(|f| f.rect.top() as i32).collect();
+    assert!(
+        tops.windows(2).all(|w| w[0] == w[1]),
+        "single-line field wrapped: {tops:?}"
+    );
+
+    // Cursor at the end of the overlong key → the layout scrolls left to
+    // keep it in view (converges over a couple frames), and the caret lands
+    // inside the rect.
+    let end = edit.renderer.buffer.current.segs.last_cursor_position();
+    edit.renderer.buffer.current.selection = (end, end);
+    for _ in 0..3 {
+        frame(&mut edit);
+    }
+    assert!(edit.single_line_scroll > 0.0, "overlong key did not scroll");
+    let [top, _] = edit.cursor_line(end).unwrap();
+    assert!(
+        top.x >= rect.left() && top.x <= rect.right(),
+        "caret ({}) outside field {rect:?} at scroll {}",
+        top.x,
+        edit.single_line_scroll
+    );
+}
+
+/// The chat composer: a multi-line `MdEdit` in a height-capped rect must
+/// scroll vertically to keep the cursor in view instead of clipping it
+/// under the bottom edge.
+#[test]
+fn bounded_composer_scrolls_cursor_into_view() {
+    use crate::MdEdit;
+    use crate::palette::{Mode, Theme, ThemeExt as _};
+
+    let ctx = crate::test_egui_ctx();
+    let mut edit = MdEdit::empty(ctx.clone());
+    // Enough lines that a 140px-tall composer must overflow several times over.
+    let draft: String = (0..30).map(|i| format!("- line {i}\n")).collect();
+    edit.set_text(&draft);
+
+    let rect = egui::Rect::from_min_size(egui::pos2(100., 100.), egui::vec2(600., 140.));
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::new(800., 600.));
+    let frame = |edit: &mut MdEdit| {
+        crate::tests::run_frame(
+            &ctx,
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            |ui| {
+                ui.ctx().set_lb_theme(Theme::default(Mode::Dark));
+                egui::CentralPanel::default().show(ui, |ui| {
+                    edit.show(ui, rect, egui::Id::unique("composer"));
+                });
+            },
+        );
+    };
+
+    let end = {
+        frame(&mut edit);
+        edit.renderer.buffer.current.segs.last_cursor_position()
+    };
+    edit.renderer.buffer.current.selection = (end, end);
+    for _ in 0..3 {
+        frame(&mut edit);
+    }
+    assert!(
+        edit.overflow_scroll > 0.0,
+        "overflowing composer did not scroll"
+    );
+    // `cursor_line` pads the fragment box by row_spacing/2 per side; the
+    // glyphs themselves must land inside the rect.
+    let slack = edit.renderer.layout.row_spacing / 2.0 + 0.5;
+    let [top, bot] = edit.cursor_line(end).unwrap();
+    assert!(
+        top.y >= rect.top() - slack && bot.y <= rect.bottom() + slack,
+        "caret line ({}..{}) outside composer {rect:?} at scroll {}",
+        top.y,
+        bot.y,
+        edit.overflow_scroll
+    );
+
+    // Cursor back at the top: the view follows back up.
+    edit.renderer.buffer.current.selection = (0.into(), 0.into());
+    for _ in 0..3 {
+        frame(&mut edit);
+    }
+    assert_eq!(
+        edit.overflow_scroll, 0.0,
+        "cursor at start should scroll back to the top"
+    );
+}
+
+/// Touch tap on a plain rendered link: selects the whole link instead of
+/// opening the link or placing the cursor.
+#[test]
+fn touch_link_tap_selects_link() {
+    let mut ws = TestEditor::new("some [title](https://example.com) text\n");
+    ws.editor.edit.renderer.touch_mode = true;
+    // One frame to lay out with touch-mode scopes, one more because
+    // interaction runs against the previous frame's fragments.
+    ws.enter_frame();
+    ws.enter_frame();
+
+    let link = ((5).into(), (33).into());
+    assert_eq!(
+        &ws.editor.edit.renderer.buffer[link],
+        "[title](https://example.com)"
+    );
+    let frag = ws
+        .editor
+        .edit
+        .renderer
+        .fragments
+        .iter()
+        .find(|f| f.interaction.is_some() && f.source_range.start() >= link.0)
+        .expect("link interaction fragment");
+    let pos = frag.rect.center();
+
+    let modifiers = egui::Modifiers::default();
+    ws.enter_frame_with_input(vec![
+        egui::Event::PointerMoved(pos),
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers,
+        },
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers,
+        },
+    ]);
+
+    assert_eq!(
+        ws.editor.edit.renderer.buffer.current.selection, link,
+        "link selected"
+    );
+    assert!(
+        ws.editor.edit.renderer.doc.opened_links.is_empty(),
+        "a touch tap doesn't open the link"
+    );
+}
+
+/// Touch tap on a collapsed inline image: selects the atom and never opens
+/// the URL directly.
+#[test]
+fn touch_image_tap_selects_image() {
+    let (mut ws, _embeds) = { TestEditor::with_test_embeds("![alt](https://example.com/i.png)\n") };
+    ws.editor.edit.renderer.touch_mode = true;
+    ws.enter_frame();
+    ws.enter_frame();
+
+    let img = ws.editor.edit.renderer.bounds.images[0];
+    let frag = ws
+        .editor
+        .edit
+        .renderer
+        .fragments
+        .iter()
+        .find(|f| matches!(f.content, FragmentContent::Embed { .. }))
+        .expect("image embed fragment");
+    let pos = frag.rect.center();
+
+    let modifiers = egui::Modifiers::default();
+    ws.enter_frame_with_input(vec![
+        egui::Event::PointerMoved(pos),
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers,
+        },
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers,
+        },
+    ]);
+
+    assert_eq!(
+        ws.editor.edit.renderer.buffer.current.selection, img,
+        "image selected"
+    );
+    assert!(
+        ws.editor.edit.renderer.doc.opened_links.is_empty(),
+        "a touch tap doesn't open the image"
+    );
+}
+
+/// `selection_open_target` gates the platform edit menu's "Open Link" /
+/// "Copy Link" — it must see wikilinks, not just links and images.
+#[test]
+fn selection_open_target_includes_wikilinks() {
+    let mut ws = TestEditor::new("a [[todo]] wikilink\n");
+    let link = ((2).into(), (10).into());
+    assert_eq!(&ws.editor.edit.renderer.buffer[link], "[[todo]]");
+    ws.push(Event::Select {
+        region: link.into(),
+    });
+    ws.enter_frame();
+    assert_eq!(
+        ws.editor.edit.renderer.selection_open_target().as_deref(),
+        Some("todo")
+    );
+}
+
+/// A caret bordering a collapsed inline image spans the image's full
+/// height: it reads as one big glyph. Pins the intermittent short-caret
+/// bug's fixed behavior.
+#[test]
+fn caret_bordering_embeds_spans_their_height() {
+    // image: caret at the image's start spans its (test-embed 200pt) height
+    let (mut ws, _embeds) = { TestEditor::with_test_embeds("![alt](https://example.com/i.png)\n") };
+    ws.enter_frame();
+    let [top, bot] = ws.editor.edit.cursor_line((0).into()).expect("image caret");
+    let row_h = ws.editor.edit.renderer.layout.row_height;
+    assert!(
+        bot.y - top.y > 3.0 * row_h,
+        "caret bordering an image spans it: {} vs row {row_h}",
+        bot.y - top.y
+    );
+}
+
+/// Regression for #5191: down on the last line lands at the end of the
+/// document, and up on the first line lands at its start.
+#[test]
+fn vertical_arrow_at_doc_edge_snaps_to_edge() {
+    use super::super::input::Increment;
+    let arrow = |backwards: bool| Event::Select {
+        region: Region::ToAdvance {
+            advance: Advance::By(Increment::Lines(1)),
+            backwards,
+            extend_selection: false,
+        },
+    };
+    let place = |g: usize| Event::Select {
+        region: Region::BetweenLocations {
+            start: Location::Grapheme(Grapheme(g)),
+            end: Location::Grapheme(Grapheme(g)),
+        },
+    };
+
+    let doc = "first line\nsecond line\nlast line";
+    let mut ws = TestEditor::new(doc);
+    ws.enter_frame();
+
+    ws.push(place(doc.len() - 4));
+    ws.enter_frame();
+    ws.push(arrow(false));
+    ws.enter_frame();
+    assert_eq!(
+        ws.editor.edit.renderer.buffer.current.selection.1.0,
+        doc.len()
+    );
+
+    ws.push(place(4));
+    ws.enter_frame();
+    ws.push(arrow(true));
+    ws.enter_frame();
+    assert_eq!(ws.editor.edit.renderer.buffer.current.selection.1.0, 0);
+}

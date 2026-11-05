@@ -165,6 +165,25 @@
 	html {
 		@apply font-sans;
 	}
+	/* The workspace fills the window and scrolls inside its panes, so the
+	page itself never scrolls or rubber-bands. */
+	html:has([data-app-shell]),
+	html:has([data-app-shell]) body {
+		overflow: hidden;
+		overscroll-behavior: none;
+	}
+}
+
+/* While the sidebar is dragged wider or narrower, it follows the pointer
+exactly and text doesn't get selected. Outside any layer, so it overrides
+the sidebar's width transition utilities. */
+[data-resizing-sidebar] {
+	cursor: col-resize;
+	user-select: none;
+}
+[data-resizing-sidebar] [data-slot='sidebar-gap'],
+[data-resizing-sidebar] [data-slot='sidebar-container'] {
+	transition: none;
 }
 
 /* Live Preview (CodeMirror) — editorial typography, separate from UI chrome. */

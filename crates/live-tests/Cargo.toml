@@ -1,0 +1,32 @@
+[package]
+name = "live-tests"
+description = "Tests that run two whole desktops, windows included, against the real sync server."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dev-dependencies]
+app-core = { version = "0.2.0", path = "../app-core", features = ["test-hooks"] }
+app-ui = { version = "0.2.0", path = "../app-ui" }
+# app-core's sync test support needs the server, its stores and a proxy.
+axum = { workspace = true, features = ["ws"] }
+egui = { workspace = true, features = ["default_fonts"] }
+egui_kittest.workspace = true
+futures.workspace = true
+jiff.workspace = true
+local-core = { version = "0.2.0", path = "../local-core" }
+reqwest.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+sync-key-envelope = { version = "0.2.0", path = "../sync-key-envelope" }
+sync-protocol = { version = "0.2.0", path = "../sync-protocol" }
+sync-server = { version = "0.2.0", path = "../sync-server" }
+sync-store = { version = "0.2.0", path = "../sync-store", features = ["conformance"] }
+sync-store-postgres = { version = "0.2.0", path = "../sync-store-postgres", features = ["testing"] }
+sync-store-sqlite = { version = "0.2.0", path = "../sync-store-sqlite" }
+tempfile.workspace = true
+tokio.workspace = true
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect"] }
+zeroize.workspace = true

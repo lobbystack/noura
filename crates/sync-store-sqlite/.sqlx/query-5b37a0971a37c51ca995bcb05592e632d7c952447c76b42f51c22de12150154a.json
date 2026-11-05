@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM blob_listings\n             WHERE workspace = ?1 AND blob = ?2 AND domain = ?3 AND seq = ?4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "5b37a0971a37c51ca995bcb05592e632d7c952447c76b42f51c22de12150154a"
+}

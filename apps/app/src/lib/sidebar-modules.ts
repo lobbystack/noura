@@ -1,8 +1,8 @@
 /**
  * Per-module sidebar registry.
  *
- * Each module decides which sidebar content its routes get — or nothing at
- * all. Contributions are gated by the module's plugin being enabled, so
+ * The sidebar is always there and always ends with the file tree. A module
+ * can add its own section above the tree on its routes. Contributions are gated by the module's plugin being enabled, so
  * turning a module off removes its sidebar the same way its rail entry
  * disappears. This data-driven registry is the interim seam while plugins
  * cannot contribute their own UI components (see docs/architecture/
@@ -14,8 +14,8 @@ import { routeMatches, routePlugin } from './plugin-routes';
 export interface SidebarModule {
 	id: string;
 	/**
-	 * Route pathnames (prefix-matched) where the section appears. The plugin
-	 * that owns the route gates the section.
+	 * Route pathnames (prefix-matched) where the section appears above the
+	 * file tree. The plugin that owns the route gates the section.
 	 */
 	routes: readonly string[];
 }
@@ -23,29 +23,10 @@ export interface SidebarModule {
 export const SIDEBAR_MODULES: readonly SidebarModule[] = [
 	{ id: 'projects', routes: ['/projects'] },
 	{ id: 'tasks-views', routes: ['/tasks'] },
-	// Files are core, so the file tree has no plugin gate.
-	{ id: 'file-browser', routes: ['/files', '/pdf'] },
 ];
 
 /**
- * Routes that open workspace documents also keep the file tree in view, below
- * their own section, so opening a task or project file from the tree never
- * takes the tree away.
- */
-const FILE_TREE_ROUTES: readonly string[] = [
-	'/files',
-	'/pdf',
-	'/tasks',
-	'/projects',
-];
-
-export function showsFileTree(pathname: string): boolean {
-	return FILE_TREE_ROUTES.some((route) => routeMatches(pathname, route));
-}
-
-/**
- * The sidebar module for one route, or null when the route gets no sidebar
- * at all. The module with the longer route prefix wins on shared prefixes;
+ * The section a route adds above the file tree, or null when it adds none. The module with the longer route prefix wins on shared prefixes;
  * the first registered module wins ties.
  */
 export function sidebarModuleFor(

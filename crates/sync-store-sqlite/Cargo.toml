@@ -1,0 +1,19 @@
+[package]
+name = "sync-store-sqlite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Compile-checked queries read the offline data in `.sqlx`, so builds need
+# no database; scripts/sqlx-prepare.sh regenerates and checks it.
+sqlx = { workspace = true, features = ["sqlite-bundled", "macros", "migrate"] }
+sync-protocol = { version = "0.2.0", path = "../sync-protocol" }
+sync-store = { version = "0.2.0", path = "../sync-store" }
+tokio = { workspace = true, features = ["sync", "rt", "time"] }
+
+[dev-dependencies]
+sync-store = { version = "0.2.0", path = "../sync-store", features = ["conformance"] }
+tempfile.workspace = true
+tokio.workspace = true

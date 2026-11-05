@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT key_seq, record_type, domain, recipient, record FROM key_entries\n             WHERE workspace = ?1 AND key_seq > ?2 ORDER BY key_seq LIMIT ?3",
+  "describe": {
+    "columns": [
+      {
+        "name": "key_seq",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "key_entries",
+            "name": "key_seq"
+          }
+        }
+      },
+      {
+        "name": "record_type",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "key_entries",
+            "name": "record_type"
+          }
+        }
+      },
+      {
+        "name": "domain",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "key_entries",
+            "name": "domain"
+          }
+        }
+      },
+      {
+        "name": "recipient",
+        "ordinal": 3,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "key_entries",
+            "name": "recipient"
+          }
+        }
+      },
+      {
+        "name": "record",
+        "ordinal": 4,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "key_entries",
+            "name": "record"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "740db8403dc2821e5486a0a20004730503399e0bc69cca5f4a6d06519ff372cb"
+}

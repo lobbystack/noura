@@ -26,7 +26,7 @@ jobs:
           GITLEAKS_CONFIG: gitleaks.toml
           GITLEAKS_VERSION: 8.30.1
 
-  typescript:
+  website:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -34,58 +34,14 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with: { bun-version: 1.3.14 }
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        with: { toolchain: '1.91', targets: wasm32-unknown-unknown }
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
-        with: { tool: wasm-bindgen-cli@0.2.127 }
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
           restore-keys: bun-${{ runner.os }}-
       - run: bun install --frozen-lockfile
-      - name: Audit JavaScript dependencies
-        run: bun audit --audit-level=high
-      - run: bunx license-checker-rseidelsohn --production --excludePrivatePackages --onlyAllow 'MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;ISC;CC0-1.0;OFL-1.1;Unicode-3.0;0BSD;BlueOak-1.0.0'
-      - run: bun run check
-      - run: bun test
-      - run: bun run build
-      # Release builds bundle this file. Generating it here catches breakage early.
-      - name: Generate the third-party license file
-        run: bun scripts/generate-third-party-licenses.ts --out "$RUNNER_TEMP/THIRD_PARTY_LICENSES.txt" --target x86_64-unknown-linux-gnu
-
-  e2e:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with: { bun-version: 1.3.14 }
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        with: { toolchain: '1.91', targets: wasm32-unknown-unknown }
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
-        with: { tool: wasm-bindgen-cli@0.2.127 }
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-${{ runner.os }}-
-      - run: bun install --frozen-lockfile
-      - name: Install Chromium for Playwright
-        run: bun x playwright install --with-deps chromium
-        working-directory: apps/app
-      - name: Run end-to-end tests against the browser build
-        run: bun run --cwd apps/app test:e2e
-      - name: Keep traces of failed tests
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: e2e-traces
-          path: apps/app/test-results/
-          retention-days: 7
+      - run: bun run check:website
+      - run: bun run build:website
 
   rust:
     strategy:
@@ -97,44 +53,476 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        with:
-          {
-            toolchain: '1.91',
-            components: 'rustfmt,clippy',
-            targets: wasm32-unknown-unknown,
-          }
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
-        with: { tool: wasm-bindgen-cli@0.2.127 }
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with: { bun-version: 1.3.14 }
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-${{ runner.os }}-
-      - run: bun install --frozen-lockfile
-      - name: Install Linux desktop build dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xvfb
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - run: cargo test --workspace --locked
-      # Pull requests build in debug to reuse the cached test build; main keeps the release build.
-      - name: Build desktop application
+      # rustup reads the version and components from rust-toolchain.toml.
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - run: rustc --version
+      # rav1d, which decodes AVIF images in notes, assembles its x86 code
+      # with NASM.
+      - name: Install NASM
+        if: runner.os != 'macOS'
         shell: bash
-        run: bun run tauri build --no-bundle ${{ github.event_name == 'pull_request' && '--debug' || '' }}
-      - name: Smoke-test Linux desktop process
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            choco install nasm --no-progress -y
+            echo 'C:\Program Files\NASM' >> "$GITHUB_PATH"
+          else
+            sudo apt-get update && sudo apt-get install -y nasm
+          fi
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features --locked --keep-going -- -D warnings
+      - run: cargo build --workspace --locked
+      # Trial S7 loads a Rust and a TypeScript hello plugin in plugin-host's
+      # tests. jco needs Node and npm, which AGENTS.md allows only for
+      # sdk/typescript.
+      - name: Install the WebAssembly component target
+        run: rustup target add wasm32-wasip2
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            sdk/typescript/s7-hello/package-lock.json
+            sdk/typescript/package-lock.json
+      - name: Build the trial S7 plugins
+        shell: bash
+        run: bash crates/plugin-host/trial/build-plugins.sh
+      # Seam 5: the TypeScript author kit under Node. Its tests create,
+      # build, rebuild in dev mode and package plugins, and run them in
+      # the real host, noura-kit-host, which `cargo build --workspace`
+      # built above, and in the mock host.
+      - name: Install the TypeScript author kit
+        working-directory: sdk/typescript
+        run: npm ci --no-audit --no-fund
+      - name: Build the TypeScript author kit
+        working-directory: sdk/typescript
+        run: npm run build
+      - name: Type-check the TypeScript author kit
+        working-directory: sdk/typescript
+        run: npm run check
+      - name: Test the TypeScript author kit against the mock and real hosts
+        working-directory: sdk/typescript
+        run: npm test
+        env:
+          NOURA_REQUIRE_KIT_HOST: '1'
+      # The hello plugin and plugin-host's test plugins, which the plugin
+      # tests in plugin-host, app-core and app-ui load.
+      - name: Build the plugins
+        shell: bash
+        run: bash crates/plugin-sdk/build-plugins.sh
+      # The PostgreSQL store's tests start throwaway clusters with the
+      # runner's initdb and pg_ctl and fail when PostgreSQL is missing. The
+      # Linux and Windows images ship PostgreSQL; Homebrew provides it on
+      # macOS.
+      - name: Install PostgreSQL on macOS
+        if: runner.os == 'macOS'
+        run: |
+          brew list postgresql@16 > /dev/null 2>&1 || brew install postgresql@16
+          echo "NOURA_POSTGRES_BIN=$(brew --prefix postgresql@16)/bin" >> "$GITHUB_ENV"
+      - run: cargo test --workspace --locked --no-fail-fast
+        timeout-minutes: 120
+        env:
+          NOURA_S7_REQUIRE_PLUGINS: '1'
+          NOURA_REQUIRE_PLUGINS: '1'
+      # The plugin host's seam 3 suite again on Wasmtime's Pulley
+      # interpreter, which a future mobile host runs instead of native code.
+      - name: Run the plugin host's tests on the Pulley interpreter
+        run: cargo test -p plugin-host --features pulley --locked
+        env:
+          NOURA_S7_REQUIRE_PLUGINS: '1'
+          NOURA_REQUIRE_PLUGINS: '1'
+      # The large note takes minutes through a debug build, so
+      # `the_large_note_keeps_its_bytes` runs only in release mode.
+      - name: Check that the editor keeps a large note's bytes
+        run: cargo test -p editor-egui --release --locked --test byte_identity
+      # A report, not a gate: each checkpoint enforces the budget on the
+      # owner's Mac.
+      - name: Report the file tree's frame times
+        if: matrix.os == 'macos-latest'
+        run: cargo test -p app-ui --release --locked --test tree_scale -- --ignored --nocapture
+      - name: Report a plugin's 10,000-row list's frame times
+        if: matrix.os == 'macos-latest'
+        run: cargo test -p app-ui --release --locked --test plugin_kit -- --ignored --nocapture
+        env:
+          NOURA_REQUIRE_PLUGINS: '1'
+      # Also a report: the 95th-percentile keystroke-to-frame time of typing
+      # in the 1 MB note, against the 16 ms budget.
+      - name: Report the editor's typing time on a 1 MB note
+        if: matrix.os == 'macos-latest'
+        run: cargo bench -p editor-egui --locked --bench typing
+
+  # Release checks: build each desktop package with cargo-packager, sign it
+  # with a throwaway updater key, install or mount it, and launch the app to
+  # its first window. Each package has to hold the plugins that ship with
+  # Noura, built for wasm32-wasip2.
+  packages:
+    strategy:
+      fail-fast: false
+      matrix:
+        # The release builds Linux packages on the oldest supported Ubuntu.
+        os: [macos-latest, windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain and the WebAssembly target
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-wasip2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: packages }
+      # rav1d, which decodes AVIF images in notes, assembles its x86 code
+      # with NASM.
+      - name: Install NASM
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            choco install nasm --no-progress -y
+            echo 'C:\Program Files\NASM' >> "$GITHUB_PATH"
+          else
+            sudo apt-get update && sudo apt-get install -y nasm
+          fi
+      - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
+        with: { tool: 'cargo-packager@0.11.8,cargo-about@0.9.2' }
+      # libfuse2 runs AppImages, including the tools cargo-packager uses to
+      # build one. Xvfb and Mesa give the app a display and a GPU.
+      - name: Install the Linux packaging and display tools
         if: runner.os == 'Linux'
         run: |
-          set +e
-          xvfb-run -a timeout 10s target/${{ github.event_name == 'pull_request' && 'debug' || 'release' }}/noura-desktop
-          status=$?
-          test "$status" -eq 124
-      - name: Verify generated TypeScript bindings
+          sudo apt-get update
+          sudo apt-get install -y libfuse2 xvfb mesa-vulkan-drivers libegl1 libxkbcommon-x11-0
+      - name: Build and sign the packages
+        shell: bash
+        run: |
+          password="$(openssl rand -hex 16)"
+          cargo packager signer generate --ci --password "$password" --path "$RUNNER_TEMP/updater.key"
+          export CARGO_PACKAGER_SIGN_PRIVATE_KEY="$RUNNER_TEMP/updater.key"
+          export CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD="$password"
+          scripts/package-desktop.sh
+      - name: Check that each update bundle has a signature
+        shell: bash
+        run: |
+          shopt -s nullglob
+          bundles=(target/release/*.app.tar.gz target/release/*.msi target/release/*.AppImage)
+          if [ "${#bundles[@]}" -eq 0 ]; then
+            echo "::error::No update bundle was built."
+            exit 1
+          fi
+          for bundle in "${bundles[@]}"; do
+            test -s "$bundle.sig" || { echo "::error::$bundle has no signature."; exit 1; }
+          done
+      - name: Install each package and launch it
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a scripts/check-desktop-packages.sh
+          else
+            scripts/check-desktop-packages.sh
+          fi
+
+  static-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain and the musl target
+        run: |
+          rustup toolchain install
+          rustup target add x86_64-unknown-linux-musl
+      - run: rustc --version
+      - name: Install the musl C compiler
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: musl }
+      - run: cargo build -p sync-server --release --locked --target x86_64-unknown-linux-musl
+      - name: Check that the server is one static binary that starts
+        run: |
+          binary=target/x86_64-unknown-linux-musl/release/sync-server
+          file "$binary"
+          program_headers="$(readelf --program-headers --wide "$binary")"
+          if grep -q INTERP <<<"$program_headers"; then
+            echo "::error::$binary asks for a dynamic loader."
+            exit 1
+          fi
+          dynamic_section="$(readelf --dynamic --wide "$binary")"
+          if grep -q '(NEEDED)' <<<"$dynamic_section"; then
+            grep '(NEEDED)' <<<"$dynamic_section"
+            echo "::error::$binary needs shared libraries."
+            exit 1
+          fi
+          "$binary" version
+      - name: Migrate, serve and pass the health check
+        run: |
+          binary=target/x86_64-unknown-linux-musl/release/sync-server
+          data="$RUNNER_TEMP/sync-data"
+          "$binary" migrate --data "$data"
+          "$binary" serve --data "$data" --listen 127.0.0.1:8787 &
+          server=$!
+          for _ in $(seq 1 50); do
+            if "$binary" healthcheck --listen 127.0.0.1:8787; then
+              kill "$server"
+              wait "$server" || true
+              exit 0
+            fi
+            sleep 0.2
+          done
+          echo "::error::The server never passed its health check."
+          exit 1
+      # A hosted PostgreSQL usually requires TLS. This cluster refuses every
+      # connection without it, and the static binary migrates and serves
+      # through it.
+      - name: Migrate and serve on a PostgreSQL that requires TLS
+        run: |
+          binary="$PWD/target/x86_64-unknown-linux-musl/release/sync-server"
+          bin="$(pg_config --bindir 2> /dev/null || ls -d /usr/lib/postgresql/*/bin | sort -V | tail -n 1)"
+          cluster="$RUNNER_TEMP/tls-cluster"
+          "$bin/initdb" -D "$cluster" -A trust -U postgres --no-sync > /dev/null
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 \
+            -subj /CN=localhost -keyout "$cluster/server.key" -out "$cluster/server.crt" 2> /dev/null
+          chmod 600 "$cluster/server.key"
+          {
+            echo "port = 54329"
+            echo "listen_addresses = '127.0.0.1'"
+            echo "unix_socket_directories = ''"
+            echo "ssl = on"
+          } >> "$cluster/postgresql.conf"
+          printf 'hostssl all all 127.0.0.1/32 trust\nhostnossl all all 127.0.0.1/32 reject\n' > "$cluster/pg_hba.conf"
+          "$bin/pg_ctl" -D "$cluster" -l "$RUNNER_TEMP/tls-cluster.log" -w start
+          export NOURA_DATABASE_URL="postgres://postgres@127.0.0.1:54329/postgres?sslmode=require"
+          export NOURA_SERVER_SECRET="$(openssl rand -hex 32)"
+          data="$RUNNER_TEMP/tls-data"
+          if NOURA_DATABASE_URL="${NOURA_DATABASE_URL/sslmode=require/sslmode=disable}" "$binary" migrate --data "$data"; then
+            echo "::error::The cluster took a connection without TLS."
+            exit 1
+          fi
+          "$binary" migrate --data "$data"
+          "$binary" serve --data "$data" --listen 127.0.0.1:8788 &
+          server=$!
+          for _ in $(seq 1 50); do
+            if "$binary" healthcheck --listen 127.0.0.1:8788; then
+              kill "$server"
+              wait "$server" || true
+              "$bin/pg_ctl" -D "$cluster" -m fast -w stop
+              exit 0
+            fi
+            sleep 0.2
+          done
+          echo "::error::The server on PostgreSQL never passed its health check."
+          exit 1
+
+  # The image the self-hosting guide and the Dokploy compose file run.
+  server-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: scripts/check-server-image.sh
+
+  # Both stores' queries are checked at compile time against offline data in
+  # crates/sync-store-sqlite/.sqlx and crates/sync-store-postgres/.sqlx, so
+  # builds need no database. This job rebuilds that data from the
+  # migrations, PostgreSQL's in the service below, and fails when it changed.
+  sqlx-offline-data:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - run: rustc --version
+      - name: Install the SQLite command-line tool
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: sqlx }
+      - run: scripts/sqlx-prepare.sh --check
+        env:
+          SQLX_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
+
+  # The store conformance suite, the server's PostgreSQL mode tests and the
+  # tracer on a PostgreSQL service, as a hosted deployment runs it, then the
+  # push soak for five minutes. Tests that need a cluster of their own, such
+  # as one that requires TLS, start it with the runner's PostgreSQL. The job
+  # builds dependencies optimized, the crypto crates among them, so its
+  # debug tests stay quick on a shared runner.
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      NOURA_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432
+      DEV_DEPENDENCIES: profile.dev.package."*".opt-level=2
+      TEST_DEPENDENCIES: profile.test.package."*".opt-level=2
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # The tests run several instances at once, each with 32 request
+      # connections, as the local test clusters allow with 500.
+      - name: Raise the service's connection limit
+        env:
+          SERVICE: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$SERVICE" psql -U postgres -c "ALTER SYSTEM SET max_connections = 500"
+          docker restart "$SERVICE"
+          for _ in $(seq 1 30); do
+            if docker exec "$SERVICE" pg_isready -U postgres; then
+              docker exec "$SERVICE" psql -U postgres -tAc "SHOW max_connections"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::The PostgreSQL service didn't come back after its restart."
+          exit 1
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - run: rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: postgres }
+      - run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p sync-store-postgres -p sync-server
+      - run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p app-core --test sync
+      # The 500 ms bar is for the server as it ships, so the soak builds
+      # Noura's own crates optimized too.
+      - name: Run the push soak for five minutes
+        run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" --config profile.dev.opt-level=2 --config profile.test.opt-level=2 -p sync-server --test soak -- --nocapture
+        env:
+          NOURA_SOAK_SECONDS: '300'
+
+  # Review item M7: 200 real devices apply a state a restore lost, and each
+  # waits by its rank for that object, so one writes it again and none gets
+  # conflict_limit. The job builds dependencies optimized, as the soak does.
+  restore-fleet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DEV_DEPENDENCIES: profile.dev.package."*".opt-level=2
+      TEST_DEPENDENCIES: profile.test.package."*".opt-level=2
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - run: rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: restore-fleet }
+      - name: Restore with 200 devices
+        run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p app-core --test sync_restore many_devices_pick_one_writer_for_a_lost_object -- --nocapture
+        env:
+          NOURA_RESTORE_DEVICES: '200'
+
+  editor-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - run: rustc --version
+      # editor-core has no UI dependency; neither editor crate reaches
+      # Lockbook's crates, a git source, a mobile host library or an HTTP
+      # client; the build holds one wgpu version.
+      - run: scripts/check-editor-deps.sh
+
+  sync-protocol:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain and the WebAssembly target
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+      - run: rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: wasm }
+      # sync-protocol holds no filesystem, socket or database crate and builds
+      # for account-web's WebAssembly target (sync-v2.md §4). Its published
+      # test vectors and fixtures run with the workspace tests.
+      - run: scripts/check-sync-protocol.sh
+
+  # The collaboration sandbox (sync-v2.md §22). Every platform runs its
+  # whole test suite twice, once on Cranelift and once on Pulley, and in
+  # each run the verdict fixtures and the records at the verdict's limits
+  # must reach the same verdicts and fuel on both backends. Linux also
+  # rebuilds the guest module and requires the bytes the sandbox embeds,
+  # checks that the guest's yrs resolves without `small-client`, runs the
+  # guest's unit tests, and runs the previous release on the current
+  # fixture.
+  collab-sandbox:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The release check needs the release tags.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain and the WebAssembly target
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+      - run: rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: collab-sandbox }
+      - name: Run the sandbox on Pulley and Cranelift
+        shell: bash
+        run: scripts/check-collab-sandbox.sh backends
+      - name: Check the guest module, its yrs and the previous release
         if: runner.os == 'Linux'
-        run: bash scripts/sync-bindings.sh && git diff --exit-code -- crates/local-core/bindings packages/shared/src/generated
+        shell: bash
+        run: scripts/check-collab-sandbox.sh module features guest release
+
+  account-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain and the WebAssembly target
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+      - run: rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with: { key: account-web }
+      # The wasm-bindgen command-line tool at the version Cargo.lock pins.
+      - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
+        with: { tool: wasm-bindgen@0.2.127 }
+      - run: cargo clippy -p account-web --lib --target wasm32-unknown-unknown --locked -- -D warnings
+      # The module and its notice, as the sync server serves them.
+      - run: scripts/build-account-web.sh --debug
+      # Chrome with a virtual WebAuthn authenticator signs up with a
+      # passkey, adds another and signs in with each through the module.
+      - name: Run account-web's browser test
+        run: cargo test -p account-web --test browser --locked -- --ignored
+        env:
+          NOURA_CHROME: /usr/bin/google-chrome
 
   dependency-audit:
     runs-on: ubuntu-latest
@@ -142,10 +530,64 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        with: { toolchain: '1.91' }
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - run: rustc --version
       - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
         with: { tool: cargo-deny@0.20.2 }
       # Checks advisories, bans, licenses, and sources. Bans needs version
       # requirements on every workspace path dependency.
       - run: cargo deny check
+      # The collaboration sandbox's guest and fuzz crates sit outside the
+      # workspace with lockfiles of their own, and the guest's crates ship
+      # inside the app's module.
+      - run: scripts/check-collab-sandbox.sh audit
+
+  # The TypeScript author kit's packages as authors get them: their npm
+  # dependencies' licenses and advisories, and the packed archives
+  # installed into a fresh project that checks, tests and packages the
+  # template.
+  typescript-kit-packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: sdk/typescript/package-lock.json
+      - name: Install the TypeScript author kit
+        working-directory: sdk/typescript
+        run: npm ci --no-audit --no-fund
+      # Mirrors deny.toml's allow list, with BlueOak-1.0.0, a permissive
+      # license some npm tools use.
+      - name: Check the kit's npm licenses
+        working-directory: sdk/typescript
+        run: npm run licenses
+      - name: Check the kit's npm advisories
+        working-directory: sdk/typescript
+        run: npm run advisories
+      - name: Pack the kit and build the template from the packed archives
+        working-directory: sdk/typescript
+        run: npm run check:packed
+
+  # The plugin interface reference comes from the WIT's doc comments.
+  plugin-reference:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
+        with: { tool: wit-bindgen-cli@0.63.0 }
+      - name: Check that the reference matches the WIT
+        run: |
+          scripts/plugin-reference.sh
+          # Mark new pages, such as one for a new interface version, so
+          # the diff shows them too.
+          git add --intent-to-add -- docs/plugins/reference
+          git diff --exit-code -- docs/plugins/reference

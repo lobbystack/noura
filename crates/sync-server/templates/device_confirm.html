@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Sign in a device{% endblock %}
+{% block content %}
+<h1>Sign in this device?</h1>
+<p>Noura asks to sign in as {{ email }} with this code:</p>
+<p class="code" data-user-code>{{ code }}</p>
+<p>Approve only if you started this sign-in and your computer shows the same code.</p>
+<form method="post" action="/device/decide">
+<input type="hidden" name="user_code" value="{{ code }}">
+<input type="hidden" name="expires" value="{{ expires }}">
+<input type="hidden" name="confirmation" value="{{ confirmation }}">
+<button type="submit" name="decision" value="approve">Sign in</button>
+<button type="submit" name="decision" value="deny" class="secondary">Don't sign in</button>
+</form>
+{% endblock %}

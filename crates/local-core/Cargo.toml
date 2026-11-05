@@ -5,6 +5,13 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# Lets tests force the native watcher to fail or deliver chosen events.
+# Never enabled in a shipped build.
+test-hooks = []
+# Lets tests record which folders a mutation syncs. Test builds only.
+durability-probe = []
+
 [dependencies]
 yrs.workspace = true
 age.workspace = true
@@ -18,14 +25,18 @@ reqwest.workspace = true
 atomic-write-file.workspace = true
 blake3.workspace = true
 directories.workspace = true
+encoding_rs.workspace = true
 fs2.workspace = true
 futures.workspace = true
 genai.workspace = true
 ignore.workspace = true
 hmac.workspace = true
+html2text.workspace = true
+html5ever.workspace = true
 jiff.workspace = true
 keyring.workspace = true
 notify.workspace = true
+parking_lot.workspace = true
 pbkdf2.workspace = true
 pulldown-cmark.workspace = true
 rusqlite.workspace = true
@@ -46,6 +57,8 @@ workspace-format = { version = "0.2.0", path = "../workspace-format" }
 x25519-dalek.workspace = true
 
 [dev-dependencies]
+# The sync file tests record which folders a write syncs.
+local-core = { path = ".", features = ["durability-probe", "test-hooks"] }
 tempfile.workspace = true
 
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
@@ -53,10 +66,17 @@ trash.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 atomicwrites = "=0.4.4"
+# The v2 device secrets need Credential Manager entries that stay on this
+# machine (`CRED_PERSIST_LOCAL_MACHINE`), which keyring's own entries don't
+# offer; keyring 4 builds on this crate.
+keyring-core = "=1.0.0"
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
-security-framework = "=3.7.0"
+# The data protection keychain (`kSecUseDataProtectionKeychain`) holds the v2
+# device secrets, with the login keychain as the fallback for a build without
+# a keychain access group; it needs the macOS 10.15 API.
+security-framework = { version = "=3.7.0", features = ["OSX_10_15"] }

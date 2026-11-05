@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, type Component, type Snippet } from 'svelte';
-	import { ModeWatcher } from 'mode-watcher';
+	import { ModeWatcher, mode } from 'mode-watcher';
 	import { beforeNavigate, goto, preloadCode } from '$app/navigation';
 	import { page } from '$app/state';
 	import { saveBeforeLeaving } from '$lib/editor/unsaved-changes';
@@ -17,7 +17,6 @@
 		getNouraClient,
 		getPluginRuntime,
 	} from '$lib/state.svelte';
-	import { sidebarModuleFor } from '$lib/sidebar-modules';
 	import { plugins } from '$lib/plugins.svelte';
 	import { routePlugin } from '$lib/plugin-routes';
 	import { getAppPlatform } from '$lib/platform';
@@ -49,6 +48,23 @@
 	setSettingsDialog(settingsDialog);
 	setRouteSidebar(new RouteSidebar());
 	setAppUpdates(new AppUpdates());
+
+	// The window shows its own background while the page repaints, so it
+	// follows the theme chosen in Settings, not only the system's.
+	$effect(() => {
+		if (web || !mode.current) return;
+		void getNouraClient()
+			.app.setTheme({ dark: mode.current === 'dark' })
+			.catch(() => {});
+	});
+
+	// The chosen zoom applies at launch and whenever it changes.
+	$effect(() => {
+		if (web) return;
+		void getNouraClient()
+			.app.setZoom({ factor: preferences.zoom })
+			.catch(() => {});
+	});
 
 	/** How often ephemeral chats are checked for expiry while the app runs. */
 	const CHAT_EXPIRY_INTERVAL_MS = 60 * 60 * 1000;
@@ -167,7 +183,7 @@
 	});
 
 	// Turned-off modules genuinely simplify the workspace: routes backed by a
-	// disabled plugin fall back to Home instead of rendering a dead surface.
+	// disabled plugin fall back to the Inbox instead of rendering a dead surface.
 	// Only the open workspace's own plugin list decides: a sync that settled
 	// while it was still opening lists no plugins at all.
 	$effect(() => {
@@ -205,12 +221,9 @@
 			void getNouraClient().sync.signIn.initialize();
 	});
 
-	// Modules own their sidebar: routes with a contributing module get one
-	// (workspace name plus that module's section); everything else renders
-	// full-width, so a module can simply opt out.
-	const showSidebar = $derived(
-		sidebarModuleFor(page.url.pathname, new Set(plugins.activeIds)) !== null,
-	);
+	// The sidebar stays put on every page; only Mod+\ hides it, and that
+	// choice is remembered.
+	const sidebarOpen = $derived(preferences.sidebarOpen);
 
 	onMount(() => {
 		let returnCount = 0;
@@ -262,6 +275,7 @@
 />
 
 <div
+	data-app-shell
 	class="flex h-svh min-h-0 flex-col overflow-hidden"
 	style:--content-text-size={preferences.textSizeValue}
 	style:--content-max-width={preferences.lineWidthValue}
@@ -270,10 +284,14 @@
 		class="flex h-(--app-titlebar-height) shrink-0 items-center border-b border-sidebar-border bg-sidebar"
 		data-tauri-drag-region
 	>
-		{#if workspace.isReady && !showSidebar}
+		<!-- The open sidebar covers this and shows its own switcher; hiding the
+		sidebar uncovers it in the same place. -->
+		{#if workspace.isReady}
 			<div
-				class="ml-14 flex h-full w-56 shrink-0 items-center pr-2 pl-6"
+				class="ml-14 flex h-full max-w-56 min-w-0 items-center pr-1 pl-6"
 				data-tauri-drag-region
+				inert={sidebarOpen}
+				aria-hidden={sidebarOpen}
 			>
 				<WorkspaceSwitcher />
 			</div>
@@ -282,13 +300,14 @@
 
 	{#if workspace.isReady}
 		<Sidebar.Provider
+			bind:open={
+				() => sidebarOpen, (open) => preferences.update({ sidebarOpen: open })
+			}
 			class="min-h-0 flex-1 overflow-hidden"
-			style="--sidebar-width: 14rem;"
+			style="--sidebar-width: {preferences.sidebarWidth}px;"
 		>
 			<AppRail />
-			{#if showSidebar}
-				<AppSidebar />
-			{/if}
+			<AppSidebar open={sidebarOpen} />
 			<main class="flex min-w-0 flex-1 flex-col">
 				<TabsBar />
 				{@render children()}

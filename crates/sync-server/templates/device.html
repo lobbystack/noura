@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Sign in a device{% endblock %}
+{% block content %}
+<h1>Sign in a device</h1>
+<p>Enter the code that Noura shows on your computer.</p>
+<form method="post" action="/device">
+<label for="user_code">Code</label>
+<input id="user_code" name="user_code" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="9" required>
+<button type="submit">Continue</button>
+{% if !error.is_empty() %}<p class="status" role="alert">{{ error }}</p>{% endif %}
+</form>
+{% endblock %}

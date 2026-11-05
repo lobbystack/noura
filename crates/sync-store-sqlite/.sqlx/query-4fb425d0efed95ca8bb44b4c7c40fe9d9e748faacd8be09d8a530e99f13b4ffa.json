@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT a.genesis AS \"genesis!\", l.seqno AS \"seqno!: i64\", l.digest AS \"digest!\"\n             FROM accounts a\n             JOIN account_links l ON l.account = a.account AND l.genesis = a.genesis\n             WHERE a.account = ?1 ORDER BY l.seqno DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "genesis!",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "genesis"
+          }
+        }
+      },
+      {
+        "name": "seqno!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "account_links",
+            "name": "seqno"
+          }
+        }
+      },
+      {
+        "name": "digest!",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "account_links",
+            "name": "digest"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "4fb425d0efed95ca8bb44b4c7c40fe9d9e748faacd8be09d8a530e99f13b4ffa"
+}

@@ -1,0 +1,2464 @@
+{
+	"cases": [
+		{
+			"base": "eec5719b75364c893ef8ed9a14f5ab5b5db5e816b54068211f5bd82b888b9023",
+			"document": "01010000040107636f6e74656e74",
+			"expect": "548c6fd62af311a2228f14117db7bc91",
+			"input": "176e6f7572612e73796e632e746578742e6c696e6561676500028166db9a6e96dd44846df7ac67542047eec5719b75364c893ef8ed9a14f5ab5b5db5e816b54068211f5bd82b888b902301010000040107636f6e74656e74",
+			"kind": "text_lineage",
+			"name": "lineage_of_a_first_document",
+			"rid": "8166db9a6e96dd44846df7ac67542047"
+		},
+		{
+			"base": "eec5719b75364c893ef8ed9a14f5ab5b5db5e816b54068211f5bd82b888b9023",
+			"document": "01010000040107636f6e74656e7400",
+			"expect": "87d1a1c4fc14189868f7c217b12adda0",
+			"input": null,
+			"kind": "text_lineage",
+			"name": "another_first_document_another_lineage",
+			"rid": "8166db9a6e96dd44846df7ac67542047"
+		},
+		{
+			"card_index": 1,
+			"expect": 536870913,
+			"kind": "client_id",
+			"load": 1,
+			"name": "card_1_load_1"
+		},
+		{
+			"card_index": 2,
+			"expect": 1073741831,
+			"kind": "client_id",
+			"load": 7,
+			"name": "card_2_load_7"
+		},
+		{
+			"card_index": 16777215,
+			"expect": 9007199254740991,
+			"kind": "client_id",
+			"load": 536870911,
+			"name": "card_16777215_load_536870911"
+		},
+		{
+			"card_index": 8,
+			"expect": 4294967297,
+			"kind": "client_id",
+			"load": 1,
+			"name": "card_8_load_1"
+		},
+		{
+			"card_index": 0,
+			"expect": null,
+			"kind": "client_id",
+			"load": 1,
+			"name": "card_0_load_1"
+		},
+		{
+			"card_index": 1,
+			"expect": null,
+			"kind": "client_id",
+			"load": 0,
+			"name": "card_1_load_0"
+		},
+		{
+			"card_index": 1,
+			"expect": null,
+			"kind": "client_id",
+			"load": 536870912,
+			"name": "card_1_load_536870912"
+		},
+		{
+			"card_index": 16777216,
+			"expect": null,
+			"kind": "client_id",
+			"load": 1,
+			"name": "card_16777216_load_1"
+		},
+		{
+			"base_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			"body": "Body\n",
+			"composed": "---\nid: note_01j9z3y7q8r2s4t6v8w0x2y4z6\ntype: note\ntags:\n- a\n---\nBody\n",
+			"document": "01010000040107636f6e74656e7405426f64790a00",
+			"file": "---\nid: note_01j9z3y7q8r2s4t6v8w0x2y4z6\ntype: note\ntags: [a]\n---\nBody\n",
+			"kind": "first_snapshot",
+			"lineage": "a7c05251e2b1ce4fb11483cc967aff18",
+			"name": "first_managed_canonical",
+			"parts": "managed",
+			"path": "Plan.md",
+			"properties": {
+				"id": "\"note_01j9z3y7q8r2s4t6v8w0x2y4z6\"",
+				"tags": "[\"a\"]",
+				"type": "\"note\""
+			},
+			"revision": "2d9106bf8dc38eb9c374c71b0b5bb09b65ab1d611251cb2d3708e7d4234903ee",
+			"rid": "81818181818181818181818181818181"
+		},
+		{
+			"base_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			"body": "Body\n",
+			"composed": "---\nid: note_01j9z3y7q8r2s4t6v8w0x2y4z6\ntype: note\ntags:\n- a\n---\nBody\n",
+			"document": "01010000040107636f6e74656e7405426f64790a00",
+			"file": "---\ntype: note\nid:   note_01j9z3y7q8r2s4t6v8w0x2y4z6\ntags:   [ a ]\n---\nBody\n",
+			"kind": "first_snapshot",
+			"lineage": "a7c05251e2b1ce4fb11483cc967aff18",
+			"name": "first_managed_non_canonical",
+			"parts": "managed",
+			"path": "Plan.md",
+			"properties": {
+				"id": "\"note_01j9z3y7q8r2s4t6v8w0x2y4z6\"",
+				"tags": "[\"a\"]",
+				"type": "\"note\""
+			},
+			"revision": "2d9106bf8dc38eb9c374c71b0b5bb09b65ab1d611251cb2d3708e7d4234903ee",
+			"rid": "81818181818181818181818181818181"
+		},
+		{
+			"base_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			"body": "One\r\nTwo\r\n",
+			"composed": "---\nid: note_01j9z3y7q8r2s4t6v8w0x2y4z6\ntype: note\n---\nOne\r\nTwo\r\n",
+			"document": "01010000040107636f6e74656e740a4f6e650d0a54776f0d0a00",
+			"file": "---\r\nid: note_01j9z3y7q8r2s4t6v8w0x2y4z6\r\ntype: note\r\n---\r\nOne\r\nTwo\r\n",
+			"kind": "first_snapshot",
+			"lineage": "265dfc90b27eb4cb09aa02fe73aa0594",
+			"name": "first_managed_crlf_body",
+			"parts": "managed",
+			"path": "Plan.md",
+			"properties": {
+				"id": "\"note_01j9z3y7q8r2s4t6v8w0x2y4z6\"",
+				"type": "\"note\""
+			},
+			"revision": "d3072372185a88a15a04fe76f8e8e8933daad4ea4181cef39d1a6458940798ef",
+			"rid": "81818181818181818181818181818181"
+		},
+		{
+			"base_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			"body": "Body\n",
+			"composed": "---\nid: note_01j9z3y7q8r2s4t6v8w0x2y4z6\ntype: note\n---\nBody\n",
+			"document": "01010000040107636f6e74656e7405426f64790a00",
+			"file": "﻿---\nid: note_01j9z3y7q8r2s4t6v8w0x2y4z6\ntype: note\n---\nBody\n",
+			"kind": "first_snapshot",
+			"lineage": "a7c05251e2b1ce4fb11483cc967aff18",
+			"name": "first_managed_byte_order_mark",
+			"parts": "managed",
+			"path": "Plan.md",
+			"properties": {
+				"id": "\"note_01j9z3y7q8r2s4t6v8w0x2y4z6\"",
+				"type": "\"note\""
+			},
+			"revision": "3996d3ea6a8a314c19c165e802020ca843f6e42fa0c9aa4347edb1e995f81ec2",
+			"rid": "81818181818181818181818181818181"
+		},
+		{
+			"base_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			"body": "﻿# Plan\r\nText\r\n",
+			"composed": "﻿# Plan\r\nText\r\n",
+			"document": "01010000040107636f6e74656e7411efbbbf2320506c616e0d0a546578740d0a00",
+			"file": "﻿# Plan\r\nText\r\n",
+			"kind": "first_snapshot",
+			"lineage": "8dc6f08b2a92d4030219b0cea9c948f9",
+			"name": "first_unmanaged_byte_order_mark_crlf",
+			"parts": "unmanaged",
+			"path": "Plan.md",
+			"properties": {},
+			"revision": "065f4b08f73807efa3cbb975eafda37d1edbe9f3586f7249c57a2b45a1c7565c",
+			"rid": "81818181818181818181818181818181"
+		},
+		{
+			"base_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			"body": "---\ntitle: x\n---\nBody\n",
+			"composed": "---\ntitle: x\n---\nBody\n",
+			"document": "01010000040107636f6e74656e74162d2d2d0a7469746c653a20780a2d2d2d0a426f64790a00",
+			"file": "---\ntitle: x\n---\nBody\n",
+			"kind": "first_snapshot",
+			"lineage": "7a18944ee3e8fc01fdec32cafcea2f41",
+			"name": "first_unmanaged_with_frontmatter",
+			"parts": "unmanaged",
+			"path": "Plan.md",
+			"properties": {},
+			"revision": "ba2848ce7961eee74b623a96bd1c6aa41d2b6bacbefca2a356a0d97f98c4ee95",
+			"rid": "81818181818181818181818181818181"
+		},
+		{
+			"base_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			"body": "",
+			"composed": "",
+			"document": "0000",
+			"file": "",
+			"kind": "first_snapshot",
+			"lineage": "dc258f694730e4356777c49d6a1620cc",
+			"name": "first_empty",
+			"parts": "unmanaged",
+			"path": "Plan.md",
+			"properties": {},
+			"revision": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+			"rid": "81818181818181818181818181818181"
+		},
+		{
+			"file": "---\nid: note_01j9z3y7q8r2s4t6v8w0x2y4z6\ntype: note\nbig: 9007199254740992\n---\nx",
+			"kind": "first_snapshot",
+			"name": "first_integer_past_2_pow_53",
+			"parts": "outside",
+			"path": "Plan.md"
+		},
+		{
+			"file": "---\nid: note_01j9z3y7q8r2s4t6v8w0x2y4z6\ntype: note\nt: !secret value\n---\nx",
+			"kind": "first_snapshot",
+			"name": "first_tag",
+			"parts": "outside",
+			"path": "Plan.md"
+		},
+		{
+			"file": "---\nid: note_01j9z3y7q8r2s4t6v8w0x2y4z6\ntype: note\na: &one 1\nb: *one\n---\nx",
+			"kind": "first_snapshot",
+			"name": "first_alias",
+			"parts": "outside",
+			"path": "Plan.md"
+		},
+		{
+			"file": "---\nid: note_01j9z3y7q8r2s4t6v8w0x2y4z6\ntype: note\nkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk: 1\n---\nx",
+			"kind": "first_snapshot",
+			"name": "first_property_name_257_bytes",
+			"parts": "outside",
+			"path": "Plan.md"
+		},
+		{
+			"base_text": "fuzz 😀 base\n",
+			"card_index": 1,
+			"expect": "refused",
+			"kind": "origin_order",
+			"name": "right_origin_left_of_origin_then_no_origins",
+			"yrs": "0102818080800200c10007000101040107636f6e74656e7403e4b8ad00"
+		},
+		{
+			"base_text": "base",
+			"card_index": 1,
+			"expect": "refused",
+			"kind": "origin_order",
+			"name": "right_origin_left_of_origin",
+			"yrs": "0101818080800200c400030001017100"
+		},
+		{
+			"base_text": "base",
+			"card_index": 1,
+			"expect": "refused",
+			"kind": "origin_order",
+			"name": "no_origins_into_a_first_document",
+			"yrs": "0101818080800200040107636f6e74656e74016100"
+		},
+		{
+			"base_text": "",
+			"card_index": 1,
+			"expect": "merged",
+			"kind": "origin_order",
+			"name": "no_origins_into_an_empty_lineage",
+			"yrs": "0101818080800200040107636f6e74656e74016100"
+		},
+		{
+			"base_text": "",
+			"before": [
+				"0101818080800200040107636f6e74656e74016100"
+			],
+			"card_index": 1,
+			"expect": "refused",
+			"kind": "origin_order",
+			"name": "no_origins_past_the_writers_first_clock",
+			"yrs": "0101818080800201040107636f6e74656e74016200"
+		},
+		{
+			"base_text": "base",
+			"card_index": 1,
+			"expect": "merged",
+			"kind": "origin_order",
+			"name": "between_its_origins",
+			"yrs": "0101818080800200c400000001017100"
+		},
+		{
+			"base_text": "abcd",
+			"covers": [
+				[
+					1,
+					1
+				],
+				[
+					2,
+					1
+				]
+			],
+			"expect": "agrees",
+			"kind": "snapshot_check",
+			"name": "an_honest_snapshot",
+			"records": [
+				{
+					"card_index": 1,
+					"counter": 1,
+					"id": 5,
+					"yrs": "010181808080020084000302787900"
+				},
+				{
+					"card_index": 2,
+					"counter": 1,
+					"id": 6,
+					"yrs": "000100010102"
+				}
+			],
+			"restart": false,
+			"snapshot": "0201818080800200840003027879030000040107636f6e74656e7401618100000284000201640100010102",
+			"text": "adxy"
+		},
+		{
+			"base_text": "abcd",
+			"covers": [
+				[
+					1,
+					1
+				],
+				[
+					2,
+					1
+				]
+			],
+			"expect": "disagrees",
+			"kind": "snapshot_check",
+			"name": "shows_a_covered_delete",
+			"records": [
+				{
+					"card_index": 1,
+					"counter": 1,
+					"id": 5,
+					"yrs": "010181808080020084000302787900"
+				},
+				{
+					"card_index": 2,
+					"counter": 1,
+					"id": 6,
+					"yrs": "000100010102"
+				}
+			],
+			"restart": false,
+			"snapshot": "0201818080800200840003027879010000040107636f6e74656e74046162636400",
+			"text": "abcdxy"
+		},
+		{
+			"base_text": "abcd",
+			"covers": [
+				[
+					1,
+					1
+				],
+				[
+					2,
+					1
+				]
+			],
+			"expect": "disagrees",
+			"kind": "snapshot_check",
+			"name": "shows_a_covered_delete_after_a_restart",
+			"records": [
+				{
+					"card_index": 1,
+					"counter": 1,
+					"id": 5,
+					"yrs": "010181808080020084000302787900"
+				},
+				{
+					"card_index": 2,
+					"counter": 1,
+					"id": 6,
+					"yrs": "000100010102"
+				}
+			],
+			"restart": true,
+			"snapshot": "0201818080800200840003027879010000040107636f6e74656e74046162636400",
+			"text": "abcdxy"
+		},
+		{
+			"base_text": "abcd",
+			"covers": [
+				[
+					1,
+					1
+				],
+				[
+					2,
+					1
+				]
+			],
+			"expect": "disagrees",
+			"kind": "snapshot_check",
+			"name": "lacks_a_covered_element",
+			"records": [
+				{
+					"card_index": 1,
+					"counter": 1,
+					"id": 5,
+					"yrs": "010181808080020084000302787900"
+				},
+				{
+					"card_index": 2,
+					"counter": 1,
+					"id": 6,
+					"yrs": "000100010102"
+				}
+			],
+			"restart": false,
+			"snapshot": "01010000040107636f6e74656e74046162636400",
+			"text": "abcd"
+		},
+		{
+			"base_text": "a",
+			"covers": [
+				[
+					1,
+					1
+				]
+			],
+			"expect": "disagrees",
+			"kind": "snapshot_check",
+			"name": "substituted_pair",
+			"records": [
+				{
+					"card_index": 1,
+					"counter": 1,
+					"id": 5,
+					"yrs": "010181808080020084000004f09f988000"
+				}
+			],
+			"restart": false,
+			"snapshot": "020181808080020084000006efbfbdefbfbd010000040107636f6e74656e74016100",
+			"text": "a��"
+		},
+		{
+			"base_text": "a",
+			"covers": [
+				[
+					1,
+					1
+				],
+				[
+					2,
+					1
+				]
+			],
+			"expect": "agrees",
+			"kind": "snapshot_check",
+			"name": "a_real_split",
+			"records": [
+				{
+					"card_index": 1,
+					"counter": 1,
+					"id": 5,
+					"yrs": "010181808080020084000004f09f988000"
+				},
+				{
+					"card_index": 2,
+					"counter": 1,
+					"id": 6,
+					"yrs": "010181808080040084818080800200017100"
+				}
+			],
+			"restart": false,
+			"snapshot": "03018180808004008481808080020001710281808080020084000003efbfbd8481808080020003efbfbd010000040107636f6e74656e74016100",
+			"text": "a��q"
+		},
+		{
+			"base_text": "hello",
+			"kind": "canonical_order",
+			"name": "arrival_matches_bootstrap",
+			"records": [
+				{
+					"card_index": 1,
+					"counter": 1,
+					"id": 2,
+					"yrs": "01018180808002008400040620776f726c6400"
+				},
+				{
+					"card_index": 2,
+					"counter": 1,
+					"id": 3,
+					"yrs": "01018180808004008400040620746865726500"
+				},
+				{
+					"card_index": 1,
+					"counter": 2,
+					"id": 4,
+					"yrs": "010181808080020684818080800205012100"
+				}
+			],
+			"text": "hello world! there"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": null,
+			"kind": "verdict",
+			"name": "managed_update_without_id",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028181818181818181818181818181818104001f6e6f74655f30316a397a337937713872327334743676387730783279347a36a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a200000001000000010007703a73746167650000000000000000010000000722647261667422010000000e0101818080800200840000017800",
+			"record": "text_update",
+			"yrs": "0101818080800200840000017800"
+		},
+		{
+			"expect": {
+				"p:a": "2",
+				"p:b": "3",
+				"path": "a.md"
+			},
+			"kind": "meta_merge",
+			"name": "different_keys_both_survive",
+			"records": [
+				{
+					"digest": "01",
+					"entries": [
+						[
+							"path",
+							0,
+							"a.md"
+						],
+						[
+							"p:a",
+							0,
+							"1"
+						]
+					],
+					"seq": 1,
+					"snapshot": true
+				},
+				{
+					"digest": "02",
+					"entries": [
+						[
+							"p:a",
+							0,
+							"2"
+						]
+					],
+					"seq": 2,
+					"snapshot": false
+				},
+				{
+					"digest": "03",
+					"entries": [
+						[
+							"p:b",
+							0,
+							"3"
+						]
+					],
+					"seq": 3,
+					"snapshot": false
+				}
+			]
+		},
+		{
+			"expect": {
+				"p:a": "2"
+			},
+			"kind": "meta_merge",
+			"name": "the_later_committed_write_wins",
+			"records": [
+				{
+					"digest": "09",
+					"entries": [
+						[
+							"p:a",
+							0,
+							"1"
+						]
+					],
+					"seq": 2,
+					"snapshot": false
+				},
+				{
+					"digest": "01",
+					"entries": [
+						[
+							"p:a",
+							0,
+							"2"
+						]
+					],
+					"seq": 3,
+					"snapshot": false
+				}
+			]
+		},
+		{
+			"expect": {
+				"p:a": "high"
+			},
+			"kind": "meta_merge",
+			"name": "the_record_digest_breaks_a_tie",
+			"records": [
+				{
+					"digest": "02",
+					"entries": [
+						[
+							"p:a",
+							3,
+							"high"
+						]
+					],
+					"seq": 5,
+					"snapshot": true
+				},
+				{
+					"digest": "01",
+					"entries": [
+						[
+							"p:a",
+							3,
+							"low"
+						]
+					],
+					"seq": 6,
+					"snapshot": true
+				}
+			]
+		},
+		{
+			"expect": {
+				"p:a": "concurrent"
+			},
+			"kind": "meta_merge",
+			"name": "a_covered_write_keeps_its_place",
+			"records": [
+				{
+					"digest": "01",
+					"entries": [
+						[
+							"p:a",
+							0,
+							"concurrent"
+						]
+					],
+					"seq": 4,
+					"snapshot": false
+				},
+				{
+					"digest": "02",
+					"entries": [
+						[
+							"p:a",
+							3,
+							"covered"
+						]
+					],
+					"seq": 5,
+					"snapshot": true
+				}
+			]
+		},
+		{
+			"expect": {
+				"p:a": "snapshot"
+			},
+			"kind": "meta_merge",
+			"name": "a_snapshot_naming_0_writes_at_its_own_sequence",
+			"records": [
+				{
+					"digest": "01",
+					"entries": [
+						[
+							"p:a",
+							0,
+							"update"
+						]
+					],
+					"seq": 4,
+					"snapshot": false
+				},
+				{
+					"digest": "02",
+					"entries": [
+						[
+							"p:a",
+							0,
+							"snapshot"
+						]
+					],
+					"seq": 5,
+					"snapshot": true
+				}
+			]
+		},
+		{
+			"expect": {
+				"p:kept": "update",
+				"p:lost": "rewritten"
+			},
+			"kind": "meta_merge",
+			"name": "a_rewritten_snapshot_keeps_a_kept_writes_place_and_writes_a_lost_one_again",
+			"records": [
+				{
+					"digest": "01",
+					"entries": [
+						[
+							"p:kept",
+							0,
+							"update"
+						],
+						[
+							"p:lost",
+							0,
+							"update"
+						]
+					],
+					"seq": 6,
+					"snapshot": false
+				},
+				{
+					"digest": "02",
+					"entries": [
+						[
+							"p:kept",
+							4,
+							"rewritten"
+						],
+						[
+							"p:lost",
+							0,
+							"rewritten"
+						]
+					],
+					"seq": 9,
+					"snapshot": true
+				}
+			]
+		},
+		{
+			"expect": {
+				"p:a": "snapshot"
+			},
+			"kind": "meta_merge",
+			"name": "a_snapshot_naming_a_later_sequence_writes_at_its_own",
+			"records": [
+				{
+					"digest": "01",
+					"entries": [
+						[
+							"p:a",
+							0,
+							"update"
+						]
+					],
+					"seq": 4,
+					"snapshot": false
+				},
+				{
+					"digest": "02",
+					"entries": [
+						[
+							"p:a",
+							9,
+							"snapshot"
+						]
+					],
+					"seq": 5,
+					"snapshot": true
+				}
+			]
+		},
+		{
+			"expect": {
+				"p:a": null
+			},
+			"kind": "meta_merge",
+			"name": "a_write_with_no_value_removes_the_property",
+			"records": [
+				{
+					"digest": "01",
+					"entries": [
+						[
+							"p:a",
+							0,
+							"1"
+						]
+					],
+					"seq": 1,
+					"snapshot": true
+				},
+				{
+					"digest": "02",
+					"entries": [
+						[
+							"p:a",
+							0,
+							null
+						]
+					],
+					"seq": 2,
+					"snapshot": false
+				}
+			]
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": null,
+			"kind": "verdict",
+			"name": "readable_insert",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000190101818080800200040107636f6e74656e740568656c6c6f00",
+			"record": "text_update",
+			"yrs": "0101818080800200040107636f6e74656e740568656c6c6f00"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "varint_not_shortest",
+			"kind": "verdict",
+			"name": "varint_not_shortest",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d640100000017018100818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": "018100818080800200040107636f6e74656e7402686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "varint_not_shortest",
+			"kind": "verdict",
+			"name": "client_id_not_shortest",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d640100000017010181808080820000040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": "010181808080820000040107636f6e74656e7402686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "varint_range",
+			"kind": "verdict",
+			"name": "client_id_2_pow_53",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000190101808080808080801000040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": "0101808080808080801000040107636f6e74656e7402686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "varint_range",
+			"kind": "verdict",
+			"name": "origin_client_2_pow_53",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000001601018180808002008480808080808080100002686900",
+			"record": "text_update",
+			"yrs": "01018180808002008480808080808080100002686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "varint_range",
+			"kind": "verdict",
+			"name": "delete_set_client_2_pow_53",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000000d00018080808080808010010001",
+			"record": "text_update",
+			"yrs": "00018080808080808010010001"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "varint_range",
+			"kind": "verdict",
+			"name": "client_id_2_pow_53_plus_own",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000190101818080808280801000040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": "0101818080808280801000040107636f6e74656e7402686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "varint_range",
+			"kind": "verdict",
+			"name": "origin_client_2_pow_53_plus_own",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000001601018180808002018481808080828080100002686900",
+			"record": "text_update",
+			"yrs": "01018180808002018481808080828080100002686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "varint_range",
+			"kind": "verdict",
+			"name": "delete_set_client_2_pow_53_plus_own",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000000d00018180808082808010010001",
+			"record": "text_update",
+			"yrs": "00018180808082808010010001"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "varint_range",
+			"kind": "verdict",
+			"name": "count_2_pow_32",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000058080808010",
+			"record": "text_update",
+			"yrs": "8080808010"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "varint_range",
+			"kind": "verdict",
+			"name": "clock_2_pow_32",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000001a010181808080028080808010040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": "010181808080028080808010040107636f6e74656e7402686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "varint_range",
+			"kind": "verdict",
+			"name": "length_2_pow_32",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000180101818080800200010107636f6e74656e74808080801000",
+			"record": "text_update",
+			"yrs": "0101818080800200010107636f6e74656e74808080801000"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "varint_range",
+			"kind": "verdict",
+			"name": "parent_marker_2_pow_32",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000001a010181808080020004808080801007636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": "010181808080020004808080801007636f6e74656e7402686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "varint_range",
+			"kind": "verdict",
+			"name": "varint_past_64_bits",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000000bffffffffffffffffffff01",
+			"record": "text_update",
+			"yrs": "ffffffffffffffffffff01"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": null,
+			"kind": "verdict",
+			"name": "clock_reaches_2_pow_32_minus_1",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000001a01018180808002fdffffff0f040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": "01018180808002fdffffff0f040107636f6e74656e7402686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "clock_overflow",
+			"kind": "verdict",
+			"name": "clock_passes_2_pow_32_minus_1",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000001a01018180808002feffffff0f040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": "01018180808002feffffff0f040107636f6e74656e7402686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": null,
+			"kind": "verdict",
+			"name": "delete_range_reaches_2_pow_32_minus_1",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000000a00010001fdffffff0f02",
+			"record": "text_update",
+			"yrs": "00010001fdffffff0f02"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "delete_range_overflow",
+			"kind": "verdict",
+			"name": "delete_range_passes_2_pow_32_minus_1",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000000a00010001feffffff0f02",
+			"record": "text_update",
+			"yrs": "00010001feffffff0f02"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "duplicate_client",
+			"kind": "verdict",
+			"name": "client_twice_in_structs",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000280201818080800200040107636f6e74656e74016101818080800201040107636f6e74656e74016200",
+			"record": "text_update",
+			"yrs": "0201818080800200040107636f6e74656e74016101818080800201040107636f6e74656e74016200"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "duplicate_client",
+			"kind": "verdict",
+			"name": "client_twice_in_delete_set",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000000a00020001000100010101",
+			"record": "text_update",
+			"yrs": "00020001000100010101"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "zero_length",
+			"kind": "verdict",
+			"name": "skip_of_length_0",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000000b01018180808002000a0000",
+			"record": "text_update",
+			"yrs": "01018180808002000a0000"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "zero_length",
+			"kind": "verdict",
+			"name": "string_of_length_0",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000140101818080800200040107636f6e74656e740000",
+			"record": "text_update",
+			"yrs": "0101818080800200040107636f6e74656e740000"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "zero_length",
+			"kind": "verdict",
+			"name": "deletion_of_length_0",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000140101818080800200010107636f6e74656e740000",
+			"record": "text_update",
+			"yrs": "0101818080800200010107636f6e74656e740000"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "zero_length",
+			"kind": "verdict",
+			"name": "delete_range_of_length_0",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d640100000006000100010000",
+			"record": "text_update",
+			"yrs": "000100010000"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "invalid_utf8",
+			"kind": "verdict",
+			"name": "string_not_utf8",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000160101818080800200040107636f6e74656e7402c32800",
+			"record": "text_update",
+			"yrs": "0101818080800200040107636f6e74656e7402c32800"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "invalid_utf8",
+			"kind": "verdict",
+			"name": "root_name_not_utf8",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000100101818080800200040101ff02686900",
+			"record": "text_update",
+			"yrs": "0101818080800200040101ff02686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "yrs_parse",
+			"kind": "verdict",
+			"name": "truncated",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000160101818080800200040107636f6e74656e740568656c",
+			"record": "text_update",
+			"yrs": "0101818080800200040107636f6e74656e740568656c"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "yrs_parse",
+			"kind": "verdict",
+			"name": "trailing_bytes",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000001a0101818080800200040107636f6e74656e740568656c6c6f0000",
+			"record": "text_update",
+			"yrs": "0101818080800200040107636f6e74656e740568656c6c6f0000"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "gc_struct",
+			"kind": "verdict",
+			"name": "gc_struct",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000000b0101818080800200000300",
+			"record": "text_update",
+			"yrs": "0101818080800200000300"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "content_kind",
+			"kind": "verdict",
+			"name": "json_content",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000140101818080800200020107636f6e74656e740100",
+			"record": "text_update",
+			"yrs": "0101818080800200020107636f6e74656e740100"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "content_kind",
+			"kind": "verdict",
+			"name": "binary_content",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000140101818080800200030107636f6e74656e740100",
+			"record": "text_update",
+			"yrs": "0101818080800200030107636f6e74656e740100"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "content_kind",
+			"kind": "verdict",
+			"name": "embed_content",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000140101818080800200050107636f6e74656e740100",
+			"record": "text_update",
+			"yrs": "0101818080800200050107636f6e74656e740100"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "content_kind",
+			"kind": "verdict",
+			"name": "format_content",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000140101818080800200060107636f6e74656e740100",
+			"record": "text_update",
+			"yrs": "0101818080800200060107636f6e74656e740100"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "content_kind",
+			"kind": "verdict",
+			"name": "type_content",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000140101818080800200070107636f6e74656e740100",
+			"record": "text_update",
+			"yrs": "0101818080800200070107636f6e74656e740100"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "content_kind",
+			"kind": "verdict",
+			"name": "any_content",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000140101818080800200080107636f6e74656e740100",
+			"record": "text_update",
+			"yrs": "0101818080800200080107636f6e74656e740100"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "content_kind",
+			"kind": "verdict",
+			"name": "doc_content",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000140101818080800200090107636f6e74656e740100",
+			"record": "text_update",
+			"yrs": "0101818080800200090107636f6e74656e740100"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "content_kind",
+			"kind": "verdict",
+			"name": "move_content",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000001401018180808002000b0107636f6e74656e740100",
+			"record": "text_update",
+			"yrs": "01018180808002000b0107636f6e74656e740100"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "parent",
+			"kind": "verdict",
+			"name": "parent_other_root",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000001401018180808002000401056f7468657202686900",
+			"record": "text_update",
+			"yrs": "01018180808002000401056f7468657202686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "parent",
+			"kind": "verdict",
+			"name": "parent_nested_type",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000140101818080800200040081808080020702686900",
+			"record": "text_update",
+			"yrs": "0101818080800200040081808080020702686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "map_key",
+			"kind": "verdict",
+			"name": "map_key",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000001a0101818080800200240107636f6e74656e74036b657902686900",
+			"record": "text_update",
+			"yrs": "0101818080800200240107636f6e74656e74036b657902686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "map_key",
+			"kind": "verdict",
+			"name": "map_key_flag_with_origin",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000000f0101818080800200a4000002686900",
+			"record": "text_update",
+			"yrs": "0101818080800200a4000002686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "payload",
+			"kind": "verdict",
+			"name": "update_load_0",
+			"note": "sync-protocol's payload decoder refuses the load, so the verdict's structured error is `payload`",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000000000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": "0101818080800200040107636f6e74656e7402686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "payload",
+			"kind": "verdict",
+			"name": "update_load_2_pow_29",
+			"note": "sync-protocol's payload decoder refuses the load, so the verdict's structured error is `payload`",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9220000000000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": "0101818080800200040107636f6e74656e7402686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "foreign_client",
+			"kind": "verdict",
+			"name": "update_under_another_load",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000160101828080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": "0101828080800200040107636f6e74656e7402686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "foreign_client",
+			"kind": "verdict",
+			"name": "update_under_another_card",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000160101818080800400040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": "0101818080800400040107636f6e74656e7402686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "foreign_client",
+			"kind": "verdict",
+			"name": "update_skip_under_another_card",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000000b01018180808004000a0200",
+			"record": "text_update",
+			"yrs": "01018180808004000a0200"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": null,
+			"kind": "verdict",
+			"name": "update_with_own_skip",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000001801028180808002000a02040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": "01028180808002000a02040107636f6e74656e7402686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": null,
+			"kind": "verdict",
+			"name": "update_deleting_others_text",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000000a00018180808004010003",
+			"record": "text_update",
+			"yrs": "00018180808004010003"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": null,
+			"kind": "verdict",
+			"name": "item_between_its_writers_earlier_elements",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000250102818080800200040107636f6e74656e74026162c4818080800200818080800201016300",
+			"record": "text_update",
+			"yrs": "0102818080800200040107636f6e74656e74026162c4818080800200818080800201016300"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "forward_origin",
+			"kind": "verdict",
+			"name": "item_after_its_own_clock",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000001f0102818080800200040107636f6e74656e7402616284818080800202016300",
+			"record": "text_update",
+			"yrs": "0102818080800200040107636f6e74656e7402616284818080800202016300"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "forward_origin",
+			"kind": "verdict",
+			"name": "item_before_a_later_clock_of_its_writer",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000250102818080800200040107636f6e74656e74026162c4818080800200818080800203016300",
+			"record": "text_update",
+			"yrs": "0102818080800200040107636f6e74656e74026162c4818080800200818080800203016300"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "forward_origin",
+			"kind": "verdict",
+			"name": "item_whose_right_origin_lies_inside_itself",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000150101818080800200c4000081808080020102616200",
+			"record": "text_update",
+			"yrs": "0101818080800200c4000081808080020102616200"
+		},
+		{
+			"blob": null,
+			"card_count": 1,
+			"card_index": 1,
+			"expect": null,
+			"kind": "verdict",
+			"name": "snapshot_under_client_0",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470300002d168e1ff20930e41ae0c8e9b0bfc97bba39b1afb272f6bf9b52bf30716e96a5a2b660c845c9e65a4964638c274d7e92000000010004706174680000000000000004010000000d4e6f7465732f506c616e2e6d64010000001201010000040107636f6e74656e740268690000",
+			"record": "text_snapshot",
+			"yrs": "01010000040107636f6e74656e7402686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": null,
+			"kind": "verdict",
+			"name": "snapshot_under_an_indexed_card",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470300002d168e1ff20930e41ae0c8e9b0bfc97bba39b1afb272f6bf9b52bf30716e96a5a2b660c845c9e65a4964638c274d7e92000000010004706174680000000000000004010000000d4e6f7465732f506c616e2e6d6401000000160101818080800400040107636f6e74656e740268690000",
+			"record": "text_snapshot",
+			"yrs": "0101818080800400040107636f6e74656e7402686900"
+		},
+		{
+			"blob": null,
+			"card_count": 1,
+			"card_index": 1,
+			"expect": "snapshot_client",
+			"kind": "verdict",
+			"name": "snapshot_under_a_card_not_yet_indexed",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470300002d168e1ff20930e41ae0c8e9b0bfc97bba39b1afb272f6bf9b52bf30716e96a5a2b660c845c9e65a4964638c274d7e92000000010004706174680000000000000004010000000d4e6f7465732f506c616e2e6d6401000000160101818080800400040107636f6e74656e740268690000",
+			"record": "text_snapshot",
+			"yrs": "0101818080800400040107636f6e74656e7402686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "snapshot_client",
+			"kind": "verdict",
+			"name": "snapshot_under_load_0",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470300002d168e1ff20930e41ae0c8e9b0bfc97bba39b1afb272f6bf9b52bf30716e96a5a2b660c845c9e65a4964638c274d7e92000000010004706174680000000000000004010000000d4e6f7465732f506c616e2e6d6401000000160101808080800400040107636f6e74656e740268690000",
+			"record": "text_snapshot",
+			"yrs": "0101808080800400040107636f6e74656e7402686900"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "snapshot_client",
+			"kind": "verdict",
+			"name": "snapshot_under_card_0",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470300002d168e1ff20930e41ae0c8e9b0bfc97bba39b1afb272f6bf9b52bf30716e96a5a2b660c845c9e65a4964638c274d7e92000000010004706174680000000000000004010000000d4e6f7465732f506c616e2e6d64010000001201010500040107636f6e74656e740268690000",
+			"record": "text_snapshot",
+			"yrs": "01010500040107636f6e74656e7402686900"
+		},
+		{
+			"blob": null,
+			"card_count": 8,
+			"card_index": 8,
+			"client": 4294967297,
+			"expect": null,
+			"kind": "client_round_trip",
+			"name": "update_by_client_4294967297",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e92000000010000000001000000180101818080801000040107636f6e74656e74047769646500",
+			"record": "text_update",
+			"text": "wide",
+			"yrs": "0101818080801000040107636f6e74656e74047769646500"
+		},
+		{
+			"blob": null,
+			"card_count": 16777215,
+			"card_index": 16777215,
+			"client": 9007199254740991,
+			"expect": null,
+			"kind": "client_round_trip",
+			"name": "update_by_client_9007199254740991",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e921fffffff00000000010000001d0101ffffffffffffff0f00040107636f6e74656e740677696465737400",
+			"record": "text_update",
+			"text": "widest",
+			"yrs": "0101ffffffffffffff0f00040107636f6e74656e740677696465737400"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": null,
+			"kind": "verdict",
+			"name": "update_without_meta",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e92000000010000000001000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_seq",
+			"kind": "verdict",
+			"name": "update_path_names_sequence_5",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000005010000000d4e6f7465732f506c616e2e6d6401000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_key",
+			"kind": "verdict",
+			"name": "update_key_neither_path_nor_property",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e92000000010000000100057469746c650000000000000000010000000622506c616e2201000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_key",
+			"kind": "verdict",
+			"name": "update_property_name_empty",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470400076e6f74655f3031a2b660c845c9e65a4964638c274d7e9200000001000000010002703a000000000000000001000000013101000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_key",
+			"kind": "verdict",
+			"name": "update_property_name_257_bytes",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470400076e6f74655f3031a2b660c845c9e65a4964638c274d7e9200000001000000010103703a6161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161000000000000000001000000013101000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": null,
+			"kind": "verdict",
+			"name": "update_property_name_256_bytes",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470400076e6f74655f3031a2b660c845c9e65a4964638c274d7e9200000001000000010102703a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161000000000000000001000000013101000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_key",
+			"kind": "verdict",
+			"name": "update_property_name_with_control",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470400076e6f74655f3031a2b660c845c9e65a4964638c274d7e9200000001000000010004703a6107000000000000000001000000013101000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_unmanaged",
+			"kind": "verdict",
+			"name": "update_property_on_unmanaged_note",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010008703a7374617475730000000000000000010000000622646f6e652201000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": null,
+			"kind": "verdict",
+			"name": "update_property_canonical",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470400076e6f74655f3031a2b660c845c9e65a4964638c274d7e9200000001000000010006703a74616773000000000000000001000000247b2261223a5b312c322e352c2278225d2c2262223a6e756c6c2c22c3a9223a747275657d01000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": null,
+			"kind": "verdict",
+			"name": "update_property_removed",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470400076e6f74655f3031a2b660c845c9e65a4964638c274d7e9200000001000000010008703a73746174757300000000000000000001000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_value",
+			"kind": "verdict",
+			"name": "update_property_whitespace",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470400076e6f74655f3031a2b660c845c9e65a4964638c274d7e9200000001000000010008703a737461747573000000000000000001000000087b2261223a20317d01000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_value",
+			"kind": "verdict",
+			"name": "update_property_keys_unsorted",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470400076e6f74655f3031a2b660c845c9e65a4964638c274d7e9200000001000000010008703a7374617475730000000000000000010000000d7b2262223a312c2261223a327d01000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_value",
+			"kind": "verdict",
+			"name": "update_property_number_not_shortest",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470400076e6f74655f3031a2b660c845c9e65a4964638c274d7e9200000001000000010008703a73746174757300000000000000000100000004312e353001000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_value",
+			"kind": "verdict",
+			"name": "update_property_escaped_letter",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470400076e6f74655f3031a2b660c845c9e65a4964638c274d7e9200000001000000010008703a73746174757300000000000000000100000008225c75303034312201000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_value",
+			"kind": "verdict",
+			"name": "update_property_not_json",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470400076e6f74655f3031a2b660c845c9e65a4964638c274d7e9200000001000000010008703a73746174757300000000000000000100000004646f6e6501000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_value",
+			"kind": "verdict",
+			"name": "update_property_not_utf8",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470400076e6f74655f3031a2b660c845c9e65a4964638c274d7e9200000001000000010008703a7374617475730000000000000000010000000322ff2201000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": null,
+			"kind": "verdict",
+			"name": "update_id_matches_object_id",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470400076e6f74655f3031a2b660c845c9e65a4964638c274d7e9200000001000000010004703a696400000000000000000100000009226e6f74655f30312201000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_id",
+			"kind": "verdict",
+			"name": "update_id_differs_from_object_id",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470400076e6f74655f3031a2b660c845c9e65a4964638c274d7e9200000001000000010004703a696400000000000000000100000009226e6f74655f30322201000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_id",
+			"kind": "verdict",
+			"name": "update_id_removed",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470400076e6f74655f3031a2b660c845c9e65a4964638c274d7e9200000001000000010004703a696400000000000000000001000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_type",
+			"kind": "verdict",
+			"name": "update_type_removed",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470400076e6f74655f3031a2b660c845c9e65a4964638c274d7e9200000001000000010006703a7479706500000000000000000001000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_path",
+			"kind": "verdict",
+			"name": "update_path_removed",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e92000000010000000100047061746800000000000000000001000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_path",
+			"kind": "verdict",
+			"name": "update_path_in_git",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000b2e6769742f636f6e66696701000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_path",
+			"kind": "verdict",
+			"name": "update_path_with_dot_dot",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e920000000100000001000470617468000000000000000001000000104e6f7465732f2e2e2f506c616e2e6d6401000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_path",
+			"kind": "verdict",
+			"name": "update_path_absolute",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000e2f4e6f7465732f506c616e2e6d6401000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_path",
+			"kind": "verdict",
+			"name": "update_path_reserved_name",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000c4e6f7465732f434f4e2e6d6401000000160101818080800200040107636f6e74656e7402686900",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": null,
+			"kind": "verdict",
+			"name": "managed_snapshot",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470300076e6f74655f30312d168e1ff20930e41ae0c8e9b0bfc97bba39b1afb272f6bf9b52bf30716e96a5a2b660c845c9e65a4964638c274d7e92000000030004703a696400000000000000030100000009226e6f74655f3031220006703a7479706500000000000000030100000006226e6f7465220004706174680000000000000003010000000d4e6f7465732f506c616e2e6d64010000001201010000040107636f6e74656e740268690000",
+			"record": "text_snapshot",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": null,
+			"kind": "verdict",
+			"name": "snapshot_names_effective_sequences",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470300002d168e1ff20930e41ae0c8e9b0bfc97bba39b1afb272f6bf9b52bf30716e96a5a2b660c845c9e65a4964638c274d7e92000000010004706174680000000000000009010000000d4e6f7465732f506c616e2e6d64010000001201010000040107636f6e74656e740268690000",
+			"record": "text_snapshot",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_path",
+			"kind": "verdict",
+			"name": "snapshot_without_path",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470300002d168e1ff20930e41ae0c8e9b0bfc97bba39b1afb272f6bf9b52bf30716e96a5a2b660c845c9e65a4964638c274d7e9200000000010000001201010000040107636f6e74656e740268690000",
+			"record": "text_snapshot",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_id",
+			"kind": "verdict",
+			"name": "managed_snapshot_without_id",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470300076e6f74655f30312d168e1ff20930e41ae0c8e9b0bfc97bba39b1afb272f6bf9b52bf30716e96a5a2b660c845c9e65a4964638c274d7e92000000020006703a7479706500000000000000030100000006226e6f7465220004706174680000000000000003010000000d4e6f7465732f506c616e2e6d64010000001201010000040107636f6e74656e740268690000",
+			"record": "text_snapshot",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "meta_type",
+			"kind": "verdict",
+			"name": "managed_snapshot_without_type",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470300076e6f74655f30312d168e1ff20930e41ae0c8e9b0bfc97bba39b1afb272f6bf9b52bf30716e96a5a2b660c845c9e65a4964638c274d7e92000000020004703a696400000000000000030100000009226e6f74655f3031220004706174680000000000000003010000000d4e6f7465732f506c616e2e6d64010000001201010000040107636f6e74656e740268690000",
+			"record": "text_snapshot",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "payload",
+			"kind": "verdict",
+			"name": "file_payload",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470100000000000d4e6f7465732f506c616e2e6d6485052e9aab1b67b6622d94a08441b09fd5b7aca61ee360416d70de5da67d86ca0100000002686900",
+			"record": "file",
+			"yrs": null
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "payload",
+			"kind": "verdict",
+			"name": "payload_not_decodable",
+			"payload": "010203",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": "0101818080800200040107636f6e74656e740b66726f6d206120626c6f6200",
+			"card_count": 2,
+			"card_index": 1,
+			"expect": null,
+			"kind": "verdict",
+			"name": "update_in_a_blob",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6402a1bdefc32c2fb444cfdbb54be88fa29a000000000000002faccc7e952442b69c3108962b4ef54d9b6ddea466f1b658986f8e149eab705276dde5d8f5380039c94ac00f564dd07e9028a2555dd1574067219be5eb88510c8a000000000000001f",
+			"record": "text_update",
+			"yrs": "0101818080800200040107636f6e74656e740b66726f6d206120626c6f6200"
+		},
+		{
+			"blob": null,
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "blob",
+			"kind": "verdict",
+			"name": "blob_missing",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6402a1bdefc32c2fb444cfdbb54be88fa29a000000000000002faccc7e952442b69c3108962b4ef54d9b6ddea466f1b658986f8e149eab705276dde5d8f5380039c94ac00f564dd07e9028a2555dd1574067219be5eb88510c8a000000000000001f",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": "0101818080800200040107636f6e74656e740b66726f6d206120626c6f6200",
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "blob",
+			"kind": "verdict",
+			"name": "blob_length_differs",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6402a1bdefc32c2fb444cfdbb54be88fa29a000000000000002faccc7e952442b69c3108962b4ef54d9b6ddea466f1b658986f8e149eab705276dde5d8f5380039c94ac00f564dd07e9028a2555dd1574067219be5eb88510c8a0000000000000020",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"blob": "0101818080800200040107636f6e74656e740b66726f6d206120626c6f6200",
+			"card_count": 2,
+			"card_index": 1,
+			"expect": "blob",
+			"kind": "verdict",
+			"name": "inline_content_with_a_blob",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000001f0101818080800200040107636f6e74656e740b66726f6d206120626c6f6200",
+			"record": "text_update",
+			"yrs": null
+		},
+		{
+			"base": "01010000040107636f6e74656e740661f09f98806200",
+			"card_count": 1,
+			"card_index": 1,
+			"kind": "surrogate",
+			"name": "insert_after_the_high_half",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e920000000100000000010000000e0101818080800200840001015800",
+			"text": "a��bX",
+			"yrs": "0101818080800200840001015800"
+		},
+		{
+			"base": "01010000040107636f6e74656e740661f09f98806200",
+			"card_count": 1,
+			"card_index": 1,
+			"kind": "surrogate",
+			"name": "insert_before_the_low_half",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e920000000100000000010000000e0101818080800200440002015800",
+			"text": "a�X�b",
+			"yrs": "0101818080800200440002015800"
+		},
+		{
+			"base": "01010000040107636f6e74656e740661f09f98806200",
+			"card_count": 1,
+			"card_index": 1,
+			"kind": "surrogate",
+			"name": "insert_between_the_halves",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e92000000010000000001000000100101818080800200c400010002015800",
+			"text": "a�X�b",
+			"yrs": "0101818080800200c400010002015800"
+		},
+		{
+			"base": "01010000040107636f6e74656e740661f09f98806200",
+			"card_count": 1,
+			"card_index": 1,
+			"kind": "surrogate",
+			"name": "delete_from_the_low_half",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000000100000006000100010202",
+			"text": "a�",
+			"yrs": "000100010202"
+		},
+		{
+			"base": "01010000040107636f6e74656e740661f09f98806200",
+			"card_count": 1,
+			"card_index": 1,
+			"kind": "surrogate",
+			"name": "delete_to_the_high_half",
+			"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000000100000006000100010101",
+			"text": "a�b",
+			"yrs": "000100010101"
+		},
+		{
+			"balances": {
+				"1": 1,
+				"2": 2000000000
+			},
+			"base": "01010000040107636f6e74656e74017800",
+			"kind": "allowance",
+			"name": "overdraw_then_defer",
+			"steps": [
+				{
+					"expect": "merged",
+					"receive": {
+						"card_count": 2,
+						"card_index": 1,
+						"id": 1,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e920000000100000000010000000e0101818080800200840000014100"
+					}
+				},
+				{
+					"expect": "deferred",
+					"receive": {
+						"card_count": 2,
+						"card_index": 1,
+						"id": 2,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000000100000012010181808080020184818080800200014200"
+					}
+				},
+				{
+					"expect": "merged",
+					"receive": {
+						"card_count": 2,
+						"card_index": 2,
+						"id": 3,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e920000000100000000010000000e0101818080800400840000014300"
+					}
+				},
+				{
+					"after_seconds": 59,
+					"expect_merged": []
+				},
+				{
+					"after_seconds": 60,
+					"expect_merged": [
+						2
+					]
+				}
+			],
+			"text": "xABC"
+		},
+		{
+			"balances": {
+				"1": -3000000000
+			},
+			"base": "01010000040107636f6e74656e74017800",
+			"kind": "allowance",
+			"name": "a_debt_waits_for_enough_refills",
+			"steps": [
+				{
+					"expect": "deferred",
+					"receive": {
+						"card_count": 2,
+						"card_index": 1,
+						"id": 1,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e920000000100000000010000000e0101818080800200840000014400"
+					}
+				},
+				{
+					"expect": "deferred",
+					"receive": {
+						"card_count": 2,
+						"card_index": 1,
+						"id": 2,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000000100000012010181808080020184818080800200014500"
+					}
+				},
+				{
+					"after_seconds": 60,
+					"expect_merged": []
+				},
+				{
+					"after_seconds": 120,
+					"expect_merged": [
+						1,
+						2
+					]
+				}
+			],
+			"text": "xDE"
+		},
+		{
+			"base": "01010000040107636f6e74656e74017800",
+			"kind": "trap",
+			"name": "a_trap_during_integration_stops_the_lineage",
+			"steps": [
+				{
+					"expect": "merged",
+					"receive": {
+						"card_count": 2,
+						"card_index": 2,
+						"id": 1,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e920000000100000000010000000e0101818080800400840000016100"
+					},
+					"trap": false
+				},
+				{
+					"expect": "stopped",
+					"receive": {
+						"card_count": 2,
+						"card_index": 2,
+						"id": 2,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000000100000012010181808080040184818080800400016200"
+					},
+					"trap": true
+				},
+				{
+					"expect": "skipped",
+					"receive": {
+						"card_count": 2,
+						"card_index": 1,
+						"id": 3,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e920000000100000000010000000e0101818080800200840000014200"
+					},
+					"trap": false
+				}
+			],
+			"text": "xa"
+		},
+		{
+			"base": "01010000040107636f6e74656e74017800",
+			"kind": "pending",
+			"name": "an_update_waits_for_the_rewrite_of_an_unreadable_one",
+			"steps": [
+				{
+					"receive": {
+						"card_count": 2,
+						"card_index": 2,
+						"id": 1,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000a2e2e2f506c616e2e6d64010000001001018180808004008400000361626300"
+					},
+					"status": "merging",
+					"text": "x"
+				},
+				{
+					"receive": {
+						"card_count": 2,
+						"card_index": 2,
+						"id": 2,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d640100000012010181808080040384818080800402016400"
+					},
+					"status": "pending",
+					"text": "x"
+				},
+				{
+					"receive": {
+						"card_count": 2,
+						"card_index": 2,
+						"id": 3,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470300002d168e1ff20930e41ae0c8e9b0bfc97bba39b1afb272f6bf9b52bf30716e96a5a2b660c845c9e65a4964638c274d7e92000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d6401000000100101818080800400840000036162630000"
+					},
+					"status": "merging",
+					"text": "xabcd"
+				}
+			]
+		},
+		{
+			"base": "01010000040107636f6e74656e74017800",
+			"kind": "pending",
+			"name": "a_state_holds_nothing_of_an_update_that_waits",
+			"steps": [
+				{
+					"receive": {
+						"card_count": 2,
+						"card_index": 2,
+						"id": 1,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d640100000011010181808080040084000004f09f988000"
+					},
+					"status": "merging",
+					"text": "x😀"
+				},
+				{
+					"booted": "x😀",
+					"receive": {
+						"card_count": 2,
+						"card_index": 2,
+						"id": 2,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000010004706174680000000000000000010000000d4e6f7465732f506c616e2e6d64010000001601018180808004008481808080060005f09f98806200"
+					},
+					"status": "pending",
+					"text": "x😀"
+				}
+			]
+		},
+		{
+			"base": "01010000040107636f6e74656e74017800",
+			"kind": "verdict_trap",
+			"module_wat": "(module (memory (export \"memory\") 1) (func (export \"alloc\") (param i32) (result i32) i32.const 0) (func (export \"verdict\") (param i32 i32 i32 i32 i32 i32 i32) (result i32) unreachable))",
+			"name": "a_trapping_verdict_makes_one_record_unreadable",
+			"steps": [
+				{
+					"expect": "trap",
+					"judge": "stand_in",
+					"receive": {
+						"card_count": 1,
+						"card_index": 1,
+						"id": 1,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e920000000100000000010000000e0101818080800200840000014100"
+					}
+				},
+				{
+					"expect": "merged",
+					"judge": "pinned",
+					"receive": {
+						"card_count": 1,
+						"card_index": 1,
+						"id": 2,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e920000000100000000010000000e0101818080800200840000014100"
+					}
+				},
+				{
+					"expect": "merged",
+					"judge": "pinned",
+					"receive": {
+						"card_count": 1,
+						"card_index": 1,
+						"id": 3,
+						"payload": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e9200000001000000000100000012010181808080020184818080800200014200"
+					}
+				}
+			],
+			"text": "xAB"
+		},
+		{
+			"blob": null,
+			"card_count": 1,
+			"card_index": 1,
+			"expect": null,
+			"fuel": 51382844,
+			"kind": "verdict_limit",
+			"name": "fuel_near_limit_subnormal_numbers",
+			"payload": {
+				"count": 9999,
+				"prefix": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac675420470400076e6f74655f3031a2b660c845c9e65a4964638c274d7e9200000001000000010006703a6c697374000000000000000001000111715b",
+				"suffix": "35652d3332345d01000000020000",
+				"unit": "35652d3332342c"
+			}
+		},
+		{
+			"blob": {
+				"count": 535625667,
+				"prefix": "010181808080020000",
+				"suffix": "",
+				"unit": "00"
+			},
+			"card_count": 1,
+			"card_index": 1,
+			"expect": "gc_struct",
+			"fuel": 535691632,
+			"kind": "verdict_limit",
+			"name": "memory_near_limit_input",
+			"payload": {
+				"count": 1,
+				"prefix": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e92000000010000000002a1bdefc32c2fb444cfdbb54be88fa29a000000001fec",
+				"suffix": "dcaccc7e952442b69c3108962b4ef54d9b6ddea466f1b658986f8e149eab705276dde5d8f5380039c94ac00f564dd07e9028a2555dd1574067219be5eb88510c8a000000001fecffcc",
+				"unit": "ff"
+			}
+		},
+		{
+			"blob": {
+				"count": 535625668,
+				"prefix": "010181808080020000",
+				"suffix": "",
+				"unit": "00"
+			},
+			"card_count": 1,
+			"card_index": 1,
+			"expect": "memory",
+			"fuel": 61157,
+			"kind": "verdict_limit",
+			"name": "memory_over_limit_input",
+			"payload": {
+				"count": 1,
+				"prefix": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e92000000010000000002a1bdefc32c2fb444cfdbb54be88fa29a000000001fec",
+				"suffix": "ddaccc7e952442b69c3108962b4ef54d9b6ddea466f1b658986f8e149eab705276dde5d8f5380039c94ac00f564dd07e9028a2555dd1574067219be5eb88510c8a000000001fecffcd",
+				"unit": "ff"
+			}
+		},
+		{
+			"blob": {
+				"count": 262144000,
+				"prefix": "0101818080800200040107636f6e74656e748080807d",
+				"suffix": "00",
+				"unit": "61"
+			},
+			"card_count": 1,
+			"card_index": 1,
+			"expect": null,
+			"fuel": 10485830863,
+			"kind": "verdict_limit",
+			"name": "memory_near_limit_decoded",
+			"payload": {
+				"count": 0,
+				"prefix": "",
+				"suffix": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e92000000010000000002a1bdefc32c2fb444cfdbb54be88fa29a000000000fa00027accc7e952442b69c3108962b4ef54d9b6ddea466f1b658986f8e149eab705276dde5d8f5380039c94ac00f564dd07e9028a2555dd1574067219be5eb88510c8a000000000fa00017",
+				"unit": "ff"
+			}
+		},
+		{
+			"blob": {
+				"count": 272629760,
+				"prefix": "0101818080800200040107636f6e74656e748080808201",
+				"suffix": "00",
+				"unit": "61"
+			},
+			"card_count": 1,
+			"card_index": 1,
+			"expect": "memory",
+			"fuel": 5861608583,
+			"kind": "verdict_limit",
+			"name": "memory_over_limit_decoded",
+			"payload": {
+				"count": 0,
+				"prefix": "",
+				"suffix": "126e6f7572612e73796e632e7061796c6f616400028166db9a6e96dd44846df7ac67542047040000a2b660c845c9e65a4964638c274d7e92000000010000000002a1bdefc32c2fb444cfdbb54be88fa29a0000000010400028accc7e952442b69c3108962b4ef54d9b6ddea466f1b658986f8e149eab705276dde5d8f5380039c94ac00f564dd07e9028a2555dd1574067219be5eb88510c8a0000000010400018",
+				"unit": "ff"
+			}
+		}
+	],
+	"description": "Text mode (sync-v2.md §22): the text lineage ID derived from the rid, the base operation's digest and the first document's bytes; yrs client IDs from a card index and a load number; and the collaboration sandbox: the guest module's hash, the verdict budget and the Wasmtime operator costs it assumes, the raw lib0 checks and the verdict on each record's yrs bytes and meta entries, surrogate pairs split into U+FFFD, client IDs past 32 bits, writer allowances, the first snapshot of a note, where integration lets an item land, the snapshot check, the canonical order and the merge of meta entries.",
+	"fixture_keys_are_public_test_values": true,
+	"keys": {},
+	"records": [],
+	"restore_cases": [
+		{
+			"behind": true,
+			"delete": false,
+			"expect": true,
+			"kind": "writes_again",
+			"name": "the_server_lacks_the_note",
+			"on_server": false,
+			"text_behind": false
+		},
+		{
+			"behind": false,
+			"delete": false,
+			"expect": true,
+			"kind": "writes_again",
+			"name": "the_document_holds_writes_the_restore_lost",
+			"on_server": true,
+			"text_behind": true
+		},
+		{
+			"behind": false,
+			"delete": false,
+			"expect": false,
+			"kind": "writes_again",
+			"name": "the_server_holds_everything_the_journal_held",
+			"on_server": true,
+			"text_behind": false
+		},
+		{
+			"behind": true,
+			"delete": true,
+			"expect": false,
+			"kind": "writes_again",
+			"name": "a_delete_of_a_rid_the_server_lacks_is_done",
+			"on_server": false,
+			"text_behind": false
+		},
+		{
+			"expect": [
+				"a5"
+			],
+			"heads": {
+				"a": 3,
+				"b": 1
+			},
+			"kind": "lost_writes",
+			"name": "a_write_above_its_devices_head_is_lost",
+			"records": [
+				"a2",
+				"a5",
+				"b1"
+			]
+		},
+		{
+			"expect": [
+				"c1",
+				"c2"
+			],
+			"heads": {},
+			"kind": "lost_writes",
+			"name": "a_device_with_no_head_lost_every_write",
+			"records": [
+				"c1",
+				"c2"
+			]
+		},
+		{
+			"covered": false,
+			"expect": "upload",
+			"in_a_document": false,
+			"in_a_file": true,
+			"kind": "missing_blob",
+			"name": "a_file_holds_the_bytes",
+			"writer": true
+		},
+		{
+			"covered": false,
+			"expect": "snapshot",
+			"in_a_document": true,
+			"in_a_file": false,
+			"kind": "missing_blob",
+			"name": "only_the_document_holds_a_text_blob",
+			"writer": true
+		},
+		{
+			"covered": true,
+			"expect": "leave",
+			"in_a_document": true,
+			"in_a_file": false,
+			"kind": "missing_blob",
+			"name": "a_snapshot_already_stands_in_for_the_blob",
+			"writer": true
+		},
+		{
+			"covered": false,
+			"expect": "leave",
+			"in_a_document": true,
+			"in_a_file": true,
+			"kind": "missing_blob",
+			"name": "a_viewer_writes_nothing",
+			"writer": false
+		}
+	],
+	"sandbox": {
+		"integration": {
+			"allowance_fuel": 2000000000,
+			"document_bytes": 33554432,
+			"record_fuel_limit": 10000000000,
+			"refill_seconds": 60,
+			"text_bytes": 8388608
+		},
+		"module": {
+			"blake3": "474fc8ff67264921721d966cab76ebae7f5d0b24684b80c7c0be769b2cb43b6e",
+			"path": "crates/collab-sandbox/guest/collab_sandbox_guest.wasm"
+		},
+		"operator_costs": {
+			"default": 1,
+			"free": [
+				"Block",
+				"Drop",
+				"Else",
+				"End",
+				"Loop",
+				"Nop",
+				"Return",
+				"Unreachable"
+			],
+			"variable": {
+				"array_copy_per_element": 1,
+				"array_fill_per_element": 1,
+				"array_init_data_per_element": 1,
+				"array_init_elem_per_element": 1,
+				"array_new_data_per_element": 1,
+				"array_new_default_per_element": 1,
+				"array_new_elem_per_element": 1,
+				"array_new_per_element": 1,
+				"memory_copy_per_byte": 1,
+				"memory_fill_per_byte": 1,
+				"memory_grow_per_page": 0,
+				"memory_init_per_byte": 1,
+				"table_copy_per_element": 1,
+				"table_fill_per_element": 1,
+				"table_grow_per_element": 1,
+				"table_init_per_element": 1
+			}
+		},
+		"verdict": {
+			"base_fuel": 1000000,
+			"counted_bytes": "the decrypted payload without its padding, and the blob's file",
+			"epoch_interruption": false,
+			"fuel_per_byte": 1000,
+			"measured": {
+				"largest_fuel_per_byte": "149.8, a 16 MiB snapshot of scattered typing",
+				"largest_memory": "434,176,000 bytes of the 536,870,912, a snapshot just under the 32 MiB stop",
+				"records": [
+					{
+						"bytes": 85,
+						"fuel": 68684,
+						"memory_bytes": 1179648,
+						"record": "typing one character",
+						"reference_seconds": 0.0001
+					},
+					{
+						"bytes": 200091,
+						"fuel": 8270068,
+						"memory_bytes": 1900544,
+						"record": "pasting 200,000 ASCII characters",
+						"reference_seconds": 0.0003
+					},
+					{
+						"bytes": 180091,
+						"fuel": 14199917,
+						"memory_bytes": 1703936,
+						"record": "pasting 60,000 CJK characters",
+						"reference_seconds": 0.0004
+					},
+					{
+						"bytes": 200091,
+						"fuel": 14869917,
+						"memory_bytes": 1900544,
+						"record": "pasting 50,000 emoji",
+						"reference_seconds": 0.0004
+					},
+					{
+						"bytes": 145316,
+						"fuel": 18442107,
+						"memory_bytes": 2818048,
+						"record": "a snapshot after 20,000 scattered keystrokes",
+						"reference_seconds": 0.001
+					},
+					{
+						"bytes": 232643,
+						"fuel": 30739696,
+						"memory_bytes": 3735552,
+						"record": "a snapshot after 20,000 keystrokes and deletions",
+						"reference_seconds": 0.0017
+					},
+					{
+						"bytes": 37986,
+						"fuel": 5582990,
+						"memory_bytes": 1703936,
+						"record": "a snapshot of 64 writers",
+						"reference_seconds": 0.0004
+					},
+					{
+						"bytes": 71819,
+						"fuel": 7339019,
+						"memory_bytes": 1572864,
+						"record": "deleting every other character of 40,000",
+						"reference_seconds": 0.0003
+					},
+					{
+						"bytes": 137131,
+						"fuel": 9786315,
+						"memory_bytes": 1441792,
+						"record": "a managed note with a large frontmatter",
+						"reference_seconds": 0.0004
+					},
+					{
+						"bytes": 18837030,
+						"fuel": 2822060251,
+						"memory_bytes": 248774656,
+						"record": "a 16 MiB snapshot of scattered typing",
+						"reference_seconds": 0.1631
+					},
+					{
+						"bytes": 33494308,
+						"fuel": 4961038658,
+						"memory_bytes": 434176000,
+						"record": "a 32 MiB snapshot of scattered typing",
+						"reference_seconds": 0.2754
+					}
+				],
+				"reference_machine": "Apple M4 Pro, 24 GB, macOS 27.0.1, Cranelift"
+			},
+			"memory_bytes": 536870912
+		}
+	}
+}

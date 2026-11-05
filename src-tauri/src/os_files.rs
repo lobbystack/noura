@@ -15,6 +15,10 @@ pub struct AppCapabilities {
     /// Revealing a file selects it in the file manager instead of only
     /// opening its folder.
     pub reveal_selects_file: bool,
+    /// Files dragged in from the file manager land in the file tree.
+    pub file_drops: bool,
+    /// Rows dragged out of the file tree become files in the file manager.
+    pub drag_out: bool,
 }
 
 #[tauri::command]
@@ -22,6 +26,60 @@ pub fn app_capabilities() -> AppCapabilities {
     AppCapabilities {
         open_terminal: cfg!(target_os = "macos"),
         reveal_selects_file: cfg!(any(target_os = "macos", target_os = "windows")),
+        file_drops: cfg!(desktop),
+        drag_out: cfg!(desktop),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct ThemeInput {
+    dark: bool,
+}
+
+/// Keep the window's own background in the app's theme, which shows while
+/// the page repaints.
+#[tauri::command(async)]
+pub fn app_set_theme(window: tauri::WebviewWindow, input: ThemeInput) {
+    paint_window_background(&window, input.dark);
+}
+
+#[derive(serde::Deserialize)]
+pub struct ZoomInput {
+    factor: f64,
+}
+
+/// Zoom the whole page, as a browser does. The page keeps the chosen level
+/// and sends it again at launch.
+#[tauri::command(async)]
+pub fn app_set_zoom(
+    window: tauri::WebviewWindow,
+    state: tauri::State<super::AppState>,
+    input: ZoomInput,
+) -> Result<(), CoreError> {
+    if !(0.25..=4.0).contains(&input.factor) {
+        return Err(CoreError::validation(
+            "invalid_zoom",
+            "Zoom must be between 25% and 400%",
+            "app_set_zoom",
+        ));
+    }
+    window
+        .set_zoom(input.factor)
+        .map_err(|_| CoreError::validation("zoom_failed", "Couldn't zoom", "app_set_zoom"))?;
+    // Drop positions arrive in window points; the page hit-tests in CSS pixels.
+    state.file_drops.set_zoom(input.factor);
+    Ok(())
+}
+
+/// The page background of the dark and light themes.
+pub fn paint_window_background(window: &tauri::WebviewWindow, dark: bool) {
+    let color = if dark {
+        tauri::window::Color(10, 10, 10, 255)
+    } else {
+        tauri::window::Color(255, 255, 255, 255)
+    };
+    if let Err(error) = window.set_background_color(Some(color)) {
+        log::debug!("could not set the window background: {error}");
     }
 }
 

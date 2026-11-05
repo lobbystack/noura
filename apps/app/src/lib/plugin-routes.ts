@@ -1,7 +1,7 @@
 /**
  * The one map from app routes to the plugin that owns them, used by the
  * shell, the rail, the sidebar, the command palette and keyboard shortcuts
- * on every platform. Routes with no plugin (Home, Files, PDFs, Settings) are
+ * on every platform. Routes with no plugin (Inbox, Files, PDFs, Settings) are
  * part of the core app and always available.
  */
 export const PLUGIN_ROUTES = [

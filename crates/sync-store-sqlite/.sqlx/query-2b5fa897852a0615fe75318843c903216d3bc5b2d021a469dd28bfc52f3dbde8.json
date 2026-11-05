@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM key_sequences WHERE workspace = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "2b5fa897852a0615fe75318843c903216d3bc5b2d021a469dd28bfc52f3dbde8"
+}

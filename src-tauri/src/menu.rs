@@ -25,7 +25,10 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("close-window", "Close Window", "CmdOrCtrl+Shift+W"),
     ("settings", "Settings…", "CmdOrCtrl+,"),
     ("toggle-sidebar", "Toggle Sidebar", "CmdOrCtrl+\\"),
-    ("go-home", "Home", "CmdOrCtrl+1"),
+    ("zoom-in", "Zoom In", "CmdOrCtrl+="),
+    ("zoom-out", "Zoom Out", "CmdOrCtrl+-"),
+    ("zoom-reset", "Actual Size", "CmdOrCtrl+0"),
+    ("go-home", "Inbox", "CmdOrCtrl+1"),
     ("go-files", "Files", "CmdOrCtrl+2"),
     ("go-tasks", "Tasks", "CmdOrCtrl+3"),
     ("go-calendar", "Calendar", "CmdOrCtrl+4"),
@@ -114,6 +117,10 @@ fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> 
         .build()?;
     let view = SubmenuBuilder::new(app, "View")
         .item(&item("toggle-sidebar")?)
+        .separator()
+        .item(&item("zoom-in")?)
+        .item(&item("zoom-out")?)
+        .item(&item("zoom-reset")?)
         .separator()
         .item(&item("go-home")?)
         .item(&item("go-files")?)

@@ -165,17 +165,26 @@ test.describe('editing a note', () => {
 		expect(await app.messages()).toEqual([]);
 	});
 
-	test('find and replace', async ({ app, page }) => {
+	test('find steps through matches and closes back to the text', async ({
+		app,
+		page,
+	}) => {
 		await app.newNote('Find');
 		await page.keyboard.type('cat and cat and dog');
 		await page.keyboard.press('ControlOrMeta+f');
-		const find = page.getByRole('textbox', { name: /find/i }).first();
+		const bar = page.getByRole('search');
+		const find = bar.getByRole('textbox', { name: 'Find in note' });
 		await expect(find).toBeFocused();
 		await page.keyboard.type('cat');
-		const replace = page.getByRole('textbox', { name: /replace/i }).first();
-		await replace.fill('bird');
-		await page.getByRole('button', { name: /replace all/i }).click();
-		expect(await app.doc()).toBe('bird and bird and dog');
-		await expectStoredBody(app, 'Find.md', 'bird and bird and dog');
+		await expect(bar).toContainText('1/2');
+		await page.keyboard.press('Enter');
+		await expect(bar).toContainText('2/2');
+		await page.keyboard.press('Shift+Enter');
+		await expect(bar).toContainText('1/2');
+		await page.keyboard.press('Escape');
+		await expect(bar).toBeHidden();
+		// The match stays selected in the text, so typing replaces it.
+		await page.keyboard.type('bird');
+		expect(await app.doc()).toBe('bird and cat and dog');
 	});
 });

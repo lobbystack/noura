@@ -15,9 +15,15 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use ts_rs::TS;
 
-pub mod calendar;
 pub mod merge;
+mod object_type;
 pub mod raw_text;
+pub mod text_note;
+
+pub use object_type::{
+    ObjectTypeRegistry, PropertyDeclaration, PropertyError, PropertyKind, PropertySchema,
+    RegistrationError,
+};
 
 /// Canonical workspace-relative location of Noura's durable manifest.
 pub const WORKSPACE_MANIFEST_PATH: &str = ".noura/workspace.yaml";
@@ -45,22 +51,6 @@ pub enum FormatError {
     TitleRequired,
     #[error("A timestamp must be an RFC 3339 instant")]
     InvalidTimestamp,
-    #[error("status must be todo, in-progress, done, or cancelled")]
-    InvalidTaskStatus,
-    #[error("status must be a string")]
-    InvalidTaskStatusType,
-    #[error("priority must be low, medium, high, or urgent")]
-    InvalidTaskPriority,
-    #[error("priority must be a string")]
-    InvalidTaskPriorityType,
-    #[error("due must use YYYY-MM-DD or RFC 3339 with an explicit offset")]
-    InvalidTaskDue,
-    #[error("Task project references use a stable project ID")]
-    InvalidTaskProject,
-    #[error("status must be planned, active, on-hold, completed, or cancelled")]
-    InvalidProjectStatus,
-    #[error("project status must be a string")]
-    InvalidProjectStatusType,
 }
 
 /// Portable failures for a managed object destination path.
@@ -136,18 +126,6 @@ pub struct UpdateNoteInput {
     pub remove_properties: Vec<String>,
     pub now: String,
 }
-
-/// The portable input used to create a task without depending on a filesystem.
-pub type CreateTaskInput = CreateNoteInput;
-
-/// The portable edit shape for a managed task.
-pub type UpdateTaskInput = UpdateNoteInput;
-
-/// The portable input used to create a project without depending on a filesystem.
-pub type CreateProjectInput = CreateNoteInput;
-
-/// The portable edit shape for a managed project.
-pub type UpdateProjectInput = UpdateNoteInput;
 
 /// The result of parsing a Markdown file without reading it from a filesystem.
 #[derive(Debug, Clone, Serialize, PartialEq, TS)]
@@ -233,23 +211,6 @@ pub fn create_note(id: String, input: CreateNoteInput) -> Result<WorkspaceObject
     create_managed_object(id, "note", input)
 }
 
-/// Constructs a task with its canonical default fields and validated task metadata.
-pub fn create_task(id: String, input: CreateTaskInput) -> Result<WorkspaceObject, FormatError> {
-    let mut task = create_managed_object(id, "task", input)?;
-    normalize_task_properties(&mut task.properties)?;
-    Ok(task)
-}
-
-/// Constructs a project with canonical default fields and validated project metadata.
-pub fn create_project(
-    id: String,
-    input: CreateProjectInput,
-) -> Result<WorkspaceObject, FormatError> {
-    let mut project = create_managed_object(id, "project", input)?;
-    normalize_project_properties(&mut project.properties)?;
-    Ok(project)
-}
-
 fn create_managed_object(
     id: String,
     object_type: &str,
@@ -267,11 +228,11 @@ fn create_managed_object(
     }
     let relative_path = input
         .relative_path
-        .unwrap_or_else(|| default_managed_object_path(object_type, &input.title, &id));
+        .unwrap_or_else(|| default_managed_object_path(object_type, &input.title));
     Ok(WorkspaceObject {
         id,
         object_type: object_type.into(),
-        title: input.title.trim().into(),
+        title: title_from_path(&relative_path),
         body: input.body,
         relative_path,
         revision: String::new(),
@@ -289,26 +250,6 @@ pub fn update_note(
     update_managed_object(note, input, "note")
 }
 
-/// Applies a task edit while retaining canonical task metadata validation.
-pub fn update_task(
-    task: WorkspaceObject,
-    input: UpdateTaskInput,
-) -> Result<WorkspaceObject, FormatError> {
-    let mut task = update_managed_object(task, input, "task")?;
-    normalize_task_properties(&mut task.properties)?;
-    Ok(task)
-}
-
-/// Applies a project edit while retaining canonical project metadata validation.
-pub fn update_project(
-    project: WorkspaceObject,
-    input: UpdateProjectInput,
-) -> Result<WorkspaceObject, FormatError> {
-    let mut project = update_managed_object(project, input, "project")?;
-    normalize_project_properties(&mut project.properties)?;
-    Ok(project)
-}
-
 fn update_managed_object(
     mut object: WorkspaceObject,
     input: UpdateNoteInput,
@@ -318,11 +259,15 @@ fn update_managed_object(
         return Err(FormatError::InvalidObjectId);
     }
     validate_timestamp(&input.now)?;
+    // The title is the file name, so a new title moves the file to a new
+    // name in the same folder. The filesystem adapter carries out the move.
     if let Some(title) = input.title {
-        if title.trim().is_empty() {
+        let name = normalize_file_name(&title);
+        if name.is_empty() {
             return Err(FormatError::TitleRequired);
         }
-        object.title = title.trim().into();
+        object.relative_path = renamed_path(&object.relative_path, &name);
+        object.title = name;
     }
     if let Some(body) = input.body {
         object.body = body;
@@ -343,111 +288,158 @@ fn update_managed_object(
     Ok(object)
 }
 
-/// Applies the task defaults and validates task-specific frontmatter values.
-/// Unknown properties are deliberately retained as user-owned metadata.
-pub fn normalize_task_properties(
-    properties: &mut BTreeMap<String, serde_json::Value>,
-) -> Result<(), FormatError> {
-    properties
-        .entry("status".into())
-        .or_insert_with(|| serde_json::json!("todo"));
-    properties
-        .entry("priority".into())
-        .or_insert_with(|| serde_json::json!("medium"));
-    match properties.get("status") {
-        Some(serde_json::Value::String(value))
-            if matches!(
-                value.as_str(),
-                "todo" | "in-progress" | "done" | "cancelled"
-            ) => {}
-        Some(serde_json::Value::String(_)) => return Err(FormatError::InvalidTaskStatus),
-        _ => return Err(FormatError::InvalidTaskStatusType),
-    }
-    match properties.get("priority") {
-        Some(serde_json::Value::String(value))
-            if matches!(value.as_str(), "low" | "medium" | "high" | "urgent") => {}
-        Some(serde_json::Value::String(_)) => return Err(FormatError::InvalidTaskPriority),
-        _ => return Err(FormatError::InvalidTaskPriorityType),
-    }
-    if let Some(value) = properties.get("due").and_then(serde_json::Value::as_str) {
-        validate_task_due(value)?;
-    }
-    if let Some(project) = properties
-        .get("project")
-        .and_then(serde_json::Value::as_str)
-        && !valid_object_id(project, "project")
-    {
-        return Err(FormatError::InvalidTaskProject);
-    }
-    Ok(())
+/// Checks for a civil date (`YYYY-MM-DD`) or an RFC 3339 instant with an
+/// explicit offset.
+fn valid_date_value(value: &str) -> bool {
+    is_civil_date(value) || is_instant(value)
 }
 
-/// Applies project defaults and validates project-specific frontmatter values.
-/// Unknown properties are deliberately retained as user-owned metadata.
-pub fn normalize_project_properties(
-    properties: &mut BTreeMap<String, serde_json::Value>,
-) -> Result<(), FormatError> {
-    properties
-        .entry("status".into())
-        .or_insert_with(|| serde_json::json!("planned"));
-    match properties.get("status") {
-        Some(serde_json::Value::String(value))
-            if matches!(
-                value.as_str(),
-                "planned" | "active" | "on-hold" | "completed" | "cancelled"
-            ) =>
-        {
-            Ok(())
-        }
-        Some(serde_json::Value::String(_)) => Err(FormatError::InvalidProjectStatus),
-        _ => Err(FormatError::InvalidProjectStatusType),
-    }
-}
-
-fn validate_task_due(value: &str) -> Result<(), FormatError> {
-    let date_only = value.len() == 10
+/// Whether `value` is a date as the workspace format writes one:
+/// `YYYY-MM-DD`, naming a day that exists.
+pub fn is_civil_date(value: &str) -> bool {
+    value.len() == 10
         && value.as_bytes().get(4) == Some(&b'-')
         && value.as_bytes().get(7) == Some(&b'-')
-        && value.parse::<jiff::civil::Date>().is_ok();
-    let timed = (value.ends_with('Z')
+        && value.parse::<jiff::civil::Date>().is_ok()
+}
+
+/// Whether `value` is a date and time as the workspace format writes one:
+/// an RFC 3339 instant with an explicit offset, such as
+/// `2026-10-21T09:30:00-04:00`.
+pub fn is_instant(value: &str) -> bool {
+    (value.ends_with('Z')
         || value
             .as_bytes()
             .iter()
             .skip(10)
             .any(|byte| matches!(byte, b'+' | b'-')))
-        && value.parse::<jiff::Timestamp>().is_ok();
-    if date_only || timed {
-        Ok(())
-    } else {
-        Err(FormatError::InvalidTaskDue)
+        && value.parse::<jiff::Timestamp>().is_ok()
+}
+
+/// The title of the file at `relative_path`: its file name without the
+/// extension. A note, task or project is named by its file, and a heading
+/// inside the file is ordinary text.
+pub fn title_from_path(relative_path: &str) -> String {
+    let name = relative_path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(relative_path);
+    match name.rfind('.') {
+        Some(dot) if dot > 0 => name[..dot].to_owned(),
+        _ => name.to_owned(),
     }
 }
 
-fn split_title(content: &str) -> (String, String) {
-    let mut lines = content.lines();
-    match lines.next() {
-        Some(first) if first.starts_with("# ") => {
-            let title = first[2..].trim().to_owned();
-            let body = lines
-                .collect::<Vec<_>>()
-                .join("\n")
-                .trim_start_matches('\n')
-                .to_owned();
-            (title, body)
-        }
-        _ => (String::new(), content.to_owned()),
+/// The longest file name, in characters, that [`normalize_file_name`]
+/// keeps.
+pub const MAX_FILE_NAME_CHARS: usize = 200;
+
+/// Turns a typed name into a file name that works on macOS, Windows and
+/// Linux: no path separators, no characters macOS or Windows reject, no
+/// leading dots (which would hide the file), no surrounding spaces, no
+/// trailing dots (which Windows drops), and at most [`MAX_FILE_NAME_CHARS`]
+/// characters. A name Windows keeps for a device, such as `CON` or `com1`,
+/// gets an underscore after it. An empty result means the name had
+/// nothing usable.
+pub fn normalize_file_name(typed: &str) -> String {
+    let kept: String = typed
+        .chars()
+        .filter(|character| {
+            !character.is_control()
+                && !matches!(
+                    character,
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+                )
+        })
+        .collect();
+    let dot_or_space = |character: char| character == '.' || character.is_whitespace();
+    let name = kept.trim_start_matches(dot_or_space).trim_end();
+    let cut: String = name.chars().take(MAX_FILE_NAME_CHARS).collect();
+    let name = cut.trim_end_matches(dot_or_space);
+    // Windows reads `CON` as the device even with an extension after it.
+    let stem = name.split('.').next().unwrap_or(name).trim_end();
+    if is_windows_device_name(stem) {
+        let (stem, rest) = name.split_at(stem.len());
+        return format!("{stem}_{rest}");
     }
+    name.to_owned()
+}
+
+/// Whether Windows keeps `name` for a device: `CON`, `PRN`, `AUX`, `NUL`,
+/// or `COM` or `LPT` followed by a digit from 1 to 9, in any letter case.
+fn is_windows_device_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    match upper.as_str() {
+        "CON" | "PRN" | "AUX" | "NUL" => true,
+        _ => {
+            upper.len() == 4
+                && (upper.starts_with("COM") || upper.starts_with("LPT"))
+                && matches!(upper.as_bytes()[3], b'1'..=b'9')
+        }
+    }
+}
+
+/// The path of the file at `relative_path` once it's named `name`, in the
+/// same folder and with the same extension.
+pub fn renamed_path(relative_path: &str, name: &str) -> String {
+    let (folder, file) = match relative_path.rfind('/') {
+        Some(slash) => (&relative_path[..=slash], &relative_path[slash + 1..]),
+        None => ("", relative_path),
+    };
+    let extension = match file.rfind('.') {
+        Some(dot) if dot > 0 => &file[dot..],
+        _ => "",
+    };
+    format!("{folder}{name}{extension}")
+}
+
+/// Where the frontmatter of LF `text` ends: the byte offset just past its
+/// closing `---` line, or `None` when the text has no complete frontmatter.
+/// A leading byte-order mark must already be gone.
+pub fn frontmatter_end(text: &str) -> Option<usize> {
+    if !text.starts_with("---\n") {
+        return None;
+    }
+    text[4..]
+        .find("\n---\n")
+        .map(|index| index + 4 + "\n---\n".len())
+}
+
+/// Reads a run of carriage returns right before a line feed as one line
+/// break, for the body. Reading only CRLF as LF would leave `\r\n` of a
+/// `\r\r\n` in the body. The serializer writes that back as it is, and the
+/// next read would drop one more carriage return, so the bytes would change
+/// on every write. The frontmatter still reads only CRLF as LF, so no file
+/// moves between managed, malformed and unmanaged.
+fn single_line_breaks(text: &str) -> Cow<'_, str> {
+    if !text.contains("\r\n") {
+        return Cow::Borrowed(text);
+    }
+    let mut normalized = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        match line.strip_suffix('\n') {
+            Some(content) => {
+                normalized.push_str(content.trim_end_matches('\r'));
+                normalized.push('\n');
+            }
+            None => normalized.push_str(line),
+        }
+    }
+    Cow::Owned(normalized)
 }
 
 /// Parses a Markdown file without relying on a local filesystem or runtime.
 pub fn parse_markdown(relative_path: &str, bytes: &[u8]) -> ParsedMarkdown {
+    let title = title_from_path(relative_path);
     let Ok(text) = std::str::from_utf8(bytes) else {
         return ParsedMarkdown::Malformed {
-            title: String::new(),
+            title,
             body: String::new(),
             error: "The file is not UTF-8".into(),
         };
     };
+    // A byte-order mark isn't part of the text. Writers keep it.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let text = if text.contains("\r\n") {
         Cow::Owned(text.replace("\r\n", "\n"))
     } else {
@@ -455,24 +447,23 @@ pub fn parse_markdown(relative_path: &str, bytes: &[u8]) -> ParsedMarkdown {
     };
     let text = text.as_ref();
     if !text.starts_with("---\n") {
-        let (title, body) = split_title(text);
         return ParsedMarkdown::Unmanaged {
             title,
-            body,
+            body: single_line_breaks(text).into_owned(),
             frontmatter: None,
         };
     }
-    let Some(end) = text[4..].find("\n---\n").map(|index| index + 4) else {
-        let (title, body) = split_title(text);
+    let Some(end) = frontmatter_end(text) else {
         return ParsedMarkdown::Malformed {
             title,
-            body,
+            body: single_line_breaks(text).into_owned(),
             error: "Frontmatter has no closing delimiter".into(),
         };
     };
-    let yaml = &text[4..end];
-    let markdown = text[end + 5..].trim_start_matches('\n');
-    let (title, body) = split_title(markdown);
+    // The line break before the closing delimiter ends the last YAML line.
+    // Without it, a block scalar written last would lose its final line break.
+    let yaml = &text[4..end - "---\n".len()];
+    let body = single_line_breaks(&text[end..]).into_owned();
     let properties: BTreeMap<String, serde_json::Value> = match serde_yaml_ng::from_str(yaml) {
         Ok(properties) => properties,
         Err(error) => {
@@ -537,71 +528,216 @@ pub fn parse_markdown(relative_path: &str, bytes: &[u8]) -> ParsedMarkdown {
     })
 }
 
-/// Serializes a managed object using the deterministic workspace representation.
+/// Serializes a managed object using the deterministic workspace
+/// representation: `id` and `type`, every property sorted by key, then
+/// `created` and `updated`. A type a plugin registers takes the order its
+/// schema declares through [`ObjectTypeRegistry::serialize`].
 pub fn serialize_object(object: &WorkspaceObject) -> Result<Vec<u8>, FormatError> {
+    serialize_envelope(object, &[])
+}
+
+/// Serializes `object` over `existing`, the bytes its file holds now. The
+/// frontmatter and the body each keep their bytes when they didn't change,
+/// and the file keeps its byte-order mark, the ending of each line nobody
+/// changed, and its final line break or the lack of one. A file that isn't
+/// managed yet gets [`serialize_object`]'s text with its own byte-order mark
+/// and line endings.
+pub fn serialize_object_over(
+    existing: &[u8],
+    object: &WorkspaceObject,
+) -> Result<Vec<u8>, FormatError> {
+    rewrite_envelope(existing, object, &[])
+}
+
+pub(crate) fn rewrite_envelope(
+    existing: &[u8],
+    object: &WorkspaceObject,
+    leading: &[&str],
+) -> Result<Vec<u8>, FormatError> {
+    let Ok((text, layout)) = raw_text::split_raw_bytes(existing) else {
+        return serialize_envelope(object, leading);
+    };
+    let (ParsedMarkdown::Managed(current), Some(end)) = (
+        parse_markdown(&object.relative_path, existing),
+        frontmatter_end(&text),
+    ) else {
+        // A file becoming managed, as when it's adopted, keeps its
+        // byte-order mark and the endings of the lines it already had.
+        let written = serialize_envelope(object, leading)?;
+        let written = String::from_utf8(written).map_err(|_| FormatError::ObjectSerialization)?;
+        return Ok(raw_text::compose_raw_bytes(&written, &layout));
+    };
+    let same_envelope = current.id == object.id
+        && current.object_type == object.object_type
+        && current.created == object.created
+        && current.updated == object.updated
+        && current.properties == object.properties;
+    let mut next = if same_envelope {
+        text[..end].to_owned()
+    } else {
+        envelope_frontmatter(object, leading)?
+    };
+    if current.body == object.body {
+        next.push_str(&text[end..]);
+    } else {
+        next.push_str(&object.body);
+    }
+    Ok(raw_text::compose_raw_bytes(&next, &layout))
+}
+
+/// Writes the managed-object envelope: `id` and `type`, the `leading`
+/// properties in that order, the other properties sorted by key, `created`
+/// and `updated`, then the body as it is. The title is the file's name, so
+/// no heading is written.
+fn serialize_envelope(object: &WorkspaceObject, leading: &[&str]) -> Result<Vec<u8>, FormatError> {
+    let mut result = envelope_frontmatter(object, leading)?;
+    result.push_str(&object.body);
+    Ok(result.into_bytes())
+}
+
+/// The frontmatter block of the managed-object envelope, closing `---`
+/// line included.
+fn envelope_frontmatter(object: &WorkspaceObject, leading: &[&str]) -> Result<String, FormatError> {
     if !valid_object_id(&object.id, &object.object_type) {
         return Err(FormatError::InvalidObjectId);
     }
-    let mut ordered = serde_yaml_ng::Mapping::new();
-    let mut insert = |key: &str, value: serde_json::Value| -> Result<(), FormatError> {
-        let value = serde_yaml_ng::to_value(value).map_err(|_| FormatError::ObjectSerialization)?;
-        ordered.insert(serde_yaml_ng::Value::String(key.into()), value);
-        Ok(())
-    };
-    insert("id", serde_json::Value::String(object.id.clone()))?;
-    insert(
-        "type",
-        serde_json::Value::String(object.object_type.clone()),
-    )?;
-    for key in [
-        "status",
-        "priority",
-        "project",
-        "due",
-        "date",
-        "start",
-        "end",
-        "kanban_order",
-    ] {
-        if let Some(value) = object.properties.get(key) {
-            insert(key, value.clone())?;
+    let mut entries = vec![
+        ("id", serde_json::Value::String(object.id.clone())),
+        (
+            "type",
+            serde_json::Value::String(object.object_type.clone()),
+        ),
+    ];
+    for key in leading {
+        if let Some(value) = object.properties.get(*key) {
+            entries.push((key, value.clone()));
         }
     }
     for (key, value) in &object.properties {
-        if !matches!(
-            key.as_str(),
-            "id" | "type"
-                | "status"
-                | "priority"
-                | "project"
-                | "due"
-                | "date"
-                | "start"
-                | "end"
-                | "kanban_order"
-                | "created"
-                | "updated"
-        ) {
-            insert(key, value.clone())?;
+        if !is_managed_property(key) && !leading.contains(&key.as_str()) {
+            entries.push((key, value.clone()));
         }
     }
     if let Some(created) = &object.created {
-        insert("created", serde_json::Value::String(created.clone()))?;
+        entries.push(("created", serde_json::Value::String(created.clone())));
     }
     if let Some(updated) = &object.updated {
-        insert("updated", serde_json::Value::String(updated.clone()))?;
+        entries.push(("updated", serde_json::Value::String(updated.clone())));
     }
-    let yaml = serde_yaml_ng::to_string(&ordered).map_err(|_| FormatError::ObjectSerialization)?;
-    let mut result = format!("---\n{}---\n\n# {}\n", yaml, object.title.trim());
-    // Only line breaks at the end are normalized. Trailing spaces stay: two
-    // of them are a Markdown line break, and the editor may be mid-typing.
-    let body = object.body.trim_end_matches(['\n', '\r']);
-    if !body.trim().is_empty() {
-        result.push('\n');
-        result.push_str(body);
-        result.push('\n');
+    let yaml = frontmatter_yaml(&entries)?;
+    Ok(format!("---\n{yaml}---\n"))
+}
+
+/// Writes `entries` as a frontmatter block, in order, with its closing
+/// `---` line, as the managed-object envelope writes its own. Chats keep a
+/// key order of their own and write their frontmatter with this.
+pub fn frontmatter_block(entries: &[(&str, serde_json::Value)]) -> Result<String, FormatError> {
+    Ok(format!("---\n{}---\n", frontmatter_yaml(entries)?))
+}
+
+/// Writes frontmatter entries as a YAML mapping, in order, as libyaml writes
+/// it, with one exception.
+///
+/// YAML 1.1 readers such as libyaml read U+2028 and U+2029 as line breaks.
+/// libyaml writes them raw, and it writes a multi-line string as a literal
+/// block. When the last value it writes is a literal block that ends in one
+/// of them, its output ends without a line feed and the closing `---` loses
+/// its line. Only then is that last string written double-quoted. Every
+/// other value keeps libyaml's bytes. libyaml doesn't let a caller pick a
+/// scalar style, so it writes the mapping again with an empty string in that
+/// place, which ends its output as `''`, and the quoted string replaces it.
+fn frontmatter_yaml(entries: &[(&str, serde_json::Value)]) -> Result<String, FormatError> {
+    let mut mapping = serde_yaml_ng::Mapping::with_capacity(entries.len());
+    for (key, value) in entries {
+        let mut value =
+            serde_yaml_ng::to_value(value).map_err(|_| FormatError::ObjectSerialization)?;
+        sort_nested_keys(&mut value);
+        mapping.insert(serde_yaml_ng::Value::String((*key).to_owned()), value);
     }
-    Ok(result.into_bytes())
+    let mut mapping = serde_yaml_ng::Value::Mapping(mapping);
+    let yaml = serde_yaml_ng::to_string(&mapping).map_err(|_| FormatError::ObjectSerialization)?;
+    if yaml.ends_with('\n') {
+        return Ok(yaml);
+    }
+    let last = last_string(&mut mapping).ok_or(FormatError::ObjectSerialization)?;
+    let text = std::mem::take(last);
+    let yaml = serde_yaml_ng::to_string(&mapping).map_err(|_| FormatError::ObjectSerialization)?;
+    let before = yaml
+        .strip_suffix("''\n")
+        .ok_or(FormatError::ObjectSerialization)?;
+    Ok(format!("{before}{}\n", double_quoted(&text)))
+}
+
+/// Sorts every mapping inside `value` by key, so a nested mapping's bytes
+/// don't depend on how `serde_json` keeps its maps. A dependency that turns
+/// on `preserve_order` would otherwise change them for the whole program.
+fn sort_nested_keys(value: &mut serde_yaml_ng::Value) {
+    match value {
+        serde_yaml_ng::Value::Sequence(items) => items.iter_mut().for_each(sort_nested_keys),
+        serde_yaml_ng::Value::Mapping(map) => {
+            let mut entries: Vec<_> = std::mem::take(map).into_iter().collect();
+            entries.sort_by(|(a, _), (b, _)| a.as_str().cmp(&b.as_str()));
+            for (key, mut value) in entries {
+                sort_nested_keys(&mut value);
+                map.insert(key, value);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The last scalar libyaml writes for `value`, when it's a string. A mapping
+/// writes each key before its value, so its last scalar is a value.
+fn last_string(value: &mut serde_yaml_ng::Value) -> Option<&mut String> {
+    match value {
+        serde_yaml_ng::Value::String(text) => Some(text),
+        serde_yaml_ng::Value::Sequence(items) => items.last_mut().and_then(last_string),
+        serde_yaml_ng::Value::Mapping(map) => map.values_mut().last().and_then(last_string),
+        _ => None,
+    }
+}
+
+/// Writes `text` as a double-quoted YAML scalar, escaping exactly what
+/// libyaml escapes: characters outside YAML's printable set, the byte order
+/// mark, line breaks, `"` and `\`.
+fn double_quoted(text: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('"');
+    for character in text.chars() {
+        match character {
+            '\0' => quoted.push_str("\\0"),
+            '\u{7}' => quoted.push_str("\\a"),
+            '\u{8}' => quoted.push_str("\\b"),
+            '\t' => quoted.push_str("\\t"),
+            '\n' => quoted.push_str("\\n"),
+            '\u{b}' => quoted.push_str("\\v"),
+            '\u{c}' => quoted.push_str("\\f"),
+            '\r' => quoted.push_str("\\r"),
+            '\u{1b}' => quoted.push_str("\\e"),
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            '\u{85}' => quoted.push_str("\\N"),
+            '\u{2028}' => quoted.push_str("\\L"),
+            '\u{2029}' => quoted.push_str("\\P"),
+            '\u{feff}' => quoted.push_str("\\uFEFF"),
+            ' '..='~' | '\u{a0}'..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'.. => {
+                quoted.push(character);
+            }
+            _ => {
+                let code = u32::from(character);
+                // Writing to a String can't fail.
+                let _ = match code {
+                    ..=0xff => write!(quoted, "\\x{code:02X}"),
+                    0x100..=0xffff => write!(quoted, "\\u{code:04X}"),
+                    _ => write!(quoted, "\\U{code:08X}"),
+                };
+            }
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 /// Decodes a manifest document without applying semantic validation.
@@ -649,6 +785,19 @@ pub fn serialize_workspace_manifest(manifest: &WorkspaceManifest) -> Result<Stri
     serde_yaml_ng::to_string(manifest).map_err(|_| FormatError::ManifestSerialization)
 }
 
+/// The marker file of a restricted folder. Scanners leave it out of the
+/// workspace's objects, and encrypted sync alone reads and writes it.
+pub const DOMAIN_MARKER: &str = ".noura-domain";
+
+/// Whether a file named `name` is a restricted folder's marker or an
+/// iCloud placeholder of one, which counts as the marker.
+pub fn is_domain_marker(name: &str) -> bool {
+    matches!(
+        name,
+        DOMAIN_MARKER | ".noura-domain.icloud" | "..noura-domain.icloud"
+    )
+}
+
 /// Checks whether an ID has the stable prefix and lowercase ULID required by the format.
 pub fn valid_object_id(id: &str, object_type: &str) -> bool {
     if !valid_object_type(object_type) {
@@ -660,17 +809,15 @@ pub fn valid_object_id(id: &str, object_type: &str) -> bool {
     value.len() == 26 && value == value.to_ascii_lowercase() && value.parse::<ulid::Ulid>().is_ok()
 }
 
-/// Returns the canonical initial file location for a managed object. Project
-/// files are folder notes so their enclosing folder can hold related files.
-pub fn default_managed_object_path(object_type: &str, title: &str, id: &str) -> String {
-    let value = slug::slugify(title);
-    let slug = if value.is_empty() { "untitled" } else { &value };
-    let short = &id[id.len().saturating_sub(6)..];
-    if object_type == "project" {
-        format!("projects/{slug}--{short}/project.md")
-    } else {
-        format!("{object_type}s/{slug}--{short}.md")
-    }
+/// Returns the canonical initial file location for a managed object: a
+/// file named after its title, since the title is the file name, in a
+/// folder named after its type, as `recipes/<title>.md`. A caller that wants
+/// another layout passes its own path. The filesystem adapter picks another
+/// name when this one is taken.
+pub fn default_managed_object_path(object_type: &str, title: &str) -> String {
+    let name = normalize_file_name(title);
+    let name = if name.is_empty() { "Untitled" } else { &name };
+    format!("{object_type}s/{name}.md")
 }
 
 fn validate_timestamp(value: &str) -> Result<(), FormatError> {
@@ -731,7 +878,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_bodies_keep_trailing_spaces_and_drop_trailing_line_breaks() {
+    fn managed_bodies_are_written_as_they_are() {
         let object = |body: &str| WorkspaceObject {
             id: "note_01j00000000000000000000000".into(),
             object_type: "note".into(),
@@ -753,12 +900,177 @@ mod tests {
         // A trailing space, or two for a Markdown line break, survives a save.
         assert_eq!(body_after_round_trip("Typing "), "Typing ");
         assert_eq!(body_after_round_trip("Line  \nnext"), "Line  \nnext");
-        // Line breaks at the end are normalized; the file ends with one.
-        assert_eq!(body_after_round_trip("Text\n\n"), "Text");
-        let bytes = serialize_object(&object("Text\n\n")).unwrap();
-        assert!(bytes.ends_with(b"Text\n"));
-        // A body of only whitespace is written as no body.
-        assert_eq!(body_after_round_trip("  \n"), "");
+        // Line breaks at the end, or none, stay as they are.
+        assert_eq!(body_after_round_trip("Text\n\n"), "Text\n\n");
+        let bytes = serialize_object(&object("Text")).unwrap();
+        assert!(bytes.ends_with(b"---\nText"));
+        assert_eq!(body_after_round_trip("  \n"), "  \n");
+    }
+
+    fn note(relative_path: &str, body: &str) -> WorkspaceObject {
+        WorkspaceObject {
+            id: "note_01j00000000000000000000000".into(),
+            object_type: "note".into(),
+            title: String::new(),
+            body: body.into(),
+            relative_path: relative_path.into(),
+            revision: String::new(),
+            created: Some("2026-08-27T12:00:00Z".into()),
+            updated: Some("2026-08-27T12:00:00Z".into()),
+            properties: BTreeMap::from([("custom".into(), serde_json::json!("kept"))]),
+        }
+    }
+
+    #[test]
+    fn a_title_is_the_file_name_and_a_heading_is_body_text() {
+        let bytes = b"---\nid: note_01j00000000000000000000000\ntype: note\n---\n# Agenda\n\nBody";
+        let ParsedMarkdown::Managed(object) = parse_markdown("notes/Team sync.v2.md", bytes) else {
+            panic!("managed object expected")
+        };
+        assert_eq!(object.title, "Team sync.v2");
+        assert_eq!(object.body, "# Agenda\n\nBody");
+        let ParsedMarkdown::Unmanaged { title, body, .. } =
+            parse_markdown("Plain.md", b"# Heading\nText")
+        else {
+            panic!("unmanaged file expected")
+        };
+        assert_eq!(
+            (title.as_str(), body.as_str()),
+            ("Plain", "# Heading\nText")
+        );
+    }
+
+    #[test]
+    fn serialization_writes_no_heading_and_the_body_as_given() {
+        let mut object = note("notes/Plan.md", "Body without a final newline");
+        object.title = "Ignored title".into();
+        let bytes = String::from_utf8(serialize_object(&object).unwrap()).unwrap();
+        assert_eq!(
+            bytes,
+            "---\nid: note_01j00000000000000000000000\ntype: note\ncustom: kept\n\
+             created: 2026-08-27T12:00:00Z\nupdated: 2026-08-27T12:00:00Z\n---\n\
+             Body without a final newline"
+        );
+        assert!(!bytes.contains("# "));
+    }
+
+    #[test]
+    fn a_byte_order_mark_before_the_frontmatter_keeps_a_file_managed() {
+        let bytes = b"\xEF\xBB\xBF---\r\nid: note_01j00000000000000000000000\r\ntype: note\r\n---\r\nBody\r\n";
+        let ParsedMarkdown::Managed(object) = parse_markdown("Note.md", bytes) else {
+            panic!("managed object expected")
+        };
+        assert_eq!(object.body, "Body\n");
+        assert_eq!(object.revision, revision(bytes));
+    }
+
+    #[test]
+    fn a_rewrite_keeps_the_body_bytes_line_endings_bom_and_final_newline() {
+        let existing = "\u{feff}---\r\nid: note_01j00000000000000000000000\r\ntype: note\r\n\
+            custom: kept\r\ncreated: 2026-08-27T12:00:00Z\r\nupdated: 2026-08-27T12:00:00Z\r\n\
+            ---\r\n\r\n# Heading\r\nLine\nmixed\r\nno final newline";
+        let ParsedMarkdown::Managed(mut object) = parse_markdown("Note.md", existing.as_bytes())
+        else {
+            panic!("managed object expected")
+        };
+        object
+            .properties
+            .insert("status".into(), serde_json::json!("done"));
+        let written =
+            String::from_utf8(serialize_object_over(existing.as_bytes(), &object).unwrap())
+                .unwrap();
+        assert_eq!(
+            written,
+            "\u{feff}---\r\nid: note_01j00000000000000000000000\r\ntype: note\r\n\
+             custom: kept\r\nstatus: done\r\ncreated: 2026-08-27T12:00:00Z\r\n\
+             updated: 2026-08-27T12:00:00Z\r\n---\r\n\r\n# Heading\r\nLine\nmixed\r\n\
+             no final newline"
+        );
+    }
+
+    #[test]
+    fn a_rewrite_keeps_unchanged_frontmatter_bytes_and_changes_only_the_body() {
+        let existing = "---\nid: note_01j00000000000000000000000\ntype: note\n\
+            custom:   'hand written'   # a comment\n---\nOld body\r\nkept line\r\n";
+        let ParsedMarkdown::Managed(mut object) = parse_markdown("Note.md", existing.as_bytes())
+        else {
+            panic!("managed object expected")
+        };
+        object.body = "New body\nkept line\n".into();
+        let written =
+            String::from_utf8(serialize_object_over(existing.as_bytes(), &object).unwrap())
+                .unwrap();
+        assert_eq!(
+            written,
+            "---\nid: note_01j00000000000000000000000\ntype: note\n\
+             custom:   'hand written'   # a comment\n---\nNew body\r\nkept line\r\n"
+        );
+        // Nothing changed: the bytes stay as they are.
+        let ParsedMarkdown::Managed(unchanged) = parse_markdown("Note.md", existing.as_bytes())
+        else {
+            panic!("managed object expected")
+        };
+        assert_eq!(
+            serialize_object_over(existing.as_bytes(), &unchanged).unwrap(),
+            existing.as_bytes()
+        );
+    }
+
+    #[test]
+    fn file_names_lose_separators_reserved_characters_leading_dots_and_spaces() {
+        assert_eq!(normalize_file_name("  ..My/plan: v2?  "), "Myplan v2");
+        assert_eq!(
+            normalize_file_name("a\\b*c\"d<e>f|g\u{7}h\u{7f}"),
+            "abcdefgh"
+        );
+        assert_eq!(normalize_file_name(" . . "), "");
+        let long = "é".repeat(250);
+        assert_eq!(normalize_file_name(&long).chars().count(), 200);
+        assert_eq!(
+            normalize_file_name(&format!("{} b", "a".repeat(199))),
+            "a".repeat(199)
+        );
+        assert_eq!(
+            normalize_file_name(&format!("{}. b", "a".repeat(198))),
+            "a".repeat(198)
+        );
+    }
+
+    #[test]
+    fn file_names_lose_trailing_dots_and_dodge_windows_device_names() {
+        assert_eq!(normalize_file_name("Plan."), "Plan");
+        assert_eq!(normalize_file_name("Plan . . "), "Plan");
+        assert_eq!(normalize_file_name("v1.2"), "v1.2");
+        assert_eq!(normalize_file_name("CON"), "CON_");
+        assert_eq!(normalize_file_name("nul"), "nul_");
+        assert_eq!(normalize_file_name("Com1"), "Com1_");
+        assert_eq!(normalize_file_name("lpt9.backup"), "lpt9_.backup");
+        assert_eq!(normalize_file_name("con ."), "con_");
+        assert_eq!(normalize_file_name("COM0"), "COM0");
+        assert_eq!(normalize_file_name("CONSOLE"), "CONSOLE");
+        assert_eq!(normalize_file_name("Auxiliary"), "Auxiliary");
+        assert_eq!(
+            default_managed_object_path("recipe", "Plan."),
+            "recipes/Plan.md"
+        );
+    }
+
+    #[test]
+    fn new_objects_are_named_after_their_title() {
+        assert_eq!(
+            default_managed_object_path("note", " Team: sync "),
+            "notes/Team sync.md"
+        );
+        // Every type gets a folder named after it, projects too: the
+        // Projects plugin picks a folder of each project's own.
+        assert_eq!(
+            default_managed_object_path("project", "Launch"),
+            "projects/Launch.md"
+        );
+        assert_eq!(
+            default_managed_object_path("task", "///"),
+            "tasks/Untitled.md"
+        );
     }
 
     #[test]
@@ -777,16 +1089,122 @@ mod tests {
         let ParsedMarkdown::Managed(object) = parse_markdown("note.md", bytes.as_bytes()) else {
             panic!("CRLF frontmatter should be managed");
         };
-        assert_eq!(object.body, "Body");
+        assert_eq!(object.title, "note");
+        assert_eq!(object.body, "# Title\n\nBody\n");
     }
 
     #[derive(Deserialize)]
     struct Fixtures {
         manifest: Vec<Fixture>,
         object_id: Vec<ObjectIdFixture>,
-        task_properties: Vec<TaskPropertiesFixture>,
-        project_properties: Vec<TaskPropertiesFixture>,
         object_body: Vec<ObjectBodyFixture>,
+        titles: Vec<TitleFixture>,
+        file_names: Vec<FileNameFixture>,
+        rewrites: Vec<RewriteFixture>,
+        domain_markers: Vec<DomainMarkerFixture>,
+    }
+
+    #[derive(Deserialize)]
+    struct DomainMarkerFixture {
+        name: String,
+        file: String,
+        marker: bool,
+    }
+
+    #[derive(Deserialize)]
+    struct TitleFixture {
+        name: String,
+        path: String,
+        markdown: String,
+        title: String,
+        body: String,
+    }
+
+    #[derive(Deserialize)]
+    struct FileNameFixture {
+        typed: String,
+        name: String,
+    }
+
+    #[derive(Deserialize)]
+    struct RewriteFixture {
+        name: String,
+        path: String,
+        existing: String,
+        #[serde(default)]
+        set_properties: BTreeMap<String, serde_json::Value>,
+        body: Option<String>,
+        expected: String,
+    }
+
+    fn conformance() -> Fixtures {
+        serde_json::from_str(include_str!(
+            "../../../docs/workspace-format/fixtures/conformance-v1.json"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn domain_markers_match_the_shared_fixtures() {
+        for fixture in conformance().domain_markers {
+            assert_eq!(
+                is_domain_marker(&fixture.file),
+                fixture.marker,
+                "{}",
+                fixture.name
+            );
+        }
+    }
+
+    #[test]
+    fn titles_come_from_file_names_as_the_shared_fixtures_say() {
+        for fixture in conformance().titles {
+            let (title, body) = match parse_markdown(&fixture.path, fixture.markdown.as_bytes()) {
+                ParsedMarkdown::Managed(object) => (object.title, object.body),
+                ParsedMarkdown::Unmanaged { title, body, .. } => (title, body),
+                ParsedMarkdown::Malformed { error, .. } => panic!("{}: {error}", fixture.name),
+            };
+            assert_eq!(
+                (title, body),
+                (fixture.title, fixture.body),
+                "{}",
+                fixture.name
+            );
+        }
+    }
+
+    #[test]
+    fn typed_names_become_file_names_as_the_shared_fixtures_say() {
+        for fixture in conformance().file_names {
+            assert_eq!(
+                normalize_file_name(&fixture.typed),
+                fixture.name,
+                "{:?}",
+                fixture.typed
+            );
+        }
+    }
+
+    #[test]
+    fn rewrites_keep_bytes_as_the_shared_fixtures_say() {
+        for fixture in conformance().rewrites {
+            let ParsedMarkdown::Managed(mut object) =
+                parse_markdown(&fixture.path, fixture.existing.as_bytes())
+            else {
+                panic!("{}: managed object expected", fixture.name)
+            };
+            object.properties.extend(fixture.set_properties);
+            if let Some(body) = fixture.body {
+                object.body = body;
+            }
+            let written = serialize_object_over(fixture.existing.as_bytes(), &object).unwrap();
+            assert_eq!(
+                String::from_utf8(written).unwrap(),
+                fixture.expected,
+                "{}",
+                fixture.name
+            );
+        }
     }
 
     #[derive(Deserialize)]
@@ -809,12 +1227,6 @@ mod tests {
         value: String,
     }
 
-    #[derive(Deserialize)]
-    struct TaskPropertiesFixture {
-        valid: bool,
-        value: BTreeMap<String, serde_json::Value>,
-    }
-
     #[test]
     fn portable_validation_matches_shared_conformance_fixtures() {
         let fixtures: Fixtures = serde_json::from_str(include_str!(
@@ -831,20 +1243,7 @@ mod tests {
             .object_id
             .into_iter()
             .all(|fixture| valid_object_id(&fixture.value, "note") == fixture.valid);
-        let task_properties_match = fixtures.task_properties.into_iter().all(|fixture| {
-            let mut properties = fixture.value;
-            normalize_task_properties(&mut properties).is_ok() == fixture.valid
-        });
-        let project_properties_match = fixtures.project_properties.into_iter().all(|fixture| {
-            let mut properties = fixture.value;
-            normalize_project_properties(&mut properties).is_ok() == fixture.valid
-        });
-        assert!(
-            manifests_match
-                && object_ids_match
-                && task_properties_match
-                && project_properties_match
-        );
+        assert!(manifests_match && object_ids_match);
     }
 
     #[test]
@@ -900,72 +1299,8 @@ mod tests {
         .unwrap();
         assert!(valid_object_id(&note.id, "note"));
         assert_eq!(note.title, "Browser note");
-        assert!(note.relative_path.starts_with("notes/browser-note--"));
+        assert_eq!(note.relative_path, "notes/Browser note.md");
         assert!(!note.properties.contains_key("id"));
-    }
-
-    #[test]
-    fn task_domain_rules_apply_defaults_and_preserve_unknown_metadata() {
-        let task = create_task(
-            "task_01j00000000000000000000000".into(),
-            CreateTaskInput {
-                title: " Browser task ".into(),
-                body: "Body".into(),
-                relative_path: None,
-                properties: BTreeMap::from([("custom".into(), serde_json::json!("kept"))]),
-                now: "2026-09-12T00:00:00Z".into(),
-            },
-        )
-        .unwrap();
-        assert_eq!(task.object_type, "task");
-        assert_eq!(task.properties["status"], "todo");
-        assert_eq!(task.properties["priority"], "medium");
-        assert_eq!(task.properties["custom"], "kept");
-        assert!(task.relative_path.starts_with("tasks/browser-task--"));
-    }
-
-    #[test]
-    fn task_domain_rules_reject_invalid_status_due_and_project() {
-        let mut invalid_status = BTreeMap::from([("status".into(), serde_json::json!("later"))]);
-        assert_eq!(
-            normalize_task_properties(&mut invalid_status),
-            Err(FormatError::InvalidTaskStatus)
-        );
-        let mut invalid_due = BTreeMap::from([("due".into(), serde_json::json!("tomorrow"))]);
-        assert_eq!(
-            normalize_task_properties(&mut invalid_due),
-            Err(FormatError::InvalidTaskDue)
-        );
-        let mut invalid_project =
-            BTreeMap::from([("project".into(), serde_json::json!("project_not-an-id"))]);
-        assert_eq!(
-            normalize_task_properties(&mut invalid_project),
-            Err(FormatError::InvalidTaskProject)
-        );
-    }
-
-    #[test]
-    fn project_domain_rules_apply_defaults_and_preserve_unknown_metadata() {
-        let project = create_project(
-            "project_01j00000000000000000000000".into(),
-            CreateProjectInput {
-                title: " Browser project ".into(),
-                body: "Body".into(),
-                relative_path: None,
-                properties: BTreeMap::from([("custom".into(), serde_json::json!("kept"))]),
-                now: "2026-09-12T00:00:00Z".into(),
-            },
-        )
-        .unwrap();
-        assert_eq!(project.object_type, "project");
-        assert_eq!(project.properties["status"], "planned");
-        assert_eq!(project.properties["custom"], "kept");
-        assert!(
-            project
-                .relative_path
-                .starts_with("projects/browser-project--")
-        );
-        assert!(project.relative_path.ends_with("/project.md"));
     }
 
     #[test]
@@ -983,5 +1318,122 @@ mod tests {
             Err(ManagedObjectPathError::Unsafe)
         );
         assert!(validate_managed_object_path("notes/note.md").is_ok());
+    }
+
+    proptest::proptest! {
+        /// libyaml double-quotes any string that holds U+0085, so its output
+        /// for such strings shows the escapes `double_quoted` has to match.
+        #[test]
+        fn double_quoted_strings_match_libyaml(
+            before in proptest::collection::vec(proptest::char::any(), 0..16),
+            after in proptest::collection::vec(proptest::char::any(), 0..16),
+        ) {
+            let text = format!(
+                "{}\u{85}{}",
+                String::from_iter(before),
+                String::from_iter(after)
+            );
+            let libyaml = serde_yaml_ng::to_string(&text).unwrap();
+            proptest::prop_assert_eq!(libyaml, format!("{}\n", double_quoted(&text)));
+        }
+    }
+
+    #[test]
+    fn double_quoted_strings_read_back_unchanged() {
+        let text = "\0\u{7}\u{8}\t\n\u{b}\u{c}\r\u{1b}\"\\\u{7f}\u{85}\u{9f}\u{a0}\u{2028}\u{2029}\u{feff}\u{fffe}\u{e000}\u{1f600}'#: -";
+        let quoted = double_quoted(text);
+        assert_eq!(serde_yaml_ng::from_str::<String>(&quoted).unwrap(), text);
+    }
+
+    /// Text heavy on the line breaks libyaml writes raw or escapes.
+    fn line_break_text() -> impl proptest::strategy::Strategy<Value = String> {
+        use proptest::strategy::Strategy as _;
+        proptest::collection::vec(
+            proptest::sample::select(
+                &[
+                    "\u{2028}", "\u{2029}", "\n", "\r", "\u{85}", " ", "a", "'", "- ", "---",
+                ][..],
+            ),
+            0..8,
+        )
+        .prop_map(|pieces| pieces.concat())
+    }
+
+    fn line_break_value() -> impl proptest::strategy::Strategy<Value = serde_json::Value> {
+        use proptest::strategy::Strategy as _;
+        let leaf = proptest::prop_oneof![
+            1 => proptest::strategy::Just(serde_json::Value::Null),
+            4 => line_break_text().prop_map(serde_json::Value::String),
+        ];
+        leaf.prop_recursive(3, 12, 3, |inner| {
+            proptest::prop_oneof![
+                proptest::collection::vec(inner.clone(), 0..3).prop_map(serde_json::Value::Array),
+                proptest::collection::btree_map(line_break_text(), inner, 0..3)
+                    .prop_map(|map| serde_json::Value::Object(map.into_iter().collect())),
+            ]
+        })
+    }
+
+    proptest::proptest! {
+        /// The frontmatter is libyaml's output unless that output lacks a
+        /// final line feed. Then it still reads back as the same mapping.
+        #[test]
+        fn frontmatter_keeps_libyaml_bytes_unless_they_lack_a_final_line_feed(
+            entries in proptest::collection::vec((line_break_text(), line_break_value()), 0..4),
+        ) {
+            let entries = entries
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.clone()))
+                .collect::<Vec<_>>();
+            let mut mapping = serde_yaml_ng::Mapping::new();
+            for (key, value) in &entries {
+                mapping.insert(
+                    serde_yaml_ng::Value::String((*key).to_owned()),
+                    serde_yaml_ng::to_value(value).unwrap(),
+                );
+            }
+            let libyaml = serde_yaml_ng::to_string(&mapping).unwrap();
+            let written = frontmatter_yaml(&entries).unwrap();
+            if libyaml.ends_with('\n') {
+                proptest::prop_assert_eq!(written, libyaml);
+            } else {
+                proptest::prop_assert!(written.ends_with("\"\n"), "{:?}", written);
+                let read: serde_yaml_ng::Mapping = serde_yaml_ng::from_str(&written).unwrap();
+                proptest::prop_assert_eq!(read, mapping);
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_last_literal_block_ending_in_a_line_separator_is_double_quoted() {
+        let mut object = WorkspaceObject {
+            id: "note_01j00000000000000000000000".into(),
+            object_type: "note".into(),
+            title: "example".into(),
+            body: String::new(),
+            relative_path: "notes/example.md".into(),
+            revision: String::new(),
+            created: None,
+            updated: Some("\na\u{2028}".into()),
+            properties: BTreeMap::from([
+                ("a".into(), serde_json::json!("Boil.\nServe.\u{2028}")),
+                (
+                    "b".into(),
+                    serde_json::json!(["x\u{2029}", {"k": "y\n\u{2029}"}]),
+                ),
+            ]),
+        };
+        let bytes = String::from_utf8(serialize_object(&object).unwrap()).unwrap();
+        // libyaml's own forms, with raw separators, except for the last value.
+        assert_eq!(
+            bytes,
+            "---\nid: note_01j00000000000000000000000\ntype: note\na: |\n  Boil.\n  Serve.\u{2028}b:\n- 'x\u{2029}  '\n- k: |+\n    y\n\u{2029}updated: \"\\na\\L\"\n---\n"
+        );
+        let ParsedMarkdown::Managed(parsed) = parse_markdown("notes/example.md", bytes.as_bytes())
+        else {
+            panic!("the canonical bytes must stay managed");
+        };
+        object.revision = parsed.revision.clone();
+        assert_eq!(parsed, object);
     }
 }

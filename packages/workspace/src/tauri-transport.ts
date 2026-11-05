@@ -1,7 +1,7 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { CoreEvent } from '@noura/shared';
-import type { CoreTransport } from './client';
+import type { CoreTransport, FileDropEvent } from './client';
 import { decodePdfResponse } from './pdf-response';
 
 export function createTauriTransport(): CoreTransport {
@@ -49,6 +49,11 @@ export function createTauriTransport(): CoreTransport {
 				({ payload }) => handler(payload),
 			);
 			return unlisten;
+		},
+		subscribeFileDrops(handler) {
+			return listen<FileDropEvent>('noura://file-drop', ({ payload }) =>
+				handler(payload),
+			);
 		},
 	};
 }

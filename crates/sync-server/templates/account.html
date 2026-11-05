@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Your account{% endblock %}
+{% block content %}
+<h1>Your account</h1>
+<p>You're signed in as {{ email }}.</p>
+<p data-passkey-count="{{ passkeys }}">{% if passkeys == 1 %}You have 1 passkey.{% else %}You have {{ passkeys }} passkeys.{% endif %}</p>
+<form data-passkey="add">
+<button type="button" data-passkey-start hidden>Add a passkey</button>
+<p class="status" data-status role="status"></p>
+</form>
+<p><a href="/device">Sign in a device</a></p>
+<form method="post" action="/account/sign-out">
+<button type="submit" class="secondary">Sign out</button>
+</form>
+{% endblock %}

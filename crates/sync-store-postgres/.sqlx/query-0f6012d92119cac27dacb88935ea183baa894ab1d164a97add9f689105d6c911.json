@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT closed FROM workspaces WHERE workspace = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "closed",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "closed"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0f6012d92119cac27dacb88935ea183baa894ab1d164a97add9f689105d6c911"
+}

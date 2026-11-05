@@ -9,6 +9,10 @@
 	import * as Avatar from '$lib/components/ui/avatar/index.js';
 	import { markdownAssets } from '$lib/pdf/markdown';
 	import { preferences } from '$lib/preferences.svelte';
+	import { isFindShortcut } from '$lib/app-shortcuts';
+	import FindBar from '$lib/components/find-bar.svelte';
+	import type { FindController } from '@noura/editor/types';
+	import { hostOs } from '$lib/host-os';
 	let {
 		session,
 		sourceRelativePath,
@@ -27,6 +31,18 @@
 	>;
 	let view = $state.raw<CollaborativeView | null>(null);
 	let setSpellcheck: typeof EditorRuntime.setSpellcheck | null = null;
+	let openFind: typeof EditorRuntime.openFind | null = null;
+	let find = $state.raw<FindController | null>(null);
+	let findBar = $state<FindBar | null>(null);
+
+	// Find opens the find panel even when the text isn't focused. Inside the
+	// text the editor's own keymap has already handled it.
+	function handleFindKey(event: KeyboardEvent) {
+		if (event.defaultPrevented || !isFindShortcut(event, hostOs())) return;
+		if (!view || !openFind || !view.dom.checkVisibility()) return;
+		event.preventDefault();
+		openFind(view);
+	}
 
 	// Follow the Settings toggle in the shared editor too.
 	$effect(() => {
@@ -53,12 +69,18 @@
 			.then((runtime) => {
 				if (disposed) return;
 				setSpellcheck = runtime.setSpellcheck;
+				openFind = runtime.openFind;
 				const created = runtime.createCollaborativeView(
 					element,
 					active,
 					options.language,
 					[
 						runtime.spellcheckExtension(options.spellcheck),
+						runtime.findExtension({
+							open: (controller) => (find = controller),
+							focus: () => findBar?.focus(),
+							close: () => (find = null),
+						}),
 						...(options.language === 'markdown'
 							? runtime.createPdfPreviewExtensions(
 									markdownAssets(options.sourceRelativePath),
@@ -86,7 +108,7 @@
 	}
 </script>
 
-<svelte:window onbeforeunload={protectDraft} />
+<svelte:window onbeforeunload={protectDraft} onkeydown={handleFindKey} />
 <div class="flex h-full min-h-0 flex-col">
 	<div class="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
 		<span role="status">{status}</span>
@@ -99,11 +121,16 @@
 			</Avatar.Root>
 		{/each}
 	</div>
-	<div
-		class={[
-			'min-h-0 flex-1 overflow-auto',
-			language === 'markdown' && 'live-md',
-		]}
-		{@attach attachEditor}
-	></div>
+	<div class="relative flex min-h-0 flex-1 flex-col">
+		{#if find}
+			<FindBar bind:this={findBar} controller={find} />
+		{/if}
+		<div
+			class={[
+				'min-h-0 flex-1 overflow-auto',
+				language === 'markdown' && 'live-md',
+			]}
+			{@attach attachEditor}
+		></div>
+	</div>
 </div>

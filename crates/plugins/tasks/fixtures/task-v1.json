@@ -1,0 +1,243 @@
+{
+	"description": "The task type the Tasks plugin declares. The plugin's tests run each case through workspace-format's generic validator and serializer with the plugin's schema, and plugin-host's tests check that the running plugin registers this schema. The property cases moved here from the task_properties section of conformance-v1.json, with the results the kernel's task rules gave, and from the task_schema_differences section of object-envelope-v1.json, both in docs/workspace-format/fixtures.",
+	"schema": {
+		"properties": [
+			{
+				"name": "status",
+				"kind": {
+					"enum": [
+						"todo",
+						"in-progress",
+						"done",
+						"cancelled"
+					]
+				},
+				"default": "todo"
+			},
+			{
+				"name": "priority",
+				"kind": {
+					"enum": [
+						"low",
+						"medium",
+						"high",
+						"urgent"
+					]
+				},
+				"default": "medium"
+			},
+			{
+				"name": "project",
+				"kind": {
+					"reference": "project"
+				},
+				"nullable": true
+			},
+			{
+				"name": "due",
+				"kind": "date",
+				"nullable": true
+			},
+			{
+				"name": "kanban_order",
+				"kind": "string"
+			}
+		]
+	},
+	"properties": [
+		{
+			"name": "canonical task values with unknown metadata",
+			"properties": {
+				"status": "in-progress",
+				"priority": "high",
+				"due": "2026-09-15",
+				"custom": "kept"
+			},
+			"expected": {
+				"status": "in-progress",
+				"priority": "high",
+				"due": "2026-09-15",
+				"custom": "kept"
+			}
+		},
+		{
+			"name": "task defaults are valid",
+			"properties": {},
+			"expected": {
+				"status": "todo",
+				"priority": "medium"
+			}
+		},
+		{
+			"name": "offset task due is valid",
+			"properties": {
+				"due": "2026-09-15T09:30:00+02:00"
+			},
+			"expected": {
+				"due": "2026-09-15T09:30:00+02:00",
+				"status": "todo",
+				"priority": "medium"
+			}
+		},
+		{
+			"name": "a null due date stays as it is",
+			"properties": {
+				"due": null
+			},
+			"expected": {
+				"due": null,
+				"status": "todo",
+				"priority": "medium"
+			}
+		},
+		{
+			"name": "unsupported task status",
+			"properties": {
+				"status": "later"
+			},
+			"error": {
+				"code": "not_allowed",
+				"property": "status"
+			}
+		},
+		{
+			"name": "task status must be a string",
+			"properties": {
+				"status": true
+			},
+			"error": {
+				"code": "wrong_type",
+				"property": "status"
+			}
+		},
+		{
+			"name": "unsupported task priority",
+			"properties": {
+				"priority": "eventually"
+			},
+			"error": {
+				"code": "not_allowed",
+				"property": "priority"
+			}
+		},
+		{
+			"name": "task priority must be a string",
+			"properties": {
+				"priority": 1
+			},
+			"error": {
+				"code": "wrong_type",
+				"property": "priority"
+			}
+		},
+		{
+			"name": "task due must be a civil date or offset timestamp",
+			"properties": {
+				"due": "tomorrow"
+			},
+			"error": {
+				"code": "invalid_date",
+				"property": "due"
+			}
+		},
+		{
+			"name": "task due must be a real civil date",
+			"properties": {
+				"due": "2026-02-30"
+			},
+			"error": {
+				"code": "invalid_date",
+				"property": "due"
+			}
+		},
+		{
+			"name": "task project references use stable IDs",
+			"properties": {
+				"project": "project_not-an-id"
+			},
+			"error": {
+				"code": "invalid_reference",
+				"property": "project"
+			}
+		},
+		{
+			"name": "a due date that isn't a string",
+			"properties": {
+				"due": 5
+			},
+			"error": {
+				"code": "wrong_type",
+				"property": "due"
+			}
+		},
+		{
+			"name": "a due value that is a boolean",
+			"properties": {
+				"due": true
+			},
+			"error": {
+				"code": "wrong_type",
+				"property": "due"
+			}
+		},
+		{
+			"name": "a project reference that isn't a string",
+			"properties": {
+				"project": 5
+			},
+			"error": {
+				"code": "wrong_type",
+				"property": "project"
+			}
+		},
+		{
+			"name": "a project reference that is a list",
+			"properties": {
+				"project": [
+					"project_01j00000000000000000000000"
+				]
+			},
+			"error": {
+				"code": "wrong_type",
+				"property": "project"
+			}
+		},
+		{
+			"name": "a kanban_order that isn't a string",
+			"properties": {
+				"kanban_order": 5
+			},
+			"error": {
+				"code": "wrong_type",
+				"property": "kanban_order"
+			}
+		}
+	],
+	"serialization": [
+		{
+			"name": "task with every task field",
+			"markdown": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: in-progress\npriority: high\nproject: project_01j00000000000000000000000\ndue: 2026-09-04\nkanban_order: a0\nestimate: 3\ntags:\n- release\n- docs\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n",
+			"canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: in-progress\npriority: high\nproject: project_01j00000000000000000000000\ndue: 2026-09-04\nkanban_order: a0\nestimate: 3\ntags:\n- release\n- docs\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n"
+		},
+		{
+			"name": "task with a null project and no due date",
+			"markdown": "---\nid: task_01j00000000000000000000001\ntype: task\nstatus: todo\npriority: medium\nproject: null\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Triage inbox\n",
+			"canonical": "---\nid: task_01j00000000000000000000001\ntype: task\nstatus: todo\npriority: medium\nproject: null\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Triage inbox\n"
+		},
+		{
+			"name": "declared properties come first in declared order, then unknown ones by key",
+			"markdown": "---\nid: task_01j00000000000000000000000\ntype: task\ndue: 2026-09-04\ncustom: kept\nproject: project_01j00000000000000000000000\npriority: high\nstatus: in-progress\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n",
+			"canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: in-progress\npriority: high\nproject: project_01j00000000000000000000000\ndue: 2026-09-04\ncustom: kept\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n"
+		},
+		{
+			"name": "kanban_order comes before an unknown key that sorts ahead of it",
+			"markdown": "---\nid: task_01j00000000000000000000000\ntype: task\nestimate: 3\nkanban_order: a0\npriority: low\nstatus: todo\n---\n\n# Sort the board\n",
+			"canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: todo\npriority: low\nkanban_order: a0\nestimate: 3\n---\n\n# Sort the board\n"
+		},
+		{
+			"name": "a dated key the schema doesn't declare sorts with the unknown keys",
+			"markdown": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: todo\npriority: low\ndate: 2026-09-04\ncustom: kept\n---\n\n# Plan the day\n",
+			"canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: todo\npriority: low\ncustom: kept\ndate: 2026-09-04\n---\n\n# Plan the day\n"
+		}
+	]
+}

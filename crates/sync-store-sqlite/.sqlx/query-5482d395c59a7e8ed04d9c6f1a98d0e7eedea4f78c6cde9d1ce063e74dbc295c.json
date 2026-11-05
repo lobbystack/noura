@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM checkpoints WHERE workspace = ?1 AND domain = ?2 AND number IN (\n               SELECT number FROM checkpoints WHERE workspace = ?1 AND domain = ?2\n               ORDER BY number LIMIT ?3\n             )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "5482d395c59a7e8ed04d9c6f1a98d0e7eedea4f78c6cde9d1ce063e74dbc295c"
+}

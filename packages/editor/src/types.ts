@@ -1,4 +1,7 @@
 import type { EditorView } from '@codemirror/view';
+import type { FindHost } from './find';
+
+export type { FindController, FindHost, FindMatches } from './find';
 
 export type MarkdownFormat =
 	| 'bold'
@@ -90,6 +93,11 @@ export interface LiveMarkdownOptions {
 	spellcheck?: boolean;
 	/** Caret and scroll position to restore. */
 	restore?: EditorViewMemory | null | undefined;
+	/**
+	 * Draws find. Without it the editor shows CodeMirror's own find and
+	 * replace panel.
+	 */
+	find?: FindHost;
 }
 
 export interface LiveMarkdownEditor {

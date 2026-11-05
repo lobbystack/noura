@@ -1,0 +1,256 @@
+pub mod advance;
+pub mod cursor;
+pub mod mutation;
+
+use comrak::nodes::NodeValue;
+
+use crate::commands::Format;
+use crate::offset_types::Grapheme;
+
+/*
+ * This module processes input events, with the following major concerns:
+ * * Plumbing: combining programmatic and UI input, delegating to appropriate handlers
+ * * Enrichment: did the user click on a link, or select a word, or drag a selection?
+ * * Buffer manipulation: text replacements & cursor movements, operational transformation, merging concurrent edits
+ */
+
+/// text location
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Location {
+    CurrentCursor,
+    Grapheme(Grapheme),
+    Pos(Pos),
+}
+
+/// text unit that has a start and end location
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Bound {
+    Word,
+    Line,
+    Paragraph,
+    Doc,
+}
+
+/// text unit you can increment or decrement a location by
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Increment {
+    Char,
+    Lines(usize),
+}
+
+/// text location relative to some absolute text location
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Advance {
+    /// text location at a bound; if you're already there, this leaves you there
+    /// (e.g. cmd+left/right)
+    To(Bound),
+
+    /// text location at the next bound; if you're already there, this goes to
+    /// the next one (e.g. option+left/right)
+    Next(Bound),
+
+    /// text location some increment away; if you're in the middle of one of
+    /// these, this goes somewhere in the middle of the next one (e.g. up/down)
+    By(Increment),
+}
+
+/// text region specified in some manner
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Region {
+    /// 0-length region starting and ending at location
+    Location(Location),
+
+    /// Text from secondary cursor to location. Preserves selection.
+    ToLocation(Location),
+
+    /// Text from one location to another
+    BetweenLocations { start: Location, end: Location },
+
+    /// Currently selected text
+    Selection,
+
+    /// Currently selected text, or if the selection is empty, text from the
+    /// primary cursor to one char/line before/after or to start/end of
+    /// word/line/doc
+    SelectionOrAdvance { advance: Advance, backwards: bool },
+
+    /// Text from primary cursor to one char/line before/after or to start/end
+    /// of word/line/paragraph/doc. In some situations this instead represents
+    /// the start of selection (if `backwards`) or end of selection, based on
+    /// what feels intuitive when using arrow keys to navigate a document.
+    ToAdvance {
+        advance: Advance,
+        backwards: bool,
+        extend_selection: bool,
+    },
+
+    /// Current word/line/paragraph/doc, preferring previous word if `backwards`
+    Bound { bound: Bound, backwards: bool },
+
+    /// Word/line/paragraph/doc at a location, preferring previous word if `backwards`
+    BoundAt {
+        bound: Bound,
+        location: Location,
+        backwards: bool,
+    },
+}
+
+/// Standardized edits to any editor state e.g. buffer, clipboard, debug state.
+/// Interpretation may depend on render state e.g. galley positions, line wrap.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Event {
+    Select {
+        region: Region,
+    },
+    Replace {
+        region: Region,
+        text: String,
+        advance_cursor: bool,
+    }, // replace region with text and optionally advance cursor to end of new text
+    ToggleStyle {
+        region: Region,
+        style: NodeValue,
+    }, // wraps or unwraps a region in a style's syntax
+    /// A toolbar button or formatting shortcut, run on the selection as
+    /// one undo step. See [`crate::commands`].
+    Format(Format),
+    /// Mod-Enter: check or uncheck the task on each selected line, add a
+    /// checkbox to a list item, or turn a plain line into a task.
+    ToggleTaskLine,
+    Newline {
+        shift: bool,
+    }, // distinct from replace because it triggers auto-bullet, etc
+    Delete {
+        region: Region,
+    }, // distinct from replace because it triggers numbered list renumber, etc
+    /// Tab nests the selected list items, with their children, under the
+    /// item above; Shift-Tab (`deindent`) lifts them out one level.
+    /// Outside a list it changes nothing; see [`crate::MdDoc::tab_indents`].
+    Indent {
+        deindent: bool,
+    },
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    ToggleDebug,
+    IncrementBaseFontSize,
+    DecrementBaseFontSize,
+    ToggleFold {
+        node: Option<(Grapheme, Grapheme)>,
+    }, // the block whose range this is, else the selection's blocks
+    EnterAtom, // select the URL inside the selected atom (e.g. image), revealing its source; the touch path in, since mobile has no arrow keys
+    ToggleSpoiler {
+        node: (Grapheme, Grapheme),
+    }, // reveal or hide the spoiler whose range this is
+    /// Report the link to `url` as opened, in a new tab when `new_tab`;
+    /// see [`crate::resolvers::OpenedLink`].
+    OpenLink {
+        url: String,
+        wikilink: bool,
+        new_tab: bool,
+    },
+    /// Open the link at the caret, or the first one the selection touches,
+    /// as a click on it does.
+    OpenSelectedLink,
+    /// Put `link` in place of what the `[[` link at the caret has typed so
+    /// far, and close the link unless it's already closed; see
+    /// [`crate::MdDoc::link_query`].
+    CompleteLink {
+        link: String,
+    },
+    Paste {
+        text: String,
+    }, // replace the selection with pasted text, or link the selection to a pasted URL
+    ToggleTask {
+        node: (Grapheme, Grapheme),
+    }, // check or uncheck the task item whose range this is
+    Unfold {
+        tag: (Grapheme, Grapheme),
+    }, // remove the fold tag at this range, showing the section it hid
+    /// An input method's marked text: shown at the caret while you
+    /// compose, and kept out of the text and its change events. Empty
+    /// text ends the composition and inserts nothing, as Escape does.
+    /// `selected` is the clause the input method is converting, in
+    /// characters of `text`.
+    Compose {
+        text: String,
+        selected: Option<std::ops::Range<usize>>,
+    },
+    /// An input method committed `text`: it ends the composition and
+    /// replaces the selection as one edit.
+    Commit {
+        text: String,
+    },
+}
+
+impl From<(Grapheme, Grapheme)> for Region {
+    fn from((start, end): (Grapheme, Grapheme)) -> Self {
+        Region::BetweenLocations {
+            start: Location::Grapheme(start),
+            end: Location::Grapheme(end),
+        }
+    }
+}
+
+/// A point in the editor's layout, in the coordinates the layout reports.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Pos {
+    pub x: f32,
+    pub y: f32,
+}
+
+// Positions compare by value; NaN never reaches here from a pointer.
+impl Eq for Pos {}
+
+/// Where the layout drew the text, for edits that start from a point or move
+/// by visual rows. `editor-egui` answers from what it painted last frame.
+pub trait TextLayout {
+    /// The range a click at `pos` selects: a cursor position, or a whole
+    /// atomic span such as a list marker.
+    fn pos_to_range(&self, pos: Pos) -> (Grapheme, Grapheme);
+
+    /// The cursor position nearest `pos`.
+    fn pos_to_offset(&self, pos: Pos) -> Grapheme;
+
+    /// The x coordinate of a caret at `offset`, or `None` if the layout
+    /// hasn't placed it.
+    fn offset_x(&self, offset: Grapheme) -> Option<f32>;
+
+    /// The cursor position one visual row above (`backwards`) or below
+    /// `offset`, nearest `x_target`.
+    fn offset_by_row(&self, offset: Grapheme, x_target: f32, backwards: bool) -> Grapheme;
+
+    /// Whether this layout placed no rows, so vertical moves step over
+    /// source lines and hold a column counted in graphemes instead.
+    fn rows_are_source_lines(&self) -> bool {
+        false
+    }
+}
+
+/// A layout that placed nothing. Points resolve to the start of the text,
+/// and vertical moves step over source lines instead of visual rows.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoLayout;
+
+impl TextLayout for NoLayout {
+    fn pos_to_range(&self, _pos: Pos) -> (Grapheme, Grapheme) {
+        (Grapheme(0), Grapheme(0))
+    }
+
+    fn pos_to_offset(&self, _pos: Pos) -> Grapheme {
+        Grapheme(0)
+    }
+
+    fn offset_x(&self, _offset: Grapheme) -> Option<f32> {
+        None
+    }
+
+    fn offset_by_row(&self, offset: Grapheme, _x_target: f32, _backwards: bool) -> Grapheme {
+        offset
+    }
+
+    fn rows_are_source_lines(&self) -> bool {
+        true
+    }
+}

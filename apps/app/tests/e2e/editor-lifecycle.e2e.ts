@@ -24,7 +24,7 @@ test.describe('leaving a note right after typing', () => {
 			.toBe('typed then left');
 	});
 
-	test('going Home while a save waits for the disk still saves', async ({
+	test('going to the Inbox while a save waits for the disk still saves', async ({
 		app,
 		page,
 	}) => {
@@ -36,7 +36,7 @@ test.describe('leaving a note right after typing', () => {
 		await expect.poll(() => app.storageWaiting()).toBe(true);
 		await page
 			.getByRole('navigation', { name: 'Sections' })
-			.getByRole('link', { name: 'Home' })
+			.getByRole('link', { name: 'Inbox' })
 			.click();
 		await release();
 		await expect(page.getByRole('heading', { level: 1 })).toContainText(/Good/);

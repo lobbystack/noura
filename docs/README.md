@@ -5,19 +5,22 @@ Use these guides to run Noura, understand its file-backed workspace, and contrib
 - **Run Noura**: follow the [desktop setup instructions](../README.md#try-noura)
 - **Contribute code**: read the [contributor conventions](../AGENTS.md) and [desktop verification guide](testing/local-alpha-acceptance.md)
 - **Work with plugins**: learn the [activation lifecycle and capability contracts](architecture/plugin-runtime.md)
+- **Write a plugin in TypeScript**: start with the [author guide](plugins/README.md), then the [page for each interface](plugins/interfaces/)
 - **Understand workspace files**: read the [workspace format](workspace-format/v1.md) and [local-core architecture](architecture/local-core.md)
 - **Understand AI access**: read about [provider consent, tool approval, and chat persistence](architecture/ai-runtime.md)
 - **Publish a release**: follow the [release guide](releasing.md) to ship signed installers and updates
 - **Run the sync service**: follow [server setup](../apps/server/README.md), then the [operations guide](../apps/server/OPERATIONS.md)
+- **Host the Rust sync server**: follow the [self-hosting guide](self-hosting.md)
 
 ## Workspace format references
 
 Treat these specifications as the public contract for durable workspace data. Rust owns parsing and deterministic serialization; TypeScript validators use the same [conformance fixtures](workspace-format/fixtures/):
 
 - [Workspace format v1](workspace-format/v1.md): manifests, managed Markdown, stable identifiers, and chats
-- [Encrypted sync protocol](workspace-format/sync-v1.md): signed operations, key envelopes, file changes, and attachments
-- [Collaboration protocol](workspace-format/collaboration.md): text generations, updates, and recovery
-- [Encrypted checkpoints](workspace-format/checkpoints.md): snapshots and access transitions
+- [Encrypted sync protocol, version 2](workspace-format/sync-v2.md): key domains, device chains, the Merkle manifest, padding, and every record the Rust client and server exchange (draft, waiting for sign-off)
+- [Encrypted sync protocol, version 1](workspace-format/sync-v1.md): the legacy app's signed operations, key envelopes, file changes, and attachments
+- [Collaboration protocol](workspace-format/collaboration.md): the legacy app's text generations, updates, and recovery
+- [Encrypted checkpoints](workspace-format/checkpoints.md): the legacy app's snapshots and access transitions
 
 ## Architecture references
 

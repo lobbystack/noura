@@ -508,7 +508,7 @@ impl Drop for ActiveWorkerGuard {
 
 fn run_worker(request: WorkerRequest) -> Result<WorkerResponse> {
     ACTIVE_WORKERS
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
             (active < MAX_ACTIVE_WORKERS).then_some(active + 1)
         })
         .map_err(|_| invalid("collaboration_worker_busy"))?;
@@ -872,30 +872,18 @@ fn restrict_worker_capabilities() -> std::io::Result<()> {
         libc::SYS_shutdown,
         libc::SYS_setsockopt,
         libc::SYS_getsockopt,
-        libc::SYS_open,
         libc::SYS_openat,
         libc::SYS_openat2,
-        libc::SYS_creat,
-        libc::SYS_unlink,
         libc::SYS_unlinkat,
-        libc::SYS_rename,
         libc::SYS_renameat,
         libc::SYS_renameat2,
-        libc::SYS_mkdir,
         libc::SYS_mkdirat,
-        libc::SYS_rmdir,
-        libc::SYS_link,
         libc::SYS_linkat,
-        libc::SYS_symlink,
         libc::SYS_symlinkat,
-        libc::SYS_mknod,
         libc::SYS_mknodat,
-        libc::SYS_chmod,
         libc::SYS_fchmod,
         libc::SYS_fchmodat,
-        libc::SYS_chown,
         libc::SYS_fchown,
-        libc::SYS_lchown,
         libc::SYS_fchownat,
         libc::SYS_truncate,
         libc::SYS_ftruncate,
@@ -906,11 +894,31 @@ fn restrict_worker_capabilities() -> std::io::Result<()> {
         libc::SYS_open_by_handle_at,
         libc::SYS_execve,
         libc::SYS_execveat,
-        libc::SYS_fork,
-        libc::SYS_vfork,
         libc::SYS_clone,
         libc::SYS_clone3,
     ];
+    // aarch64 has only the `*at` forms of these calls.
+    #[cfg(target_arch = "x86_64")]
+    let denied = [
+        denied.as_slice(),
+        &[
+            libc::SYS_open,
+            libc::SYS_creat,
+            libc::SYS_unlink,
+            libc::SYS_rename,
+            libc::SYS_mkdir,
+            libc::SYS_rmdir,
+            libc::SYS_link,
+            libc::SYS_symlink,
+            libc::SYS_mknod,
+            libc::SYS_chmod,
+            libc::SYS_chown,
+            libc::SYS_lchown,
+            libc::SYS_fork,
+            libc::SYS_vfork,
+        ],
+    ]
+    .concat();
     let mut filter = Vec::with_capacity(denied.len() * 2 + 5);
     filter.push(statement(BPF_LD_W_ABS, 4));
     filter.push(jump(BPF_JMP_JEQ_K, CURRENT_ARCH, 1, 0));

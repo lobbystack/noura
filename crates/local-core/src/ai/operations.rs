@@ -59,6 +59,19 @@ impl AiOperationRegistry {
             .is_some_and(|operation| operation.cancellation.send(()).is_ok()))
     }
 
+    /// Cancel every running request to the provider `provider_id`.
+    pub(super) fn cancel_provider(&self, provider_id: &str) -> Result<u32> {
+        let operations = self
+            .operations
+            .lock()
+            .map_err(|_| operation_lock_error("ai_provider_remove"))?;
+        Ok(operations
+            .values()
+            .filter(|operation| operation.consent_key.provider_id == provider_id)
+            .filter(|operation| operation.cancellation.send(()).is_ok())
+            .count() as u32)
+    }
+
     pub(super) fn cancel_matching(&self, consent_key: &AiConsentKey) -> Result<u32> {
         let operations = self
             .operations
@@ -86,7 +99,7 @@ impl Drop for AiOperation {
     }
 }
 
-pub(super) async fn run_stream<S: AiStreamer>(
+pub(super) async fn run_stream<S: AiStreamer + ?Sized>(
     mut operation: AiOperation,
     sender: mpsc::Sender<AiStreamFrame>,
     model: AiModelRef,

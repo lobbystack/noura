@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM rewrap_requests WHERE workspace = $1 AND domain = $2 AND epoch < $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9e450fe4aeb531c471a71874808a17762dbe56f75807b04aba0b64c69ca4208b"
+}

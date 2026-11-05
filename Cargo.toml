@@ -1,10 +1,44 @@
 [workspace]
 resolver = "2"
 members = [
+    "apps/desktop",
+    "crates/account-web",
+    "crates/app-core",
+    "crates/app-ui",
+    "crates/collab-sandbox",
+    "crates/editor-core",
+    "crates/editor-egui",
+    "crates/kit-host",
+    "crates/live-tests",
     "crates/local-core",
     "crates/mcp-server",
+    "crates/plugin-host",
+    "crates/plugin-host/trial/rust-hello",
+    "crates/plugin-host/test-plugins/kit",
+    "crates/plugin-host/test-plugins/misbehave",
+    "crates/plugin-host/test-plugins/probe",
+    "crates/plugin-host/test-plugins/recipes",
+    "crates/plugin-host/test-plugins/uses-files",
+    "crates/plugin-sdk",
+    "crates/plugins/ai",
+    "crates/plugins/calendar",
+    "crates/plugins/hello",
+    "crates/plugins/projects",
+    "crates/plugins/tasks",
+    "crates/spell-check",
     "crates/sync-key-envelope",
+    "crates/sync-protocol",
+    "crates/sync-server",
+    "crates/sync-store",
+    "crates/sync-store-postgres",
+    "crates/sync-store-sqlite",
     "crates/workspace-format",
+]
+# The legacy Tauri app is a read-only behavior reference. It builds from the
+# `legacy-reference` tag, not from this workspace.
+exclude = [
+    "crates/collab-sandbox/fuzz",
+    "crates/collab-sandbox-guest",
     "crates/workspace-format-wasm",
     "src-tauri",
 ]
@@ -13,11 +47,56 @@ members = [
 version = "0.2.0"
 edition = "2024"
 license = "MIT"
-rust-version = "1.91"
+rust-version = "1.99"
 
 [workspace.dependencies]
+aho-corasick = "1"
+# The account pages of the sync server, as templates with plain forms (ADR
+# 0003). MIT OR Apache-2.0.
+askama = "0.16.1"
+# Lets the server tests implement passkey-authenticator's traits. MIT OR
+# Apache-2.0.
+async-trait = "0.1.92"
+# The sync server's HTTP layer, on hyper's HTTP/1 server. MIT.
+axum = { version = "0.8.9", default-features = false, features = ["http1", "matched-path", "tokio"] }
+# Highlights fenced code in notes with tree-sitter grammars. MIT OR
+# Apache-2.0; each grammar keeps its own license, all MIT or Apache-2.0 in
+# this set. Default features are empty, so only these grammars build.
+arborium = { version = "=2.18.2", default-features = false, features = [
+    "lang-bash",
+    "lang-c",
+    "lang-c-sharp",
+    "lang-cpp",
+    "lang-css",
+    "lang-diff",
+    "lang-go",
+    "lang-html",
+    "lang-java",
+    "lang-javascript",
+    "lang-json",
+    "lang-kotlin",
+    "lang-lua",
+    "lang-markdown",
+    "lang-php",
+    "lang-python",
+    "lang-ruby",
+    "lang-rust",
+    "lang-sql",
+    "lang-swift",
+    "lang-toml",
+    "lang-tsx",
+    "lang-typescript",
+    "lang-xml",
+    "lang-yaml",
+] }
+# Adds Noura to the apps that open at login: a launch agent on macOS, the
+# Run key on Windows and an XDG autostart entry on Linux.
+auto-launch = "0.6.0"
 yrs = { version = "=0.26.0", features = ["small-client", "sync"] }
-age = { version = "=0.12.1", default-features = false }
+# local-core's v1 sync encryption. age 0.12 depends on ml-kem 0.2, whose kem
+# 0.3 pre-release can't share the lockfile with the kem 0.3 that hpke 0.14's
+# X-Wing needs for sync v2 (sync-v2.md §3), so v1 stays on age 0.11.
+age = { version = "=0.11.5", default-features = false }
 aes-gcm = "=0.10.3"
 base64 = "0.22"
 bech32 = "=0.11.1"
@@ -27,39 +106,208 @@ zeroize = { version = "1", features = ["derive"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 atomic-write-file = "0.3.1"
 blake3 = "1.8"
+bytes = "1"
+# The sync server's blob store on S3-compatible storage (sync-v2.md §21).
+# MIT OR Apache-2.0.
+object_store = { version = "0.14.2", default-features = false, features = ["aws"] }
+# An S3-compatible emulator over a directory, for the blob store's tests.
+# Apache-2.0.
+s3s = "0.17.0"
+s3s-fs = "0.17.0"
+# The sync server's accept loop. MIT.
+http-body = "1"
+hyper = { version = "1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+# The desktop app's updater. It checks the signatures cargo-packager writes
+# with minisign, which the desktop tests use to sign a local feed.
+cargo-packager-updater = "0.2.3"
+minisign = "0.7"
+# The editor's Markdown parser. Pinned to the release Lockbook's editor was
+# built and tested against; see docs/provenance/lockbook-editor.md.
+comrak = { version = "=0.50.0", default-features = false, features = ["shortcodes"] }
 directories = "6"
+dunce = "1"
 diffy = "=0.5.1"
+drag = "2.1.1"
+# eframe's native defaults. `clipboard` connects copy and paste to the
+# system clipboard through arboard, whose Windows crates are BSL-1.0.
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "links", "system_fonts", "wayland", "wgpu", "x11"] }
+egui = "0.37"
+egui-wgpu = { version = "0.37", default-features = false }
+egui_kittest = "0.37"
+# Decodes a web page in the character set its server names, for the AI's
+# page reads. (Apache-2.0 OR MIT) AND BSD-3-Clause.
+encoding_rs = "0.8.35"
+# The properties panel's date picker. MIT OR Apache-2.0.
+egui_extras = { version = "0.37", default-features = false, features = ["datepicker"] }
+# Shapes the editor's text and paints it through eframe's wgpu renderer.
+# 0.12 targets wgpu 30, the version eframe 0.37 uses.
+glyphon = "0.12"
 fs2 = "0.4"
 futures = "0.3"
 genai = "=0.6.5"
+# Renders PDF pages, reads their text and unlocks password-protected PDFs, in
+# Rust on the CPU. Apache-2.0 OR MIT. It embeds PDFium's Foxit fonts for the
+# standard PDF fonts and Adobe's CMaps, both BSD-3-Clause; see
+# THIRD_PARTY_NOTICES.md.
+hayro = "0.8.0"
 hkdf = "=0.12.4"
+# Turns a web page the AI reads into plain text, links kept as footnotes.
+# MIT.
+html2text = "0.17.4"
+# Parses a page the AI reads for html2text, which builds on it, so Noura
+# can stop a page nested too deeply while it parses. MIT OR Apache-2.0.
+html5ever = "0.40.1"
 hmac = "=0.12.1"
+# Bounds the sync server's caches of verified policy and account chains,
+# dropping the least recently used first. sqlx already uses this release.
+# MIT OR Apache-2.0.
+hashlink = "0.11.1"
+# ICU4X names months and weekdays and writes times in the computer's
+# locale on calendar grids, from data compiled into the app. Unicode-3.0.
+icu_calendar = { version = "2.3.0", default-features = false }
+icu_datetime = "2.3.0"
+icu_locale_core = "2.3.0"
+icu_time = { version = "2.3.0", default-features = false }
 ignore = "0.4"
+# Local sockets for single-instance handling: Unix domain sockets on macOS
+# and Linux, named pipes on Windows.
+interprocess = "2.4.6"
 jiff = { version = "0.2", features = ["serde"] }
+# Checks the arguments of plugin tools against each tool's JSON Schema.
+# Without default features it resolves no `$ref` over the network or from
+# files.
+jsonschema = { version = "0.59.0", default-features = false }
 keyring = "4"
+# Sign-in mail over SMTP for the sync server, with rustls. MIT.
+lettre = { version = "0.11.23", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
+# Reads command-line arguments as OsStrings, so a path that isn't UTF-8
+# reaches a check that refuses it instead of a panic. MIT, no dependencies.
+lexopt = "0.3.2"
+# Rotates the local diagnostic log at 1 MB and keeps three old files.
+logroller = "0.1.12"
+memchr = "2.8.3"
+# Without default features muda has no GTK backend: on Linux, menus need a GTK
+# window, which winit doesn't create.
+muda = { version = "0.21.2", default-features = false }
 trash = "5"
 notify = "8"
+# Ranks the command palette's and quick open's matches. MPL-2.0, used
+# unmodified.
+nucleo-matcher = "0.3.1"
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false }
+objc2-foundation = { version = "0.3.2", default-features = false }
+# `reveal` shows an item selected in Finder, Explorer or a Linux file manager.
+opener = { version = "0.9.0", features = ["reveal"] }
+openssl = "0.10"
+# A software passkey that signs up and in at seam 4. MIT OR Apache-2.0.
+passkey-authenticator = "0.6.0"
+passkey-client = "0.6.0"
+passkey-crypto = "0.1.1"
+passkey-types = "0.6.0"
+public-suffix = "0.1.3"
+parking_lot = "0.12.5"
 pbkdf2 = "=0.12.2"
+# Without default features proptest leaves out its process-forking runner.
+proptest = { version = "1.12", default-features = false, features = ["std"] }
 pulldown-cmark = "0.13"
+rand = "0.8"
+regex = "1.13.1"
+rfd = "0.16"
+ropey = "1.6.1"
+similar = { version = "2.7", features = ["unicode"] }
+unicode-linebreak = "0.1.5"
+unicode-segmentation = "1.13"
 rusqlite = { version = "0.37", features = ["bundled-full", "serde_json"] }
+rustc-hash = "2.1.3"
 rmcp = { version = "3.1", features = ["server", "transport-io"] }
 schemars = "1"
+# Plugin versions and interface versions in plugin manifests.
+semver = "1.0.28"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
 slug = "0.1"
+# The language and region the computer formats dates and times for.
+sys-locale = "0.3.2"
+# 0.9 accepts the libsqlite3-sys release that rusqlite 0.37 links.
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio"] }
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
+# Reads plugin manifests, with the line and column of each error.
+toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"] }
+tower-service = "0.3"
 tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 ts-rs = { version = "11", features = ["serde-compat"] }
 ulid = { version = "1", default-features = false }
+unicode-normalization = "0.1.25"
 uuid = { version = "1", features = ["v4", "serde"] }
+# Stays on the 48.x LTS line. cargo deny fails the build on an unpatched advisory.
+wasmtime = { version = "48.0.8", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
 url = "2"
+# Generates plugin-sdk's Rust bindings for `noura:plugin`.
+wit-bindgen = { version = "0.63.0", default-features = false, features = ["macros", "realloc"] }
 libc = "0.2"
+# ISpellChecker, the Windows spell checking API, which windows-sys leaves out
+# because it is COM.
+windows = "0.62.2"
 windows-sys = "0.61.2"
+# The winit release eframe 0.37 runs on, for its macOS and Windows event loop
+# options.
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
 wasm-bindgen = "0.2.127"
+# account-web's browser bindings: its fetches, forms and passkey calls.
+wasm-bindgen-futures = "0.4.77"
+web-sys = "0.3.104"
+webauthn-rs = "0.5"
+# The WebAuthn JSON types webauthn-rs speaks, and with `wasm` their
+# conversions to the browser's credential options, for account-web.
+# MPL-2.0, unmodified.
+webauthn-rs-proto = "=0.5.5"
 x25519-dalek = "=2.0.1"
 js-sys = "0.3.104"
+# Reads plugin release archives. Without default features it reads stored
+# and deflated entries only, inflated by zlib-rs, with no encryption and no
+# other compression format. Pinned: 9.0 had four patch releases in a week.
+zip = { version = "=9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+# Line tables keep backtraces readable at a fraction of full debug info's disk
+# cost, which matters with several worktrees building at once.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
+# Dependencies build without debug info to keep each worktree's build output small.
+[profile.dev.package."*"]
+debug = false
+
+# Tests compile the collaboration sandbox's guest module with Cranelift and
+# run it on Pulley. Unoptimized, one compile takes about 20 seconds and
+# Pulley runs many times slower, so the code generator, the interpreter and
+# the runtime build optimized in test builds too.
+[profile.dev.package.cranelift-codegen]
+opt-level = 2
+[profile.dev.package.cranelift-frontend]
+opt-level = 2
+[profile.dev.package.cranelift-bforest]
+opt-level = 2
+[profile.dev.package.cranelift-entity]
+opt-level = 2
+[profile.dev.package.regalloc2]
+opt-level = 2
+[profile.dev.package.wasmparser]
+opt-level = 2
+[profile.dev.package.wasmtime]
+opt-level = 2
+[profile.dev.package.wasmtime-environ]
+opt-level = 2
+[profile.dev.package.wasmtime-internal-cranelift]
+opt-level = 2
+[profile.dev.package.pulley-interpreter]
+opt-level = 2
