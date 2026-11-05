@@ -327,10 +327,13 @@ fn a_listed_provider_connects_with_a_pasted_key_and_consent_stays_per_provider()
     run(harness);
     assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
 
-    // Each provider Noura connects to shows with whether it's connected.
+    // Each provider Noura connects to shows, with no badge until it's
+    // connected.
     let openai = harness.get_by_role_and_label(Role::Group, "OpenAI");
+    let shown = texts(openai.query_all(By::new().role(Role::Label)));
     assert!(
-        texts(openai.query_all(By::new().role(Role::Label))).contains(&"Not connected".to_owned())
+        !shown.iter().any(|text| text.contains("onnected")),
+        "{shown:?}"
     );
     harness.get_by_role_and_label(Role::Group, "Anthropic");
     harness.get_by_role_and_label(Role::Group, "Local or custom");
@@ -368,7 +371,7 @@ fn a_listed_provider_connects_with_a_pasted_key_and_consent_stays_per_provider()
     // Consent stays per provider and per workspace.
     let local = harness.get_by_role_and_label(Role::Group, "Local in this workspace");
     let shown = texts(local.query_all(By::new().role(Role::Label)));
-    assert!(shown.contains(&"Not granted".to_owned()), "{shown:?}");
+    assert!(!shown.contains(&"Granted".to_owned()), "{shown:?}");
     let consent = (Role::Group, "Local in this workspace");
     click_in(harness, consent, Role::Button, "Grant");
     let local = harness.get_by_role_and_label(Role::Group, "Local in this workspace");
@@ -380,9 +383,8 @@ fn a_listed_provider_connects_with_a_pasted_key_and_consent_stays_per_provider()
     click_in(harness, (Role::Group, "OpenAI"), Role::Button, "OpenAI");
     click_in(harness, (Role::Group, "OpenAI"), Role::Button, "Remove key");
     let openai = harness.get_by_role_and_label(Role::Group, "OpenAI");
-    assert!(
-        texts(openai.query_all(By::new().role(Role::Label))).contains(&"Not connected".to_owned())
-    );
+    let shown = texts(openai.query_all(By::new().role(Role::Label)));
+    assert!(!shown.contains(&"Connected".to_owned()), "{shown:?}");
 }
 
 #[test]

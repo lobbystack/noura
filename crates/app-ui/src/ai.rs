@@ -11,7 +11,7 @@ use egui::{Frame, Id, Margin, RichText, Stroke, TextEdit, Ui, UiBuilder, accessk
 use zeroize::Zeroizing;
 
 use crate::{
-    common::{BadgeLook, Btn, Size, Variant, badge, description},
+    common::{Btn, Size, Variant, badge, description},
     theme::{Palette, radius},
 };
 
@@ -94,12 +94,7 @@ fn row_line(ui: &mut Ui) {
 
 /// A row you open and close: its name, a badge at its end and a caret.
 /// Returns whether you clicked it.
-fn provider_row(
-    ui: &mut Ui,
-    name: &str,
-    badge_text: Option<(&str, BadgeLook)>,
-    open: bool,
-) -> bool {
+fn provider_row(ui: &mut Ui, name: &str, badge_text: Option<&str>, open: bool) -> bool {
     let palette = Palette::of(ui.ctx());
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 48.0), egui::Sense::click());
@@ -143,7 +138,7 @@ fn provider_row(
         };
         crate::icons::paint(painter, icon, caret, palette.muted_foreground, false);
     }
-    if let Some((text, look)) = badge_text {
+    if let Some(text) = badge_text {
         let galley = ui.painter().layout_no_wrap(
             text.to_owned(),
             crate::theme::font(
@@ -159,7 +154,7 @@ fn provider_row(
             egui::vec2(width, 20.0),
         );
         let mut badge_ui = ui.new_child(UiBuilder::new().max_rect(badge_rect));
-        badge(&mut badge_ui, text, look);
+        badge(&mut badge_ui, text);
     }
     response.clicked()
 }
@@ -256,12 +251,9 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
             .accessibility_label(choice.name);
         ui.push_id(("ai-provider", choice.kind), |ui| {
             ui.scope_builder(builder, |ui| {
-                let status = if choice.connected {
-                    ("Connected", BadgeLook::Secondary)
-                } else {
-                    ("Not connected", BadgeLook::Outline)
-                };
-                if provider_row(ui, choice.name, Some(status), open) {
+                // Only a connected provider says so.
+                let status = choice.connected.then_some("Connected");
+                if provider_row(ui, choice.name, status, open) {
                     toggled = Some(choice.kind.to_owned());
                 }
                 if open {
@@ -298,7 +290,7 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
         .accessibility_label("Local or custom");
     ui.scope_builder(builder, |ui| {
         let count = (!custom_rows.is_empty()).then(|| format!("{} set up", custom_rows.len()));
-        let status = count.as_deref().map(|text| (text, BadgeLook::Secondary));
+        let status = count.as_deref();
         if provider_row(ui, "Local or custom", status, open) {
             toggled = Some(CUSTOM.to_owned());
         }
@@ -382,7 +374,7 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
                                         if Btn::new("Revoke").size(Size::Sm).show(ui).clicked() {
                                             change = Some(Change::Revoke(row.id.clone()));
                                         }
-                                        badge(ui, "Granted", BadgeLook::Secondary);
+                                        badge(ui, "Granted");
                                     } else {
                                         if Btn::new("Grant")
                                             .variant(Variant::Default)
@@ -392,7 +384,6 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
                                         {
                                             change = Some(Change::Allow(row.id.clone()));
                                         }
-                                        badge(ui, "Not granted", BadgeLook::Outline);
                                     }
                                 },
                             );
