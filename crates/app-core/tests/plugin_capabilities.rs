@@ -595,7 +595,7 @@ fn a_package_ships_every_first_party_plugin_and_the_first_run_screen_lists_each(
     settle(&mut app);
     assert_eq!(
         rail_titles(&app),
-        ["Inbox", "Files", "AI", "Calendar", "Projects", "Tasks"]
+        ["Inbox", "AI", "Files", "Tasks", "Calendar", "Projects"]
     );
 }
 
