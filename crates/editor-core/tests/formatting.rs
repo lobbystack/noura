@@ -1,6 +1,6 @@
 //! Seam 2: the formatting commands the toolbar and the shortcuts run,
-//! through `editor-core` alone. Ported from the legacy app's
-//! `packages/editor/src/commands.test.ts`, whose rules they keep.
+//! through `editor-core` alone. Ported from the legacy app's command
+//! tests, whose rules they keep.
 
 use editor_core::MdDoc;
 use editor_core::commands::Format;

@@ -1,5 +1,5 @@
 //! Which files open in the editor as plain text: the legacy app's list of
-//! text and code files, ported from `apps/app/src/lib/editor/text-files.ts`.
+//! text and code files.
 
 /// The extensions of the text and code files the editor opens, lowercase.
 const TEXT_EXTENSIONS: [&str; 37] = [

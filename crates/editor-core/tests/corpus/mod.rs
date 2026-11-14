@@ -6,7 +6,7 @@
 /// Each note, with where it comes from or what it holds.
 pub const NOTES: &[(&str, &str)] = &[
     (
-        "packages/editor/src/preview-view.test.ts KITCHEN_SINK",
+        "legacy editor preview-view.test.ts KITCHEN_SINK",
         "---\ntitle: Kitchen sink\ntags: [a, b]\n---\n\n# Heading with **bold** and *italic*\n\n\
          > [!note] Callout title\n> Callout body with [[Link|alias]] and #tag\n\n\
          > quote line one\n> quote line two\n\n\
@@ -18,79 +18,76 @@ pub const NOTES: &[(&str, &str)] = &[
          | A | B |\n| - | - |\n| 1 | 2 |\n\nSetext\n===\n\n---\n\nLast line ^block-id\n",
     ),
     (
-        "packages/editor/src/preview.test.ts table",
+        "legacy editor preview.test.ts table",
         "| A | B |\n| - | - |\n| 1 | 2 |\n",
     ),
     (
-        "packages/editor/src/preview.test.ts display math",
+        "legacy editor preview.test.ts display math",
         "Intro\n\n$$x + y$$\n\nOutro\n",
     ),
     (
-        "packages/editor/src/preview.test.ts embeds",
+        "legacy editor preview.test.ts embeds",
         "![[Notes/index]]\n\nprose ![[Note]] tail\n",
     ),
     (
-        "packages/editor/src/preview.test.ts padded embed",
+        "legacy editor preview.test.ts padded embed",
         "  ![[Note]]  \n",
     ),
     (
-        "packages/editor/src/preview.test.ts code span",
+        "legacy editor preview.test.ts code span",
         "Fenced-looking `[[Note]] $x$ ==h== #tag %%c%%` prose\n",
     ),
     (
-        "packages/editor/src/preview.test.ts hidden comment",
+        "legacy editor preview.test.ts hidden comment",
         "before %%secret **bold**%% after\n",
     ),
+    ("legacy editor preview.test.ts inline math", "$x$ here\n"),
     (
-        "packages/editor/src/preview.test.ts inline math",
-        "$x$ here\n",
-    ),
-    (
-        "packages/editor/src/preview.test.ts frontmatter",
+        "legacy editor preview.test.ts frontmatter",
         "---\ntitle: Plan\ntags: [a, \"#b\"]\nlink: \"[[Note]]\"\n---\n\nBody #tag\n",
     ),
     (
-        "packages/editor/src/preview.test.ts unclosed frontmatter",
+        "legacy editor preview.test.ts unclosed frontmatter",
         "---\ntext\n",
     ),
     (
-        "packages/editor/src/preview.test.ts multi-line math",
+        "legacy editor preview.test.ts multi-line math",
         "Intro\n\n$$\nx^2 + y^2\n$$\n\nOutro\n",
     ),
     (
-        "packages/editor/src/preview.test.ts math emphasis",
+        "legacy editor preview.test.ts math emphasis",
         "$$\na*b*c #x\n$$\n\nafter\n",
     ),
     (
-        "packages/editor/src/preview.test.ts blockquote",
+        "legacy editor preview.test.ts blockquote",
         "> one\n> two\n> three\n\nafter\n",
     ),
     (
-        "packages/editor/src/preview.test.ts callout",
+        "legacy editor preview.test.ts callout",
         "> [!note] Title\n> body\n\nafter\n",
     ),
     (
-        "packages/editor/src/preview.test.ts folded callout",
+        "legacy editor preview.test.ts folded callout",
         "> [!warning]- Careful\n> body\n\nafter\n",
     ),
     (
-        "packages/editor/src/preview.test.ts fenced code",
+        "legacy editor preview.test.ts fenced code",
         "```js\nconst a = 1;\n```\n\nafter\n",
     ),
     (
-        "packages/editor/src/preview.test.ts images",
+        "legacy editor preview.test.ts images",
         "![Alt](pic.png \"A title\")\n\n![[photo.jpg|300]]\n\nend\n",
     ),
     (
-        "packages/editor/src/preview.test.ts link",
+        "legacy editor preview.test.ts link",
         "See [the docs](https://example.com) now\n",
     ),
     (
-        "packages/editor/src/preview.test.ts tasks",
+        "legacy editor preview.test.ts tasks",
         "- [ ] one\n* [x] two\n+ [ ] three\n1. [X] four\n- [ ]\n\nend\n",
     ),
     (
-        "packages/editor/src/preview.test.ts currency",
+        "legacy editor preview.test.ts currency",
         "It costs $5 or $10 today\n\nUSD $5 and CAD $10\n",
     ),
     (

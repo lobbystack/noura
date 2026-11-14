@@ -1,6 +1,5 @@
-//! The egui theme, built from the legacy app's design tokens
-//! (`apps/app/src/app.css`): its light and dark colors, corner radii, type
-//! scale and spacing. The tokens are OKLCH colors; this module converts
+//! The egui theme, built from the legacy app's CSS design tokens: its
+//! light and dark colors, corner radii, type scale and spacing. The tokens are OKLCH colors; this module converts
 //! them to sRGB.
 
 use egui::{
