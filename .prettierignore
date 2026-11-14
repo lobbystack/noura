@@ -6,13 +6,10 @@ target/
 .opencode/
 .svelte-kit*/
 build/
-build-hosted/
 dist/
-src-tauri/icons/
 crates/workspace-format/bindings/
 Cargo.lock
 bun.lock
 sdk/typescript/**/package-lock.json
 crates/local-core/bindings/
-packages/shared/src/generated/
 sdk/typescript/**/src/generated/

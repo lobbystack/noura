@@ -1,6 +1,5 @@
 node_modules/
 .svelte-kit*/
-build-hosted/
 build/
 dist/
 target/
@@ -10,13 +9,9 @@ target/
 .env.*
 !.env.example
 index.sqlite*
-src-tauri/gen/
-# Written by scripts/generate-third-party-licenses.ts before release builds
-src-tauri/THIRD_PARTY_LICENSES.txt
 # Written by scripts/package-desktop.sh before packaging
 apps/desktop/packaging/THIRD_PARTY_LICENSES.html
 apps/desktop/packaging/plugins/
-packages/workspace-format-wasm/wasm/
 crates/workspace-format/bindings/
 
 # Local agent/tooling artifacts
