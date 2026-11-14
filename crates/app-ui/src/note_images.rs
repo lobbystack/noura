@@ -37,7 +37,7 @@ const LOADING_SIZE: Vec2 = Vec2::new(96.0, 96.0);
 const LOCKED_SIZE: Vec2 = Vec2::new(360.0, 96.0);
 
 /// What an embed of a locked PDF says beside its Open in tab button.
-pub(crate) const LOCKED_PDF: &str = "This PDF is locked. Open it in a tab to enter its password.";
+pub(crate) const LOCKED_PDF: &str = "Locked PDF. Open it in a tab to unlock it.";
 
 /// Where a workspace image stands.
 #[derive(Clone, PartialEq, Eq)]

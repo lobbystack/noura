@@ -3,7 +3,6 @@
 **/.svelte-kit*
 **/dist
 **/build
-**/build-hosted
 target
 **/.env
 **/.env.*

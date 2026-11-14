@@ -25,6 +25,13 @@ ignore = [
   # ml-kem 0.2 and a kem pre-release that can't share a lockfile with the kem
   # 0.3 under hpke 0.14's X-Wing (sync-v2.md §3).
   "RUSTSEC-2026-0173",
+  # Bundled SQLite before 3.54 can return stale page-cache memory when it opens
+  # a crafted database beside a `-wal` file of another page size. The fix
+  # needs libsqlite3-sys 0.39, and sqlx 0.9 accepts only below 0.38; both link
+  # one SQLite, so neither can move first. Noura opens only its own SQLite
+  # files, in its app data folder and on the sync server's disk, and never
+  # opens or syncs one from a workspace. Drop this once sqlx accepts 0.39.
+  "RUSTSEC-2026-0459",
   # proc-macro-error, through the GTK crates the `drag` crate uses on Linux.
   # The desktop crate uses `drag` on macOS and Windows only, so no build
   # compiles them, but cargo deny reads every target's dependencies.
@@ -34,11 +41,6 @@ ignore = [
   # depends on unmaintained smallstr 0.3.1. This is a maintenance advisory,
   # not a reported vulnerability; decoder isolation remains a release gate.
   "RUSTSEC-2026-0215",
-  # crypto-bigint 0.5.5's timing leaks, through age 0.12.1's P-256 tag
-  # recipients. age has no release on crypto-bigint 0.7.6 yet, and Noura
-  # encrypts and decrypts with X25519 keys only, so no P-256 arithmetic
-  # runs on its secrets. Drop this once age moves to elliptic-curve 0.14.
-  "RUSTSEC-2026-0387",
 ]
 
 [bans]

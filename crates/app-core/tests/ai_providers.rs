@@ -213,3 +213,62 @@ fn a_key_reaches_only_the_credential_store_and_the_provider() {
     assert!(system.credentials.secrets().is_empty());
     assert!(!app.ai_providers()[0].has_key);
 }
+
+#[test]
+fn a_listed_provider_connects_with_only_its_key_and_gets_its_default_model() {
+    let fixture = Fixture::new(&[]);
+    let system = FakeSystem::new();
+    let mut app = fixture.app_with(system.clone());
+
+    let choices = app.ai_provider_choices();
+    let kinds: Vec<&str> = choices.iter().map(|choice| choice.kind).collect();
+    assert_eq!(kinds, app_core::AI_KEY_PROVIDERS.map(|(kind, _)| kind));
+    assert!(choices.iter().all(|choice| !choice.connected));
+    assert_eq!(choices[0].name, "OpenAI");
+
+    assert!(app.connect_ai_provider("anthropic", "  ").is_err());
+    let id = app.connect_ai_provider("anthropic", KEY).unwrap();
+
+    let row = app
+        .ai_providers()
+        .into_iter()
+        .find(|row| row.id == id)
+        .unwrap();
+    assert_eq!(
+        (row.kind.as_str(), row.model.as_str(), row.name.as_str()),
+        ("anthropic", "claude-sonnet-4-5", "Anthropic")
+    );
+    assert!(row.enabled && row.has_key && row.endpoint.is_none());
+    assert_eq!(system.credentials.secrets(), [KEY.to_owned()]);
+    let anthropic = |app: &app_core::App| {
+        app.ai_provider_choices()
+            .into_iter()
+            .find(|choice| choice.kind == "anthropic")
+            .unwrap()
+    };
+    assert!(anthropic(&app).connected);
+    assert_eq!(anthropic(&app).provider.as_deref(), Some(id.as_str()));
+
+    // A new key replaces the old one and keeps the provider's settings.
+    app.save_ai_provider(AiProviderInput {
+        id: Some(id.clone()),
+        ..ai::provider("Mine", "anthropic", "claude-other", None)
+    })
+    .unwrap();
+    app.connect_ai_provider("anthropic", "sk-second").unwrap();
+    let row = app
+        .ai_providers()
+        .into_iter()
+        .find(|row| row.id == id)
+        .unwrap();
+    assert_eq!(
+        (row.name.as_str(), row.model.as_str()),
+        ("Mine", "claude-other")
+    );
+    assert_eq!(system.credentials.secrets(), ["sk-second".to_owned()]);
+
+    app.remove_ai_provider_key(&id).unwrap();
+    assert!(!anthropic(&app).connected);
+    assert!(system.credentials.secrets().is_empty());
+    assert!(app.connect_ai_provider("ollama", KEY).is_err());
+}

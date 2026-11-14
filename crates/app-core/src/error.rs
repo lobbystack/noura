@@ -75,9 +75,9 @@ impl AppError {
                 _ => format!("Something inside {path} is a link, and Noura won't follow it."),
             },
             _ => match (error.category, access) {
-                (ErrorCategory::Permission, Access::SetUpWorkspace) => format!(
-                    "Noura doesn't have permission to add its .noura settings folder to {path}."
-                ),
+                (ErrorCategory::Permission, Access::SetUpWorkspace) => {
+                    format!("Noura can't add its .noura folder to {path}.")
+                }
                 (ErrorCategory::Permission, _) => {
                     format!("Noura doesn't have permission to read {path}.")
                 }

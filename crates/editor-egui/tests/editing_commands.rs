@@ -407,3 +407,33 @@ fn replace_and_replace_all_change_the_matches() {
     press(&mut harness, Modifiers::COMMAND, Key::Z);
     assert_eq!(text(&harness), "cow dog cat dog cat\n");
 }
+
+#[test]
+fn every_toolbar_button_is_one_height_on_one_line_whatever_its_glyph() {
+    let harness = harness("Some text\n");
+    let toolbar = harness.get_by_role_and_label(Role::Toolbar, "Formatting");
+    let buttons: Vec<_> = toolbar
+        .query_all_by_role(Role::Button)
+        .map(|button| {
+            (
+                button.accesskit_node().label().unwrap_or_default(),
+                button.rect(),
+            )
+        })
+        .collect();
+    assert!(buttons.len() >= 13, "{buttons:?}");
+    for (name, rect) in &buttons {
+        assert_eq!(rect.height(), 28.0, "{name}");
+        assert_eq!(rect.top(), buttons[0].1.top(), "{name}");
+        // The inline formats are wider, as the legacy toggles were.
+        let width = if ["Bold", "Italic", "Underline", "Strikethrough"]
+            .iter()
+            .any(|format| name.starts_with(format))
+        {
+            36.0
+        } else {
+            28.0
+        };
+        assert_eq!(rect.width(), width, "{name}");
+    }
+}

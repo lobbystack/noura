@@ -7,13 +7,10 @@ Use this runbook for contributor and release review of the desktop Local Alpha. 
 1. Run the automated gates from the repository root:
 
    ```sh
-   bun run check
-   bun run test
-   bun run build
-   bun run format:check
-   cargo clippy --workspace --all-targets --all-features -- -D warnings
-   bun run bindings:check
-   bun run licenses:check
+   cargo fmt --all --check
+   cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+   cargo test --workspace --locked
+   cargo deny check
    ```
 
 2. Run the shared-engine proof by itself when diagnosing Model Context Protocol (MCP) or watcher failures:
@@ -22,10 +19,11 @@ Use this runbook for contributor and release review of the desktop Local Alpha. 
    cargo test -p noura-mcp --test shared_files
    ```
 
-3. Start the desktop app:
+3. Build the plugins that ship with Noura, then start the desktop app:
 
    ```sh
-   bun run tauri dev
+   scripts/build-shipped-plugins.sh
+   cargo run -p desktop
    ```
 
 4. Create a disposable workspace. Keep `.noura/workspace.yaml` open so its workspace identifier (ID) and enabled plugins remain visible.
@@ -70,10 +68,9 @@ Use this runbook for contributor and release review of the desktop Local Alpha. 
 
 ## Verify disposable-index recovery
 
-1. In Settings, choose **Rebuild index**. Confirm the button stays disabled while running and a success toast appears. Confirm every projection refreshes.
-2. Record each object's ID, path, body, and dated properties.
-3. Quit Noura.
-4. Find the workspace’s local index by matching the ID from `.noura/workspace.yaml`. On macOS, search the application-data directory with:
+1. Record each object's ID, path, body, and dated properties.
+2. Quit Noura.
+3. Find the workspace’s local index by matching the ID from `.noura/workspace.yaml`. On macOS, search the application-data directory with:
 
    ```sh
    find "$HOME/Library/Application Support" -path "*/workspaces/*/index.sqlite" -print
@@ -81,8 +78,8 @@ Use this runbook for contributor and release review of the desktop Local Alpha. 
 
    On other platforms, locate the index in Noura’s operating system application-data directory. Match the workspace ID before deleting any index.
 
-5. Delete only that workspace's `index.sqlite`, then reopen Noura and the disposable workspace.
-6. Confirm notes, tasks, projects, IDs, paths, bodies, search results, Calendar results, and project boards match the recorded state. Calendar may return to Month because its view preference is disposable.
+4. Delete only that workspace's `index.sqlite`, then reopen Noura and the disposable workspace.
+5. Confirm notes, tasks, projects, IDs, paths, bodies, search results, Calendar results, and project boards match the recorded state. Calendar may return to Month because its view preference is disposable.
 
 ## Record the results
 
@@ -100,5 +97,4 @@ Record one result for every row. Resolve failures before handoff.
 | Local conflict resolution    | Pass / Fail |                   |
 | External conflict resolution | Pass / Fail |                   |
 | MCP mutation refresh         | Pass / Fail |                   |
-| Settings rebuild             | Pass / Fail |                   |
 | Deleted-index recovery       | Pass / Fail |                   |

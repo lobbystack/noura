@@ -99,6 +99,14 @@ impl Filters {
         due_by: None,
     };
 
+    /// Whether any filter narrows the view.
+    pub(crate) fn active(&self) -> bool {
+        self.status.is_some()
+            || !matches!(self.project, ProjectFilter::Any)
+            || self.folder.is_some()
+            || self.due_by.is_some()
+    }
+
     /// Whether `task` passes every filter.
     pub(crate) fn keep(&self, task: &Task, now: &Now) -> bool {
         let status = self

@@ -1,5 +1,7 @@
 # Better Auth `int8` type-match patch
 
+> **Removed 2026-11-14.** The 2026-11-14 cleanup deleted the legacy server that used Better Auth, and the root `package.json` no longer applies this patch. The record stays as history.
+
 - Repository: https://github.com/better-auth/better-auth
 - Package: `better-auth@1.7.2`, pinned in `bun.lock`
 - Source file: `dist/db/get-migration.mjs`

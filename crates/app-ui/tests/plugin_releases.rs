@@ -78,6 +78,11 @@ fn install_from_github(harness: &mut Ui, address: &str) {
         .get_by_role_and_label(Role::Button, "Plugins")
         .click();
     harness.run();
+    // The ways to install sit under the list of plugins.
+    dialog(harness, "Settings")
+        .get_by_role_and_label(Role::TextInput, "Release address")
+        .scroll_to_me();
+    harness.run();
     dialog(harness, "Settings")
         .get_by_role_and_label(Role::TextInput, "Release address")
         .click();
@@ -109,8 +114,7 @@ fn the_install_dialog_shows_the_release_with_a_warning_and_cancel_installs_nothi
         "Install Probe?",
         "Version 0.1.0",
         RELEASE,
-        "Nobody reviewed this plugin. Anyone can publish a release on GitHub, so install it \
-         if you trust its author.",
+        "Nobody reviewed this plugin. Install it only if you trust its author.",
         "Add pages to the rail and show panels in them.",
         "Connect to api.example.com.",
         "network",
@@ -180,6 +184,15 @@ fn a_plugin_from_github_checks_for_updates_from_its_row() {
         .get_by_role_and_label(Role::Button, "Install")
         .click();
     settle(harness);
+    let details = "Probe settings";
+    dialog(harness, "Settings")
+        .get_by_role_and_label(Role::Button, details)
+        .scroll_to_me();
+    harness.run();
+    dialog(harness, "Settings")
+        .get_by_role_and_label(Role::Button, details)
+        .click();
+    harness.run();
 
     let row = dialog(harness, "Settings").get_by_role_and_label(Role::Group, "Probe");
     let shown = labels(&row);
@@ -194,10 +207,5 @@ fn a_plugin_from_github_checks_for_updates_from_its_row() {
 
     let row = dialog(harness, "Settings").get_by_role_and_label(Role::Group, "Probe");
     let shown = labels(&row);
-    assert!(
-        shown
-            .iter()
-            .any(|label| label == "Version 0.1.0 is the newest release."),
-        "{shown:?}"
-    );
+    assert!(shown.iter().any(|label| label == "Up to date"), "{shown:?}");
 }

@@ -9,12 +9,11 @@ Use these guides to run Noura, understand its file-backed workspace, and contrib
 - **Understand workspace files**: read the [workspace format](workspace-format/v1.md) and [local-core architecture](architecture/local-core.md)
 - **Understand AI access**: read about [provider consent, tool approval, and chat persistence](architecture/ai-runtime.md)
 - **Publish a release**: follow the [release guide](releasing.md) to ship signed installers and updates
-- **Run the sync service**: follow [server setup](../apps/server/README.md), then the [operations guide](../apps/server/OPERATIONS.md)
-- **Host the Rust sync server**: follow the [self-hosting guide](self-hosting.md)
+- **Host the sync server**: follow the [self-hosting guide](self-hosting.md)
 
 ## Workspace format references
 
-Treat these specifications as the public contract for durable workspace data. Rust owns parsing and deterministic serialization; TypeScript validators use the same [conformance fixtures](workspace-format/fixtures/):
+Treat these specifications as the public contract for durable workspace data. `crates/workspace-format` owns parsing and deterministic serialization, and the Rust tests check the shared [conformance fixtures](workspace-format/fixtures/):
 
 - [Workspace format v1](workspace-format/v1.md): manifests, managed Markdown, stable identifiers, and chats
 - [Encrypted sync protocol, version 2](workspace-format/sync-v2.md): key domains, device chains, the Merkle manifest, padding, and every record the Rust client and server exchange (draft, waiting for sign-off)

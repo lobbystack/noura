@@ -2432,20 +2432,12 @@ fn public_message(message: ChatMessage) -> AiMessage {
 /// people. Neither ever holds a provider's own words, headers or a key.
 fn failure_of(error: &CoreError) -> AiFailure {
     let message = match error.code.as_str() {
-        "ai_consent_required" => {
-            "Noura needs your consent before this provider receives the workspace's content."
-        }
+        "ai_consent_required" => "This provider needs your consent first.",
         "provider_not_found" => "The provider isn't set up or turned on anymore.",
-        "credential_store_error" => {
-            "Noura couldn't read the provider's key from this computer's credential store."
-        }
-        "endpoint_insecure" => {
-            "Use an HTTPS address. Plain HTTP works only for a server on this computer."
-        }
-        "revision_conflict" => "The chat changed elsewhere, so Noura didn't save the answer.",
-        "provider_stream_incomplete" => {
-            "The provider stopped before it finished answering. Try again."
-        }
+        "credential_store_error" => "Couldn't read the provider's key from the credential store.",
+        "endpoint_insecure" => "Use HTTPS, or HTTP only for a server on this computer.",
+        "revision_conflict" => "The chat changed elsewhere, so the answer wasn't saved.",
+        "provider_stream_incomplete" => "The provider stopped early. Try again.",
         PLUGIN_DISABLED => "You turned off a plugin this answer relied on.",
         _ => match error.category {
             local_core::ErrorCategory::Provider | local_core::ErrorCategory::Transient => {
@@ -2518,9 +2510,7 @@ fn settings_error(error: CoreError) -> AppError {
     let message = match error.code.as_str() {
         "provider_invalid" => "Give the provider a model.".to_owned(),
         "provider_kind_invalid" => "Choose one of the kinds Noura offers.".to_owned(),
-        "credential_store_error" => {
-            "Noura couldn't reach this computer's credential store for the key.".to_owned()
-        }
+        "credential_store_error" => "Couldn't reach the credential store.".to_owned(),
         "credential_empty" => "Enter the key.".to_owned(),
         "provider_not_found" => "Turn the provider on first.".to_owned(),
         _ => error.message,
@@ -2533,10 +2523,7 @@ fn no_workspace() -> AppError {
 }
 
 fn unwritten() -> ServiceError {
-    ServiceError::Failed(
-        "This chat isn't saved until its first message goes out, so it can't change yet."
-            .to_owned(),
-    )
+    ServiceError::Failed("Send a first message to save this chat.".to_owned())
 }
 
 fn no_workspace_core() -> CoreError {
@@ -2595,9 +2582,80 @@ pub(crate) fn provider_kinds() -> &'static [(&'static str, &'static str)] {
     &AI_PROVIDER_KINDS
 }
 
+/// The providers Settings lists for you to connect with only a key, in
+/// the order it lists them, each with the model its chats use. Ollama and
+/// OpenAI-compatible servers, which need an address, go under Local or
+/// custom; OpenAI Responses is OpenAI's own other interface.
+pub const AI_KEY_PROVIDERS: [(&str, &str); 10] = [
+    ("openai", "gpt-4.1-mini"),
+    ("anthropic", "claude-sonnet-4-5"),
+    ("gemini", "gemini-2.5-flash"),
+    ("groq", "llama-3.3-70b-versatile"),
+    ("deepseek", "deepseek-chat"),
+    ("xai", "grok-3-mini"),
+    ("together", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
+    (
+        "fireworks",
+        "accounts/fireworks/models/llama-v3p3-70b-instruct",
+    ),
+    ("cohere", "command-a-03-2025"),
+    ("open_router", "openrouter/auto"),
+];
+
+/// One provider Settings lists to connect with a key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiProviderChoice {
+    /// One of [`AI_PROVIDER_KINDS`], such as `openai`.
+    pub kind: &'static str,
+    /// The name Settings shows, such as `OpenAI`.
+    pub name: &'static str,
+    /// The model a new connection's chats use.
+    pub default_model: &'static str,
+    /// The provider you set up of this kind with no address of its own,
+    /// if there is one.
+    pub provider: Option<String>,
+    /// Whether that provider's key is in the credential store.
+    pub connected: bool,
+}
+
+/// Each provider Settings lists, with what `rows` holds of it: the first
+/// provider of its kind with no address of its own.
+pub(crate) fn provider_choices(rows: &[AiProviderRow]) -> Vec<AiProviderChoice> {
+    AI_KEY_PROVIDERS
+        .iter()
+        .map(|(kind, model)| {
+            let name = AI_PROVIDER_KINDS
+                .iter()
+                .find(|(known, _)| known == kind)
+                .map_or(*kind, |(_, name)| name);
+            let row = rows
+                .iter()
+                .find(|row| row.kind == *kind && row.endpoint.is_none());
+            AiProviderChoice {
+                kind,
+                name,
+                default_model: model,
+                provider: row.map(|row| row.id.clone()),
+                connected: row.is_some_and(|row| row.has_key),
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_provider_settings_lists_is_a_kind_noura_connects_to() {
+        for (kind, model) in AI_KEY_PROVIDERS {
+            assert!(
+                AI_PROVIDER_KINDS.iter().any(|(known, _)| *known == kind),
+                "{kind}"
+            );
+            assert!(!model.is_empty());
+        }
+    }
 
     #[test]
     fn a_first_message_names_its_chat_from_its_first_line() {

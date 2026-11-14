@@ -102,7 +102,7 @@ fn conflict_review_labels_both_versions_and_escape_leaves_a_banner_that_opens_it
 
     assert!(!has(&harness, Role::Dialog, "Choose a version"));
     let banner = harness.get_by_role_and_label(Role::Alert, "This file changed in another app");
-    banner.get_by_label("Your text is still here. Compare both versions and choose one.");
+    banner.get_by_label("Your text is still here.");
     assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
     banner
         .get_by_role_and_label(Role::Button, "Compare")
@@ -183,7 +183,7 @@ fn a_note_deleted_while_you_type_offers_restore() {
     });
 
     let banner = harness.get_by_role_and_label(Role::Alert, "This file was deleted");
-    banner.get_by_label("Your text is still here. You can put the file back.");
+    banner.get_by_label("Your text is still here.");
     banner
         .get_by_role_and_label(Role::Button, "Restore")
         .click();

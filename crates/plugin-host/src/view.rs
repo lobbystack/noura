@@ -15,7 +15,10 @@
 
 use std::collections::HashSet;
 
-use crate::{CalendarEntry, CalendarMode, Choice, Column, Node, NodeKind, Value, VirtualRow};
+use crate::{
+    CalendarEntry, CalendarMode, Choice, Column, HeadingLevel, Icon, Node, NodeKind, Value,
+    VirtualRow,
+};
 
 /// The most nodes a view may hold.
 pub const MAX_NODES: usize = 10_000;
@@ -154,7 +157,30 @@ pub enum ViewKind {
         start: String,
         end: Option<String>,
     },
+    /// A page's or a section's title, whose children are its buttons and
+    /// choice inputs.
+    Heading {
+        text: String,
+        level: HeadingLevel,
+        detail: Option<String>,
+        icon: Option<Icon>,
+    },
+    /// What an empty page or section shows, whose children are its
+    /// buttons.
+    Empty {
+        title: String,
+        detail: Option<String>,
+        icon: Option<Icon>,
+    },
+    /// Two panes side by side, the first `first_width` points wide,
+    /// whose children are the two panels.
+    Split {
+        first_width: u32,
+    },
 }
+
+/// The narrowest and widest a split's first pane may be, in points.
+pub const SPLIT_WIDTHS: std::ops::RangeInclusive<u32> = 160..=640;
 
 /// Why a node list or a virtual list's rows can't be drawn. The message
 /// names the rule and the node, for the error shown in place of the view.
@@ -306,6 +332,9 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Card(_) => "card",
         NodeKind::Calendar(_) => "calendar",
         NodeKind::Entry(_) => "entry",
+        NodeKind::Heading(_) => "heading",
+        NodeKind::Empty(_) => "empty state",
+        NodeKind::Split(_) => "split",
     }
 }
 
@@ -328,6 +357,15 @@ fn check_node(node: &Node) -> Result<(), ViewError> {
             invalid(format!("The row {id} has no cell with text."))
         }
         NodeKind::Row(_) => Ok(()),
+        NodeKind::Heading(heading) if blank(&heading.text) => Err(unlabeled()),
+        NodeKind::Empty(empty) if blank(&empty.title) => Err(unlabeled()),
+        NodeKind::Heading(_) | NodeKind::Empty(_) => Ok(()),
+        NodeKind::Split(width) if !SPLIT_WIDTHS.contains(width) => invalid(format!(
+            "The split {id}'s first pane is {width} points wide; it must be {} to {}.",
+            SPLIT_WIDTHS.start(),
+            SPLIT_WIDTHS.end()
+        )),
+        NodeKind::Split(_) => Ok(()),
         NodeKind::Button(label)
         | NodeKind::Menu(label)
         | NodeKind::Board(label)
@@ -596,6 +634,46 @@ fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
             }
             Ok(())
         }
+        // A heading holds its buttons and choices, such as a calendar's
+        // mode; an empty state only buttons.
+        NodeKind::Heading(_) => {
+            for child in children {
+                let choice = matches!(
+                    &child.kind,
+                    NodeKind::Input(input) if matches!(input.value, Value::Choice(_))
+                );
+                if !matches!(child.kind, NodeKind::Button(_)) && !choice {
+                    return misplaced(format!(
+                        "The {kind} {id} holds {}, which isn't a button or a choice.",
+                        child.id
+                    ));
+                }
+            }
+            Ok(())
+        }
+        NodeKind::Split(_) => {
+            let count = parent.children.len();
+            let panels = children
+                .filter(|child| matches!(child.kind, NodeKind::Panel(_)))
+                .count();
+            if count != 2 || panels != 2 {
+                return misplaced(format!(
+                    "The split {id} holds {count} nodes and {panels} panels; it holds two panels."
+                ));
+            }
+            Ok(())
+        }
+        NodeKind::Empty(_) => {
+            for child in children {
+                if !matches!(child.kind, NodeKind::Button(_)) {
+                    return misplaced(format!(
+                        "The {kind} {id} holds {}, which isn't a button.",
+                        child.id
+                    ));
+                }
+            }
+            Ok(())
+        }
         NodeKind::Calendar(_) => {
             for child in children {
                 if !matches!(child.kind, NodeKind::Entry(_)) {
@@ -777,6 +855,20 @@ fn build(
             title: entry.title.clone(),
             start: entry.start.clone(),
             end: entry.end.clone(),
+        },
+        NodeKind::Heading(heading) => ViewKind::Heading {
+            text: heading.text.clone(),
+            level: heading.level,
+            detail: heading.detail.clone().filter(|detail| !blank(detail)),
+            icon: heading.icon,
+        },
+        NodeKind::Empty(empty) => ViewKind::Empty {
+            title: empty.title.clone(),
+            detail: empty.detail.clone().filter(|detail| !blank(detail)),
+            icon: empty.icon,
+        },
+        NodeKind::Split(width) => ViewKind::Split {
+            first_width: *width,
         },
     };
     let children: Vec<ViewNode> = node

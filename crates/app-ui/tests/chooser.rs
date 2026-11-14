@@ -15,7 +15,7 @@ fn with_no_recent_workspace_the_chooser_offers_open_folder_and_new_workspace() {
 
     harness.get_by_role_and_label(Role::Button, "Open folder…");
     harness.get_by_role_and_label(Role::Button, "New workspace…");
-    assert!(harness.query_by_label("Recent workspaces").is_none());
+    assert!(harness.query_by_label("Recent").is_none());
     assert!(harness.unnamed_widgets().is_empty());
 }
 

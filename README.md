@@ -2,7 +2,7 @@
 
 The open workspace for humans and AI.
 
-noura is an open-source, local-first desktop workspace for notes, tasks, projects, and AI chat. Keep your work in ordinary files you can edit, back up, and use without noura.
+noura is an open-source, local-first desktop workspace for notes, tasks, projects, and AI chat. Your work stays in ordinary files you can edit, back up, and use without noura.
 
 [![Status: Local Alpha](https://img.shields.io/badge/status-Local%20Alpha-8b5cf6)](#try-noura) [![Continuous integration](https://github.com/lobbystack/noura/actions/workflows/ci.yml/badge.svg)](https://github.com/lobbystack/noura/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -10,85 +10,86 @@ noura is an open-source, local-first desktop workspace for notes, tasks, project
 
 ## A workspace built from plugins
 
-Files and the Markdown editor are always on. Tasks, projects, calendar, and AI are first-party plugins: choose the ones each workspace needs in **Settings**.
+Files and the Markdown editor are always on. Tasks, projects, calendar, and AI are first-party plugins. Each runs as a WebAssembly component with only the capabilities you approve, and you turn plugins on for each workspace in **Settings** > **Plugins**.
 
-Start with notes for writing, then add tasks and projects to organize the work around them. Turning a plugin off leaves its files in place. Plugins use [shared capabilities](docs/architecture/plugin-runtime.md#capabilities) to work with your files and contribute commands or AI context.
+Turning a plugin off leaves its files in place. You can also install plugins from a folder or from GitHub, or [write your own](docs/plugins/README.md) in TypeScript or Rust.
 
 ## Work in one workspace
 
 Write project notes, track tasks, and give your AI assistant context from the same workspace:
 
-- **Notes**: write and edit Markdown
+- **Notes**: write and edit Markdown, and open PDFs and images beside them
 - **Tasks and projects**: track priorities, due dates, and progress on project boards
 - **Calendar**: view scheduled work by month, week, or day
 - **Search**: find content across your workspace with full-text search
-- **AI chat**: connect your provider, allow it to read workspace content, and approve each tool action
-- **External AI tools**: read and update notes and tasks through [Model Context Protocol (MCP)](https://modelcontextprotocol.io/docs/getting-started/intro). noura doesn't ask before each MCP action, so connect only tools you trust
+- **AI chat**: connect your provider, allow it to read workspace content, and approve each tool call
+- **External AI tools**: read and update notes and tasks through the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/docs/getting-started/intro). noura doesn't ask before each MCP action, so connect only tools you trust.
 
 ## Keep control of your work
 
 Use noura alongside your existing tools:
 
-- **Open files**: keep notes, tasks, projects, and chat history as Markdown with structured metadata
+- **Open files**: notes, tasks, projects, and chat history stay Markdown files with structured metadata
 - **Local use**: read and edit your workspace offline, without an account or hosted service
-- **External editing**: edit, move, and rename files with other tools; review conflicts when changes overlap
-- **AI permissions**: choose your provider and authorize sending workspace content before an in-app AI request
-- **Credentials**: noura stores provider credentials in your operating system’s credential store
+- **External editing**: edit, move, and rename files with other tools, and review conflicts when changes overlap
+- **AI permissions**: choose your provider, and allow it to read workspace content before the first request
+- **Credentials**: noura keeps provider keys in your operating system's credential store
+- **Sync**: turn on end-to-end encrypted sync for a workspace with a [sync server](docs/self-hosting.md), which stores ciphertext and the metadata it needs to route it
 
 ## Try noura
 
 Download the installer for macOS, Windows, or Linux from [noura.app](https://noura.app/#download) or the [releases page](https://github.com/lobbystack/noura/releases). noura is an early alpha, so keep backups of important files.
 
-To run the desktop app from source, install these prerequisites:
+### Run noura from source
 
-- [Bun](https://bun.sh/docs/installation) 1.3.14
-- [Rust](https://www.rust-lang.org/tools/install) 1.91 or newer
-- [Tauri 2 platform prerequisites](https://v2.tauri.app/start/prerequisites/) for your operating system
+Install these tools first:
+
+- **[rustup](https://www.rust-lang.org/tools/install)**: it installs the Rust version that `rust-toolchain.toml` pins
+- **[NASM](https://nasm.us) 2.14 or newer**, on an Intel or AMD computer only: the AVIF decoder assembles its x86 code with it. Run `brew install nasm`, `sudo apt-get install nasm`, or `choco install nasm`, and make sure it's on your `PATH`.
+- **Git Bash**, on Windows only: it runs the repository's scripts
+
+Clone the repository, install the pinned toolchain with its WebAssembly target, build the plugins that ship with noura, and start the app:
 
 ```sh
 git clone https://github.com/lobbystack/noura.git
 cd noura
-bun install
-bun run tauri dev
+rustup toolchain install
+rustup target add wasm32-wasip2
+scripts/build-shipped-plugins.sh
+cargo run -p desktop
 ```
 
-Create a workspace, add a note, and open the note’s Markdown file in your editor.
+`scripts/build-shipped-plugins.sh` builds the Tasks, Projects, Calendar, and AI plugins into `apps/desktop/packaging/plugins`, and `cargo run` loads them from there.
+
+Create a workspace, add a note, and open the note's Markdown file in your editor.
 
 ## Develop noura
 
-The browser workspace build also requires the Rust Wasm target and the wasm-bindgen CLI version that matches the Rust dependency:
+Run the checks CI runs from the repository root:
 
 ```sh
-rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.127 --locked
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --locked
+cargo deny check
 ```
 
-To build the Rust crates on an Intel or AMD computer, install [NASM](https://nasm.us) 2.14 or newer and put it on your `PATH`. rav1d, the AVIF decoder in `crates/app-ui`, assembles its x86 code with it. Install it with `brew install nasm`, `sudo apt-get install nasm` or `choco install nasm`. Apple silicon Macs and other ARM computers don't need it.
+Some plugin tests load the plugins as WebAssembly components and skip themselves when the components are missing. Build them first with `crates/plugin-sdk/build-plugins.sh`. Follow the [contributor guide](CONTRIBUTING.md) for the rest of the checks, and the [desktop verification guide](docs/testing/local-alpha-acceptance.md) for the manual workflows.
 
-Run the development checks from the repository root:
-
-```sh
-bun run check
-bun run test
-bun run build
-bun run format:check
-```
-
-Follow the [desktop verification guide](docs/testing/local-alpha-acceptance.md) for the full checks and workspace workflows.
-
-To work on the marketing website, start its development server:
+The TypeScript plugin kit in `sdk/typescript` uses Node and npm. The marketing website uses [Bun](https://bun.sh/docs/installation). To work on the website, install its packages and start its development server:
 
 ```sh
+bun install
 bun run dev:website
 ```
 
-Open `http://127.0.0.1:5174` in your browser.
+Then open `http://127.0.0.1:5174` in your browser.
 
 ## How noura stores your workspace
 
 Your workspace is a folder with a [manifest](docs/workspace-format/v1.md#manifest) at `.noura/workspace.yaml`. Notes, tasks, projects, and chats use Markdown with structured metadata in [frontmatter](docs/workspace-format/v1.md#managed-markdown). You can move or rename a file without changing its stable identifier.
 
-noura commits workspace files to disk before reporting a successful change. You can rebuild its SQLite search index and metadata cache from those files. The desktop app and MCP server use the same Rust services:
+noura writes workspace files to disk before it reports a change as saved. You can delete its SQLite search index and metadata cache, and noura rebuilds them from those files. The desktop app and the MCP server use the same Rust services:
 
 ```mermaid
 flowchart LR
@@ -106,14 +107,25 @@ Start with the directory for the part you want to work on:
 
 | Directory | Purpose |
 | --- | --- |
-| [`apps/app`](apps/app) | SvelteKit and Svelte 5 interface for the desktop app, account pages, share viewer, and experimental browser workspace |
-| [`apps/website`](apps/website) | Marketing website |
-| [`apps/server`](apps/server) | Experimental sync service that hosts the browser build of `apps/app` |
-| [`packages`](packages) | Typed workspace client, shared types, editor, AI runtime, and plugin contracts |
-| [`crates/local-core`](crates/local-core) | Rust file operations, validation, indexing, watching, and credentials |
-| [`crates/mcp-server`](crates/mcp-server) | MCP adapter over local-core services |
-| [`plugins`](plugins) | First-party workspace modules |
-| [`src-tauri`](src-tauri) | Tauri 2 desktop shell and native bridge |
+| [`apps/desktop`](apps/desktop) | The desktop binary: windows, menus, drag and drop, packaging, and updates |
+| [`apps/website`](apps/website) | Marketing website and legal pages for noura.app |
+| [`crates/app-core`](crates/app-core) | Product behavior and view state, with no UI dependency |
+| [`crates/app-ui`](crates/app-ui) | egui screens and the widget kit that draws plugin views |
+| [`crates/editor-core`](crates/editor-core), [`crates/editor-egui`](crates/editor-egui) | The Markdown editor's buffer and parsing, and the egui editor that draws it |
+| [`crates/local-core`](crates/local-core) | File operations, validation, indexing, watching, and credentials |
+| [`crates/workspace-format`](crates/workspace-format) | Parsing, validation, and canonical serialization of workspace files |
+| [`crates/plugin-host`](crates/plugin-host), [`crates/plugin-sdk`](crates/plugin-sdk) | The Wasmtime plugin host, and the WIT interfaces with the Rust author library |
+| [`crates/plugins`](crates/plugins) | First-party plugins: AI, calendar, projects, tasks, and a hello sample |
+| [`crates/mcp-server`](crates/mcp-server) | MCP adapter over the shared services |
+| [`crates/collab-sandbox`](crates/collab-sandbox), [`crates/collab-sandbox-guest`](crates/collab-sandbox-guest) | The sandbox that checks and applies collaborative text edits |
+| [`crates/sync-protocol`](crates/sync-protocol), [`crates/sync-key-envelope`](crates/sync-key-envelope) | Sync wire types, signing, key envelopes, and device formats |
+| [`crates/sync-server`](crates/sync-server), [`crates/sync-store`](crates/sync-store), [`crates/sync-store-sqlite`](crates/sync-store-sqlite), [`crates/sync-store-postgres`](crates/sync-store-postgres) | The sync service and its SQLite and PostgreSQL stores |
+| [`crates/account-web`](crates/account-web) | WebAssembly module for passkey sign-in and the encrypted share viewer |
+| [`crates/spell-check`](crates/spell-check) | The system spell checker on macOS and Windows |
+| [`crates/kit-host`](crates/kit-host), [`crates/live-tests`](crates/live-tests) | Test drivers for the TypeScript kit and for two desktops syncing |
+| [`sdk/typescript`](sdk/typescript) | The TypeScript plugin author kit |
+| [`docs`](docs) | Workspace format, architecture, plugin, and security documentation |
+| [`scripts`](scripts) | Build, packaging, and check scripts |
 
 ## Documentation
 
@@ -122,15 +134,16 @@ Start with the [documentation guide](docs/README.md), or use these references fo
 - [Workspace format](docs/workspace-format/v1.md)
 - [Local-core architecture](docs/architecture/local-core.md)
 - [AI runtime and permissions](docs/architecture/ai-runtime.md)
-- [Plugin capabilities](docs/architecture/plugin-runtime.md)
+- [Plugin runtime](docs/architecture/plugin-runtime.md)
+- [Plugin author guide](docs/plugins/README.md)
 - [Desktop verification guide](docs/testing/local-alpha-acceptance.md)
-- [Server setup](apps/server/README.md)
+- [Sync server self-hosting](docs/self-hosting.md)
 
 ## Contributing
 
-Read the [contributor conventions](AGENTS.md) before changing code. Keep pull requests focused, include tests for behavior changes, and run the development checks.
+Read the [contributor guide](CONTRIBUTING.md) and the [conventions](AGENTS.md) reviewers enforce before changing code. Keep pull requests focused, include tests for behavior changes, and run the development checks.
 
-For workspace-format changes, update the shared [conformance fixtures](docs/workspace-format/fixtures/) so Rust and TypeScript accept the same files.
+For workspace-format changes, update the shared [conformance fixtures](docs/workspace-format/fixtures/) in the same commit.
 
 ## Support and security
 

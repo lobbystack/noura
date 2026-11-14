@@ -342,10 +342,7 @@ fn check_folder(folder: &Path, path: &str) -> Result<(), AppError> {
         )),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(AppError::new(
             "folder_missing",
-            format!(
-                "The folder {path} isn't there. If it's on a drive that isn't connected, \
-                 connect the drive and try again."
-            ),
+            format!("{path} isn't there. Connect its drive and try again."),
         )),
         Err(error) => Err(unreadable(&error, path)),
     }
@@ -404,8 +401,7 @@ fn check_manifest(folder: &Path, path: &str) -> Result<(), AppError> {
         Ok(false) => Err(AppError::new(
             "workspace_manifest_missing",
             format!(
-                "The settings file .noura/workspace.yaml is missing from {path}. Noura left \
-                 the folder as it was. Choose Open folder to use it as a new workspace."
+                "{path} has no .noura/workspace.yaml. Choose Open folder to make it a new workspace."
             ),
         )),
         Err(error) => Err(unreadable(&error, path)),

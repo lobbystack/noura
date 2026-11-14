@@ -608,6 +608,22 @@ Where an object opens.
   others, which stays open.
 
 
+#### <a id="settings_section"></a>`enum settings-section`
+
+A section of Settings a plugin may open.
+
+##### Enum Cases
+
+- <a id="settings_section.plugins"></a>`plugins`
+  <p>Plugins, where you turn plugins on and off.
+
+- <a id="settings_section.ai"></a>`ai`
+  <p>AI, where you add AI providers and choose what they may read.
+
+- <a id="settings_section.sync"></a>`sync`
+  <p>Sync and devices.
+
+
 ----
 
 ### Functions
@@ -637,6 +653,19 @@ Show the plugin's own page with this ID.
 ##### Return values
 
 - <a id="open_page.0"></a> result<_, [`error`](#error)>
+
+#### <a id="open_settings"></a>`open-settings: func`
+
+Open Settings on `section`, as a page's "Open AI settings" button
+does.
+
+##### Params
+
+- <a id="open_settings.section"></a>`section`: [`settings-section`](#settings_section)
+
+##### Return values
+
+- <a id="open_settings.0"></a> result<_, [`error`](#error)>
 
 #### <a id="trash_object"></a>`trash-object: func`
 
@@ -1496,6 +1525,58 @@ covers, in this device's time zone.
   timed entry 30 minutes.
 
 
+#### <a id="icon"></a>`enum icon`
+
+An icon Noura draws beside a heading or in an empty state.
+
+##### Enum Cases
+
+- <a id="icon.calendar"></a>`calendar`
+- <a id="icon.done"></a>`done`
+- <a id="icon.folder"></a>`folder`
+- <a id="icon.note"></a>`note`
+- <a id="icon.sparkle"></a>`sparkle`
+- <a id="icon.tasks"></a>`tasks`
+
+#### <a id="heading_level"></a>`enum heading-level`
+
+How prominent a heading is.
+
+##### Enum Cases
+
+- <a id="heading_level.page"></a>`page`
+  <p>The page's title, at the top of the page.
+
+- <a id="heading_level.section"></a>`section`
+  <p>A section's title.
+
+
+#### <a id="heading"></a>`record heading`
+
+
+
+##### Record Fields
+
+- <a id="heading.text"></a>`text`: `string`
+- <a id="heading.level"></a>`level`: [`heading-level`](#heading_level)
+- <a id="heading.detail"></a>`detail`: option<`string`>
+  <p>A line under a page heading or beside a section heading, such as
+  the period a page shows.
+
+- <a id="heading.icon"></a>`icon`: option<[`icon`](#icon)>
+
+#### <a id="empty_state"></a>`record empty-state`
+
+What a page or a section shows while it holds nothing.
+
+##### Record Fields
+
+- <a id="empty_state.title"></a>`title`: `string`
+- <a id="empty_state.detail"></a>`detail`: option<`string`>
+  <p>A line under the title that says what to do.
+
+- <a id="empty_state.icon"></a>`icon`: option<[`icon`](#icon)>
+
 #### <a id="node_kind"></a>`variant node-kind`
 
 
@@ -1589,6 +1670,20 @@ covers, in this device's time zone.
   keyboard and open it by double-click or Enter, which send `selected`
   and `activated` naming the calendar.
 
+- <a id="node_kind.heading"></a>`heading`: [`heading`](#heading)
+  <p>A page's or a section's title. Its children are buttons and choice
+  inputs, which line up at its end, the first child first; a page
+  heading's first child, when a button, stands out.
+
+- <a id="node_kind.empty"></a>`empty`: [`empty-state`](#empty_state)
+  <p>An empty page or section. Its children are buttons under its text.
+
+- <a id="node_kind.split"></a>`split`: `u32`
+  <p>Two panes side by side, each scrolling on its own: the first this
+  many points wide, from 160 to 640, with a line on its right, and the
+  second taking the rest of the width. Its children are the two panes,
+  each a panel.
+
 
 #### <a id="node"></a>`record node`
 
@@ -1603,9 +1698,10 @@ covers, in this device's time zone.
 - <a id="node.children"></a>`children`: list<`u32`>
   <p>Indices into the view's node list. Panels and forms hold the nodes
   they lay out, lists their items, tables their rows, boards their
-  columns, columns their cards, calendars their entries, and menus
-  their items; a row, a card or a button may hold one menu, and an
-  item one menu or one name field.
+  columns, columns their cards, calendars their entries, menus their
+  items, headings their buttons and choices, empty states their
+  buttons, and splits their two panels; a row, a card or a button may
+  hold one menu, and an item one menu or one name field.
 
 
 #### <a id="target"></a>`record target`
@@ -1900,7 +1996,8 @@ The types the plugin registers when it starts.
 
 The nodes of the properties panel for the object with this ID. A
 panel can't hold a virtual list, since nothing fetches its rows:
-Noura shows why in the panel's place.
+Noura shows why in the panel's place. A root panel with no children
+shows no panel, and the body takes the editor's whole width.
 
 ##### Params
 

@@ -7,6 +7,17 @@ pub const FILES_PAGE: &str = "files";
 /// The Inbox's page ID. The rail puts it first until you move it.
 pub const INBOX_PAGE: &str = "inbox";
 
+/// The legacy rail's order of Noura's own pages, before you move any:
+/// the Inbox, AI, Files, Tasks, Calendar and Projects.
+const FIRST_PARTY_ORDER: [&str; 6] = [
+    INBOX_PAGE,
+    "plugin:ai:ai",
+    FILES_PAGE,
+    "plugin:tasks:tasks",
+    "plugin:calendar:calendar",
+    "plugin:projects:projects",
+];
+
 /// A page in the rail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {
@@ -70,10 +81,16 @@ impl Rail {
         if !self.saved.iter().any(|id| id == INBOX_PAGE) && self.page(INBOX_PAGE).is_some() {
             order.push(INBOX_PAGE);
         }
+        // First-party pages that arrive take the legacy rail's places, so
+        // the order doesn't hang on which plugin started first.
+        let first_party = FIRST_PARTY_ORDER
+            .into_iter()
+            .filter(|id| self.page(id).is_some());
         let ids = self
             .saved
             .iter()
             .map(String::as_str)
+            .chain(first_party)
             .chain(self.pages.iter().map(|page| page.id.as_str()));
         for id in ids {
             if !order.contains(&id) {
@@ -140,5 +157,35 @@ impl Rail {
 
     pub(crate) fn page(&self, id: &str) -> Option<&Page> {
         self.pages.iter().find(|page| page.id == id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn noura_s_pages_take_the_legacy_order_whichever_arrives_first() {
+        let mut rail = Rail::default();
+        for (id, title) in [
+            ("plugin:projects:projects", "Projects"),
+            ("plugin:hello:hello", "Hello"),
+            ("plugin:calendar:calendar", "Calendar"),
+            ("plugin:tasks:tasks", "Tasks"),
+            ("plugin:ai:ai", "AI"),
+        ] {
+            rail.register(id, title);
+        }
+        let titles: Vec<&str> = rail
+            .ordered()
+            .iter()
+            .map(|page| page.title.as_str())
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                "Inbox", "AI", "Files", "Tasks", "Calendar", "Projects", "Hello"
+            ]
+        );
     }
 }

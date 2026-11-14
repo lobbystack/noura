@@ -1,116 +1,62 @@
 # Plugin runtime architecture
 
-Noura’s first-party notes, tasks, calendar, projects, folders, AI, and sync plugins use shared capability contracts. `packages/plugin-sdk` defines those contracts, `packages/workspace` adapts them to the typed client, and `apps/app` constructs the runtime in the WebView:
+Noura's tasks, projects, calendar and AI features are first-party plugins. They build to WebAssembly components against the same `noura:plugin` interface as third-party plugins, and they run under the same capability checks. This page describes how the desktop app loads and checks them. To write a plugin, read the [TypeScript author guide](../plugins/README.md) or the [Rust author guide](../plugins/rust.md).
 
 ```text
-apps/app state
+crates/app-ui        draws plugin views with the widget kit
    │
-PluginRuntime (packages/workspace)
-   │  syncWithManifest(): reads .noura/workspace.yaml on disk
-PluginHost (packages/plugin-sdk)
-   │  activate / deactivate, capability guards
-PluginContext ── capability-gated facade over NouraClient
+crates/app-core      plugin service: installs, approvals, enabled list, one thread per plugin
+   │
+crates/plugin-host   Wasmtime: compiles, starts and checks each call
+   │
+plugin component     built against crates/plugin-sdk/wit/plugin.wit
 ```
 
-## Activation lifecycle
+## Load and run a plugin
 
-`syncWithManifest` treats `.noura/workspace.yaml` as authoritative and reconciles the active host set in this order:
+A plugin is a folder that holds `plugin.toml` and a WebAssembly component. You install one from a folder, which is the dev mode that reloads each new build, or from a release on GitHub. `crates/plugin-host` compiles the component on your device and starts it with the capabilities you approved.
 
-1. Read `enabled_plugins` from the durable manifest. Preserve unknown IDs in the manifest without activating them.
-2. Deactivate active plugins whose IDs are absent from `enabled_plugins`.
-3. Activate enabled first-party plugins that are not active.
+Each call runs under these limits:
 
-The desktop runtime reconciles at startup and after `workspace:ready`, `workspace:manifest-updated`, or `file:changed` events. The engine adopts external manifest edits and emits `workspace:manifest-updated` with source `external`. Its atomic-write journal suppresses notifications for its own writes.
+- **Memory**: 256 MiB per plugin
+- **Time**: 1 second of the plugin's own work, and 120 seconds in all
+- **Imports**: only `noura:plugin` interfaces. WASI imports trap, so a plugin gets no filesystem or sockets of its own.
+- **Failures**: a failed call restarts the plugin's store, and three failures in a short window stop the plugin until Noura restarts
 
-Settings updates `enabled_plugins` through the engine’s atomic, revision-checked `manifest_update` operation. Navigation and route guards follow the reconciled plugin state.
+`crates/app-core` runs each plugin's calls on a thread of its own, so a plugin that loops or crashes never holds up a window. The four plugins that ship with Noura, `ai`, `calendar`, `projects` and `tasks`, live in `crates/plugins/` and wait for one approval on each device's first-run screen.
 
-Plugin definitions may implement `deactivate(context)`. The host supplies the activation context, and capability disposers unregister commands, remove AI tools and context, and unsubscribe events. Closing a workspace deactivates its plugins and removes their registrations.
+## Turn plugins on and off
+
+`enabled_plugins` in `.noura/workspace.yaml` lists the plugins a workspace turns on. When you open a workspace, `app-core` stops every running plugin, then starts each enabled plugin that this device installed and approved. A plugin that the workspace enables but this device lacks appears in Settings > Plugins and runs nothing.
+
+Turning a plugin on or off in Settings writes `enabled_plugins` through the engine's revision-checked `manifest_update`, then starts or stops the plugin. The engine adopts an outside edit of the manifest and emits `workspace:manifest-updated`. Running plugins change only when you open a workspace, turn a plugin on or off, or install or update one. A tool call checks the manifest again and refuses to run a plugin the workspace turned off.
+
+Uninstalling a plugin removes its code and approvals from the device and leaves the workspace's `enabled_plugins` alone.
 
 ## Capabilities
 
-`PluginContext` exposes the capabilities declared by the plugin manifest:
+`plugin.toml` declares capabilities as `[[capabilities]]` tables. The names are `workspace-read`, `views`, `object-types`, `network` with `hosts`, `commands` with optional `targets`, `inbox-sections`, `settings`, `tools` and `ai`. The [author guide](../plugins/README.md#declare-what-the-plugin-needs) says what each one allows.
 
-- `workspace.files` and `workspace.objects`
-- `workspace.search` and `workspace.commands`
-- `workspace.events` and `workspace.storage`
-- `ai.tools` and `ai.context`
-- `workspace.collaboration` (trusted)
+You approve each capability, network host and command target when you install a plugin, and the install dialog lists them before any code runs. Approvals live in this device's app data, never in workspace files, so a workspace that lists a plugin runs none of its code on a device where you haven't approved it. An update that asks for more waits for your approval, and you can revoke any grant in Settings > Plugins.
 
-Every call checks the declared capability before it reaches a service. Plugins never see transport internals, SQLite, or Rust types.
-
-A trusted capability reaches native services that handle credentials or encrypted workspace keys. The host grants it only to plugin definitions passed in `PluginHostOptions.trustedPlugins`, matched by object identity, so a copy of a trusted definition is untrusted. `PluginRuntime` trusts the bundled first-party plugins. Activating an untrusted plugin that declares a trusted capability fails with `plugin_capability_untrusted`, and the context guard rejects calls with the same code.
+`plugin-host` checks the grant on every import a plugin calls and before Noura calls one of the plugin's exports. A call without a grant fails with `capability-not-declared` and names the capability. The `objects` interface also reaches only the object types the plugin registered.
 
 ## Storage contract
 
-`plugin_state` rows live in the disposable per-device index. The runtime contract is:
+Durable plugin data lives in workspace files. A plugin writes objects through the `objects` interface as Markdown files with a stable ID, frontmatter checked against the type's schema, and revision-checked durable writes. Plugins can't write under `.noura`, `.git`, `node_modules` or `target`. A plugin keeps its settings in workspace files too.
 
-- Plugin state is **cache state only** (view selections, scroll positions, projection hints). Deleting `index.sqlite` or rebuilding the index may erase it.
-- Durable plugin data must remain in workspace files through `workspace.objects` and `workspace.files`, so plugins can disappear while the information survives. This mirrors the master rule: plugins add functionality without taking ownership of data.
-- The host namespaces storage keys by manifest id; plugins pass plain keys.
-
-## Host-backed plugins: sync
-
-The `sync` plugin (`plugins/sync`) turns encrypted sync and live collaboration on for one workspace replica. Unlike the domain plugins, most of its behavior lives in the native host, so the TypeScript runtime and the Rust host both read the same switch: `sync` in `enabled_plugins`.
-
-### Decision
-
-Sync is opt-in per replica. New local workspaces and browser workspaces start with it off. A replica created by joining a synchronized workspace starts with it on. `.noura` is never synchronized, so turning sync off on one device leaves other devices unchanged.
-
-Reasons:
-
-- A local-only workspace should not run a sync loop, read the credential store, or ask the native side about collaboration. With the plugin off, none of that happens.
-- The manifest is canonical workspace state. Using it for the switch keeps SQLite as a cache (`plugin_state` rows are never the source of truth) and lets an external edit of `.noura/workspace.yaml` turn sync on or off.
-- The MCP server has no plugin runtime. Reading the manifest natively keeps its object routing in line with the desktop app.
-
-### Capability
-
-The plugin declares the trusted `workspace.collaboration` capability. On activation it registers `context.collaboration.service`, the host’s typed collaboration service, as the workspace’s collaboration provider. `PluginRuntime.collaboration` holds that provider in a `CollaborationProviderSlot` with at most one entry and a generation counter.
-
-Editors reach collaboration only through the slot (`apps/app/src/lib/editor/collaboration-access.ts`). With an empty slot they open documents as plain local files and send no collaboration request. The host removes the provider before an asynchronous `deactivate` runs, and the notes and projects views reopen editors when the generation changes.
-
-The manifest supports desktop, mobile, and the web. Browsers activate it with no capabilities (`activationCapabilities.web` is empty), so the browser slot stays empty; browser sync has its own settings and runs only while the plugin is on.
-
-### Native gating
-
-`crates/local-core` exposes `SYNC_PLUGIN_ID`, `WorkspaceEngine::sync_plugin_enabled()` (from the in-memory manifest), and `require_sync_plugin(operation)`. With the plugin off, every workspace entry point of `WorkspaceSyncCoordinator` fails with this error:
-
-| Field       | Value                                                    |
-| ----------- | -------------------------------------------------------- |
-| `code`      | `sync_plugin_disabled`                                   |
-| `category`  | `validation`                                             |
-| `retryable` | `false`                                                  |
-| `message`   | `Turn on the Sync plugin for this workspace to use sync` |
-| `details`   | `{ "pluginId": "sync" }`                                 |
-
-The desktop host applies the same check to `sync_workspace_*` commands and to opening, submitting, flushing, and presence for collaboration sessions. Closing a session, account commands, the service configuration, listing remote workspaces, and joining stay available.
-
-The desktop sync loop parks while no workspace is open or its plugin is off. A parked loop clears the live sync status and realtime handle, closes collaboration sessions, and waits for a wake-up without a timer, configuration read, credential access, or network request. The `workspace:manifest-updated` event wakes it and cancels a running pass.
-
-Object create, update, move, and delete share one routing rule in `local-core` (`sync::route_*_object`), used by the desktop host and the MCP server. A mutation takes the collaboration path only while the plugin is on and the workspace or object collaborates. The device connection is read only on that path.
-
-### Migration
-
-Workspaces that set up sync before the plugin existed keep syncing. When a workspace with `.noura/sync/config.json` opens, including a paused one, the engine adds `sync` to `enabled_plugins` once and writes the marker `.noura/sync/plugin.json`. The marker keeps a later “off” in place.
-
-If `sync` is already enabled but the marker is missing, as after a crash between the two writes, the engine writes only the marker. A failed migration goes to the diagnostic log and the workspace still opens. Saving a sync configuration also writes the marker.
-
-Browser workspaces follow the same rule. A workspace with a binding under `.noura-adapter/browser-sync/bindings` turns the plugin on once, and a marker under `.noura-adapter/browser-sync/plugin` records it. Writing a binding also writes the marker.
-
-### Settings
-
-`apps/app/src/lib/settings-sections.ts` lists settings sections and their gating. Sync and People appear only while the plugin is enabled. Account also appears while the device is signed in, so you can always sign out.
-
-The app reads sign-in state at startup only when the plugin is on; otherwise Settings reads it when it opens. Turning Sync off asks for confirmation and first saves pending drafts. If a draft can’t be saved, the plugin stays on.
-
-## Boundaries
-
-Keep dependency and transport responsibilities separate:
-
-- `packages/workspace` may import first-party plugins; plugins never import `packages/workspace`.
-- The MCP server does not construct a plugin runtime. Plugin-contributed MCP tools are future work behind the same capability contracts.
+The index still has a `plugin_state` table for disposable cache state, but no plugin interface reaches it.
 
 ## UI contributions
 
-Plugins do not yet contribute rich UI such as trees, boards, or custom panes. The shell uses the per-module sidebar registry in `apps/app/src/lib/sidebar-modules.ts`; each module defines sidebar content for its routes or opts out so its routes render full width.
+Plugins describe their UI as a tree of nodes, and `crates/app-ui` draws the nodes with the widget kit and the theme's tokens. Through the `view` interface a plugin adds pages to the rail and a sidebar section above the file tree. Through `settings`, `inbox`, `object-types` and `commands` it adds a Settings page, Inbox sections, a properties panel and palette commands. `plugin-host` checks each tree before Noura draws it, with at most 10,000 nodes and 64 levels.
 
-The registry includes a module only when its plugin is enabled. Sidebar sections read module-owned stores: the file browser reads the folders-gated tree, while task views read the shared tasks projection. A future `workspace.views.register` capability can replace these hardcoded entries without changing the renderer.
+The `navigation` interface opens pages and objects only in answer to something you did.
+
+## MCP
+
+`crates/mcp-server` offers the kernel's tools plus `<plugin>.<tool>` for each enabled plugin's tools, such as `tasks.list`. It starts the plugins through `app-core`'s plugin service with this device's approvals, and drops a plugin's tools when the workspace turns the plugin off.
+
+## Legacy sync switch
+
+The legacy app kept a `sync` plugin that turned v1 sync on per workspace. `crates/local-core` still holds its gate: `SYNC_PLUGIN_ID`, `require_sync_plugin`, the `sync_plugin_disabled` error and the `.noura/sync/plugin.json` marker. The desktop app doesn't call it, and no Rust plugin has the ID `sync`. You turn on v2 sync in Settings > Sync and devices.

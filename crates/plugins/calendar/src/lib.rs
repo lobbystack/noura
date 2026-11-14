@@ -19,7 +19,7 @@ use std::sync::Mutex;
 
 use jiff::{ToSpan, civil::Date};
 use plugin_sdk::{
-    CalendarMode, Column, Event, InboxSection, Node, Page, Plugin, Target, Value, View,
+    CalendarMode, Column, Event, Icon, InboxSection, Node, Page, Plugin, Target, Value, View,
     navigation::{self, Placement},
 };
 use serde_json::Value as Json;
@@ -30,6 +30,9 @@ use rules::select_calendar_entries;
 
 /// The Calendar page.
 const PAGE: &str = "calendar";
+
+/// The Inbox section's button that opens the Calendar page.
+const OPEN_CALENDAR: &str = "open-calendar";
 
 /// The Inbox section.
 const SECTION: &str = "next-7-days";
@@ -168,8 +171,14 @@ impl Plugin for Calendar {
     }
 
     fn handle_inbox_event(_section: String, event: Event) {
-        if let Event::Activated(Target { item, .. }) = event {
-            open(&item);
+        match event {
+            Event::Activated(Target { item, .. }) => open(&item),
+            Event::Pressed(node)
+                if node == OPEN_CALENDAR && navigation::open_page(PAGE).is_err() =>
+            {
+                state().notice = Some("Noura couldn't open the calendar.".to_owned());
+            }
+            _ => {}
         }
     }
 }
@@ -213,12 +222,22 @@ fn page() -> Vec<Node> {
     let shown = all.and_then(|all| within(all, &now, first, count));
 
     let mut view = View::panel("root", None);
-    let (previous, next) = mode.steps();
-    view.button(View::ROOT, "previous", previous);
-    view.button(View::ROOT, "today", "Today");
-    view.button(View::ROOT, "next", next);
+    // The heading names the month under the title, with the mode, then
+    // Previous, Today and Next at its end, as the legacy page header did.
+    let month = focus.strftime("%B %Y").to_string();
+    let heading = view.page_heading(
+        View::ROOT,
+        "title",
+        "Calendar",
+        Some(&month),
+        Some(Icon::Calendar),
+    );
     let modes: Vec<(&str, &str)> = Mode::ALL.iter().map(|(_, id, name)| (*id, *name)).collect();
-    view.choice_input(View::ROOT, "mode", "View", &modes, Some(mode.id()));
+    view.choice_input(heading, "mode", "View", &modes, Some(mode.id()));
+    let (previous, next) = mode.steps();
+    view.button(heading, "previous", previous);
+    view.button(heading, "today", "Today");
+    view.button(heading, "next", next);
     if let Some(notice) = &state.notice {
         view.text(View::ROOT, "notice", notice);
     }
@@ -236,10 +255,7 @@ fn page() -> Vec<Node> {
         view.text(
             View::ROOT,
             "too-many",
-            &format!(
-                "This period has {} entries. The calendar shows the first 5,000.",
-                entries.len()
-            ),
+            &format!("Showing the first 5,000 of {} entries.", entries.len()),
         );
     }
     let grid = view.calendar(
@@ -380,12 +396,20 @@ fn next_seven_days() -> Vec<Node> {
             entries
         });
     let mut view = View::panel(SECTION, None);
+    let heading = view.section_heading(
+        View::ROOT,
+        "upcoming-heading",
+        "Next 7 days",
+        Some(Icon::Calendar),
+    );
+    view.button(heading, OPEN_CALENDAR, "Calendar");
+    let card = view.add_panel(View::ROOT, "upcoming-card", None);
     match entries {
         Ok(entries) if entries.is_empty() => {
-            view.text(View::ROOT, "nothing", "Nothing scheduled this week.");
+            view.text(card, "nothing", "Nothing scheduled this week.");
         }
         Ok(entries) => {
-            let list = view.list(View::ROOT, "upcoming", "Next 7 days");
+            let list = view.list(card, "upcoming", "Next 7 days");
             for entry in entries.iter().take(UPCOMING) {
                 view.item(
                     list,

@@ -1,7 +1,7 @@
 //! Formatting commands: what the toolbar's buttons, Mod-Enter and Tab do to
 //! the text.
 //!
-//! Ported from the legacy app's `packages/editor/src/commands.ts`. Like
+//! Ported from the legacy app's editor commands. Like
 //! the legacy commands, these read the text and its lines rather than the
 //! parse, so a command does the same thing whatever the parser makes of
 //! half-typed syntax. Each command plans its edits as byte ranges of the

@@ -166,12 +166,19 @@ struct State {
     offer_hidden: bool,
     /// The status or the offer changed, and the windows haven't heard yet.
     changed: bool,
+    /// When the last check found Noura up to date.
+    checked_at: Option<jiff::Timestamp>,
+    /// The clock that time comes from.
+    clock: Clock,
 }
+
+/// Where [`Updates`] reads the time: the system's clock, which tests fix.
+pub(crate) type Clock = Arc<dyn Fn() -> jiff::Timestamp + Send + Sync>;
 
 impl Updates {
     /// The update service for the windows `notify` wakes, waiting for
     /// `writes` before a restart.
-    pub(crate) fn new(writes: PendingWrites, notify: Notify) -> Self {
+    pub(crate) fn new(writes: PendingWrites, notify: Notify, clock: Clock) -> Self {
         Self(Arc::new(Shared {
             state: Mutex::new(State {
                 current_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -185,6 +192,8 @@ impl Updates {
                 events: None,
                 offer_hidden: false,
                 changed: false,
+                checked_at: None,
+                clock,
             }),
             writes,
             notify,
@@ -210,6 +219,11 @@ impl Updates {
 
     pub fn status(&self) -> UpdateStatus {
         self.read(|state| state.status.clone())
+    }
+
+    /// When the last check found Noura up to date, for Up to date as of.
+    pub fn checked_at(&self) -> Option<jiff::Timestamp> {
+        self.read(|state| state.checked_at)
     }
 
     /// The running app's version.
@@ -373,8 +387,7 @@ impl Updates {
             state.set(UpdateStatus::Installing { version });
         } else {
             state.set(UpdateStatus::Failed {
-                message: "Noura couldn't start installing. Quit Noura and open it again."
-                    .to_owned(),
+                message: "Couldn't start installing. Quit Noura and open it again.".to_owned(),
             });
         }
     }
@@ -462,7 +475,7 @@ impl State {
         {
             // The thread ended without a result, so it panicked.
             self.set(UpdateStatus::Failed {
-                message: "Noura couldn't finish updating. Try again later.".to_owned(),
+                message: "Couldn't finish updating. Try again later.".to_owned(),
             });
         }
         if changed {
@@ -475,7 +488,10 @@ impl State {
     fn apply(&mut self, event: Event) {
         match event {
             Event::Downloading(version) => self.set(UpdateStatus::Downloading { version }),
-            Event::UpToDate => self.set(UpdateStatus::UpToDate),
+            Event::UpToDate => {
+                self.checked_at = Some((self.clock)());
+                self.set(UpdateStatus::UpToDate);
+            }
             Event::Ready(update) => {
                 let status = UpdateStatus::Ready {
                     version: update.version().to_owned(),
@@ -512,7 +528,7 @@ impl State {
                 tracing::warn!(kind = ?error.kind, detail = %error.detail, "an update failed");
                 let message = match (error.kind, &self.status) {
                     (UpdateErrorKind::Unreachable, _) => {
-                        "Couldn't reach the update server. Check your connection.".to_owned()
+                        "Can't reach the update server. Check your connection.".to_owned()
                     }
                     (UpdateErrorKind::BadSignature, _) => "The download's signature didn't \
                          match Noura's key, so Noura deleted it."
@@ -521,7 +537,7 @@ impl State {
                         "Noura installed version {version} but couldn't restart. Quit Noura \
                          and open it again."
                     ),
-                    _ => "Noura couldn't update. Try again later.".to_owned(),
+                    _ => "Couldn't update. Try again later.".to_owned(),
                 };
                 self.set(UpdateStatus::Failed { message });
             }
@@ -553,8 +569,8 @@ fn unsaved_changes_problem(error: &AppError) -> String {
 
 fn unsaved_problem(failure: &WriteFailure) -> String {
     format!(
-        "Noura didn't restart, because it couldn't save \u{201c}{}\u{201d}. {} Save it again, \
-         or move it to the trash, then restart. If you quit Noura instead, you lose that change.",
+        "Noura didn't restart, because it couldn't save \u{201c}{}\u{201d}. {} Save it or trash \
+         it, then restart; quitting loses that change.",
         failure.file, failure.message
     )
 }

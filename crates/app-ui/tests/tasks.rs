@@ -1,7 +1,7 @@
 //! The Tasks plugin through AccessKit: New task from the keyboard alone,
 //! again and again, from the button and from the command palette, the
 //! sidebar's views, the task rows with their checkboxes and overdue
-//! warning, and the labels of a task's properties panel.
+//! warning, and the labels of the selected task's fields.
 
 mod support;
 
@@ -381,53 +381,11 @@ fn a_rows_checkbox_marks_its_task_done_and_overdue_tasks_say_so() {
     wait_until(&mut harness, |harness| task_list(harness).is_empty());
 }
 
+/// As in the legacy app, a task opened from the file tree shows its text
+/// at the editor's whole width, with no panel beside it, and the whole
+/// formatting toolbar stays in the window.
 #[test]
-fn a_task_opens_beside_the_tasks_panel_with_its_labeled_properties() {
-    let Some(Opened {
-        mut harness,
-        _folders,
-        ..
-    }) = opened()
-    else {
-        return;
-    };
-    harness
-        .get_by_role_and_label(Role::TreeItem, "tasks")
-        .click();
-    run(&mut harness);
-    harness
-        .get_by_role_and_label(Role::TreeItem, "Read the manual")
-        .click();
-    wait_until(&mut harness, |harness| {
-        harness
-            .query_by_role_and_label(Role::Group, "Properties")
-            .is_some_and(|panel| panel.query_by_role_and_label(Role::Group, "Task").is_some())
-    });
-
-    harness.get_by_role_and_label(Role::Document, "Note text");
-    let panel = harness.get_by_role_and_label(Role::Group, "Properties");
-    let status = panel.get_by_role_and_label(Role::RadioGroup, "Status");
-    assert_eq!(
-        labels(status.get_all_by_role(Role::RadioButton)),
-        ["To do", "In progress", "Done", "Cancelled"]
-    );
-    let priority = panel.get_by_role_and_label(Role::RadioGroup, "Priority");
-    assert_eq!(
-        labels(priority.get_all_by_role(Role::RadioButton)),
-        ["Low", "Medium", "High", "Urgent"]
-    );
-    panel.get_by_role_and_label(Role::TextInput, "Due");
-    let project = panel.get_by_role_and_label(Role::RadioGroup, "Project");
-    assert_eq!(
-        labels(project.get_all_by_role(Role::RadioButton)),
-        ["No project", "Garden"]
-    );
-}
-
-/// At a normal window width the note's whole toolbar stays beside the
-/// Tasks panel, and the panel's values show in words.
-#[test]
-fn the_task_pane_shows_its_whole_toolbar_at_a_normal_window_width() {
+fn a_task_opens_from_the_tree_at_full_width_with_no_panel_beside_it() {
     let Some(Opened {
         mut harness,
         _folders,
@@ -447,31 +405,34 @@ fn the_task_pane_shows_its_whole_toolbar_at_a_normal_window_width() {
         .click();
     wait_until(&mut harness, |harness| {
         harness
-            .query_by_role_and_label(Role::Group, "Properties")
-            .is_some_and(|panel| panel.query_by_role_and_label(Role::Group, "Task").is_some())
+            .query_by_role_and_label(Role::Document, "Note text")
+            .is_some()
     });
+    // The plugin answers on its own thread; give it time to.
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        harness.step();
+    }
+    run(&mut harness);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Group, "Properties")
+            .is_none()
+    );
+    assert!(
+        harness
+            .query_by_role_and_label(Role::RadioGroup, "Status")
+            .is_none()
+    );
 
     let toolbar = harness.get_by_role_and_label(Role::Toolbar, "Formatting");
     let buttons: Vec<_> = toolbar.get_all_by_role(Role::Button).collect();
     assert!(buttons.len() > 10, "{}", buttons.len());
-    let panel = harness
-        .get_by_role_and_label(Role::RadioGroup, "Status")
-        .get_all_by_role(Role::RadioButton)
-        .next()
-        .expect("Status offers choices")
-        .rect();
-    let document = harness
-        .get_by_role_and_label(Role::TextInput, "File name")
-        .rect();
     for button in &buttons {
         let rect = button.rect();
         let label = button.accesskit_node().label();
         assert!(
-            rect.right() <= panel.left() && rect.left() >= document.left() - 1.0,
-            "{label:?} at {rect:?} leaves the pane left of {panel:?}"
-        );
-        assert!(
-            rect.top() >= 0.0 && rect.bottom() <= 750.0,
+            rect.left() >= 0.0 && rect.right() <= 1100.0 && rect.bottom() <= 750.0,
             "{label:?} at {rect:?} leaves the window"
         );
     }
@@ -481,22 +442,6 @@ fn the_task_pane_shows_its_whole_toolbar_at_a_normal_window_width() {
             .label()
             .is_some_and(|label| label.starts_with("Find"))
     }));
-
-    let selected = |group: &str| {
-        harness
-            .get_by_role_and_label(Role::RadioGroup, group)
-            .get_all_by_role(Role::RadioButton)
-            .find(|option| {
-                option.accesskit_node().is_selected() == Some(true)
-                    || option
-                        .accesskit_node()
-                        .toggled()
-                        .is_some_and(|state| state == egui::accesskit::Toggled::True)
-            })
-            .and_then(|option| option.accesskit_node().label())
-    };
-    assert_eq!(selected("Status").as_deref(), Some("To do"));
-    assert_eq!(selected("Priority").as_deref(), Some("High"));
 }
 
 /// The Inbox's Due today list.
@@ -606,7 +551,7 @@ fn add_stays_disabled_until_you_type_a_name_and_the_field_clears_after_adding() 
 
     harness
         .get_by_role_and_label(Role::Form, "Add a task for today")
-        .get_by_role_and_label(Role::TextInput, "Task")
+        .get_by_role_and_label(Role::TextInput, "Add a task for today\u{2026}")
         .focus();
     run(&mut harness);
     type_text(&mut harness, "   ");
@@ -627,7 +572,7 @@ fn add_stays_disabled_until_you_type_a_name_and_the_field_clears_after_adding() 
     assert!(text.contains(&format!("due: {today}")), "{text}");
     let field = harness
         .get_by_role_and_label(Role::Form, "Add a task for today")
-        .get_by_role_and_label(Role::TextInput, "Task");
+        .get_by_role_and_label(Role::TextInput, "Add a task for today\u{2026}");
     assert_eq!(field.value().unwrap_or_default(), "");
     assert!(add_button(&harness).accesskit_node().is_disabled());
 
@@ -793,4 +738,78 @@ fn rename_shows_the_name_in_a_field_in_the_row_and_enter_saves_it() {
             .query_by_role_and_label(Role::TextInput, "Task name")
             .is_none()
     );
+}
+
+#[test]
+fn the_page_shows_the_list_beside_the_selected_task_which_edits_in_place() {
+    let Some(Opened {
+        mut harness,
+        folder,
+        _folders,
+    }) = opened()
+    else {
+        return;
+    };
+    harness
+        .get_by_role_and_label(Role::ListBox, "Views")
+        .get_by_role_and_label(Role::ListBoxOption, "All")
+        .click();
+    wait_until(&mut harness, |harness| {
+        task_list(harness).contains(&"Read the manual".to_owned())
+    });
+    harness.get_by_label("Select a task");
+
+    harness
+        .get_by_role_and_label(Role::ListBox, "Task list")
+        .get_by_role_and_label(Role::ListBoxOption, "Read the manual")
+        .click();
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::RadioGroup, "Priority")
+            .is_some()
+    });
+    assert!(harness.query_by_label("Select a task").is_none());
+    harness.get_by_role_and_label(Role::Heading, "Read the manual");
+    let choices = |harness: &Ui, group: &str| {
+        labels(
+            harness
+                .get_by_role_and_label(Role::RadioGroup, group)
+                .get_all_by_role(Role::RadioButton),
+        )
+    };
+    assert_eq!(
+        choices(&harness, "Status"),
+        ["To do", "In progress", "Done", "Cancelled"]
+    );
+    assert_eq!(
+        choices(&harness, "Priority"),
+        ["Low", "Medium", "High", "Urgent"]
+    );
+    assert_eq!(choices(&harness, "Project"), ["No project", "Garden"]);
+    harness.get_by_role_and_label(Role::TextInput, "Due");
+    let selected = |harness: &Ui, group: &str| {
+        harness
+            .get_by_role_and_label(Role::RadioGroup, group)
+            .get_all_by_role(Role::RadioButton)
+            .find(|option| {
+                option
+                    .accesskit_node()
+                    .toggled()
+                    .is_some_and(|state| state == egui::accesskit::Toggled::True)
+            })
+            .and_then(|option| option.accesskit_node().label())
+    };
+    assert_eq!(selected(&harness, "Status").as_deref(), Some("To do"));
+    assert_eq!(selected(&harness, "Priority").as_deref(), Some("High"));
+
+    // The pane's fields write the task file, as its properties panel does.
+    harness
+        .get_by_role_and_label(Role::RadioGroup, "Priority")
+        .get_by_role_and_label(Role::RadioButton, "Urgent")
+        .click();
+    wait_until(&mut harness, |_| {
+        std::fs::read_to_string(folder.join("tasks/Read the manual.md"))
+            .unwrap()
+            .contains("priority: urgent")
+    });
 }

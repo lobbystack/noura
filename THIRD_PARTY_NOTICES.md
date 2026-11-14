@@ -1,20 +1,14 @@
 # Third-Party Notices
 
-The unified hosted app includes `@tauri-apps/api` under its MIT option. Generated release notices include its copyright and license text, which also appears in [`apps/server/licenses/tauri-api-2.11.1.txt`](apps/server/licenses/tauri-api-2.11.1.txt). See [`docs/provenance/tauri-api-license.md`](docs/provenance/tauri-api-license.md).
-
 noura uses third-party dependencies under their respective licenses. The lockfiles and automated license report provide the dependency inventory.
 
-Each desktop release bundles `THIRD_PARTY_LICENSES.txt`, which lists the npm packages in the desktop frontend bundle and the crates the desktop app links, with their license texts. The same file is attached to each [GitHub release](https://github.com/lobbystack/noura/releases) as `third-party-licenses-<platform>.txt`. [Releasing](docs/releasing.md#third-party-licenses-in-the-app) explains how the release workflow generates it.
+Each desktop package bundles `THIRD_PARTY_LICENSES.html`, which lists the crates the desktop app links, with their license texts. Each [GitHub release](https://github.com/lobbystack/noura/releases) attaches the same file as `third-party-licenses-<platform>.html`. [Releasing](docs/releasing.md#third-party-licenses-in-the-app) explains how the release workflow generates it.
 
 The repository includes Apollo GraphQL's unmodified `rust-best-practices` agent skill under the MIT license. See `docs/provenance/apollo-rust-best-practices.md` for its pinned source and verification record.
 
 The repository also includes the unmodified `shadcn-svelte` agent skill under the MIT license. See `docs/provenance/shadcn-svelte-skill.md` for its source record.
 
-The noura server build generates `apps/server/dist/THIRD_PARTY_NOTICES.md` from the packages present in the Bun server and browser bundles and includes it in the Docker image. The release build also inventories extracted CSS and fonts. Its additional dependencies include Hono and Better Auth (MIT), Nodemailer (MIT-0), and Postgres.js (Unlicense). The server's bundle-specific check accepts MIT-0 and Unlicense as permissive licenses. noura has not copied donor source into the synchronization service.
-
-Resumable uploads use `@tus/server`, `@tus/file-store`, and `@tus/utils` (MIT). noura supplies the missing published utilities notice from its exact upstream commit; see `docs/provenance/tus-utils-license.md`.
-
-The browser viewer uses Marked (MIT), DOMPurify (the Apache-2.0 option of its dual license), and Public Sans (OFL-1.1). Native and portable encryption use age, aes-gcm, ed25519-dalek, x25519-dalek (BSD-3-Clause), hkdf (MIT/Apache-2.0), and zeroize under their permissive Cargo-declared license options. These are dependencies, not copied donor implementations. The pinned Cargo and Bun lockfiles remain the complete dependency inventories.
+Native encryption uses age, aes-gcm, ed25519-dalek, x25519-dalek (BSD-3-Clause), hkdf (MIT/Apache-2.0), and zeroize under their permissive Cargo-declared license options. These are dependencies, not copied donor implementations. `Cargo.lock` remains the complete dependency inventory.
 
 The v2 sync server (`sync-server`, `sync-store`, `sync-store-sqlite` and `sync-store-postgres`) uses axum (MIT), sqlx (MIT/Apache-2.0) with the SQLite it bundles (public domain) and its PostgreSQL driver, tokio and tracing (MIT), jiff (MIT/Unlicense), and hashlink (MIT/Apache-2.0) for its caches of verified chains. It reaches PostgreSQL over TLS through rustls (Apache-2.0/ISC/MIT) with ring (Apache-2.0 and ISC) and the Mozilla root certificates in `webpki-roots` (CDLA-Permissive-2.0). These are dependencies, not copied donor implementations. Atuin's server (MIT) served as a layout reference for running SQLite and PostgreSQL from one binary, and noura copied none of its code.
 
@@ -22,9 +16,7 @@ The sync server's account pages run passkey ceremonies with `webauthn-rs`, `weba
 
 Sync protocol v2 (`sync-protocol` and `sync-key-envelope`) uses ed25519-dalek 3 and x25519-dalek 3 (BSD-3-Clause), hpke with x-wing and ml-kem, chacha20poly1305, aead-stream and getrandom (MIT/Apache-2.0), and blake3 (CC0-1.0/Apache-2.0). These are dependencies, not copied donor implementations. Its tests read one draft-ietf-hpke-pq vector taken from the `hpke` package and the Wycheproof sets through the `wycheproof` crate (Apache-2.0); see `docs/provenance/sync-v2-test-vectors.md`.
 
-The browser encrypted-sync foundation uses `@noble/hashes` (MIT) for BLAKE3 device fingerprints and attachment content revisions, and `@noble/ciphers` (MIT) for the ChaCha20-Poly1305 primitive inside the byte-compatible `age` attachment stream; the Rust side uses the `blake3` and `age` crates. These are dependencies, not copied donor implementations.
-
-Notable runtime dependencies include the Apache-2.0 licensed official Rust MCP SDK (`rmcp`), dual MIT/Apache-2.0 `genai`, MIT/Apache-2.0 `keyring`, MIT `trash`, MIT `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai`, MIT `Tauri`, MIT `Svelte`, MIT `Tiptap`, and CC0-1.0 `fractional-indexing`. Desktop release packaging includes the generated license file described above.
+Notable runtime dependencies include the Apache-2.0 licensed official Rust MCP SDK (`rmcp`), dual MIT/Apache-2.0 `genai`, MIT/Apache-2.0 `keyring`, and MIT `trash`. Desktop release packaging includes the generated license file described above.
 
 The plugins that ship in each desktop package are WebAssembly components that link `wit-bindgen` (Apache-2.0 WITH LLVM-exception, Apache-2.0 or MIT), as the license file says. Their other crates also appear in the desktop binary.
 
@@ -61,12 +53,6 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-## PDF.js and PDF rendering assets
-
-PDF.js 6.3.289, Copyright Mozilla Foundation and contributors, is licensed under Apache-2.0. The complete license ships at `pdfjs/LICENSE`. Adobe CMaps, PDFium/Foxit fonts, and the PDFium JBIG2 decoder use BSD-3-Clause; OpenJPEG uses BSD-2-Clause; qcms uses MIT; ICC profiles use CC0-1.0. Their complete notices ship alongside their assets in `pdfjs/cmaps`, `pdfjs/standard_fonts`, `pdfjs/wasm`, and `pdfjs/iccs`.
-
-Liberation Sans 2.1.5, digitized data Copyright 2010 Google Corporation and Copyright 2012 Red Hat, Inc., uses SIL Open Font License 1.1. Unmodified fonts and the complete license ship in `pdfjs/standard_fonts`; the source license is also retained in `apps/app/vendor/pdf-fonts/LICENSE`. The older GPL Liberation files from the PDF.js package are excluded from the application bundle. See `docs/provenance/pdfjs.md` for exact sources and revisions.
-
 ## security-framework 3.7.0 (macOS Keychain interaction)
 
 Native credential access uses the MIT option of the MIT/Apache-2.0 licensed `security-framework` dependency from https://github.com/kornelski/rust-security-framework. The version and checksum are pinned in Cargo.lock. No implementation source was copied.
@@ -90,7 +76,135 @@ The desktop app draws text with the fonts egui bundles in `epaint_default_fonts`
 - **Hack**: Copyright 2018 Source Foundry Authors, under the MIT License, with Bitstream Vera glyphs Copyright 2003 Bitstream, Inc., under the Bitstream Vera License
 - **emoji-icon-font** and its `egui-icons` subset: Copyright 2014 John Slegers, under the MIT License
 
-The crate's `fonts` folder holds each font's full license text. Noura uses the crate as a dependency and copies no font file into this repository.
+The crate's `fonts` folder holds each font's full license text. Noura uses the crate as a dependency and copies no font file from it into this repository. The interface draws in Public Sans, below, with egui's fonts behind it. On macOS and Windows the app also reads the system's own font, San Francisco or Segoe UI, at launch, for symbols such as ⌘ that Public Sans lacks, and Noura ships neither.
+
+## Public Sans 5.3.0 (interface font)
+
+The desktop app draws its interface and notes in Public Sans, the legacy app's font, from `@fontsource-variable/public-sans` 5.3.0. `crates/app-ui/assets/fonts` holds its Latin, Latin Extended and Vietnamese subsets, converted from WOFF2 to TTF, and the license. See [`docs/provenance/public-sans.md`](docs/provenance/public-sans.md). Every desktop package carries this license in `THIRD_PARTY_LICENSES.html`.
+
+```text
+Copyright 2015 The Public Sans Project Authors (https://github.com/uswds/public-sans) PublicSans-Italic[wght].ttf: Copyright 2015 The Public Sans Project Authors (https://github.com/uswds/public-sans)
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+This license is copied below, and is also available with a FAQ at:
+http://scripts.sil.org/OFL
+
+
+-----------------------------------------------------------
+SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
+-----------------------------------------------------------
+
+PREAMBLE
+The goals of the Open Font License (OFL) are to stimulate worldwide
+development of collaborative font projects, to support the font creation
+efforts of academic and linguistic communities, and to provide a free and
+open framework in which fonts may be shared and improved in partnership
+with others.
+
+The OFL allows the licensed fonts to be used, studied, modified and
+redistributed freely as long as they are not sold by themselves. The
+fonts, including any derivative works, can be bundled, embedded,
+redistributed and/or sold with any software provided that any reserved
+names are not used by derivative works. The fonts and derivatives,
+however, cannot be released under any other type of license. The
+requirement for fonts to remain under this license does not apply
+to any document created using the fonts or their derivatives.
+
+DEFINITIONS
+"Font Software" refers to the set of files released by the Copyright
+Holder(s) under this license and clearly marked as such. This may
+include source files, build scripts and documentation.
+
+"Reserved Font Name" refers to any names specified as such after the
+copyright statement(s).
+
+"Original Version" refers to the collection of Font Software components as
+distributed by the Copyright Holder(s).
+
+"Modified Version" refers to any derivative made by adding to, deleting,
+or substituting -- in part or in whole -- any of the components of the
+Original Version, by changing formats or by porting the Font Software to a
+new environment.
+
+"Author" refers to any designer, engineer, programmer, technical
+writer or other person who contributed to the Font Software.
+
+PERMISSION & CONDITIONS
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of the Font Software, to use, study, copy, merge, embed, modify,
+redistribute, and sell modified and unmodified copies of the Font
+Software, subject to the following conditions:
+
+1) Neither the Font Software nor any of its individual components,
+in Original or Modified Versions, may be sold by itself.
+
+2) Original or Modified Versions of the Font Software may be bundled,
+redistributed and/or sold with any software, provided that each copy
+contains the above copyright notice and this license. These can be
+included either as stand-alone text files, human-readable headers or
+in the appropriate machine-readable metadata fields within text or
+binary files as long as those fields can be easily viewed by the user.
+
+3) No Modified Version of the Font Software may use the Reserved Font
+Name(s) unless explicit written permission is granted by the corresponding
+Copyright Holder. This restriction only applies to the primary font name as
+presented to the users.
+
+4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font
+Software shall not be used to promote, endorse or advertise any
+Modified Version, except to acknowledge the contribution(s) of the
+Copyright Holder(s) and the Author(s) or with their explicit written
+permission.
+
+5) The Font Software, modified or unmodified, in part or in whole,
+must be distributed entirely under this license, and must not be
+distributed under any other license. The requirement for fonts to
+remain under this license does not apply to any document created
+using the Font Software.
+
+TERMINATION
+This license becomes null and void if any of the above conditions are
+not met.
+
+DISCLAIMER
+THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
+OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
+DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
+OTHER DEALINGS IN THE FONT SOFTWARE.
+```
+
+## Phosphor icons
+
+The desktop app draws its interface icons from Phosphor's path data, copied from `phosphor-svelte` 3.1.0 into `crates/app-ui/src/icons/phosphor.rs`. See [`docs/provenance/phosphor-icons.md`](docs/provenance/phosphor-icons.md).
+
+```text
+MIT License
+
+Copyright (c) 2020 Phosphor Icons
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 ## comrak 0.50.0 (Markdown parser)
 
@@ -151,7 +265,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ## AVIF decoding
 
-The desktop app decodes AVIF images in notes with these crates. Noura uses them unmodified, pinned in Cargo.lock, and copies none of their source. The `THIRD_PARTY_LICENSES.txt` file in each desktop package carries their full license texts.
+The desktop app decodes AVIF images in notes with these crates. Noura uses them unmodified, pinned in Cargo.lock, and copies none of their source. The `THIRD_PARTY_LICENSES.html` file in each desktop package carries their full license texts.
 
 - `avif-decode` 3.0.0, under the BSD 3-Clause License: Copyright 2021 Kornel Lesiński
 - `rav1d` 1.1.0, a Rust port of the dav1d AV1 decoder, under the BSD 2-Clause License: Copyright © 2018-2019, VideoLAN and dav1d authors, and Copyright © 2023-2024, VideoLAN, dav1d authors, and Internet Security Research Group
@@ -161,7 +275,7 @@ The desktop app decodes AVIF images in notes with these crates. Noura uses them 
 
 ## hayro 0.8.0 (PDF rendering)
 
-The desktop app opens, draws, searches and unlocks PDFs with Laurenz Stampfl's `hayro`, `hayro-interpret` and `hayro-syntax` 0.8.0, and the crates they bring, under the MIT option of their `Apache-2.0 OR MIT` licenses. Noura uses them unmodified, pinned in Cargo.lock, and copies none of their source. The `THIRD_PARTY_LICENSES.txt` file in each desktop package carries their full license texts.
+The desktop app opens, draws, searches and unlocks PDFs with Laurenz Stampfl's `hayro`, `hayro-interpret` and `hayro-syntax` 0.8.0, and the crates they bring, under the MIT option of their `Apache-2.0 OR MIT` licenses. Noura uses them unmodified, pinned in Cargo.lock, and copies none of their source. The `THIRD_PARTY_LICENSES.html` file in each desktop package carries their full license texts.
 
 `hayro-interpret` builds in two sets of files whose licenses differ from the crate's own:
 

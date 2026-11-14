@@ -799,7 +799,7 @@ fn brave_search_failures_reach_the_chat_as_public_errors_without_the_key_or_its_
         chat.result(1, "call_1"),
         json!({ "error": {
             "code": "web_search_key_rejected",
-            "message": "Brave Search didn't accept the key. Check it in Settings, under Web search."
+            "message": "Brave Search refused the key. Check it in Settings > AI."
         }})
     );
     chat.call(1, "call_2", "web_search", search("rate limited"));
@@ -807,7 +807,7 @@ fn brave_search_failures_reach_the_chat_as_public_errors_without_the_key_or_its_
         chat.result(2, "call_2"),
         json!({ "error": {
             "code": "web_search_rate_limited",
-            "message": "Brave Search's limit for your key was reached. Try again in a moment."
+            "message": "Your Brave Search limit was reached. Try again in a moment."
         }})
     );
     chat.answer(2, "Brave Search isn't answering.");
@@ -815,8 +815,7 @@ fn brave_search_failures_reach_the_chat_as_public_errors_without_the_key_or_its_
     let lines = ai::lines(&chat.app);
     assert!(
         lines.contains(
-            &"The web call failed: Brave Search didn't accept the key. Check it in Settings, \
-              under Web search."
+            &"The web call failed: Brave Search refused the key. Check it in Settings > AI."
                 .to_owned()
         ),
         "{lines:?}"
@@ -976,7 +975,7 @@ fn the_real_brave_client_answers_a_chat_through_the_request_boundary() {
         chat.result(3, "call_3"),
         json!({ "error": {
             "code": "web_search_key_rejected",
-            "message": "Brave Search didn't accept the key. Check it in Settings, under Web search."
+            "message": "Brave Search refused the key. Check it in Settings > AI."
         }})
     );
     chat.answer(3, "Stake them early.");

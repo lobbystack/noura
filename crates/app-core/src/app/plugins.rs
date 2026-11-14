@@ -591,6 +591,9 @@ impl App {
         self.session
             .plugins()
             .panel(object_type, object_id, session.revision())
+            // A panel with nothing in its root shows nothing beside the
+            // body, as before the plugin's first answer.
+            .filter(|view| !matches!(view, Ok(view) if view.root().children.is_empty()))
     }
 
     /// Press the button `node_id` in the plugin's properties panel of the
@@ -679,8 +682,8 @@ impl App {
     }
 
     /// Do what running plugins asked of this window, oldest first: show
-    /// objects, and pages once they are in the rail, and move objects to
-    /// the trash. An object Noura can't find says so; a page the plugin
+    /// objects, pages once they are in the rail, and Settings, and move
+    /// objects to the trash. An object Noura can't find says so; a page the plugin
     /// doesn't add is passed over.
     fn open_for_plugins(&mut self, openings: Vec<Opening>) {
         if self.closed || self.is_leaving_window() {
@@ -695,6 +698,7 @@ impl App {
                     }
                 }
                 Opening::Trash(id) => self.trash_object(&id),
+                Opening::Settings(section) => self.open_settings_at(section),
             }
         }
     }

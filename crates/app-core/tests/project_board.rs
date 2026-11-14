@@ -15,7 +15,7 @@ use support::{
     tasks::{A, B, C, D, E, F, G, H, find, property, task_file, with_tasks},
 };
 
-const MOVE_CHANGED: &str = "Could not move the task. The task changed while you were viewing it.";
+const MOVE_CHANGED: &str = "The task changed, so it didn't move.";
 
 fn task(suffix: &str, status: &str, more: &str) -> Vec<u8> {
     task_file(

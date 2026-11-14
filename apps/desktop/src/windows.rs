@@ -16,7 +16,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, Sender, channel},
     },
@@ -54,12 +54,45 @@ const FORWARD_RETRY: Duration = Duration::from_millis(200);
 #[cfg(target_os = "windows")]
 const MENU_RETRY: Duration = Duration::from_millis(100);
 
+/// The icon of Noura's windows and taskbar entries. On macOS the app
+/// bundle's own icon stays, the layered one macOS 26 draws, so this holds
+/// no image: eframe then leaves the Dock icon alone instead of drawing
+/// egui's logo there.
+fn icon() -> Arc<egui::IconData> {
+    static ICON: OnceLock<Arc<egui::IconData>> = OnceLock::new();
+    ICON.get_or_init(|| {
+        let none = || egui::IconData {
+            rgba: Vec::new(),
+            width: 1,
+            height: 1,
+        };
+        if cfg!(target_os = "macos") {
+            return Arc::new(none());
+        }
+        let png = include_bytes!("../icons/128x128@2x.png");
+        Arc::new(
+            eframe::icon_data::from_png_bytes(png).unwrap_or_else(|error| {
+                tracing::warn!(%error, "the window icon could not be read");
+                none()
+            }),
+        )
+    })
+    .clone()
+}
+
 /// A window's frame: its title, size and, for a new window, its place.
 pub fn builder(position: Option<Pos2>) -> ViewportBuilder {
     let builder = ViewportBuilder::default()
         .with_title("Noura")
+        .with_icon(icon())
         .with_inner_size([1100.0, 720.0])
-        .with_min_inner_size([640.0, 420.0]);
+        .with_min_inner_size([640.0, 420.0])
+        // On macOS the window's content runs under a transparent title
+        // bar, and Noura draws its own title bar row there, as the
+        // legacy app did.
+        .with_fullsize_content_view(true)
+        .with_titlebar_shown(false)
+        .with_title_shown(false);
     match position {
         Some(position) => builder.with_position(position),
         None => builder,

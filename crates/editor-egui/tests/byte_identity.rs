@@ -286,7 +286,7 @@ fn the_format_conformance_fixtures_keep_their_bytes() {
 /// The Markdown the legacy editor's tests open, with the test it comes from.
 const LEGACY_NOTES: &[(&str, &str)] = &[
     (
-        "packages/editor/src/preview-view.test.ts KITCHEN_SINK",
+        "legacy editor preview-view.test.ts KITCHEN_SINK",
         "---\ntitle: Kitchen sink\ntags: [a, b]\n---\n\n# Heading with **bold** and *italic*\n\n\
          > [!note] Callout title\n> Callout body with [[Link|alias]] and #tag\n\n\
          > quote line one\n> quote line two\n\n\
@@ -298,162 +298,144 @@ const LEGACY_NOTES: &[(&str, &str)] = &[
          | A | B |\n| - | - |\n| 1 | 2 |\n\nSetext\n===\n\n---\n\nLast line ^block-id\n",
     ),
     (
-        "packages/editor/src/preview-view.test.ts task",
+        "legacy editor preview-view.test.ts task",
         "intro\n\n- [ ] task\n",
     ),
     (
-        "packages/editor/src/preview-view.test.ts links",
+        "legacy editor preview-view.test.ts links",
         "intro\n\nSee [[Plan|the plan]] and [docs](https://example.com)\n",
     ),
     (
-        "packages/editor/src/editor-view.test.ts SAMPLE",
+        "legacy editor editor-view.test.ts SAMPLE",
         "# Plan\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\n$$E = mc^2$$\n\n![[Notes/index]]\n\n\
          Inline `[[Note]]` code\n",
     ),
     (
-        "packages/editor/src/editor-view.test.ts PDF embeds",
+        "legacy editor editor-view.test.ts PDF embeds",
         "![[lecture.pdf#page=7]]\n\n![](lecture.pdf#page=9)\n\n[Read](lecture.pdf#page=11)\n\n\
          Inline ![[lecture.pdf#page=3]] end\n",
     ),
     (
-        "packages/editor/src/collaborative-view.test.ts",
+        "legacy editor collaborative-view.test.ts",
         "Introduction\n\n[Lecture](lecture.pdf#page=7)\n",
     ),
     (
-        "packages/editor/src/factory.test.ts lone carriage return",
+        "legacy editor factory.test.ts lone carriage return",
         "a\rb\nc\r\n",
     ),
     (
-        "packages/editor/src/factory.test.ts outside edit",
+        "legacy editor factory.test.ts outside edit",
         "line one\nline two\nline three\nexternal\n",
     ),
     (
-        "packages/editor/src/preview.test.ts table",
+        "legacy editor preview.test.ts table",
         "| A | B |\n| - | - |\n| 1 | 2 |\n",
     ),
     (
-        "packages/editor/src/preview.test.ts display math",
+        "legacy editor preview.test.ts display math",
         "Intro\n\n$$x + y$$\n\nOutro\n",
     ),
     (
-        "packages/editor/src/preview.test.ts embeds",
+        "legacy editor preview.test.ts embeds",
         "![[Notes/index]]\n\nprose ![[Note]] tail\n",
     ),
     (
-        "packages/editor/src/preview.test.ts padded embed",
+        "legacy editor preview.test.ts padded embed",
         "  ![[Note]]  \n",
     ),
     (
-        "packages/editor/src/preview.test.ts code span",
+        "legacy editor preview.test.ts code span",
         "Fenced-looking `[[Note]] $x$ ==h== #tag %%c%%` prose\n",
     ),
     (
-        "packages/editor/src/preview.test.ts hidden comment",
+        "legacy editor preview.test.ts hidden comment",
         "before %%secret **bold**%% after\n",
     ),
+    ("legacy editor preview.test.ts inline math", "$x$ here\n"),
     (
-        "packages/editor/src/preview.test.ts inline math",
-        "$x$ here\n",
-    ),
-    (
-        "packages/editor/src/preview.test.ts frontmatter",
+        "legacy editor preview.test.ts frontmatter",
         "---\ntitle: Plan\ntags: [a, \"#b\"]\nlink: \"[[Note]]\"\n---\n\nBody #tag\n",
     ),
     (
-        "packages/editor/src/preview.test.ts unclosed frontmatter",
+        "legacy editor preview.test.ts unclosed frontmatter",
         "---\ntext\n",
     ),
     (
-        "packages/editor/src/preview.test.ts multi-line math",
+        "legacy editor preview.test.ts multi-line math",
         "Intro\n\n$$\nx^2 + y^2\n$$\n\nOutro\n",
     ),
     (
-        "packages/editor/src/preview.test.ts math emphasis",
+        "legacy editor preview.test.ts math emphasis",
         "$$\na*b*c #x\n$$\n\nafter\n",
     ),
     (
-        "packages/editor/src/preview.test.ts blockquote",
+        "legacy editor preview.test.ts blockquote",
         "> one\n> two\n> three\n\nafter\n",
     ),
     (
-        "packages/editor/src/preview.test.ts callout",
+        "legacy editor preview.test.ts callout",
         "> [!note] Title\n> body\n\nafter\n",
     ),
     (
-        "packages/editor/src/preview.test.ts folded callout",
+        "legacy editor preview.test.ts folded callout",
         "> [!warning]- Careful\n> body\n\nafter\n",
     ),
     (
-        "packages/editor/src/preview.test.ts fenced code",
+        "legacy editor preview.test.ts fenced code",
         "```js\nconst a = 1;\n```\n\nafter\n",
     ),
     (
-        "packages/editor/src/preview.test.ts long emphasis",
+        "legacy editor preview.test.ts long emphasis",
         "**xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx**\n\nnext\n",
     ),
     (
-        "packages/editor/src/preview.test.ts images",
+        "legacy editor preview.test.ts images",
         "![Alt](pic.png \"A title\")\n\n![[photo.jpg|300]]\n\nend\n",
     ),
     (
-        "packages/editor/src/preview.test.ts link",
+        "legacy editor preview.test.ts link",
         "See [the docs](https://example.com) now\n",
     ),
     (
-        "packages/editor/src/preview.test.ts tasks",
+        "legacy editor preview.test.ts tasks",
         "- [ ] one\n* [x] two\n+ [ ] three\n1. [X] four\n- [ ]\n\nend\n",
     ),
     (
-        "packages/editor/src/commands.test.ts tasks",
+        "legacy editor commands.test.ts tasks",
         "- [ ] one\n- [x] two",
     ),
     (
-        "packages/editor/src/commands.test.ts mixed tasks",
+        "legacy editor commands.test.ts mixed tasks",
         "* [ ] a\n+ [x] b\n1. [ ] c\n- [ ]",
     ),
+    ("legacy editor commands.test.ts empty bold", "abc ****"),
+    ("legacy editor commands.test.ts bold", "a **bold** b"),
+    ("legacy editor commands.test.ts italic", "a *it* b"),
+    ("legacy editor commands.test.ts strike", "a ~~x~~ b"),
+    ("legacy editor commands.test.ts code", "a `x` b"),
+    ("legacy editor commands.test.ts underline", "a <u>x</u> b"),
+    ("legacy editor commands.test.ts bold italic", "***x***"),
+    ("legacy editor commands.test.ts empty link", "see [docs]()"),
+    ("legacy editor commands.test.ts lines", "a\nb\nc"),
     (
-        "packages/editor/src/commands.test.ts empty bold",
-        "abc ****",
-    ),
-    ("packages/editor/src/commands.test.ts bold", "a **bold** b"),
-    ("packages/editor/src/commands.test.ts italic", "a *it* b"),
-    ("packages/editor/src/commands.test.ts strike", "a ~~x~~ b"),
-    ("packages/editor/src/commands.test.ts code", "a `x` b"),
-    (
-        "packages/editor/src/commands.test.ts underline",
-        "a <u>x</u> b",
-    ),
-    (
-        "packages/editor/src/commands.test.ts bold italic",
-        "***x***",
-    ),
-    (
-        "packages/editor/src/commands.test.ts empty link",
-        "see [docs]()",
-    ),
-    ("packages/editor/src/commands.test.ts lines", "a\nb\nc"),
-    (
-        "packages/editor/src/commands.test.ts numbered",
+        "legacy editor commands.test.ts numbered",
         "1. a\n2. b\n3. c",
     ),
     (
-        "packages/editor/src/commands.test.ts ordered nesting",
+        "legacy editor commands.test.ts ordered nesting",
         "1. parent\n2. child\n",
     ),
     (
-        "packages/editor/src/commands.test.ts nesting",
+        "legacy editor commands.test.ts nesting",
         "- a\n- b\n  - c\n- d",
     ),
+    ("legacy editor text-sync.test.ts", "one\n2\nthree\nfour\n"),
     (
-        "packages/editor/src/text-sync.test.ts",
-        "one\n2\nthree\nfour\n",
-    ),
-    (
-        "apps/app/src/lib/editor/document-session.test.ts trailing space",
+        "legacy app document-session.test.ts trailing space",
         "Hello \nworld",
     ),
     (
-        "apps/app/src/lib/editor/managed-draft-session.test.ts",
+        "legacy app managed-draft-session.test.ts",
         "outside\nline\none two",
     ),
 ];

@@ -8,10 +8,13 @@ A view is a flat list of nodes, because WIT has no recursive types. The first no
 
 A node's `kind` sets what Noura draws:
 
-- Layout and text: `panel`, `text` and `markdown`.
+- Layout and text: `panel`, `text`, `markdown`, and `split`, two panels side by side: the first as wide as the `split` says, from 160 to 640 points, with a line on its right, and the second taking the rest. Each pane scrolls on its own.
+- Headings and empty states: `heading`, a page's or a section's title with an optional `icon` and its buttons and choice inputs at its end, and `empty`, what an empty page or section shows, with its buttons under its text. A page heading's first child stands out when it is a button.
 - Controls: `button`, `input` (a single or multi-line text, a checkbox, a choice, a date or a date and time), `form` and `name-field`.
 - Collections: `list` with `item` children, `virtual-list`, `table` with `row` children, `board` with `board-column` and `card` children, and `calendar` with `entry` children.
 - Menus: `menu`, `menu-item` and `separator`, the only child of an item, a row, a card or a button.
+
+Noura lays out a run of buttons, or of choice inputs with up to five short options, on one row, and draws those choices as a segmented control. It draws a form that holds one text input on one line, with the input's label as its placeholder. A view's root panel has no border; the panels inside it draw as cards.
 
 Every label must hold more than spaces, since screen readers read it. Noura checks a view against its rules before it draws it, and shows why in its place when the view breaks one.
 

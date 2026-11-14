@@ -190,8 +190,11 @@ jobs:
           identity="${APPLE_SIGNING_IDENTITY:--}"
           identity="${identity//\\/\\\\}"
           identity="${identity//\"/\\\"}"
-          printf '\n[package.metadata.packager.macos]\nsigning-identity = "%s"\n' "$identity" \
-            >> apps/desktop/Cargo.toml
+          # The manifest has the table already, for the icon's plist.
+          IDENTITY="$identity" perl -pi -e \
+            's/^\[package\.metadata\.packager\.macos\]\n/$&signing-identity = "$ENV{IDENTITY}"\n/' \
+            apps/desktop/Cargo.toml
+          grep -q '^signing-identity = ' apps/desktop/Cargo.toml
       # scripts/package-desktop.sh builds the plugins each package ships.
       # cargo-packager signs and notarizes the app, then signs every package
       # for the updater and writes a .sig beside each one.

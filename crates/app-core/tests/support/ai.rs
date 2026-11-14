@@ -289,6 +289,14 @@ fn collect(node: &ViewNode, lines: &mut Vec<String>) {
     match &node.kind {
         ViewKind::Text(text) => lines.push(text.clone()),
         ViewKind::Markdown(text) => lines.push(format!("md: {text}")),
+        ViewKind::Heading { text, detail, .. } => {
+            lines.push(text.clone());
+            lines.extend(detail.clone());
+        }
+        ViewKind::Empty { title, detail, .. } => {
+            lines.push(title.clone());
+            lines.extend(detail.clone());
+        }
         _ => {}
     }
     for child in &node.children {

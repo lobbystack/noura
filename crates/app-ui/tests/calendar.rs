@@ -2,8 +2,8 @@
 //! Next buttons and View choice, today's cell marked as the current date,
 //! entries on the grid labeled with their title and their time on this
 //! device's clock, and the entry panel's
-//! title, type, properties and Open, which shows a task beside the Tasks
-//! properties panel. The fake system keeps Toronto's time zone and US
+//! title, type, properties and Open, which opens the task in the note
+//! editor. The fake system keeps Toronto's time zone and US
 //! English, and its clock reads 11:00 on Wednesday 21 October 2026.
 
 mod support;
@@ -189,7 +189,7 @@ fn the_page_labels_its_buttons_its_view_choice_and_its_entries() {
 }
 
 #[test]
-fn an_entry_shows_its_panel_and_open_shows_the_task_beside_the_tasks_panel() {
+fn an_entry_shows_its_panel_and_open_opens_the_task_in_the_note_editor() {
     let Some(Opened {
         mut harness,
         _folders,
@@ -219,8 +219,8 @@ fn an_entry_shows_its_panel_and_open_shows_the_task_beside_the_tasks_panel() {
     press_button(&mut harness, "Open");
     wait_until(&mut harness, |harness| {
         harness
-            .query_by_role_and_label(Role::Group, "Properties")
-            .is_some_and(|panel| panel.query_by_role_and_label(Role::Group, "Task").is_some())
+            .query_by_role_and_label(Role::Document, "Note text")
+            .is_some()
     });
     assert_eq!(
         harness
@@ -231,7 +231,4 @@ fn an_entry_shows_its_panel_and_open_shows_the_task_beside_the_tasks_panel() {
             .as_deref(),
         Some("Standup")
     );
-    harness
-        .get_by_role_and_label(Role::Group, "Properties")
-        .get_by_role_and_label(Role::RadioGroup, "Status");
 }

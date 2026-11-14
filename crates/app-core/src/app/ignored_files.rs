@@ -1,5 +1,5 @@
-//! The Ignored files page's view state. Settings can host the page once
-//! it exists; for now the workspace switcher opens it.
+//! The Ignored files page's view state. Settings' Ignored files section
+//! opens it while it shows.
 
 use super::{App, Change};
 use crate::ignored::IgnoreList;

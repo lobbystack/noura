@@ -34,9 +34,9 @@ pub(crate) fn opens_in_tab(path: &str) -> bool {
 
 /// Extensions the system would run, install or follow elsewhere rather
 /// than show. Handing one from a workspace someone else wrote to the
-/// default app would run their code. Ported from the legacy app's
-/// `src-tauri/src/file_actions.rs`, with the macOS location files, Java
-/// Web Start, configuration profiles and the Windows app installers added.
+/// default app would run their code. Ported from the legacy Tauri app's
+/// file actions, with the macOS location files, Java Web Start,
+/// configuration profiles and the Windows app installers added.
 const RUNNABLE_EXTENSIONS: &[&str] = &[
     "app",
     "appimage",

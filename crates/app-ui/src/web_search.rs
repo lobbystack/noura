@@ -5,13 +5,12 @@
 //! plugin can show a prompt that grants web consent or read the key.
 
 use app_core::App;
-use egui::{Button, Id, Modal, RichText, Ui, UiBuilder, accesskit::Role};
+use egui::{Id, RichText, Ui, UiBuilder, accesskit::Role};
 use zeroize::Zeroizing;
 
 use crate::{
     ai::{alert, boxed, text_field},
-    common::{muted, primary_button},
-    theme::TITLE_SIZE,
+    common::{description, primary_button},
 };
 
 /// What the Web search section remembers between frames.
@@ -29,10 +28,9 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut WebSettingsView) {
         alert(ui, &problem);
         return;
     }
-    muted(
+    description(
         ui,
-        "The AI can search the web with Brave Search and read the pages it finds. Add your own \
-         Brave Search API key. Noura keeps it in this computer's credential store.",
+        "Uses your own Brave Search key, kept in this computer's credential store.",
     );
     ui.add_space(8.0);
     if let Some(problem) = &view.problem {
@@ -46,19 +44,8 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut WebSettingsView) {
     ui.scope_builder(builder, |ui| {
         boxed(ui, |ui| {
             ui.label(RichText::new("Brave Search key").strong());
-            muted(
-                ui,
-                if row.has_key {
-                    "Your key is saved."
-                } else {
-                    "No key yet."
-                },
-            );
-            let label = if row.has_key {
-                "New key (leave empty to keep the saved one)"
-            } else {
-                "Key"
-            };
+            description(ui, if row.has_key { "Saved" } else { "No key" });
+            let label = if row.has_key { "New key" } else { "Key" };
             text_field(ui, label, &mut view.key, true);
             ui.horizontal(|ui| {
                 let ready = !view.key.trim().is_empty();
@@ -81,20 +68,17 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut WebSettingsView) {
         boxed(ui, |ui| {
             ui.label(RichText::new("This workspace").strong());
             let Some(workspace) = &workspace else {
-                muted(ui, "Open a workspace to allow web search there.");
+                description(ui, "Open a workspace first.");
                 return;
             };
             if row.consented {
-                muted(ui, &format!("The AI can search the web in {workspace}."));
-                if ui.button("Turn off for this workspace").clicked() {
+                description(ui, &format!("Allowed in {workspace}"));
+                if ui.button("Turn off").clicked() {
                     changed = Some(app.revoke_web_consent());
                 }
             } else {
-                muted(
-                    ui,
-                    &format!("The AI can't search the web in {workspace} yet."),
-                );
-                if ui.button("Allow for this workspace").clicked() {
+                description(ui, &format!("Not allowed in {workspace}"));
+                if ui.button("Allow").clicked() {
                     changed = Some(app.ask_web_consent());
                 }
             }
@@ -124,43 +108,42 @@ pub(crate) fn consent_prompt(ui: &mut Ui, app: &mut App, view: &mut WebConsentVi
     view.asking = true;
     let title = format!("Let the AI search the web with {}?", prompt.provider_name);
     let mut answer = None;
-    let modal = Modal::new(Id::unique("web-consent")).show(ui.ctx(), |ui| {
+    let modal = crate::common::dialog(ui.ctx(), Id::unique("web-consent")).show(ui.ctx(), |ui| {
         let builder = UiBuilder::new()
             .accessibility_role(Role::AlertDialog)
             .accessibility_label(&title);
         ui.scope_builder(builder, |ui| {
             ui.set_width(440.0);
-            ui.label(RichText::new(&title).size(TITLE_SIZE).strong());
+            crate::common::dialog_title(ui, &title);
             ui.add_space(4.0);
             ui.label(format!(
-                "When a chat in {} uses the web, the search queries the AI writes go to {}, and \
-                 the addresses of the pages it reads go to the sites that host them. Both leave \
-                 this computer.",
+                "In {}, search queries go to {}, and page addresses go to the sites that host them.",
                 prompt.workspace, prompt.provider_name
             ));
             ui.label(format!(
-                "Plugins you allowed to send chats to AI providers can then search the web in {} \
-                 too, when the AI asks them to.",
+                "Plugins you let use AI can search the web in {} too.",
                 prompt.workspace
             ));
-            muted(
+            description(
                 ui,
-                "Noura doesn't ask again before each search. To take this back, open Settings, \
-                 then Web search.",
+                "Noura won't ask before each search. Revoke it in Settings > AI.",
             );
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                let deny = ui.add(Button::new("Deny"));
-                if opened {
-                    deny.request_focus();
-                }
-                if deny.clicked() {
-                    answer = Some(false);
-                }
-                if primary_button(ui, "Allow", true).clicked() {
-                    answer = Some(true);
-                }
-            });
+            let pressed = crate::common::dialog_footer(
+                ui,
+                vec![
+                    crate::common::Btn::new("Deny"),
+                    crate::common::Btn::new("Allow").variant(crate::common::Variant::Default),
+                ],
+            );
+            if opened {
+                pressed[0].request_focus();
+            }
+            if pressed[0].clicked() {
+                answer = Some(false);
+            }
+            if pressed[1].clicked() {
+                answer = Some(true);
+            }
         });
     });
     if answer.is_none() && modal.should_close() {

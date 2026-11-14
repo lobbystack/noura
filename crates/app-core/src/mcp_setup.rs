@@ -105,7 +105,6 @@ pub(crate) fn configuration(program: &Path, folder: &str) -> Result<String, Stri
             }
         }
     });
-    serde_json::to_string_pretty(&configuration).map_err(|_| {
-        "Noura couldn't write the configuration. Open Settings again to retry.".to_owned()
-    })
+    serde_json::to_string_pretty(&configuration)
+        .map_err(|_| "Couldn't write the configuration. Open Settings again to retry.".to_owned())
 }

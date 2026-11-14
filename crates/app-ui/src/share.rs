@@ -5,7 +5,7 @@
 
 use app_core::App;
 use app_core::shares::{DEFAULT_SHARE_DAYS, ShareAction};
-use egui::{Button, Id, Modal, RichText, ScrollArea, Slider, Ui};
+use egui::{Button, Id, RichText, ScrollArea, Slider, Ui};
 
 use crate::common::{muted, primary_button};
 use crate::theme::{Palette, TITLE_SIZE};
@@ -22,12 +22,10 @@ pub(crate) fn dialog(ui: &mut Ui, app: &mut App) {
     }
     let palette = Palette::of(ui.ctx());
     let mut actions = Vec::new();
-    let modal = Modal::new(Id::unique("share-link")).show(ui.ctx(), |ui| {
+    let modal = crate::common::dialog(ui.ctx(), Id::unique("share-link")).show(ui.ctx(), |ui| {
         ui.set_width(420.0);
         ui.label(
-            RichText::new(format!("Share \u{201c}{}\u{201d}", screen.note))
-                .size(TITLE_SIZE)
-                .strong(),
+            RichText::new(format!("Share \u{201c}{}\u{201d}", screen.note)).font(crate::theme::font(ui.ctx(), TITLE_SIZE, crate::theme::Weight::Medium)),
         );
         if let Some(why) = &screen.unavailable {
             muted(ui, why);
@@ -39,7 +37,7 @@ pub(crate) fn dialog(ui: &mut Ui, app: &mut App) {
         }
         muted(
             ui,
-            "Anyone with the link can read a copy of this note as it is now, without an account. Images stay out.",
+            "Anyone with the link can read this note as it is now, without an account. Images aren't shared.",
         );
         ui.add_space(8.0);
         let mut days = screen.days.max(1);
@@ -87,7 +85,7 @@ pub(crate) fn dialog(ui: &mut Ui, app: &mut App) {
             ui.label(RichText::new("All links in this workspace").strong());
             muted(
                 ui,
-                "The server doesn't know which note each link shares, so links from other devices show by their ID.",
+                "Links from other devices show by ID, since the server can't see their notes.",
             );
             ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
                 for link in &screen.workspace_links {
@@ -95,7 +93,7 @@ pub(crate) fn dialog(ui: &mut Ui, app: &mut App) {
                         if link.creator_removed {
                             ui.label(RichText::new(&link.label).color(palette.destructive))
                                 .on_hover_text(
-                                    "The device that made this link left the workspace. Revoke it unless you still want it.",
+                                    "Its device left the workspace. Revoke it unless you still want it.",
                                 );
                         } else {
                             ui.label(&link.label);

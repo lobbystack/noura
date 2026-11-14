@@ -1,5 +1,5 @@
 //! Seam 2: find and replace in a note through `editor-core` alone. The
-//! matching cases come from the legacy app's `packages/editor/src/find.test.ts`.
+//! matching cases come from the legacy app's find tests.
 
 use editor_core::MdDoc;
 use editor_core::find::{Find, MATCH_LIMIT};

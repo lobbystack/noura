@@ -1,5 +1,5 @@
-//! What a running plugin asks the window you acted in to show or move to
-//! the trash, and the clock it reads. A plugin's request waits here until
+//! What a running plugin asks the window you acted in to show, Settings
+//! included, or move to the trash, and the clock it reads. A plugin's request waits here until
 //! that window polls,
 //! and only a call that answers something you did may make one: an event
 //! in one of the plugin's views or panels, or a command you ran from the
@@ -12,9 +12,11 @@ use std::{
     thread::{self, ThreadId},
 };
 
-use plugin_host::{ClockReading, DeviceClock, Navigation, Placement, ServiceError};
+use plugin_host::{
+    ClockReading, DeviceClock, Navigation, Placement, ServiceError, SettingsSection,
+};
 
-use crate::{OpenAs, System, session::WindowKey};
+use crate::{OpenAs, System, session::WindowKey, settings::settings_section};
 
 /// Something a plugin asked a window to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,13 +27,15 @@ pub(crate) enum Opening {
     Page(String),
     /// Move the object with this stable ID to the trash.
     Trash(String),
+    /// Open Settings on the section with this ID.
+    Settings(&'static str),
 }
 
 /// The requests waiting for each window, oldest first.
 pub(crate) type Openings = Arc<Mutex<Vec<(WindowKey, Opening)>>>;
 
 /// Why a plugin's request outside a call that answers you opens nothing.
-const REFUSED: &str = "Noura opens things only in answer to something you did.";
+const REFUSED: &str = "Noura opens things only when you act.";
 
 /// One running plugin's navigation service.
 pub(crate) struct Navigator {
@@ -64,10 +68,8 @@ impl Navigator {
 
     fn request(&self, opening: Opening) -> Result<(), ServiceError> {
         let refusal = match opening {
-            Opening::Trash(_) => {
-                "Noura moves things to the trash only in answer to something you did."
-            }
-            Opening::Object { .. } | Opening::Page(_) => REFUSED,
+            Opening::Trash(_) => "Noura trashes things only when you act.",
+            Opening::Object { .. } | Opening::Page(_) | Opening::Settings(_) => REFUSED,
         };
         let origin = *self
             .origin
@@ -106,6 +108,15 @@ impl Navigation for Navigator {
 
     fn trash_object(&self, id: &str) -> Result<(), ServiceError> {
         self.request(Opening::Trash(id.to_owned()))
+    }
+
+    fn open_settings(&self, section: SettingsSection) -> Result<(), ServiceError> {
+        let id = match section {
+            SettingsSection::Plugins => settings_section::PLUGINS,
+            SettingsSection::Ai => settings_section::AI,
+            SettingsSection::Sync => settings_section::SYNC,
+        };
+        self.request(Opening::Settings(id))
     }
 }
 
@@ -147,12 +158,17 @@ mod tests {
         .unwrap();
         assert!(refused(answer));
         navigator.open_page("events").unwrap();
+        navigator.open_settings(SettingsSection::Ai).unwrap();
         navigator.set_origin(None);
         assert!(refused(navigator.open_page("events")));
+        assert!(refused(navigator.open_settings(SettingsSection::Plugins)));
 
         assert_eq!(
             *openings.lock().unwrap(),
-            [(window, Opening::Page("plugin:probe:events".to_owned()))]
+            [
+                (window, Opening::Page("plugin:probe:events".to_owned())),
+                (window, Opening::Settings(settings_section::AI)),
+            ]
         );
     }
 }

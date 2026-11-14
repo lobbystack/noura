@@ -127,11 +127,19 @@ pub fn selected(app: &App) -> Option<String> {
     }
 }
 
-/// The text of the page's text node `id`.
+/// The text of the page's text node `id`, the detail line of its heading
+/// `id`, or the title of its empty state `id`.
 pub fn text(app: &App, id: &str) -> Option<String> {
     let view = page(app);
     match &find(view.root(), id)?.kind {
         ViewKind::Text(text) => Some(text.clone()),
+        // The page heading names the view in its detail line.
+        ViewKind::Heading {
+            detail: Some(detail),
+            ..
+        } => Some(detail.clone()),
+        // An empty state reads as its title.
+        ViewKind::Empty { title, .. } => Some(title.clone()),
         _ => None,
     }
 }
@@ -195,6 +203,11 @@ pub fn choose(app: &mut App, list: &str, item: &str) {
         }),
     );
     super::settle(app);
+}
+
+/// Open the page's filters, which stay hidden until you ask for them.
+pub fn show_filters(app: &mut App) {
+    send(app, PluginEvent::Pressed("toggle-filters".to_owned()));
 }
 
 /// Send `event` to the page and wait for the plugin to draw.
@@ -271,6 +284,13 @@ pub fn due_text(app: &App, id: &str) -> Option<String> {
     let view = due_view(app);
     match &find(view.root(), id)?.kind {
         ViewKind::Text(text) => Some(text.clone()),
+        // The page heading names the view in its detail line.
+        ViewKind::Heading {
+            detail: Some(detail),
+            ..
+        } => Some(detail.clone()),
+        // An empty state reads as its title.
+        ViewKind::Empty { title, .. } => Some(title.clone()),
         _ => None,
     }
 }
@@ -287,4 +307,51 @@ pub fn property(bytes: &[u8], key: &str) -> Option<serde_json::Value> {
         local_core::ParsedMarkdown::Managed(object) => object.properties.get(key).cloned(),
         other => panic!("not a managed file: {other:?}"),
     }
+}
+
+/// What the Tasks page's right pane names its fields with, before the
+/// field's own name.
+pub const PANE: &str = "selected-";
+
+/// Show the task `id` in the Tasks page's right pane, as a click on its row
+/// in All does, where its fields edit it.
+pub fn select_in_pane(app: &mut App, id: &str) {
+    choose(app, "views", "view:all");
+    send(
+        app,
+        PluginEvent::Selected(Target {
+            node: "tasks".to_owned(),
+            item: id.to_owned(),
+        }),
+    );
+}
+
+/// The right pane's input `field`: its value and its choices, once the
+/// pane shows it.
+pub fn pane_input(app: &App, field: &str) -> Option<(app_core::InputValue, Vec<app_core::Choice>)> {
+    let view = app.plugin_view(PAGE)?.ok()?;
+    match &find(view.root(), &format!("{PANE}{field}"))?.kind {
+        ViewKind::Input { value, choices, .. } => Some((value.clone(), choices.clone())),
+        _ => None,
+    }
+}
+
+/// The right pane's text `node`, such as its notice.
+pub fn pane_text(app: &App, node: &str) -> Option<String> {
+    let view = app.plugin_view(PAGE)?.ok()?;
+    match &find(view.root(), &format!("{PANE}{node}"))?.kind {
+        ViewKind::Text(text) => Some(text.clone()),
+        _ => None,
+    }
+}
+
+/// Change the right pane's input `field` to `value`, as you do there.
+pub fn pane_change(app: &mut App, field: &str, value: app_core::InputValue) {
+    send(
+        app,
+        PluginEvent::Changed(app_core::Field {
+            node: format!("{PANE}{field}"),
+            value,
+        }),
+    );
 }

@@ -286,10 +286,9 @@ impl App {
             return None;
         }
         let message = if workspace.has_system_trash() {
-            "The folder and everything in it go to your system's trash, where you can \
-             restore them."
+            "Everything in it goes to your system's trash."
         } else {
-            "The folder and everything in it move to .noura/trash in this workspace."
+            "Everything in it moves to .noura/trash."
         };
         Some(Question {
             title: format!("Move {} to the trash?", self.quoted(relative_path)),
@@ -329,16 +328,10 @@ impl App {
                     self.select(&next);
                 }
                 match place {
-                    None => self.show_done(
-                        &format!("Moved {quoted} to the trash"),
-                        "You can restore it from your system's trash.".to_owned(),
-                    ),
+                    None => self.show_done(&format!("Moved {quoted} to the trash"), String::new()),
                     Some(place) => self.show_done(
                         &format!("Moved {quoted} to .noura/trash"),
-                        format!(
-                            "Noura couldn't use the system trash and moved it to {place} in this \
-                             workspace."
-                        ),
+                        format!("The system trash wasn't available, so it went to {place}."),
                     ),
                 }
             }

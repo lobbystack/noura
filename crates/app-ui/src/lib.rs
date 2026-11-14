@@ -10,6 +10,8 @@ mod common;
 mod dates;
 mod finder;
 mod folder_sync;
+pub mod fonts;
+mod icons;
 mod ignored_files;
 mod image_decoders;
 mod image_view;
@@ -74,7 +76,6 @@ pub struct NouraUi {
     /// The New workspace form, while it is open.
     new_workspace: Option<common::NewWorkspace>,
     tree: tree::TreeView,
-    ignored: ignored_files::IgnoredFilesView,
     settings: settings::SettingsView,
     plugin_install: plugins::InstallView,
     shipped_plugins: plugins::ShippedView,
@@ -98,6 +99,8 @@ pub struct NouraUi {
     /// The tab the document area showed last frame.
     shown_tab: Option<TabId>,
     started: bool,
+    /// The title the window shows now.
+    title: String,
     /// This window's own salt for IDs in egui's memory. Every window draws
     /// with one egui context, so they share that memory.
     window: Id,
@@ -108,10 +111,10 @@ impl NouraUi {
         Self {
             app,
             picker,
+            title: String::new(),
             quitting: false,
             new_workspace: None,
             tree: tree::TreeView::default(),
-            ignored: ignored_files::IgnoredFilesView::default(),
             settings: settings::SettingsView::default(),
             plugin_install: plugins::InstallView::default(),
             shipped_plugins: plugins::ShippedView::default(),
@@ -279,15 +282,16 @@ impl NouraUi {
 
     /// Draw one frame.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
+        common::track_focus_visible(ui.ctx());
         if !self.started {
             self.started = true;
             theme::install(ui.ctx());
             // The desktop app registers a font system with the system's
-            // fonts first; without one, the editor uses egui's own.
-            editor_egui::register_font_system(
-                ui.ctx(),
-                editor_egui::fonts::default_font_database(),
-            );
+            // fonts behind Public Sans first; without one, the editor uses
+            // Public Sans and egui's own.
+            let mut fonts = editor_egui::fonts::default_font_database();
+            editor_egui::fonts::prefer_sans(&mut fonts, fonts::editor_faces());
+            editor_egui::register_font_system(ui.ctx(), fonts);
             let ctx = ui.ctx().clone();
             // Each window is its own viewport, which repaints on its own.
             let viewport = ctx.viewport_id();
@@ -302,6 +306,17 @@ impl NouraUi {
             return;
         }
         apply_preferences(ui.ctx(), &self.app);
+        // The window takes the open workspace's name, as the title bar
+        // and the Window menu show it.
+        let title = self
+            .app
+            .workspace()
+            .map_or_else(|| "Noura".to_owned(), |workspace| workspace.name());
+        if title != self.title {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
+        }
         let now = Instant::now();
         self.app.save_due_notes(now);
         if let Some(due) = self.app.next_note_save() {

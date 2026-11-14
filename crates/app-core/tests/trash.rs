@@ -36,7 +36,7 @@ fn move_to_trash_uses_the_system_trash_and_says_so() {
         notice(&app),
         Some((
             "Moved \u{201c}Plan\u{201d} to the trash".to_owned(),
-            "You can restore it from your system's trash.".to_owned()
+            String::new()
         ))
     );
     assert_eq!(app.notice().unwrap().kind, NoticeKind::Done);
@@ -69,8 +69,8 @@ fn when_the_system_trash_refuses_the_item_goes_to_the_workspace_trash_folder() {
         Some((
             "Moved \u{201c}Plan\u{201d} to .noura/trash".to_owned(),
             format!(
-                "Noura couldn't use the system trash and moved it to \
-                 .noura/trash/{stamp}/Docs/Deep/Plan.md in this workspace."
+                "The system trash wasn't available, so it went to \
+                 .noura/trash/{stamp}/Docs/Deep/Plan.md."
             )
         ))
     );
@@ -111,8 +111,7 @@ fn a_folder_asks_first_and_says_where_it_goes() {
     assert_eq!(question.title, "Move \u{201c}Docs\u{201d} to the trash?");
     assert_eq!(
         question.message,
-        "The folder and everything in it go to your system's trash, where you can \
-         restore them."
+        "Everything in it goes to your system's trash."
     );
     assert_eq!(app.trash_question("Readme.md"), None);
     drop(app);
@@ -120,7 +119,7 @@ fn a_folder_asks_first_and_says_where_it_goes() {
     let app = fixture.app_with(FakeSystem::without_trash());
     assert_eq!(
         app.trash_question("Docs").unwrap().message,
-        "The folder and everything in it move to .noura/trash in this workspace."
+        "Everything in it moves to .noura/trash."
     );
     assert!(fixture.exists("Docs/Plan.md"));
 }

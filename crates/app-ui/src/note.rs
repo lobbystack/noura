@@ -12,11 +12,11 @@ use std::{
 };
 
 use app_core::sync::workspace::presence::SelectionRange;
-use app_core::{App, ConflictChoice, OpenAs, PluginView, Property, PropertyValue, TabId};
+use app_core::{App, ConflictChoice, OpenAs, PluginView, TabId};
 use editor_egui::{Editor, MdConfig, RemoteCursor, SpellChecker};
 use egui::{
-    Button, Color32, Event, Frame, Grid, Id, Key, Margin, Modifiers, Panel, RichText, ScrollArea,
-    Stroke, TextEdit, Ui, UiBuilder,
+    Color32, Event, Frame, Id, Key, Margin, Modifiers, Panel, RichText, ScrollArea, Stroke,
+    TextEdit, Ui, UiBuilder,
     accesskit::{Action, NodeId, Role},
     text::{CCursor, CCursorRange},
     text_edit::TextEditState,
@@ -52,8 +52,6 @@ struct OpenNote {
     name: Option<String>,
     /// Move the keyboard to the name field on the next frame.
     focus_name: bool,
-    /// What each property's field holds while you edit it.
-    drafts: HashMap<String, String>,
     /// The widget to hand the keyboard back to after the editor's first
     /// frame: a note opened from the keyboard, as with Enter in the file
     /// tree, leaves the keyboard where it was. A click puts the caret in
@@ -83,17 +81,13 @@ impl NoteView {
         self.drawn = None;
     }
 
-    /// Whether a name or property field holds typing that hasn't gone to
-    /// the note yet.
+    /// Whether a name field holds typing that hasn't gone to the note yet.
     pub(crate) fn has_drafts(&self) -> bool {
-        self.notes
-            .values()
-            .any(|note| note.name.is_some() || !note.drafts.is_empty())
+        self.notes.values().any(|note| note.name.is_some())
     }
 
-    /// Hand what the name and property fields hold to their notes, as
-    /// leaving the fields does: the name renames the file, and each
-    /// property's value goes in. A command, closing the window and quitting
+    /// Hand what the name fields hold to their notes, as leaving the
+    /// fields does: the name renames the file. A command, closing the window and quitting
     /// do this first, since they can close a note before its fields lose
     /// the keyboard.
     pub(crate) fn commit_drafts(&mut self, app: &mut App) {
@@ -148,62 +142,19 @@ impl NoteView {
             if note.name.is_some() && left(name_field_id(*tab)) {
                 commit_name(app, *tab, note);
             }
-            let keys: Vec<String> = note
-                .drafts
-                .keys()
-                .filter(|key| left(property_field_id(*tab, key)))
-                .cloned()
-                .collect();
-            for key in keys {
-                commit_property(app, *tab, note, &key);
-            }
         }
     }
 }
 
-/// Hand the typing in the note's name and property fields to the note.
+/// Hand the typing in the note's name field to the note.
 fn commit(app: &mut App, tab: TabId, note: &mut OpenNote) {
     commit_name(app, tab, note);
-    let keys: Vec<String> = note.drafts.keys().cloned().collect();
-    for key in keys {
-        commit_property(app, tab, note, &key);
-    }
 }
 
 /// Rename the note's file to what its name field holds.
 fn commit_name(app: &mut App, tab: TabId, note: &mut OpenNote) {
     if let Some(typed) = note.name.take() {
         app.rename_note(tab, &typed);
-    }
-}
-
-/// Give the property `key` the value its field holds.
-fn commit_property(app: &mut App, tab: TabId, note: &mut OpenNote, key: &str) {
-    let Some(typed) = note.drafts.remove(key) else {
-        return;
-    };
-    let property = app
-        .note(tab)
-        .and_then(|session| session.properties())
-        .and_then(|properties| properties.into_iter().find(|property| property.key == key));
-    if let Some(value) = property.and_then(|property| typed_value(&property, &typed)) {
-        app.set_note_property(tab, key, value);
-    }
-}
-
-/// The value `typed` gives the property, or `None` when the property
-/// keeps its value: `typed` is the value it has, or no number where the
-/// property holds one.
-fn typed_value(property: &Property, typed: &str) -> Option<PropertyValue> {
-    if property.read_only {
-        return None;
-    }
-    match &property.value {
-        PropertyValue::Text(text) => (typed != text).then(|| PropertyValue::Text(typed.to_owned())),
-        PropertyValue::Number(number) => (typed != number.to_string())
-            .then(|| PropertyValue::number(typed))
-            .flatten(),
-        _ => None,
     }
 }
 
@@ -226,10 +177,6 @@ fn cursor_color(index: u8) -> Color32 {
 
 fn name_field_id(tab: TabId) -> Id {
     Id::unique(("note-name", tab))
-}
-
-fn property_field_id(tab: TabId, key: &str) -> Id {
-    Id::unique(("note-property", tab, key))
 }
 
 /// Draw the note in `tab`, or why it couldn't open, in the window whose ID
@@ -267,7 +214,6 @@ pub(crate) fn show(
             whole_file,
             name: None,
             focus_name: false,
-            drafts: HashMap::new(),
             give_focus_back: if clicked {
                 None
             } else {
@@ -383,22 +329,21 @@ pub(crate) fn show(
     header(ui, app, note, tab);
     properties_notice(ui, app, tab);
     file_notice(ui, app, tab);
-    let palette = Palette::of(ui.ctx());
-    let panel = Panel::right(("note-properties", tab))
-        .resizable(true)
-        .default_size(PROPERTIES_WIDTH)
-        .frame(
-            Frame::new()
-                .fill(palette.background)
-                .stroke(Stroke::new(1.0, palette.border))
-                .inner_margin(Margin::same(12)),
-        );
-    // An object of a running plugin's type shows the plugin's panel in
-    // place of the kernel's.
+    // As in the legacy app, a note shows no properties beside its text. A
+    // plugin's object, such as a project, may still show its plugin's
+    // panel.
     if let Some(view) = app.plugin_panel(tab) {
-        panel.show(ui, |ui| plugin_panel(ui, app, window, tab, &view));
-    } else if let Some(properties) = app.note(tab).and_then(|session| session.properties()) {
-        panel.show(ui, |ui| properties_panel(ui, app, note, tab, &properties));
+        let palette = Palette::of(ui.ctx());
+        Panel::right(("note-properties", tab))
+            .resizable(true)
+            .default_size(PROPERTIES_WIDTH)
+            .frame(
+                Frame::new()
+                    .fill(palette.background)
+                    .stroke(Stroke::new(1.0, palette.border))
+                    .inner_margin(Margin::same(12)),
+            )
+            .show(ui, |ui| plugin_panel(ui, app, window, tab, &view));
     }
     body(ui, app, note, tab);
     // An embed's Open in tab button opens its PDF at the page its link
@@ -442,7 +387,7 @@ fn properties_notice(ui: &mut Ui, app: &App, tab: TabId) {
     else {
         return;
     };
-    let title = "The properties at the top of this file have an error";
+    let title = "Properties can\u{2019}t be read";
     let palette = Palette::of(ui.ctx());
     let builder = UiBuilder::new()
         .accessibility_role(Role::Alert)
@@ -455,7 +400,7 @@ fn properties_notice(ui: &mut Ui, app: &App, tab: TabId) {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(RichText::new(title).strong());
-                ui.label(format!("{reason} Fix them in the text below."));
+                ui.label(reason);
             });
     });
     ui.add_space(8.0);
@@ -471,16 +416,26 @@ fn header(ui: &mut Ui, app: &mut App, note: &mut OpenNote, tab: TabId) {
     let problem = session.name_problem().map(str::to_owned);
     let id = name_field_id(tab);
     let mut draft = note.name.clone().unwrap_or_else(|| shown.clone());
+    // The legacy document header: 48 px tall, the name on one 24 px line
+    // in its middle, then a line across the page.
+    ui.add_space(-12.0);
+    let interact = ui.spacing().interact_size.y;
+    ui.spacing_mut().interact_size.y = 24.0;
     let response = ui
         .add(
             TextEdit::singleline(&mut draft)
                 .id(id)
                 .hint_text("Untitled")
-                .font(egui::FontId::proportional(TITLE_SIZE + 6.0))
+                .font(crate::theme::font(
+                    ui.ctx(),
+                    TITLE_SIZE,
+                    crate::theme::Weight::Semibold,
+                ))
                 .frame(egui::Frame::NONE)
                 .desired_width(f32::INFINITY),
         )
         .accessible_name("File name");
+    ui.spacing_mut().interact_size.y = interact;
     if response.changed() {
         note.name = Some(draft);
     }
@@ -525,7 +480,16 @@ fn header(ui: &mut Ui, app: &mut App, note: &mut OpenNote, tab: TabId) {
             );
         });
     }
+    // The legacy document header ends in a line across the whole page.
     ui.add_space(4.0);
+    let palette = Palette::of(ui.ctx());
+    let y = ui.cursor().top();
+    ui.painter().hline(
+        ui.max_rect().x_range().expand(24.0),
+        y,
+        Stroke::new(1.0, palette.border),
+    );
+    ui.add_space(8.0);
 }
 
 /// What keeps the note's edits off the disk: another app's edit of the
@@ -538,7 +502,7 @@ fn file_notice(ui: &mut Ui, app: &mut App, tab: TabId) {
         let compare = banner(
             ui,
             "This file changed in another app",
-            "Your text is still here. Compare both versions and choose one.",
+            "Your text is still here.",
             None,
             "Compare",
         );
@@ -550,7 +514,7 @@ fn file_notice(ui: &mut Ui, app: &mut App, tab: TabId) {
         let restore = banner(
             ui,
             "This file was deleted",
-            "Your text is still here. You can put the file back.",
+            "Your text is still here.",
             problem.as_deref(),
             "Restore",
         );
@@ -562,7 +526,9 @@ fn file_notice(ui: &mut Ui, app: &mut App, tab: TabId) {
     }
 }
 
-/// A notice in the note with one button. Returns whether it was clicked.
+/// A notice in the note with one button, as the legacy alert: a warning
+/// icon, its title and text, and the button at its end. Returns whether
+/// the button was clicked.
 fn banner(ui: &mut Ui, title: &str, text: &str, problem: Option<&str>, button: &str) -> bool {
     let palette = Palette::of(ui.ctx());
     let builder = UiBuilder::new()
@@ -571,17 +537,43 @@ fn banner(ui: &mut Ui, title: &str, text: &str, problem: Option<&str>, button: &
     let clicked = ui
         .scope_builder(builder, |ui| {
             Frame::new()
+                .fill(palette.popover)
                 .stroke(Stroke::new(1.0, palette.border))
-                .corner_radius(radius(1.0))
-                .inner_margin(Margin::same(12))
+                .corner_radius(crate::theme::pill())
+                .inner_margin(Margin::symmetric(16, 12))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(RichText::new(title).strong());
-                    ui.label(text);
-                    if let Some(problem) = problem {
-                        ui.label(RichText::new(problem).color(palette.destructive));
-                    }
-                    ui.button(button).clicked()
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(16.0, 20.0), egui::Sense::hover());
+                        let icon =
+                            egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 16.0));
+                        crate::icons::paint(
+                            ui.painter(),
+                            crate::icons::WARNING,
+                            icon,
+                            palette.foreground,
+                            false,
+                        );
+                        let mut clicked = false;
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                            clicked = crate::common::Btn::new(button)
+                                .size(crate::common::Size::Sm)
+                                .show(ui)
+                                .clicked();
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                crate::common::field_label(ui, title);
+                                crate::common::description(ui, text);
+                                if let Some(problem) = problem {
+                                    ui.label(RichText::new(problem).color(palette.destructive));
+                                }
+                            });
+                        });
+                        clicked
+                    })
+                    .inner
                 })
                 .inner
         })
@@ -611,95 +603,101 @@ fn conflict_review(ui: &mut Ui, app: &mut App, tab: TabId) {
     let mut keep = false;
     let mut cancel = false;
     let mut confirm = false;
-    let modal = egui::Modal::new(Id::unique(("conflict-review", tab))).show(ui.ctx(), |ui| {
-        if let Some(choice) = confirming {
-            let (title, text) = match choice {
-                ConflictChoice::Mine => (
-                    "Use your version?",
-                    "The file\u{2019}s version is kept as a backup first.",
-                ),
-                ConflictChoice::File => (
-                    "Use the file\u{2019}s version?",
-                    "Your version is kept as a backup first.",
-                ),
-            };
-            let builder = UiBuilder::new()
-                .accessibility_role(Role::AlertDialog)
-                .accessibility_label(title);
-            ui.scope_builder(builder, |ui| {
-                ui.set_width(360.0);
-                ui.label(RichText::new(title).size(TITLE_SIZE).strong());
-                ui.label(text);
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    let cancel_button = ui.button("Cancel");
-                    let continue_button = ui.add(
-                        Button::new(RichText::new("Continue").color(palette.primary_foreground))
-                            .fill(palette.primary),
+    let modal = crate::common::dialog(ui.ctx(), Id::unique(("conflict-review", tab))).show(
+        ui.ctx(),
+        |ui| {
+            if let Some(choice) = confirming {
+                let (title, text) = match choice {
+                    ConflictChoice::Mine => (
+                        "Use your version?",
+                        "The file\u{2019}s version is kept as a backup first.",
+                    ),
+                    ConflictChoice::File => (
+                        "Use the file\u{2019}s version?",
+                        "Your version is kept as a backup first.",
+                    ),
+                };
+                let builder = UiBuilder::new()
+                    .accessibility_role(Role::AlertDialog)
+                    .accessibility_label(title);
+                ui.scope_builder(builder, |ui| {
+                    ui.set_width(360.0);
+                    crate::common::dialog_title(ui, title);
+                    crate::common::description(ui, text);
+                    let pressed = crate::common::dialog_footer(
+                        ui,
+                        vec![
+                            crate::common::Btn::new("Cancel"),
+                            crate::common::Btn::new("Continue")
+                                .variant(crate::common::Variant::Default),
+                        ],
                     );
-                    let ids = [cancel_button.id, continue_button.id];
+                    let ids = [pressed[0].id, pressed[1].id];
                     if !ui.memory(|memory| memory.focused().is_some_and(|id| ids.contains(&id))) {
-                        continue_button.request_focus();
+                        pressed[1].request_focus();
                     }
-                    cancel = cancel_button.clicked();
-                    confirm = continue_button.clicked();
+                    cancel = pressed[0].clicked();
+                    confirm = pressed[1].clicked();
                 });
-            });
-            return;
-        }
-        let builder = UiBuilder::new()
-            .accessibility_role(Role::Dialog)
-            .accessibility_label("Choose a version");
-        ui.scope_builder(builder, |ui| {
-            let width = (ui.ctx().content_rect().width() - 96.0).clamp(360.0, 960.0);
-            ui.set_width(width);
-            ui.label(RichText::new("Choose a version").size(TITLE_SIZE).strong());
-            ui.label("Both versions are kept until you choose.");
-            if let Some(problem) = &problem {
-                ui.label(RichText::new(problem).color(palette.destructive));
+                return;
             }
-            ui.add_space(8.0);
-            let height = (ui.ctx().content_rect().height() * 0.5).max(160.0);
-            ui.columns(2, |columns| {
-                version(
-                    &mut columns[0],
-                    ("conflict-mine", tab),
-                    "Your version",
-                    &mine,
-                    height,
-                );
-                version(
-                    &mut columns[1],
-                    ("conflict-file", tab),
-                    "The file\u{2019}s version",
-                    &theirs,
-                    height,
-                );
+            let builder = UiBuilder::new()
+                .accessibility_role(Role::Dialog)
+                .accessibility_label("Choose a version");
+            ui.scope_builder(builder, |ui| {
+                let width = (ui.ctx().content_rect().width() - 96.0).clamp(360.0, 960.0);
+                ui.set_width(width);
+                crate::common::dialog_title(ui, "Choose a version");
+                if let Some(problem) = &problem {
+                    ui.label(RichText::new(problem).color(palette.destructive));
+                }
+                ui.add_space(8.0);
+                let height = (ui.ctx().content_rect().height() * 0.5).max(160.0);
+                ui.columns(2, |columns| {
+                    version(
+                        &mut columns[0],
+                        ("conflict-mine", tab),
+                        "Your version",
+                        &mine,
+                        height,
+                    );
+                    version(
+                        &mut columns[1],
+                        ("conflict-file", tab),
+                        "The file\u{2019}s version",
+                        &theirs,
+                        height,
+                    );
+                });
+                {
+                    let pressed = crate::common::dialog_footer(
+                        ui,
+                        vec![
+                            crate::common::Btn::new("Keep editing"),
+                            crate::common::Btn::new("Use the file\u{2019}s version"),
+                            crate::common::Btn::new("Use my version")
+                                .variant(crate::common::Variant::Default),
+                        ],
+                    );
+                    let (keep_button, file_button, mine_button) =
+                        (&pressed[0], &pressed[1], &pressed[2]);
+                    // The keyboard stays in the review, starting on Keep
+                    // editing, so nothing typed reaches the note behind it.
+                    let ids = [keep_button.id, file_button.id, mine_button.id];
+                    if !ui.memory(|memory| memory.focused().is_some_and(|id| ids.contains(&id))) {
+                        keep_button.request_focus();
+                    }
+                    keep = keep_button.clicked();
+                    if file_button.clicked() {
+                        chosen = Some(ConflictChoice::File);
+                    }
+                    if mine_button.clicked() {
+                        chosen = Some(ConflictChoice::Mine);
+                    }
+                }
             });
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let keep_button = ui.button("Keep editing");
-                let file_button = ui.button("Use the file\u{2019}s version");
-                let mine_button = ui.add(
-                    Button::new(RichText::new("Use my version").color(palette.primary_foreground))
-                        .fill(palette.primary),
-                );
-                // The keyboard stays in the review, starting on Keep
-                // editing, so nothing typed reaches the note behind it.
-                let ids = [keep_button.id, file_button.id, mine_button.id];
-                if !ui.memory(|memory| memory.focused().is_some_and(|id| ids.contains(&id))) {
-                    keep_button.request_focus();
-                }
-                keep = keep_button.clicked();
-                if file_button.clicked() {
-                    chosen = Some(ConflictChoice::File);
-                }
-                if mine_button.clicked() {
-                    chosen = Some(ConflictChoice::Mine);
-                }
-            });
-        });
-    });
+        },
+    );
     let escape = modal.should_close();
     if confirm {
         app.confirm_version(tab);
@@ -833,155 +831,36 @@ fn plugin_panel(ui: &mut Ui, app: &mut App, window: Id, tab: TabId, view: &Plugi
     });
 }
 
-/// The note's frontmatter: ID, type, created and updated read-only, and
-/// strings, numbers, booleans and dates edited in place.
-fn properties_panel(
-    ui: &mut Ui,
-    app: &mut App,
-    note: &mut OpenNote,
-    tab: TabId,
-    properties: &[Property],
-) {
-    let builder = UiBuilder::new()
-        .accessibility_role(Role::Group)
-        .accessibility_label("Properties");
-    ui.scope_builder(builder, |ui| {
-        ui.label(RichText::new("Properties").strong());
-        ui.add_space(4.0);
-        ScrollArea::vertical()
-            .id_salt(("note-properties-scroll", tab))
-            .show(ui, |ui| {
-                Grid::new(("note-properties-grid", tab))
-                    .num_columns(2)
-                    .spacing([12.0, 6.0])
-                    .show(ui, |ui| {
-                        for property in properties {
-                            muted(ui, &property.key);
-                            if let Some(value) = property_value(ui, note, tab, property) {
-                                app.set_note_property(tab, &property.key, value);
-                            }
-                            ui.end_row();
-                        }
-                    });
-            });
-    });
-}
-
-/// Draw one property's value. Returns the new value once an edit is done.
-fn property_value(
-    ui: &mut Ui,
-    note: &mut OpenNote,
-    tab: TabId,
-    property: &Property,
-) -> Option<PropertyValue> {
-    let key = &property.key;
-    if property.read_only {
-        let text = match &property.value {
-            PropertyValue::Text(text) | PropertyValue::Date(text) | PropertyValue::Other(text) => {
-                text.clone()
-            }
-            PropertyValue::Number(number) => number.to_string(),
-            PropertyValue::Bool(value) => value.to_string(),
-        };
-        // Selectable and copyable, but not editable.
-        ui.add(
-            TextEdit::singleline(&mut text.as_str())
-                .frame(Frame::NONE)
-                .desired_width(f32::INFINITY),
-        )
-        .accessible_name(key.clone());
-        return None;
-    }
-    match &property.value {
-        PropertyValue::Bool(value) => {
-            let mut checked = *value;
-            let response = ui.checkbox(&mut checked, "").accessible_name(key.clone());
-            response.changed().then_some(PropertyValue::Bool(checked))
-        }
-        PropertyValue::Date(text) => {
-            let mut date: jiff::civil::Date = text.parse().ok()?;
-            let response = ui.add(
-                egui_extras::DatePickerButton::new(&mut date)
-                    .id_salt(key)
-                    .show_icon(false)
-                    .calendar_week(false),
-            );
-            response.accessible_name(key.clone());
-            let picked = date.to_string();
-            (picked != *text).then_some(PropertyValue::Date(picked))
-        }
-        PropertyValue::Text(text) => {
-            let typed = text_field(ui, note, tab, key, text)?;
-            typed_value(property, &typed)
-        }
-        PropertyValue::Number(number) => {
-            let typed = text_field(ui, note, tab, key, &number.to_string())?;
-            typed_value(property, &typed)
-        }
-        PropertyValue::Other(_) => None,
-    }
-}
-
-/// A one-line field for a property. Returns what you typed once you press
-/// Enter or leave the field, and nothing after Escape.
-fn text_field(
-    ui: &mut Ui,
-    note: &mut OpenNote,
-    tab: TabId,
-    key: &str,
-    value: &str,
-) -> Option<String> {
-    let mut draft = note
-        .drafts
-        .get(key)
-        .cloned()
-        .unwrap_or_else(|| value.to_owned());
-    let response = ui
-        .add(
-            TextEdit::singleline(&mut draft)
-                .id(property_field_id(tab, key))
-                .desired_width(f32::INFINITY),
-        )
-        .accessible_name(key.to_owned());
-    if response.changed() {
-        note.drafts.insert(key.to_owned(), draft);
-    }
-    if !response.lost_focus() {
-        return None;
-    }
-    let escape = ui.input(|input| input.key_pressed(Key::Escape));
-    let typed = note.drafts.remove(key)?;
-    (!escape).then_some(typed)
-}
-
 /// The prompt when a note couldn't save before something closed: Try
 /// again, Keep editing or Discard changes. Escape keeps editing.
 pub(crate) fn unsaved_prompt(ui: &mut Ui, app: &mut App) {
     let Some(prompt) = app.unsaved_prompt().cloned() else {
         return;
     };
-    let palette = Palette::of(ui.ctx());
     let mut retry = false;
     let mut keep = false;
     let mut discard = false;
-    let modal = egui::Modal::new(Id::unique("unsaved-note")).show(ui.ctx(), |ui| {
+    let modal = crate::common::dialog(ui.ctx(), Id::unique("unsaved-note")).show(ui.ctx(), |ui| {
         let builder = UiBuilder::new()
             .accessibility_role(Role::AlertDialog)
             .accessibility_label(prompt.title.clone());
         ui.scope_builder(builder, |ui| {
             ui.set_width(360.0);
-            ui.label(RichText::new(&prompt.title).size(TITLE_SIZE).strong());
-            ui.label(&prompt.message);
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let discard_button = ui.add(Button::new(
-                    RichText::new("Discard changes").color(palette.destructive),
-                ));
-                let keep_button = ui.button("Keep editing");
-                let try_again = ui.add(
-                    Button::new(RichText::new("Try again").color(palette.primary_foreground))
-                        .fill(palette.primary),
+            crate::common::dialog_title(ui, &prompt.title);
+            crate::common::description(ui, &prompt.message);
+            {
+                let pressed = crate::common::dialog_footer(
+                    ui,
+                    vec![
+                        crate::common::Btn::new("Discard changes")
+                            .variant(crate::common::Variant::Destructive),
+                        crate::common::Btn::new("Keep editing"),
+                        crate::common::Btn::new("Try again")
+                            .variant(crate::common::Variant::Default),
+                    ],
                 );
+                let (discard_button, keep_button, try_again) =
+                    (&pressed[0], &pressed[1], &pressed[2]);
                 // The keyboard stays in the prompt, starting on Try again,
                 // so nothing typed reaches the note behind it.
                 let ids = [discard_button.id, keep_button.id, try_again.id];
@@ -991,7 +870,7 @@ pub(crate) fn unsaved_prompt(ui: &mut Ui, app: &mut App) {
                 discard = discard_button.clicked();
                 keep = keep_button.clicked();
                 retry = try_again.clicked();
-            });
+            }
         });
     });
     if retry {

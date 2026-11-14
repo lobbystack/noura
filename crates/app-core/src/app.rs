@@ -1178,10 +1178,7 @@ fn copy_of_shown(path: &str, shown: &Shown) -> AppError {
     let Shown { name, root, .. } = shown;
     AppError::new(
         "workspace_already_open",
-        format!(
-            "{path} holds a copy of \u{201c}{name}\u{201d}, which you have open from {root}. \
-             Noura opens one copy at a time."
-        ),
+        format!("{path} copies \u{201c}{name}\u{201d}, already open from {root}."),
     )
 }
 

@@ -4,20 +4,21 @@
 
 use std::time::Duration;
 
-use app_core::{App, FileLink, Inbox, InboxSection, OpenAs};
+use app_core::{App, FileLink, Inbox, InboxSection, OpenAs, ViewKind};
 use egui::{
-    Align, Frame, Id, Label, Layout, Margin, Rect, Response, RichText, Stroke, Ui, UiBuilder,
-    accesskit::Role, pos2, vec2,
+    Align, Frame, Id, Label, Layout, Margin, Rect, Response, RichText, Sense, Stroke, Ui,
+    UiBuilder, accesskit::Role, pos2, vec2,
 };
 
 use crate::{
-    common::muted,
-    plugin_view,
-    theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, TITLE_SIZE, radius},
+    icons, plugin_view,
+    theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, Weight, font, radius},
 };
 
-/// The widest the Inbox's column grows.
-const COLUMN_WIDTH: f32 = 640.0;
+/// The size of the greeting at the top.
+const GREETING_SIZE: f32 = 16.0;
+/// The widest the Inbox's column grows, padding included.
+const COLUMN_WIDTH: f32 = 672.0 - 48.0;
 /// The space between the Inbox's parts.
 const GAP: f32 = 20.0;
 
@@ -53,7 +54,8 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, window: Id) {
 
 fn page(ui: &mut Ui, app: &mut App, window: Id, inbox: &Inbox) -> Option<Follow> {
     let mut follow = None;
-    heading(ui, inbox.greeting, 0, TITLE_SIZE);
+    heading(ui, inbox.greeting, 0, GREETING_SIZE);
+    ui.add_space(4.0);
     if !inbox.needs_attention.is_empty() {
         ui.add_space(GAP);
         follow = follow.or(needs_attention(ui, inbox));
@@ -68,7 +70,12 @@ fn page(ui: &mut Ui, app: &mut App, window: Id, inbox: &Inbox) -> Option<Follow>
 
 /// Draw `text` as a heading at `level`, counted from 0 for the page's own.
 fn heading(ui: &mut Ui, text: &str, level: usize, size: f32) {
-    let response = ui.label(RichText::new(text).size(size).strong());
+    let weight = if level == 0 {
+        Weight::Semibold
+    } else {
+        Weight::Medium
+    };
+    let response = ui.label(RichText::new(text).font(font(ui.ctx(), size, weight)));
     ui.ctx().accesskit_node_builder(response.id, |node| {
         node.set_role(Role::Heading);
         node.set_level(level);
@@ -83,7 +90,7 @@ fn rows<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     Frame::new()
         .stroke(Stroke::new(1.0, palette.border))
         .corner_radius(radius(1.0))
-        .inner_margin(Margin::symmetric(16, 10))
+        .inner_margin(Margin::symmetric(16, 12))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             add(ui)
@@ -151,8 +158,18 @@ fn needs_attention(ui: &mut Ui, inbox: &Inbox) -> Option<Follow> {
 /// A plugin's section: the view it drew, or why it couldn't load or draw,
 /// in its own place. What you do there goes back to the plugin.
 fn plugin_section(ui: &mut Ui, app: &mut App, window: Id, section: &InboxSection) {
-    heading(ui, &section.title, 1, BODY_SIZE);
-    ui.add_space(8.0);
+    // A section that draws its own heading, with its icon and buttons,
+    // gets no other.
+    let own_heading = section.content.as_ref().is_ok_and(|view| {
+        view.root()
+            .children
+            .iter()
+            .any(|child| matches!(child.kind, ViewKind::Heading { .. }))
+    });
+    if !own_heading {
+        heading(ui, &section.title, 1, BODY_SIZE);
+        ui.add_space(8.0);
+    }
     let empty = section
         .content
         .as_ref()
@@ -165,45 +182,106 @@ fn plugin_section(ui: &mut Ui, app: &mut App, window: Id, section: &InboxSection
 }
 
 fn recent(ui: &mut Ui, inbox: &Inbox) -> Option<Follow> {
-    heading(ui, "Recent", 1, BODY_SIZE);
+    ui.horizontal(|ui| {
+        let palette = Palette::of(ui.ctx());
+        let (rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+        icons::paint(
+            ui.painter(),
+            icons::NEW_NOTE,
+            rect,
+            palette.muted_foreground,
+            false,
+        );
+        heading(ui, "Recent", 1, BODY_SIZE);
+    });
     ui.add_space(8.0);
     if inbox.recent.is_empty() {
-        muted(ui, "No notes yet.");
+        rows(ui, |ui| {
+            let palette = Palette::of(ui.ctx());
+            ui.label(
+                RichText::new("No notes yet.")
+                    .size(BODY_SIZE)
+                    .color(palette.muted_foreground),
+            );
+        });
         return None;
     }
     let palette = Palette::of(ui.ctx());
     let mut follow = None;
-    rows(ui, |ui| {
-        for note in &inbox.recent {
-            // Notes that share a title show their paths to tell them apart.
-            let response = ui
-                .horizontal_wrapped(|ui| {
-                    let response = ui.link(RichText::new(&note.title).size(BODY_SIZE));
-                    if note.shares_title {
-                        ui.label(
-                            RichText::new(&note.relative_path)
-                                .size(SUPPORTING_SIZE)
-                                .color(palette.muted_foreground),
+    // The legacy list: a bordered card of 40 px rows with lines between,
+    // each filling on hover.
+    Frame::new()
+        .stroke(Stroke::new(1.0, palette.border))
+        .corner_radius(radius(1.0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let count = inbox.recent.len();
+            for (index, note) in inbox.recent.iter().enumerate() {
+                let (rect, response) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::click());
+                // Notes that share a title show their paths to tell them
+                // apart.
+                let label = if note.shares_title {
+                    format!("{}, {}", note.title, note.relative_path)
+                } else {
+                    note.title.clone()
+                };
+                response.widget_info(|| egui::WidgetInfo::labeled(Role::Link, true, &label));
+                let path = note.relative_path.clone();
+                ui.ctx().accesskit_node_builder(response.id, |node| {
+                    node.set_description(path);
+                });
+                if ui.is_rect_visible(rect) {
+                    let painter = ui.painter();
+                    if response.hovered() {
+                        let corner = egui::CornerRadius {
+                            nw: if index == 0 { 10 } else { 0 },
+                            ne: if index == 0 { 10 } else { 0 },
+                            sw: if index + 1 == count { 10 } else { 0 },
+                            se: if index + 1 == count { 10 } else { 0 },
+                        };
+                        painter.rect_filled(rect.shrink(1.0), corner, palette.accent);
+                    }
+                    if index > 0 {
+                        painter.hline(
+                            rect.x_range(),
+                            rect.top(),
+                            Stroke::new(1.0, palette.border.gamma_multiply(0.6)),
                         );
                     }
-                    response
-                })
-                .inner;
-            let label = if note.shares_title {
-                format!("{}, {}", note.title, note.relative_path)
-            } else {
-                note.title.clone()
-            };
-            let path = note.relative_path.clone();
-            ui.ctx().accesskit_node_builder(response.id, |node| {
-                node.set_label(label);
-                node.set_description(path);
-            });
-            let response = response.on_hover_text(&note.relative_path);
-            if let Some(how) = opened_as(ui, &response) {
-                follow = Some(Follow::Note(note.relative_path.clone(), how));
+                    let title = painter.layout_no_wrap(
+                        note.title.clone(),
+                        egui::FontId::proportional(BODY_SIZE),
+                        palette.foreground,
+                    );
+                    let at = pos2(rect.left() + 16.0, rect.center().y - title.size().y / 2.0);
+                    let end = at.x + title.size().x;
+                    painter.galley(at, title, palette.foreground);
+                    if note.shares_title {
+                        let path = painter.layout_no_wrap(
+                            note.relative_path.clone(),
+                            egui::FontId::proportional(SUPPORTING_SIZE),
+                            palette.muted_foreground,
+                        );
+                        let at = pos2(end + 8.0, rect.center().y - path.size().y / 2.0);
+                        let shown = Rect::from_min_size(at, path.size());
+                        painter.galley(at, path, palette.muted_foreground);
+                        // The path reads on its own too, as the legacy
+                        // label beside the title did.
+                        let label = ui.interact(shown, response.id.with("path"), Sense::hover());
+                        let text = note.relative_path.clone();
+                        label.widget_info(|| egui::WidgetInfo::labeled(Role::Label, true, &text));
+                    }
+                    if response.has_focus() {
+                        crate::common::focus_ring(painter, rect.shrink(2.0), radius(0.8), &palette);
+                    }
+                }
+                let response = response.on_hover_text(&note.relative_path);
+                if let Some(how) = opened_as(ui, &response) {
+                    follow = Some(Follow::Note(note.relative_path.clone(), how));
+                }
             }
-        }
-    });
+        });
     follow
 }

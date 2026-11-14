@@ -401,11 +401,7 @@ fn stop_while_noura_asks_denies_the_call_and_ends_the_run() {
     tooled.send("Add a task to water the tomatoes", 0);
     tooled.create(0, "call_1");
     ai::tool_prompt(&mut tooled.app);
-    assert!(
-        ai::lines(&tooled.app).contains(
-            &"Noura is asking you whether to run a tool the model wants to use.".to_owned()
-        )
-    );
+    assert!(ai::lines(&tooled.app).contains(&"Waiting for your answer on a tool call.".to_owned()));
 
     ai::press(&mut tooled.app, "stop");
 
@@ -543,7 +539,7 @@ fn message_with(app: &mut App, root: &std::path::Path, kind: &str, status: &str)
     find(root).unwrap()
 }
 
-const STOPPED: &str = "You turned off a plugin this answer relied on, so the answer stopped.";
+const STOPPED: &str = "You turned off a plugin this answer relied on, so it stopped.";
 
 #[test]
 fn turning_off_a_plugin_mid_answer_ends_the_run_as_interrupted_and_keeps_its_files() {

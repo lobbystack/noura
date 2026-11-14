@@ -10,7 +10,7 @@ use std::{sync::Arc, time::Instant};
 
 use app_core::{App, Palette as Overlay, PaletteMode, Platform};
 use egui::{
-    Align2, Color32, Event, EventFilter, FontId, Frame, Galley, Id, Key, Margin, Modal, Pos2, Rect,
+    Align2, Color32, Event, EventFilter, FontId, Galley, Id, Key, Margin, Modal, Pos2, Rect,
     RichText, ScrollArea, Sense, TextEdit, TextWrapMode, Ui, UiBuilder, WidgetInfo, WidgetText,
     accesskit::{Action, Role},
     pos2, vec2,
@@ -21,8 +21,8 @@ use crate::{
     theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, radius},
 };
 
-const WIDTH: f32 = 560.0;
-const LIST_HEIGHT: f32 = 340.0;
+const WIDTH: f32 = 576.0 - 16.0;
+const LIST_HEIGHT: f32 = 288.0;
 /// A row with one line: a command, or a file name with its folder beside
 /// it.
 pub(crate) const ROW_HEIGHT: f32 = 32.0;
@@ -117,14 +117,16 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut PaletteView) {
     let mut close = false;
     let mut run = false;
     let mut clicked = None;
+    // The legacy palette's top edge sits a third of the way down.
+    let top = ctx.content_rect().height() / 3.0;
     let area =
-        Modal::default_area(Id::unique("palette")).anchor(Align2::CENTER_TOP, vec2(0.0, 72.0));
+        Modal::default_area(Id::unique("palette")).anchor(Align2::CENTER_TOP, vec2(0.0, top));
     let modal = Modal::new(Id::unique("palette"))
         .area(area)
+        .backdrop_color(crate::common::BACKDROP)
         .frame(
-            Frame::popup(&ctx.global_style())
-                .fill(theme.popover)
-                .corner_radius(radius(1.4))
+            crate::common::menu_frame(&ctx)
+                .corner_radius(radius(2.2))
                 .inner_margin(Margin::same(8)),
         )
         .show(&ctx, |ui| {
@@ -148,14 +150,33 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut PaletteView) {
                     .palette()
                     .map(|palette| palette.query().to_owned())
                     .unwrap_or_default();
+                // The legacy search field: a pill with a faint magnifying
+                // glass at its start.
                 let field = ui
                     .add(
                         TextEdit::singleline(&mut query)
                             .id(field_id())
                             .hint_text(hint)
+                            .margin(Margin {
+                                left: 32,
+                                right: 10,
+                                top: 6,
+                                bottom: 6,
+                            })
                             .desired_width(f32::INFINITY),
                     )
                     .accessible_name(field_name);
+                let glass = Rect::from_center_size(
+                    pos2(field.rect.left() + 16.0, field.rect.center().y),
+                    vec2(16.0, 16.0),
+                );
+                crate::icons::paint(
+                    ui.painter(),
+                    crate::icons::SEARCH,
+                    glass,
+                    theme.foreground.gamma_multiply(0.5),
+                    false,
+                );
                 if opening {
                     field.request_focus();
                 }
@@ -335,9 +356,9 @@ pub(crate) fn list(
 fn paint_row(ui: &Ui, rect: Rect, row: &Row, highlighted: bool, theme: &Palette) {
     let painter = ui.painter();
     if highlighted {
-        painter.rect_filled(rect, radius(0.6), theme.accent);
+        painter.rect_filled(rect, radius(1.0), theme.muted);
     }
-    let inner = rect.shrink2(vec2(10.0, 0.0));
+    let inner = rect.shrink2(vec2(8.0, 0.0));
     let detail = (!row.detail.is_empty())
         .then(|| line(ui, &row.detail, SUPPORTING_SIZE, inner.width() * 0.4));
     let detail_width = detail.as_ref().map_or(0.0, |galley| galley.size().x + 12.0);

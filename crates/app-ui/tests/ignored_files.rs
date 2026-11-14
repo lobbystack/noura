@@ -1,5 +1,5 @@
-//! The workspace switcher's Reveal and Ignored files items, through
-//! AccessKit.
+//! The workspace switcher's Reveal item and Settings' Ignored files
+//! section, through AccessKit.
 
 mod support;
 
@@ -25,7 +25,7 @@ fn the_switcher_reveals_the_workspace_folder() {
         .click();
     harness.run();
     harness
-        .get_by_role_and_label(Role::Button, "Show in Explorer")
+        .get_by_role_and_label(Role::MenuItem, "Show in Explorer")
         .click();
     harness.run();
 
@@ -48,14 +48,14 @@ fn the_ignored_files_page_adds_and_removes_patterns() {
     harness.get_by_role_and_label(Role::TreeItem, "build");
 
     harness
-        .get_by_role_and_label(Role::Button, SWITCHER)
+        .get_by_role_and_label(Role::Button, "Settings")
         .click();
     harness.run();
     harness
-        .get_by_role_and_label(Role::Button, "Ignored files\u{2026}")
+        .get_by_role_and_label(Role::Navigation, "Settings sections")
+        .get_by_role_and_label(Role::Button, "Ignored files")
         .click();
     harness.run();
-    harness.get_by_label("Ignored files");
     harness
         .get_by_role_and_label(Role::TextInput, "Pattern to ignore")
         .type_text("build/");
@@ -87,7 +87,10 @@ fn the_ignored_files_page_adds_and_removes_patterns() {
     harness.run();
     harness.get_by_role_and_label(Role::TreeItem, "build");
 
-    harness.get_by_role_and_label(Role::Button, "Done").click();
+    harness
+        .get_by_role_and_label(Role::Dialog, "Settings")
+        .get_by_role_and_label(Role::Button, "Close")
+        .click();
     harness.run();
     assert!(harness.query_by_label("Pattern to ignore").is_none());
 }

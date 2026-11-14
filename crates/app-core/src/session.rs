@@ -202,6 +202,7 @@ impl Session {
             // The update service wakes every open window when its status
             // changes.
             let woken = session.clone();
+            let clock = system.clone();
             let updates = Updates::new(
                 writes.clone(),
                 Arc::new(move |change| {
@@ -209,6 +210,7 @@ impl Session {
                         session.emit_all(change);
                     }
                 }),
+                Arc::new(move || clock.now()),
             );
             let mut plugins = Plugins::new(app_data);
             // A plugin's reload watcher wakes every window once it read a

@@ -1,25 +1,20 @@
 # Encrypted synchronization service
 
-Noura’s sync service uses Bun, Hono, and PostgreSQL to route signed, encrypted operations between authorized clients. Clients own workspace content keys and canonical file writes. Read the [server setup guide](../../apps/server/README.md) to run the service.
+`crates/sync-server` is Noura's sync service. It routes signed, encrypted records between your devices under [sync protocol version 2](../workspace-format/sync-v2.md). Your devices hold the content keys and write the canonical workspace files. To run the service, follow the [self-hosting guide](../self-hosting.md).
 
 ## Trust boundary
 
-Clients send signed ciphertext envelopes rather than plaintext workspace content. Authentication and authorization are separate from possession of content keys. An operation’s signature binds its routing fields and ciphertext.
+Clients send signed ciphertext, never plaintext workspace content. Signing in proves who you are. It gives the server no content key. Each signature binds a record's routing fields to its ciphertext.
 
-Database transactions serialize workspace changes, including revocation, before the server returns an acknowledgment. Operation IDs are durable retry identities. Native credentials remain in the operating system’s credential store.
+The server stores ciphertext and the metadata that [§29 of the protocol](../workspace-format/sync-v2.md#29-what-the-server-stores) lists, such as opaque IDs, sizes after padding, and request times. It can't prove that a client encrypted the bytes it sent, so each client verifies and decrypts what it receives. A client also detects a server that drops, reorders, replays or forks its records ([§1](../workspace-format/sync-v2.md#1-goals)).
 
-The server can observe this metadata:
+## Service layout
 
-- Opaque workspace, object, and device IDs
-- Authorization relationships
-- Ciphertext length and traffic timing
+The service is one binary with `serve`, `migrate` and `healthcheck` commands. It keeps everything in SQLite in a data directory, or in PostgreSQL when you give it a database URL, so several instances can share one database:
 
-The server does not hold client content keys. Clients must authenticate and decrypt incoming content; the server cannot prove that a malicious client encrypted submitted bytes.
+- **`crates/sync-server`**: HTTP, accounts, rate limits, logs and blob uploads
+- **`crates/sync-store`**: the store's transaction traits, the protocol checks and commits every store shares, and the conformance suite
+- **`crates/sync-store-sqlite`** and **`crates/sync-store-postgres`**: the two stores, which both pass that suite
+- **`crates/account-web`**: the WebAssembly module the account pages load for passkey ceremonies
 
-## Service scope
-
-The service supports the encrypted transport described in [`sync-v1.md`](../workspace-format/sync-v1.md): signed opaque operations, access policies, encrypted key envelopes, attachment ciphertext, and public encrypted snapshots. The native client owns canonical file application, local consent, trust pins, credentials, and durable journal state.
-
-The service verifies authentication and authorization, serializes workspace changes, and stores opaque protocol records. It does not own workspace content keys or canonical workspace files. Experimental collaboration capability routes remain disabled by standard service startup; durable HTTP pull and acknowledgment remain authoritative when those routes are enabled for testing.
-
-The service remains experimental. Follow the [operations guide](../../apps/server/OPERATIONS.md) for deployment, backup, and validation requirements.
+Local features never depend on the server. A workspace without sync works offline with no account.

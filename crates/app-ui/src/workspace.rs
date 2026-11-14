@@ -4,12 +4,12 @@
 use app_core::{INBOX_PAGE, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, TabContent, TabPlace};
 use egui::{
     Button, CentralPanel, Frame, Id, Margin, Modal, Panel, RichText, ScrollArea, Ui, UiBuilder,
-    accesskit::Role, containers::menu::MenuButton, vec2,
+    accesskit::Role, vec2,
 };
 
 use crate::{
     NouraUi,
-    common::{self, NewWorkspace, muted},
+    common::{self, Btn, NewWorkspace, Size, Variant, muted},
     inbox,
     rail::{self, RAIL_WIDTH},
     tab_bar::{self, BAR_HEIGHT},
@@ -37,19 +37,35 @@ pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
                 .inner_margin(Margin::symmetric(8, 0)),
         )
         .show(ui, |ui| {
+            // The bar is the title bar row: its empty part moves the
+            // window.
+            let rect = ui.max_rect().expand2(vec2(8.0, 0.0));
+            common::title_bar_area(ui, rect, "tab-bar");
             ui.horizontal_centered(|ui| {
-                // With the sidebar hidden, its switcher moves here.
+                // With the sidebar hidden, its switcher moves here, 24 px
+                // in, clear of the window's buttons.
                 if !sidebar_shown {
-                    switcher(state, ui);
+                    ui.add_space(16.0);
+                    ui.scope(|ui| {
+                        ui.set_max_width(200.0);
+                        switcher(state, ui);
+                    });
                 }
                 tab_bar::show(ui, &mut state.app, &mut state.tab_bar);
             });
         });
+    // A page scrolls edge to edge, so its header's line runs the page's
+    // whole width; its contents keep the 24 px margin inside.
+    let page = state
+        .app
+        .active_tab()
+        .is_some_and(|tab| matches!(tab.content(), TabContent::Page { .. }));
+    let margin = if page { 0 } else { 24 };
     CentralPanel::default()
         .frame(
             Frame::new()
                 .fill(palette.background)
-                .inner_margin(Margin::same(24)),
+                .inner_margin(Margin::same(margin)),
         )
         .show(ui, |ui| {
             common::notice(state, ui);
@@ -57,58 +73,42 @@ pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
         });
     new_workspace_dialog(state, ui);
     trash_dialog(state, ui);
-    ignored_files_dialog(state, ui);
 }
 
-/// Ask before a folder goes to the trash, and say where it goes.
+/// Ask before a folder goes to the trash, and say where it goes, as the
+/// legacy alert dialog did: its question, what happens, then Cancel and
+/// the destructive Move to Trash on the right.
 fn trash_dialog(state: &mut NouraUi, ui: &mut Ui) {
     let Some((_, question)) = state.app.pending_trash() else {
         return;
     };
     let question = question.clone();
-    let palette = Palette::of(ui.ctx());
     let mut confirm = false;
     let mut cancel = false;
-    let modal = Modal::new(Id::unique("trash-folder")).show(ui.ctx(), |ui| {
-        ui.set_width(340.0);
-        ui.label(RichText::new(&question.title).size(TITLE_SIZE).strong());
-        muted(ui, &question.message);
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            cancel = ui.button("Cancel").clicked();
-            confirm = ui
-                .add(
-                    Button::new(RichText::new("Move to Trash").color(palette.primary_foreground))
-                        .fill(palette.destructive),
-                )
-                .clicked();
+    let modal = Modal::new(Id::unique("trash-folder"))
+        .frame(common::dialog_frame(ui.ctx()))
+        .backdrop_color(common::BACKDROP)
+        .show(ui.ctx(), |ui| {
+            ui.set_width(400.0);
+            ui.spacing_mut().item_spacing.y = 6.0;
+            common::dialog_title(ui, &question.title);
+            common::description(ui, &question.message);
+            let pressed = common::dialog_footer(
+                ui,
+                vec![
+                    Btn::new("Cancel"),
+                    Btn::new("Move to Trash").variant(Variant::Destructive),
+                ],
+            );
+            cancel = pressed[0].clicked();
+            confirm = pressed[1].clicked();
         });
-    });
     if confirm {
         state.app.confirm_trash();
         state.tree.refocus();
     } else if cancel || modal.should_close() {
         state.app.cancel_trash();
         state.tree.refocus();
-    }
-}
-
-/// The Ignored files page, in a dialog until Settings exists.
-fn ignored_files_dialog(state: &mut NouraUi, ui: &mut Ui) {
-    if state.app.ignored_files().is_none() {
-        return;
-    }
-    let mut done = false;
-    let modal = Modal::new(Id::unique("ignored-files")).show(ui.ctx(), |ui| {
-        ui.set_width(380.0);
-        ui.label(RichText::new("Ignored files").size(TITLE_SIZE).strong());
-        crate::ignored_files::page(ui, &mut state.app, &mut state.ignored);
-        ui.add_space(8.0);
-        done = common::primary_button(ui, "Done", true).clicked();
-    });
-    if done || modal.should_close() {
-        state.app.close_ignored_files();
-        state.ignored = Default::default();
     }
 }
 
@@ -120,16 +120,32 @@ fn sidebar(state: &mut NouraUi, ui: &mut Ui) {
         .resizable(true)
         .default_size(width)
         .size_range(SIDEBAR_MIN_WIDTH..=SIDEBAR_MAX_WIDTH)
-        .frame(
-            Frame::new()
-                .fill(palette.sidebar)
-                .inner_margin(Margin::same(8)),
-        )
+        .frame(Frame::new().fill(palette.sidebar))
         .show(ui, |ui| {
-            switcher(state, ui);
-            ui.separator();
-            plugin_section(state, ui);
-            tree::show(ui, &mut state.app, &mut state.tree);
+            // The header: the switcher in the title bar row, over a line.
+            let header = egui::Rect::from_min_size(
+                ui.max_rect().min,
+                vec2(ui.max_rect().width(), common::TITLE_BAR_HEIGHT),
+            );
+            common::title_bar_area(ui, header, "sidebar");
+            ui.painter().hline(
+                header.x_range(),
+                header.bottom() - 0.5,
+                egui::Stroke::new(1.0, palette.sidebar_border),
+            );
+            let switcher_rect =
+                egui::Rect::from_min_max(header.min + vec2(24.0, 4.0), header.max - vec2(8.0, 4.0));
+            let mut header_ui = ui.new_child(
+                UiBuilder::new()
+                    .max_rect(switcher_rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            switcher(state, &mut header_ui);
+            ui.add_space(common::TITLE_BAR_HEIGHT);
+            Frame::new().inner_margin(Margin::same(8)).show(ui, |ui| {
+                plugin_section(state, ui);
+                tree::show(ui, &mut state.app, &mut state.tree);
+            });
         });
     // Save the width once a resize ends.
     let shown = panel.response.rect.width().round();
@@ -150,6 +166,15 @@ fn plugin_section(state: &mut NouraUi, ui: &mut Ui) {
     }) else {
         return;
     };
+    // A page without a section of its own leaves the file tree where it
+    // is on every other page.
+    let empty = state
+        .app
+        .plugin_sidebar(&page_id)
+        .is_none_or(|view| view.is_ok_and(|view| view.root().children.is_empty()));
+    if empty {
+        return;
+    }
     let drawn = ScrollArea::vertical()
         .id_salt(("plugin-sidebar", &page_id))
         .max_height(ui.available_height() / 2.0)
@@ -178,62 +203,101 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
     let mut pick = false;
     let mut create = false;
     let mut reveal = false;
-    let mut ignored = false;
     let reveal_label = state.app.platform().reveal_label();
-    let button = Button::new(RichText::new(&name).strong()).frame(false);
-    let (menu, _) = MenuButton::from_button(button).ui(ui, |ui| {
-        muted(ui, "Workspaces");
-        for recent in &recents {
-            let is_current = recent.workspace_id == current;
-            let item = ui.add_enabled(
-                !is_current && !busy,
-                Button::selectable(is_current, &recent.name),
-            );
-            let path = recent.path.clone();
-            ui.ctx()
-                .accesskit_node_builder(item.id, |node| node.set_description(path));
-            if item.on_hover_text(&recent.path).clicked() {
-                open = Some(recent.workspace_id.clone());
+    let label = format!("Switch workspace. Current workspace: {name}");
+    let trigger = Btn::new(&name)
+        .icon(crate::icons::FOLDER_OPEN)
+        .variant(Variant::Ghost)
+        .size(Size::Sm)
+        .width(ui.available_width())
+        .show(ui);
+    ui.ctx().accesskit_node_builder(trigger.id, |node| {
+        node.set_label(label);
+        node.set_has_popup(egui::accesskit::HasPopup::Menu);
+    });
+    egui::Popup::menu(&trigger)
+        .width(320.0)
+        .frame(common::menu_frame(ui.ctx()))
+        .align(egui::RectAlign::BOTTOM_START)
+        .gap(4.0)
+        .show(|ui| {
+            ui.set_width(312.0);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            common::menu_label(ui, "Workspaces");
+            for recent in &recents {
+                let is_current = recent.workspace_id == current;
+                let item = common::menu_item(
+                    ui,
+                    Some(crate::icons::FOLDER_OPEN),
+                    &recent.name,
+                    Some(&recent.path),
+                    is_current,
+                    !is_current && !busy,
+                );
+                let path = recent.path.clone();
+                ui.ctx()
+                    .accesskit_node_builder(item.id, |node| node.set_description(path));
+                if item.on_hover_text(&recent.path).clicked() {
+                    open = Some(recent.workspace_id.clone());
+                    ui.close();
+                }
+            }
+            common::menu_separator(ui);
+            if common::menu_item(
+                ui,
+                Some(crate::icons::FOLDER_OPEN),
+                "Open folder\u{2026}",
+                None,
+                false,
+                !busy,
+            )
+            .clicked()
+            {
+                pick = true;
                 ui.close();
             }
-        }
-        ui.separator();
-        if ui.add_enabled(!busy, Button::new("Open folder…")).clicked() {
-            pick = true;
-            ui.close();
-        }
-        if ui
-            .add_enabled(!busy, Button::new("New workspace…"))
+            if common::menu_item(
+                ui,
+                Some(crate::icons::FOLDER_PLUS),
+                "New workspace\u{2026}",
+                None,
+                false,
+                !busy,
+            )
             .clicked()
-        {
-            create = true;
-            ui.close();
-        }
-        ui.separator();
-        if ui.button(reveal_label).clicked() {
-            reveal = true;
-            ui.close();
-        }
-        if ui.button("Ignored files\u{2026}").clicked() {
-            ignored = true;
-            ui.close();
-        }
-        let others: Vec<_> = recents
-            .iter()
-            .filter(|recent| recent.workspace_id != current)
-            .collect();
-        if !others.is_empty() {
-            ui.menu_button("Remove from recents", |ui| {
-                for recent in others {
-                    if ui.add_enabled(!busy, Button::new(&recent.name)).clicked() {
-                        remove = Some(recent.workspace_id.clone());
-                        ui.close();
+            {
+                create = true;
+                ui.close();
+            }
+            if common::menu_item(
+                ui,
+                Some(crate::icons::REVEAL),
+                reveal_label,
+                None,
+                false,
+                true,
+            )
+            .clicked()
+            {
+                reveal = true;
+                ui.close();
+            }
+            let others: Vec<_> = recents
+                .iter()
+                .filter(|recent| recent.workspace_id != current)
+                .collect();
+            if !others.is_empty() {
+                let button = Button::new("Remove from recents");
+                egui::containers::menu::SubMenuButton::from_button(button).ui(ui, |ui| {
+                    for recent in others {
+                        if common::menu_item(ui, None, &recent.name, None, false, !busy).clicked() {
+                            remove = Some(recent.workspace_id.clone());
+                            ui.close();
+                        }
                     }
-                }
-            });
-        }
-    });
-    menu.accessible_name(format!("Switch workspace. Current workspace: {name}"));
+                });
+            }
+        });
     if let Some(workspace_id) = open {
         state.app.open_recent(&workspace_id);
     }
@@ -249,8 +313,36 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
     if reveal {
         state.app.reveal_workspace();
     }
-    if ignored {
-        state.app.open_ignored_files();
+}
+
+/// What a tab shows that no viewer draws: a file's name and path, the
+/// Inbox, or a page's title and its plugin's view.
+fn page_content(state: &mut NouraUi, ui: &mut Ui, content: &TabContent, is_inbox: bool) {
+    match content {
+        TabContent::File { file, .. } => {
+            ui.label(RichText::new(&file.name).font(crate::theme::font(
+                ui.ctx(),
+                TITLE_SIZE,
+                crate::theme::Weight::Medium,
+            )));
+            muted(ui, &file.relative_path);
+        }
+        TabContent::Page { .. } if is_inbox => inbox::show(ui, &mut state.app, state.window),
+        TabContent::Page { title, page_id } => {
+            // A plugin page that draws its own heading gets no other.
+            let plugin = state.app.is_plugin_page(page_id);
+            if !(plugin && crate::plugin_view::has_page_heading(&state.app, page_id)) {
+                ui.label(RichText::new(title).font(crate::theme::font(
+                    ui.ctx(),
+                    TITLE_SIZE,
+                    crate::theme::Weight::Medium,
+                )));
+                ui.add_space(8.0);
+            }
+            if plugin {
+                crate::plugin_view::show(ui, &mut state.app, state.window, page_id);
+            }
+        }
     }
 }
 
@@ -270,7 +362,13 @@ fn content(state: &mut NouraUi, ui: &mut Ui) {
     ui.scope_builder(builder, |ui| {
         let Some((id, content, place)) = active else {
             state.shown_tab = None;
-            ui.centered_and_justified(|ui| muted(ui, "Open a file from the sidebar."));
+            ui.add_space((ui.available_height() / 2.0 - 120.0).max(0.0));
+            common::empty_state(
+                ui,
+                Some(crate::icons::NEW_NOTE),
+                "No file open",
+                Some("Pick a file from the sidebar."),
+            );
             return;
         };
         if matches!(content, TabContent::File { .. })
@@ -296,19 +394,27 @@ fn content(state: &mut NouraUi, ui: &mut Ui) {
             state.shown_tab = Some(id);
             scroll = scroll.scroll_offset(vec2(place.scroll[0], place.scroll[1]));
         }
-        let output = scroll.show(ui, |ui| match &content {
-            TabContent::File { file, .. } => {
-                ui.label(RichText::new(&file.name).size(TITLE_SIZE).strong());
-                muted(ui, &file.relative_path);
-            }
-            TabContent::Page { .. } if is_inbox => inbox::show(ui, &mut state.app, state.window),
-            TabContent::Page { title, page_id } => {
-                ui.label(RichText::new(title).size(TITLE_SIZE).strong());
-                if state.app.is_plugin_page(page_id) {
-                    ui.add_space(8.0);
-                    crate::plugin_view::show(ui, &mut state.app, state.window, page_id);
+        // A plugin page's header sits in the top 56 px, as the legacy page
+        // header did; other pages keep 24 px all round.
+        let margin = match &content {
+            TabContent::Page { page_id, .. }
+                if state.app.is_plugin_page(page_id)
+                    && crate::plugin_view::has_page_heading(&state.app, page_id) =>
+            {
+                Margin {
+                    left: 24,
+                    right: 24,
+                    top: 12,
+                    bottom: 24,
                 }
             }
+            TabContent::Page { .. } => Margin::same(24),
+            _ => Margin::ZERO,
+        };
+        let output = scroll.show(ui, |ui| {
+            Frame::new()
+                .inner_margin(margin)
+                .show(ui, |ui| page_content(state, ui, &content, is_inbox));
         });
         let offset = output.state.clamped_offset();
         if [offset.x, offset.y] != place.scroll {
@@ -327,10 +433,13 @@ fn new_workspace_dialog(state: &mut NouraUi, ui: &mut Ui) {
     if state.new_workspace.is_none() {
         return;
     }
-    let modal = Modal::new(Id::unique("new-workspace")).show(ui.ctx(), |ui| {
+    let modal = crate::common::dialog(ui.ctx(), Id::unique("new-workspace")).show(ui.ctx(), |ui| {
         ui.set_width(320.0);
-        ui.label(RichText::new("New workspace").size(TITLE_SIZE).strong());
-        muted(ui, "Name it, then choose its folder.");
+        ui.label(RichText::new("New workspace").font(crate::theme::font(
+            ui.ctx(),
+            TITLE_SIZE,
+            crate::theme::Weight::Medium,
+        )));
         common::new_workspace_form(state, ui);
     });
     if modal.should_close() {

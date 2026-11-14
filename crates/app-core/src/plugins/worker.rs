@@ -463,8 +463,7 @@ pub(super) fn failure_message(error: &PluginError, doing: Doing) -> String {
             cap_bytes >> 20
         ),
         PluginError::Stopped => {
-            "The plugin failed too often and stopped. Start it again in Settings, under Plugins."
-                .to_owned()
+            "The plugin failed too often. Start it again in Settings > Plugins.".to_owned()
         }
         PluginError::Busy { .. } => "The plugin was busy. Try again.".to_owned(),
         PluginError::CapabilityNotDeclared { capability } => {

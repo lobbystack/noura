@@ -1,11 +1,15 @@
 //! The Ignored files page: the workspace's patterns, with a field to add
-//! one and a button to remove each. The workspace switcher opens it in a
-//! dialog; Settings can host the same page later.
+//! one and a button to remove each. Settings' Ignored files section
+//! draws it.
 
 use app_core::App;
-use egui::{Button, Key, RichText, TextEdit, Ui, UiBuilder, accesskit::Role};
+use egui::{Frame, Key, Margin, RichText, Stroke, TextEdit, Ui, UiBuilder, accesskit::Role};
 
-use crate::{common::muted, theme::Palette};
+use crate::{
+    common::{Btn, Size},
+    icons,
+    theme::{BODY_SIZE, Palette, pill},
+};
 
 /// What the page remembers between frames.
 #[derive(Default)]
@@ -16,44 +20,49 @@ pub(crate) struct IgnoredFilesView {
     focused: bool,
 }
 
-/// Draw the page's contents for the open Ignored files list.
+/// Draw the page's contents for the open Ignored files list: each
+/// pattern in a bordered row with its remove button, then the field that
+/// adds one.
 pub(crate) fn page(ui: &mut Ui, app: &mut App, view: &mut IgnoredFilesView) {
     let Some(list) = app.ignored_files().cloned() else {
         return;
     };
     let palette = Palette::of(ui.ctx());
-    muted(
-        ui,
-        "Noura leaves files and folders that match these patterns out of the file tree and \
-         search. Patterns work like a .gitignore file.",
-    );
-    ui.add_space(8.0);
     let mut removed = None;
-    if list.patterns.is_empty() {
-        muted(ui, "No patterns yet.");
+    if !list.patterns.is_empty() {
+        ui.spacing_mut().item_spacing.y = 10.0;
+        for pattern in &list.patterns {
+            Frame::new()
+                .stroke(Stroke::new(1.0, palette.border))
+                .corner_radius(pill())
+                .inner_margin(Margin::symmetric(14, 8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(pattern).monospace().size(BODY_SIZE));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let label = format!("Stop ignoring {pattern}");
+                            let remove = Btn::icon_only(icons::CLOSE, &label)
+                                .size(Size::Sm)
+                                .show(ui)
+                                .on_hover_text("Stop ignoring");
+                            if remove.clicked() {
+                                removed = Some(pattern.clone());
+                            }
+                        });
+                    });
+                });
+        }
+        ui.add_space(6.0);
     }
-    for pattern in &list.patterns {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(pattern).monospace());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let remove = ui
-                    .add(Button::new("\u{d7}").frame(false))
-                    .accessible_name(format!("Stop ignoring {pattern}"))
-                    .on_hover_text("Stop ignoring");
-                if remove.clicked() {
-                    removed = Some(pattern.clone());
-                }
-            });
-        });
-    }
-    ui.add_space(8.0);
     let mut add = false;
     ui.horizontal(|ui| {
+        let button = Btn::new("Add").enabled(!view.pattern.trim().is_empty());
         let field = ui
             .add(
                 TextEdit::singleline(&mut view.pattern)
                     .hint_text("drafts/")
-                    .desired_width(ui.available_width() - 56.0),
+                    .desired_width(button.room_before(ui)),
             )
             .accessible_name("Pattern to ignore");
         if !view.focused {
@@ -61,9 +70,7 @@ pub(crate) fn page(ui: &mut Ui, app: &mut App, view: &mut IgnoredFilesView) {
             field.request_focus();
         }
         add |= field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
-        add |= ui
-            .add_enabled(!view.pattern.trim().is_empty(), Button::new("Add"))
-            .clicked();
+        add |= button.show(ui).clicked();
     });
     if let Some(problem) = &list.problem {
         let builder = UiBuilder::new().accessibility_role(Role::Alert);

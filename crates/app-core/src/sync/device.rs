@@ -48,7 +48,7 @@ impl Pause for Sleep {
 pub fn server_address(address: &str) -> Result<String, &'static str> {
     let address = address.trim().trim_end_matches('/');
     let url = reqwest::Url::parse(address)
-        .map_err(|_| "Enter the server's address, such as https://sync.noura.app.")?;
+        .map_err(|_| "Enter the server's address, like https://sync.noura.app.")?;
     let loopback = matches!(url.host(), Some(url::Host::Domain("localhost")))
         || match url.host() {
             Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
@@ -59,10 +59,10 @@ pub fn server_address(address: &str) -> Result<String, &'static str> {
         "https" => {}
         "http" if loopback => {}
         "http" => return Err("The server's address must start with https://."),
-        _ => return Err("Enter the server's address, such as https://sync.noura.app."),
+        _ => return Err("Enter the server's address, like https://sync.noura.app."),
     }
     if url.host().is_none() || url.path() != "/" || url.query().is_some() {
-        return Err("Enter only the server's address, such as https://sync.noura.app.");
+        return Err("Enter only the address, like https://sync.noura.app.");
     }
     Ok(address.to_owned())
 }
@@ -330,10 +330,8 @@ pub enum SignInEnd {
 impl std::fmt::Display for SignInEnd {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            SignInEnd::Refused => {
-                "You refused the sign-in in your browser. Sign in again to retry."
-            }
-            SignInEnd::Expired => "The sign-in code expired. Sign in again for a new code.",
+            SignInEnd::Refused => "You refused the sign-in. Sign in again to retry.",
+            SignInEnd::Expired => "The sign-in code expired. Sign in again.",
         })
     }
 }
@@ -433,7 +431,7 @@ pub async fn join(signed_in: &SignedIn, store: &dyn SyncCredentials) -> Result<J
                 };
             if !(new_account && session_gone) {
                 return Err(SyncError::Invalid(
-                    "This computer already holds a device of another account on this server. Sign out of that account first.".into(),
+                    "Sign out of another account on this server first.".into(),
                 ));
             }
             // The folders of the old account stop with `sync_restore_lost`

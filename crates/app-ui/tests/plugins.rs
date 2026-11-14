@@ -124,6 +124,15 @@ fn the_install_dialog_lists_each_capability_and_installs_from_the_keyboard() {
             .query_by_role_and_label(Role::Dialog, "Install plugin")
             .is_none()
     );
+    let details = "Hello settings";
+    dialog(harness, "Settings")
+        .get_by_role_and_label(Role::Button, details)
+        .scroll_to_me();
+    harness.run();
+    dialog(harness, "Settings")
+        .get_by_role_and_label(Role::Button, details)
+        .click();
+    harness.run();
     let row = dialog(harness, "Settings").get_by_role_and_label(Role::Group, "Hello");
     let shown = labels(&row);
     assert!(

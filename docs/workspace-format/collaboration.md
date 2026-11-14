@@ -1,6 +1,6 @@
 # Experimental native text collaboration
 
-> The legacy app implements this protocol. The Rust product replaces it with [sync protocol version 2](sync-v2.md), which supports none of its records or data.
+> The legacy app implemented this protocol until the 2026-11-14 cleanup deleted it. `crates/local-core` still holds the Rust side of it, which the desktop app doesn't call. The Rust product replaces it with [sync protocol version 2](sync-v2.md), which supports none of its records or data.
 
 Production discovery advertises no live-text capability. This document describes the implemented protocol and durable records, not a completed collaboration release.
 

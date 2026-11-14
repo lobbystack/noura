@@ -397,7 +397,7 @@ impl Theme {
         Self {
             current,
             dim: ThemeVariant {
-                black: Color32::from_rgb(0x10, 0x10, 0x10),
+                black: Color32::from_rgb(0x0A, 0x0A, 0x0A),
                 red: Color32::from_rgb(0xDF, 0x20, 0x40),
                 green: Color32::from_rgb(0x00, 0xB3, 0x71),
                 yellow: Color32::from_rgb(0xE6, 0xAC, 0x00),

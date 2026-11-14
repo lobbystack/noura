@@ -28,9 +28,9 @@ A durable mutation succeeds only after the canonical file operation completes du
 - `sdk/typescript` is the only TypeScript in the product. It uses npm and Node because the `jco` toolchain requires them.
 - `apps/website` stays on SvelteKit and Bun until it moves to Zola. Use the [@svelte](plugin://svelte@svelte) plugin when you edit it.
 
-## Rewrite in progress
+## Rust rewrite
 
-Noura is moving to an all-Rust desktop app. Until the Rust app reaches parity, the legacy code stays as a read-only behavior reference: `apps/app`, `apps/server`, `apps/server-web`, `packages/*`, the TypeScript `plugins/*`, `src-tauri` and `crates/workspace-format-wasm`. Read it to learn how a feature behaves today, and build the replacement in the crates below.
+The all-Rust desktop app replaced the legacy TypeScript and Tauri app. The owner signed off on parity, and the 2026-11-14 cleanup deleted the legacy code. To check how the legacy app behaved, read it in the Git history before the commit that removed it.
 
 ## Code Ownership Boundaries
 
@@ -84,6 +84,19 @@ Keep architectural responsibilities separated:
 - Do not implement cloud, collaboration, meeting, or calling features unless the task includes them.
 
 Internal plans and product notes belong in the private Noura-Internal workspace, not this public repository. Public workspace-format, contributor, provenance, and security documents belong here.
+
+## Interface Copy
+
+Write interface text the way Apple Reminders does: sparse. Every string must earn its place by telling the user something they need and can't already see.
+
+- Label a control with one or two words: "Save key", "New task", "Done".
+- A heading names the screen, and the controls under it explain themselves. Add a description line only when a choice has a consequence the label can't carry, such as data leaving the device or something that can't be undone.
+- An empty state is a short title, plus at most one line that names the next action.
+- An error says what failed and what to do next, in one sentence.
+- One string says each thing once. Cut a line that repeats a heading, a label, a tooltip or what the screen already shows.
+- Before you add a string, check whether the screen works without it. If it does, leave it out.
+
+Accessibility labels follow the same rule: name the control, and leave the rest to its role and state.
 
 ## Security Principles
 

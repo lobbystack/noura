@@ -104,7 +104,7 @@ pub(super) fn ensure_secure_endpoint(provider: &AiProviderConfig, operation: &st
     } else {
         Err(CoreError::validation(
             "endpoint_insecure",
-            "Use an HTTPS address. Plain HTTP works only for a server on this computer.",
+            "Use HTTPS, or HTTP only for a server on this computer.",
             operation,
         ))
     }

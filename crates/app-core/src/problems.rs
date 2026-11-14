@@ -132,12 +132,10 @@ fn in_plain_words(code: &str, path: Option<&str>, message: String) -> String {
             format!("{path} links to an object that no longer exists.")
         }
         ("unreadable_file", Some(path)) => {
-            format!("Noura can't open {path}. Check that you have permission to read it.")
+            format!("Noura has no permission to read {path}.")
         }
         ("unreadable_folder", Some(path)) => {
-            format!(
-                "Noura can't open the folder {path}. Check that you have permission to read it."
-            )
+            format!("Noura has no permission to read the folder {path}.")
         }
         ("unsupported_path", folder) => {
             let place = folder.map_or_else(

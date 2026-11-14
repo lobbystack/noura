@@ -120,8 +120,9 @@
 	] as const;
 
 	const sourceCommands = `git clone ${siteConfig.githubUrl}.git
-cd noura && bun install
-bun run tauri dev`;
+cd noura && rustup target add wasm32-wasip2
+scripts/build-shipped-plugins.sh
+cargo run -p desktop`;
 
 	let platform = $state<Platform | null>(null);
 	const primaryDownload = $derived(
@@ -423,8 +424,8 @@ bun run tauri dev`;
 					</div>
 					<pre><code>{sourceCommands}</code></pre>
 					<p>
-						Requires Bun, Rust, and the Tauri prerequisites.
-						<a href={`${siteConfig.githubUrl}#try-noura`}
+						Requires rustup, plus NASM on Intel and AMD.
+						<a href={`${siteConfig.githubUrl}#run-noura-from-source`}
 							>Read the setup guide</a
 						>.
 					</p>

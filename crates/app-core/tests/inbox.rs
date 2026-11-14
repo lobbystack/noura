@@ -176,8 +176,7 @@ fn a_file_noura_cannot_read_links_to_the_file_manager() {
     assert_eq!(
         attention(&app),
         [(
-            "Noura can't open Notes/Locked.md. Check that you have permission to read it."
-                .to_owned(),
+            "Noura has no permission to read Notes/Locked.md.".to_owned(),
             vec![reveal],
         )]
     );
@@ -223,8 +222,7 @@ fn a_folder_noura_cannot_open_links_to_the_file_manager() {
     assert_eq!(
         shown,
         [(
-            "Noura can't open the folder Locked. Check that you have permission to read it."
-                .to_owned(),
+            "Noura has no permission to read the folder Locked.".to_owned(),
             vec![(
                 "Show Locked in Finder".to_owned(),
                 "Locked".to_owned(),

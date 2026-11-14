@@ -100,8 +100,13 @@ icons = [
 ]
 resources = [
     { src = "packaging/THIRD_PARTY_LICENSES.html", target = "THIRD_PARTY_LICENSES.html" },
+    { src = "icons/Assets.car", target = "Assets.car" },
     { src = "packaging/plugins", target = "plugins" },
 ]
+
+# The layered macOS icon in icons/Assets.car, which the plist names.
+[package.metadata.packager.macos]
+info-plist-path = "packaging/Info.plist"
 
 # winit and wgpu load these libraries when the app starts.
 [package.metadata.packager.deb]

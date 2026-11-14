@@ -158,8 +158,21 @@ pub(super) fn calendar(
     let builder = UiBuilder::new()
         .accessibility_role(Role::Heading)
         .accessibility_label(heading.as_str());
+    // A page heading that names the period already shows the month, as
+    // the legacy page header did; the grid's own heading then only names
+    // it for screen readers. A day keeps its date over its hours.
+    let titled = kit.page_detail && mode != CalendarMode::Day;
     ui.scope_builder(builder, |ui| {
-        ui.label(RichText::new(&heading).size(TITLE_SIZE).strong());
+        if titled {
+            let (_, response) = ui.allocate_exact_size(vec2(0.0, 0.0), egui::Sense::hover());
+            response.widget_info(|| egui::WidgetInfo::labeled(Role::Label, true, &heading));
+        } else {
+            ui.label(RichText::new(&heading).font(crate::theme::font(
+                ui.ctx(),
+                TITLE_SIZE,
+                crate::theme::Weight::Semibold,
+            )));
+        }
     });
     let builder = UiBuilder::new()
         .accessibility_role(Role::Grid)
@@ -256,8 +269,23 @@ fn draw(ui: &mut Ui, node: &ViewNode, mode: CalendarMode, grid: &Grid, kit: &mut
     }
     let mut select = keyboard.filter(|_| moved);
 
-    let top_left = ui.cursor().min;
-    let width = ui.available_width();
+    // On a page the grid runs past the page's 24 point margins to its
+    // edges, as the legacy calendar did.
+    let bleed = if matches!(kit.place, super::Place::Page(_)) {
+        24.0
+    } else {
+        0.0
+    };
+    // Under a page header that names the period, the grid starts just
+    // under the header's line, over the gaps its unseen title leaves, and
+    // leaves the line itself as on every other page.
+    let lift = if bleed > 0.0 && kit.page_detail && mode != CalendarMode::Day {
+        2.0 * ui.spacing().item_spacing.y - 1.0
+    } else {
+        0.0
+    };
+    let top_left = ui.cursor().min - egui::vec2(bleed, lift);
+    let width = ui.available_width() + 2.0 * bleed;
     let rows = match mode {
         CalendarMode::Month => month(ui, grid, top_left, width),
         CalendarMode::Week | CalendarMode::Day => hours(ui, grid, top_left, width),
@@ -265,7 +293,8 @@ fn draw(ui: &mut Ui, node: &ViewNode, mode: CalendarMode, grid: &Grid, kit: &mut
     let whole = rows
         .iter()
         .fold(Rect::NOTHING, |whole, row| whole.union(row.rect));
-    ui.allocate_rect(whole, Sense::hover());
+    // The part in the page's margins doesn't widen the page.
+    ui.allocate_rect(whole.shrink2(egui::vec2(bleed, 0.0)), Sense::hover());
 
     let palette = Palette::of(ui.ctx());
     let selected_entry = state.selected.as_ref().map(|(id, _)| id.as_str());
@@ -376,7 +405,7 @@ fn month(ui: &Ui, grid: &Grid, top_left: egui::Pos2, width: f32) -> Vec<Row> {
     let mut rows = Vec::new();
 
     let header = Rect::from_min_size(top_left, vec2(width, MONTH_HEADER_HEIGHT));
-    painter.rect_filled(header, radius(0.0), palette.muted);
+    painter.rect_filled(header, radius(0.0), palette.muted.gamma_multiply(0.4));
     let cells = grid.days[..7]
         .iter()
         .enumerate()
@@ -430,19 +459,19 @@ fn month(ui: &Ui, grid: &Grid, top_left: egui::Pos2, width: f32) -> Vec<Row> {
                     Rect::from_min_size(pos2(left(day_index % 7), top), vec2(column, height));
                 let in_month = day.date.month() == grid.focus.month();
                 if !in_month {
-                    painter.rect_filled(rect, radius(0.0), palette.muted);
+                    painter.rect_filled(rect, radius(0.0), palette.muted.gamma_multiply(0.2));
                 }
                 painter.rect_stroke(
                     rect,
                     radius(0.0),
-                    Stroke::new(1.0, palette.border),
+                    Stroke::new(1.0, palette.border.gamma_multiply(0.5)),
                     StrokeKind::Inside,
                 );
                 day_number(
                     ui,
                     grid,
                     day.date,
-                    pos2(rect.left() + 18.0, top + 16.0),
+                    pos2(rect.left() + 18.0, top + 18.0),
                     in_month,
                 );
                 let mut y = top + DAY_NUMBER_HEIGHT;

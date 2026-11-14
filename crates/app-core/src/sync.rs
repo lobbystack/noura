@@ -109,7 +109,7 @@ pub enum SyncError {
     /// A device removed the recovery kit's identity, so the kit can't
     /// recover; you reset your devices instead (§12).
     #[error(
-        "A device removed this recovery kit, so it can't recover your account. Reset your devices to start over."
+        "This kit was removed and can't recover your account. Reset your devices to start over."
     )]
     KitRevoked,
 }

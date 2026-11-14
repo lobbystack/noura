@@ -247,10 +247,7 @@ impl crate::Workspace {
         }
         self.system().open_file(&path).map_err(|error| {
             tracing::warn!(%error, "the default app didn't open");
-            AppError::new(
-                "open_failed",
-                "Noura couldn't find an app on this computer that opens this file.",
-            )
+            AppError::new("open_failed", "No app on this computer opens this file.")
         })
     }
 }

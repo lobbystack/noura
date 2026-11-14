@@ -38,7 +38,7 @@ impl Opener {
     fn answer(&self, opened: String) -> Result<(), ServiceError> {
         if self.refuse {
             return Err(ServiceError::Failed(
-                "Noura opens things only in answer to something you did.".into(),
+                "Noura opens things only when you act.".into(),
             ));
         }
         self.opened.lock().unwrap().push(opened);
@@ -57,6 +57,10 @@ impl Navigation for Opener {
 
     fn open_page(&self, page: &str) -> Result<(), ServiceError> {
         self.answer(format!("page {page}"))
+    }
+
+    fn open_settings(&self, section: plugin_host::SettingsSection) -> Result<(), ServiceError> {
+        self.answer(format!("settings {section:?}"))
     }
 
     fn trash_object(&self, id: &str) -> Result<(), ServiceError> {
@@ -203,7 +207,7 @@ fn an_open_the_app_refuses_or_cant_carry_out_fails_with_a_reason() {
 
     assert_eq!(
         plugins::texts(&refused.render("events").unwrap()),
-        ["hello open error failed Noura opens things only in answer to something you did."]
+        ["hello open error failed Noura opens things only when you act."]
     );
     assert_eq!(
         plugins::texts(&alone.render("events").unwrap()),

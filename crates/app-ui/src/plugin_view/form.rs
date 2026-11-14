@@ -18,14 +18,17 @@
 //! plugin first.
 
 use app_core::{
-    Field, InputValue, PluginEvent, PluginNaming, Submission, ViewKind, ViewNode, date_time_fields,
-    date_time_value, date_value,
+    Choice, Field, InputValue, PluginEvent, PluginNaming, Submission, ViewKind, ViewNode,
+    date_time_fields, date_time_value, date_value,
 };
-use egui::{Id, Key, RichText, TextEdit, Ui, UiBuilder, accesskit::Role, text_edit::TextEditState};
+use egui::{
+    Id, Key, Margin, RichText, TextEdit, Ui, UiBuilder, accesskit::Role, text_edit::TextEditState,
+    vec2,
+};
 
 use super::{Kit, boxed};
 use crate::{
-    common::primary_button,
+    common::{self, primary_button},
     theme::{Palette, SUPPORTING_SIZE},
 };
 
@@ -78,17 +81,30 @@ pub(super) fn form(
     (label, submit, required): (&str, &str, &[String]),
     kit: &mut Kit,
 ) {
-    boxed(ui, Role::Form, Some(label), |ui| {
-        let outer = std::mem::take(&mut kit.entered);
-        for child in &node.children {
-            super::node(ui, child, kit);
-        }
-        let entered = std::mem::replace(&mut kit.entered, outer);
-        ui.add_space(8.0);
+    let single = matches!(
+        node.children.as_slice(),
+        [ViewNode {
+            kind: ViewKind::Input {
+                value: InputValue::Text(_),
+                ..
+            },
+            ..
+        }]
+    );
+    let submit_with = |ui: &mut Ui, kit: &mut Kit, entered: bool| {
         let ready = required
             .iter()
             .all(|input| holds_text(ui, node, input, kit));
-        let pressed = primary_button(ui, submit, ready).clicked();
+        let pressed = if single {
+            common::Btn::new(submit)
+                .variant(common::Variant::Default)
+                .size(common::Size::Sm)
+                .enabled(ready)
+                .show(ui)
+                .clicked()
+        } else {
+            primary_button(ui, submit, ready).clicked()
+        };
         if (pressed || entered) && ready {
             let mut fields = Vec::new();
             let mut whole = true;
@@ -100,6 +116,39 @@ pub(super) fn form(
                 }));
             }
         }
+    };
+    if single {
+        // One text field and its button on one line, the field's label
+        // as its placeholder.
+        let builder = UiBuilder::new()
+            .accessibility_role(Role::Form)
+            .accessibility_label(label);
+        ui.scope_builder(builder, |ui| {
+            ui.horizontal(|ui| {
+                let outer = std::mem::take(&mut kit.entered);
+                let inline = std::mem::replace(&mut kit.inline, true);
+                // The field leaves the button exactly its room, so the row
+                // never runs past the column the rest of the view fills.
+                let button = common::Btn::new(submit).size(common::Size::Sm).measure(ui)
+                    + ui.spacing().item_spacing.x;
+                ui.allocate_ui(vec2(ui.available_width() - button, 32.0), |ui| {
+                    super::node(ui, &node.children[0], kit);
+                });
+                kit.inline = inline;
+                let entered = std::mem::replace(&mut kit.entered, outer);
+                submit_with(ui, kit, entered);
+            });
+        });
+        return;
+    }
+    boxed(ui, Role::Form, Some(label), |ui| {
+        let outer = std::mem::take(&mut kit.entered);
+        for child in &node.children {
+            super::node(ui, child, kit);
+        }
+        let entered = std::mem::replace(&mut kit.entered, outer);
+        ui.add_space(8.0);
+        submit_with(ui, kit, entered);
     });
 }
 
@@ -134,6 +183,26 @@ fn inputs(ui: &Ui, node: &ViewNode, kit: &Kit, fields: &mut Vec<Field>, whole: &
     }
 }
 
+/// Whether a choice input draws as a segmented control: a few short
+/// choices in one row, where the choices name themselves.
+pub(super) fn segmented(value: &InputValue, choices: &[Choice]) -> bool {
+    matches!(value, InputValue::Choice(_))
+        && (2..=5).contains(&choices.len())
+        && choices
+            .iter()
+            .all(|choice| choice.label.chars().count() <= 14)
+}
+
+/// A row of joined buttons, one per choice. Returns the choice picked.
+fn segments(ui: &mut Ui, choices: &[Choice], chosen: Option<&str>) -> Option<String> {
+    let options: Vec<(Option<&str>, &str)> = choices
+        .iter()
+        .map(|choice| (Some(choice.id.as_str()), choice.label.as_str()))
+        .collect();
+    let mut picked = chosen;
+    common::segmented(ui, &options, &mut picked).then(|| picked.unwrap_or_default().to_owned())
+}
+
 /// A labeled input.
 pub(super) fn input(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
     let ViewKind::Input {
@@ -147,7 +216,11 @@ pub(super) fn input(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
     let id = kit.id(&node.id);
     let mut draft = Draft::load(ui, id, value);
     let before = draft.shown.clone();
-    ui.add_space(4.0);
+    // The gap above an input in a column; in a row, such as a heading's
+    // end, it would push the input sideways.
+    if !ui.layout().is_horizontal() {
+        ui.add_space(4.0);
+    }
     match value {
         InputValue::Checkbox(_) => {
             let mut checked = matches!(draft.shown, InputValue::Checkbox(true));
@@ -159,26 +232,48 @@ pub(super) fn input(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             let builder = UiBuilder::new()
                 .accessibility_role(Role::RadioGroup)
                 .accessibility_label(label.as_str());
+            let short = segmented(value, choices);
             ui.scope_builder(builder, |ui| {
-                ui.label(RichText::new(label).strong());
-                ui.horizontal_wrapped(|ui| {
-                    for choice in choices {
-                        let chosen =
-                            matches!(&draft.shown, InputValue::Choice(Some(id)) if *id == choice.id);
-                        if ui.radio(chosen, choice.label.as_str()).clicked() && !chosen {
-                            draft.shown = InputValue::Choice(Some(choice.id.clone()));
+                if !short {
+                    ui.label(RichText::new(label).strong());
+                }
+                let chosen_id = match &draft.shown {
+                    InputValue::Choice(Some(id)) => Some(id.clone()),
+                    _ => None,
+                };
+                let picked = if short {
+                    segments(ui, choices, chosen_id.as_deref())
+                } else {
+                    ui.horizontal_wrapped(|ui| {
+                        let mut picked = None;
+                        for choice in choices {
+                            let chosen = chosen_id.as_deref() == Some(choice.id.as_str());
+                            if ui.radio(chosen, choice.label.as_str()).clicked() && !chosen {
+                                picked = Some(choice.id.clone());
+                            }
                         }
-                    }
-                });
+                        picked
+                    })
+                    .inner
+                };
+                if let Some(id) = picked {
+                    draft.shown = InputValue::Choice(Some(id));
+                }
             });
         }
         InputValue::Text(_) | InputValue::Multiline(_) => {
-            ui.label(RichText::new(label).strong());
+            if !kit.inline {
+                ui.label(RichText::new(label).strong());
+            }
             let multiline = matches!(value, InputValue::Multiline(_));
             let field = if multiline {
                 TextEdit::multiline(&mut draft.text)
                     .desired_rows(3)
                     .lock_focus(false)
+            } else if kit.inline {
+                TextEdit::singleline(&mut draft.text)
+                    .hint_text(label.as_str())
+                    .margin(Margin::symmetric(12, 7))
             } else {
                 TextEdit::singleline(&mut draft.text)
             };

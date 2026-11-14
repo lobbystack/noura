@@ -88,10 +88,7 @@ pub(crate) fn results(
     let selected = palette.selected();
     match palette {
         Palette::Commands(_) => None,
-        Palette::QuickOpen(quick_open) if quick_open.query.trim().is_empty() => {
-            note(ui, theme, "Type part of a file's name.");
-            None
-        }
+        Palette::QuickOpen(quick_open) if quick_open.query.trim().is_empty() => None,
         Palette::QuickOpen(quick_open) if quick_open.matches.is_empty() => {
             note(ui, theme, "No matches");
             None
@@ -111,14 +108,7 @@ pub(crate) fn results(
             list(ui, view, theme, "Files", &rows, selected, ROW_HEIGHT)
         }
         Palette::Search(search) => match &search.state {
-            SearchState::Idle => {
-                note(
-                    ui,
-                    theme,
-                    "Type a word to search titles, file names, properties and note text.",
-                );
-                None
-            }
+            SearchState::Idle => None,
             SearchState::Searching => {
                 note(ui, theme, "Searching\u{2026}");
                 None

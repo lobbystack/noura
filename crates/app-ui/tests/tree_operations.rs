@@ -355,10 +355,7 @@ fn delete_and_cmd_backspace_trash_a_file_and_a_folder_asks_first() {
     focus_row(&mut harness, "Docs");
     press(&mut harness, Key::Delete);
     harness.get_by_label("Move \u{201c}Docs\u{201d} to the trash?");
-    harness.get_by_label(
-        "The folder and everything in it go to your system's trash, where you can restore \
-         them.",
-    );
+    harness.get_by_label("Everything in it goes to your system's trash.");
     click(&mut harness, "Cancel");
     assert!(folder.join("Docs/Guide.md").exists());
 

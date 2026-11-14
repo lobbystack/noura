@@ -118,7 +118,7 @@ fn an_outside_edit_of_other_text_merges_with_your_typing_and_says_so_once() {
     assert_eq!(notice.title, "Merged changes from another app");
     assert_eq!(
         notice.message,
-        "Noura kept your typing in \u{201c}Plan\u{201d} and the other app\u{2019}s edits."
+        "Kept your typing in \u{201c}Plan\u{201d} and the other app\u{2019}s edits."
     );
 
     // The typing from during the merge saves on top, without a notice.

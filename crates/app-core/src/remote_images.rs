@@ -103,7 +103,7 @@ fn failure(code: &str) -> String {
         "image_timeout" => "The image took too long to load.",
         "image_address_invalid" => "Noura loads images only from web addresses.",
         "image_address_private" => {
-            "Noura doesn\u{2019}t load images from this computer or its local network."
+            "Noura doesn\u{2019}t load images from this computer or a private network."
         }
         _ => "Noura couldn\u{2019}t load the image.",
     }

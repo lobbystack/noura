@@ -7,7 +7,7 @@ use app_core::{NoteEmbedState, NoteLinks, is_external_link};
 use editor_egui::resolvers::{EmbeddedNote, LinkResolver, LinkState, LinkSuggestion, ResolvedLink};
 
 /// What a link that names no file in the workspace says.
-const NOT_IN_WORKSPACE: &str = "No file in this workspace matches this link.";
+const NOT_IN_WORKSPACE: &str = "No file matches this link.";
 
 /// Answers a note's editor about its links.
 pub(crate) struct WorkspaceLinks {

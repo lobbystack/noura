@@ -3,20 +3,20 @@
 //! the answer streaming in, Stop, Resume, and the message box.
 
 use plugin_sdk::{
-    Event, Node, Value, View,
+    Event, Icon, Node, Value, View,
     ai::{
         self, Chat, Message, MessageKind, MessageStatus, Provider, Request, Retention, Run,
         RunStatus, ToolDefinition,
     },
+    navigation::{self, SettingsSection},
 };
 
 use crate::{State, reason, web};
 
-/// The title a chat has until its first message names it.
-const NEW_CHAT: &str = "New chat";
-
 /// The node IDs events name.
 const NEW_CHAT_BUTTON: &str = "new-chat";
+/// The empty state's button that opens Settings on AI.
+const OPEN_AI_SETTINGS: &str = "open-ai-settings";
 const CHATS: &str = "chats";
 const COMPOSER: &str = "composer";
 const PROVIDER: &str = "provider";
@@ -51,7 +51,7 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
     let mut messages = Vec::new();
     match state.chat.clone().map(|id| ai::read_chat(&id)) {
         None => {
-            view.text(View::ROOT, "title", NEW_CHAT);
+            view.page_heading(View::ROOT, "title", "AI", None, Some(Icon::Sparkle));
         }
         Some(Ok((read, read_messages))) => {
             chat = Some(read);
@@ -63,7 +63,7 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
             if matches!(error, plugin_sdk::Error::NotFound(_)) {
                 state.chat = None;
             }
-            view.text(View::ROOT, "title", NEW_CHAT);
+            view.page_heading(View::ROOT, "title", "AI", None, Some(Icon::Sparkle));
             view.text(View::ROOT, "chat-problem", &reason(&error));
         }
     }
@@ -93,11 +93,14 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
     if busy {
         view.button(View::ROOT, STOP, "Stop");
     } else if providers.is_empty() {
-        view.text(
+        let empty = view.empty_state(
             View::ROOT,
             "no-providers",
-            "Add an AI provider in Settings, under AI providers, to start a chat.",
+            "Connect an AI provider",
+            None,
+            Some(Icon::Sparkle),
         );
+        view.button(empty, OPEN_AI_SETTINGS, "Open AI settings");
     } else {
         if stopped_before_answering(&messages) {
             view.button(View::ROOT, RESUME, "Resume");
@@ -189,14 +192,15 @@ fn stopped_before_answering(messages: &[Message]) -> bool {
 /// The chat's title, and how long Noura keeps it when that isn't until
 /// you delete it.
 fn draw_title(view: &mut View, chat: &Chat) {
-    view.text(View::ROOT, "title", &chat.title);
-    if chat.retention == Retention::Ephemeral {
-        view.text(
-            View::ROOT,
-            "retention",
-            "Noura moves this chat to the trash 30 days after it started.",
-        );
-    }
+    let detail = (chat.retention == Retention::Ephemeral)
+        .then_some("This chat moves to the trash 30 days after it started.");
+    view.page_heading(
+        View::ROOT,
+        "title",
+        &chat.title,
+        detail,
+        Some(Icon::Sparkle),
+    );
 }
 
 /// The menu of a chat in the sidebar: rename it, or choose how long Noura
@@ -284,10 +288,10 @@ fn draw_message(view: &mut View, message: &Message, run: Option<&Run>, providers
                 MessageStatus::Interrupted
                     if message.error_code.as_deref() == Some("plugin-disabled") =>
                 {
-                    Some("You turned off the plugin that offers this tool, so the call didn't run.")
+                    Some("You turned off this tool's plugin, so the call didn't run.")
                 }
                 MessageStatus::Interrupted => {
-                    Some("Noura stopped before this call finished, and won't run it on its own.")
+                    Some("Noura stopped before this call finished and won't rerun it.")
                 }
                 MessageStatus::Failed => Some("This call failed."),
             };
@@ -299,7 +303,7 @@ fn draw_message(view: &mut View, message: &Message, run: Option<&Run>, providers
             let denied = serde_json::from_str::<serde_json::Value>(&message.content)
                 .is_ok_and(|result| result["denied"] == true);
             let line = if denied {
-                "You didn't allow this call, so it didn't run.".to_owned()
+                "You denied this call, so it didn't run.".to_owned()
             } else {
                 format!("Result: {}", message.content)
             };
@@ -370,21 +374,17 @@ fn draw_run_status(view: &mut View, run: &Run, providers: &[Provider], state: &S
         .find(|known| known.id == run.provider)
         .map_or(run.provider.as_str(), |known| known.name.as_str());
     let line = match run.status {
-        RunStatus::WaitingForConsent => Some(format!(
-            "Noura is asking you whether {name} may receive this workspace's content."
-        )),
-        RunStatus::WaitingForApproval => {
-            Some("Noura is asking you whether to run a tool the model wants to use.".to_owned())
+        RunStatus::WaitingForConsent => {
+            Some(format!("Waiting for your answer on sending to {name}."))
         }
-        RunStatus::Denied => Some(format!(
-            "You didn't let {name} receive this workspace's content, so Noura sent nothing."
-        )),
+        RunStatus::WaitingForApproval => Some("Waiting for your answer on a tool call.".to_owned()),
+        RunStatus::Denied => Some(format!("You denied {name}, so nothing was sent.")),
         RunStatus::Failed => run
             .failure
             .as_ref()
             .map(|failure| format!("The answer failed: {}", failure.message)),
         RunStatus::Interrupted => {
-            Some("You turned off a plugin this answer relied on, so the answer stopped.".to_owned())
+            Some("You turned off a plugin this answer relied on, so it stopped.".to_owned())
         }
         RunStatus::Streaming | RunStatus::Completed | RunStatus::Cancelled => None,
     };
@@ -472,6 +472,11 @@ pub(crate) fn sidebar(state: &State) -> Vec<Node> {
 /// Something you did on the page or in its sidebar section.
 pub(crate) fn handle(state: &mut State, event: Event) {
     match event {
+        Event::Pressed(node) if node == OPEN_AI_SETTINGS => {
+            if let Err(error) = navigation::open_settings(SettingsSection::Ai) {
+                state.notice = Some(reason(&error));
+            }
+        }
         Event::Pressed(node) if node == NEW_CHAT_BUTTON => {
             state.chat = None;
             state.notice = None;

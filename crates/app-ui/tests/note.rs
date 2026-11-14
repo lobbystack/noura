@@ -1,5 +1,5 @@
 //! The note screen through AccessKit: a note opens from the tree into the
-//! editor, the properties panel labels each property, the name field's
+//! editor with no properties beside it, the name field's
 //! keyboard path renames the file, and the prompt about a note that
 //! couldn't save offers its three choices.
 
@@ -66,8 +66,10 @@ fn name_field(harness: &Ui) -> egui_kittest::Node<'_> {
     harness.get_by_role_and_label(Role::TextInput, "File name")
 }
 
+/// As in the legacy app, a note opens with its name over its text and
+/// nothing beside it, its frontmatter kept in the file.
 #[test]
-fn a_note_opens_from_the_tree_in_the_editor_with_its_name_and_properties() {
+fn a_note_opens_from_the_tree_in_the_editor_with_its_name_and_no_properties_beside_it() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let mut harness = opened(app_data.path(), &parent.path().join("Garden"));
@@ -80,31 +82,11 @@ fn a_note_opens_from_the_tree_in_the_editor_with_its_name_and_properties() {
         name_field(&harness).accesskit_node().value().as_deref(),
         Some("Plan")
     );
-    let panel = harness.get_by_role_and_label(Role::Group, "Properties");
-    let labels: Vec<String> = panel
-        .get_all_by_role(Role::Label)
-        .filter_map(|label| {
-            label
-                .accesskit_node()
-                .value()
-                .or(label.accesskit_node().label())
-        })
-        .collect();
-    for key in ["id", "type", "color", "done", "created", "updated"] {
-        assert!(
-            labels.iter().any(|label| label == key),
-            "{key} in {labels:?}"
-        );
-    }
-    // Noura's own properties read as read-only, and the others edit in place.
-    for key in ["id", "type", "created", "updated"] {
-        let field = panel.get_by_role_and_label(Role::TextInput, key);
-        assert!(field.accesskit_node().is_read_only(), "{key}");
-    }
-    let color = panel.get_by_role_and_label(Role::TextInput, "color");
-    assert!(!color.accesskit_node().is_read_only());
-    assert_eq!(color.accesskit_node().value().as_deref(), Some("green"));
-    panel.get_by_role_and_label(Role::CheckBox, "done");
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Group, "Properties")
+            .is_none()
+    );
 }
 
 #[test]
@@ -260,20 +242,8 @@ fn typing_in_the_note_saves_it_after_a_pause() {
     assert_eq!(written.replace("Typed. ", ""), NOTE);
 }
 
-/// Click the property field `key` and type `typed` at its end.
-fn type_in_property(harness: &mut Ui, key: &str, typed: &str) {
-    harness
-        .get_by_role_and_label(Role::Group, "Properties")
-        .get_by_role_and_label(Role::TextInput, key)
-        .click();
-    harness.run_steps(4);
-    harness.key_press(Key::End);
-    harness.event(Event::Text(typed.into()));
-    harness.run_steps(4);
-}
-
 /// Close Tab runs before a field could report losing the keyboard, so
-/// what the field holds goes in first: a property's value, then the name.
+/// what the name field holds goes in first.
 #[test]
 fn closing_the_tab_from_a_field_keeps_what_you_typed_in_it() {
     let app_data = tempfile::tempdir().unwrap();
@@ -281,24 +251,8 @@ fn closing_the_tab_from_a_field_keeps_what_you_typed_in_it() {
     let folder = parent.path().join("Garden");
     let mut harness = opened(app_data.path(), &folder);
     open_plan(&mut harness);
-    type_in_property(&mut harness, "color", "ish");
     let path = folder.join("Docs/Plan.md");
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), NOTE);
-
-    harness.key_press_modifiers(Modifiers::COMMAND, Key::W);
-    harness.run_steps(4);
-
-    wait_until(&mut harness, |harness| {
-        harness.state().app().tabs().is_empty()
-    });
     let written = std::fs::read_to_string(&path).unwrap();
-    assert!(written.contains("\ncolor: greenish\n"), "{written:?}");
-
-    // Docs stays open in the tree.
-    harness
-        .get_by_role_and_label(Role::TreeItem, "Plan")
-        .click();
-    harness.run_steps(4);
     harness.key_press(Key::F2);
     harness.run_steps(4);
     harness.event(Event::Text("Roadmap".into()));
@@ -316,48 +270,14 @@ fn closing_the_tab_from_a_field_keeps_what_you_typed_in_it() {
     );
 }
 
-/// A click on another tab hides the field without it reporting the lost
-/// keyboard: the value goes in anyway, and shows when you come back.
-#[test]
-fn a_property_typed_before_switching_tabs_goes_in() {
-    let app_data = tempfile::tempdir().unwrap();
-    let parent = tempfile::tempdir().unwrap();
-    let folder = parent.path().join("Garden");
-    let mut harness = opened(app_data.path(), &folder);
-    std::fs::write(folder.join("Docs/Other.md"), "Other text\n").unwrap();
-    let app = harness.state_mut().app_mut();
-    app.open_file("Docs/Other.md", app_core::OpenAs::Kept);
-    app.open_file("Docs/Plan.md", app_core::OpenAs::Kept);
-    harness.run_steps(4);
-    type_in_property(&mut harness, "color", "ish");
-
-    harness.get_by_role_and_label(Role::Tab, "Other").click();
-    harness.run_steps(4);
-
-    let path = folder.join("Docs/Plan.md");
-    wait_until(&mut harness, |_| {
-        std::fs::read_to_string(&path).unwrap() != NOTE
-    });
-    let written = std::fs::read_to_string(&path).unwrap();
-    assert!(written.contains("\ncolor: greenish\n"), "{written:?}");
-    harness.get_by_role_and_label(Role::Tab, "Plan").click();
-    harness.run_steps(4);
-    let color = harness
-        .get_by_role_and_label(Role::Group, "Properties")
-        .get_by_role_and_label(Role::TextInput, "color");
-    assert_eq!(color.accesskit_node().value().as_deref(), Some("greenish"));
-}
-
-/// The two kinds of field next to a note's text.
+/// The field next to a note's text.
 #[derive(Debug, Clone, Copy)]
 enum Field {
     /// F2, then `Roadmap` over the name `Plan`.
     Name,
-    /// `ish` at the end of `color: green`.
-    Property,
 }
 
-const FIELDS: [Field; 2] = [Field::Name, Field::Property];
+const FIELDS: [Field; 1] = [Field::Name];
 
 /// Type in `field` of the note the window shows, without leaving it.
 fn type_in(harness: &mut Ui, field: Field) {
@@ -368,7 +288,6 @@ fn type_in(harness: &mut Ui, field: Field) {
             harness.event(Event::Text("Roadmap".into()));
             harness.run_steps(4);
         }
-        Field::Property => type_in_property(harness, "color", "ish"),
     }
 }
 
@@ -378,13 +297,11 @@ fn went_in(folder: &std::path::Path, field: Field) -> bool {
         Field::Name => {
             !folder.join("Docs/Plan.md").exists() && folder.join("Docs/Roadmap.md").exists()
         }
-        Field::Property => std::fs::read_to_string(folder.join("Docs/Plan.md"))
-            .is_ok_and(|text| text.contains("\ncolor: greenish\n")),
     }
 }
 
-/// Typing in a field of the note `Plan`, then `leave`, keeps the typing,
-/// for the name field and a property field.
+/// Typing in the name field of the note `Plan`, then `leave`, keeps the
+/// typing.
 fn leaving_keeps_the_typing(leave: impl Fn(&mut Ui)) {
     for field in FIELDS {
         let app_data = tempfile::tempdir().unwrap();

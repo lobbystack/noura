@@ -118,15 +118,10 @@ impl Plugin for Ai {
         let mut view = View::panel("chat-panel", Some("Chat"));
         match chat_of(&object) {
             Some(_) => {
-                view.text(
-                    View::ROOT,
-                    "where",
-                    "You read and continue this chat on the AI page.",
-                );
-                view.button(View::ROOT, "open-chat", "Open on the AI page");
+                view.button(View::ROOT, "open-chat", "Open chat");
             }
             None => {
-                view.text(View::ROOT, "where", "This message's chat can't be found.");
+                view.text(View::ROOT, "where", "Chat not found");
             }
         }
         view.into_nodes()

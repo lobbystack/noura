@@ -987,9 +987,7 @@ impl App {
             .unwrap_or_default();
         self.show_done(
             "Merged changes from another app",
-            format!(
-                "Noura kept your typing in \u{201c}{name}\u{201d} and the other app\u{2019}s edits."
-            ),
+            format!("Kept your typing in \u{201c}{name}\u{201d} and the other app\u{2019}s edits."),
         );
     }
 

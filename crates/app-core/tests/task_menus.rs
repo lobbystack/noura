@@ -356,7 +356,7 @@ fn move_to_trash_saves_the_tasks_edits_first_then_uses_the_system_trash_and_clos
         notice(&app),
         Some((
             "Moved \u{201c}Water the beds\u{201d} to the trash".to_owned(),
-            "You can restore it from your system's trash.".to_owned()
+            String::new()
         ))
     );
     support::plugins::wait_until(&mut app, "the list drops the task", |app| {
@@ -401,8 +401,8 @@ fn when_the_system_trash_refuses_move_to_trash_uses_the_workspace_trash_folder()
         Some((
             "Moved \u{201c}Water the beds\u{201d} to .noura/trash".to_owned(),
             format!(
-                "Noura couldn't use the system trash and moved it to \
-                 .noura/trash/{stamp}/tasks/Water the beds.md in this workspace."
+                "The system trash wasn't available, so it went to \
+                 .noura/trash/{stamp}/tasks/Water the beds.md."
             )
         ))
     );

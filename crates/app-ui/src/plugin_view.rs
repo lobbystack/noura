@@ -16,6 +16,7 @@ mod board;
 mod calendar;
 mod drag;
 mod form;
+mod heading;
 mod menu;
 mod rows;
 
@@ -29,6 +30,98 @@ use crate::{
     markdown,
     theme::{Palette, radius},
 };
+
+/// Two panes side by side, as the legacy Tasks page's list and detail:
+/// they fill the rest of the page from edge to edge, the first
+/// `first_width` points wide with a line on its right, and each scrolls on
+/// its own. A pane's panel draws no box.
+fn split(ui: &mut Ui, node: &ViewNode, first_width: u32, kit: &mut Kit) {
+    let palette = Palette::of(ui.ctx());
+    // The page keeps 24 points around its contents; the panes run past
+    // them to the page's edges, as the legacy panes did.
+    // The gap above it is empty, so the panes start where the content
+    // above them ends.
+    let mut available = ui.available_rect_before_wrap();
+    available.min.y -= ui.spacing().item_spacing.y;
+    let height = ui
+        .clip_rect()
+        .bottom()
+        .min(available.bottom() + 24.0)
+        .max(available.top() + 240.0)
+        - available.top();
+    let rect = egui::Rect::from_min_size(
+        available.min - egui::vec2(24.0, 0.0),
+        egui::vec2(available.width() + 48.0, height),
+    );
+    // Only the page's own width counts toward its size, so the panes
+    // running into its margins never widen it.
+    ui.allocate_rect(
+        egui::Rect::from_min_size(available.min, egui::vec2(available.width(), height)),
+        egui::Sense::hover(),
+    );
+    let first = (first_width as f32).min(rect.width() / 2.0);
+    let line = rect.left() + first;
+    ui.painter()
+        .vline(line, rect.y_range(), Stroke::new(1.0, palette.border));
+    let panes = [
+        egui::Rect::from_min_max(rect.min, egui::pos2(line, rect.bottom())),
+        egui::Rect::from_min_max(egui::pos2(line + 1.0, rect.top()), rect.max),
+    ];
+    for (index, (pane, child)) in panes.into_iter().zip(&node.children).enumerate() {
+        let mut pane_ui = ui.new_child(
+            UiBuilder::new()
+                .max_rect(pane)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        egui::ScrollArea::vertical()
+            .id_salt((&node.id, index))
+            .auto_shrink(false)
+            .show(&mut pane_ui, |ui| {
+                Frame::new().inner_margin(Margin::same(8)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let builder = UiBuilder::new().accessibility_role(Role::Group);
+                    let builder = match &child.kind {
+                        ViewKind::Panel { label: Some(label) } => {
+                            builder.accessibility_label(label)
+                        }
+                        _ => builder,
+                    };
+                    // A pane is narrow, so its nodes stack, one per row.
+                    ui.push_id(&child.id, |ui| {
+                        ui.scope_builder(builder, |ui| {
+                            ui.spacing_mut().item_spacing.y = 12.0;
+                            for node in &child.children {
+                                self::node(ui, node, kit);
+                            }
+                        });
+                    });
+                });
+            });
+    }
+}
+
+/// A title over a group in the sidebar, as the legacy sidebar's section
+/// labels: 12 px medium in the faded foreground, after a caret.
+fn sidebar_label(ui: &mut Ui, text: &str) {
+    let palette = Palette::of(ui.ctx());
+    ui.horizontal(|ui| {
+        ui.set_height(32.0);
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.add_space(8.0);
+        let color = palette.foreground.gamma_multiply(0.7);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+        crate::icons::paint(ui.painter(), crate::icons::CARET_DOWN, rect, color, false);
+        ui.label(
+            RichText::new(text)
+                .font(crate::theme::font(
+                    ui.ctx(),
+                    crate::theme::SUPPORTING_SIZE,
+                    crate::theme::Weight::Medium,
+                ))
+                .color(color),
+        );
+    });
+}
 
 /// Where a plugin's view shows.
 #[derive(Debug, Clone, Copy, Hash)]
@@ -58,6 +151,14 @@ struct Kit<'a> {
     /// Enter left a single-line text input this frame, which submits the
     /// form around it.
     entered: bool,
+    /// How many panels the node being drawn sits in.
+    depth: usize,
+    /// The input being drawn is a one-line form's field, whose label is
+    /// its placeholder.
+    inline: bool,
+    /// The page's heading has a detail line, such as the month a
+    /// calendar shows, so a calendar grid adds no title of its own.
+    page_detail: bool,
 }
 
 impl Kit<'_> {
@@ -115,10 +216,28 @@ pub(crate) fn show_sidebar(ui: &mut Ui, app: &mut App, window: Id, page_id: &str
     true
 }
 
+/// Whether the plugin page `page_id` starts with a page heading of its
+/// own.
+pub(crate) fn has_page_heading(app: &App, page_id: &str) -> bool {
+    app.plugin_view(page_id)
+        .and_then(|view| view.ok())
+        .is_some_and(|view| {
+            view.root().children.first().is_some_and(|child| {
+                matches!(
+                    child.kind,
+                    ViewKind::Heading {
+                        level: app_core::HeadingLevel::Page,
+                        ..
+                    }
+                )
+            })
+        })
+}
+
 /// The plugin page `page_id` in the window whose ID salt is `window`.
 pub(crate) fn show(ui: &mut Ui, app: &mut App, window: Id, page_id: &str) {
     let Some(view) = app.plugin_view(page_id) else {
-        muted(ui, "The plugin that adds this page isn't running.");
+        muted(ui, "Its plugin isn't running.");
         return;
     };
     let (events, link) = draw(ui, app, window, Place::Page(page_id), &view);
@@ -165,7 +284,7 @@ pub(crate) fn show_section(
 /// salt is `window`. Events go back to the plugin by node ID.
 pub(crate) fn show_settings(ui: &mut Ui, app: &mut App, window: Id, section_id: &str) {
     let Some(view) = app.plugin_settings_view(section_id) else {
-        muted(ui, "The plugin that adds this page isn't running.");
+        muted(ui, "Its plugin isn't running.");
         return;
     };
     let (events, link) = draw(ui, app, window, Place::Settings(section_id), &view);
@@ -200,6 +319,9 @@ fn draw(
         events: Vec::new(),
         link: None,
         entered: false,
+        depth: 0,
+        inline: false,
+        page_detail: false,
     };
     ui.push_id(("plugin-view", window, place), |ui| {
         node(ui, view.root(), &mut kit);
@@ -249,13 +371,92 @@ fn boxed(ui: &mut Ui, role: Role, label: Option<&str>, add: impl FnOnce(&mut Ui)
     });
 }
 
+/// Whether `node` lines up beside its neighbours, as a toolbar's buttons
+/// and a segmented choice do.
+fn inline(node: &ViewNode) -> bool {
+    match &node.kind {
+        ViewKind::Button { .. } => true,
+        ViewKind::Input { value, choices, .. } => form::segmented(value, choices),
+        _ => false,
+    }
+}
+
+/// Draw a panel's children from top to bottom, with each run of inline
+/// nodes on one row.
+fn children(ui: &mut Ui, nodes: &[ViewNode], kit: &mut Kit) {
+    let mut index = 0;
+    while index < nodes.len() {
+        let run = nodes[index..]
+            .iter()
+            .take_while(|node| inline(node))
+            .count();
+        if run > 1 {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                for child in &nodes[index..index + run] {
+                    self::node(ui, child, kit);
+                }
+            });
+            index += run;
+        } else {
+            let sidebar = matches!(kit.place, Place::Sidebar(_));
+            // In the sidebar, text over a list titles it, and a list that
+            // no text titles shows its own label as its title, as the
+            // legacy sidebar's Views and Folders did.
+            let list_next = matches!(
+                nodes.get(index + 1).map(|node| &node.kind),
+                Some(ViewKind::List { .. })
+            );
+            match &nodes[index].kind {
+                ViewKind::Text(text) if sidebar && list_next => {
+                    sidebar_label(ui, text);
+                }
+                ViewKind::List { label, .. } => {
+                    let titled = index > 0 && matches!(nodes[index - 1].kind, ViewKind::Text(_));
+                    if sidebar && !titled {
+                        sidebar_label(ui, label);
+                    }
+                    self::node(ui, &nodes[index], kit);
+                }
+                _ => self::node(ui, &nodes[index], kit),
+            }
+            index += 1;
+        }
+    }
+}
+
 fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
     ui.push_id(&node.id, |ui| match &node.kind {
         ViewKind::Panel { label } => {
-            boxed(ui, Role::Group, label.as_deref(), |ui| {
-                for child in &node.children {
-                    self::node(ui, child, kit);
+            kit.depth += 1;
+            if kit.depth == 1 {
+                // The view's own panel is the page, so it draws no box.
+                let mut builder = UiBuilder::new().accessibility_role(Role::Group);
+                if let Some(label) = label.as_deref() {
+                    builder = builder.accessibility_label(label);
                 }
+                ui.scope_builder(builder, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.vertical(|ui| children(ui, &node.children, kit));
+                });
+            } else {
+                boxed(ui, Role::Group, label.as_deref(), |ui| {
+                    children(ui, &node.children, kit);
+                });
+            }
+            kit.depth -= 1;
+        }
+        ViewKind::Text(text) if matches!(kit.place, Place::Sidebar(_)) => {
+            // Other text in the sidebar is a muted line, as the legacy
+            // sidebar's "No chats yet."
+            let palette = Palette::of(ui.ctx());
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                ui.label(
+                    RichText::new(text)
+                        .size(crate::theme::BODY_SIZE)
+                        .color(palette.muted_foreground),
+                );
             });
         }
         ViewKind::Text(text) => {
@@ -267,6 +468,8 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             }
         }
         ViewKind::Button { label } => menu::button(ui, node, label, kit),
+        ViewKind::Heading { .. } => heading::heading(ui, node, kit),
+        ViewKind::Empty { .. } => heading::empty(ui, node, kit),
         ViewKind::List {
             label,
             reorder,
@@ -282,6 +485,7 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             rows::list(ui, node, &options, kit);
         }
         ViewKind::Board { label } => board::board(ui, node, label, kit),
+        ViewKind::Split { first_width } => split(ui, node, *first_width, kit),
         ViewKind::Calendar { label, mode, date } => {
             calendar::calendar(ui, node, label, *mode, date, kit);
         }

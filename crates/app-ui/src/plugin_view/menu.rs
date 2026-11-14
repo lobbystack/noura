@@ -4,11 +4,16 @@
 
 use app_core::{PluginEvent, ViewKind, ViewNode};
 use egui::{
-    Align, Button, Event, Key, Layout, Modifiers, Popup, PopupKind, Pos2, Response, Ui,
+    Align, Button, Event, Key, Layout, Modifiers, Popup, PopupKind, Pos2, Response, Stroke, Ui,
     accesskit::HasPopup, containers::menu::menu_style,
 };
 
 use super::Kit;
+use crate::{
+    common::{Btn, Size, Variant},
+    icons,
+    theme::{Palette, SUPPORTING_SIZE, radius},
+};
 
 /// What happened to an open menu this frame.
 pub(super) enum Outcome {
@@ -38,6 +43,7 @@ pub(super) fn show(
         .kind(PopupKind::Menu)
         .layout(Layout::top_down_justified(Align::Min))
         .style(menu_style)
+        .frame(crate::common::menu_frame(ui.ctx()))
         .open_bool(&mut open)
         .accessible_name(label.clone());
     if let Some(at) = at {
@@ -108,19 +114,64 @@ struct Opened {
 /// A button. One that holds a menu opens it on a press, the context-menu
 /// key or Shift-F10, and sends the chosen item; any other sends its press.
 pub(super) fn button(ui: &mut Ui, node: &ViewNode, label: &str, kit: &mut Kit) {
+    styled_button(ui, node, label, Look::Plain, kit);
+}
+
+/// How a plugin's button looks.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Look {
+    /// The legacy outline button.
+    Plain,
+    /// The one action that stands out, as a page heading's first button.
+    Primary,
+    /// No fill until hovered, as a page heading's other buttons.
+    Ghost,
+    /// Muted text, as a section heading's buttons.
+    Quiet,
+}
+
+/// A plugin's button drawn the way `look` says.
+pub(super) fn styled_button(ui: &mut Ui, node: &ViewNode, label: &str, look: Look, kit: &mut Kit) {
+    // As in the legacy app, a heading's Previous and Next show as arrows,
+    // and a button that creates something starts with a plus.
+    let step = if label.starts_with("Previous ") {
+        Some(icons::CARET_LEFT)
+    } else if label.starts_with("Next ") {
+        Some(icons::CARET_RIGHT)
+    } else {
+        None
+    };
+    let creates = label.starts_with("New ") || label.starts_with("Add ");
+    let draw = |ui: &mut Ui| match (look, step) {
+        (Look::Ghost, Some(icon)) => Btn::icon_only(icon, label).size(Size::Sm).show(ui),
+        (Look::Plain, _) => Btn::new(label).show(ui),
+        (Look::Primary, _) => {
+            let button = Btn::new(label).variant(Variant::Default).size(Size::Sm);
+            if creates {
+                button.icon(icons::PLUS).show(ui)
+            } else {
+                button.show(ui)
+            }
+        }
+        (Look::Ghost, None) => Btn::new(label)
+            .variant(Variant::Ghost)
+            .size(Size::Sm)
+            .show(ui),
+        (Look::Quiet, _) => quiet_link(ui, label),
+    };
     let menu = node
         .children
         .first()
         .filter(|child| matches!(child.kind, ViewKind::Menu { .. }));
     let Some(menu) = menu else {
-        if ui.button(label).clicked() {
+        if draw(ui).clicked() {
             kit.events.push(PluginEvent::Pressed(node.id.clone()));
         }
         return;
     };
     let id = kit.id(&node.id);
     let mut opened: Option<Opened> = ui.data(|data| data.get_temp(id));
-    let response = ui.add(Button::new(label));
+    let response = draw(ui);
     let from_keys =
         ui.input(|input| input.key_pressed(Key::Enter) || input.key_pressed(Key::Space));
     if response.has_focus() && opened.is_none() && menu_key(ui, true) {
@@ -158,4 +209,34 @@ pub(super) fn button(ui: &mut Ui, node: &ViewNode, label: &str, kit: &mut Kit) {
         }
         None => data.remove::<Opened>(id),
     });
+}
+
+/// A link-like button in 12 px muted text that turns the foreground color
+/// and underlines on hover, as the legacy section links did.
+fn quiet_link(ui: &mut Ui, label: &str) -> Response {
+    let palette = Palette::of(ui.ctx());
+    let galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::proportional(SUPPORTING_SIZE),
+        egui::Color32::PLACEHOLDER,
+    );
+    let (rect, response) = ui.allocate_exact_size(galley.size(), egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Button, true, label));
+    if ui.is_rect_visible(rect) {
+        let hovered = response.hovered();
+        let color = if hovered {
+            palette.foreground
+        } else {
+            palette.muted_foreground
+        };
+        ui.painter().galley(rect.min, galley, color);
+        if hovered {
+            ui.painter()
+                .hline(rect.x_range(), rect.bottom(), Stroke::new(1.0, color));
+        }
+        if response.has_focus() {
+            crate::common::focus_ring(ui.painter(), rect.expand(2.0), radius(0.4), &palette);
+        }
+    }
+    response
 }

@@ -1,5 +1,7 @@
 # Better Auth utilities license declaration
 
+> **Removed 2026-11-14.** This notice shipped with the legacy server bundle, which the 2026-11-14 cleanup deleted with the rest of the legacy TypeScript app. The record stays as history.
+
 - Repository: https://github.com/better-auth/utils
 - Commit: `b20329a32d78f1f9bcc088bbd6f982b28c4192f1` (peeled `v0.4.2` tag)
 - Package: `@better-auth/utils@0.4.2`, pinned transitively in `bun.lock`

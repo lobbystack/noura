@@ -84,16 +84,12 @@ impl OpenAtLogin {
 fn refusal(error: &io::Error, enabling: Option<bool>) -> String {
     match (error.kind(), enabling) {
         (io::ErrorKind::PermissionDenied, _) => {
-            "Noura doesn't have permission to change the apps that open at login.".to_owned()
+            "Noura has no permission to change login items.".to_owned()
         }
         (io::ErrorKind::Unsupported, _) | (_, None) => {
-            "This computer doesn't let Noura change the apps that open at login.".to_owned()
+            "This computer doesn't let Noura change login items.".to_owned()
         }
-        (_, Some(true)) => {
-            "Your computer refused to add Noura to the apps that open at login.".to_owned()
-        }
-        (_, Some(false)) => {
-            "Your computer refused to remove Noura from the apps that open at login.".to_owned()
-        }
+        (_, Some(true)) => "Couldn't add Noura to login items.".to_owned(),
+        (_, Some(false)) => "Couldn't remove Noura from login items.".to_owned(),
     }
 }

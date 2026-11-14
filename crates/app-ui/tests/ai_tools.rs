@@ -64,7 +64,7 @@ fn opened(program: PathBuf, answer: Result<&str, &str>) -> Opened {
     harness.run();
     harness
         .get_by_role_and_label(Role::Navigation, "Settings sections")
-        .get_by_role_and_label(Role::Button, "AI tools")
+        .get_by_role_and_label(Role::Button, "External tools")
         .click();
     harness.run();
     Opened {
@@ -106,7 +106,7 @@ fn the_section_shows_the_configuration_a_copy_button_and_a_warning() {
     let escaped = root.replace('\\', "\\\\");
     assert!(configuration.contains(&escaped), "{configuration}");
     assert!(configuration.contains("\"--workspace\""), "{configuration}");
-    harness.get_by_label_contains("without asking you first");
+    harness.get_by_label_contains("Connect only assistants you trust");
 
     harness
         .get_by_role_and_label(Role::Group, "Configuration")
@@ -183,10 +183,12 @@ fn a_binary_path_the_configuration_cant_hold_shows_a_clear_error() {
         .value()
         .unwrap();
     assert!(text.contains("Move Noura to a folder"), "{text}");
+    // Copy shows, as in the legacy app, but you can't press it.
     assert!(
         group
-            .query_by_role_and_label(Role::Button, "Copy")
-            .is_none()
+            .get_by_role_and_label(Role::Button, "Copy")
+            .accesskit_node()
+            .is_disabled()
     );
     assert!(
         harness
