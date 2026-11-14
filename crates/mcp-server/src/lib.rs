@@ -34,7 +34,7 @@ use rmcp::{
     model::{
         CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
         Implementation, JsonObject, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
-        ServerCapabilities, ServerInfo, Tool,
+        ServerCapabilities, ServerConfig, Tool,
     },
     schemars,
     service::{NotificationContext, Peer, RequestContext},
@@ -314,12 +314,12 @@ impl NouraMcp {
 }
 
 impl ServerHandler for NouraMcp {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let capabilities = ServerCapabilities::builder()
             .enable_tools()
             .enable_tool_list_changed()
             .build();
-        ServerInfo::new(capabilities)
+        ServerConfig::new(capabilities)
             .with_server_info(Implementation::new("noura", env!("CARGO_PKG_VERSION")))
             .with_instructions(INSTRUCTIONS.to_owned())
     }
