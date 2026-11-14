@@ -7,15 +7,18 @@
 #   * a layered `AppIcon.icon` for macOS 26 and later, compiled to `Assets.car`
 #     with `actool`, so the system draws the squircle, background, and
 #     light/dark/tinted appearances
-#   * full-bleed icons for iOS, Android, Windows, and Linux via `tauri icon`
-#   * favicon, apple-touch-icon, and the in-app logo for the web apps
+#   * full-bleed PNG and Windows icons for the desktop packages, in
+#     apps/desktop/icons
+#   * favicon, apple-touch-icon, and logo for the website
 #
 # Requires ImageMagick, and the Apple toolchain (`actool`) for the macOS icon.
+# Without `actool`, macOS falls back to a flat icon.icns built with
+# `iconutil`, or keeps the checked-in one.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 source_png="$root/assets/brand/noura-logo.png"
-icons_dir="$root/src-tauri/icons"
+icons_dir="$root/apps/desktop/icons"
 app_icon="$root/assets/macos/AppIcon.icon"
 source_background='#FDFAFD'
 
@@ -35,7 +38,12 @@ magick "$source_png" -fuzz 10% -transparent "$source_background" "$work/glyph.pn
 magick "$work/glyph.png" -trim +repage -resize 760x760 "$work/glyph-fit.png"
 magick -size 1024x1024 xc:none "$work/glyph-fit.png" -gravity center \
 	-composite "$root/assets/brand/noura-icon-1024.png"
-(cd "$root" && bun run tauri icon "$root/assets/brand/noura-icon-1024.png")
+master="$root/assets/brand/noura-icon-1024.png"
+for size in 32 64 128; do
+	magick "$master" -resize "${size}x${size}" "$icons_dir/${size}x${size}.png"
+done
+magick "$master" -resize 256x256 "$icons_dir/128x128@2x.png"
+magick "$master" -define icon:auto-resize=256,128,64,48,32,16 "$icons_dir/icon.ico"
 
 # 3. macOS layered icon: the glyph on the Apple grid, no mask and no baked
 #    background, so the system supplies both.
@@ -69,26 +77,26 @@ if [ -n "$actool" ]; then
 		--minimum-deployment-target 15.0 --app-icon AppIcon \
 		--include-all-app-icons \
 		--output-partial-info-plist "$work/iconcar/partial.plist" >/dev/null
-	cp "$work/iconcar/Assets.car" "$root/src-tauri/Assets.car"
+	cp "$work/iconcar/Assets.car" "$icons_dir/Assets.car"
 	cp "$work/iconcar/AppIcon.icns" "$icons_dir/icon.icns"
-else
+elif command -v iconutil >/dev/null; then
 	echo "actool not found; macOS falls back to the flat icon.icns" >&2
-fi
-
-# The Rust desktop app packages the same icons.
-desktop_icons="$root/apps/desktop/icons"
-for icon in 32x32.png 64x64.png 128x128.png 128x128@2x.png icon.icns icon.ico; do
-	cp "$icons_dir/$icon" "$desktop_icons/$icon"
-done
-if [ -f "$root/src-tauri/Assets.car" ]; then
-	cp "$root/src-tauri/Assets.car" "$desktop_icons/Assets.car"
+	iconset="$work/icon.iconset"
+	mkdir -p "$iconset"
+	for size in 16 32 128 256 512; do
+		magick "$master" -resize "${size}x${size}" "$iconset/icon_${size}x${size}.png"
+		double=$((size * 2))
+		magick "$master" -resize "${double}x${double}" "$iconset/icon_${size}x${size}@2x.png"
+	done
+	iconutil -c icns "$iconset" -o "$icons_dir/icon.icns"
+else
+	echo "actool and iconutil not found; keeping the checked-in icon.icns" >&2
 fi
 
 # 4. Web assets: the glyph on transparency.
-for dest in "$root/apps/app/static" "$root/apps/website/static"; do
-	magick "$root/assets/brand/noura-icon-1024.png" -resize 48x48 "$dest/favicon.png"
-	magick "$root/assets/brand/noura-icon-1024.png" -resize 180x180 "$dest/apple-touch-icon.png"
-	magick "$root/assets/brand/noura-icon-1024.png" -resize 256x256 "$dest/logo.png"
-done
+web="$root/apps/website/static"
+magick "$master" -resize 48x48 "$web/favicon.png"
+magick "$master" -resize 180x180 "$web/apple-touch-icon.png"
+magick "$master" -resize 256x256 "$web/logo.png"
 
 echo "Assets regenerated from $source_png"
