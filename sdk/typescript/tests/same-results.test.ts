@@ -362,7 +362,7 @@ describe.each(HOSTS)('a plugin that declares ai, on %s', (_name, start) => {
 		const unwritten = {
 			error: {
 				tag: 'failed',
-				val: "This chat isn't saved until its first message goes out, so it can't change yet.",
+				val: 'Send a first message to save this chat.',
 			},
 		};
 		expect(await probe(host, 'ai-rename-new-chat')).toEqual(unwritten);
@@ -398,7 +398,7 @@ describe.each(HOSTS)('a plugin that declares ai, on %s', (_name, start) => {
 					val: {
 						code: 'web_search_key_missing',
 						message:
-							'Add a Brave Search key in Settings, under Web search, to search the web.',
+							'Add a Brave Search key in Settings > AI to search the web.',
 					},
 				},
 			});
