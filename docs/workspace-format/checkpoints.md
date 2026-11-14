@@ -1,6 +1,6 @@
 # Experimental encrypted checkpoint protocol
 
-> The legacy app implements this protocol. The Rust product replaces it with [sync protocol version 2](sync-v2.md), which supports none of its records or data.
+> The legacy app implemented this protocol until the 2026-11-14 cleanup deleted it. `crates/local-core` still holds the Rust side of it, which the desktop app doesn't call. The Rust product replaces it with [sync protocol version 2](sync-v2.md), which supports none of its records or data.
 
 This protocol is implemented for native and relay testing. The HTTP routes require `createApp(store, { checkpointTransitions: true, ... })`; production startup does not set this option. The discovery endpoint returns empty checkpoint and transition version lists by default. Native text checkpoint retrieval, invitation activation, rotation rebase, durable editing, native lifecycle mutations, and realtime delivery are experimental. Complete the cross-platform and sustained-load gates before enabling the routes for users.
 
@@ -22,7 +22,7 @@ Version-1 signing bytes are unchanged. The client uses version 2 only when a che
 
 Digests are lowercase SHA-256 over signing bytes followed by the decoded 64-byte signature. Checkpoints are strictly sorted by object ID, with no duplicate objects. Every checkpoint must match its policy's workspace, device, revision and object epoch. The transition signature binds all checkpoint digests and the existing signed access policy digest. Clients must verify the policy against previously trusted authority before accepting checkpoint content; a valid signature alone does not prove that a checkpoint is current or committed.
 
-The shared `fixtures/checkpoint-v1.json` fixture verifies the tuple format in Rust and TypeScript. Its content key is the public test value `[7; 32]`. Generate a replacement with `cargo run -p local-core --example checkpoint_fixture` and review changes before replacing it.
+The shared `fixtures/checkpoint-v1.json` fixture verifies the tuple format in Rust. Its content key is the public test value `[7; 32]`. Generate a replacement with `cargo run -p local-core --example checkpoint_fixture` and review changes before replacing it.
 
 ## Relay transaction
 

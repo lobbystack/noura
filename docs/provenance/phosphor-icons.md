@@ -4,7 +4,7 @@ Noura's interface icons are Phosphor's. The legacy app drew the same icons throu
 
 ## Source
 
-- Package: `phosphor-svelte` 3.1.0 from npm, the version `bun.lock` pins for `apps/app`
+- Package: `phosphor-svelte` 3.1.0 from npm, the version the legacy app's `bun.lock` pinned
 - Integrity: `sha512-nldtxx+XCgNREvrb7O5xgDsefytXpSkPTx8Rnu3f2qQCUZLDV1rLxYSd2Jcwckuo9lZB1qKMqGR17P4UDC0PrA==`
 - Source path: `lib/<Name>.svelte`, the `<path d="...">` data of the `regular` and `fill` weights
 - Upstream project: https://github.com/phosphor-icons/core

@@ -1,5 +1,7 @@
 # PDF viewer dependencies
 
+> **Removed 2026-11-14.** The 2026-11-14 cleanup deleted the legacy app that bundled PDF.js. The desktop app draws PDFs with `hayro`; see `THIRD_PARTY_NOTICES.md`. The record stays as history.
+
 Reviewed by Codex on 2026-09-08 for the PDF viewing implementation.
 
 ## PDF.js

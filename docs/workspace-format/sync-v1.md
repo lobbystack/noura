@@ -1,12 +1,12 @@
 # Encrypted file synchronization, version 1
 
-> The legacy app implements this protocol. The Rust product replaces it with [sync protocol version 2](sync-v2.md), which supports none of its records or data.
+> The legacy app implemented this protocol until the 2026-11-14 cleanup deleted it. `crates/local-core` still holds the Rust side of it, which the desktop app doesn't call. The Rust product replaces it with [sync protocol version 2](sync-v2.md), which supports none of its records or data.
 
-This document defines the implemented file-change payload and its local durable journal. It does not change canonical Markdown serialization. Rust in `crates/local-core` owns serialization; the TypeScript workspace-schema package only validates the shared `fixtures/sync-v1.json` conformance cases.
+This document defines the implemented file-change payload and its local durable journal. It does not change canonical Markdown serialization. Rust in `crates/local-core` owns serialization and checks the shared `fixtures/sync-v1.json` conformance cases.
 
 ## Plugin switch
 
-Sync runs for a replica only while `sync` is in `enabled_plugins` in `.noura/workspace.yaml`. With it off, the native coordinator rejects workspace sync operations with `sync_plugin_disabled` and the files under `.noura/sync/` stay untouched. `.noura/sync/plugin.json` contains `{"version":1}`. The application writes it the first time it adds `sync` to the manifest of a replica that already had `.noura/sync/config.json`, and whenever it saves that configuration. With the marker present, the application never adds `sync` on its own again. See [the plugin runtime](../architecture/plugin-runtime.md#host-backed-plugins-sync).
+Sync runs for a replica only while `sync` is in `enabled_plugins` in `.noura/workspace.yaml`. With it off, the native coordinator rejects workspace sync operations with `sync_plugin_disabled` and the files under `.noura/sync/` stay untouched. `.noura/sync/plugin.json` contains `{"version":1}`. The application writes it the first time it adds `sync` to the manifest of a replica that already had `.noura/sync/config.json`, and whenever it saves that configuration. With the marker present, the application never adds `sync` on its own again.
 
 ## File changes
 
@@ -30,7 +30,7 @@ Managed Markdown uses its existing frontmatter object ID. Ordinary files use a s
 
 ## Encryption and signatures
 
-`packages/shared/src/sync.ts` and the native `EncryptedOperation` define the envelope. A fresh 12-byte nonce accompanies AES-256-GCM ciphertext and its tag. Additional authenticated data is the UTF-8 encoding of this JSON tuple:
+The native `EncryptedOperation` defines the envelope. A fresh 12-byte nonce accompanies AES-256-GCM ciphertext and its tag. Additional authenticated data is the UTF-8 encoding of this JSON tuple:
 
 ```text
 ["noura.sync.payload",version,workspaceId,objectId,deviceId,operationId,epoch,policyRevision]
@@ -94,7 +94,7 @@ Encrypted file payload version 2 retains the version 1 fields and adds `accepted
 
 Local resolution retains its signed ciphertext intent under `resolutions/` before writing canonical bytes. The canonical choice reaches disk before the journal publishes the resolution in its outbox and marks reviewed conflicts resolved. Restart repeats the same ciphertext instead of creating a second operation. Original incoming envelopes and conflict bytes remain available after resolution. Receipts bind retained conflict plaintext by its digest, allowing an authenticated resolution to clear only the reviewed branches on another replica.
 
-The shared conformance fixtures cover all three payload versions. Rust remains the serializer; TypeScript exposes validation only.
+The shared conformance fixtures cover all three payload versions, and Rust is the only serializer.
 
 Directory fsync is implemented on Unix. Equivalent crash-durability behavior on Windows still needs implementation and platform testing. Move/identity conflict resolution remains unfinished. Collaborative text updates are experimental, disabled by default, and remain release-gated; see [the collaboration protocol](collaboration.md).
 

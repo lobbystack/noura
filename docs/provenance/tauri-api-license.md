@@ -1,5 +1,7 @@
 # Tauri API release notice
 
+> **Removed 2026-11-14.** This notice shipped with the legacy server bundle, which the 2026-11-14 cleanup deleted with the rest of the legacy TypeScript app. The record stays as history.
+
 - Repository: https://github.com/tauri-apps/tauri
 - Commit: `6f6ab1207bb3923c2721fbc67d2fdb1c8deb0c7a` (`@tauri-apps/api-v2.11.1`)
 - Source path: `LICENSE_MIT`

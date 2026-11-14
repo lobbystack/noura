@@ -1,5 +1,7 @@
 # Browser key custody and encrypted synchronization
 
+> **Removed 2026-11-14.** This page describes the legacy hosted browser workspace, which the 2026-11-14 cleanup deleted with the rest of the legacy TypeScript app. The paths it names no longer exist. The Rust sync server and client follow [sync protocol version 2](../workspace-format/sync-v2.md) instead. The page stays as history.
+
 This document describes how the hosted browser client custodies workspace keys and takes part in noura encrypted synchronization. It started as an architecture decision record. Most of the design is now implemented, and each section says whether it describes implemented code or a proposal. Encrypted sync is experimental: noura doesn't offer it to users yet.
 
 Decision markers used throughout:
@@ -209,7 +211,7 @@ Behavior:
 
 ### App host wiring (`apps/app`)
 
-Browser sync runs only while the workspace's `sync` plugin is on. Settings shows the sync section and notes show synced attachments only then. A workspace that already has a binding in this browser turns the plugin on once; the marker `.noura-adapter/browser-sync/plugin/<workspace>.json` keeps a later “off” in place, and writing a binding also writes it. Like the other adapter files, the marker is never exported or synchronized. See [the plugin runtime](plugin-runtime.md#host-backed-plugins-sync).
+Browser sync runs only while the workspace's `sync` plugin is on. Settings shows the sync section and notes show synced attachments only then. A workspace that already has a binding in this browser turns the plugin on once; the marker `.noura-adapter/browser-sync/plugin/<workspace>.json` keeps a later “off” in place, and writing a binding also writes it. Like the other adapter files, the marker is never exported or synchronized.
 
 `packages/browser-sync-client` holds the controller that binds the packages above to the hosted app; `apps/app/src/lib/browser-sync.ts` only creates it. It reconciles **per object**, not through one shared sync object:
 

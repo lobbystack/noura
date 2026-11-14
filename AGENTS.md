@@ -28,9 +28,9 @@ A durable mutation succeeds only after the canonical file operation completes du
 - `sdk/typescript` is the only TypeScript in the product. It uses npm and Node because the `jco` toolchain requires them.
 - `apps/website` stays on SvelteKit and Bun until it moves to Zola. Use the [@svelte](plugin://svelte@svelte) plugin when you edit it.
 
-## Rewrite in progress
+## Rust rewrite
 
-Noura is moving to an all-Rust desktop app. Until the Rust app reaches parity, the legacy code stays as a read-only behavior reference: `apps/app`, `apps/server`, `apps/server-web`, `packages/*`, the TypeScript `plugins/*`, `src-tauri` and `crates/workspace-format-wasm`. Read it to learn how a feature behaves today, and build the replacement in the crates below.
+The all-Rust desktop app replaced the legacy TypeScript and Tauri app. The owner signed off on parity, and the 2026-11-14 cleanup deleted the legacy code. To check how the legacy app behaved, read it in the Git history before the commit that removed it.
 
 ## Code Ownership Boundaries
 

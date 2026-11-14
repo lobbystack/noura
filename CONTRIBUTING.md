@@ -49,10 +49,9 @@ sccache reads the size when its server starts, so run `sccache --stop-server` af
 
 Keep each responsibility where reviewers expect it:
 
-- Put business rules and canonical behavior in `crates/local-core` and `packages/*`, not in Svelte components or stores.
-- Call typed contracts from `apps/app`. Don’t call raw Tauri commands from components.
-- Define capability contracts in `packages/plugin-sdk`. Plugins must not import SQLite or Rust internals.
-- Follow the format in `docs/workspace-format/`. Rust owns parsing, validation, and deterministic serialization; TypeScript only validates.
+- Put business rules in `crates/app-core`, `crates/local-core`, or a plugin. Keep them out of `crates/app-ui`, which draws screens and calls only `app-core`.
+- Define plugin interfaces in the WIT under `crates/plugin-sdk/wit`. Plugins reach the workspace only through those interfaces, with the capabilities the user approved.
+- Follow the format in `docs/workspace-format/`. `crates/workspace-format` owns parsing, validation, and deterministic serialization.
 
 ## Respect licensing and provenance
 

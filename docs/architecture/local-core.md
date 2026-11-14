@@ -1,6 +1,6 @@
 # Local core architecture
 
-`crates/local-core` owns the durable workspace boundary. The Tauri host and standalone Model Context Protocol (MCP) server call the same services.
+`crates/local-core` owns the durable workspace boundary. The desktop app, through `crates/app-core`, and the standalone Model Context Protocol (MCP) server call the same services.
 
 ```text
 WorkspaceEngine
@@ -32,7 +32,7 @@ WorkspaceEngine
 
 `src/ai.rs` holds the AI provider and consent API. The `genai` adapter, stream operations, and input checks live in `src/ai/`.
 
-The desktop host in `src-tauri/src/lib.rs` holds the shared app state and `run()`. Its Tauri commands live in `src-tauri/src/commands/`, one module per domain, and call these engine methods.
+`crates/app-core` opens a `WorkspaceEngine` for each workspace and calls these engine methods for every screen. `crates/mcp-server` calls the same methods for MCP tools.
 
 ## Delete to the system trash
 
@@ -88,6 +88,6 @@ Calendar results sort by start, title, source ID, and property.
 
 ## Keep plugin state disposable
 
-Plugins and user interface code cannot access `IndexStore`. They use generic object, search, Calendar, event, command, and local-storage capabilities. First-party domains validate values before the engine serializes frontmatter.
+Plugins and interface code can't reach `IndexStore`. Plugins work through the `noura:plugin` interfaces, such as `workspace` and `objects`, with the capabilities you approved. The engine validates each value against the object type's schema before it serializes frontmatter.
 
-The [plugin runtime](plugin-runtime.md) activates first-party domains and enforces capabilities. It also reconciles active plugins with `.noura/workspace.yaml`. `plugin_state` IDs in the disposable index hold cache state only. Durable plugin data stays in workspace files.
+The [plugin runtime](plugin-runtime.md) starts the plugins `.noura/workspace.yaml` enables and checks each call against the capabilities you approved. Durable plugin data stays in workspace files. The index keeps a `plugin_state` table for cache state only, and no plugin interface reaches it yet.

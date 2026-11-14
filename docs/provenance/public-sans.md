@@ -4,7 +4,7 @@ Noura's interface font is Public Sans, the font the legacy app bundled. The Rust
 
 ## Source
 
-- Package: `@fontsource-variable/public-sans` 5.3.0 from npm, the version `bun.lock` pins for `apps/app`
+- Package: `@fontsource-variable/public-sans` 5.3.0 from npm, the version the legacy app's `bun.lock` pinned
 - Integrity: `sha512-AVfkmAt50BMXWpOO21FAntiJFKGX6xTc2dSL8dxtDteONe9IuRXJWGbs0EbG955vAMCq23ENeuopuW87cGWDSQ==`
 - Source path: `files/public-sans-{latin,latin-ext,vietnamese}-wght-{normal,italic}.woff2`, and `LICENSE`
 - Upstream project: https://github.com/uswds/public-sans

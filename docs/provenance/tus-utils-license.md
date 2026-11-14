@@ -1,5 +1,7 @@
 # Tus utilities license notice
 
+> **Removed 2026-11-14.** This notice shipped with the legacy server bundle, which the 2026-11-14 cleanup deleted with the rest of the legacy TypeScript app. The record stays as history.
+
 - Repository: https://github.com/tus/tus-node-server
 - Exact published `gitHead`: `7c1be0c6c24d246ed51a5c96ab4ef93a5788de12`
 - Package: `@tus/utils@0.7.1`, pinned transitively in `bun.lock`
