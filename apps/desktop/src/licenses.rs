@@ -41,12 +41,24 @@ pub fn carries_font_license(path: &Path) -> bool {
 }
 
 /// The folder of plugins that ship with this copy of Noura, `plugins`
-/// among its resources, one plugin per subfolder. Builds without one ship
-/// no plugins.
+/// among its resources, one plugin per subfolder. A debug build that runs
+/// from the repository's `target` folder, as `cargo run` does, falls back
+/// to the folder `scripts/build-shipped-plugins.sh` writes. Other builds
+/// without a `plugins` folder ship no plugins.
 pub fn bundled_plugins() -> Option<PathBuf> {
     let executable = std::env::current_exe().ok()?;
-    let folder = resources_dir(&executable, std::env::consts::OS)?.join("plugins");
-    folder.is_dir().then_some(folder)
+    let packaged = resources_dir(&executable, std::env::consts::OS)
+        .map(|resources| resources.join("plugins"))
+        .filter(|folder| folder.is_dir());
+    packaged.or_else(|| {
+        let desktop = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let target = desktop.join("../../target");
+        let from_cargo = target
+            .canonicalize()
+            .is_ok_and(|target| executable.starts_with(target));
+        let built = desktop.join("packaging/plugins");
+        (cfg!(debug_assertions) && from_cargo && built.is_dir()).then_some(built)
+    })
 }
 
 /// The smoke run's line about the plugins this copy ships: the name of

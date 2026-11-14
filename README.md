@@ -59,7 +59,7 @@ scripts/build-shipped-plugins.sh
 cargo run -p desktop
 ```
 
-`scripts/build-shipped-plugins.sh` writes the tasks, projects, calendar, and AI plugins to `apps/desktop/packaging/plugins`. Only an installed package loads that folder by itself. In an app you run with Cargo, open **Settings** > **Plugins**, choose **Install from folder…**, and pick each plugin's folder there.
+`scripts/build-shipped-plugins.sh` builds the Tasks, Projects, Calendar, and AI plugins into `apps/desktop/packaging/plugins`, and `cargo run` loads them from there.
 
 Create a workspace, add a note, and open the note's Markdown file in your editor.
 
