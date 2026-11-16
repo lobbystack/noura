@@ -139,10 +139,8 @@ impl Stopped {
             folders.push(probe);
         }
         folders.push(ai::with_ai(&mut app, &FakeProvider::new())?);
-        let id = app
-            .save_ai_provider(ai::provider("Local", "ollama", "llama3", None))
+        app.save_ai_provider(ai::provider("Local", "ollama", "llama3", None))
             .unwrap();
-        app.grant_ai_consent(&id).unwrap();
         support::settle(&mut app);
         app.close_window();
         drop(app);

@@ -18,8 +18,8 @@ use wasmtime::Engine;
 use wasmtime::component::Component;
 
 use crate::{
-    Capability, Command, Event, InboxSection, Limits, Node, Page, PluginError, PluginManifest,
-    Services, Tool, VirtualRow,
+    Capability, Command, Event, InboxSection, KernelEvent, Limits, Node, Page, PluginError,
+    PluginManifest, Services, Tool, VirtualRow,
     instance::{CallError, Grants, Owner, PluginInstance, Registration},
     object_types::next_instance,
     runtime::EpochTicker,
@@ -198,6 +198,13 @@ impl RunningPlugin {
     /// for no section.
     pub fn render_sidebar(&self, page: &str) -> Result<Vec<Node>, PluginError> {
         self.call(|instance| instance.render_sidebar(page))
+    }
+
+    /// Hand the plugin a kernel event: a shortcut, a menu bar entry, the
+    /// microphone or a recording. It counts as something you did, so the
+    /// caller marks it as an answer to you, as for a view's event.
+    pub fn handle_kernel_event(&self, event: &KernelEvent) -> Result<(), PluginError> {
+        self.call(|instance| instance.handle_kernel_event(event))
     }
 
     pub fn commands(&self) -> Result<Vec<Command>, PluginError> {

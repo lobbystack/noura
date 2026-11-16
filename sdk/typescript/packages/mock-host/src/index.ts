@@ -124,7 +124,14 @@ interface Interfaces {
 	'noura:plugin/clock': typeof import('noura:plugin/clock@0.1.0');
 	'noura:plugin/navigation': typeof import('noura:plugin/navigation@0.1.0');
 	'noura:plugin/ai': typeof import('noura:plugin/ai@0.1.0');
+	'noura:plugin/speech': typeof import('noura:plugin/speech@0.1.0');
+	'noura:plugin/global-shortcuts': typeof import('noura:plugin/global-shortcuts@0.1.0');
+	'noura:plugin/paste': typeof import('noura:plugin/paste@0.1.0');
+	'noura:plugin/menu-bar': typeof import('noura:plugin/menu-bar@0.1.0');
 }
+
+type MenuEntry = import('noura:plugin/menu-bar@0.1.0').Entry;
+type KernelEvent = import('noura:plugin/kernel-events@0.1.0').KernelEvent;
 
 type Chat = import('noura:plugin/ai@0.1.0').Chat;
 type Run = import('noura:plugin/ai@0.1.0').Run;
@@ -271,6 +278,14 @@ export class MockHost {
 	private readonly runs = new Map<string, Run>();
 	/** The plugin's tools as the model sees them, read when it starts. */
 	private modelTools: ToolDefinition[] = [];
+	/** What the plugin pasted, oldest first. */
+	readonly pastes: string[] = [];
+	/** What the plugin copied, oldest first. */
+	readonly copies: string[] = [];
+	/** The plugin's menu bar entries now. */
+	menuEntries: MenuEntry[] = [];
+	/** The dictation the plugin kept last. */
+	private lastDictation: string | undefined;
 
 	private constructor(
 		readonly manifest: Manifest,
@@ -399,6 +414,11 @@ export class MockHost {
 		const ai = () => {
 			if (!this.declares('ai')) {
 				refused('ai');
+			}
+		};
+		const speech = () => {
+			if (!this.declares('speech')) {
+				refused('speech');
 			}
 		};
 		// The mock host has no Brave Search key, so web calls fail closed as
@@ -554,8 +574,8 @@ export class MockHost {
 					this.openings.push({ kind: 'trash', id });
 				},
 			},
-			// The mock host asks no provider and nobody for consent: a run
-			// waits for consent until the plugin stops it, and writes nothing.
+			// The mock host asks no provider: a run streams until the plugin
+			// stops it, and writes nothing.
 			'noura:plugin/ai': {
 				providers: () => {
 					ai();
@@ -598,7 +618,7 @@ export class MockHost {
 						[...this.runs.values()].some(
 							(known) =>
 								known.chat === request.chat &&
-								known.status === 'waiting-for-consent',
+								known.status === 'streaming',
 						)
 					) {
 						throw {
@@ -610,7 +630,7 @@ export class MockHost {
 						id: `run_${randomUUID()}`,
 						chat: request.chat,
 						provider: request.provider,
-						status: 'waiting-for-consent',
+						status: 'streaming',
 						text: '',
 						messageWritten: false,
 						toolCalls: [],
@@ -670,7 +690,7 @@ export class MockHost {
 				stop: (id: string) => {
 					ai();
 					const found = run(id);
-					if (found.status === 'waiting-for-consent') {
+					if (found.status === 'streaming') {
 						found.status = 'cancelled';
 					}
 				},
@@ -680,6 +700,86 @@ export class MockHost {
 				},
 				webSearch: () => web(),
 				webFetch: () => web(),
+				// The mock host has no provider to complete with.
+				complete: () => {
+					if (!this.declares('ai')) {
+						throw {
+							tag: 'refused',
+							val: { tag: 'capability-not-declared', val: 'ai' },
+						};
+					}
+					throw {
+						tag: 'failed',
+						val: {
+							code: 'no_provider',
+							message: 'Add an AI provider in Settings first.',
+						},
+					};
+				},
+			},
+			// The mock host has no microphone and no model, so a recording
+			// can't start, and it keeps the last dictation in memory.
+			'noura:plugin/speech': {
+				models: () => (speech(), []),
+				microphones: () => (speech(), []),
+				readPreferences: () => (
+					speech(),
+					{ systemAudio: false }
+				),
+				setPreferences: () => {
+					speech();
+					throw { tag: 'failed', val: "The model isn't downloaded." };
+				},
+				start: () => {
+					speech();
+					throw { tag: 'failed', val: "The model isn't downloaded." };
+				},
+				readRecording: (id: string) => (speech(), notFound(id)),
+				stop: (id: string) => (speech(), notFound(id)),
+				cancel: (id: string) => (speech(), notFound(id)),
+				saveAudio: (id: string) => (speech(), notFound(id)),
+				keepAudio: (id: string) => (speech(), notFound(id)),
+				forget: (id: string) => (speech(), notFound(id)),
+				rememberDictation: (text: string) => {
+					speech();
+					this.lastDictation = text;
+				},
+				lastDictation: () => (speech(), this.lastDictation),
+			},
+			'noura:plugin/global-shortcuts': {
+				shortcuts: () => {
+					if (!this.declares('global-shortcuts')) {
+						refused('global-shortcuts');
+					}
+					return (this.capability('global-shortcuts')?.shortcuts ?? []).map(
+						(shortcut) => ({ ...shortcut, registered: true }),
+					);
+				},
+			},
+			'noura:plugin/paste': {
+				paste: (text: string) => {
+					if (!this.declares('paste')) {
+						refused('paste');
+					}
+					if (!this.acting) {
+						throw { tag: 'failed', val: 'Noura pastes only when you act.' };
+					}
+					this.pastes.push(text);
+				},
+				copy: (text: string) => {
+					if (!this.declares('paste')) {
+						refused('paste');
+					}
+					this.copies.push(text);
+				},
+			},
+			'noura:plugin/menu-bar': {
+				setEntries: (entries: MenuEntry[]) => {
+					if (!this.declares('menu-bar-items')) {
+						refused('menu-bar-items');
+					}
+					this.menuEntries = entries.map((entry) => ({ ...entry }));
+				},
 			},
 		};
 	}
@@ -734,6 +834,23 @@ export class MockHost {
 	): Promise<void> {
 		await this.page(page);
 		this.act(() => this.call('view', 'handleEvent', page, event));
+	}
+
+	/**
+	 * Hand the plugin a kernel event, as Noura does for a shortcut, a menu
+	 * bar entry, the microphone or a recording. It counts as something you
+	 * did. An event whose capability the manifest doesn't declare throws a
+	 * `CapabilityError`.
+	 */
+	async kernelEvent(event: KernelEvent): Promise<void> {
+		const needed =
+			event.tag === 'shortcut-pressed' || event.tag === 'shortcut-released'
+				? 'global-shortcuts'
+				: event.tag === 'menu-item-chosen'
+					? 'menu-bar-items'
+					: 'speech';
+		this.needs(needed);
+		this.act(() => this.call('kernelEvents', 'handleKernelEvent', event));
 	}
 
 	/** Press the button `node` in the page's view. */

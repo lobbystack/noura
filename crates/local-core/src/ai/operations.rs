@@ -13,14 +13,15 @@ pub(super) struct AiOperationRegistry {
 
 pub(super) struct ActiveAiOperation {
     cancellation: watch::Sender<()>,
-    consent_key: AiConsentKey,
+    /// The provider the request goes to.
+    provider_id: String,
 }
 
 impl AiOperationRegistry {
     pub(super) fn start(
         self: &Arc<Self>,
         operation_id: String,
-        consent_key: AiConsentKey,
+        provider_id: String,
     ) -> Result<AiOperation> {
         let (cancellation, receiver) = watch::channel(());
         let mut operations = self
@@ -31,7 +32,7 @@ impl AiOperationRegistry {
             Entry::Vacant(entry) => {
                 entry.insert(ActiveAiOperation {
                     cancellation,
-                    consent_key,
+                    provider_id,
                 });
             }
             Entry::Occupied(_) => {
@@ -67,19 +68,7 @@ impl AiOperationRegistry {
             .map_err(|_| operation_lock_error("ai_provider_remove"))?;
         Ok(operations
             .values()
-            .filter(|operation| operation.consent_key.provider_id == provider_id)
-            .filter(|operation| operation.cancellation.send(()).is_ok())
-            .count() as u32)
-    }
-
-    pub(super) fn cancel_matching(&self, consent_key: &AiConsentKey) -> Result<u32> {
-        let operations = self
-            .operations
-            .lock()
-            .map_err(|_| operation_lock_error("ai_consent_revoke"))?;
-        Ok(operations
-            .values()
-            .filter(|operation| &operation.consent_key == consent_key)
+            .filter(|operation| operation.provider_id == provider_id)
             .filter(|operation| operation.cancellation.send(()).is_ok())
             .count() as u32)
     }

@@ -30,7 +30,7 @@ WorkspaceEngine
 | `durable.rs` | Path normalization, atomic writes, and fsync helpers |
 | `sync.rs`, `sync/` | The encrypted sync replica, with collaborative documents in `sync/collaboration/` |
 
-`src/ai.rs` holds the AI provider and consent API. The `genai` adapter, stream operations, and input checks live in `src/ai/`.
+`src/ai.rs` holds the AI provider API. The `genai` adapter, stream operations, and input checks live in `src/ai/`.
 
 `crates/app-core` opens a `WorkspaceEngine` for each workspace and calls these engine methods for every screen. `crates/mcp-server` calls the same methods for MCP tools.
 

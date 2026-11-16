@@ -308,17 +308,19 @@ fn a_reference_must_lead_to_an_object_of_its_type() {
     let fixture = workspace();
     let schemas = tasks_schema();
     let create = |properties: serde_json::Value| {
-        fixture.engine.create_object_checked(
-            CreateObjectInput {
-                object_type: "task".into(),
-                title: "Mulch".into(),
-                body: String::new(),
-                relative_path: None,
-                properties: serde_json::from_value(properties).unwrap(),
-            },
-            &schemas,
-        )
-        .map_err(Box::new)
+        fixture
+            .engine
+            .create_object_checked(
+                CreateObjectInput {
+                    object_type: "task".into(),
+                    title: "Mulch".into(),
+                    body: String::new(),
+                    relative_path: None,
+                    properties: serde_json::from_value(properties).unwrap(),
+                },
+                &schemas,
+            )
+            .map_err(Box::new)
     };
 
     let refused = |result: Result<_, Box<local_core::CoreError>>| {

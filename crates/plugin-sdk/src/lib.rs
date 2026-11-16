@@ -48,14 +48,16 @@ wit_bindgen::generate!({
 #[doc(hidden)]
 pub mod __private {
     pub use crate::exports::noura::plugin::{
-        commands::Guest as Commands, inbox::Guest as Inbox, object_types::Guest as ObjectTypes,
-        settings::Guest as Settings, tools::Guest as Tools, view::Guest as View,
+        commands::Guest as Commands, inbox::Guest as Inbox, kernel_events::Guest as KernelEvents,
+        object_types::Guest as ObjectTypes, settings::Guest as Settings, tools::Guest as Tools,
+        view::Guest as View,
     };
     pub use wit_bindgen::rt;
 }
 
 pub use exports::noura::plugin::commands::Command;
 pub use exports::noura::plugin::inbox::Section as InboxSection;
+pub use exports::noura::plugin::kernel_events::{KernelEvent, MicrophoneUse};
 pub use exports::noura::plugin::object_types::ObjectType;
 pub use exports::noura::plugin::tools::Tool;
 pub use exports::noura::plugin::view::Page;
@@ -110,10 +112,10 @@ pub mod navigation {
 }
 
 /// Chats with the AI providers you set up in Settings, which Noura keeps
-/// as Markdown files in the workspace. Needs the `ai` capability. Noura
-/// asks you for consent before a request carries the workspace's content
-/// to a provider, and no call returns a provider's key. Once you add a
-/// Brave Search key and allow web search for the workspace, `web_search`
+/// as Markdown files in the workspace, and one-off prompts with
+/// `complete`. Needs the `ai` capability. Choosing a provider is your
+/// say-so, so Noura asks nothing before a request goes out, and no call
+/// returns a provider's key. Once you add a Brave Search key, `web_search`
 /// and `web_fetch` search the web and read pages for the model, and
 /// `web_ready` says whether they work. Each one answers a call the model
 /// made: a run of the plugin's completed with a `web_search` call for
@@ -144,11 +146,66 @@ pub mod navigation {
 /// ```
 pub mod ai {
     pub use crate::noura::plugin::ai::{
-        Chat, Failure, Message, MessageKind, MessageStatus, Provider, Request, Retention, Run,
-        RunStatus, ToolCall, ToolDefinition, ToolResult, WebError, WebPage, WebResult,
-        answer_tools, chats, create_chat, providers, read_chat, read_run, rename_chat, resume,
-        run_tools, send, set_retention, stop, web_fetch, web_ready, web_search, workspace_tools,
+        Chat, Completion, CompletionError, CompletionRequest, Failure, Message, MessageKind,
+        MessageStatus, Provider, Request, Retention, Run, RunStatus, ToolCall, ToolDefinition,
+        ToolResult, WebError, WebPage, WebResult, answer_tools, chats, complete, create_chat,
+        providers, read_chat, read_run, rename_chat, resume, run_tools, send, set_retention, stop,
+        web_fetch, web_ready, web_search, workspace_tools,
     };
+}
+
+/// Recording the microphone and the sound other apps play, and turning
+/// speech into text with models on this device. Needs the `speech`
+/// capability. Every call returns at once: Noura records and transcribes
+/// on its own threads, and the plugin reads the text as it comes.
+///
+/// ```no_run
+/// use plugin_sdk::speech::{self, RecordingOptions, RecordingState, Source};
+///
+/// let id = speech::start(&RecordingOptions {
+///     sources: vec![Source::Microphone, Source::SystemAudio],
+///     model: None,
+///     microphone: None,
+///     language: None,
+/// })
+/// .unwrap();
+/// // Later, as the plugin draws its views again or answers an event:
+/// let now = speech::read_recording(&id).unwrap();
+/// for segment in &now.segments {
+///     let _ = (&segment.channel, segment.start_ms, &segment.text);
+/// }
+/// speech::stop(&id).unwrap();
+/// // Once a `recording-changed` event says it finished:
+/// if speech::read_recording(&id).unwrap().state == RecordingState::Finished {
+///     speech::forget(&id).unwrap();
+/// }
+/// ```
+pub mod speech {
+    pub use crate::noura::plugin::speech::{
+        Channel, Microphone, Model, Preferences, Recording, RecordingOptions, RecordingState,
+        Segment, Source, cancel, forget, keep_audio, last_dictation, microphones, models,
+        read_preferences, read_recording, remember_dictation, save_audio, set_preferences, start,
+        stop,
+    };
+}
+
+/// The keyboard shortcuts the manifest declares under `global-shortcuts`,
+/// with the keys you set in Settings. Their presses and releases come to
+/// [`Plugin::handle_kernel_event`].
+pub mod global_shortcuts {
+    pub use crate::noura::plugin::global_shortcuts::{Shortcut, shortcuts};
+}
+
+/// Pasting text into the app you're typing in. Needs the `paste`
+/// capability, and works only in answer to something you did.
+pub mod paste {
+    pub use crate::noura::plugin::paste::{Method, copy, paste};
+}
+
+/// Entries in Noura's menu bar or tray menu. Needs the `menu-bar-items`
+/// capability. A chosen entry comes to [`Plugin::handle_kernel_event`].
+pub mod menu_bar {
+    pub use crate::noura::plugin::menu_bar::{Entry, EntryKind, set_entries};
 }
 
 /// What a plugin adds to Noura. Noura calls each method only when the
@@ -249,6 +306,10 @@ pub trait Plugin {
     fn call_tool(name: String, _arguments: String) -> Result<String, String> {
         Err(format!("This plugin has no tool {name}."))
     }
+
+    /// Answer a kernel event: a shortcut press or release, a menu bar
+    /// entry, the microphone or a recording. Each needs its capability.
+    fn handle_kernel_event(_event: KernelEvent) {}
 }
 
 /// Exports a type that implements [`Plugin`] as the plugin's component.
@@ -342,6 +403,12 @@ macro_rules! export {
                 }
                 fn handle_panel_event(object: ::std::string::String, event: $crate::Event) {
                     <$ty as $crate::Plugin>::handle_panel_event(object, event)
+                }
+            }
+
+            impl $crate::__private::KernelEvents for __NouraExports {
+                fn handle_kernel_event(event: $crate::KernelEvent) {
+                    <$ty as $crate::Plugin>::handle_kernel_event(event)
                 }
             }
 

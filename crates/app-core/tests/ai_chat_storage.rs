@@ -75,8 +75,8 @@ fn fixture_with(files: &[(String, Vec<u8>)]) -> Fixture {
     Fixture::new(&borrowed)
 }
 
-/// The app on `fixture` with the AI plugin on, a provider set up and
-/// consented, and the fake provider it talks to.
+/// The app on `fixture` with the AI plugin on, a provider set up
+/// and the fake provider it talks to.
 fn open(
     fixture: &Fixture,
     system: &Arc<FakeSystem>,
@@ -87,7 +87,6 @@ fn open(
     let id = app
         .save_ai_provider(ai::provider("Local", "ollama", "llama3", None))
         .unwrap();
-    app.grant_ai_consent(&id).unwrap();
     support::settle(&mut app);
     Some((app, provider, id, plugin))
 }

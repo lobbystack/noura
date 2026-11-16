@@ -13,8 +13,8 @@ use std::{
 
 use plugin_host::{
     AiChat, AiChats, AiFailure, AiMessage, AiProvider, AiRequest, AiRetention, AiRun, AiRunStatus,
-    AiToolCall, AiToolDefinition, AiToolResult, AiWebPage, AiWebResult, Capability, ObjectTypes,
-    RunningPlugin, ServiceError, Services, read_manifest,
+    AiToolCall, AiToolDefinition, AiToolResult, AiWebPage, AiWebResult, Capability, Limits,
+    ObjectTypes, RunningPlugin, ServiceError, Services, read_manifest,
 };
 use serde_json::Value;
 use support::plugins::{self, FakeObjects};
@@ -67,6 +67,27 @@ impl FakeAi {
 }
 
 impl AiChats for FakeAi {
+    fn complete(
+        &self,
+        request: plugin_host::AiCompletionRequest,
+    ) -> Result<plugin_host::AiCompletion, AiFailure> {
+        self.record(format!(
+            "complete {:?} {:?} {} {}",
+            request.provider, request.instructions, request.json, request.prompt
+        ));
+        if request.json {
+            return Err(AiFailure {
+                code: "invalid_json".to_owned(),
+                message: "The answer wasn't JSON.".to_owned(),
+            });
+        }
+        Ok(plugin_host::AiCompletion {
+            provider: "local".to_owned(),
+            model: "llama3".to_owned(),
+            text: format!("echoed {}", request.prompt),
+        })
+    }
+
     fn providers(&self) -> Result<Vec<AiProvider>, ServiceError> {
         self.record("providers");
         Ok(vec![AiProvider {
@@ -643,4 +664,61 @@ fn every_valid_chat_conformance_fixture_fits_the_ai_plugins_schemas() {
             }
         }
     }
+}
+
+/// `complete` reaches the AI service with the plugin's request and writes
+/// no chat; without `ai` it reaches nothing.
+#[test]
+fn complete_answers_a_prompt_without_a_chat_and_needs_ai() {
+    let Some(component) = plugins::built("probe_plugin") else {
+        return;
+    };
+    let ai = Arc::new(FakeAi::default());
+    let service: Arc<dyn AiChats> = ai.clone();
+    let (plugin, _folders) = plugins::start(
+        "probe",
+        &component,
+        &["name = \"views\"", "name = \"ai\""],
+        Services {
+            ai: Some(service.clone()),
+            ..Services::default()
+        },
+        Limits::default(),
+    );
+
+    assert_eq!(
+        lines(&plugin, "ai:complete:Summarize the call"),
+        ["completion local llama3 echoed Summarize the call"]
+    );
+    assert_eq!(
+        lines(&plugin, "ai:complete-json:List the action items"),
+        ["completion-failed invalid_json The answer wasn't JSON."]
+    );
+    assert_eq!(
+        lines(&plugin, "ai:complete:   "),
+        ["completion-failed empty_prompt The prompt is empty."]
+    );
+    assert_eq!(
+        ai.calls(),
+        [
+            "complete None Some(\"Answer briefly.\") false Summarize the call",
+            "complete None Some(\"Answer briefly.\") true List the action items",
+        ]
+    );
+
+    let (without, _folders) = plugins::start(
+        "probe",
+        &component,
+        &["name = \"views\""],
+        Services {
+            ai: Some(service),
+            ..Services::default()
+        },
+        Limits::default(),
+    );
+    assert_eq!(
+        lines(&without, "ai:complete:Summarize the call"),
+        ["error capability-not-declared ai"]
+    );
+    assert_eq!(ai.calls().len(), 2);
 }

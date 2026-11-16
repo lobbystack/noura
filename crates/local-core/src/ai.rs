@@ -21,12 +21,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
 use ts_rs::TS;
 
-use crate::{
-    AiConsentDataCategory, AiConsentGrant, AiConsentGrantInput, AiConsentReadInput,
-    AiConsentRevokeInput, AiConsentRevokeOutcome, CredentialStore, SystemCredentials,
-    consent::{AiConsentKey, AiConsentStore, consent_key},
-};
 use crate::{CoreError, ErrorCategory, Result};
+use crate::{CredentialStore, SystemCredentials};
 
 mod genai_streamer;
 mod operations;
@@ -134,9 +130,6 @@ pub struct AiStreamInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub tools: Option<Vec<AiToolDefinition>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub policy_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
@@ -233,24 +226,21 @@ pub struct AiStreamOperation {
 pub struct AiFoundation {
     config_path: PathBuf,
     providers: Mutex<Vec<AiProviderConfig>>,
-    consents: AiConsentStore,
     credentials: Arc<dyn CredentialStore>,
     stream_gate: Mutex<()>,
     operations: Arc<AiOperationRegistry>,
 }
 
 impl AiFoundation {
-    /// Open the provider settings at `config_path` and the consents at
-    /// `consent_path`, both on this device, with keys in the operating
-    /// system's credential store.
-    pub fn open(config_path: impl AsRef<Path>, consent_path: impl AsRef<Path>) -> Result<Self> {
-        Self::open_with(config_path, consent_path, Arc::new(SystemCredentials))
+    /// Open the provider settings at `config_path`, on this device, with
+    /// keys in the operating system's credential store.
+    pub fn open(config_path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with(config_path, Arc::new(SystemCredentials))
     }
 
     /// [`AiFoundation::open`] with keys in `credentials`.
     pub fn open_with(
         config_path: impl AsRef<Path>,
-        consent_path: impl AsRef<Path>,
         credentials: Arc<dyn CredentialStore>,
     ) -> Result<Self> {
         let config_path = config_path.as_ref().to_owned();
@@ -272,7 +262,6 @@ impl AiFoundation {
         Ok(Self {
             config_path,
             providers: Mutex::new(providers),
-            consents: AiConsentStore::open(consent_path)?,
             credentials,
             stream_gate: Mutex::new(()),
             operations: Arc::new(AiOperationRegistry {
@@ -292,9 +281,8 @@ impl AiFoundation {
     pub fn save_provider(&self, provider: AiProviderConfig) -> Result<()> {
         validate_provider(&provider, "ai_provider_save")?;
         ensure_secure_endpoint(&provider, "ai_provider_save")?;
-        // A stream must use either the provider configuration that consented to
-        // it or the replacement configuration, never a snapshot raced with a
-        // provider update. The same gate also protects consent revocation.
+        // A stream must use either the provider configuration it started
+        // with or the replacement, never a snapshot raced with an update.
         let _gate = self
             .stream_gate
             .lock()
@@ -381,7 +369,7 @@ impl AiFoundation {
     }
 
     /// Remove the provider `provider_id` from the settings, with its key.
-    /// Its running requests stop, and its consents lapse.
+    /// Its running requests stop.
     pub fn remove_provider(&self, provider_id: &str) -> Result<()> {
         let _gate = self
             .stream_gate
@@ -394,9 +382,6 @@ impl AiFoundation {
         let Some(removed) = values.iter().find(|value| value.id == provider_id).cloned() else {
             return Ok(());
         };
-        // The consents go first: a provider added again under the same ID
-        // asks again, even when the settings write below fails.
-        self.consents.revoke_provider(provider_id)?;
         let next: Vec<AiProviderConfig> = values
             .iter()
             .filter(|value| value.id != provider_id)
@@ -412,99 +397,23 @@ impl AiFoundation {
         Ok(())
     }
 
-    pub fn read_consent(
-        &self,
-        workspace_id: &str,
-        input: AiConsentReadInput,
-    ) -> Result<Option<AiConsentGrant>> {
-        let Some(provider) = self.configured_provider(&input.provider_id)? else {
-            return Ok(None);
-        };
-        self.consents.read(&consent_key(
-            workspace_id,
-            input.provider_id,
-            input.policy_version,
-            provider_fingerprint(&provider),
-        ))
-    }
-
-    pub fn grant_consent(
-        &self,
-        workspace_id: &str,
-        input: AiConsentGrantInput,
-    ) -> Result<AiConsentGrant> {
-        let _gate = self
-            .stream_gate
-            .lock()
-            .map_err(|_| operation_lock_error("ai_consent_grant"))?;
-        let provider = self.provider(&input.provider_id, "ai_consent_grant")?;
-        let key = consent_key(
-            workspace_id,
-            input.provider_id.clone(),
-            input.policy_version.clone(),
-            provider_fingerprint(&provider),
-        );
-        self.consents.grant(key, input)
-    }
-
-    pub fn revoke_consent(
-        &self,
-        workspace_id: &str,
-        input: AiConsentRevokeInput,
-    ) -> Result<AiConsentRevokeOutcome> {
-        let _gate = self
-            .stream_gate
-            .lock()
-            .map_err(|_| operation_lock_error("ai_consent_revoke"))?;
-        let keys = self.consents.revoke_matching(
-            workspace_id,
-            &input.provider_id,
-            &input.policy_version,
-        )?;
-        let revoked = !keys.is_empty();
-        let cancelled_operations = keys
-            .iter()
-            .map(|key| self.operations.cancel_matching(key))
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .sum();
-        Ok(AiConsentRevokeOutcome {
-            provider_id: input.provider_id,
-            policy_version: input.policy_version,
-            revoked,
-            cancelled_operations,
-        })
-    }
-
-    pub fn start_stream(
-        &self,
-        workspace_id: &str,
-        input: AiStreamInput,
-    ) -> Result<AiStreamOperation> {
-        self.start_stream_with(workspace_id, input, Arc::new(GenAiStreamer))
+    /// Ask the provider `input` names and stream its answer. Choosing the
+    /// provider is your say-so: nothing asks before the request goes out.
+    pub fn start_stream(&self, input: AiStreamInput) -> Result<AiStreamOperation> {
+        self.start_stream_with(input, Arc::new(GenAiStreamer))
     }
 
     pub fn start_stream_with<S: AiStreamer + ?Sized>(
         &self,
-        workspace_id: &str,
         input: AiStreamInput,
         streamer: Arc<S>,
     ) -> Result<AiStreamOperation> {
         validate_operation_id(&input.operation_id, "ai_stream")?;
         validate_transport_messages(&input.messages, "ai_stream")?;
         validate_tools(input.tools.as_deref().unwrap_or_default(), "ai_stream")?;
-        let policy_version = input.policy_version.as_deref().ok_or_else(|| {
-            CoreError::new(
-                "ai_consent_required",
-                ErrorCategory::Permission,
-                "Explicit consent is required before sending workspace content to an AI provider",
-                "ai_stream",
-            )
-        })?;
-        // Keep provider lookup, consent verification, and operation registration
-        // in the same critical section as provider updates and revocations.
-        // Otherwise a replacement endpoint could race this request after its
-        // consent fingerprint had been selected.
+        // Keep provider lookup and operation registration in the same
+        // critical section as provider updates and removals, so a removed
+        // provider can't race a request.
         let _gate = self
             .stream_gate
             .lock()
@@ -518,27 +427,6 @@ impl AiFoundation {
                 "ai_stream",
             ));
         }
-        let consent_key = consent_key(
-            workspace_id,
-            input.model.provider_id.clone(),
-            policy_version.into(),
-            provider_fingerprint(&provider),
-        );
-        let consent = self.consents.read(&consent_key)?;
-        if !matches!(
-            consent,
-            Some(AiConsentGrant {
-                data_category: AiConsentDataCategory::WorkspaceContent,
-                ..
-            })
-        ) {
-            return Err(CoreError::new(
-                "ai_consent_required",
-                ErrorCategory::Permission,
-                "Explicit consent is required before sending workspace content to an AI provider",
-                "ai_stream",
-            ));
-        }
         let credential = provider
             .credential_ref
             .as_ref()
@@ -546,7 +434,7 @@ impl AiFoundation {
             .transpose()?;
         let operation = self
             .operations
-            .start(input.operation_id.clone(), consent_key)?;
+            .start(input.operation_id.clone(), provider.id.clone())?;
         let (sender, receiver) = mpsc::channel(STREAM_BUFFER_CAPACITY);
         let model = input.model;
         tokio::spawn(run_stream(
@@ -679,12 +567,8 @@ mod tests {
     fn keys_go_to_the_credential_store_and_settings_keep_a_reference() {
         let root = tempdir().unwrap();
         let credentials = Arc::new(crate::MemoryCredentials::new());
-        let ai = AiFoundation::open_with(
-            root.path().join("providers.json"),
-            root.path().join("consents.json"),
-            credentials.clone(),
-        )
-        .unwrap();
+        let ai = AiFoundation::open_with(root.path().join("providers.json"), credentials.clone())
+            .unwrap();
         ai.save_provider(enabled_provider()).unwrap();
         let first = ai.set_credential("test", "sk-first-secret").unwrap();
         let second = ai.set_credential("test", "sk-second-secret").unwrap();
@@ -702,50 +586,6 @@ mod tests {
         ai.remove_provider("test").unwrap();
         assert!(credentials.secrets().is_empty());
         assert!(ai.list_providers().unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_removed_provider_takes_its_consents_along_so_adding_it_again_asks_again() {
-        let root = tempdir().unwrap();
-        let open = || {
-            AiFoundation::open_with(
-                root.path().join("providers.json"),
-                root.path().join("consents.json"),
-                Arc::new(crate::MemoryCredentials::new()),
-            )
-            .unwrap()
-        };
-        let ai = open();
-        ai.save_provider(enabled_provider()).unwrap();
-        let read = || AiConsentReadInput {
-            provider_id: "test".into(),
-            policy_version: "2026-09".into(),
-        };
-        const A: &str = "workspace_01jbcdefghjkmnpqrstvwxyz0a";
-        const B: &str = "workspace_01jbcdefghjkmnpqrstvwxyz0b";
-        for workspace in [A, B] {
-            ai.grant_consent(
-                workspace,
-                AiConsentGrantInput {
-                    provider_id: "test".into(),
-                    policy_version: "2026-09".into(),
-                    data_category: AiConsentDataCategory::WorkspaceContent,
-                },
-            )
-            .unwrap();
-            assert!(ai.read_consent(workspace, read()).unwrap().is_some());
-        }
-
-        ai.remove_provider("test").unwrap();
-        ai.save_provider(enabled_provider()).unwrap();
-
-        for workspace in [A, B] {
-            assert_eq!(ai.read_consent(workspace, read()).unwrap(), None);
-        }
-        let consents = std::fs::read_to_string(root.path().join("consents.json")).unwrap();
-        assert!(!consents.contains(A), "{consents}");
-        drop(ai);
-        assert_eq!(open().read_consent(A, read()).unwrap(), None);
     }
 
     #[test]
@@ -793,22 +633,7 @@ mod tests {
                 description: Some("Read a workspace file".into()),
                 input_schema: serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}}),
             }]),
-            policy_version: Some("2026-09".into()),
         }
-    }
-
-    const WORKSPACE_ID: &str = "workspace_01j00000000000000000000000";
-
-    fn grant_workspace_content(ai: &AiFoundation) {
-        ai.grant_consent(
-            WORKSPACE_ID,
-            AiConsentGrantInput {
-                provider_id: "test".into(),
-                policy_version: "2026-09".into(),
-                data_category: AiConsentDataCategory::WorkspaceContent,
-            },
-        )
-        .unwrap();
     }
 
     #[tokio::test]
@@ -816,15 +641,12 @@ mod tests {
         let registry = Arc::new(AiOperationRegistry {
             operations: Mutex::new(HashMap::new()),
         });
-        let consent = AiConsentKey {
-            workspace_id: WORKSPACE_ID.into(),
-            provider_id: "test".into(),
-            policy_version: "2026-09".into(),
-            provider_fingerprint: "a".repeat(64),
-        };
-        let mut original = registry.start("operation".into(), consent.clone()).unwrap();
+        let provider = "test".to_owned();
+        let mut original = registry
+            .start("operation".into(), provider.clone())
+            .unwrap();
 
-        let Err(error) = registry.start("operation".into(), consent.clone()) else {
+        let Err(error) = registry.start("operation".into(), provider.clone()) else {
             panic!("a duplicate operation should be rejected");
         };
         assert_eq!(error.code, "ai_operation_in_progress");
@@ -833,22 +655,17 @@ mod tests {
         assert!(original.cancellation.changed().await.is_ok());
 
         drop(original);
-        let replacement = registry.start("operation".into(), consent).unwrap();
+        let replacement = registry.start("operation".into(), provider).unwrap();
         drop(replacement);
     }
 
     #[tokio::test]
     async fn stream_frames_are_ordered_and_include_a_terminal_summary() {
         let root = tempdir().unwrap();
-        let ai = AiFoundation::open(
-            root.path().join("providers.json"),
-            root.path().join("consents.json"),
-        )
-        .unwrap();
+        let ai = AiFoundation::open(root.path().join("providers.json")).unwrap();
         ai.save_provider(enabled_provider()).unwrap();
-        grant_workspace_content(&ai);
         let mut operation = ai
-            .start_stream_with(WORKSPACE_ID, stream_input(), Arc::new(MockStreamer))
+            .start_stream_with(stream_input(), Arc::new(MockStreamer))
             .unwrap();
         let mut frames = Vec::new();
         while let Some(frame) = operation.receiver.recv().await {
@@ -875,17 +692,12 @@ mod tests {
     #[tokio::test]
     async fn cancellation_stops_an_active_stream() {
         let root = tempdir().unwrap();
-        let ai = AiFoundation::open(
-            root.path().join("providers.json"),
-            root.path().join("consents.json"),
-        )
-        .unwrap();
+        let ai = AiFoundation::open(root.path().join("providers.json")).unwrap();
         ai.save_provider(enabled_provider()).unwrap();
-        grant_workspace_content(&ai);
         let input = stream_input();
         let operation_id = input.operation_id.clone();
         let mut operation = ai
-            .start_stream_with(WORKSPACE_ID, input, Arc::new(PendingMockStreamer))
+            .start_stream_with(input, Arc::new(PendingMockStreamer))
             .unwrap();
         let first = operation.receiver.recv().await.unwrap();
         assert!(matches!(first.event, AiStreamEvent::Started { .. }));
@@ -902,16 +714,11 @@ mod tests {
     #[tokio::test]
     async fn a_provider_stream_must_emit_an_explicit_terminal_event() {
         let root = tempdir().unwrap();
-        let ai = AiFoundation::open(
-            root.path().join("providers.json"),
-            root.path().join("consents.json"),
-        )
-        .unwrap();
+        let ai = AiFoundation::open(root.path().join("providers.json")).unwrap();
         ai.save_provider(enabled_provider()).unwrap();
-        grant_workspace_content(&ai);
 
         let mut operation = ai
-            .start_stream_with(WORKSPACE_ID, stream_input(), Arc::new(ClosedMockStreamer))
+            .start_stream_with(stream_input(), Arc::new(ClosedMockStreamer))
             .unwrap();
         assert!(matches!(
             operation.receiver.recv().await.unwrap().event,
@@ -928,11 +735,7 @@ mod tests {
     #[test]
     fn unknown_provider_kind_is_rejected_instead_of_falling_back() {
         let root = tempdir().unwrap();
-        let ai = AiFoundation::open(
-            root.path().join("providers.json"),
-            root.path().join("consents.json"),
-        )
-        .unwrap();
+        let ai = AiFoundation::open(root.path().join("providers.json")).unwrap();
         let mut provider = enabled_provider();
         provider.kind = "not-a-provider".into();
         let error = ai.save_provider(provider).unwrap_err();
@@ -944,107 +747,31 @@ mod tests {
     fn provider_settings_reopen_durably_and_reject_duplicate_ids() {
         let root = tempdir().unwrap();
         let providers_path = root.path().join("providers.json");
-        let consents_path = root.path().join("consents.json");
-        let ai = AiFoundation::open(&providers_path, &consents_path).unwrap();
+        let ai = AiFoundation::open(&providers_path).unwrap();
         ai.save_provider(enabled_provider()).unwrap();
         drop(ai);
 
-        let reopened = AiFoundation::open(&providers_path, &consents_path).unwrap();
+        let reopened = AiFoundation::open(&providers_path).unwrap();
         assert_eq!(reopened.list_providers().unwrap(), vec![enabled_provider()]);
         drop(reopened);
 
         let duplicate = vec![enabled_provider(), enabled_provider()];
         std::fs::write(&providers_path, serde_json::to_vec(&duplicate).unwrap()).unwrap();
-        let Err(error) = AiFoundation::open(&providers_path, &consents_path) else {
+        let Err(error) = AiFoundation::open(&providers_path) else {
             panic!("duplicate provider IDs must be rejected");
         };
         assert_eq!(error.code, "provider_config_invalid");
     }
 
     #[test]
-    fn stream_requires_matching_workspace_provider_and_policy_consent() {
-        let root = tempdir().unwrap();
-        let ai = AiFoundation::open(
-            root.path().join("providers.json"),
-            root.path().join("consents.json"),
-        )
-        .unwrap();
-        ai.save_provider(enabled_provider()).unwrap();
-
-        let Err(error) = ai.start_stream_with(WORKSPACE_ID, stream_input(), Arc::new(MockStreamer))
-        else {
-            panic!("a stream without consent should be rejected");
-        };
-
-        assert_eq!(error.code, "ai_consent_required");
-    }
-
-    #[test]
-    fn provider_configuration_changes_make_existing_consent_ineffective() {
-        let root = tempdir().unwrap();
-        let ai = AiFoundation::open(
-            root.path().join("providers.json"),
-            root.path().join("consents.json"),
-        )
-        .unwrap();
-        ai.save_provider(enabled_provider()).unwrap();
-        grant_workspace_content(&ai);
-
-        let mut changed = enabled_provider();
-        changed.endpoint = Some("https://replacement.example.test/v1/".into());
-        ai.save_provider(changed).unwrap();
-
-        assert!(
-            ai.read_consent(
-                WORKSPACE_ID,
-                AiConsentReadInput {
-                    provider_id: "test".into(),
-                    policy_version: "2026-09".into(),
-                },
-            )
-            .unwrap()
-            .is_none()
-        );
-        let Err(error) = ai.start_stream_with(WORKSPACE_ID, stream_input(), Arc::new(MockStreamer))
-        else {
-            panic!("a consent for a different provider target must not be effective");
-        };
-        assert_eq!(error.code, "ai_consent_required");
-    }
-
-    #[test]
-    fn provider_consent_fingerprint_includes_kind_endpoint_and_model() {
-        let provider = enabled_provider();
-        let fingerprint = provider_fingerprint(&provider);
-
-        let mut changed_kind = provider.clone();
-        changed_kind.kind = "anthropic".into();
-        assert_ne!(fingerprint, provider_fingerprint(&changed_kind));
-
-        let mut changed_endpoint = provider.clone();
-        changed_endpoint.endpoint = Some("https://other.example.test/v1/".into());
-        assert_ne!(fingerprint, provider_fingerprint(&changed_endpoint));
-
-        let mut changed_model = provider;
-        changed_model.model = "other-model".into();
-        assert_ne!(fingerprint, provider_fingerprint(&changed_model));
-    }
-
-    #[test]
     fn stream_rejects_invalid_tool_definitions_and_history_roles() {
         let root = tempdir().unwrap();
-        let ai = AiFoundation::open(
-            root.path().join("providers.json"),
-            root.path().join("consents.json"),
-        )
-        .unwrap();
+        let ai = AiFoundation::open(root.path().join("providers.json")).unwrap();
         ai.save_provider(enabled_provider()).unwrap();
-        grant_workspace_content(&ai);
 
         let mut invalid_tool = stream_input();
         invalid_tool.tools.as_mut().unwrap()[0].input_schema = serde_json::json!("not a schema");
-        let Err(error) = ai.start_stream_with(WORKSPACE_ID, invalid_tool, Arc::new(MockStreamer))
-        else {
+        let Err(error) = ai.start_stream_with(invalid_tool, Arc::new(MockStreamer)) else {
             panic!("a non-schema tool definition must be rejected");
         };
         assert_eq!(error.code, "tool_definition_invalid");
@@ -1057,58 +784,40 @@ mod tests {
 
         let mut invalid_history = stream_input();
         invalid_history.messages[0].role = "tool".into();
-        let Err(error) =
-            ai.start_stream_with(WORKSPACE_ID, invalid_history, Arc::new(MockStreamer))
-        else {
+        let Err(error) = ai.start_stream_with(invalid_history, Arc::new(MockStreamer)) else {
             panic!("tool history must contain tool results");
         };
         assert_eq!(error.code, "message_content_invalid");
     }
 
     #[tokio::test]
-    async fn revoking_consent_cancels_matching_active_streams_and_blocks_new_ones() {
+    async fn a_stream_goes_out_without_asking_and_removing_its_provider_stops_it() {
         let root = tempdir().unwrap();
-        let ai = AiFoundation::open(
-            root.path().join("providers.json"),
-            root.path().join("consents.json"),
-        )
-        .unwrap();
+        let ai = AiFoundation::open(root.path().join("providers.json")).unwrap();
         ai.save_provider(enabled_provider()).unwrap();
-        grant_workspace_content(&ai);
         let input = stream_input();
         let mut operation = ai
-            .start_stream_with(WORKSPACE_ID, input.clone(), Arc::new(PendingMockStreamer))
+            .start_stream_with(input.clone(), Arc::new(PendingMockStreamer))
             .unwrap();
         assert!(matches!(
             operation.receiver.recv().await.unwrap().event,
             AiStreamEvent::Started { .. }
         ));
-        let Err(error) = ai.start_stream_with(WORKSPACE_ID, input, Arc::new(PendingMockStreamer))
-        else {
+        let Err(error) = ai.start_stream_with(input, Arc::new(PendingMockStreamer)) else {
             panic!("a duplicate operation should be rejected");
         };
         assert_eq!(error.code, "ai_operation_in_progress");
 
-        let outcome = ai
-            .revoke_consent(
-                WORKSPACE_ID,
-                AiConsentRevokeInput {
-                    provider_id: "test".into(),
-                    policy_version: "2026-09".into(),
-                },
-            )
-            .unwrap();
+        ai.remove_provider("test").unwrap();
 
-        assert_eq!(outcome.cancelled_operations, 1);
         assert!(matches!(
             operation.receiver.recv().await.unwrap().event,
             AiStreamEvent::Cancelled
         ));
-        let Err(error) = ai.start_stream_with(WORKSPACE_ID, stream_input(), Arc::new(MockStreamer))
-        else {
-            panic!("a stream after revocation should be rejected");
+        let Err(error) = ai.start_stream_with(stream_input(), Arc::new(MockStreamer)) else {
+            panic!("a stream to a removed provider should be rejected");
         };
-        assert_eq!(error.code, "ai_consent_required");
+        assert_eq!(error.code, "provider_not_found");
     }
 
     #[test]
@@ -1126,12 +835,6 @@ mod tests {
         AiCancelOutcome::export_all_to(bindings)?;
         AiUsage::export_all_to(bindings)?;
         AiStopReason::export_all_to(bindings)?;
-        AiConsentDataCategory::export_all_to(bindings)?;
-        AiConsentGrantInput::export_all_to(bindings)?;
-        AiConsentReadInput::export_all_to(bindings)?;
-        AiConsentRevokeInput::export_all_to(bindings)?;
-        AiConsentGrant::export_all_to(bindings)?;
-        AiConsentRevokeOutcome::export_all_to(bindings)?;
         Ok(())
     }
 }

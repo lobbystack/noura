@@ -1,22 +1,19 @@
-//! The Web search section of Settings and Noura's web consent prompt
-//! through AccessKit: the key field hides what you type and Settings
-//! never shows the key, and the prompt names Brave Search, says what
-//! leaves the computer, starts on Deny and denies on Escape.
+//! The Web search section of Settings through AccessKit: the key field
+//! hides what you type, Settings never shows the key, and no prompt asks
+//! per workspace.
 
 mod support;
 
 use app_core::Platform;
-use egui::{Key, accesskit::Role};
+use egui::accesskit::Role;
 use egui_kittest::kittest::{By, NodeT, Queryable};
 use support::{
     FakePicker, FakeSystem, create_workspace, harness_with,
-    kit::{Ui, focused, press, run},
+    kit::{Ui, run},
     settle,
 };
 
 const KEY: &str = "BSA-ui-test-0123456789";
-
-const TITLE: &str = "Let the AI search the web with Brave Search?";
 
 /// The text of every label under the group `group`.
 fn labels_in(harness: &Ui, group: &str) -> Vec<String> {
@@ -35,7 +32,7 @@ fn all_labels(harness: &Ui) -> Vec<String> {
 }
 
 #[test]
-fn the_key_field_hides_the_key_and_noura_s_prompt_names_brave_search_and_what_leaves() {
+fn the_key_field_hides_the_key_and_no_prompt_asks_per_workspace() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
@@ -73,73 +70,19 @@ fn the_key_field_hides_the_key_and_noura_s_prompt_names_brave_search_and_what_le
             .all(|label| !label.contains(KEY))
     );
 
-    // Allowing opens Noura's prompt, which starts on Deny.
-    assert!(labels_in(&harness, "This workspace").contains(&"Not allowed in Garden".to_owned()));
-    // Web search sits under the providers in the AI section.
-    harness
-        .get_by_role_and_label(Role::Group, "This workspace")
-        .get_by_role_and_label(Role::Button, "Allow")
-        .scroll_to_me();
-    run(&mut harness);
-    harness
-        .get_by_role_and_label(Role::Group, "This workspace")
-        .get_by_role_and_label(Role::Button, "Allow")
-        .click();
-    run(&mut harness);
-    let dialog = harness.get_by_role_and_label(Role::AlertDialog, TITLE);
-    dialog.get_by_role_and_label(Role::Button, "Allow");
-    let said: Vec<String> = dialog
-        .query_all(By::new().role(Role::Label))
-        .filter_map(|node| node.accesskit_node().value())
-        .collect();
-    assert!(
-        said.contains(
-            &"In Garden, search queries go to Brave Search, and page addresses go to the sites \
-              that host them."
-                .to_owned()
-        ),
-        "{said:?}"
-    );
-    assert!(
-        said.contains(&"Plugins you let use AI can search the web in Garden too.".to_owned()),
-        "{said:?}"
-    );
-    assert_eq!(focused(&harness).as_deref(), Some("Deny"));
-
-    // Escape counts as Deny.
-    press(&mut harness, Key::Escape);
+    // Adding the key is your say-so: no section or prompt asks per
+    // workspace.
     assert!(
         harness
-            .query_by_role_and_label(Role::AlertDialog, TITLE)
+            .query_by_role_and_label(Role::Group, "This workspace")
             .is_none()
     );
-    assert!(!harness.state_mut().app_mut().web_search().consented);
-
-    harness
-        .get_by_role_and_label(Role::Group, "This workspace")
-        .get_by_role_and_label(Role::Button, "Allow")
-        .click();
-    run(&mut harness);
-    harness
-        .get_by_role_and_label(Role::AlertDialog, TITLE)
-        .get_by_role_and_label(Role::Button, "Allow")
-        .click();
-    run(&mut harness);
-    assert!(harness.state_mut().app_mut().web_search().consented);
-    assert!(labels_in(&harness, "This workspace").contains(&"Allowed in Garden".to_owned()));
-
-    // Turning it off takes the consent back.
-    harness
-        .get_by_role_and_label(Role::Group, "This workspace")
-        .get_by_role_and_label(Role::Button, "Turn off")
-        .click();
-    run(&mut harness);
-    assert!(!harness.state_mut().app_mut().web_search().consented);
+    assert!(harness.query_by_role(Role::AlertDialog).is_none());
 
     harness
         .get_by_role_and_label(Role::Group, "Brave Search key")
         .get_by_role_and_label(Role::Button, "Remove key")
-        .click();
+        .click_accesskit();
     run(&mut harness);
     assert!(system.credentials.secrets().is_empty());
 }

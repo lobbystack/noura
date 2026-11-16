@@ -1,12 +1,10 @@
 //! Web search for the AI: your Brave Search key in the operating system's
-//! credential store, your web consent for each workspace, and the web
-//! searches and page reads that plugins holding `ai` ask for.
+//! credential store, and the web searches and page reads that plugins
+//! holding `ai` ask for.
 //!
-//! Web consent is its own choice, apart from a provider's consent: Noura
-//! asks for it in a prompt it draws itself, keeps it on this device, and
-//! asks nothing before each call. A search or a page read fails closed,
-//! with nothing sent, until the key and the consent for the open
-//! workspace are both there. Even then, a plugin's search or page read
+//! Adding the key is your say-so, so Noura asks nothing per workspace or
+//! per call. A search or a page read fails closed, with nothing sent,
+//! until the key is there. Even then, a plugin's search or page read
 //! goes out only to answer a call its model made: a run the plugin sent
 //! completed asking for `web_search` with that query, or `web_fetch`
 //! with that address. The requests go out from here through
@@ -17,10 +15,7 @@
 use std::{
     future::Future,
     path::Path,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
 };
 
 use local_core::{
@@ -32,10 +27,6 @@ use plugin_host::{AiFailure, AiRunStatus, AiWebPage, AiWebResult};
 use super::{Ai, lock};
 use crate::AppError;
 
-/// The version of what Noura tells you before the AI searches the web.
-/// Consent holds for one version, so a new one asks again.
-pub const WEB_POLICY_VERSION: &str = "2026-10-24";
-
 /// The tools whose calls a plugin's web searches and page reads answer.
 const SEARCH_TOOL: &str = "web_search";
 const FETCH_TOOL: &str = "web_fetch";
@@ -43,10 +34,8 @@ const FETCH_TOOL: &str = "web_fetch";
 /// The name of the web search provider, as Noura shows it.
 pub const WEB_SEARCH_PROVIDER_NAME: &str = "Brave Search";
 
-/// Where the web search settings and the web consents live, under the app
-/// data folder, apart from the AI provider consents.
+/// Where the web search settings live, under the app data folder.
 const SETTINGS_FILE: &str = "ai/web.json";
-const CONSENTS_FILE: &str = "ai/web-consents.json";
 
 /// Web search as Settings shows it. It holds whether the key is saved,
 /// never the key.
@@ -54,58 +43,34 @@ const CONSENTS_FILE: &str = "ai/web-consents.json";
 pub struct WebSearchRow {
     /// Whether the Brave Search key is in the credential store.
     pub has_key: bool,
-    /// Whether you allowed web search for the open workspace.
-    pub consented: bool,
-}
-
-/// The question Noura asks before the AI may search the web and read
-/// pages in the open workspace.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WebConsentPrompt {
-    /// The provider that receives the searches: Brave Search.
-    pub provider_name: String,
-    /// The open workspace's name.
-    pub workspace: String,
 }
 
 pub(super) struct Web {
-    /// The key and consents, or why they can't be read.
+    /// The key, or why it can't be read.
     store: Result<WebFoundation, AppError>,
     /// Makes the provider: Brave Search, or a fake in tests.
     client: Mutex<Arc<dyn WebClient>>,
-    /// Whether the prompt is open.
-    asking: AtomicBool,
 }
 
 impl Web {
     pub(super) fn new(app_data: &Path, credentials: Arc<dyn CredentialStore>) -> Self {
-        let store = WebFoundation::open_with(
-            app_data.join(SETTINGS_FILE),
-            app_data.join(CONSENTS_FILE),
-            credentials,
-        )
-        .map_err(|error| {
-            tracing::warn!(code = %error.code, "the web search settings can't be read");
-            AppError::new(
-                "web_settings_unreadable",
-                "Noura can't read its web search settings on this computer, so it left them as \
+        let store =
+            WebFoundation::open_with(app_data.join(SETTINGS_FILE), credentials).map_err(|error| {
+                tracing::warn!(code = %error.code, "the web search settings can't be read");
+                AppError::new(
+                    "web_settings_unreadable",
+                    "Noura can't read its web search settings on this computer, so it left them as \
                  they were.",
-            )
-        });
+                )
+            });
         Self {
             store,
             client: Mutex::new(Arc::new(BraveClient)),
-            asking: AtomicBool::new(false),
         }
     }
 
     fn store(&self) -> Result<&WebFoundation, AppError> {
         self.store.as_ref().map_err(Clone::clone)
-    }
-
-    /// Close the prompt without an answer, as when its workspace closes.
-    pub(super) fn close_prompt(&self) {
-        self.asking.store(false, Ordering::SeqCst);
     }
 }
 
@@ -122,14 +87,10 @@ impl Ai {
     /// Web search as Settings shows it.
     pub(crate) fn web_row(&self) -> WebSearchRow {
         let Ok(store) = self.web.store() else {
-            return WebSearchRow {
-                has_key: false,
-                consented: false,
-            };
+            return WebSearchRow { has_key: false };
         };
         WebSearchRow {
             has_key: store.has_key(),
-            consented: self.web_consented(store),
         }
     }
 
@@ -148,85 +109,17 @@ impl Ai {
         Ok(())
     }
 
-    /// Open the prompt that asks whether the AI may search the web in the
-    /// open workspace.
-    pub(crate) fn ask_web_consent(&self) -> Result<(), AppError> {
-        self.workspace().ok_or_else(super::no_workspace)?;
-        self.web.store()?;
-        self.web.asking.store(true, Ordering::SeqCst);
-        self.changed();
-        Ok(())
-    }
-
-    /// The web consent question waiting for your answer, if one is.
-    pub(crate) fn web_prompt(&self) -> Option<WebConsentPrompt> {
-        if !self.web.asking.load(Ordering::SeqCst) {
-            return None;
-        }
-        let workspace = self.workspace()?;
-        Some(WebConsentPrompt {
-            provider_name: WEB_SEARCH_PROVIDER_NAME.to_owned(),
-            workspace: workspace.name(),
-        })
-    }
-
-    /// Answer the web consent prompt. Allowing it stores your consent for
-    /// the open workspace on this device; saying no stores nothing.
-    pub(crate) fn answer_web_prompt(&self, allow: bool) -> Result<(), AppError> {
-        if !self.web.asking.swap(false, Ordering::SeqCst) {
-            return Ok(());
-        }
-        let answered = if allow {
-            let workspace = self.workspace().ok_or_else(super::no_workspace)?;
-            self.web
-                .store()?
-                .grant(workspace.id(), WEB_POLICY_VERSION)
-                .map(|_| ())
-                .map_err(web_settings_error)
-        } else {
-            Ok(())
-        };
-        self.changed();
-        answered
-    }
-
-    /// Withdraw your web consent for the open workspace. The next web
-    /// search or page read fails, and chats go on without them.
-    pub(crate) fn revoke_web(&self) -> Result<(), AppError> {
-        let workspace = self.workspace().ok_or_else(super::no_workspace)?;
-        self.web
-            .store()?
-            .revoke(workspace.id())
-            .map_err(web_settings_error)?;
-        self.changed();
-        Ok(())
-    }
-
     /// Search the web and read pages through `client` from the next call
     /// on.
     pub(crate) fn set_web_client(&self, client: Arc<dyn WebClient>) {
         *lock(&self.web.client) = client;
     }
 
-    /// Whether you consented to web search for the open workspace.
-    fn web_consented(&self, store: &WebFoundation) -> bool {
-        self.workspace().is_some_and(|workspace| {
-            store
-                .consent(workspace.id(), WEB_POLICY_VERSION)
-                .ok()
-                .flatten()
-                .is_some()
-        })
-    }
-
     // What plugins reach.
 
-    /// Whether the model may search the web and read pages in the open
-    /// workspace.
+    /// Whether the model may search the web and read pages.
     pub(super) fn web_ready(&self) -> bool {
-        self.web
-            .store()
-            .is_ok_and(|store| store.has_key() && self.web_consented(store))
+        self.web.store().is_ok_and(WebFoundation::has_key)
     }
 
     /// Search the web for `query` for the plugin `plugin`, whose model
@@ -237,14 +130,14 @@ impl Ai {
         query: &str,
         max_results: Option<u32>,
     ) -> Result<Vec<AiWebResult>, AiFailure> {
-        let (workspace, store) = self.web_call(plugin, SEARCH_TOOL, "query", query)?;
+        let store = self.web_call(plugin, SEARCH_TOOL, "query", query)?;
         let client = lock(&self.web.client).clone();
         let input = WebSearchInput {
             query: query.to_owned(),
             max_results: max_results.map(|count| usize::try_from(count).unwrap_or(usize::MAX)),
         };
         let found = self
-            .block_on(store.search(&workspace, WEB_POLICY_VERSION, client.as_ref(), input))
+            .block_on(store.search(client.as_ref(), input))
             .map_err(|error| web_failure(&error))?;
         Ok(found
             .results
@@ -260,13 +153,13 @@ impl Ai {
     /// Read the page at `url` for the plugin `plugin`, whose model asked
     /// to read it.
     pub(super) fn web_fetch(&self, plugin: &str, url: &str) -> Result<AiWebPage, AiFailure> {
-        let (workspace, store) = self.web_call(plugin, FETCH_TOOL, "url", url)?;
+        let store = self.web_call(plugin, FETCH_TOOL, "url", url)?;
         let client = lock(&self.web.client).clone();
         let input = WebFetchInput {
             url: url.to_owned(),
         };
         let page = self
-            .block_on(store.fetch(&workspace, WEB_POLICY_VERSION, client.as_ref(), input))
+            .block_on(store.fetch(client.as_ref(), input))
             .map_err(|error| web_failure(&error))?;
         Ok(AiWebPage {
             url: page.url,
@@ -276,31 +169,29 @@ impl Ai {
         })
     }
 
-    /// The open workspace's ID and the web settings, for a web call the
-    /// plugin `plugin` makes to answer its model's call to `tool` with
-    /// `argument` set to `value`. Without the key or your consent the call
-    /// fails as it always does, and a call that answers no call of the
-    /// model's fails with nothing sent.
+    /// The web settings, for a web call the plugin `plugin` makes in the
+    /// open workspace to answer its model's call to `tool` with `argument`
+    /// set to `value`. Without the key the call fails as it always does,
+    /// and a call that answers no call of the model's fails with nothing
+    /// sent.
     fn web_call(
         &self,
         plugin: &str,
         tool: &str,
         argument: &str,
         value: &str,
-    ) -> Result<(String, &WebFoundation), AiFailure> {
-        let workspace = self.workspace().ok_or_else(no_workspace)?.id().to_owned();
+    ) -> Result<&WebFoundation, AiFailure> {
+        self.workspace().ok_or_else(no_workspace)?;
         let store = self
             .web
             .store()
             .map_err(|_| web_failure_code("web_settings_invalid"))?;
-        store
-            .check_ready(&workspace, WEB_POLICY_VERSION)
-            .map_err(|error| web_failure(&error))?;
+        store.check_ready().map_err(|error| web_failure(&error))?;
         if !self.model_asked(plugin, tool, argument, value) {
             tracing::warn!(%plugin, %tool, "a plugin's web call answered no call of its model's");
             return Err(web_failure_code("web_call_not_requested"));
         }
-        Ok((workspace, store))
+        Ok(store)
     }
 
     /// Whether a run the plugin `plugin` sent completed asking for `tool`
@@ -326,7 +217,7 @@ impl Ai {
 
     /// Run `future` on the service's runtime and wait for it, from a
     /// thread of its own when the caller is inside a runtime already.
-    fn block_on<F>(&self, future: F) -> F::Output
+    pub(super) fn block_on<F>(&self, future: F) -> F::Output
     where
         F: Future + Send,
         F::Output: Send,
@@ -369,7 +260,6 @@ fn web_message<'a>(code: &str, error: Option<&'a CoreError>) -> &'a str {
     match code {
         "workspace_not_open" => "Open a workspace first.",
         "web_search_key_missing" => "Add a Brave Search key in Settings > AI to search the web.",
-        "web_consent_required" => "Allow web search in Settings > AI.",
         "web_call_not_requested" => {
             "Noura searches the web or reads a page only when the model asks for that query or \
              address."

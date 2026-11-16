@@ -1,12 +1,10 @@
 //! What the kernel draws for AI: the AI section of Settings, where you
 //! connect a provider by pasting its key, which goes to the credential
-//! store, and consent for the open workspace, the prompt that asks before a provider
-//! receives the workspace's content, and the prompt that asks before a
-//! tool call the model wants runs. Plugins draw none of them, so no
-//! plugin can show a prompt that grants consent, allow its own tool calls
+//! store, and the prompt that asks before a tool call the model wants
+//! runs. Plugins draw neither, so no plugin can allow its own tool calls
 //! or read a key.
 
-use app_core::{AiConsentPrompt, AiProviderInput, AiProviderRow, App};
+use app_core::{AiProviderInput, AiProviderRow, App};
 use egui::{Frame, Id, Margin, RichText, Stroke, TextEdit, Ui, UiBuilder, accesskit::Role};
 use zeroize::Zeroizing;
 
@@ -43,18 +41,8 @@ struct CustomForm {
     key: Zeroizing<String>,
 }
 
-/// The name Settings shows for a provider kind.
-fn kind_name<'a>(app: &App, kind: &'a str) -> &'a str {
-    app.ai_provider_kinds()
-        .iter()
-        .find(|(known, _)| *known == kind)
-        .map_or(kind, |(_, name)| name)
-}
-
 /// A change to one provider, by its ID.
 enum Change {
-    Allow(String),
-    Revoke(String),
     RemoveKey(String),
     Remove(String),
 }
@@ -62,8 +50,6 @@ enum Change {
 impl Change {
     fn apply(self, app: &mut App) -> Result<(), app_core::AppError> {
         match self {
-            Self::Allow(id) => app.grant_ai_consent(&id),
-            Self::Revoke(id) => app.revoke_ai_consent(&id),
             Self::RemoveKey(id) => app.remove_ai_provider_key(&id),
             Self::Remove(id) => app.remove_ai_provider(&id),
         }
@@ -231,7 +217,6 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
     }
     let rows = app.ai_providers();
     let choices = app.ai_provider_choices();
-    let workspace = app.workspace().map(|workspace| workspace.name());
     let mut change = None;
     ui.spacing_mut().item_spacing.y = 8.0;
     section_title(ui, "Providers", None);
@@ -335,65 +320,6 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
         view.open = (view.open.as_deref() != Some(kind.as_str())).then_some(kind);
     }
 
-    ui.spacing_mut().item_spacing.y = 8.0;
-    ui.add_space(32.0);
-    section_title(
-        ui,
-        "Workspace permissions",
-        Some("A granted provider receives this workspace's content."),
-    );
-    match &workspace {
-        _ if rows.is_empty() => {
-            description(ui, "Connect a provider first.");
-        }
-        None => {
-            description(ui, "Open a workspace first.");
-        }
-        Some(_) => {
-            for (index, row) in rows.iter().enumerate() {
-                if index > 0 {
-                    row_line(ui);
-                }
-                let label = format!("{} in this workspace", row.name);
-                let builder = UiBuilder::new()
-                    .accessibility_role(Role::Group)
-                    .accessibility_label(&label);
-                ui.push_id(("ai-consent", &row.id), |ui| {
-                    ui.scope_builder(builder, |ui| {
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            crate::common::field_label(ui, &row.name);
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.spacing_mut().item_spacing.x = 8.0;
-                                    if !row.enabled {
-                                        return;
-                                    }
-                                    if row.consented {
-                                        if Btn::new("Revoke").size(Size::Sm).show(ui).clicked() {
-                                            change = Some(Change::Revoke(row.id.clone()));
-                                        }
-                                        badge(ui, "Granted");
-                                    } else {
-                                        if Btn::new("Grant")
-                                            .variant(Variant::Default)
-                                            .size(Size::Sm)
-                                            .show(ui)
-                                            .clicked()
-                                        {
-                                            change = Some(Change::Allow(row.id.clone()));
-                                        }
-                                    }
-                                },
-                            );
-                        });
-                        ui.add_space(8.0);
-                    });
-                });
-            }
-        }
-    }
     if let Some(change) = change {
         view.problem = change.apply(app).err().map(|error| error.message);
     }
@@ -536,66 +462,6 @@ pub(crate) fn alert(ui: &mut Ui, message: &str) {
     });
 }
 
-/// What the consent prompt remembers between frames.
-#[derive(Default)]
-pub(crate) struct ConsentView {
-    /// The provider the prompt asked about last frame.
-    asking: Option<String>,
-}
-
-/// The prompt that asks whether a provider may receive the open
-/// workspace's content. It starts on Deny. Escape or a click outside it
-/// counts as Deny.
-pub(crate) fn consent_prompt(ui: &mut Ui, app: &mut App, view: &mut ConsentView) {
-    let Some(prompt) = app.ai_consent_prompt() else {
-        view.asking = None;
-        return;
-    };
-    let opened = view.asking.as_deref() != Some(prompt.provider_id.as_str());
-    view.asking = Some(prompt.provider_id.clone());
-    let title = format!(
-        "Let {} receive this workspace's content?",
-        prompt.provider_name
-    );
-    let mut answer = None;
-    let modal = crate::common::dialog(ui.ctx(), Id::unique("ai-consent")).show(ui.ctx(), |ui| {
-        let builder = UiBuilder::new()
-            .accessibility_role(Role::AlertDialog)
-            .accessibility_label(&title);
-        ui.scope_builder(builder, |ui| {
-            ui.set_width(440.0);
-            crate::common::dialog_title(ui, &title);
-            ui.add_space(4.0);
-            ui.label(details(app, &prompt));
-            description(
-                ui,
-                "Noura asks again if its kind, endpoint or model changes. Revoke it in Settings > AI.",
-            );
-            let pressed = crate::common::dialog_footer(
-                ui,
-                vec![Btn::new("Deny"), Btn::new("Allow").variant(Variant::Default)],
-            );
-            if opened {
-                pressed[0].request_focus();
-            }
-            if pressed[0].clicked() {
-                answer = Some(false);
-            }
-            if pressed[1].clicked() {
-                answer = Some(true);
-            }
-        });
-    });
-    if answer.is_none() && modal.should_close() {
-        answer = Some(false);
-    }
-    match answer {
-        Some(true) => app.allow_ai_consent(),
-        Some(false) => app.deny_ai_consent(),
-        None => {}
-    }
-}
-
 /// What the tool prompt remembers between frames.
 #[derive(Default)]
 pub(crate) struct ToolPromptView {
@@ -608,12 +474,8 @@ const TOOL_INPUT_HEIGHT: f32 = 240.0;
 
 /// The prompt that asks whether a tool call the model wants may run. It
 /// names the tool, its plugin and its input, starts on Deny, and Escape
-/// or a click outside it counts as Deny. It waits while the consent
-/// prompt shows, so you answer one question at a time.
+/// or a click outside it counts as Deny.
 pub(crate) fn tool_prompt(ui: &mut Ui, app: &mut App, view: &mut ToolPromptView) {
-    if app.ai_consent_prompt().is_some() {
-        return;
-    }
     let Some(prompt) = app.ai_tool_prompt() else {
         view.asking = None;
         return;
@@ -669,20 +531,4 @@ pub(crate) fn tool_prompt(ui: &mut Ui, app: &mut App, view: &mut ToolPromptView)
     if let Some(allow) = answer {
         app.answer_ai_tool(&prompt, allow);
     }
-}
-
-/// What the prompt says goes where.
-fn details(app: &App, prompt: &AiConsentPrompt) -> String {
-    let address = prompt
-        .endpoint
-        .as_deref()
-        .map(|endpoint| format!(" at {endpoint}"))
-        .unwrap_or_default();
-    format!(
-        "Your messages and this chat go from {} to {}, model {} ({}){address}.",
-        prompt.workspace,
-        prompt.provider_name,
-        prompt.model,
-        kind_name(app, &prompt.kind)
-    )
 }

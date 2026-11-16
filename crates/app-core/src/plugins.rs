@@ -953,6 +953,7 @@ impl Plugins {
             clock: self.clock.clone(),
             navigation: Some(navigation),
             ai: self.ai.as_ref().map(|ai| ai.access(id)),
+            ..Services::default()
         };
         let plugin = host.start(&loaded, &record.approved, services);
         self.manifests

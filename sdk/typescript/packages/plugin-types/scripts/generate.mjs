@@ -84,6 +84,7 @@ import type * as Commands from 'noura:plugin/commands@${version}';
 import type * as Inbox from 'noura:plugin/inbox@${version}';
 import type * as Settings from 'noura:plugin/settings@${version}';
 import type * as Tools from 'noura:plugin/tools@${version}';
+import type * as KernelEvents from 'noura:plugin/kernel-events@${version}';
 
 /** Pages in the rail and their views. Needs the \`views\` capability. */
 export type ViewExports = Partial<typeof View>;
@@ -102,6 +103,10 @@ export type SettingsExports = Partial<typeof Settings>;
 
 /** Tools for AI assistants. Needs \`tools\`. */
 export type ToolsExports = Partial<typeof Tools>;
+
+/** Shortcuts, menu bar entries, the microphone and recordings. Needs
+ * \`global-shortcuts\`, \`menu-bar-items\` or \`speech\`. */
+export type KernelEventsExports = Partial<typeof KernelEvents>;
 `;
 }
 

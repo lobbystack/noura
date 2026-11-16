@@ -170,7 +170,6 @@ fn a_key_reaches_only_the_credential_store_and_the_provider() {
     let id = app
         .save_ai_provider(ai::provider("Cloud", "openai", "gpt-test", Some(KEY)))
         .unwrap();
-    app.grant_ai_consent(&id).unwrap();
     support::settle(&mut app);
     assert!(app.ai_providers()[0].has_key);
     assert_eq!(system.credentials.secrets(), [KEY.to_owned()]);

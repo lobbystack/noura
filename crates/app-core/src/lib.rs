@@ -71,9 +71,8 @@ mod writes;
 
 pub use agent::AgentWorkspace;
 pub use ai::{
-    AI_KEY_PROVIDERS, AI_POLICY_VERSION, AiConsentPrompt, AiProviderChoice, AiProviderInput,
-    AiProviderRow, AiToolPrompt, DEFAULT_CONTEXT_WINDOW, NEW_CHAT_TITLE, WEB_POLICY_VERSION,
-    WEB_SEARCH_PROVIDER_NAME, WebConsentPrompt, WebSearchRow,
+    AI_KEY_PROVIDERS, AiProviderChoice, AiProviderInput, AiProviderRow, AiToolPrompt,
+    DEFAULT_CONTEXT_WINDOW, NEW_CHAT_TITLE, WEB_SEARCH_PROVIDER_NAME, WebSearchRow,
 };
 pub use app::{
     App, Change, CommandPalette, DragOut, IgnoredFiles, NameDraft, Notice, NoticeKind, Origin,

@@ -290,7 +290,7 @@ pub(super) fn tools(tools: &[AiToolDefinition]) -> Vec<local_core::AiToolDefinit
         .collect()
 }
 
-fn text(role: &str, content: &str) -> AiTransportMessage {
+pub(super) fn text(role: &str, content: &str) -> AiTransportMessage {
     AiTransportMessage {
         role: role.to_owned(),
         content: vec![AiContentPart::Text {

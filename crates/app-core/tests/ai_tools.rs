@@ -52,7 +52,6 @@ fn a_run_lists_the_tool_calls_and_carries_their_results_to_the_model() {
     let id = app
         .save_ai_provider(ai::provider("Local", "ollama", "llama3", None))
         .unwrap();
-    app.grant_ai_consent(&id).unwrap();
 
     let created = press(&mut app, "ai:create-chat");
     let chat = id_after(&created[0], "hello ai chat ").to_owned();
@@ -163,7 +162,6 @@ fn a_call_to_a_workspace_tool_the_run_didn_t_offer_fails_without_a_prompt() {
     let id = app
         .save_ai_provider(ai::provider("Local", "ollama", "llama3", None))
         .unwrap();
-    app.grant_ai_consent(&id).unwrap();
 
     // The probe offers the model no tool, and the model asks for the
     // Tasks plugin's anyway.
@@ -228,7 +226,6 @@ impl Tooled {
         let id = app
             .save_ai_provider(ai::provider("Local", "ollama", "llama3", None))
             .unwrap();
-        app.grant_ai_consent(&id).unwrap();
         support::settle(&mut app);
         Some(Self {
             app,
@@ -608,7 +605,6 @@ fn turning_off_a_plugin_while_its_call_waits_interrupts_the_call_and_never_runs_
     let id = app
         .save_ai_provider(ai::provider("Local", "ollama", "llama3", None))
         .unwrap();
-    app.grant_ai_consent(&id).unwrap();
     support::settle(&mut app);
     ai::send(&mut app, "Echo hi", &id);
     ai::wait_until(&mut app, "the request leaves", |_| {

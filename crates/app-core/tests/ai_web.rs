@@ -1,13 +1,13 @@
 //! Seam 1: web search and page reads for the AI, with a fake provider and
 //! a fake web provider. You add a Brave Search key in Settings, which
-//! goes only to the credential store, and allow web search for the
-//! workspace in Noura's own prompt, apart from a provider's consent.
-//! Until both are there, web calls fail closed and the fake web provider
-//! gets nothing. Once they are, the model's searches and page reads reach
-//! it, and the chat records each call and its sources. A plugin's search
-//! or page read goes out only to answer a call its own model made, for
-//! the query or address the model named. Revoking web
-//! consent fails the next call and the chat goes on, and failures reach
+//! goes only to the credential store. Adding it is your say-so, so
+//! nothing asks per workspace. Until it's there, web calls fail closed
+//! and the fake web provider gets nothing. Once it is, the model's
+//! searches and page reads reach it, and the chat records each call and
+//! its sources. A plugin's search or page read goes out only to answer a
+//! call its own model made, for the query or address the model named.
+//! Removing the key fails the next call and the chat goes on, and
+//! failures reach
 //! the chat as public errors without the key or what Brave Search
 //! answered. One test joins the real Brave Search client to a chat, with a
 //! scripted stand-in for the network below the request boundary.
@@ -48,15 +48,9 @@ struct Searching {
 #[derive(Clone, Copy)]
 struct Setup {
     key: Option<&'static str>,
-    web_consent: bool,
-    provider_consent: bool,
 }
 
-const READY: Setup = Setup {
-    key: Some(KEY),
-    web_consent: true,
-    provider_consent: true,
-};
+const READY: Setup = Setup { key: Some(KEY) };
 
 impl Searching {
     fn new(setup: Setup) -> Option<Self> {
@@ -80,15 +74,8 @@ impl Searching {
         let id = app
             .save_ai_provider(ai::provider("Local", "ollama", "llama3", None))
             .unwrap();
-        if setup.provider_consent {
-            app.grant_ai_consent(&id).unwrap();
-        }
         if let Some(key) = setup.key {
             app.save_web_search_key(key).unwrap();
-        }
-        if setup.web_consent {
-            app.ask_web_consent().unwrap();
-            app.allow_web_consent();
         }
         support::settle(&mut app);
         Some(Self {
@@ -537,17 +524,10 @@ fn a_plugin_reaches_the_web_only_to_answer_its_own_models_call() {
 }
 
 #[test]
-fn without_a_key_or_web_consent_web_calls_fail_closed_and_reach_no_web_provider() {
-    for (key, web_consent, code) in [
-        (None, false, "web_search_key_missing"),
-        (None, true, "web_search_key_missing"),
-        (Some(KEY), false, "web_consent_required"),
-    ] {
-        let Some(mut chat) = Searching::new(Setup {
-            key,
-            web_consent,
-            provider_consent: true,
-        }) else {
+fn without_a_key_web_calls_fail_closed_and_reach_no_web_provider() {
+    {
+        let code = "web_search_key_missing";
+        let Some(mut chat) = Searching::new(Setup { key: None }) else {
             return;
         };
 
@@ -573,77 +553,21 @@ fn without_a_key_or_web_consent_web_calls_fail_closed_and_reach_no_web_provider(
 }
 
 #[test]
-fn web_consent_alone_sends_nothing_to_an_ai_provider() {
-    let Some(mut chat) = Searching::new(Setup {
-        provider_consent: false,
-        ..READY
-    }) else {
+fn the_key_stays_on_this_device_and_a_relaunch_reads_it_back() {
+    let Some(chat) = Searching::new(READY) else {
         return;
     };
-    assert!(chat.app.web_search().consented);
-
-    chat.send("Find a tomato guide");
-
-    assert!(chat.app.ai_consent_prompt().is_some());
-    assert!(chat.provider.requests().is_empty());
-    assert!(chat.web.calls().is_empty());
-    assert!(ai::chat_files(&chat.fixture.root).is_empty());
-}
-
-#[test]
-fn web_consent_has_its_own_prompt_and_stays_on_this_device_apart_from_provider_consent() {
-    let Some(mut chat) = Searching::new(Setup {
-        web_consent: false,
-        ..READY
-    }) else {
-        return;
-    };
-    assert_eq!(chat.app.web_consent_prompt(), None);
-
-    // Saying no stores nothing.
-    chat.app.ask_web_consent().unwrap();
-    let prompt = chat.app.web_consent_prompt().expect("Noura asks");
-    assert_eq!(prompt.provider_name, "Brave Search");
-    assert_eq!(prompt.workspace, "Garden");
-    chat.app.deny_web_consent();
-    assert_eq!(chat.app.web_consent_prompt(), None);
-    assert!(!chat.app.web_search().consented);
-
-    chat.app.ask_web_consent().unwrap();
-    chat.app.allow_web_consent();
-    assert_eq!(chat.app.web_consent_prompt(), None);
-    assert!(chat.app.web_search().consented);
-
-    // The consent lives in this device's app data, in a file of its own,
-    // and the workspace holds none.
-    let workspace = chat.app.workspace().unwrap().id().to_owned();
+    assert!(chat.app.web_search().has_key);
+    // The key's reference lives in this device's app data, and the
+    // workspace holds nothing of it.
     let app_data = chat.fixture.app_data.path();
-    let web_consents = std::fs::read_to_string(app_data.join("ai/web-consents.json")).unwrap();
-    assert!(web_consents.contains(&workspace), "{web_consents}");
-    assert!(web_consents.contains("brave-search"), "{web_consents}");
-    let provider_consents = std::fs::read_to_string(app_data.join("ai/consents.json")).unwrap();
-    assert!(
-        !provider_consents.contains("brave-search"),
-        "{provider_consents}"
-    );
+    assert!(app_data.join("ai/web.json").exists());
+    assert!(!app_data.join("ai/web-consents.json").exists());
     assert!(chat.fixture.snapshot().iter().all(|(_, bytes)| {
         bytes
             .as_deref()
-            .is_none_or(|bytes| !String::from_utf8_lossy(bytes).contains("brave-search"))
-    }),);
-
-    // Revoking the provider's consent leaves web consent, and the reverse.
-    let id = chat.id.clone();
-    chat.app.revoke_ai_consent(&id).unwrap();
-    assert!(chat.app.web_search().consented);
-    chat.app.grant_ai_consent(&id).unwrap();
-    chat.app.revoke_web_consent().unwrap();
-    assert!(!chat.app.web_search().consented);
-    assert!(chat.app.ai_providers()[0].consented);
-
-    // A relaunch reads the consent back.
-    chat.app.ask_web_consent().unwrap();
-    chat.app.allow_web_consent();
+            .is_none_or(|bytes| !String::from_utf8_lossy(bytes).contains(KEY))
+    }));
     let system = chat.system.clone();
     let Searching {
         app,
@@ -653,12 +577,11 @@ fn web_consent_has_its_own_prompt_and_stays_on_this_device_apart_from_provider_c
     } = chat;
     drop(app);
     let app = fixture.app_with(system);
-    assert!(app.web_search().consented);
     assert!(app.web_search().has_key);
 }
 
 #[test]
-fn revoking_web_consent_fails_the_next_web_call_and_the_chat_goes_on() {
+fn removing_the_key_fails_the_next_web_call_and_the_chat_goes_on() {
     let Some(mut chat) = Searching::new(READY) else {
         return;
     };
@@ -667,14 +590,14 @@ fn revoking_web_consent_fails_the_next_web_call_and_the_chat_goes_on() {
     chat.call(0, "call_1", "web_search", search("tomato care"));
     assert!(chat.result(1, "call_1")["results"].is_array());
 
-    chat.app.revoke_web_consent().unwrap();
+    chat.app.remove_web_search_key().unwrap();
     support::settle(&mut chat.app);
-    assert!(!chat.app.web_search().consented);
+    assert!(!chat.app.web_search().has_key);
     chat.call(1, "call_2", "web_search", search("more tomatoes"));
 
     assert_eq!(
         chat.result(2, "call_2")["error"]["code"],
-        "web_consent_required"
+        "web_search_key_missing"
     );
     assert!(chat.provider.requests()[2].tools.is_empty());
     assert_eq!(chat.web.calls(), [WebCall::Search("tomato care".into())]);
@@ -760,7 +683,7 @@ fn assert_nowhere(chat: &Searching, log: &Captured, secrets: &[&str]) {
 #[test]
 fn the_brave_search_key_goes_only_to_the_credential_store_and_the_web_provider() {
     let log = log();
-    let Some(mut chat) = Searching::new(Setup { key: None, ..READY }) else {
+    let Some(mut chat) = Searching::new(Setup { key: None }) else {
         return;
     };
     assert!(!chat.app.web_search().has_key);

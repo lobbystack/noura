@@ -14,7 +14,7 @@ use support::{
     ai::{self, FakeProvider},
 };
 
-/// A workspace with the AI plugin on, one provider set up and consented,
+/// A workspace with the AI plugin on, one provider set up,
 /// talking to a fake provider.
 /// The app comes first, so it closes before its folders go.
 struct Chatting {
@@ -36,7 +36,6 @@ impl Chatting {
         let id = app
             .save_ai_provider(ai::provider("Local", "ollama", "llama3", None))
             .unwrap();
-        app.grant_ai_consent(&id).unwrap();
         support::settle(&mut app);
         Some(Self {
             fixture,
@@ -267,7 +266,6 @@ fn chats_come_back_after_a_relaunch_and_continue_with_another_provider() {
             Some("sk-test-key"),
         ))
         .unwrap();
-    chat.app.grant_ai_consent(&second).unwrap();
     ai::send(&mut chat.app, "First question", &first);
     chat.wait("the request leaves", |_| provider.requests().len() == 1);
     provider.say(0, "First answer.");

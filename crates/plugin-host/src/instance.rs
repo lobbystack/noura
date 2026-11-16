@@ -12,10 +12,10 @@ use wasmtime::component::{Component, HasSelf, Linker, LinkerInstance, ResourceTy
 use wasmtime::{Engine, Store, UpdateDeadline};
 
 use crate::{
-    AiChats, Capability, ClockReading, DeviceClock, EntryKind, Limits, Listed, Navigation,
-    NewObject, ObjectChanges, ObjectRead, ObjectRecord, ObjectTypes, PropertyProblem, Router,
-    SERVICE_WRITTEN_TYPES, ServiceError, TypeError, WorkspaceObjects, WorkspacePath,
-    WorkspaceReads,
+    AiChats, Capability, ClockReading, DeviceClock, EntryKind, Limits, Listed, MenuBarService,
+    Navigation, NewObject, ObjectChanges, ObjectRead, ObjectRecord, ObjectTypes, PasteService,
+    PropertyProblem, Router, SERVICE_WRITTEN_TYPES, ServiceError, ShortcutService, SpeechService,
+    TypeError, WorkspaceObjects, WorkspacePath, WorkspaceReads,
     object_types::type_of_id,
     runtime::{EpochTicker, Failure, StoreLimiter, deadline_ticks},
 };
@@ -31,21 +31,32 @@ mod bindings {
 use bindings::Plugin;
 pub use bindings::exports::noura::plugin::commands::Command;
 pub use bindings::exports::noura::plugin::inbox::Section as InboxSection;
+pub use bindings::exports::noura::plugin::kernel_events::{KernelEvent, MicrophoneUse};
 pub use bindings::exports::noura::plugin::object_types::ObjectType;
 pub use bindings::exports::noura::plugin::tools::Tool;
 pub use bindings::exports::noura::plugin::view::Page;
 use bindings::exports::noura::plugin::{
-    commands as commands_export, inbox as inbox_export, object_types as types_export,
-    settings as settings_export, tools as tools_export, view as view_export,
+    commands as commands_export, inbox as inbox_export, kernel_events as events_export,
+    object_types as types_export, settings as settings_export, tools as tools_export,
+    view as view_export,
 };
 pub use bindings::noura::plugin::ai::{
-    Chat as AiChat, Failure as AiFailure, Message as AiMessage, MessageKind as AiMessageKind,
+    Chat as AiChat, Completion as AiCompletion, CompletionRequest as AiCompletionRequest,
+    Failure as AiFailure, Message as AiMessage, MessageKind as AiMessageKind,
     MessageStatus as AiMessageStatus, Provider as AiProvider, Request as AiRequest,
     Retention as AiRetention, Run as AiRun, RunStatus as AiRunStatus, ToolCall as AiToolCall,
     ToolDefinition as AiToolDefinition, ToolResult as AiToolResult, WebPage as AiWebPage,
     WebResult as AiWebResult,
 };
+pub use bindings::noura::plugin::global_shortcuts::Shortcut as ShortcutState;
+pub use bindings::noura::plugin::menu_bar::{Entry as MenuBarEntry, EntryKind as MenuBarEntryKind};
 pub use bindings::noura::plugin::navigation::{Placement, SettingsSection};
+pub use bindings::noura::plugin::paste::Method as PasteMethod;
+pub use bindings::noura::plugin::speech::{
+    Channel as SpeechChannel, Microphone as SpeechMicrophone, Model as SpeechModel,
+    Preferences as SpeechPreferences, Recording, RecordingOptions, RecordingState,
+    Segment as SpeechSegment, Source as SpeechSource,
+};
 pub(crate) use bindings::noura::plugin::types::Error as CallError;
 pub use bindings::noura::plugin::ui::{
     Calendar, CalendarEntry, CalendarMode, Check, Choice, Column, ColumnPress, EmptyState, Event,
@@ -53,7 +64,8 @@ pub use bindings::noura::plugin::ui::{
     Naming, Node, NodeKind, SortOrder, Submission, Table, Target, Value, VirtualList, VirtualRow,
 };
 use bindings::noura::plugin::{
-    ai, clock, command_calls, navigation, network, objects, types, workspace,
+    ai, clock, command_calls, global_shortcuts, menu_bar, navigation, network, objects, paste,
+    speech, types, workspace,
 };
 
 /// The capability behind object types, their panels and object writes.
@@ -132,6 +144,15 @@ pub struct Services {
     /// Chats with the AI providers you set up, for `ai`. Without one,
     /// every call fails.
     pub ai: Option<Arc<dyn AiChats>>,
+    /// Recording and speech-to-text, for `speech`. Without one, every
+    /// call fails.
+    pub speech: Option<Arc<dyn SpeechService>>,
+    /// The plugin's global shortcuts, for `global-shortcuts`.
+    pub shortcuts: Option<Arc<dyn ShortcutService>>,
+    /// Pasting into the focused app, for `paste`.
+    pub paste: Option<Arc<dyn PasteService>>,
+    /// The plugin's menu bar entries, for `menu-bar-items`.
+    pub menu_bar: Option<Arc<dyn MenuBarService>>,
 }
 
 /// How long the current call has run.
@@ -266,6 +287,30 @@ impl HostState {
         self.waiting(|_| call(ai.as_ref())).map_err(wit_error)
     }
 
+    /// The service `pick` takes from the services, when the plugin holds
+    /// `capability`.
+    fn service<T: ?Sized>(
+        &self,
+        capability: &str,
+        pick: impl FnOnce(&Services) -> Option<Arc<T>>,
+    ) -> Result<Arc<T>, types::Error> {
+        if !self.holds(capability) {
+            return Err(types::Error::CapabilityNotDeclared(capability.to_owned()));
+        }
+        pick(&self.services)
+            .ok_or_else(|| types::Error::Failed(format!("Noura can't offer {capability} here.")))
+    }
+
+    /// Run `call` on the speech service. Starting a recording opens a
+    /// device, which the call's deadline doesn't count.
+    fn with_speech<R>(
+        &mut self,
+        call: impl FnOnce(&dyn SpeechService) -> Result<R, ServiceError>,
+    ) -> Result<R, types::Error> {
+        let speech = self.service("speech", |services| services.speech.clone())?;
+        self.waiting(|_| call(speech.as_ref())).map_err(wit_error)
+    }
+
     /// The object service for the object with the stable ID `id`, whose
     /// type is its prefix.
     fn objects_for(&self, id: &str) -> Result<&dyn WorkspaceObjects, types::Error> {
@@ -363,6 +408,141 @@ impl workspace::Host for HostState {
             .map_err(wit_error)?;
         Ok(object.map(object_of))
     }
+}
+
+impl speech::Host for HostState {
+    fn models(&mut self) -> Result<Vec<speech::Model>, types::Error> {
+        self.with_speech(|speech| speech.models())
+    }
+
+    fn microphones(&mut self) -> Result<Vec<speech::Microphone>, types::Error> {
+        self.with_speech(|speech| speech.microphones())
+    }
+
+    fn read_preferences(&mut self) -> Result<speech::Preferences, types::Error> {
+        self.with_speech(|speech| speech.preferences())
+    }
+
+    fn set_preferences(&mut self, preferences: speech::Preferences) -> Result<(), types::Error> {
+        self.with_speech(|speech| speech.set_preferences(preferences))
+    }
+
+    fn start(&mut self, options: speech::RecordingOptions) -> Result<String, types::Error> {
+        if options.sources.is_empty() {
+            return Err(types::Error::Failed(
+                "A recording needs at least one source.".to_owned(),
+            ));
+        }
+        self.with_speech(|speech| speech.start(options))
+    }
+
+    fn read_recording(&mut self, id: String) -> Result<speech::Recording, types::Error> {
+        self.with_speech(|speech| speech.read_recording(&id))
+    }
+
+    fn stop(&mut self, id: String) -> Result<(), types::Error> {
+        self.with_speech(|speech| speech.stop(&id))
+    }
+
+    fn cancel(&mut self, id: String) -> Result<(), types::Error> {
+        self.with_speech(|speech| speech.cancel(&id))
+    }
+
+    fn save_audio(&mut self, id: String, object: String) -> Result<String, types::Error> {
+        // The audio goes beside one of the plugin's own objects only.
+        let object_type = type_of_id(&object).unwrap_or_default().to_owned();
+        if !self.holds(OBJECT_TYPES) || !self.services.types.held_by(&object_type, self.instance) {
+            return Err(types::Error::CapabilityNotDeclared(OBJECT_TYPES.to_owned()));
+        }
+        self.with_speech(|speech| speech.save_audio(&id, &object))
+            .map(|path| path.as_str().to_owned())
+    }
+
+    fn keep_audio(&mut self, id: String, days: u32) -> Result<(), types::Error> {
+        self.with_speech(|speech| speech.keep_audio(&id, days))
+    }
+
+    fn forget(&mut self, id: String) -> Result<(), types::Error> {
+        self.with_speech(|speech| speech.forget(&id))
+    }
+
+    fn remember_dictation(&mut self, text: String) -> Result<(), types::Error> {
+        self.with_speech(|speech| speech.remember_dictation(&text))
+    }
+
+    fn last_dictation(&mut self) -> Result<Option<String>, types::Error> {
+        self.with_speech(|speech| speech.last_dictation())
+    }
+}
+
+impl global_shortcuts::Host for HostState {
+    fn shortcuts(&mut self) -> Result<Vec<global_shortcuts::Shortcut>, types::Error> {
+        let service = self.service("global-shortcuts", |services| services.shortcuts.clone())?;
+        service.shortcuts().map_err(wit_error)
+    }
+}
+
+impl paste::Host for HostState {
+    fn paste(&mut self, text: String, method: paste::Method) -> Result<(), types::Error> {
+        let service = self.service("paste", |services| services.paste.clone())?;
+        // Waiting for the target app to read the clipboard doesn't count
+        // toward the deadline.
+        self.waiting(|_| service.paste(&text, method))
+            .map_err(wit_error)
+    }
+
+    fn copy(&mut self, text: String) -> Result<(), types::Error> {
+        let service = self.service("paste", |services| services.paste.clone())?;
+        service.copy(&text).map_err(wit_error)
+    }
+}
+
+impl menu_bar::Host for HostState {
+    fn set_entries(&mut self, entries: Vec<menu_bar::Entry>) -> Result<(), types::Error> {
+        let service = self.service("menu-bar-items", |services| services.menu_bar.clone())?;
+        check_menu_entries(&entries)?;
+        service.set_entries(entries).map_err(wit_error)
+    }
+}
+
+/// The most entries a plugin may show in the menu bar menu.
+const MAX_MENU_ENTRIES: usize = 200;
+
+/// Refuse entries that can't make a menu: an ID twice, an empty label on
+/// an item or a submenu, or a parent that isn't an earlier submenu.
+fn check_menu_entries(entries: &[menu_bar::Entry]) -> Result<(), types::Error> {
+    let refuse = |message: String| Err(types::Error::Failed(message));
+    if entries.len() > MAX_MENU_ENTRIES {
+        return refuse(format!(
+            "A plugin shows at most {MAX_MENU_ENTRIES} menu entries."
+        ));
+    }
+    let mut seen: Vec<(&str, bool)> = Vec::new();
+    for entry in entries {
+        if entry.id.is_empty() || seen.iter().any(|(id, _)| *id == entry.id) {
+            return refuse(format!(
+                "The menu entry ID \u{201c}{}\u{201d} is empty or taken.",
+                entry.id
+            ));
+        }
+        let separator = matches!(entry.kind, menu_bar::EntryKind::Separator);
+        if !separator && entry.label.trim().is_empty() {
+            return refuse(format!("The menu entry {} needs a label.", entry.id));
+        }
+        if let Some(parent) = &entry.parent
+            && !seen.iter().any(|(id, submenu)| id == parent && *submenu)
+        {
+            return refuse(format!(
+                "The menu entry {} names {parent}, which isn't an earlier submenu.",
+                entry.id
+            ));
+        }
+        seen.push((
+            &entry.id,
+            matches!(entry.kind, menu_bar::EntryKind::Submenu),
+        ));
+    }
+    Ok(())
 }
 
 /// An object read from the workspace, as it crosses the boundary.
@@ -588,6 +768,21 @@ impl ai::Host for HostState {
         self.waiting(|_| ai.web_fetch(&url))
             .map_err(ai::WebError::Failed)
     }
+
+    fn complete(
+        &mut self,
+        request: ai::CompletionRequest,
+    ) -> Result<ai::Completion, ai::CompletionError> {
+        let ai = self.ai().map_err(ai::CompletionError::Refused)?;
+        if request.prompt.trim().is_empty() {
+            return Err(ai::CompletionError::Failed(ai::Failure {
+                code: "empty_prompt".to_owned(),
+                message: "The prompt is empty.".to_owned(),
+            }));
+        }
+        self.waiting(|_| ai.complete(request))
+            .map_err(ai::CompletionError::Failed)
+    }
 }
 
 impl objects::Host for HostState {
@@ -731,6 +926,7 @@ fn network_error(error: CoreError) -> types::Error {
 /// The interfaces a plugin's component exports. Each is optional: a plugin
 /// that doesn't export one registers nothing under it.
 struct Exports {
+    events: Option<events_export::Guest>,
     view: Option<view_export::Guest>,
     object_types: Option<types_export::Guest>,
     commands: Option<commands_export::Guest>,
@@ -867,6 +1063,13 @@ impl PluginInstance {
             let instance = pre.instantiate(&mut store)?;
             let store = &mut store;
             Ok(Exports {
+                events: export!(
+                    events_export,
+                    "noura:plugin/kernel-events@0.1.0",
+                    &pre,
+                    store,
+                    &instance
+                ),
                 view: export!(
                     view_export,
                     "noura:plugin/view@0.1.0",
@@ -977,6 +1180,31 @@ impl PluginInstance {
             .ok_or(PluginError::NotExported {
                 interface: "noura:plugin/settings",
             })
+    }
+
+    /// Hand the plugin `event`, when it holds the capability the event
+    /// needs: `global-shortcuts` for a shortcut, `menu-bar-items` for a
+    /// menu entry and `speech` for the microphone and recordings.
+    pub(crate) fn handle_kernel_event(&mut self, event: &KernelEvent) -> Result<(), PluginError> {
+        self.needs(match event {
+            KernelEvent::ShortcutPressed(_) | KernelEvent::ShortcutReleased(_) => {
+                "global-shortcuts"
+            }
+            KernelEvent::MenuItemChosen(_) => "menu-bar-items",
+            KernelEvent::MicrophoneInUse(_)
+            | KernelEvent::MicrophoneFree
+            | KernelEvent::RecordingChanged(_) => "speech",
+        })?;
+        let events = self
+            .exports
+            .events
+            .clone()
+            .ok_or(PluginError::NotExported {
+                interface: "noura:plugin/kernel-events",
+            })?;
+        events
+            .call_handle_kernel_event(&mut self.store, event)
+            .map_err(|error| self.failed(&error))
     }
 
     fn tools_export(&self) -> Result<tools_export::Guest, PluginError> {

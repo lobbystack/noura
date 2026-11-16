@@ -6,10 +6,10 @@
 //! message to the provider you pick. Each message offers the model the
 //! tools of the plugins on in the workspace, and the plugin hands the
 //! calls the model asks for to Noura, which asks you about each one.
-//! Noura keeps the providers, their keys and your consent, and writes the
-//! chat files; the plugin reaches them only through the host AI
-//! interface. Once you allow web search, the model may also search the
-//! web and read pages, which Noura does for the plugin.
+//! Noura keeps the providers and their keys, and writes the chat files;
+//! the plugin reaches them only through the host AI interface. Once you
+//! add a Brave Search key, the model may also search the web and read
+//! pages, which Noura does for the plugin.
 //!
 //! Build it with `crates/plugin-sdk/build-plugins.sh`, then install the
 //! folder holding `plugin.toml` and the built `ai_plugin.wasm`.

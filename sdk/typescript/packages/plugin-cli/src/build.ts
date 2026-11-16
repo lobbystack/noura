@@ -86,6 +86,9 @@ export const settings = part(exported('settings'), {
 	renderSettings: nothing,
 	handleSettingsEvent: ignore,
 });
+export const kernelEvents = part(exported('kernelEvents'), {
+	handleKernelEvent: ignore,
+});
 export const tools = part(exported('tools'), {
 	tools: nothing,
 	callTool: (name) => {

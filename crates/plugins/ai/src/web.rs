@@ -272,8 +272,8 @@ mod tests {
             ]
         );
         assert!(matches!(
-            shown_result(r#"{"error":{"code":"web_consent_required","message":"Allow it."}}"#),
-            Some(Shown::Failed(message)) if message == "Allow it."
+            shown_result(r#"{"error":{"code":"web_search_key_missing","message":"Add a key."}}"#),
+            Some(Shown::Failed(message)) if message == "Add a key."
         ));
         assert!(matches!(
             shown_result(r#"{"url":"https://garden.example.com/","text":"Grow."}"#),

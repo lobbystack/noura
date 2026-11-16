@@ -1,20 +1,6 @@
-//! Provider settings: validation, secure endpoints, credentials, and the
-//! fingerprint that ties consent to one provider configuration.
+//! Provider settings: validation, secure endpoints and credentials.
 
 use super::*;
-
-pub(super) fn provider_fingerprint(provider: &AiProviderConfig) -> String {
-    let mut fingerprint = blake3::Hasher::new();
-    for value in [
-        &provider.kind,
-        provider.endpoint.as_deref().unwrap_or(""),
-        &provider.model,
-    ] {
-        fingerprint.update(&(value.len() as u64).to_le_bytes());
-        fingerprint.update(value.as_bytes());
-    }
-    fingerprint.finalize().to_hex().to_string()
-}
 
 /// The provider kinds Noura offers, each with the name Settings shows, in
 /// the order it lists them. Each is one that `genai` connects to.

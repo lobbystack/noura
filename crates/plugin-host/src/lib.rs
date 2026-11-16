@@ -43,9 +43,15 @@ pub use instance::{
     PluginError, Registration, Services, SettingsSection, SortOrder, Submission, Table, Target,
     Tool, Value, VirtualList, VirtualRow,
 };
+pub use instance::{
+    AiCompletion, AiCompletionRequest, KernelEvent, MenuBarEntry, MenuBarEntryKind, MicrophoneUse,
+    PasteMethod, Recording, RecordingOptions, RecordingState, ShortcutState, SpeechChannel,
+    SpeechMicrophone, SpeechModel, SpeechPreferences, SpeechSegment, SpeechSource,
+};
 pub use manifest::{
-    Capability, Grant, INTERFACE_VERSIONS, MANIFEST_FILE, Platform, PluginManifest, read_manifest,
-    valid_command_id, valid_plugin_id,
+    Capability, Grant, INTERFACE_VERSIONS, MANIFEST_FILE, MODIFIERS, NAMED_KEYS, Platform,
+    PluginManifest, ShortcutDeclaration, read_manifest, valid_command_id, valid_keys,
+    valid_plugin_id,
 };
 pub use memory::{process_memory, release_free_memory};
 pub use object_types::{KERNEL_TYPES, ObjectTypes, PLUGIN_TYPES, SERVICE_WRITTEN_TYPES, TypeError};
@@ -55,8 +61,8 @@ pub use running::{
 };
 pub use runtime::{Backend, Limits, StoreLimiter, wasmtime_config};
 pub use services::{
-    AiChats, ClockReading, DeviceClock, Entry, EntryKind, FileRead, Listed, Navigation, NewObject,
-    ObjectChanges, ObjectRead, ObjectRecord, PropertyProblem, ServiceError, WorkspaceObjects,
-    WorkspacePath, WorkspaceReads,
+    AiChats, ClockReading, DeviceClock, Entry, EntryKind, FileRead, Listed, MenuBarService,
+    Navigation, NewObject, ObjectChanges, ObjectRead, ObjectRecord, PasteService, PropertyProblem,
+    ServiceError, ShortcutService, SpeechService, WorkspaceObjects, WorkspacePath, WorkspaceReads,
 };
 pub use view::{MAX_DEPTH, MAX_NODES, MAX_ROWS, View, ViewError, ViewKind, ViewNode, check_rows};
