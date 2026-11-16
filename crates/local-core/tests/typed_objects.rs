@@ -76,8 +76,8 @@ fn a_created_object_takes_its_types_prefix_defaults_and_declared_order() {
         "{}",
         created.value.id
     );
-    assert_eq!(created.value.relative_path, "recipes/Soup.md");
-    let text = read(&workspace, "recipes/Soup.md");
+    assert_eq!(created.value.relative_path, "Recipes/Soup.md");
+    let text = read(&workspace, "Recipes/Soup.md");
     let expected_start = format!(
         "---\nid: {}\ntype: recipe\ncourse: main\nservings: 4\nzeta: 1\ncreated: ",
         created.value.id
@@ -141,7 +141,7 @@ fn an_update_passes_the_schema_and_keeps_unknown_properties_and_the_body() {
     let created = engine
         .create_object_checked(recipe("Soup", json!({"zeta": "kept"})), &schemas())
         .unwrap();
-    let before = read(&workspace, "recipes/Soup.md");
+    let before = read(&workspace, "Recipes/Soup.md");
 
     let error = engine
         .update_object_checked(
@@ -155,7 +155,7 @@ fn an_update_passes_the_schema_and_keeps_unknown_properties_and_the_body() {
         error.details,
         Some(json!({"property": "servings", "code": "wrong_type"}))
     );
-    assert_eq!(read(&workspace, "recipes/Soup.md"), before);
+    assert_eq!(read(&workspace, "Recipes/Soup.md"), before);
 
     let updated = engine
         .update_object_checked(
@@ -164,7 +164,7 @@ fn an_update_passes_the_schema_and_keeps_unknown_properties_and_the_body() {
             &schemas(),
         )
         .unwrap();
-    let text = read(&workspace, "recipes/Soup.md");
+    let text = read(&workspace, "Recipes/Soup.md");
     assert!(
         text.contains("type: recipe\ncourse: dessert\nservings: 2\nzeta: kept\ncreated: "),
         "{text}"
@@ -183,8 +183,8 @@ fn an_update_with_an_old_revision_changes_nothing() {
     let created = engine
         .create_object_checked(recipe("Soup", json!({})), &schemas())
         .unwrap();
-    let edited = read(&workspace, "recipes/Soup.md").replace("Simmer.", "Boil.");
-    std::fs::write(workspace.path().join("recipes/Soup.md"), &edited).unwrap();
+    let edited = read(&workspace, "Recipes/Soup.md").replace("Simmer.", "Boil.");
+    std::fs::write(workspace.path().join("Recipes/Soup.md"), &edited).unwrap();
 
     let error = engine
         .update_object_checked(
@@ -195,7 +195,7 @@ fn an_update_with_an_old_revision_changes_nothing() {
         .unwrap_err();
 
     assert_eq!(error.code, "revision_conflict");
-    assert_eq!(read(&workspace, "recipes/Soup.md"), edited);
+    assert_eq!(read(&workspace, "Recipes/Soup.md"), edited);
 }
 
 #[test]
@@ -204,8 +204,8 @@ fn reads_come_from_the_files_after_an_outside_edit() {
     let created = engine
         .create_object_checked(recipe("Soup", json!({})), &schemas())
         .unwrap();
-    let edited = read(&workspace, "recipes/Soup.md").replace("servings: 2", "servings: 9");
-    std::fs::write(workspace.path().join("recipes/Soup.md"), &edited).unwrap();
+    let edited = read(&workspace, "Recipes/Soup.md").replace("servings: 2", "servings: 9");
+    std::fs::write(workspace.path().join("Recipes/Soup.md"), &edited).unwrap();
     let revision = workspace_format::revision(edited.as_bytes());
 
     let object = engine.read_object(&created.value.id).unwrap();
@@ -228,7 +228,7 @@ fn a_write_that_cant_reach_disk_fails_and_neither_the_index_nor_an_event_reports
     let created = engine
         .create_object_checked(recipe("Soup", json!({})), &schemas())
         .unwrap();
-    let before = read(&workspace, "recipes/Soup.md");
+    let before = read(&workspace, "Recipes/Soup.md");
     let folder = workspace.path().join("recipes");
     std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
     let mut events = engine.subscribe();
@@ -244,7 +244,7 @@ fn a_write_that_cant_reach_disk_fails_and_neither_the_index_nor_an_event_reports
     assert!(update.is_err());
     assert!(create.is_err());
     assert!(events.try_recv().is_err(), "no event reports the writes");
-    assert_eq!(read(&workspace, "recipes/Soup.md"), before);
+    assert_eq!(read(&workspace, "Recipes/Soup.md"), before);
     let listed = engine.list_objects("recipe").unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].revision, created.revision);

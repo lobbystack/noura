@@ -116,7 +116,7 @@ fn a_message_and_its_answer_reach_the_chat_files_in_order() {
     // A new chat's files wait for its first message, so its folder takes
     // the title too.
     assert!(
-        chat_file.0.starts_with("chats/plan-the-garden--"),
+        chat_file.0.starts_with("Chats/plan-the-garden--"),
         "{}",
         chat_file.0
     );
@@ -456,8 +456,8 @@ fn a_message_noura_couldnt_write_comes_back_to_the_message_box() {
         return;
     };
     let id = chat.id.clone();
-    // The chats folder takes no new file, as on a full or read-only disk.
-    let chats = chat.fixture.root.join("chats");
+    // The Chats folder takes no new file, as on a full or read-only disk.
+    let chats = chat.fixture.root.join("Chats");
     std::fs::create_dir_all(&chats).unwrap();
     std::fs::set_permissions(&chats, std::fs::Permissions::from_mode(0o555)).unwrap();
 

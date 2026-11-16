@@ -174,7 +174,7 @@ fn a_new_project_keeps_its_overview_typed_across_saves_and_a_status_change() {
         return;
     };
     name_new_project(&mut app, "Garden plan");
-    let path = "projects/Garden plan/Garden plan.md";
+    let path = "Projects/Garden plan/Garden plan.md";
     let tab = app.active_tab().expect("the new project opens").id();
     let body = |fixture: &Fixture| {
         let text = String::from_utf8(fixture.read(path)).unwrap();

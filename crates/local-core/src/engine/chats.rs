@@ -8,6 +8,10 @@ use super::*;
 /// changed. Each try walks the workspace with every file change held off.
 const CHAT_RECOVERY_RETRY: Duration = Duration::from_secs(5);
 
+/// The folder new chats go in. An existing folder whose name differs only
+/// in case, such as `chats/`, takes them instead.
+const CHATS_FOLDER: &str = "Chats";
+
 /// A chat recovery that failed, and how things stood just after.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct FailedChatRecovery {
@@ -55,7 +59,10 @@ impl WorkspaceEngine {
         let mut chat = Chat {
             id,
             title: title.into(),
-            relative_path: format!("chats/{slug}--{short_id}/chat.md"),
+            relative_path: crate::path::match_existing_folder_case(
+                &self.root,
+                &format!("{CHATS_FOLDER}/{slug}--{short_id}/chat.md"),
+            ),
             revision: String::new(),
             created: now.clone(),
             updated: now,
@@ -994,7 +1001,7 @@ impl WorkspaceEngine {
                 .parent()
                 .and_then(|value| value.file_name())
                 .and_then(|value| value.to_str())
-                != Some("chats")
+                .is_none_or(|name| !name.eq_ignore_ascii_case(CHATS_FOLDER))
         {
             return Ok(false);
         }

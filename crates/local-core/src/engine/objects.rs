@@ -57,7 +57,9 @@ impl WorkspaceEngine {
         properties.remove("updated");
         let id = new_object_id(&input.object_type);
         let relative_path = match input.relative_path {
-            Some(relative_path) => relative_path,
+            Some(relative_path) => {
+                crate::path::match_existing_folder_case(&self.root, &relative_path)
+            }
             None => self.free_object_path(&input.object_type, &input.title),
         };
         let object = WorkspaceObject {
@@ -111,7 +113,9 @@ impl WorkspaceEngine {
             properties.remove(key);
         }
         let relative_path = match input.relative_path {
-            Some(relative_path) => relative_path,
+            Some(relative_path) => {
+                crate::path::match_existing_folder_case(&self.root, &relative_path)
+            }
             None => self.free_object_path(&input.object_type, &input.title),
         };
         let mut object = WorkspaceObject {
@@ -282,7 +286,10 @@ impl WorkspaceEngine {
             let room = workspace_format::MAX_FILE_NAME_CHARS - suffix.chars().count();
             let stem: String = base.chars().take(room).collect();
             let name = format!("{}{suffix}", stem.trim_end());
-            candidate = workspace_format::default_managed_object_path(object_type, &name);
+            candidate = crate::path::match_existing_folder_case(
+                &self.root,
+                &workspace_format::default_managed_object_path(object_type, &name),
+            );
             if std::fs::symlink_metadata(self.root.join(&candidate)).is_err() {
                 break;
             }
@@ -939,9 +946,123 @@ mod tests {
 
         assert_eq!(created.value.body, "");
         assert!(created.value.properties.is_empty());
-        assert_eq!(created.value.relative_path, "projects/Portable project.md");
+        assert_eq!(created.value.relative_path, "Projects/Portable project.md");
         assert_eq!(created.value.title, "Portable project");
         assert!(workspace.path().join(created.value.relative_path).is_file());
+    }
+
+    /// A workspace made before folders took capitals keeps its `notes/`
+    /// and `tasks/`: objects stay where they are, Noura finds them by ID,
+    /// and new ones join the lowercase folder instead of a second one.
+    #[test]
+    fn lowercase_type_folders_keep_working_and_get_no_capitalized_twin() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let note_id = "note_01j00000000000000000000000";
+        let task_id = "task_01j00000000000000000000000";
+        std::fs::create_dir_all(workspace.path().join("notes")).unwrap();
+        std::fs::create_dir_all(workspace.path().join("tasks")).unwrap();
+        std::fs::write(
+            workspace.path().join("notes/Old.md"),
+            format!("---\nid: {note_id}\ntype: note\n---\nOld\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.path().join("tasks/Old task.md"),
+            format!("---\nid: {task_id}\ntype: task\n---\n"),
+        )
+        .unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        engine.reconcile().unwrap();
+        assert_eq!(
+            engine.read_object(note_id).unwrap().relative_path,
+            "notes/Old.md"
+        );
+        assert_eq!(
+            engine.read_object(task_id).unwrap().relative_path,
+            "tasks/Old task.md"
+        );
+
+        let create = |object_type: &str, title: &str| {
+            engine
+                .create_object(CreateObjectInput {
+                    object_type: object_type.into(),
+                    title: title.into(),
+                    body: String::new(),
+                    relative_path: None,
+                    properties: BTreeMap::new(),
+                })
+                .unwrap()
+                .value
+        };
+        assert_eq!(create("note", "New").relative_path, "notes/New.md");
+        assert_eq!(
+            create("task", "New task").relative_path,
+            "tasks/New task.md"
+        );
+        assert_eq!(
+            create("project", "Garden").relative_path,
+            "Projects/Garden.md"
+        );
+        let given = engine
+            .create_object(CreateObjectInput {
+                object_type: "note".into(),
+                title: "Given".into(),
+                body: String::new(),
+                relative_path: Some("Notes/Given.md".into()),
+                properties: BTreeMap::new(),
+            })
+            .unwrap()
+            .value;
+        assert_eq!(given.relative_path, "notes/Given.md");
+        let mut folders: Vec<String> = std::fs::read_dir(workspace.path())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_type().unwrap().is_dir())
+            .map(|entry| entry.file_name().into_string().unwrap())
+            .filter(|name| !name.starts_with('.'))
+            .collect();
+        folders.sort();
+        assert_eq!(folders, ["Projects", "notes", "tasks"]);
+    }
+
+    /// On a case-insensitive file system, such as macOS's and Windows's
+    /// defaults, writing `Notes/x.md` would land in `notes/` while Noura
+    /// recorded the other spelling. The path Noura records must be the
+    /// one on disk.
+    #[test]
+    fn a_case_insensitive_disk_records_the_folder_it_already_has() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join("notes")).unwrap();
+        let insensitive = workspace.path().join("NOTES").exists();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        let created = engine
+            .create_object(CreateObjectInput {
+                object_type: "note".into(),
+                title: "Plan".into(),
+                body: String::new(),
+                relative_path: None,
+                properties: BTreeMap::new(),
+            })
+            .unwrap()
+            .value;
+        assert_eq!(created.relative_path, "notes/Plan.md");
+        let names: Vec<String> = std::fs::read_dir(workspace.path().join("notes"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names, ["Plan.md"]);
+        // The default macOS and Windows disks ignore case; say so when the
+        // test ran on one that doesn't.
+        if !insensitive {
+            eprintln!("this disk keeps case, so only the folder choice was checked");
+        }
     }
 
     #[test]
@@ -1154,13 +1275,13 @@ mod tests {
         let second = create("Team sync");
         assert_eq!(
             (first.relative_path.as_str(), first.title.as_str()),
-            ("notes/Team sync.md", "Team sync")
+            ("Notes/Team sync.md", "Team sync")
         );
         assert_eq!(
             (second.relative_path.as_str(), second.title.as_str()),
-            ("notes/Team sync 1.md", "Team sync 1")
+            ("Notes/Team sync 1.md", "Team sync 1")
         );
-        let bytes = std::fs::read_to_string(workspace.path().join("notes/Team sync.md")).unwrap();
+        let bytes = std::fs::read_to_string(workspace.path().join("Notes/Team sync.md")).unwrap();
         assert!(bytes.ends_with("---\nBody\n") && !bytes.contains("# "));
     }
 

@@ -374,7 +374,7 @@ mod durability_tests {
         });
         let chat = created.unwrap().value;
         let folder = chat.relative_path.trim_end_matches("/chat.md").to_owned();
-        assert_synced(&engine, &synced, &["", "chats", &folder]);
+        assert_synced(&engine, &synced, &["", "Chats", &folder]);
 
         let (appended, synced) = durability_probe::record(|| {
             engine.append_chat_user_message(crate::AppendChatUserMessageInput {

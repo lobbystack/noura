@@ -337,8 +337,8 @@ fn the_add_field_creates_a_task_due_on_the_devices_date_then_clears() {
 
 #[test]
 fn an_add_that_fails_keeps_the_field_and_says_why() {
-    // A file named `tasks` stands where the tasks folder goes.
-    let fixture = Fixture::new(&[("tasks", b"in the way")]);
+    // A file named `Tasks` stands where the Tasks folder goes.
+    let fixture = Fixture::new(&[("Tasks", b"in the way")]);
     let mut app = fixture.app();
     let Some(_folder) = with_tasks(&mut app) else {
         return;

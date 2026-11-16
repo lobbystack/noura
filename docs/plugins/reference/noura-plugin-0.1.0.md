@@ -312,9 +312,11 @@ A new object.
 
 - <a id="new_object.path"></a>`path`: option<`string`>
   <p>Where to write the file, relative to the workspace, ending in `.md`.
-  Without it the file goes in a folder named after the type, as
-  `recipes/<title>.md` for `recipe`, with a number added when the
-  name is taken. A plugin that wants another layout passes the path.
+  Without it the file goes in a folder named after the type in the
+  plural with a capital letter, as `Recipes/<title>.md` for `recipe`,
+  with a number added when the name is taken. A plugin that wants
+  another layout passes the path. A folder on the path that exists
+  with another letter case, such as `recipes/`, takes the file.
 
 - <a id="new_object.body"></a>`body`: `string`
   <p>The Markdown after the frontmatter.

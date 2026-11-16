@@ -55,7 +55,7 @@ fn chats_are_canonical_revision_checked_and_rebuildable() {
         created
             .value
             .relative_path
-            .starts_with("chats/release-planning--")
+            .starts_with("Chats/release-planning--")
     );
     assert!(created.value.relative_path.ends_with("/chat.md"));
 

@@ -407,7 +407,18 @@ pub fn new_chat(app: &mut App) {
 /// text.
 pub fn chat_files(root: &std::path::Path) -> Vec<(String, String)> {
     let mut found = Vec::new();
-    walk(&root.join("chats"), root, &mut found);
+    // New chats go in `Chats/`; the fixtures seed older ones in `chats/`.
+    // Read the names the disk holds, so a disk that ignores case doesn't
+    // list one folder twice.
+    for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.eq_ignore_ascii_case("chats"))
+        {
+            walk(&entry.path(), root, &mut found);
+        }
+    }
     found.sort();
     found
 }

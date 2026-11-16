@@ -239,8 +239,8 @@ fn a_task_created_by_another_plugin_gets_the_task_defaults_in_tasks() {
 
     let id = created["id"].as_str().unwrap();
     assert!(id.starts_with("task_"), "{id}");
-    assert_eq!(created["path"], "tasks/Rake the leaves.md");
-    let bytes = fixture.read("tasks/Rake the leaves.md");
+    assert_eq!(created["path"], "Tasks/Rake the leaves.md");
+    let bytes = fixture.read("Tasks/Rake the leaves.md");
     assert_eq!(created["revision"], revision(&bytes));
     let text = String::from_utf8(bytes).unwrap();
     let start =

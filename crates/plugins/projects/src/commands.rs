@@ -4,7 +4,7 @@
 //!
 //! - `create`: `title`, and optionally `properties` and `body`. A project
 //!   without a status starts planned, and its file goes in a folder of its
-//!   own, as `projects/Garden/Garden.md`.
+//!   own, as `Projects/Garden/Garden.md`.
 //! - `update`: `id`, `expected_revision`, and `properties` to set, a
 //!   `null` clearing one, and optionally a new `body`.
 //!
@@ -99,7 +99,7 @@ fn create(input: &Map<String, Value>) -> Result<Object, String> {
 }
 
 /// Create a project titled `title`, in a folder of its own, as
-/// `projects/Garden/Garden.md`. When a file already has that path, the
+/// `Projects/Garden/Garden.md`. When a file already has that path, the
 /// project takes the next free name of `Garden 1`, `Garden 2` and so on,
 /// for its folder and its file.
 pub(crate) fn new_project(

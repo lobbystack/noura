@@ -811,13 +811,25 @@ pub fn valid_object_id(id: &str, object_type: &str) -> bool {
 
 /// Returns the canonical initial file location for a managed object: a
 /// file named after its title, since the title is the file name, in a
-/// folder named after its type, as `recipes/<title>.md`. A caller that wants
+/// folder named after its type, as `Recipes/<title>.md`. A caller that wants
 /// another layout passes its own path. The filesystem adapter picks another
-/// name when this one is taken.
+/// name when this one is taken, and keeps an existing folder whose name
+/// differs only in case, such as `recipes/`.
 pub fn default_managed_object_path(object_type: &str, title: &str) -> String {
     let name = normalize_file_name(title);
     let name = if name.is_empty() { "Untitled" } else { &name };
-    format!("{object_type}s/{name}.md")
+    format!("{}/{name}.md", type_folder(object_type))
+}
+
+/// The folder Noura creates for a type's new objects: the type's name in
+/// the plural, starting with a capital letter, as `Notes` for `note` and
+/// `Tasks` for `task`.
+pub fn type_folder(object_type: &str) -> String {
+    let mut letters = object_type.chars();
+    match letters.next() {
+        Some(first) => format!("{}{}s", first.to_uppercase(), letters.as_str()),
+        None => String::new(),
+    }
 }
 
 fn validate_timestamp(value: &str) -> Result<(), FormatError> {
@@ -1051,7 +1063,7 @@ mod tests {
         assert_eq!(normalize_file_name("Auxiliary"), "Auxiliary");
         assert_eq!(
             default_managed_object_path("recipe", "Plan."),
-            "recipes/Plan.md"
+            "Recipes/Plan.md"
         );
     }
 
@@ -1059,17 +1071,17 @@ mod tests {
     fn new_objects_are_named_after_their_title() {
         assert_eq!(
             default_managed_object_path("note", " Team: sync "),
-            "notes/Team sync.md"
+            "Notes/Team sync.md"
         );
         // Every type gets a folder named after it, projects too: the
         // Projects plugin picks a folder of each project's own.
         assert_eq!(
             default_managed_object_path("project", "Launch"),
-            "projects/Launch.md"
+            "Projects/Launch.md"
         );
         assert_eq!(
             default_managed_object_path("task", "///"),
-            "tasks/Untitled.md"
+            "Tasks/Untitled.md"
         );
     }
 
@@ -1100,6 +1112,7 @@ mod tests {
         object_body: Vec<ObjectBodyFixture>,
         titles: Vec<TitleFixture>,
         file_names: Vec<FileNameFixture>,
+        default_paths: Vec<DefaultPathFixture>,
         rewrites: Vec<RewriteFixture>,
         domain_markers: Vec<DomainMarkerFixture>,
     }
@@ -1118,6 +1131,15 @@ mod tests {
         markdown: String,
         title: String,
         body: String,
+    }
+
+    #[derive(Deserialize)]
+    struct DefaultPathFixture {
+        name: String,
+        #[serde(rename = "type")]
+        object_type: String,
+        title: String,
+        path: String,
     }
 
     #[derive(Deserialize)]
@@ -1150,6 +1172,18 @@ mod tests {
             assert_eq!(
                 is_domain_marker(&fixture.file),
                 fixture.marker,
+                "{}",
+                fixture.name
+            );
+        }
+    }
+
+    #[test]
+    fn new_objects_go_in_capitalized_folders_as_the_shared_fixtures_say() {
+        for fixture in conformance().default_paths {
+            assert_eq!(
+                default_managed_object_path(&fixture.object_type, &fixture.title),
+                fixture.path,
                 "{}",
                 fixture.name
             );
@@ -1299,7 +1333,7 @@ mod tests {
         .unwrap();
         assert!(valid_object_id(&note.id, "note"));
         assert_eq!(note.title, "Browser note");
-        assert_eq!(note.relative_path, "notes/Browser note.md");
+        assert_eq!(note.relative_path, "Notes/Browser note.md");
         assert!(!note.properties.contains_key("id"));
     }
 

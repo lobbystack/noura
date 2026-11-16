@@ -584,7 +584,7 @@ fn noura_s_tool_prompt_names_the_tool_its_plugin_and_input_and_escape_denies() {
     assert!(
         !tooled
             .workspace
-            .join("tasks/Water the tomatoes.md")
+            .join("Tasks/Water the tomatoes.md")
             .exists()
     );
     assert_eq!(tooled.provider.requests.load(Ordering::SeqCst), 2);
@@ -610,7 +610,7 @@ fn tab_and_enter_allow_the_call_once() {
     assert!(
         tooled
             .workspace
-            .join("tasks/Water the tomatoes.md")
+            .join("Tasks/Water the tomatoes.md")
             .exists()
     );
 }
