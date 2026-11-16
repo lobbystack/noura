@@ -731,14 +731,16 @@ async fn a_device_holds_a_bounded_number_of_channels() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_silent_channel_closes_and_a_ping_keeps_one_open() {
     let (store, _dir) = sqlite().await;
+    // Pings come ten times as often as the idle limit, so a runner that
+    // stalls for a while between two of them still keeps the channel open.
     let channels = ChannelLimits {
-        idle: Duration::from_millis(400),
+        idle: Duration::from_millis(1500),
         ..ChannelLimits::default()
     };
     let world = with_channels(store, channels).await;
     let mut silent = world.channel(0).await;
     let mut pinging = world.channel(1).await;
-    for _ in 0..6 {
+    for _ in 0..14 {
         tokio::time::sleep(Duration::from_millis(150)).await;
         pinging
             .0
