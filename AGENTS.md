@@ -14,7 +14,7 @@ Noura is "The open workspace for humans and AI." It is a local-first workspace w
 - ALWAYS prefer mature permissively licensed existing implementations over custom infrastructure when reasonable.
 - DO NOT change locked architecture decisions without documenting the reason.
 - Managed sync MUST be end-to-end encrypted. Hosted infrastructure must not require plaintext workspace content to store, synchronize, route, or index workspace data.
-- AI systems may access plaintext workspace content only on an authorized client or device, or through an explicitly authorized agent action. Sending content to an AI provider requires explicit authorization.
+- AI systems may access plaintext workspace content only on an authorized client or device, or through an explicitly authorized agent action.
 
 Files win whenever a file and a derived index disagree. Users must be able to delete every `index.sqlite` file and rebuild the same workspace state from ordinary files. Stable object IDs survive moves and renames. Plugins store durable data in workspace files, not private database tables.
 
