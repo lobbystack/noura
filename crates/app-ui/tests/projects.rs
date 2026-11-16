@@ -18,8 +18,6 @@ use support::{
 const TASKS_MANIFEST: &str = include_str!("../../plugins/tasks/plugin.toml");
 const PROJECTS_MANIFEST: &str = include_str!("../../plugins/projects/plugin.toml");
 
-const GARDEN: &str = "project_01jbcdefghjkmnpqrstvwxyz0h";
-
 const PROJECT: &str = "---\nid: project_01jbcdefghjkmnpqrstvwxyz0h\ntype: project\nstatus: active\n\
                        created: 2026-10-01T10:00:00Z\nupdated: 2026-10-01T10:00:00Z\n---\n\
                        Grow vegetables.\n";
@@ -30,7 +28,7 @@ const NOTE: &str = "---\nid: note_01jbcdefghjkmnpqrstvwxyz0a\ntype: note\n\
 fn task(suffix: &str, properties: &str) -> String {
     format!(
         "---\nid: task_01jbcdefghjkmnpqrstvwxyz0{suffix}\ntype: task\n{properties}\
-         project: {GARDEN}\ncreated: 2026-10-01T10:00:00Z\nupdated: 2026-10-01T10:00:00Z\n\
+         project: '[[Garden]]'\ncreated: 2026-10-01T10:00:00Z\nupdated: 2026-10-01T10:00:00Z\n\
          ---\nNotes.\n"
     )
 }

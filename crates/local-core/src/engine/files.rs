@@ -314,6 +314,8 @@ impl WorkspaceEngine {
         drop(guard);
         self.reconcile_after_change("folder_move");
         self.announce_own_change(&[from, to]);
+        self.note_moved_folder(from, to);
+        self.follow_moved_links();
         Ok(())
     }
 
@@ -351,6 +353,8 @@ impl WorkspaceEngine {
         drop(guard);
         self.reconcile_after_change(operation);
         self.announce_own_change(&[from, to]);
+        self.note_moved_links([(from.to_owned(), to.to_owned())]);
+        self.follow_moved_links();
         Ok(())
     }
 

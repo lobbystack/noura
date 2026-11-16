@@ -34,6 +34,13 @@
 				"nullable": true
 			},
 			{
+				"name": "source",
+				"kind": {
+					"reference": "*"
+				},
+				"nullable": true
+			},
+			{
 				"name": "due",
 				"kind": "date",
 				"nullable": true
@@ -151,13 +158,36 @@
 			}
 		},
 		{
-			"name": "task project references use stable IDs",
+			"name": "a task links to its project and its source by title",
 			"properties": {
-				"project": "project_not-an-id"
+				"project": "[[Garden]]",
+				"source": "[[Meetings/Team sync/Team sync]]"
+			},
+			"expected": {
+				"project": "[[Garden]]",
+				"source": "[[Meetings/Team sync/Team sync]]",
+				"status": "todo",
+				"priority": "medium"
+			}
+		},
+		{
+			"name": "a project holding a stable ID instead of a link",
+			"properties": {
+				"project": "project_01j00000000000000000000000"
 			},
 			"error": {
 				"code": "invalid_reference",
 				"property": "project"
+			}
+		},
+		{
+			"name": "a source that isn't a link",
+			"properties": {
+				"source": "Team sync"
+			},
+			"error": {
+				"code": "invalid_reference",
+				"property": "source"
 			}
 		},
 		{
@@ -194,7 +224,7 @@
 			"name": "a project reference that is a list",
 			"properties": {
 				"project": [
-					"project_01j00000000000000000000000"
+					"[[Garden]]"
 				]
 			},
 			"error": {
@@ -216,8 +246,8 @@
 	"serialization": [
 		{
 			"name": "task with every task field",
-			"markdown": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: in-progress\npriority: high\nproject: project_01j00000000000000000000000\ndue: 2026-09-04\nkanban_order: a0\nestimate: 3\ntags:\n- release\n- docs\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n",
-			"canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: in-progress\npriority: high\nproject: project_01j00000000000000000000000\ndue: 2026-09-04\nkanban_order: a0\nestimate: 3\ntags:\n- release\n- docs\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n"
+			"markdown": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: in-progress\npriority: high\nproject: '[[Release 0.3]]'\ndue: 2026-09-04\nkanban_order: a0\nestimate: 3\ntags:\n- release\n- docs\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n",
+			"canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: in-progress\npriority: high\nproject: '[[Release 0.3]]'\ndue: 2026-09-04\nkanban_order: a0\nestimate: 3\ntags:\n- release\n- docs\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n"
 		},
 		{
 			"name": "task with a null project and no due date",
@@ -226,8 +256,8 @@
 		},
 		{
 			"name": "declared properties come first in declared order, then unknown ones by key",
-			"markdown": "---\nid: task_01j00000000000000000000000\ntype: task\ndue: 2026-09-04\ncustom: kept\nproject: project_01j00000000000000000000000\npriority: high\nstatus: in-progress\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n",
-			"canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: in-progress\npriority: high\nproject: project_01j00000000000000000000000\ndue: 2026-09-04\ncustom: kept\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n"
+			"markdown": "---\nid: task_01j00000000000000000000000\ntype: task\ndue: 2026-09-04\ncustom: kept\nproject: '[[Release 0.3]]'\npriority: high\nstatus: in-progress\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n",
+			"canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: in-progress\npriority: high\nproject: '[[Release 0.3]]'\ndue: 2026-09-04\ncustom: kept\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n"
 		},
 		{
 			"name": "kanban_order comes before an unknown key that sorts ahead of it",

@@ -44,6 +44,7 @@ mod drafts;
 mod durable;
 mod files;
 mod import;
+mod links;
 mod manifest;
 mod objects;
 mod own_writes;
@@ -124,6 +125,14 @@ pub struct WorkspaceEngine {
     collaboration_sessions: Mutex<HashMap<String, (String, String, bool)>>,
     collaboration_presence: Mutex<HashMap<String, CollaborationPresenceCacheEntry>>,
     system_trash: std::sync::RwLock<Option<SystemTrash>>,
+    /// Moves whose links Noura hasn't followed yet, from and to.
+    moved_links: Mutex<Vec<(String, String)>>,
+    /// The files whose links to a moved file Noura couldn't update, with
+    /// the link they still hold.
+    stale_links: Mutex<std::collections::BTreeMap<String, links::StaleLink>>,
+    /// Test hook: runs before each link rewrite writes its file.
+    #[cfg(any(test, feature = "test-hooks"))]
+    link_rewrite_hook: Mutex<Option<links::LinkRewriteHook>>,
 }
 
 impl WorkspaceEngine {
@@ -322,6 +331,10 @@ impl WorkspaceEngine {
             collaboration_sessions: Mutex::new(HashMap::new()),
             collaboration_presence: Mutex::new(HashMap::new()),
             system_trash: std::sync::RwLock::new(None),
+            moved_links: Mutex::new(Vec::new()),
+            stale_links: Mutex::new(Default::default()),
+            #[cfg(any(test, feature = "test-hooks"))]
+            link_rewrite_hook: Mutex::new(None),
         };
         engine.recover_pending_chat_mutations()?;
         if rebuild {
@@ -364,6 +377,7 @@ impl WorkspaceEngine {
         if let Ok(scan) = self.scan_state.lock() {
             diagnostics.extend(scan.diagnostics.iter().cloned());
         }
+        diagnostics.extend(self.stale_link_diagnostics());
         WorkspaceState {
             phase: WorkspacePhase::Ready,
             workspace_id: Some(self.current_workspace_id()),
@@ -423,6 +437,7 @@ impl WorkspaceEngine {
             .map_err(|error| CoreError::io(error, operation, self.lock_path.to_str()))?;
         file.lock_exclusive()
             .map_err(|error| CoreError::io(error, operation, self.lock_path.to_str()))?;
+        WRITE_LOCKS_HELD.with(|held| held.set(held.get() + 1));
         Ok(WorkspaceLock { file, _gate: gate })
     }
 
@@ -680,7 +695,20 @@ struct WorkspaceLock<'a> {
 impl Drop for WorkspaceLock<'_> {
     fn drop(&mut self) {
         let _ = self.file.unlock();
+        WRITE_LOCKS_HELD.with(|held| held.set(held.get().saturating_sub(1)));
     }
+}
+
+thread_local! {
+    /// How many [`WorkspaceLock`]s this thread holds. The file lock isn't
+    /// reentrant, so work that takes it, such as following moved links,
+    /// waits while the thread holds one.
+    static WRITE_LOCKS_HELD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether this thread holds the workspace's write lock.
+fn holds_write_lock() -> bool {
+    WRITE_LOCKS_HELD.with(|held| held.get() > 0)
 }
 
 fn lock_error(operation: &str) -> CoreError {

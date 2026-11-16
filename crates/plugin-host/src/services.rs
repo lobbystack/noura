@@ -131,6 +131,23 @@ pub trait WorkspaceReads: Send + Sync {
     /// The object the file at `path` holds, even when another file holds
     /// the same ID. A file that holds no object is `NotFound`.
     fn read_object_at(&self, path: &WorkspacePath) -> Result<ObjectRead, ServiceError>;
+
+    /// The link Noura writes for the object with the stable ID `id`, such
+    /// as `[[Garden]]`.
+    fn link_to(&self, id: &str) -> Result<String, ServiceError> {
+        Err(ServiceError::NotFound(id.to_owned()))
+    }
+
+    /// The object `link` leads to from the file at `from`, or from the top
+    /// of the workspace, or `None` when it leads to no object.
+    fn resolve_link(
+        &self,
+        link: &str,
+        from: Option<&WorkspacePath>,
+    ) -> Result<Option<ObjectRead>, ServiceError> {
+        let _ = (link, from);
+        Ok(None)
+    }
 }
 
 /// A property whose value doesn't fit its object type's schema.

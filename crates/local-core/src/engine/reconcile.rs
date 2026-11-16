@@ -61,7 +61,9 @@ impl WorkspaceEngine {
 
     /// Walk the whole workspace and bring the index in line with the files.
     pub fn reconcile(&self) -> Result<()> {
-        self.reconcile_forced_with_source(&HashSet::new(), EventSource::Reconciliation)
+        self.reconcile_forced_with_source(&HashSet::new(), EventSource::Reconciliation)?;
+        self.follow_moved_links();
+        Ok(())
     }
 
     /// Walk after a file operation this app performed, so the resulting events
@@ -263,6 +265,15 @@ impl WorkspaceEngine {
         index.reconcile_markdown(&changed, &removed)?;
         let after = index.object_heads(&ids)?;
         drop(index);
+        // Sync brings the rewrites the device that moved the file made, so
+        // only this device's moves and other apps' move links here.
+        if source != EventSource::Sync {
+            self.note_moved_links(after.iter().filter_map(|(id, head)| {
+                let previous = before.get(id)?;
+                (previous.relative_path != head.relative_path)
+                    .then(|| (previous.relative_path.clone(), head.relative_path.clone()))
+            }));
+        }
         self.emit_object_changes(&before, &after, source);
         self.emit("search:index-updated", source, serde_json::json!({}));
         Ok(())
@@ -297,6 +308,7 @@ impl WorkspaceEngine {
                     serde_json::json!({ "paths": scan.touched, "rescanned": true }),
                 );
             }
+            self.follow_moved_links();
             return Ok(WatchPoll {
                 changed: scan.touched,
                 rescanned: true,
@@ -367,6 +379,7 @@ impl WorkspaceEngine {
                 EventSource::External,
                 serde_json::json!({ "paths": external }),
             );
+            self.follow_moved_links();
         }
         Ok(external)
     }

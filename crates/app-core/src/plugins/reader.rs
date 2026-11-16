@@ -83,6 +83,35 @@ impl WorkspaceReads for WorkspaceReader {
             _ => Err(ServiceError::NotFound(path.to_string())),
         }
     }
+
+    fn link_to(&self, id: &str) -> Result<String, ServiceError> {
+        self.0
+            .engine()
+            .link_to_object(id)
+            .map_err(|error| service_error(&error, id))
+    }
+
+    fn resolve_link(
+        &self,
+        link: &str,
+        from: Option<&WorkspacePath>,
+    ) -> Result<Option<ObjectRead>, ServiceError> {
+        let engine = self.0.engine();
+        let Some(path) = engine
+            .resolve_link(from.map(WorkspacePath::as_str), link)
+            .map_err(|error| service_error(&error, link))?
+        else {
+            return Ok(None);
+        };
+        let Ok(path) = WorkspacePath::new(&path) else {
+            return Err(ServiceError::UnsupportedPath);
+        };
+        match self.read_object_at(&path) {
+            Ok(object) => Ok(Some(object)),
+            Err(ServiceError::NotFound(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 /// An object as a plugin reads it, from its file at `path`.

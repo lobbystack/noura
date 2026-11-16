@@ -18,7 +18,8 @@ const PROPERTIES: &str = r#"{
   "properties": {
     "status": {"enum": ["todo", "in-progress", "done", "cancelled", null]},
     "priority": {"enum": ["low", "medium", "high", "urgent", null]},
-    "project": {"type": ["string", "null"], "description": "A project's stable ID."},
+    "project": {"type": ["string", "null"], "description": "A link to a project, such as [[Garden]], or the project's stable ID."},
+    "source": {"type": ["string", "null"], "description": "A link to the object the task came from, such as [[Team sync]], or its stable ID."},
     "due": {"type": ["string", "null"], "description": "A day as YYYY-MM-DD, or an RFC 3339 time with its offset."},
     "kanban_order": {"type": ["string", "null"]}
   },
@@ -37,7 +38,7 @@ pub(crate) fn tools() -> Vec<Tool> {
   "type": "object",
   "properties": {
     "status": {"enum": ["todo", "in-progress", "done", "cancelled"]},
-    "project": {"type": "string", "description": "A project's stable ID."}
+    "project": {"type": "string", "description": "A link to a project, such as [[Garden]], or the project's stable ID."}
   },
   "additionalProperties": false
 }"#
@@ -46,7 +47,7 @@ pub(crate) fn tools() -> Vec<Tool> {
         Tool {
             name: "create".into(),
             description: "Create a task with a title, and optionally a body and task fields. \
-                          Its file goes in the tasks folder, named after the title. Answers \
+                          Its file goes in the Tasks folder, named after the title. Answers \
                           with the task's stable ID and revision."
                 .into(),
             input_schema: format!(

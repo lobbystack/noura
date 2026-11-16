@@ -281,3 +281,53 @@ async fn two_new_files_whose_paths_collide_end_at_distinct_names() {
         files.keys().collect::<Vec<_>>()
     );
 }
+
+/// A link rewrite after a rename is an ordinary edit of the linking file
+/// (ADR 0005): against an edit of the same file on another device, both
+/// versions stay and wait for you, as any two edits do. The device that
+/// receives the rename doesn't rewrite the link a second time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_link_rewrite_and_a_remote_edit_of_one_file_conflict_like_two_edits() {
+    let Pair {
+        server: _server,
+        proxy: _proxy,
+        laptop: _laptop,
+        mut service,
+        a,
+        mut sync_a,
+        mut desktop,
+        b,
+        mut sync_b,
+    } = pair().await;
+    a.write(
+        "Garden.md",
+        b"---\nid: project_01jbcdefghjkmnpqrstvwxyz0h\ntype: project\n---\nBeds.\n",
+    );
+    a.write("Plan.md", b"Start with [[Garden]].\n");
+    sync_a.round(&mut service, 0).await.expect("a round");
+    sync_b
+        .round(&mut desktop.service, 0)
+        .await
+        .expect("a round");
+    assert_eq!(b.files()["Plan.md"], b"Start with [[Garden]].\n");
+
+    a.engine.reconcile().unwrap();
+    a.engine.move_file("Garden.md", "Backyard.md").unwrap();
+    assert_eq!(a.files()["Plan.md"], b"Start with [[Backyard]].\n");
+    b.write("Plan.md", b"Start with [[Garden]], then the paths.\n");
+    sync_a.round(&mut service, 0).await.expect("a round");
+    sync_b
+        .round(&mut desktop.service, 0)
+        .await
+        .expect("a round");
+    sync_a.round(&mut service, 0).await.expect("a round");
+
+    assert_eq!(a.files()["Plan.md"], b"Start with [[Backyard]].\n");
+    assert_eq!(
+        b.files()["Plan.md"],
+        b"Start with [[Garden]], then the paths.\n"
+    );
+    assert!(b.files().contains_key("Backyard.md"));
+    assert_eq!(sync_a.status().conflicts, 1);
+    assert_eq!(sync_b.status().conflicts, 1);
+}

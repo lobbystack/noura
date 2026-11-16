@@ -21,10 +21,19 @@ use support::{
 fn garden() -> Fixture {
     let garden = format!("project_{H}");
     let kitchen = format!("project_{C}");
+    // Tasks link to their project by its title.
+    let link = |project: &str| match project {
+        id if id == garden => "[[Garden]]".to_owned(),
+        id if id == kitchen => "[[Kitchen]]".to_owned(),
+        other => other.to_owned(),
+    };
     let task = |suffix: &str, status: &str, more: &str, project: &str| {
         task_file(
             suffix,
-            &format!("status: {status}\npriority: medium\n{more}project: {project}\n"),
+            &format!(
+                "status: {status}\npriority: medium\n{more}project: '{}'\n",
+                link(project)
+            ),
             "2026-10-01T10:00:00Z",
         )
     };
@@ -263,9 +272,7 @@ fn a_new_project_gets_a_folder_of_its_own_starts_planned_and_opens() {
 
 #[test]
 fn the_projects_page_lists_every_project_with_its_status_and_task_count() {
-    let garden = format!("project_{H}");
-    let kitchen = format!("project_{C}");
-    let in_garden = format!("status: todo\npriority: medium\nproject: {garden}\n");
+    let in_garden = "status: todo\npriority: medium\nproject: '[[Garden]]'\n".to_owned();
     let fixture = Fixture::new(&[
         (
             "projects/Kitchen/Kitchen.md",
@@ -288,7 +295,7 @@ fn the_projects_page_lists_every_project_with_its_status_and_task_count() {
             "tasks/Paint.md",
             &task_file(
                 D,
-                &format!("status: done\npriority: low\nproject: {kitchen}\n"),
+                "status: done\npriority: low\nproject: '[[Kitchen]]'\n",
                 "2026-10-01T10:00:00Z",
             ),
         ),
@@ -486,7 +493,7 @@ fn the_project_page_shows_tasks_and_files_that_change_outside_noura() {
         "tasks/Mulch.md",
         &task_file(
             E,
-            &format!("status: todo\npriority: medium\nproject: project_{H}\n"),
+            "status: todo\npriority: medium\nproject: '[[Garden]]'\n",
             "2026-10-01T10:00:00Z",
         ),
     );

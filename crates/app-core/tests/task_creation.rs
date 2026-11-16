@@ -226,7 +226,7 @@ fn a_task_named_in_a_project_view_joins_the_project_and_the_view_stays() {
     name_new_task(&mut app, "Turn the compost");
 
     let bytes = fixture.read("Tasks/Turn the compost.md");
-    assert_eq!(property(&bytes, "project"), Some(project.clone().into()));
+    assert_eq!(property(&bytes, "project"), Some("[[Garden]]".into()));
     assert_eq!(text(&app, "view").as_deref(), Some("Garden"));
     assert_eq!(labels(&app), ["Turn the compost"]);
 }

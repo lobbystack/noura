@@ -237,6 +237,42 @@ which `read-object` refuses. A file that holds no object returns
 
 - <a id="read_object_at.0"></a> result<[`object`](#object), [`error`](#error)>
 
+#### <a id="link_to"></a>`link-to: func`
+
+The link Noura writes for the object with this stable ID, for a
+reference property such as a task's `project` or `source`, or a body:
+`[[Title]]`, or `[[Folder/Title]]` when another file shares the
+title. Noura keeps every link current when the file moves or gets a
+new title, in Noura or in another app.
+
+##### Params
+
+- <a id="link_to.id"></a>`id`: `string`
+
+##### Return values
+
+- <a id="link_to.0"></a> result<`string`, [`error`](#error)>
+
+#### <a id="resolve_link"></a>`resolve-link: func`
+
+The object a link leads to, or none when it leads to no object, as
+for a plain note or a file that doesn't exist. `link` is written as
+`[[Title]]`, `[[Folder/Title]]` or without the brackets, and may carry
+a heading after `#` or a label after `|`. It resolves as the editor
+resolves it from the file at the workspace-relative path `from`, or
+from the top of the workspace without one: relative to that file,
+then from the top, then by title anywhere, preferring that file's
+folder and then the shortest path.
+
+##### Params
+
+- <a id="resolve_link.link"></a>`link`: `string`
+- <a id="resolve_link.from"></a>`from`: option<`string`>
+
+##### Return values
+
+- <a id="resolve_link.0"></a> result<option<[`object`](#object)>, [`error`](#error)>
+
 ## <a id="noura_plugin_objects_0_1_0"></a>Import interface noura:plugin/objects@0.1.0
 
 Objects of the types the plugin registered: Markdown files in the

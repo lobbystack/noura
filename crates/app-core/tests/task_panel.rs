@@ -143,7 +143,7 @@ fn two_project_files_with_one_id_show_as_one_project_in_the_pane_the_filters_and
             "tasks/Paint the fence.md",
             &task_file(
                 A,
-                &format!("status: todo\npriority: medium\nproject: {garden}\n"),
+                "status: todo\npriority: medium\nproject: '[[Garden]]'\n",
                 "2026-10-01T10:00:00Z",
             ),
         ),
@@ -221,7 +221,7 @@ fn each_change_in_the_pane_writes_the_task_and_keeps_its_body() {
 
     let garden = format!("project_{H}");
     change(&mut app, tab, "project", choice(&garden));
-    assert_eq!(property(&read(), "project"), Some(garden.clone().into()));
+    assert_eq!(property(&read(), "project"), Some("[[Garden]]".into()));
     wait_for(&mut app, tab, "project", choice(&garden));
     change(&mut app, tab, "project", choice("none"));
     assert_eq!(property(&read(), "project"), None);
@@ -238,7 +238,7 @@ fn a_task_keeps_its_project_when_the_project_is_renamed_and_moved() {
     let garden = format!("project_{H}");
     let task = task_file(
         A,
-        &format!("status: todo\npriority: medium\nproject: {garden}\n"),
+        "status: todo\npriority: medium\nproject: '[[Garden]]'\n",
         "2026-10-01T10:00:00Z",
     );
     let fixture = Fixture::new(&[
@@ -269,8 +269,16 @@ fn a_task_keeps_its_project_when_the_project_is_renamed_and_moved() {
     app.rescan();
     settle(&mut app);
 
+    // Noura rewrote the task's link at the rename, and `[[Allotment]]`
+    // still leads to the project after the move.
     wait_for(&mut app, tab, "project", choice(&garden));
-    assert_eq!(fixture.read("tasks/Paint the fence.md"), task);
+    assert_eq!(
+        fixture.read("tasks/Paint the fence.md"),
+        String::from_utf8(task)
+            .unwrap()
+            .replace("[[Garden]]", "[[Allotment]]")
+            .into_bytes()
+    );
 }
 
 #[test]

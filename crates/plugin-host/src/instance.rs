@@ -343,6 +343,26 @@ impl workspace::Host for HostState {
         let object = workspace.read_object_at(&path).map_err(wit_error)?;
         Ok(object_of(object))
     }
+
+    fn link_to(&mut self, id: String) -> Result<String, types::Error> {
+        self.workspace()?.link_to(&id).map_err(wit_error)
+    }
+
+    fn resolve_link(
+        &mut self,
+        link: String,
+        from: Option<String>,
+    ) -> Result<Option<workspace::Object>, types::Error> {
+        let workspace = self.workspace()?;
+        let from = from
+            .map(|path| WorkspacePath::new(&path))
+            .transpose()
+            .map_err(wit_error)?;
+        let object = workspace
+            .resolve_link(&link, from.as_ref())
+            .map_err(wit_error)?;
+        Ok(object.map(object_of))
+    }
 }
 
 /// An object read from the workspace, as it crosses the boundary.

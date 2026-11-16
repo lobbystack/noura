@@ -136,7 +136,7 @@ fn moved(task: &str, position: u32) -> PluginEvent {
 fn task(suffix: &str, order: &str) -> Vec<u8> {
     task_file(
         suffix,
-        &format!("status: todo\npriority: medium\nkanban_order: {order}\nproject: project_{H}\n"),
+        &format!("status: todo\npriority: medium\nkanban_order: {order}\nproject: '[[Garden]]'\n"),
         "2026-10-01T10:00:00Z",
     )
 }

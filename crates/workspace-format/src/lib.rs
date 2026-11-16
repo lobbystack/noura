@@ -15,14 +15,15 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use ts_rs::TS;
 
+pub mod links;
 pub mod merge;
 mod object_type;
 pub mod raw_text;
 pub mod text_note;
 
 pub use object_type::{
-    ObjectTypeRegistry, PropertyDeclaration, PropertyError, PropertyKind, PropertySchema,
-    RegistrationError,
+    ANY_TYPE, DeclaredLink, ObjectTypeRegistry, PropertyDeclaration, PropertyError, PropertyKind,
+    PropertySchema, RegistrationError,
 };
 
 /// Canonical workspace-relative location of Noura's durable manifest.

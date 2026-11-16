@@ -77,7 +77,7 @@ fn a_write_with_a_value_outside_the_task_fields_fails_with_a_structured_error() 
         (r#"{"status":"blocked"}"#, "status", "not_allowed"),
         (r#"{"priority":3}"#, "priority", "wrong_type"),
         (r#"{"due":"next week"}"#, "due", "invalid_date"),
-        (r#"{"project":"Garden"}"#, "project", "invalid_reference"),
+        (r#"{"project":"Nowhere"}"#, "project", "invalid_reference"),
         (r#"{"kanban_order":7}"#, "kanban_order", "wrong_type"),
     ] {
         let refused = call(
@@ -177,7 +177,7 @@ fn update_accepts_every_task_field_the_board_order_key_included() {
     let text = String::from_utf8(bytes).unwrap();
     let start = format!(
         "---\nid: task_{A}\ntype: task\nstatus: in-progress\npriority: high\n\
-         project: project_{B}\ndue: 2026-10-30T09:00:00-04:00\nkanban_order: a0V\nestimate: 3\n"
+         project: '[[Garden]]'\ndue: 2026-10-30T09:00:00-04:00\nkanban_order: a0V\nestimate: 3\n"
     );
     assert!(text.starts_with(&start), "{text}");
     assert!(text.ends_with("---\nThree coats.\n"), "{text}");

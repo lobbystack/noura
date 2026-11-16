@@ -450,6 +450,9 @@ export class MockHost {
 				readFile: (path: string) => workspace().readFile(path),
 				readObject: (id: string) => workspace().readObject(id),
 				readObjectAt: (path: string) => workspace().readObjectAt(path),
+				linkTo: (id: string) => workspace().linkTo(id),
+				resolveLink: (link: string, from?: string) =>
+					workspace().resolveLink(link, from),
 			},
 			'noura:plugin/objects': {
 				create: (object: Parameters<MockWorkspace['create']>[0]) =>

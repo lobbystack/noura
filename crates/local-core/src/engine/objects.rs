@@ -130,6 +130,7 @@ impl WorkspaceEngine {
             properties,
         };
         check_schema(&mut object, schemas)?;
+        self.check_links(&object, schemas, None)?;
         self.commit_object_with(object, None, "object:created", OPERATION, schemas)
     }
 
@@ -159,8 +160,11 @@ impl WorkspaceEngine {
         let (mut object, bytes) = self.read_canonical_object(id, OPERATION)?;
         check_revision(&bytes, &patch.expected_revision, OPERATION)?;
         let expected_revision = patch.expected_revision.clone();
+        let changed: std::collections::BTreeSet<String> =
+            patch.properties.keys().cloned().collect();
         apply_patch(&mut object, patch);
         check_schema(&mut object, schemas)?;
+        self.check_links(&object, schemas, Some(&changed))?;
         object.updated = Some(now_rfc3339());
         self.commit_object_with(
             object,
@@ -462,7 +466,21 @@ impl WorkspaceEngine {
         self.update_object(id, patch)
     }
 
+    /// Move the object with the stable ID `id` to `destination`, which
+    /// renames it when only the file name changes, then rewrite the links
+    /// that led to it. The file must still hold `expected_revision`.
     pub fn move_object(
+        &self,
+        id: &str,
+        destination: &str,
+        expected_revision: &str,
+    ) -> Result<MutationResult<WorkspaceObject>> {
+        let moved = self.move_object_file(id, destination, expected_revision)?;
+        self.follow_moved_links();
+        Ok(moved)
+    }
+
+    fn move_object_file(
         &self,
         id: &str,
         destination: &str,
@@ -517,6 +535,7 @@ impl WorkspaceEngine {
             index.upsert_markdown(destination, &bytes, mtime_ns(&destination_path), &parsed)
         })();
         let (index_status, warnings) = self.index_outcome(index_result);
+        self.note_moved_links([(old.clone(), destination.to_owned())]);
         self.emit(
             "object:moved",
             EventSource::Application,
@@ -847,6 +866,57 @@ fn apply_patch(object: &mut WorkspaceObject, patch: ObjectPatch) {
 /// properties as they are. A failing property comes back as
 /// `invalid_property`, naming it and the workspace format's code for what
 /// is wrong, and leaves `object` as it was.
+impl WorkspaceEngine {
+    /// Check that each link a reference property of `object` holds leads
+    /// to an object of the type its schema declares, from where the
+    /// object's file goes. With `only`, just the properties it names.
+    fn check_links(
+        &self,
+        object: &WorkspaceObject,
+        schemas: &ObjectTypeRegistry,
+        only: Option<&std::collections::BTreeSet<String>>,
+    ) -> Result<()> {
+        let links: Vec<_> = schemas
+            .declared_links(object)
+            .into_iter()
+            .filter(|link| only.is_none_or(|only| only.contains(&link.property)))
+            .collect();
+        if links.is_empty() {
+            return Ok(());
+        }
+        let targets = self.link_targets()?;
+        let index = self
+            .index
+            .lock()
+            .map_err(|_| lock_error("object_validate"))?;
+        for link in links {
+            let leads_to = match targets.resolve(&object.relative_path, &link.target) {
+                Some(path) => index.object_type_at(&path)?,
+                None => None,
+            };
+            let fits = leads_to.as_deref().is_some_and(|object_type| {
+                link.object_type == workspace_format::ANY_TYPE || object_type == link.object_type
+            });
+            if !fits {
+                let mut core = CoreError::validation(
+                    "invalid_property",
+                    format!(
+                        "{} doesn't link to an object of the declared type",
+                        link.property
+                    ),
+                    "object_validate",
+                );
+                core.details = Some(serde_json::json!({
+                    "property": link.property,
+                    "code": "invalid_reference",
+                }));
+                return Err(core);
+            }
+        }
+        Ok(())
+    }
+}
+
 fn check_schema(object: &mut WorkspaceObject, schemas: &ObjectTypeRegistry) -> Result<()> {
     schemas.normalize(object).map_err(|error| {
         let details = serde_json::to_value(&error).unwrap_or_default();

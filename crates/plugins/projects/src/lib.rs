@@ -182,8 +182,8 @@ fn page() -> Vec<Node> {
         Ok(tasks) => {
             let mut counts: BTreeMap<String, usize> = BTreeMap::new();
             for task in tasks {
-                if let Some(project) = task.properties.get("project").and_then(|p| p.as_str()) {
-                    *counts.entry(project.to_owned()).or_default() += 1;
+                if let Some(project) = task.project {
+                    *counts.entry(project).or_default() += 1;
                 }
             }
             Some(counts)

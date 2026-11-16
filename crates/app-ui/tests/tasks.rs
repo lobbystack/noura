@@ -812,4 +812,18 @@ fn the_page_shows_the_list_beside_the_selected_task_which_edits_in_place() {
             .unwrap()
             .contains("priority: urgent")
     });
+
+    // The project picker writes a link to the project, by its title.
+    harness
+        .get_by_role_and_label(Role::RadioGroup, "Project")
+        .get_by_role_and_label(Role::RadioButton, "Garden")
+        .click();
+    wait_until(&mut harness, |_| {
+        std::fs::read_to_string(folder.join("tasks/Read the manual.md"))
+            .unwrap()
+            .contains("project: '[[Garden]]'")
+    });
+    wait_until(&mut harness, |harness| {
+        selected(harness, "Project").as_deref() == Some("Garden")
+    });
 }

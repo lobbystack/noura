@@ -69,7 +69,8 @@ pub use noura::plugin::ui::{
 /// Reading the open workspace. Needs the `workspace-read` capability.
 pub mod workspace {
     pub use crate::noura::plugin::workspace::{
-        Entry, EntryKind, File, Object, list_entries, read_file, read_object, read_object_at,
+        Entry, EntryKind, File, Object, link_to, list_entries, read_file, read_object,
+        read_object_at, resolve_link,
     };
 }
 

@@ -83,7 +83,8 @@ pub(crate) struct LinkIndex {
     /// Counts the listings so far.
     seq: u64,
     paths: HashSet<String>,
-    by_name: HashMap<String, Vec<String>>,
+    /// The files, for the workspace format's link resolution.
+    targets: workspace_format::links::LinkTargets,
     /// How many files show each name in the file tree, by lowercase name.
     shown_names: HashMap<String, usize>,
     /// Each indexed file's revision.
@@ -94,9 +95,8 @@ impl LinkIndex {
     pub(crate) fn new<'a>(files: impl IntoIterator<Item = &'a str>) -> Self {
         let mut index = Self::default();
         for file in files {
-            let name = file.rsplit('/').next().unwrap_or(file).to_lowercase();
             *index.shown_names.entry(shown_lowercase(file)).or_default() += 1;
-            index.by_name.entry(name).or_default().push(file.to_owned());
+            index.targets.insert(file);
             index.paths.insert(file.to_owned());
         }
         index
@@ -687,33 +687,6 @@ fn folder_of(path: &str) -> &str {
     path.rfind('/').map_or("", |cut| &path[..cut])
 }
 
-/// `path` joined onto `folder` with `.` and `..` resolved, or `None` when
-/// it leaves the workspace.
-fn join_path(folder: &str, path: &str) -> Option<String> {
-    let mut parts: Vec<&str> = folder.split('/').filter(|part| !part.is_empty()).collect();
-    for segment in path.split('/') {
-        match segment {
-            "" | "." => {}
-            ".." => {
-                parts.pop()?;
-            }
-            segment => parts.push(segment),
-        }
-    }
-    Some(parts.join("/"))
-}
-
-/// Whether the last part of `path` has an extension of up to 8 letters
-/// and digits.
-fn has_extension(path: &str) -> bool {
-    let name = path.rsplit('/').next().unwrap_or(path);
-    name.rfind('.').is_some_and(|dot| {
-        let extension = &name[dot + 1..];
-        (1..=8).contains(&extension.len()) && extension.chars().all(|ch| ch.is_ascii_alphanumeric())
-    })
-}
-
-/// Whether `path` starts with a URL scheme, as `https:` or `mailto:` do.
 fn has_scheme(path: &str) -> bool {
     let Some(colon) = path.find(':') else {
         return false;
@@ -765,68 +738,15 @@ pub fn is_remote_image(url: &str) -> bool {
     })
 }
 
-/// The paths a link to `candidate` may mean: `candidate` and
-/// `candidate.md`, the one with an extension first.
-fn variants(candidate: &str) -> [String; 2] {
-    let with_md = format!("{candidate}.md");
-    if has_extension(candidate) {
-        [candidate.to_owned(), with_md]
-    } else {
-        [with_md, candidate.to_owned()]
-    }
-}
-
 /// The file in `files` that `target`, written in the note at `source`,
 /// leads to.
 pub(crate) fn resolve_link_path(source: &str, target: &str, files: &LinkIndex) -> Option<String> {
-    let path = link_path(target);
-    if path.is_empty() || has_scheme(&path) {
-        return None;
-    }
-    let known = |candidate: &str| files.paths.contains(candidate);
-    let source_folder = folder_of(source);
-    let direct = if path.starts_with('/') {
-        vec![join_path("", &path)]
-    } else {
-        vec![join_path(source_folder, &path), join_path("", &path)]
-    };
-    for candidate in direct.into_iter().flatten() {
-        if let Some(found) = variants(&candidate)
-            .into_iter()
-            .find(|variant| known(variant))
-        {
-            return Some(found);
-        }
-    }
-    let wanted = variants(path.trim_start_matches('/')).map(|variant| variant.to_lowercase());
-    wanted
-        .iter()
-        .filter_map(|variant| {
-            files
-                .by_name
-                .get(variant.rsplit('/').next().unwrap_or(variant))
-        })
-        .flatten()
-        .filter(|file| {
-            let lower = file.to_lowercase();
-            wanted
-                .iter()
-                .any(|variant| lower == *variant || lower.ends_with(&format!("/{variant}")))
-        })
-        .min_by(|left, right| {
-            let rank = |file: &str| usize::from(folder_of(file) != source_folder);
-            rank(left)
-                .cmp(&rank(right))
-                .then(left.split('/').count().cmp(&right.split('/').count()))
-                .then(left.to_lowercase().cmp(&right.to_lowercase()))
-                .then(left.cmp(right))
-        })
-        .cloned()
+    files.targets.resolve(source, target)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{has_extension, is_external_link, is_remote_image, join_path, link_path};
+    use super::{is_external_link, is_remote_image, link_path};
 
     #[test]
     fn web_addresses_and_other_schemes_lead_out_of_the_workspace() {
@@ -865,21 +785,6 @@ mod tests {
         assert_eq!(link_path("Old%20notes.md#Top"), "Old notes.md");
         assert_eq!(link_path("100%"), "100%");
         assert_eq!(link_path("  Plan  "), "Plan");
-    }
-
-    #[test]
-    fn joining_never_climbs_out_of_the_workspace() {
-        assert_eq!(join_path("a/b", "../c").as_deref(), Some("a/c"));
-        assert_eq!(join_path("a", "../../c"), None);
-        assert_eq!(join_path("", "./x/./y").as_deref(), Some("x/y"));
-    }
-
-    #[test]
-    fn extensions_are_short_letters_and_digits() {
-        assert!(has_extension("a/diagram.png"));
-        assert!(has_extension("x.markdown"));
-        assert!(!has_extension("v1.2 notes"));
-        assert!(!has_extension("folder.d/Plan"));
     }
 
     #[test]

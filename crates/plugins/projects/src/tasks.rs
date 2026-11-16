@@ -31,6 +31,9 @@ pub(crate) struct Task {
     /// order key, or its stable ID when its file holds none.
     pub(crate) order: String,
     pub(crate) properties: Map<String, Value>,
+    /// The stable ID of the project the task's `project` link leads to,
+    /// as Tasks answers.
+    pub(crate) project: Option<String>,
 }
 
 impl Task {
@@ -55,6 +58,7 @@ impl Task {
             priority: property("priority").unwrap_or_else(|| "medium".to_owned()),
             order: property("kanban_order").unwrap_or_else(|| id.clone()),
             properties,
+            project: text("project_id"),
             id,
         })
     }

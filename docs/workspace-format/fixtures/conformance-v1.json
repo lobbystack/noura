@@ -587,6 +587,99 @@
 			"body": "Body\n"
 		}
 	],
+	"links": {
+		"files": [
+			"Garden.md",
+			"Projects/Garden/Garden.md",
+			"Projects/Garden/Soil.md",
+			"Notes/Plan.md",
+			"Notes/Plan 2.md",
+			"Report.pdf"
+		],
+		"resolve": [
+			{
+				"name": "a title finds the file of that name anywhere",
+				"source": "Notes/Today.md",
+				"target": "plan",
+				"path": "Notes/Plan.md"
+			},
+			{
+				"name": "a shared title prefers the linking file's folder",
+				"source": "Projects/Garden/Soil.md",
+				"target": "Garden",
+				"path": "Projects/Garden/Garden.md"
+			},
+			{
+				"name": "a shared title prefers the shortest path elsewhere",
+				"source": "Notes/Today.md",
+				"target": "Garden",
+				"path": "Garden.md"
+			},
+			{
+				"name": "a path from the top of the workspace",
+				"source": "Notes/Today.md",
+				"target": "Projects/Garden/Garden",
+				"path": "Projects/Garden/Garden.md"
+			},
+			{
+				"name": "a heading and a label don't change the file",
+				"source": "Notes/Today.md",
+				"target": "Plan 2#Steps|steps",
+				"path": "Notes/Plan 2.md"
+			},
+			{
+				"name": "another file keeps its extension",
+				"source": "Notes/Today.md",
+				"target": "Report.pdf",
+				"path": "Report.pdf"
+			},
+			{
+				"name": "a missing file leads nowhere",
+				"source": "Notes/Today.md",
+				"target": "Missing",
+				"path": null
+			}
+		],
+		"link_for": [
+			{
+				"name": "a unique title links by title",
+				"source": "Notes/Today.md",
+				"path": "Notes/Plan.md",
+				"link": "[[Plan]]"
+			},
+			{
+				"name": "a shared title links by path",
+				"source": "Notes/Today.md",
+				"path": "Projects/Garden/Garden.md",
+				"link": "[[Projects/Garden/Garden]]"
+			},
+			{
+				"name": "the shared title that resolves first keeps the title",
+				"source": "Notes/Today.md",
+				"path": "Garden.md",
+				"link": "[[Garden]]"
+			}
+		],
+		"body_links": [
+			{
+				"name": "links and embeds outside code",
+				"body": "See [[Garden]] and ![[Plan#Steps|the plan]].\n`[[Code]]` \\[[escaped]]\n```\n[[Fenced]]\n```\n",
+				"targets": [
+					"Garden",
+					"Plan"
+				]
+			}
+		],
+		"rewrites": [
+			{
+				"name": "a renamed file's links take its new title and keep headings and labels",
+				"body": "[[Garden]], [[garden#Beds|beds]] and [[Kitchen]]\r\n",
+				"from": "Garden",
+				"to": "Backyard",
+				"expected": "[[Backyard]], [[Backyard#Beds|beds]] and [[Kitchen]]\r\n"
+			}
+		]
+	},
 	"default_paths": [
 		{
 			"name": "a note goes in Notes",

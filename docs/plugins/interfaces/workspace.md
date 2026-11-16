@@ -8,6 +8,8 @@ The `workspace` interface reads the files, folders and objects in the open works
 - `readFile(path)`: a file's bytes and the revision of those bytes. A path that leaves the workspace or names `.noura` throws `invalid-path`, and a missing file throws `not-found`.
 - `readObject(id)`: a Noura object by its stable ID, wherever its file is now. The ID stays the same when you move or rename the file. When two files hold the ID, as after a copy made in another app, it throws `identity-conflict` with the ID.
 - `readObjectAt(path)`: the object that the file at `path` holds, even when another file holds the same ID. A missing file, or one that holds no object, throws `not-found` with the path.
+- `linkTo(id)`: the link Noura writes for the object with this stable ID, such as `[[Garden]]`, or `[[Projects/Garden/Garden]]` when another file shares its title. Put it in a reference property, such as a task's `project`. Noura rewrites the link when the file moves or gets a new title.
+- `resolveLink(link, from)`: the object a link leads to, or `undefined` when it leads to a plain note or nowhere. Pass the path of the file that holds the link as `from`, or `undefined` to resolve from the top of the workspace. The link may keep its brackets, a heading after `#` or a label after `|`.
 
 ## Example
 
@@ -92,5 +94,6 @@ export const view: ViewExports = {
 ## Notes
 
 - `readFile` reads the file from disk on each call, so an edit you make in another app shows on the next one.
+- Links resolve as the editor resolves them: relative to the linking file, then from the top of the workspace, then by title anywhere, preferring the linking file's folder and then the shortest path. The [workspace format](../../workspace-format/v1.md#links) has the details.
 - A file larger than 16 MB fails with `failed`.
 - To change files, a plugin writes objects of its own types through the [`objects`](objects.md) interface. It can't write any other file.
