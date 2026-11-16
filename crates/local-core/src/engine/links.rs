@@ -18,6 +18,7 @@ use workspace_format::links::{
 use super::*;
 
 /// Test hook: runs with each file's path before a link rewrite writes it.
+#[cfg(any(test, feature = "test-hooks"))]
 pub type LinkRewriteHook = Box<dyn Fn(&str) + Send + Sync>;
 
 /// A file whose links to a moved file Noura couldn't update.
