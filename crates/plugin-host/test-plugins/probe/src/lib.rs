@@ -41,6 +41,8 @@
 //!   node whose ID is `paste:<text>` pastes too.
 //! - `menu-bar:<labels>`: show these comma-separated menu bar items, the
 //!   first one a submenu holding the rest.
+//! - `speech-paste` and `speech-menu`: pages that paste `hello` and show
+//!   the menu `Model` holding `Parakeet Ultra`.
 //! - `clock`: the clock's reading, as `now <instant> <time zone>`.
 //! - `markdown`: a Markdown node with a heading, emphasis, a link, a
 //!   list and a remote image.
@@ -145,6 +147,14 @@ impl Plugin for Probe {
                 title: "Events".into(),
             },
             Page {
+                id: "speech-paste".into(),
+                title: "Paste".into(),
+            },
+            Page {
+                id: "speech-menu".into(),
+                title: "Menu".into(),
+            },
+            Page {
                 id: "opens".into(),
                 title: "Opens".into(),
             },
@@ -185,6 +195,10 @@ impl Plugin for Probe {
             ai_call(call)
         } else if let Some(call) = page.strip_prefix("speech:") {
             speech_call(call)
+        } else if page == "speech-paste" {
+            vec![pasted(paste::paste("hello", paste::Method::Clipboard))]
+        } else if page == "speech-menu" {
+            vec![menu("Model,Parakeet Ultra")]
         } else if page == "shortcuts" {
             shortcuts()
         } else if let Some(text) = page.strip_prefix("paste:") {

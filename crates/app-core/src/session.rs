@@ -236,6 +236,16 @@ impl Session {
             }));
             ai.set_toolbox(Arc::new(SessionTools(session.clone())));
             plugins.set_ai(ai.clone());
+            // Speech records, transcribes and pastes with the system's
+            // devices, and wakes every window as text arrives.
+            let speech = crate::speech_kernel::SpeechKernel::new(app_data, system.speech_devices());
+            let woken = session.clone();
+            speech.set_wake(Arc::new(move || {
+                if let Some(session) = woken.upgrade() {
+                    session.wake_all();
+                }
+            }));
+            plugins.set_speech(speech);
             Self::with(app_data, system, rescans, writes, updates, plugins, ai)
         })
     }

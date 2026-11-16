@@ -115,6 +115,12 @@ pub trait System: Send + Sync {
     }
 
     /// Where AI provider keys go: this computer's credential store.
+    /// The devices speech records, transcribes and pastes with. The
+    /// default hears nothing; the desktop app passes the real ones.
+    fn speech_devices(&self) -> crate::SpeechDevices {
+        crate::SpeechDevices::fake()
+    }
+
     fn credentials(&self) -> std::sync::Arc<dyn local_core::CredentialStore> {
         std::sync::Arc::new(local_core::SystemCredentials)
     }

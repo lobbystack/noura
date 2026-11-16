@@ -54,6 +54,24 @@ pub struct FakeSystem {
     /// The system's credential store, in memory, so no test reaches this
     /// computer's own.
     pub credentials: Arc<local_core::MemoryCredentials>,
+    /// What plugins pasted and copied, as `paste <text>` and `copy <text>`.
+    pub pasted: Arc<Mutex<Vec<String>>>,
+}
+
+/// Records what plugins paste, in place of the keyboard and clipboard.
+struct RecordingPaste(Arc<Mutex<Vec<String>>>);
+
+impl speech::paste::Paster for RecordingPaste {
+    fn paste(&self, text: &str, typing: bool) -> speech::Result<()> {
+        let how = if typing { "type" } else { "paste" };
+        self.0.lock().unwrap().push(format!("{how} {text}"));
+        Ok(())
+    }
+
+    fn copy(&self, text: &str) -> speech::Result<()> {
+        self.0.lock().unwrap().push(format!("copy {text}"));
+        Ok(())
+    }
 }
 
 impl FakeSystem {
@@ -86,6 +104,7 @@ impl FakeSystem {
             now: Mutex::new(None),
             time_zone: Mutex::new(None),
             credentials: Arc::new(local_core::MemoryCredentials::new()),
+            pasted: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -118,6 +137,13 @@ impl FakeSystem {
 impl System for FakeSystem {
     fn platform(&self) -> Platform {
         self.platform
+    }
+
+    fn speech_devices(&self) -> app_core::SpeechDevices {
+        app_core::SpeechDevices {
+            paster: Arc::new(RecordingPaste(self.pasted.clone())),
+            ..app_core::SpeechDevices::fake()
+        }
     }
 
     fn has_trash(&self) -> bool {

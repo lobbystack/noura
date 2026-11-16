@@ -21,7 +21,7 @@
 //! window: its views, commands, Inbox sections, Settings page and tools
 //! update when its answers arrive, through [`Plugins::poll`].
 
-mod navigation;
+pub(crate) mod navigation;
 mod reader;
 mod reload;
 mod worker;
@@ -582,6 +582,9 @@ pub(crate) struct Plugins {
     agent: bool,
     /// The AI service plugins that hold `ai` chat through.
     ai: Option<Arc<Ai>>,
+    /// Speech, shortcuts, paste and the menu bar, for the plugins that
+    /// hold them.
+    speech: Option<Arc<crate::speech_kernel::SpeechKernel>>,
 }
 
 impl Plugins {
@@ -628,6 +631,7 @@ impl Plugins {
             version: 0,
             agent: false,
             ai: None,
+            speech: None,
         }
     }
 
@@ -646,6 +650,76 @@ impl Plugins {
     /// on.
     pub(crate) fn set_ai(&mut self, ai: Arc<Ai>) {
         self.ai = Some(ai);
+    }
+
+    /// Serve speech, shortcuts, paste and the menu bar from `speech`,
+    /// from the next start on.
+    pub(crate) fn set_speech(&mut self, speech: Arc<crate::speech_kernel::SpeechKernel>) {
+        self.speech = Some(speech);
+    }
+
+    pub(crate) fn speech(&self) -> Option<&Arc<crate::speech_kernel::SpeechKernel>> {
+        self.speech.as_ref()
+    }
+
+    /// The shortcuts the running plugins declare and you approved, with
+    /// the keys they answer to now.
+    pub(crate) fn global_shortcuts(&self) -> Vec<crate::GlobalShortcut> {
+        let Some(kernel) = &self.speech else {
+            return Vec::new();
+        };
+        self.running
+            .iter()
+            .filter(|(_, running)| !running.failed)
+            .filter_map(|(id, _)| Some((id, self.records.plugins.get(id)?)))
+            .flat_map(|(id, record)| {
+                crate::speech_kernel::approved_shortcuts(&record.approved)
+                    .into_iter()
+                    .map(|shortcut| crate::GlobalShortcut {
+                        plugin: id.clone(),
+                        keys: kernel
+                            .speech
+                            .shortcut_keys(id, &shortcut.id, &shortcut.keys),
+                        id: shortcut.id,
+                        title: shortcut.title,
+                        declared: shortcut.keys,
+                    })
+            })
+            .collect()
+    }
+
+    /// Whether the running plugin `id` was approved `capability`.
+    fn holds(&self, id: &str, capability: &str) -> bool {
+        self.running.contains_key(id)
+            && self
+                .records
+                .plugins
+                .get(id)
+                .is_some_and(|record| Capability::holds(&record.approved, capability))
+    }
+
+    /// Hand the kernel event `event` to the plugin `id`, or to every
+    /// running plugin that holds its capability when `id` is empty.
+    pub(crate) fn kernel_event(&mut self, id: &str, event: plugin_host::KernelEvent) {
+        use plugin_host::KernelEvent;
+        let capability = match &event {
+            KernelEvent::ShortcutPressed(_) | KernelEvent::ShortcutReleased(_) => {
+                "global-shortcuts"
+            }
+            KernelEvent::MenuItemChosen(_) => "menu-bar-items",
+            _ => "speech",
+        };
+        let targets: Vec<String> = if id.is_empty() {
+            self.running.keys().cloned().collect()
+        } else {
+            vec![id.to_owned()]
+        };
+        for target in targets {
+            if self.holds(&target, capability) {
+                self.acts += 1;
+                self.send(&target, Job::Kernel(event.clone()));
+            }
+        }
     }
 
     pub(crate) fn set_wake(&mut self, wake: Wake) {
@@ -905,6 +979,9 @@ impl Plugins {
         if let Some(running) = self.running.remove(id) {
             running.plugin.release_object_types();
         }
+        if let Some(speech) = &self.speech {
+            speech.forget_plugin(id);
+        }
         self.router.remove(id);
     }
 
@@ -941,9 +1018,17 @@ impl Plugins {
         let (host, loaded) = loaded;
         let reader: Arc<dyn WorkspaceReads> = Arc::new(reader::WorkspaceReader(workspace.clone()));
         let objects: Arc<dyn WorkspaceObjects> =
-            Arc::new(ObjectStore::new(workspace, self.types.clone()));
+            Arc::new(ObjectStore::new(workspace.clone(), self.types.clone()));
         let navigator = Arc::new(Navigator::new(id, self.openings.clone()));
         let navigation: Arc<dyn Navigation> = navigator.clone();
+        let speech = self.speech.as_ref().map(|kernel| {
+            kernel.services(
+                id,
+                crate::speech_kernel::approved_shortcuts(&record.approved),
+                navigator.clone(),
+                workspace.clone(),
+            )
+        });
         let services = Services {
             workspace: Some(reader),
             objects: Some(objects),
@@ -953,7 +1038,10 @@ impl Plugins {
             clock: self.clock.clone(),
             navigation: Some(navigation),
             ai: self.ai.as_ref().map(|ai| ai.access(id)),
-            ..Services::default()
+            speech: speech.as_ref().map(|services| services.speech.clone()),
+            shortcuts: speech.as_ref().map(|services| services.shortcuts.clone()),
+            paste: speech.as_ref().map(|services| services.paste.clone()),
+            menu_bar: speech.as_ref().map(|services| services.menu_bar.clone()),
         };
         let plugin = host.start(&loaded, &record.approved, services);
         self.manifests
@@ -1522,6 +1610,17 @@ impl Plugins {
         }
         while let Ok(outcome) = self.outcomes.1.try_recv() {
             self.take(outcome);
+        }
+        let queued = self
+            .speech
+            .as_ref()
+            .map(|kernel| kernel.take())
+            .unwrap_or_default();
+        for (plugin, event) in queued {
+            match event {
+                Some(event) => self.kernel_event(&plugin, event),
+                None => self.send(&plugin, Job::Redraw),
+            }
         }
         let called: Vec<String> = self.called.try_iter().collect();
         for id in called {

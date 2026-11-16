@@ -57,6 +57,7 @@ mod search;
 mod session;
 mod settings;
 pub mod shares;
+mod speech_kernel;
 mod store;
 pub mod sync;
 mod system;
@@ -78,6 +79,7 @@ pub use app::{
     App, Change, CommandPalette, DragOut, IgnoredFiles, NameDraft, Notice, NoticeKind, Origin,
     Palette, PaletteMode, PluginPlace, Question, QuickOpen, Rename, Screen, Search, UnsavedPrompt,
 };
+pub use app::{SPEECH_LANGUAGES, SpeechModelRow};
 pub use calendar_grid::{GridDay, GridEntry, Segment, Span, grid_days, lay_out};
 pub use commands::{
     Area, Command, CommandSource, ShortcutEntry, ShortcutGroup, command_id, default_shortcuts,
@@ -105,6 +107,7 @@ pub use local_core::WatchFault;
 pub use local_core::{
     AI_PROVIDER_KINDS, AiStreamer, CredentialStore, MemoryCredentials, RemoteImage,
 };
+pub use speech_kernel::{GlobalShortcut, MenuBarItems, NoPaste, SpeechDevices};
 
 /// What a client passes to [`App::set_ai_client`] talks to providers in
 /// these terms. Noura uses `genai`'s client unless a client sets another,

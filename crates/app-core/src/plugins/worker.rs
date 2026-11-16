@@ -34,6 +34,9 @@ pub(super) enum Job {
     Command(String, Option<WindowKey>),
     /// Draw the plugin's views again.
     Redraw,
+    /// Hand the plugin a kernel event, such as a shortcut press, which
+    /// counts as something you did, then draw its views.
+    Kernel(plugin_host::KernelEvent),
     /// Draw the properties panel of the object with this ID, whose file
     /// has this revision.
     Panel(String, String),
@@ -250,6 +253,15 @@ impl Worker {
                         revision: None,
                         view,
                     });
+                }
+                Job::Kernel(event) => {
+                    self.navigator.set_kernel(true);
+                    let handled = self.plugin.handle_kernel_event(&event);
+                    self.navigator.set_kernel(false);
+                    if let Err(error) = handled {
+                        tracing::warn!(%error, "a plugin failed to handle a kernel event");
+                        failed = Some((None, failure_message(&error, Doing::Handling)));
+                    }
                 }
                 Job::Event(surface, event, origin) => {
                     self.navigator.set_origin(origin);

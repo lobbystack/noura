@@ -44,6 +44,9 @@ pub(crate) struct Navigator {
     /// The window whose action the plugin's current call answers, if any,
     /// and the thread that call runs on.
     origin: Mutex<Option<(ThreadId, WindowKey)>>,
+    /// The thread whose current call answers a kernel event, such as a
+    /// shortcut press, which counts as something you did without a window.
+    kernel: Mutex<Option<ThreadId>>,
     openings: Openings,
 }
 
@@ -52,6 +55,7 @@ impl Navigator {
         Self {
             plugin: plugin.to_owned(),
             origin: Mutex::new(None),
+            kernel: Mutex::new(None),
             openings,
         }
     }
@@ -64,6 +68,32 @@ impl Navigator {
             .lock()
             .unwrap_or_else(|error| error.into_inner()) =
             window.map(|window| (thread::current().id(), window));
+    }
+
+    /// Note that the plugin's next calls on this thread answer a kernel
+    /// event, or don't when `false`.
+    pub(crate) fn set_kernel(&self, answering: bool) {
+        *self
+            .kernel
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = answering.then(|| thread::current().id());
+    }
+
+    /// Whether the call running on this thread answers something you did:
+    /// an action in a window or a kernel event.
+    pub(crate) fn answering(&self) -> bool {
+        let here = thread::current().id();
+        let window = self
+            .origin
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_some_and(|(thread, _)| thread == here);
+        window
+            || *self
+                .kernel
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                == Some(here)
     }
 
     fn request(&self, opening: Opening) -> Result<(), ServiceError> {

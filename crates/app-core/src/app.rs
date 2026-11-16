@@ -51,6 +51,7 @@ mod palette;
 mod plugins;
 mod preferences;
 mod settings;
+mod speech;
 mod view;
 mod viewers;
 mod web;
@@ -62,6 +63,7 @@ pub use ignored_files::IgnoredFiles;
 pub use notes::UnsavedPrompt;
 pub use palette::{CommandPalette, Palette, PaletteMode};
 pub use plugins::{NameDraft, PluginPlace};
+pub use speech::{SPEECH_LANGUAGES, SpeechModelRow};
 
 /// What the window shows.
 #[derive(Debug, Clone, PartialEq, Eq)]

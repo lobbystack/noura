@@ -31,6 +31,10 @@ hayro.workspace = true
 jiff.workspace = true
 jsonschema.workspace = true
 local-core = { version = "0.2.0", path = "../local-core" }
+# Speech for plugins. The transcribe.cpp engine comes with the desktop app,
+# so app-core's own builds compile no C++.
+speech = { version = "0.2.0", path = "../speech", default-features = false, features = ["download"] }
+parking_lot.workspace = true
 # tus `Upload-Metadata` values for blob uploads (sync-v2.md §21).
 base64.workspace = true
 nucleo-matcher.workspace = true
