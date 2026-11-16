@@ -30,6 +30,7 @@ mod rail;
 mod settings;
 mod share;
 mod shortcuts;
+mod speech;
 mod tab_bar;
 pub mod theme;
 mod tree;

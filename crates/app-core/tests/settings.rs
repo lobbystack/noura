@@ -103,6 +103,7 @@ fn settings_lists_its_sections_under_this_computer_workspace_and_app() {
                     "General".to_owned(),
                     "Editor".to_owned(),
                     "Keyboard shortcuts".to_owned(),
+                    "Speech".to_owned(),
                     "Account".to_owned()
                 ]
             ),

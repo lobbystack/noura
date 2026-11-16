@@ -101,7 +101,9 @@ fn section<'a>(harness: &'a Ui, title: &'a str) -> egui_kittest::Node<'a> {
 }
 
 fn choose_section(harness: &mut Ui, title: &str) {
-    section(harness, title).click();
+    // A section low in the list may sit below the dialog's edge, so the
+    // click goes through AccessKit.
+    section(harness, title).click_accesskit();
     harness.run();
 }
 
@@ -140,6 +142,7 @@ fn the_rail_s_settings_button_opens_settings_with_its_sections_by_group() {
                     "General".to_owned(),
                     "Editor".to_owned(),
                     "Keyboard shortcuts".to_owned(),
+                    "Speech".to_owned(),
                     "Account".to_owned()
                 ]
             ),

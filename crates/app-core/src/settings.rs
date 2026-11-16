@@ -46,6 +46,9 @@ pub mod settings_section {
     pub const SYNC: &str = "workspace-sync";
     /// The workspace's members and invitations.
     pub const MEMBERS: &str = "workspace-members";
+    /// Speech models on this computer, the language you speak, the
+    /// plugins' shortcuts and how Noura pastes.
+    pub const SPEECH: &str = "speech";
     /// The sync account: the server, this computer's sign-in, your devices
     /// and the recovery kit.
     pub const SYNC_ACCOUNT: &str = "sync-account";
@@ -99,10 +102,11 @@ impl SettingsSection {
 /// Where the kernel's sections and the sections later areas register by
 /// a known ID go, in the order Settings lists them. Other sections follow
 /// these in their group, in the order they register.
-const SECTION_ORDER: [&str; 12] = [
+const SECTION_ORDER: [&str; 13] = [
     settings_section::GENERAL,
     settings_section::EDITOR,
     settings_section::SHORTCUTS,
+    settings_section::SPEECH,
     settings_section::SYNC_ACCOUNT,
     settings_section::WORKSPACE,
     settings_section::PLUGINS,
@@ -128,6 +132,9 @@ pub(crate) fn section_keywords(id: &str) -> &'static str {
         }
         settings_section::EDITOR => "text size font line width spelling spellcheck",
         settings_section::SHORTCUTS => "keys",
+        settings_section::SPEECH => {
+            "dictation transcription microphone models parakeet whisper language paste"
+        }
         settings_section::SYNC_ACCOUNT => "sign in log out disconnect server",
         settings_section::WORKSPACE => "rename folder path",
         settings_section::PLUGINS => "notes tasks calendar projects folders sync",
@@ -157,6 +164,11 @@ pub(crate) fn kernel_sections() -> Vec<SettingsSection> {
         (
             settings_section::SHORTCUTS,
             "Keyboard shortcuts",
+            SettingsGroup::ThisComputer,
+        ),
+        (
+            settings_section::SPEECH,
+            "Speech",
             SettingsGroup::ThisComputer,
         ),
         (

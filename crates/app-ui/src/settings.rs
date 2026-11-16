@@ -41,6 +41,8 @@ pub(crate) struct SettingsView {
     ai: crate::ai::AiSettingsView,
     /// The Web search section.
     web: crate::web_search::WebSettingsView,
+    /// The Speech section.
+    speech: crate::speech::SpeechSettingsView,
     /// The release address being typed in Plugins.
     release_address: String,
     /// The Members section.
@@ -56,6 +58,7 @@ fn section_icon(id: &str) -> Icon {
         settings_section::GENERAL => icons::SETTINGS,
         settings_section::EDITOR => icons::TEXT_AA,
         settings_section::SHORTCUTS => icons::KEYBOARD,
+        settings_section::SPEECH => icons::DESKTOP,
         settings_section::SYNC_ACCOUNT => icons::USER_CIRCLE,
         settings_section::WORKSPACE => icons::FOLDER_SIMPLE,
         settings_section::AI => icons::AI,
@@ -334,6 +337,7 @@ fn content(
         settings_section::GENERAL => general(ui, app, settings),
         settings_section::EDITOR => editor(ui, app, spelling),
         settings_section::SHORTCUTS => crate::shortcuts::page(ui, app),
+        settings_section::SPEECH => crate::speech::settings(ui, app, &mut view.speech),
         settings_section::WORKSPACE => workspace(ui, app, view),
         settings_section::PLUGINS => {
             crate::plugins::section(ui, app, picker, &mut view.release_address);
