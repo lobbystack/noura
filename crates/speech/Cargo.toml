@@ -1,0 +1,49 @@
+[package]
+name = "speech"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Recording, speech-to-text models and pasting for Noura's kernel."
+publish = false
+
+[features]
+default = ["transcribe", "download"]
+# The transcribe.cpp engine, which builds C++ with CMake. Without it the
+# crate offers only the engine trait, for tests and for checking other
+# targets' code.
+transcribe = ["dep:transcribe-cpp"]
+# Model downloads from Hugging Face, which pull in a TLS stack that builds
+# C code.
+download = ["dep:hf-hub"]
+
+[dependencies]
+atomic-write-file.workspace = true
+futures.workspace = true
+handy-recorder.workspace = true
+hf-hub = { workspace = true, optional = true }
+hound.workspace = true
+parking_lot.workspace = true
+rubato.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true }
+tracing.workspace = true
+transcribe-cpp = { workspace = true, optional = true }
+arboard.workspace = true
+enigo.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cidre.workspace = true
+objc2.workspace = true
+objc2-app-kit = { workspace = true, features = ["std", "NSPasteboard"] }
+objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSString"] }
+rtrb = "0.4.0"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wasapi.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

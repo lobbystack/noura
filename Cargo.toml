@@ -25,6 +25,7 @@ members = [
     "crates/plugins/hello",
     "crates/plugins/projects",
     "crates/plugins/tasks",
+    "crates/speech",
     "crates/spell-check",
     "crates/sync-key-envelope",
     "crates/sync-protocol",
@@ -97,6 +98,20 @@ aes-gcm = "=0.10.3"
 base64 = "0.22"
 bech32 = "=0.11.1"
 sha2 = "=0.10.9"
+# Speech in the kernel (ADR 0006): models through transcribe.cpp, the
+# microphone through handy-recorder, model files through hf-hub.
+transcribe-cpp = "=0.4.2"
+handy-recorder = "=0.1.1"
+hf-hub = { version = "=1.0.0", default-features = false, features = ["rustls-tls"] }
+rubato = "=5.0.0"
+hound = "3.5.1"
+arboard = { version = "3.7.0", default-features = false, features = ["wayland-data-control"] }
+enigo = "0.6.1"
+cidre = { version = "0.30.1", default-features = false, features = ["core_audio", "av", "cat", "cf", "ns", "blocks"] }
+wasapi = "0.27.0"
+global-hotkey = "0.10.0"
+tray-icon = "0.26.1"
+ashpd = { version = "0.14.0", default-features = false, features = ["tokio", "global_shortcuts"] }
 ed25519-dalek = { version = "=2.2.0", features = ["rand_core"] }
 zeroize = { version = "1", features = ["derive"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
