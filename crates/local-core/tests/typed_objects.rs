@@ -113,7 +113,7 @@ fn a_path_names_the_object_and_only_a_create_without_one_needs_a_title() {
     assert_eq!(titled.value.title, "Soup");
     assert!(workspace.path().join("Mains/Soup.md").exists());
     assert_eq!(refused.code, "title_required");
-    assert!(!workspace.path().join("recipes").exists());
+    assert!(!workspace.path().join("Recipes").exists());
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn properties_that_fail_the_schema_name_the_field_and_write_nothing() {
         error.details,
         Some(json!({"property": "course", "code": "not_allowed"}))
     );
-    assert!(!workspace.path().join("recipes").exists());
+    assert!(!workspace.path().join("Recipes").exists());
     assert!(events.try_recv().is_err());
     assert!(engine.list_objects("recipe").unwrap().is_empty());
 }
@@ -229,7 +229,7 @@ fn a_write_that_cant_reach_disk_fails_and_neither_the_index_nor_an_event_reports
         .create_object_checked(recipe("Soup", json!({})), &schemas())
         .unwrap();
     let before = read(&workspace, "Recipes/Soup.md");
-    let folder = workspace.path().join("recipes");
+    let folder = workspace.path().join("Recipes");
     std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
     let mut events = engine.subscribe();
 
