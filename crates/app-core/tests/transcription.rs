@@ -104,6 +104,7 @@ impl System for SpeechSystem {
 /// What one request to the fake provider carried.
 #[derive(Debug, Clone)]
 struct Asked {
+    provider: String,
     system: String,
     user: String,
 }
@@ -140,6 +141,7 @@ impl AiStreamer for Provider {
                 .join("\n")
         };
         let asked = Asked {
+            provider: request.provider.id.clone(),
             system: role("system"),
             user: role("user"),
         };
@@ -349,6 +351,7 @@ fn texts(node: &ViewNode, found: &mut Vec<String>) {
         ViewKind::Text(text) => found.push(text.clone()),
         ViewKind::Button { label } => found.push(format!("[{label}]")),
         ViewKind::Item { label, .. } => found.push(format!("- {label}")),
+        ViewKind::Markdown(text) => found.push(format!("md: {text}")),
         _ => {}
     }
     for child in &node.children {
@@ -425,6 +428,27 @@ fn a_recording_becomes_a_transcript_a_summary_below_your_notes_and_tasks() {
     assert!(live.contains(&"00:00:00".to_owned()), "{live:?}");
 
     kit.speak();
+    // The live Transcript shows what was heard so far, each time the
+    // panel draws. A press the plugin ignores draws it again.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        kit.app.press_panel_button(tab, "draw-again");
+        support::settle(&mut kit.app);
+        let live = kit
+            .app
+            .plugin_panel(tab)
+            .and_then(Result::ok)
+            .and_then(|view| find(view.root(), "transcript").map(|node| node.kind.clone()));
+        if matches!(&live, Some(ViewKind::Markdown(text)) if text.starts_with("**Me** · 00:00:00\n"))
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no live Transcript: {live:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     // You take notes in the editor meanwhile, here as another app would.
     let note = kit.read(NOTE);
     let notes = "Agenda\r\n- pricing  \n\n### Keep this\nno line break at the end";
@@ -585,6 +609,112 @@ fn without_a_provider_the_transcript_stays_and_summarize_reads_your_edits() {
         "## Summary\n\n### Decisions\n- Ship on Friday.\n\n### Next Steps\n- Ada sends the notes.\n"
     );
     assert!(kit.read(NOTE).contains("type: transcription"));
+}
+
+#[test]
+fn the_settings_pick_the_provider_the_prompt_and_the_folder_and_tasks_get_the_project() {
+    let standup = "---\nid: transcription_01jbcdefghjkmnpqrstvwxyz0a\ntype: transcription\n\
+                   attendees:\n- Ada\ncreated: 2026-11-16T13:00:00Z\nupdated: 2026-11-16T13:00:00Z\n\
+                   ---\nAgenda.\n";
+    let transcript = "---\nid: transcript_01jbcdefghjkmnpqrstvwxyz0b\ntype: transcript\n\
+                      transcription: '[[Standup]]'\ncreated: 2026-11-16T13:00:00Z\n\
+                      updated: 2026-11-16T13:00:00Z\n---\n**Me** · 00:00:02\nLet's ship.\n";
+    let Some(mut kit) = kit(
+        &[
+            ("Projects/Garden/Garden.md", GARDEN.as_bytes()),
+            ("Meetings/Standup/Standup.md", standup.as_bytes()),
+            ("Meetings/Standup/Transcript.md", transcript.as_bytes()),
+        ],
+        true,
+        None,
+    ) else {
+        return;
+    };
+    let other = kit
+        .app
+        .save_ai_provider(support::ai::provider("Other", "ollama", "qwen3", None))
+        .unwrap();
+    kit.settings("provider", InputValue::Choice(Some(other.clone())));
+    kit.settings("folder", InputValue::Choice(Some("meetings".into())));
+    kit.app.send_plugin_settings_event(
+        SETTINGS,
+        &PluginEvent::Submitted(app_core::Submission {
+            node: "prompt-form".into(),
+            fields: vec![Field {
+                node: "prompt".into(),
+                value: InputValue::Multiline("Write a short narrative in {{ language }}.".into()),
+            }],
+        }),
+    );
+    support::settle(&mut kit.app);
+    let settings = kit.read("Meetings/Transcription settings.md");
+    assert!(
+        settings.contains(&format!("provider: {other}")),
+        "{settings}"
+    );
+    assert!(settings.contains("folder: meetings"), "{settings}");
+    assert!(
+        settings.ends_with("---\nWrite a short narrative in {{ language }}.\n"),
+        "{settings}"
+    );
+
+    // With Transcriptions kept in Meetings, a project stays a link.
+    let tab = support::open_from_tree(&mut kit.app, "Meetings/Standup/Standup.md");
+    panel(&mut kit.app, tab, "summarize");
+    kit.app.send_panel_event(
+        tab,
+        &PluginEvent::Changed(Field {
+            node: "project".into(),
+            value: InputValue::Choice(Some("project_01jbcdefghjkmnpqrstvwxyz0h".into())),
+        }),
+    );
+    kit.wait_for("Meetings/Standup/Standup.md", "project: '[[Garden]]'");
+
+    kit.app.press_panel_button(tab, "summarize");
+    kit.wait_for("Meetings/Standup/Standup.md", "## Summary");
+    let asked = kit.provider.asked.lock().unwrap().clone();
+    assert_eq!(asked[0].provider, other);
+    assert!(
+        asked[0]
+            .system
+            .contains("Write a short narrative in English.")
+    );
+    assert!(!asked[0].system.contains("Structure with # (h1) headings"));
+    assert!(
+        asked[0].user.contains("Participants:\n- Ada"),
+        "{}",
+        asked[0].user
+    );
+    assert!(
+        asked[0]
+            .user
+            .contains("Keep the requested structure and stay under")
+    );
+    wait_until(&mut kit.app, "the tasks exist", |_| {
+        tasks(&kit.fixture).len() == 2
+    });
+    for (_, text) in tasks(&kit.fixture) {
+        assert!(text.contains("project: '[[Garden]]'"), "{text}");
+        assert!(text.contains("source: '[[Standup]]'"), "{text}");
+    }
+
+    // With Transcriptions in their project's folder, picking one moves it.
+    kit.settings("folder", InputValue::Choice(Some("project".into())));
+    for choice in ["none", "project_01jbcdefghjkmnpqrstvwxyz0h"] {
+        kit.app.send_panel_event(
+            tab,
+            &PluginEvent::Changed(Field {
+                node: "project".into(),
+                value: InputValue::Choice(Some(choice.into())),
+            }),
+        );
+        support::settle(&mut kit.app);
+    }
+    wait_until(&mut kit.app, "Standup moves to Garden", |_| {
+        kit.fixture.exists("Projects/Garden/Standup/Standup.md")
+            && kit.fixture.exists("Projects/Garden/Standup/Transcript.md")
+    });
+    assert!(!kit.fixture.exists("Meetings/Standup/Standup.md"));
 }
 
 #[test]
