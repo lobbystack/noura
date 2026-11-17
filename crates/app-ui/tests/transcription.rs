@@ -246,3 +246,58 @@ fn the_settings_page_holds_each_setting() {
     harness.get_by_role_and_label(Role::CheckBox, "System audio");
     harness.get_by_role_and_label(Role::MultilineTextInput, "Prompt");
 }
+
+/// The labels of the file tree's rows.
+fn rows(harness: &Ui) -> Vec<String> {
+    harness
+        .get_all_by_role(Role::TreeItem)
+        .filter_map(|row| row.accesskit_node().label())
+        .collect()
+}
+
+#[test]
+fn clicking_the_transcript_in_the_tree_shows_it_in_the_editor() {
+    let Some(mut opened) = opened() else {
+        return;
+    };
+    let harness = &mut opened.harness;
+    open(harness, "Meetings/Standup/Standup.md");
+    // The Transcript sits in the Transcription's folder.
+    for folder in ["Meetings", "Standup"] {
+        harness
+            .get_by_role_and_label(Role::TreeItem, folder)
+            .click();
+        harness.run_steps(4);
+    }
+    wait_until(harness, "the Transcript's row", |harness| {
+        rows(harness).iter().any(|row| row == "Transcript")
+    });
+    harness
+        .get_by_role_and_label(Role::TreeItem, "Transcript")
+        .click();
+    wait_until(harness, "the Transcript", |harness| {
+        harness
+            .query_by_role_and_label(Role::TextInput, "File name")
+            .is_some_and(|name| name.accesskit_node().value().as_deref() == Some("Transcript"))
+    });
+    let text = harness
+        .get_by_role_and_label(Role::MultilineTextInput, "Note text")
+        .accesskit_node()
+        .value()
+        .unwrap_or_default();
+    assert!(text.contains("Ship on Friday."), "{text}");
+    assert!(!text.contains("Agenda."), "{text}");
+    // The Transcription's panel goes with it.
+    harness.run_steps(20);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Group, "Transcription")
+            .is_none()
+    );
+    let tab = harness.state().app().active_tab().unwrap();
+    assert!(tab.is_preview());
+    assert_eq!(
+        tab.file().map(|file| file.relative_path.as_str()),
+        Some("Meetings/Standup/Transcript.md")
+    );
+}

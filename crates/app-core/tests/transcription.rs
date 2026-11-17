@@ -1022,3 +1022,30 @@ fn a_recording_that_hears_no_speech_says_so_after_stop() {
         "Noura heard no speech. Check your microphone and try again."
     );
 }
+
+#[test]
+fn clicking_the_transcript_in_the_tree_opens_it() {
+    let Some(mut kit) = kit(&[], false, None) else {
+        return;
+    };
+    kit.press_shortcut();
+    kit.wait_for(NOTE, "start:");
+    kit.speak();
+    kit.press_shortcut();
+    kit.wait_for(TRANSCRIPT, "**Me** · 00:00:00");
+    let note_tab = kit.app.active_tab().expect("a tab is open").id();
+    assert_eq!(kit.app.note(note_tab).unwrap().relative_path(), NOTE);
+
+    let tab = support::open_from_tree(&mut kit.app, TRANSCRIPT);
+    support::settle(&mut kit.app);
+    let shown = kit
+        .app
+        .note(tab)
+        .expect("the Transcript opens in the editor");
+    assert_eq!(shown.relative_path(), TRANSCRIPT);
+    assert!(
+        shown.text().contains("**Me** · 00:00:00"),
+        "{}",
+        shown.text()
+    );
+}
