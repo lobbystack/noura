@@ -190,11 +190,18 @@ impl WorkspaceEngine {
             ));
         }
         let now = now_rfc3339();
-        let mut enabled_plugins: Vec<String> =
-            ["folders", "notes", "tasks", "calendar", "projects"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect();
+        // Every plugin that ships with Noura but AI, which you turn on
+        // yourself because it sends workspace content to a provider.
+        let mut enabled_plugins: Vec<String> = [
+            "calendar",
+            "dictation",
+            "projects",
+            "tasks",
+            "transcription",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
         for plugin in extra_plugins {
             if !enabled_plugins.iter().any(|id| id == plugin) {
                 enabled_plugins.push((*plugin).to_owned());

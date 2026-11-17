@@ -369,7 +369,7 @@ mod tests {
                 .enabled_plugins
                 .contains(&SYNC_PLUGIN_ID.to_owned())
         );
-        assert!(manifest.enabled_plugins.contains(&"notes".to_owned()));
+        assert!(manifest.enabled_plugins.contains(&"tasks".to_owned()));
     }
 
     #[test]

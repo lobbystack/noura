@@ -2330,6 +2330,27 @@ fn plugin_state_rejects_invalid_plugin_ids_and_accepts_hyphenated_ids() {
 }
 
 #[test]
+fn a_new_workspace_enables_the_shipped_plugins_but_ai() {
+    let (workspace, _app_data, engine) = engine();
+    let expected = [
+        "calendar",
+        "dictation",
+        "projects",
+        "tasks",
+        "transcription",
+    ];
+
+    assert_eq!(engine.read_manifest().unwrap().enabled_plugins, expected);
+    let on_disk = std::fs::read_to_string(workspace.path().join(".noura/workspace.yaml")).unwrap();
+    assert!(
+        on_disk.contains(
+            "enabled_plugins:\n- calendar\n- dictation\n- projects\n- tasks\n- transcription\n"
+        ),
+        "{on_disk}"
+    );
+}
+
+#[test]
 fn manifest_update_rewrites_enabled_plugins_durably_and_in_memory() {
     let (workspace, _app_data, engine) = engine();
     let before = engine.read_manifest().unwrap();
