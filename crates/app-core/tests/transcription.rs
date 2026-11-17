@@ -270,8 +270,10 @@ fn recorded(path: &Path, turns: &[(u64, u64)]) -> Vec<f32> {
     std::fs::write(path, &wav).unwrap();
     let read = std::fs::read(path).unwrap();
     read[44..]
-        .chunks_exact(2)
-        .map(|pair| f32::from(i16::from_le_bytes([pair[0], pair[1]])) / f32::from(i16::MAX))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| f32::from(i16::from_le_bytes(*pair)) / f32::from(i16::MAX))
         .collect()
 }
 
@@ -580,9 +582,7 @@ fn without_a_provider_the_transcript_stays_and_summarize_reads_your_edits() {
     );
     assert_eq!(
         kit.body(NOTE),
-        format!(
-            "## Summary\n\n### Decisions\n- Ship on Friday.\n\n### Next Steps\n- Ada sends the notes.\n"
-        )
+        "## Summary\n\n### Decisions\n- Ship on Friday.\n\n### Next Steps\n- Ada sends the notes.\n"
     );
     assert!(kit.read(NOTE).contains("type: transcription"));
 }

@@ -58,7 +58,7 @@ pub(crate) fn tasks_of(id: &str) -> Result<Vec<TaskRow>, String> {
             })
         })
         .collect();
-    rows.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    rows.sort_by_key(|row| row.title.to_lowercase());
     Ok(rows)
 }
 

@@ -290,11 +290,11 @@ pub(crate) fn render() -> Vec<Node> {
         }
         Audio::Device => {
             let days = settings.audio_days.to_string();
-            let chosen = DAYS
-                .iter()
-                .any(|(id, _)| *id == days)
-                .then_some(days.as_str())
-                .unwrap_or("30");
+            let chosen = if DAYS.iter().any(|(id, _)| *id == days) {
+                days.as_str()
+            } else {
+                "30"
+            };
             view.choice_input(View::ROOT, "audio-days", "Keep for", &DAYS, Some(chosen));
         }
         Audio::None => {}

@@ -79,7 +79,7 @@ pub(crate) fn projects() -> Vec<(String, String)> {
             Some((id, name.strip_suffix(".md").unwrap_or(name).to_owned()))
         })
         .collect();
-    projects.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+    projects.sort_by_key(|project| project.1.to_lowercase());
     projects.dedup_by(|a, b| a.0 == b.0);
     projects
 }
