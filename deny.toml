@@ -41,6 +41,10 @@ ignore = [
   # depends on unmaintained smallstr 0.3.1. This is a maintenance advisory,
   # not a reported vulnerability; decoder isolation remains a release gate.
   "RUSTSEC-2026-0215",
+  # chrono, through logroller, object_store, rmcp, rusqlite, schemars, trash
+  # and xet-client, all of which require it.
+  "RUSTSEC-2026-0543",
+  "RUSTSEC-2026-0542", # humantime, through object_store
 ]
 
 [bans]
