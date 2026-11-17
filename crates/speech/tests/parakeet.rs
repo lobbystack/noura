@@ -4,7 +4,9 @@
 //! Ultra and Silero VAD; the test links them into a scratch folder, so it
 //! never writes there. With no model picked, the service must choose the
 //! downloaded one, cut `say`'s speech with Silero, and transcribe it while
-//! it records, at full level and as quiet as a Bluetooth headset.
+//! it records, at full level and as quiet as a Bluetooth headset. It runs
+//! on macOS only, where `say` makes the speech.
+#![cfg(target_os = "macos")]
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
