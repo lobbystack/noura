@@ -504,3 +504,45 @@ fn shortcut(id: &str, at_ms: u64) -> plugin_host::ShortcutEvent {
         at_ms,
     }
 }
+
+#[test]
+fn keys_read_as_macos_menus_write_them_on_macos_and_as_written_elsewhere() {
+    use plugin_host::{keys_from_label, keys_label_on};
+
+    for (keys, macos) in [
+        ("Alt+Space", "\u{2325}Space"),
+        ("Shift+Cmd+D", "\u{21e7}\u{2318}D"),
+        (
+            "Ctrl+Alt+Shift+Cmd+F5",
+            "\u{2303}\u{2325}\u{21e7}\u{2318}F5",
+        ),
+        ("Space", "Space"),
+    ] {
+        assert_eq!(keys_label_on(keys, true), macos);
+        assert_eq!(keys_label_on(keys, false), keys);
+        // What a label shows reads back as the keys it came from.
+        assert_eq!(keys_from_label(macos).as_deref(), Some(keys), "{macos}");
+        assert_eq!(keys_from_label(keys).as_deref(), Some(keys), "{keys}");
+    }
+    // Keys that aren't valid show as written.
+    assert_eq!(keys_label_on("Hyper+Space", true), "Hyper+Space");
+
+    for (typed, keys) in [
+        ("Option+Space", "Alt+Space"),
+        ("Command+Control+D", "Ctrl+Cmd+D"),
+        ("\u{2325}+Space", "Alt+Space"),
+        (" Alt+Ctrl+D ", "Ctrl+Alt+D"),
+    ] {
+        assert_eq!(keys_from_label(typed).as_deref(), Some(keys), "{typed}");
+    }
+    for bad in [
+        "",
+        "\u{2325}",
+        "\u{2325}\u{2325}Space",
+        "Alt+\u{2325}Space",
+        "ctrl+d",
+        "Hyper+D",
+    ] {
+        assert_eq!(keys_from_label(bad), None, "{bad}");
+    }
+}

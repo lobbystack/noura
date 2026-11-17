@@ -3,7 +3,7 @@
 //! size and badges, download and delete; then the language, the plugins'
 //! shortcuts and how Noura pastes. Onboarding recommends Parakeet Ultra.
 
-use app_core::{App, SPEECH_LANGUAGES, SpeechModelRow};
+use app_core::{App, SPEECH_LANGUAGES, SpeechModelRow, keys_from_label, keys_label};
 use egui::{RichText, Ui, UiBuilder, accesskit::Role};
 
 use crate::{
@@ -203,21 +203,30 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut SpeechSettingsView
                 let typed = view
                     .keys
                     .entry(key.clone())
-                    .or_insert_with(|| shortcut.keys.clone());
+                    .or_insert_with(|| keys_label(&shortcut.keys));
                 ui.label(&shortcut.title);
                 text_field(ui, &format!("{} keys", shortcut.title), typed, false);
                 ui.horizontal(|ui| {
-                    let ready = *typed != shortcut.keys && !typed.trim().is_empty();
+                    let saved = keys_from_label(typed).as_deref() == Some(shortcut.keys.as_str());
+                    let ready = !saved && !typed.trim().is_empty();
                     if primary_button(ui, "Save", ready).clicked() {
-                        changed = Some(app.set_shortcut_keys(
+                        let saved = app.set_shortcut_keys(
                             &shortcut.plugin,
                             &shortcut.id,
                             Some(typed.trim()),
-                        ));
+                        );
+                        // The field shows the keys as this system writes
+                        // them, whichever way you typed them.
+                        if saved.is_ok()
+                            && let Some(keys) = keys_from_label(typed)
+                        {
+                            *typed = keys_label(&keys);
+                        }
+                        changed = Some(saved);
                     }
                     if shortcut.keys != shortcut.declared && ui.button("Reset").clicked() {
                         changed = Some(app.set_shortcut_keys(&shortcut.plugin, &shortcut.id, None));
-                        *typed = shortcut.declared.clone();
+                        *typed = keys_label(&shortcut.declared);
                     }
                 });
             }

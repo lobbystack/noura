@@ -60,8 +60,35 @@ fn a_shortcut_press_reaches_the_plugin_which_pastes_and_its_menu_shows() {
             .code,
         "invalid_keys"
     );
+    // Keys typed as macOS writes them save as the manifest writes them.
+    app.set_shortcut_keys("probe", "paste", Some("\u{2303}\u{2325}D"))
+        .unwrap();
+    assert_eq!(app.global_shortcuts()[0].keys, "Ctrl+Alt+D");
     app.set_shortcut_keys("probe", "paste", None).unwrap();
     assert_eq!(app.global_shortcuts()[0].keys, "Alt+Space");
+
+    // The capability line shows the keys as this system writes them.
+    let keys = if cfg!(target_os = "macos") {
+        "\u{2325}Space"
+    } else {
+        "Alt+Space"
+    };
+    let row = app
+        .plugins()
+        .into_iter()
+        .find(|row| row.id == "probe")
+        .unwrap();
+    let line = row
+        .approved
+        .iter()
+        .find(|line| line.name == "global-shortcuts")
+        .unwrap();
+    assert!(
+        line.description
+            .ends_with(&format!(": Dictation ({keys}).")),
+        "{}",
+        line.description
+    );
 
     app.press_shortcut("probe", "paste", true, Instant::now());
     app.press_shortcut("probe", "paste", false, Instant::now());

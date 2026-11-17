@@ -168,22 +168,19 @@ impl App {
         self.session.plugins().global_shortcuts()
     }
 
-    /// Give `plugin`'s shortcut `id` the keys `keys`, such as `Ctrl+Alt+D`,
-    /// or its declared ones back with `None`.
+    /// Give `plugin`'s shortcut `id` the keys `keys`, such as `Ctrl+Alt+D`
+    /// or, as macOS writes them, `⌃⌥D`, or its declared ones back with
+    /// `None`.
     pub fn set_shortcut_keys(
         &mut self,
         plugin: &str,
         id: &str,
         keys: Option<&str>,
     ) -> Result<(), AppError> {
-        if let Some(keys) = keys
-            && !plugin_host::valid_keys(keys)
-        {
-            return Err(AppError::new(
-                "invalid_keys",
-                "Use modifiers such as Ctrl or Alt, then one key, as in Alt+Space.",
-            ));
-        }
+        let keys = keys
+            .map(|typed| plugin_host::keys_from_label(typed).ok_or_else(invalid_keys))
+            .transpose()?;
+        let keys = keys.as_deref();
         if !self
             .global_shortcuts()
             .iter()
@@ -254,4 +251,16 @@ fn unavailable() -> AppError {
 
 fn speech_error(error: speech::SpeechError) -> AppError {
     AppError::new(&error.code, error.message)
+}
+
+/// Keys you typed that aren't a shortcut, with an example in the form this
+/// computer's system writes keys.
+fn invalid_keys() -> AppError {
+    let hint = if cfg!(target_os = "macos") {
+        "Use modifiers such as \u{2303} Control or \u{2325} Option, then one key, as in \
+         \u{2325}Space."
+    } else {
+        "Use modifiers such as Ctrl or Alt, then one key, as in Alt+Space."
+    };
+    AppError::new("invalid_keys", hint)
 }

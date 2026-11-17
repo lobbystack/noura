@@ -1,7 +1,8 @@
 //! Settings > Speech through AccessKit: onboarding recommends Parakeet
 //! Ultra, the models on this computer and those for your language show
 //! with their grade and a labeled button, Delete removes a model's file,
-//! and the language and paste choices are labeled controls.
+//! the language and paste choices are labeled controls, and a plugin's
+//! shortcut shows its keys as this system writes them.
 
 mod support;
 
@@ -11,7 +12,7 @@ use egui_kittest::kittest::{By, NodeT, Queryable};
 use support::{
     FakePicker, FakeSystem, create_workspace, harness_with,
     kit::{Ui, run},
-    settle,
+    plugins, settle,
 };
 
 fn labels_in(harness: &Ui, group: &str) -> Vec<String> {
@@ -93,4 +94,33 @@ fn a_downloaded_model_shows_on_this_computer_and_delete_removes_its_file() {
 
     assert!(!file.exists());
     assert!(labels_in(&harness, "On this computer").contains(&"No models yet".to_owned()));
+}
+
+#[test]
+fn a_shortcut_shows_its_keys_as_this_system_writes_them() {
+    let Some(probe) = plugins::built("probe_plugin") else {
+        return;
+    };
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    let manifest = plugins::probe_manifest_with(&["name = \"global-shortcuts\"\n\
+         shortcuts = [{ id = \"paste\", title = \"Dictation\", keys = \"Alt+Space\" }]"]);
+    let folder = plugins::folder(parent.path(), &manifest, "plugin.wasm", &probe);
+    plugins::install_and_enable(app_data.path(), &folder, "probe");
+    let system = FakeSystem::new(Platform::current());
+    let mut harness = harness_with(app_data.path(), FakePicker::default(), system);
+    settle(&mut harness);
+    harness.state_mut().app_mut().open_settings_at("speech");
+    run(&mut harness);
+
+    let keys = if cfg!(target_os = "macos") {
+        "\u{2325}Space"
+    } else {
+        "Alt+Space"
+    };
+    let field = harness
+        .get_by_role_and_label(Role::Group, "Shortcuts")
+        .get_by_role_and_label(Role::TextInput, "Dictation keys");
+    assert_eq!(field.accesskit_node().value().as_deref(), Some(keys));
 }

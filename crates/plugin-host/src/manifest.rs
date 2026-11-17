@@ -242,7 +242,9 @@ impl Capability {
             Self::GlobalShortcuts { shortcuts } => {
                 let keys: Vec<String> = shortcuts
                     .iter()
-                    .map(|shortcut| format!("{} ({})", shortcut.title, shortcut.keys_here()))
+                    .map(|shortcut| {
+                        format!("{} ({})", shortcut.title, keys_label(shortcut.keys_here()))
+                    })
                     .collect();
                 whole(&format!(
                     "Answer keyboard shortcuts in any app, even with Noura's windows closed: {}.",
@@ -970,3 +972,76 @@ pub const NAMED_KEYS: [&str; 14] = [
     "PageUp",
     "PageDown",
 ];
+
+/// Each modifier as macOS menus write it, in the order they write them.
+const MACOS_MODIFIERS: [(&str, char); 4] = [
+    ("Ctrl", '\u{2303}'),
+    ("Alt", '\u{2325}'),
+    ("Shift", '\u{21e7}'),
+    ("Cmd", '\u{2318}'),
+];
+
+/// Other names you may type for a modifier, as macOS labels its keys.
+const MODIFIER_ALIASES: [(&str, &str); 3] =
+    [("Control", "Ctrl"), ("Option", "Alt"), ("Command", "Cmd")];
+
+/// `keys`, such as `Alt+Space`, as this computer's system writes them:
+/// `⌥Space` on macOS, as its menus do, and `Alt+Space` elsewhere.
+pub fn keys_label(keys: &str) -> String {
+    keys_label_on(keys, cfg!(target_os = "macos"))
+}
+
+/// `keys` as macOS menus write them when `macos` holds, with `⌃`, `⌥`,
+/// `⇧` and `⌘` in that order before the key, and as written otherwise.
+/// Keys that aren't valid stay as written.
+pub fn keys_label_on(keys: &str, macos: bool) -> String {
+    let parts: Vec<&str> = keys.split('+').collect();
+    let Some((key, modifiers)) = parts.split_last().filter(|_| macos && valid_keys(keys)) else {
+        return keys.to_owned();
+    };
+    let mut label: String = MACOS_MODIFIERS
+        .iter()
+        .filter(|(name, _)| modifiers.contains(name))
+        .map(|(_, symbol)| *symbol)
+        .collect();
+    label.push_str(key);
+    label
+}
+
+/// Keys you typed, as the manifest writes them: `Alt+Space` from
+/// `Alt+Space`, `Option+Space` or `⌥Space`, with the modifiers in
+/// [`MODIFIERS`] order. `None` when they aren't valid keys.
+pub fn keys_from_label(text: &str) -> Option<String> {
+    let mut rest = text.trim();
+    let mut modifiers: Vec<&str> = Vec::new();
+    while let Some((name, symbol)) = MACOS_MODIFIERS
+        .iter()
+        .find(|(_, symbol)| rest.starts_with(*symbol))
+    {
+        if modifiers.contains(name) {
+            return None;
+        }
+        modifiers.push(name);
+        rest = rest[symbol.len_utf8()..].trim_start_matches('+');
+    }
+    let parts: Vec<&str> = rest.split('+').map(str::trim).collect();
+    let (key, named) = parts.split_last()?;
+    for modifier in named {
+        let modifier = MODIFIER_ALIASES
+            .iter()
+            .find(|(alias, _)| alias == modifier)
+            .map_or(*modifier, |(_, name)| *name);
+        if !MODIFIERS.contains(&modifier) || modifiers.contains(&modifier) {
+            return None;
+        }
+        modifiers.push(modifier);
+    }
+    let mut keys: Vec<&str> = MODIFIERS
+        .iter()
+        .copied()
+        .filter(|name| modifiers.contains(name))
+        .collect();
+    keys.push(key);
+    let keys = keys.join("+");
+    valid_keys(&keys).then_some(keys)
+}

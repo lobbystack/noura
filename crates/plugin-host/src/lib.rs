@@ -51,8 +51,8 @@ pub use instance::{
 };
 pub use manifest::{
     Capability, Grant, INTERFACE_VERSIONS, MANIFEST_FILE, MODIFIERS, NAMED_KEYS, Platform,
-    PluginManifest, ShortcutDeclaration, read_manifest, valid_command_id, valid_keys,
-    valid_plugin_id,
+    PluginManifest, ShortcutDeclaration, keys_from_label, keys_label, keys_label_on, read_manifest,
+    valid_command_id, valid_keys, valid_plugin_id,
 };
 pub use memory::{process_memory, release_free_memory};
 pub use object_types::{KERNEL_TYPES, ObjectTypes, PLUGIN_TYPES, SERVICE_WRITTEN_TYPES, TypeError};
