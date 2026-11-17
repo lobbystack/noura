@@ -85,7 +85,7 @@ fn opened() -> Option<Opened> {
     let component = plugins::built("ai_plugin")?;
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    create_workspace(app_data.path(), &parent.path().join("Garden"));
     let plugin = plugins::folder(parent.path(), MANIFEST, "ai_plugin.wasm", &component);
     plugins::install_and_enable(app_data.path(), &plugin, "ai");
     set_up_provider(app_data.path());
@@ -458,7 +458,7 @@ fn asking_with(arguments: serde_json::Value) -> Option<Tooled> {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let workspace = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &workspace);
+    create_workspace(app_data.path(), &workspace);
     let tasks_folder = parent.path().join("tasks-plugin");
     std::fs::create_dir_all(&tasks_folder).unwrap();
     let tasks = plugins::folder(&tasks_folder, TASKS_MANIFEST, "tasks_plugin.wasm", &tasks);
@@ -591,7 +591,7 @@ fn without_a_provider_the_page_offers_open_ai_settings_which_opens_settings_on_a
     };
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    create_workspace(app_data.path(), &parent.path().join("Garden"));
     let plugin = plugins::folder(parent.path(), MANIFEST, "ai_plugin.wasm", &component);
     plugins::install_and_enable(app_data.path(), &plugin, "ai");
     let system = FakeSystem::new(Platform::current());

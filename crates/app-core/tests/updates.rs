@@ -705,7 +705,7 @@ fn restart_waits_for_a_workspace_that_is_still_being_set_up() {
     settle(&mut app, now);
     let folder = tempfile::tempdir().unwrap();
 
-    app.create_workspace("Plans", folder.path().to_owned());
+    app.create_workspace(folder.path().to_owned());
     app.restart_to_update();
     std::thread::sleep(Duration::from_millis(200));
     app.poll_at(now);

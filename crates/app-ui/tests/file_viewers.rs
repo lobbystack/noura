@@ -53,7 +53,7 @@ fn workspace_on(
     files: &[(&str, &[u8])],
     system: Arc<FakeSystem>,
 ) -> Ui {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     for (name, bytes) in files {
         let path = folder.join(name);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

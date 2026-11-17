@@ -116,12 +116,9 @@ fn wrapped_keys_survive_index_rebuild_and_refuse_replacement_or_wrong_context() 
 
 fn engine() -> (TempDir, WorkspaceEngine) {
     let dir = TempDir::new().unwrap();
-    let engine = WorkspaceEngine::create_with_app_data(
-        dir.path().join("workspace"),
-        "Sync test",
-        dir.path().join("app"),
-    )
-    .unwrap();
+    let engine =
+        WorkspaceEngine::create_with_app_data(dir.path().join("workspace"), dir.path().join("app"))
+            .unwrap();
     (dir, engine)
 }
 

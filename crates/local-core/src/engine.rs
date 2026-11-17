@@ -136,7 +136,7 @@ pub struct WorkspaceEngine {
 }
 
 impl WorkspaceEngine {
-    pub fn create(root: impl AsRef<Path>, name: &str) -> Result<Self> {
+    pub fn create(root: impl AsRef<Path>) -> Result<Self> {
         let app_data = directories::ProjectDirs::from("org", "noura", "Noura")
             .ok_or_else(|| {
                 CoreError::new(
@@ -148,22 +148,20 @@ impl WorkspaceEngine {
             })?
             .data_local_dir()
             .to_owned();
-        Self::create_with_app_data(root, name, app_data)
+        Self::create_with_app_data(root, app_data)
     }
 
     pub fn create_with_app_data(
         root: impl AsRef<Path>,
-        name: &str,
         app_data: impl AsRef<Path>,
     ) -> Result<Self> {
-        Self::create_with_identity(root, name, app_data, None, &[])
+        Self::create_with_identity(root, app_data, None, &[])
     }
 
     /// `extra_plugins` are enabled in the new manifest in addition to the
     /// default domain plugins.
     fn create_with_identity(
         root: impl AsRef<Path>,
-        name: &str,
         app_data: impl AsRef<Path>,
         workspace_id: Option<&str>,
         extra_plugins: &[&str],
@@ -179,13 +177,6 @@ impl WorkspaceEngine {
                 "workspace_exists",
                 ErrorCategory::Conflict,
                 "A workspace already exists at this location",
-                "workspace_create",
-            ));
-        }
-        if name.trim().is_empty() {
-            return Err(CoreError::validation(
-                "workspace_name_required",
-                "A workspace name is required",
                 "workspace_create",
             ));
         }
@@ -205,7 +196,6 @@ impl WorkspaceEngine {
                 format!("workspace_{}", ulid::Ulid::new().to_string().to_lowercase())
             }),
             format_version: 1,
-            name: name.trim().to_owned(),
             created: now.clone(),
             updated: now,
             enabled_plugins,
@@ -229,11 +219,7 @@ impl WorkspaceEngine {
     /// Opens a workspace, initializing Noura metadata when an existing
     /// directory has no `.noura/workspace.yaml`. A saved identity can be supplied
     /// when repairing a previously registered workspace.
-    pub fn open_or_initialize(
-        root: impl AsRef<Path>,
-        name: &str,
-        workspace_id: Option<&str>,
-    ) -> Result<Self> {
+    pub fn open_or_initialize(root: impl AsRef<Path>, workspace_id: Option<&str>) -> Result<Self> {
         let app_data = directories::ProjectDirs::from("org", "noura", "Noura")
             .ok_or_else(|| {
                 CoreError::new(
@@ -245,12 +231,11 @@ impl WorkspaceEngine {
             })?
             .data_local_dir()
             .to_owned();
-        Self::open_or_initialize_with_app_data(root, name, workspace_id, app_data)
+        Self::open_or_initialize_with_app_data(root, workspace_id, app_data)
     }
 
     pub fn open_or_initialize_with_app_data(
         root: impl AsRef<Path>,
-        name: &str,
         workspace_id: Option<&str>,
         app_data: impl AsRef<Path>,
     ) -> Result<Self> {
@@ -267,7 +252,7 @@ impl WorkspaceEngine {
         {
             return Self::open_with_app_data(root, app_data);
         }
-        Self::create_with_identity(root, name, app_data, workspace_id, &[])
+        Self::create_with_identity(root, app_data, workspace_id, &[])
     }
 
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
@@ -730,8 +715,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         let start = engine.change_counts();
         let folders = 120;
         std::thread::scope(|scope| {
@@ -762,10 +746,9 @@ mod tests {
         let app_data = tempdir().unwrap();
         std::fs::create_dir(workspace.path().join(".noura")).unwrap();
         std::fs::write(workspace.path().join(WORKSPACE_MANIFEST_PATH), "sentinel").unwrap();
-        let error =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .err()
-                .unwrap();
+        let error = WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path())
+            .err()
+            .unwrap();
         assert_eq!(error.code, "workspace_exists");
         assert_eq!(
             std::fs::read_to_string(workspace.path().join(WORKSPACE_MANIFEST_PATH)).unwrap(),
@@ -779,7 +762,7 @@ mod tests {
         let app_data = tempdir().unwrap();
         std::fs::write(workspace.path().join("workspace.yaml"), "user content").unwrap();
 
-        WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path()).unwrap();
+        WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
 
         assert_eq!(
             (
@@ -796,15 +779,9 @@ mod tests {
         let app_data = tempdir().unwrap();
         std::fs::write(workspace.path().join("existing.md"), "# Existing\n").unwrap();
 
-        let engine = WorkspaceEngine::open_or_initialize_with_app_data(
-            workspace.path(),
-            "Existing notes",
-            None,
-            app_data.path(),
-        )
-        .unwrap();
+        WorkspaceEngine::open_or_initialize_with_app_data(workspace.path(), None, app_data.path())
+            .unwrap();
 
-        assert_eq!(engine.manifest().name, "Existing notes");
         assert_eq!(
             std::fs::read_to_string(workspace.path().join("existing.md")).unwrap(),
             "# Existing\n"
@@ -819,14 +796,10 @@ mod tests {
         let app_data = tempdir().unwrap();
         let workspace = parent.path().join("missing");
 
-        let error = WorkspaceEngine::open_or_initialize_with_app_data(
-            &workspace,
-            "Missing",
-            None,
-            app_data.path(),
-        )
-        .err()
-        .unwrap();
+        let error =
+            WorkspaceEngine::open_or_initialize_with_app_data(&workspace, None, app_data.path())
+                .err()
+                .unwrap();
 
         assert_eq!(error.operation, "workspace_open");
         assert!(!workspace.exists());
@@ -840,7 +813,6 @@ mod tests {
 
         let engine = WorkspaceEngine::open_or_initialize_with_app_data(
             workspace.path(),
-            "Recovered",
             Some(workspace_id),
             app_data.path(),
         )
@@ -856,7 +828,6 @@ mod tests {
 
         let error = WorkspaceEngine::open_or_initialize_with_app_data(
             workspace.path(),
-            "Recovered",
             Some("../../outside"),
             app_data.path(),
         )
@@ -872,7 +843,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         std::fs::create_dir(workspace.path().join(".noura")).unwrap();
-        std::fs::write(workspace.path().join(WORKSPACE_MANIFEST_PATH), "id: ../../outside\nformat_version: 1\nname: Bad\ncreated: 2026-08-27T12:00:00Z\nupdated: 2026-08-27T12:00:00Z\nenabled_plugins: []\nignore: []\n").unwrap();
+        std::fs::write(workspace.path().join(WORKSPACE_MANIFEST_PATH), "id: ../../outside\nformat_version: 1\ncreated: 2026-08-27T12:00:00Z\nupdated: 2026-08-27T12:00:00Z\nenabled_plugins: []\nignore: []\n").unwrap();
         let error = WorkspaceEngine::open_with_app_data(workspace.path(), app_data.path())
             .err()
             .unwrap();
@@ -887,10 +858,9 @@ mod tests {
         let outside = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         std::os::unix::fs::symlink(outside.path(), workspace.path().join(".noura")).unwrap();
-        let error =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .err()
-                .unwrap();
+        let error = WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path())
+            .err()
+            .unwrap();
         assert_eq!(error.code, "symlink_escape");
         assert!(!outside.path().join("trash").exists());
     }

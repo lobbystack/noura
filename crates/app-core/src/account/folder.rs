@@ -706,7 +706,7 @@ impl Folder {
                         )?
                     }
                     _ => {
-                        let name = engine.manifest().name;
+                        let name = crate::workspace::folder_name(engine.root());
                         // A workspace your account has isn't made twice.
                         let same = crate::sync::workspace::synced_workspaces(service)
                             .await?
@@ -715,7 +715,7 @@ impl Folder {
                         if let Some((workspace, other)) = same {
                             if !self.holds_no_files() {
                                 return Err(SyncError::Invalid(format!(
-                                    "Your account already has a workspace named {other}. Rename this one to keep both."
+                                    "Your account already has a workspace named {other}. Rename its folder to keep both."
                                 )));
                             }
                             return self.download(service, workspace, app_data).await;
@@ -748,17 +748,6 @@ impl Folder {
                     && let (Some(sync), Some(service)) = (self.sync.as_mut(), service)
                 {
                     sync.round(service, 0).await?;
-                }
-            }
-            FolderSyncAction::Rename(name) => {
-                if let (Some(sync), Some(service)) = (self.sync.as_mut(), service) {
-                    match sync.rename(service, &name).await {
-                        Ok(()) => {}
-                        // Only an owner or admin renames a shared workspace;
-                        // the folder keeps its own name.
-                        Err(SyncError::Invalid(_)) => {}
-                        Err(error) => return Err(error),
-                    }
                 }
             }
             FolderSyncAction::Choose { rid, key } => {

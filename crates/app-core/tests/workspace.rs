@@ -14,7 +14,7 @@ fn new_workspace_writes_a_manifest_with_a_new_id_and_the_name() {
     let folder = tempfile::tempdir().unwrap();
     let service = WorkspaceService::new(app_data.path());
 
-    let workspace = service.create("Research", folder.path()).unwrap();
+    let workspace = service.create(folder.path()).unwrap();
 
     let on_disk = manifest(folder.path());
     assert!(on_disk.contains("name: Research"), "{on_disk}");
@@ -36,7 +36,7 @@ fn new_workspace_leaves_existing_files_byte_for_byte() {
     std::fs::write(folder.path().join("Sub/data.bin"), [0u8, 159, 146, 150]).unwrap();
 
     WorkspaceService::new(app_data.path())
-        .create("Notes", folder.path())
+        .create(folder.path())
         .unwrap();
 
     assert_eq!(std::fs::read(folder.path().join("Note.md")).unwrap(), note);
@@ -53,7 +53,7 @@ fn new_workspace_with_a_blank_name_changes_nothing() {
     let folder = parent.path().join("Not yet");
 
     let error = WorkspaceService::new(app_data.path())
-        .create("   ", &folder)
+        .create(&folder)
         .err()
         .unwrap();
 
@@ -67,10 +67,10 @@ fn new_workspace_where_one_exists_changes_nothing_and_says_so() {
     let app_data = tempfile::tempdir().unwrap();
     let folder = tempfile::tempdir().unwrap();
     let service = WorkspaceService::new(app_data.path());
-    drop(service.create("First", folder.path()).unwrap());
+    drop(service.create(folder.path()).unwrap());
     let before = manifest(folder.path());
 
-    let error = service.create("Second", folder.path()).err().unwrap();
+    let error = service.create(folder.path()).err().unwrap();
 
     assert_eq!(error.code, "workspace_exists");
     assert_eq!(
@@ -85,11 +85,7 @@ fn open_folder_opens_an_existing_workspace() {
     let app_data = tempfile::tempdir().unwrap();
     let folder = tempfile::tempdir().unwrap();
     let service = WorkspaceService::new(app_data.path());
-    let id = service
-        .create("Existing", folder.path())
-        .unwrap()
-        .id()
-        .to_owned();
+    let id = service.create(folder.path()).unwrap().id().to_owned();
     let before = manifest(folder.path());
 
     let workspace = service.open_folder(folder.path()).unwrap();
@@ -109,11 +105,11 @@ fn open_folder_opens_the_workspace_now_in_a_folder_recents_remember_differently(
     let folder = parent.path().join("Reused");
     std::fs::create_dir(&folder).unwrap();
     let service = WorkspaceService::new(app_data.path());
-    service.create("Old", &folder).unwrap();
+    service.create(&folder).unwrap();
     rename_with_retry(&folder, &parent.path().join("Old moved"));
     std::fs::create_dir(&folder).unwrap();
     let new_id = WorkspaceService::new(other_app_data.path())
-        .create("New", &folder)
+        .create(&folder)
         .unwrap()
         .id()
         .to_owned();
@@ -134,7 +130,7 @@ fn open_folder_gives_a_folder_that_lost_its_manifest_a_new_id() {
     let folder = parent.path().join("Known folder");
     std::fs::create_dir(&folder).unwrap();
     let service = WorkspaceService::new(app_data.path());
-    let id = service.create("Known", &folder).unwrap().id().to_owned();
+    let id = service.create(&folder).unwrap().id().to_owned();
     std::fs::remove_file(folder.join(".noura/workspace.yaml")).unwrap();
 
     let workspace = service.open_folder(&folder).unwrap();
@@ -151,7 +147,7 @@ fn open_folder_never_lends_a_remembered_id_to_another_folder_at_the_same_path() 
     let folder = parent.path().join("Projects");
     std::fs::create_dir(&folder).unwrap();
     let service = WorkspaceService::new(app_data.path());
-    let old_id = service.create("Old", &folder).unwrap().id().to_owned();
+    let old_id = service.create(&folder).unwrap().id().to_owned();
     let archive = parent.path().join("Projects archive");
     rename_with_retry(&folder, &archive);
     std::fs::create_dir(&folder).unwrap();
@@ -281,8 +277,8 @@ fn recents_list_the_most_recent_first_once_per_workspace_id() {
     let first = tempfile::tempdir().unwrap();
     let second = tempfile::tempdir().unwrap();
     let service = WorkspaceService::new(app_data.path());
-    let a = service.create("A", first.path()).unwrap().id().to_owned();
-    let b = service.create("B", second.path()).unwrap().id().to_owned();
+    let a = service.create(first.path()).unwrap().id().to_owned();
+    let b = service.create(second.path()).unwrap().id().to_owned();
 
     service.open_folder(first.path()).unwrap();
 
@@ -304,7 +300,7 @@ fn recents_keep_at_most_twenty_workspaces() {
         .map(|index| {
             let folder = parent.path().join(format!("w{index}"));
             std::fs::create_dir(&folder).unwrap();
-            service.create("W", &folder).unwrap().id().to_owned()
+            service.create(&folder).unwrap().id().to_owned()
         })
         .collect();
 
@@ -320,7 +316,7 @@ fn recents_live_in_app_data_and_never_in_the_workspace() {
     let app_data = tempfile::tempdir().unwrap();
     let folder = tempfile::tempdir().unwrap();
     let service = WorkspaceService::new(app_data.path());
-    service.create("Private", folder.path()).unwrap();
+    service.create(folder.path()).unwrap();
 
     let mut written: Vec<String> = walk(folder.path());
     written.sort();
@@ -353,8 +349,8 @@ fn the_switcher_opens_another_recent_workspace() {
     let first = tempfile::tempdir().unwrap();
     let second = tempfile::tempdir().unwrap();
     let service = WorkspaceService::new(app_data.path());
-    let a = service.create("A", first.path()).unwrap().id().to_owned();
-    let b = service.create("B", second.path()).unwrap().id().to_owned();
+    let a = service.create(first.path()).unwrap().id().to_owned();
+    let b = service.create(second.path()).unwrap().id().to_owned();
 
     let workspace = service.open_recent(&a).unwrap();
 
@@ -368,8 +364,8 @@ fn remove_from_recents_drops_the_entry_and_leaves_its_folder_alone() {
     let first = tempfile::tempdir().unwrap();
     let second = tempfile::tempdir().unwrap();
     let service = WorkspaceService::new(app_data.path());
-    let a = service.create("A", first.path()).unwrap().id().to_owned();
-    let b = service.create("B", second.path()).unwrap().id().to_owned();
+    let a = service.create(first.path()).unwrap().id().to_owned();
+    let b = service.create(second.path()).unwrap().id().to_owned();
     std::fs::write(first.path().join("Note.md"), b"stays").unwrap();
     let before = manifest(first.path());
 
@@ -395,7 +391,7 @@ fn a_recent_workspace_that_fails_to_open_stays_listed_for_removal() {
     let folder = parent.path().join("Gone");
     std::fs::create_dir(&folder).unwrap();
     let service = WorkspaceService::new(app_data.path());
-    let id = service.create("Gone", &folder).unwrap().id().to_owned();
+    let id = service.create(&folder).unwrap().id().to_owned();
     rename_with_retry(&folder, &parent.path().join("Elsewhere"));
 
     let error = service.open_recent(&id).err().unwrap();
@@ -411,8 +407,8 @@ fn restore_reopens_the_last_workspace() {
     let older = tempfile::tempdir().unwrap();
     let last = tempfile::tempdir().unwrap();
     let service = WorkspaceService::new(app_data.path());
-    service.create("Older", older.path()).unwrap();
-    let id = service.create("Last", last.path()).unwrap().id().to_owned();
+    service.create(older.path()).unwrap();
+    let id = service.create(last.path()).unwrap().id().to_owned();
 
     let restored = WorkspaceService::new(app_data.path())
         .restore_last()
@@ -442,8 +438,8 @@ fn restore_says_why_while_the_folder_is_missing_and_opens_it_once_it_is_back() {
     std::fs::create_dir(&older).unwrap();
     std::fs::create_dir(&folder).unwrap();
     let service = WorkspaceService::new(app_data.path());
-    service.create("Older", &older).unwrap();
-    let id = service.create("Last", &folder).unwrap().id().to_owned();
+    service.create(&older).unwrap();
+    let id = service.create(&folder).unwrap().id().to_owned();
     let saved_path = service.recents()[0].path.clone();
     let away = parent.path().join("Away");
     rename_with_retry(&folder, &away);
@@ -468,7 +464,7 @@ fn restore_and_open_recent_refuse_a_saved_folder_that_lost_its_manifest() {
     let folder = parent.path().join("Bare");
     std::fs::create_dir(&folder).unwrap();
     let service = WorkspaceService::new(app_data.path());
-    let id = service.create("Bare", &folder).unwrap().id().to_owned();
+    let id = service.create(&folder).unwrap().id().to_owned();
     let saved_path = service.recents()[0].path.clone();
     std::fs::remove_file(folder.join(".noura/workspace.yaml")).unwrap();
 
@@ -493,13 +489,13 @@ fn restore_refuses_a_different_workspace_at_the_saved_path() {
     let folder = parent.path().join("Shared path");
     std::fs::create_dir(&folder).unwrap();
     let service = WorkspaceService::new(app_data.path());
-    service.create("Original", &folder).unwrap();
+    service.create(&folder).unwrap();
     let saved_path = service.recents()[0].path.clone();
     // Another workspace replaces the folder at the same path.
     rename_with_retry(&folder, &parent.path().join("Original moved"));
     std::fs::create_dir(&folder).unwrap();
     WorkspaceService::new(other_app_data.path())
-        .create("Impostor", &folder)
+        .create(&folder)
         .unwrap();
 
     let error = service.restore_last().err().unwrap();
@@ -520,7 +516,7 @@ fn restore_says_when_the_folder_is_unreadable() {
     let folder = parent.path().join("Locked");
     std::fs::create_dir(&folder).unwrap();
     let service = WorkspaceService::new(app_data.path());
-    service.create("Locked", &folder).unwrap();
+    service.create(&folder).unwrap();
     let saved_path = service.recents()[0].path.clone();
     std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o000)).unwrap();
     if std::fs::read_dir(&folder).is_ok() {
@@ -585,7 +581,7 @@ fn new_workspace_in_a_folder_noura_cannot_represent_returns_unsupported_path() {
         .join(std::ffi::OsStr::from_bytes(b"not \xff utf-8"));
 
     let error = WorkspaceService::new(app_data.path())
-        .create("Odd", &folder)
+        .create(&folder)
         .err()
         .unwrap();
 
@@ -627,7 +623,7 @@ fn a_folder_noura_cannot_write_to_says_so_and_stays_empty() {
     let path = folder.to_str().unwrap().to_owned();
     let service = WorkspaceService::new(app_data.path());
 
-    let created = service.create("Read only", &folder).err().unwrap();
+    let created = service.create(&folder).err().unwrap();
     let opened = service.open_folder(&folder).err().unwrap();
     std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
 
@@ -646,11 +642,7 @@ fn a_noura_folder_that_is_a_link_opens_nothing_and_says_so() {
     let original = parent.path().join("Original");
     std::fs::create_dir(&original).unwrap();
     let service = WorkspaceService::new(app_data.path());
-    let id = service
-        .create("Original", &original)
-        .unwrap()
-        .id()
-        .to_owned();
+    let id = service.create(&original).unwrap().id().to_owned();
     let linked = parent.path().join("Linked");
     std::fs::create_dir(&linked).unwrap();
     std::os::unix::fs::symlink(original.join(".noura"), linked.join(".noura")).unwrap();
@@ -658,7 +650,7 @@ fn a_noura_folder_that_is_a_link_opens_nothing_and_says_so() {
     let before = snapshot(&original);
 
     let opened = service.open_folder(&linked).err().unwrap();
-    let created = service.create("Linked", &linked).err().unwrap();
+    let created = service.create(&linked).err().unwrap();
 
     let message = format!("The .noura folder in {path} is a link, so Noura won't use it.");
     for error in [opened, created] {
@@ -684,11 +676,7 @@ fn a_settings_file_that_links_to_another_workspace_never_lends_its_id() {
     let original = parent.path().join("Original");
     std::fs::create_dir(&original).unwrap();
     let service = WorkspaceService::new(app_data.path());
-    let id = service
-        .create("Original", &original)
-        .unwrap()
-        .id()
-        .to_owned();
+    let id = service.create(&original).unwrap().id().to_owned();
     let linked = parent.path().join("Linked");
     std::fs::create_dir_all(linked.join(".noura")).unwrap();
     std::os::unix::fs::symlink(
@@ -722,7 +710,7 @@ fn restore_refuses_a_saved_workspace_whose_settings_file_became_a_link() {
     let folder = parent.path().join("Saved");
     std::fs::create_dir(&folder).unwrap();
     let service = WorkspaceService::new(app_data.path());
-    service.create("Saved", &folder).unwrap();
+    service.create(&folder).unwrap();
     let saved_path = service.recents()[0].path.clone();
     let elsewhere = parent.path().join("workspace.yaml");
     std::fs::rename(folder.join(".noura/workspace.yaml"), &elsewhere).unwrap();
@@ -758,7 +746,7 @@ fn a_copied_workspace_folder_opens_with_the_original_id_today() {
     let original = parent.path().join("Garden");
     std::fs::create_dir(&original).unwrap();
     let service = WorkspaceService::new(app_data.path());
-    let id = service.create("Garden", &original).unwrap().id().to_owned();
+    let id = service.create(&original).unwrap().id().to_owned();
     std::fs::write(original.join("Note.md"), b"x").unwrap();
     let copy = parent.path().join("Garden copy");
     std::fs::create_dir_all(copy.join(".noura")).unwrap();

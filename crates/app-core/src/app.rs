@@ -185,7 +185,6 @@ enum Job {
     },
     OpenFolder(PathBuf),
     Create {
-        name: String,
         folder: PathBuf,
     },
     OpenRecent {
@@ -663,13 +662,10 @@ impl App {
         self.depart(notes::Departure::Open(Job::OpenFolder(folder)));
     }
 
-    /// Create a workspace named `name` in `folder` and open it. Every
-    /// window's open notes save first.
-    pub fn create_workspace(&mut self, name: &str, folder: PathBuf) {
-        self.depart(notes::Departure::Open(Job::Create {
-            name: name.to_owned(),
-            folder,
-        }));
+    /// Create a workspace in `folder`, named after the folder, and open
+    /// it. Every window's open notes save first.
+    pub fn create_workspace(&mut self, folder: PathBuf) {
+        self.depart(notes::Departure::Open(Job::Create { folder }));
     }
 
     /// Open a workspace from the recent list. Every window's open notes
@@ -1127,7 +1123,7 @@ fn run(
             service.open_recent(workspace_id)?
         }
         Job::OpenFolder(folder) => service.open_folder(folder)?,
-        Job::Create { name, folder } => service.create(name, folder)?,
+        Job::Create { folder } => service.create(folder)?,
     };
     let (snapshot, counts) = Snapshot::of(workspace.engine(), workspace.root())?;
     let tree = FileTree::from_entries(&snapshot.entries);

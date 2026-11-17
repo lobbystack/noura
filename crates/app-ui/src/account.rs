@@ -240,11 +240,11 @@ pub(crate) fn section(
     for action in actions {
         app.account_action(action);
     }
-    if let (Some(folder), Some(invitation)) = (download, &screen.invitation) {
-        app.download_invited(&invitation.workspace, folder);
+    if let (Some(folder), Some(_)) = (download, &screen.invitation) {
+        app.download_invited(folder);
     }
-    if let Some((workspace, name, folder)) = download_listed {
-        app.download_workspace(workspace, &name, folder);
+    if let Some((workspace, folder)) = download_listed {
+        app.download_workspace(workspace, folder);
     }
 }
 
@@ -256,7 +256,7 @@ fn workspaces_group(
     view: &SignedInView,
     actions: &mut Vec<AccountAction>,
     picker: &mut dyn FolderPicker,
-) -> Option<(Id, String, PathBuf)> {
+) -> Option<(Id, PathBuf)> {
     if view.workspaces.is_empty() {
         return None;
     }
@@ -280,7 +280,7 @@ fn workspaces_group(
                     .clicked()
                     && let Some(folder) = picker.pick_folder("Choose an empty folder")
                 {
-                    chosen = Some((row.workspace, row.name.clone(), folder));
+                    chosen = Some((row.workspace, folder));
                 }
             });
         }

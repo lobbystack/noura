@@ -47,7 +47,7 @@ fn opened(program: PathBuf, answer: Result<&str, &str>) -> Opened {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     let system = FakeSystem::new(Platform::MacOs);
     let probe = Arc::new(FakeProbe(answer.map(str::to_owned).map_err(str::to_owned)));
     let mut harness = harness_on(

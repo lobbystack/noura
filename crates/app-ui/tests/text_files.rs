@@ -25,7 +25,7 @@ const NOTICE: &str = "Properties can\u{2019}t be read";
 /// A workspace holding `files`, each a name and its text, with `open`
 /// opened from the tree.
 fn opened(app_data: &Path, folder: &Path, files: &[(&str, &str)], open: &str) -> Ui {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     for (name, text) in files {
         std::fs::write(folder.join(name), text).unwrap();
     }

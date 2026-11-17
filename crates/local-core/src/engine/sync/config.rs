@@ -7,7 +7,6 @@ impl WorkspaceEngine {
     /// Existing workspace identities are never changed.
     pub fn create_sync_replica(
         root: impl AsRef<Path>,
-        name: &str,
         workspace_id: &str,
         app_data: impl AsRef<Path>,
     ) -> Result<Self> {
@@ -23,7 +22,7 @@ impl WorkspaceEngine {
         {
             return Err(invalid("sync_replica_directory_not_empty"));
         }
-        Self::create_with_identity(root, name, app_data, Some(workspace_id), &[SYNC_PLUGIN_ID])
+        Self::create_with_identity(root, app_data, Some(workspace_id), &[SYNC_PLUGIN_ID])
     }
 
     pub fn sync_configuration(&self) -> Result<Option<crate::sync::WorkspaceSyncConfig>> {

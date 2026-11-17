@@ -543,27 +543,6 @@ fn the_windows_share_this_device_s_preferences() {
     assert!(!second.preferences().spell_check);
 }
 
-/// The workspace's name in one window's Settings shows in every window.
-#[test]
-fn a_workspace_renamed_in_one_window_shows_the_new_name_in_the_others() {
-    let (_app_data, _folder, mut first) = opened(&["A.md"]);
-    let mut second = first.new_window().unwrap();
-
-    first.open_settings_at(app_core::settings_section::WORKSPACE);
-    assert!(first.rename_workspace("Orchard"));
-    second.poll();
-
-    let names = |app: &App| -> Vec<String> {
-        app.recents()
-            .iter()
-            .map(|recent| recent.name.clone())
-            .collect()
-    };
-    assert_eq!(second.workspace().unwrap().name(), "Orchard");
-    assert_eq!(names(&second), names(&first));
-    assert!(names(&second).contains(&"Orchard".to_owned()));
-}
-
 /// Closing the last window quits, so it comes back at the next launch.
 #[test]
 fn the_last_window_closed_comes_back_at_the_next_launch() {

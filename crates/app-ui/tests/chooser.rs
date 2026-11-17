@@ -42,26 +42,18 @@ fn open_folder_opens_the_picked_folder() {
 }
 
 #[test]
-fn new_workspace_asks_for_a_name_then_a_folder() {
+fn new_workspace_asks_for_a_folder_and_takes_its_name() {
     let app_data = tempfile::tempdir().unwrap();
-    let folder = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Lab notes");
+    std::fs::create_dir(&folder).unwrap();
     let picker = FakePicker::default();
-    picker.answer(Some(folder.path()));
+    picker.answer(Some(&folder));
     let mut harness = harness(app_data.path(), picker.clone());
     harness.run();
 
     harness
         .get_by_role_and_label(Role::Button, "New workspace…")
-        .click();
-    harness.run();
-    let choose = harness.get_by_role_and_label(Role::Button, "Choose folder…");
-    assert!(choose.accesskit_node().is_disabled(), "a name comes first");
-    harness
-        .get_by_role_and_label(Role::TextInput, "Workspace name")
-        .type_text("Lab notes");
-    harness.run();
-    harness
-        .get_by_role_and_label(Role::Button, "Choose folder…")
         .click();
     settle(&mut harness);
 
@@ -69,8 +61,8 @@ fn new_workspace_asks_for_a_name_then_a_folder() {
         *picker.titles.lock().unwrap(),
         ["Choose a folder for the new workspace"]
     );
-    let manifest = std::fs::read_to_string(folder.path().join(".noura/workspace.yaml")).unwrap();
-    assert!(manifest.contains("name: Lab notes"), "{manifest}");
+    let manifest = std::fs::read_to_string(folder.join(".noura/workspace.yaml")).unwrap();
+    assert!(!manifest.contains("name"), "{manifest}");
     harness.get_by_label_contains("Lab notes");
 }
 
@@ -79,7 +71,7 @@ fn a_failed_new_workspace_says_why() {
     let app_data = tempfile::tempdir().unwrap();
     let other_app_data = tempfile::tempdir().unwrap();
     let folder = tempfile::tempdir().unwrap();
-    support::create_workspace(other_app_data.path(), "Taken", folder.path());
+    support::create_workspace(other_app_data.path(), folder.path());
     let picker = FakePicker::default();
     picker.answer(Some(folder.path()));
     let mut harness = harness(app_data.path(), picker);
@@ -87,14 +79,6 @@ fn a_failed_new_workspace_says_why() {
 
     harness
         .get_by_role_and_label(Role::Button, "New workspace…")
-        .click();
-    harness.run();
-    harness
-        .get_by_role_and_label(Role::TextInput, "Workspace name")
-        .type_text("Again");
-    harness.run();
-    harness
-        .get_by_role_and_label(Role::Button, "Choose folder…")
         .click();
     settle(&mut harness);
 

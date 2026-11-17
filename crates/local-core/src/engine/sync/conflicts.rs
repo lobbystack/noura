@@ -435,21 +435,18 @@ mod tests {
             let directory = tempfile::TempDir::new().unwrap();
             let left = WorkspaceEngine::create_with_app_data(
                 directory.path().join("left"),
-                "Left",
                 directory.path().join("app_left"),
             )
             .unwrap();
             let workspace = left.manifest().id;
             let right = WorkspaceEngine::create_sync_replica(
                 directory.path().join("right"),
-                "Right",
                 &workspace,
                 directory.path().join("app_right"),
             )
             .unwrap();
             let later = WorkspaceEngine::create_sync_replica(
                 directory.path().join("later"),
-                "Later",
                 &workspace,
                 directory.path().join("app_later"),
             )
@@ -607,14 +604,12 @@ mod tests {
         let directory = tempfile::TempDir::new().unwrap();
         let engine = WorkspaceEngine::create_with_app_data(
             directory.path().join("left"),
-            "Left",
             directory.path().join("app_left"),
         )
         .unwrap();
         let workspace = engine.manifest().id;
         let peer = WorkspaceEngine::create_sync_replica(
             directory.path().join("right"),
-            "Right",
             &workspace,
             directory.path().join("app_right"),
         )
@@ -864,7 +859,6 @@ mod tests {
         let directory = tempfile::TempDir::new().unwrap();
         let engine = WorkspaceEngine::create_with_app_data(
             directory.path().join("left"),
-            "Left",
             directory.path().join("app_left"),
         )
         .unwrap();

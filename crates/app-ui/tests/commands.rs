@@ -28,7 +28,7 @@ fn opened(
     platform: Platform,
     register: impl FnOnce(&mut App),
 ) -> Harness<'static, NouraUi> {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     for name in ["Ideas.md", "Plan.md"] {
         std::fs::write(folder.join(name), b"x").unwrap();
     }

@@ -938,7 +938,7 @@ mod tests {
         let folder = app_data.path().join("Current");
         std::fs::create_dir(&folder).unwrap();
         app_core::WorkspaceService::new(app_data.path())
-            .create("Current", &folder)
+            .create(&folder)
             .unwrap();
         app_data
     }

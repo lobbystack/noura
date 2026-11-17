@@ -38,7 +38,6 @@ fn fixture() -> Fixture {
     let directory = tempfile::tempdir().unwrap();
     let engine = WorkspaceEngine::create_with_app_data(
         directory.path().join("workspace"),
-        "Collaboration",
         directory.path().join("app"),
     )
     .unwrap();
@@ -116,7 +115,6 @@ fn managed_fixture() -> Fixture {
     let directory = tempfile::tempdir().unwrap();
     let engine = WorkspaceEngine::create_with_app_data(
         directory.path().join("workspace"),
-        "Managed collaboration",
         directory.path().join("app"),
     )
     .unwrap();
@@ -235,7 +233,6 @@ fn checkpoint_blob_round_trip_installs_large_text_without_inline_plaintext() {
     let directory = tempfile::tempdir().unwrap();
     let engine = WorkspaceEngine::create_with_app_data(
         directory.path().join("workspace"),
-        "Large checkpoint",
         directory.path().join("app"),
     )
     .unwrap();
@@ -363,7 +360,6 @@ fn unsupported_text_rotates_into_attachment_mode_and_archives_old_operations() {
     let directory = tempfile::tempdir().unwrap();
     let engine = WorkspaceEngine::create_with_app_data(
         directory.path().join("workspace"),
-        "Attachment checkpoint",
         directory.path().join("app"),
     )
     .unwrap();
@@ -502,7 +498,6 @@ fn writer_object_activation_is_durable_and_installs_its_fresh_generation() {
     let directory = tempfile::tempdir().unwrap();
     let engine = WorkspaceEngine::create_with_app_data(
         directory.path().join("workspace"),
-        "Object activation",
         directory.path().join("app"),
     )
     .unwrap();

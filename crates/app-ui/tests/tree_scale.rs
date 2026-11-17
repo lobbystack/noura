@@ -14,7 +14,7 @@ const FILES: usize = 10_000;
 
 /// A workspace with `FILES` files side by side, so every one is a row.
 fn big_workspace(app_data: &std::path::Path, folder: &std::path::Path, extension: &str) {
-    create_workspace(app_data, "Big", folder);
+    create_workspace(app_data, folder);
     for index in 0..FILES {
         std::fs::write(folder.join(format!("File {index:05}.{extension}")), b"x").unwrap();
     }

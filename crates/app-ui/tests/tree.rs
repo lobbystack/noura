@@ -16,7 +16,7 @@ fn opened(
     app_data: &std::path::Path,
     folder: &std::path::Path,
 ) -> Harness<'static, app_ui::NouraUi> {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     for (path, bytes) in [
         ("Docs/Guide.md", b"# Guide\n".as_slice()),
         ("Notes/Seeds.md", b"x"),
@@ -106,7 +106,7 @@ fn a_file_cloud_storage_has_not_downloaded_says_so_and_does_not_open() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     std::fs::write(folder.join(".Cloud note.md.icloud"), b"placeholder").unwrap();
     let mut harness = harness(app_data.path(), FakePicker::default());
     settle(&mut harness);
@@ -130,7 +130,7 @@ fn a_file_cloud_storage_has_not_downloaded_offers_no_duplicate() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     std::fs::write(folder.join(".Cloud note.md.icloud"), b"placeholder").unwrap();
     std::fs::write(folder.join("Local note.md"), b"# Local note\n").unwrap();
     let mut harness = harness(app_data.path(), FakePicker::default());
@@ -159,7 +159,7 @@ fn the_not_downloaded_marker_clears_once_the_cloud_drive_downloads_the_file() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     std::fs::write(folder.join(".Cloud note.md.icloud"), b"placeholder").unwrap();
     let mut harness = harness(app_data.path(), FakePicker::default());
     settle(&mut harness);
@@ -278,7 +278,7 @@ fn many_notes(
     folder: &std::path::Path,
     count: usize,
 ) -> Harness<'static, app_ui::NouraUi> {
-    create_workspace(app_data, "Notes", folder);
+    create_workspace(app_data, folder);
     for index in 0..count {
         std::fs::write(folder.join(format!("N {index:03}.md")), b"x").unwrap();
     }
@@ -289,10 +289,7 @@ fn many_notes(
 
 /// The part of the window the tree can show: below the workspace switcher.
 fn tree_area(harness: &Harness<'static, app_ui::NouraUi>) -> egui::Rect {
-    let switcher = harness
-        .get_by_label_contains("Workspace: ")
-        .rect()
-        .bottom();
+    let switcher = harness.get_by_label_contains("Workspace: ").rect().bottom();
     let mut area = harness.ctx.content_rect();
     area.min.y = switcher;
     area

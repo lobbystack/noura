@@ -11,9 +11,9 @@ fn the_switcher_lists_recent_workspaces_and_opens_another() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let first = parent.path().join("First");
-    create_workspace(app_data.path(), "First", &first);
+    create_workspace(app_data.path(), &first);
     std::fs::write(first.join("Only in first.md"), b"x").unwrap();
-    create_workspace(app_data.path(), "Second", &parent.path().join("Second"));
+    create_workspace(app_data.path(), &parent.path().join("Second"));
     let mut harness = harness(app_data.path(), FakePicker::default());
     settle(&mut harness);
 
@@ -47,7 +47,7 @@ fn another_workspace_opens_with_its_tree_scrolled_to_the_top() {
     let parent = tempfile::tempdir().unwrap();
     for name in ["First", "Second"] {
         let folder = parent.path().join(name);
-        create_workspace(app_data.path(), name, &folder);
+        create_workspace(app_data.path(), &folder);
         for index in 0..200 {
             std::fs::write(folder.join(format!("{name} {index:03}.txt")), b"x").unwrap();
         }
@@ -79,8 +79,8 @@ fn remove_from_recents_in_the_switcher_drops_the_entry() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let first = parent.path().join("First");
-    create_workspace(app_data.path(), "First", &first);
-    create_workspace(app_data.path(), "Second", &parent.path().join("Second"));
+    create_workspace(app_data.path(), &first);
+    create_workspace(app_data.path(), &parent.path().join("Second"));
     let mut harness = harness(app_data.path(), FakePicker::default());
     settle(&mut harness);
     harness
@@ -103,11 +103,11 @@ fn remove_from_recents_in_the_switcher_drops_the_entry() {
 }
 
 #[test]
-fn new_workspace_from_the_switcher_asks_for_a_name_then_a_folder() {
+fn new_workspace_from_the_switcher_asks_for_a_folder_and_takes_its_name() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    create_workspace(app_data.path(), "Current", &parent.path().join("Current"));
-    let fresh = parent.path().join("Fresh");
+    create_workspace(app_data.path(), &parent.path().join("Current"));
+    let fresh = parent.path().join("Fresh start");
     std::fs::create_dir(&fresh).unwrap();
     let picker = FakePicker::default();
     picker.answer(Some(&fresh));
@@ -121,18 +121,7 @@ fn new_workspace_from_the_switcher_asks_for_a_name_then_a_folder() {
     harness
         .get_by_role_and_label(Role::MenuItem, "New workspace…")
         .click();
-    harness.run();
-    harness
-        .get_by_role_and_label(Role::TextInput, "Workspace name")
-        .type_text("Fresh start");
-    harness.run();
-    harness
-        .get_by_role_and_label(Role::Button, "Choose folder…")
-        .click();
     settle(&mut harness);
 
-    harness.get_by_role_and_label(
-        Role::Button,
-        "Workspace: Fresh start",
-    );
+    harness.get_by_role_and_label(Role::Button, "Workspace: Fresh start");
 }

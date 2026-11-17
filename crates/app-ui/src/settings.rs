@@ -7,8 +7,8 @@ use app_core::{
     VERSION, settings_section,
 };
 use egui::{
-    Color32, CornerRadius, Frame, Id, Key, Margin, Modal, Rect, RichText, ScrollArea, Sense,
-    Shadow, Stroke, TextEdit, Ui, UiBuilder, accesskit::Role, pos2, vec2,
+    Color32, CornerRadius, Frame, Id, Margin, Modal, Rect, RichText, ScrollArea, Sense, Shadow,
+    Stroke, TextEdit, Ui, UiBuilder, accesskit::Role, pos2, vec2,
 };
 
 use crate::{
@@ -33,8 +33,6 @@ pub(crate) struct SettingsView {
     open: bool,
     /// The widget that had the keyboard before Settings opened.
     return_focus: Option<Id>,
-    /// The name being typed in Name and location, once you start typing.
-    name: Option<String>,
     /// What the Sync account section remembers.
     account: crate::account::AccountView,
     /// The AI providers section.
@@ -336,7 +334,7 @@ fn content(
         settings_section::EDITOR => editor(ui, app, spelling),
         settings_section::SHORTCUTS => crate::shortcuts::page(ui, app),
         settings_section::SPEECH => crate::speech::settings(ui, app, &mut view.speech),
-        settings_section::WORKSPACE => workspace(ui, app, view),
+        settings_section::WORKSPACE => workspace(ui, app),
         settings_section::PLUGINS => {
             crate::plugins::section(ui, app, picker, &mut view.release_address);
         }
@@ -530,55 +528,29 @@ fn ignored_files(ui: &mut Ui, app: &mut App, view: &mut SettingsView) {
     crate::ignored_files::page(ui, app, &mut view.ignored);
 }
 
-fn workspace(ui: &mut Ui, app: &mut App, view: &mut SettingsView) {
+/// The Location section: the workspace folder's path and Show folder. The
+/// section's title names it, so the path has no label of its own.
+fn workspace(ui: &mut Ui, app: &mut App) {
     let Some(workspace) = app.workspace() else {
         no_workspace(ui);
         return;
     };
-    let current = workspace.name();
     let root = workspace.root().to_owned();
-    let mut rename = false;
-    let mut reveal = false;
-    field(ui, "Name", Role::Group, |ui| {
-        let name = view.name.get_or_insert_with(|| current.clone());
-        ui.horizontal(|ui| {
-            let trimmed = name.trim().to_owned();
-            let button = Btn::new("Rename").enabled(!trimmed.is_empty() && trimmed != current);
-            let response = ui
-                .add(
-                    TextEdit::singleline(name)
-                        .desired_width(button.room_before(ui))
-                        .char_limit(120),
-                )
-                .accessible_name("Workspace name");
-            rename |= response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
-            rename |= button.show(ui).clicked();
-        });
-        description(ui, "The folder keeps its name.");
-    });
-    field(ui, "Location", Role::Group, |ui| {
-        let palette = Palette::of(ui.ctx());
-        ui.add(
-            egui::Label::new(
-                RichText::new(&root)
-                    .size(BODY_SIZE)
-                    .color(palette.muted_foreground),
-            )
-            .selectable(true)
-            .wrap(),
-        );
-        reveal = Btn::new("Show folder")
-            .icon(icons::FOLDER_OPEN)
-            .show(ui)
-            .clicked();
-    });
-    if rename
-        && let Some(name) = view.name.clone()
-        && (app.rename_workspace(&name) || name.trim().is_empty())
-    {
-        // Show the name the workspace has now.
-        view.name = None;
-    }
+    let palette = Palette::of(ui.ctx());
+    ui.spacing_mut().item_spacing.y = 12.0;
+    ui.add(
+        egui::Label::new(
+            RichText::new(&root)
+                .size(BODY_SIZE)
+                .color(palette.muted_foreground),
+        )
+        .selectable(true)
+        .wrap(),
+    );
+    let reveal = Btn::new("Show folder")
+        .icon(icons::FOLDER_OPEN)
+        .show(ui)
+        .clicked();
     if reveal {
         app.reveal_workspace();
     }

@@ -43,7 +43,7 @@ fn opened(probe: &[u8], github: &Arc<FakeGitHub>) -> Opened {
     );
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    create_workspace(app_data.path(), &parent.path().join("Garden"));
     let transport = github.clone();
     let mut harness = harness_registering(app_data.path(), FakePicker::default(), move |app| {
         app.set_plugin_release_transport(transport);

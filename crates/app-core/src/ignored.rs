@@ -74,7 +74,7 @@ mod tests {
         std::fs::write(folder.path().join("drafts/Idea.md"), "# Idea\n\nzucchini\n").unwrap();
         std::fs::write(folder.path().join("Kept.md"), "# Kept\n\nzucchini\n").unwrap();
         let service = WorkspaceService::new(app_data.path());
-        let workspace = service.create("Garden", folder.path()).unwrap();
+        let workspace = service.create(folder.path()).unwrap();
         assert_eq!(found(&workspace, "zucchini").len(), 2);
 
         let list = workspace.ignore_list().unwrap();

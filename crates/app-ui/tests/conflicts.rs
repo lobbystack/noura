@@ -26,7 +26,7 @@ const THEIRS: &str = "---\nid: note_01jbcdefghjkmnpqrstvwxyz0a\ntype: note\n\
 
 /// A workspace holding `Plan.md`, opened, with the note open in the editor.
 fn opened(app_data: &std::path::Path, folder: &std::path::Path) -> Ui {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     std::fs::write(folder.join("Plan.md"), NOTE).unwrap();
     let mut harness = harness(app_data, FakePicker::default());
     settle(&mut harness);

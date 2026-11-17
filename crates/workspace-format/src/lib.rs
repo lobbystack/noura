@@ -40,8 +40,6 @@ pub enum FormatError {
     InvalidManifest,
     #[error("The workspace ID must be a lowercase stable workspace ID")]
     InvalidWorkspaceId,
-    #[error("A workspace name is required")]
-    WorkspaceNameRequired,
     #[error("Plugin identifiers use lowercase letters, digits, and hyphens")]
     InvalidPluginId,
     #[error("This workspace format version is not supported")]
@@ -64,14 +62,16 @@ pub enum ManagedObjectPathError {
     UnsupportedExtension,
 }
 
-/// The canonical workspace manifest stored in `.noura/workspace.yaml`.
+/// The canonical workspace manifest stored in `.noura/workspace.yaml`. A
+/// workspace has no name of its own: it takes its folder's name. Decoding
+/// ignores keys the manifest doesn't define, such as the `name` of earlier
+/// builds, and serializing drops them.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub struct WorkspaceManifest {
     pub id: String,
     pub format_version: u32,
-    pub name: String,
     pub created: String,
     pub updated: String,
     pub enabled_plugins: Vec<String>,
@@ -185,12 +185,8 @@ pub fn validate_managed_object_path(path: &str) -> Result<(), ManagedObjectPathE
 /// decisions in portable Rust. The caller supplies the current clock instant.
 pub fn create_workspace_manifest(
     id: String,
-    name: String,
     now: String,
 ) -> Result<WorkspaceManifest, FormatError> {
-    if name.trim().is_empty() {
-        return Err(FormatError::WorkspaceNameRequired);
-    }
     validate_timestamp(&now)?;
     if !valid_object_id(&id, "workspace") {
         return Err(FormatError::InvalidWorkspaceId);
@@ -198,7 +194,6 @@ pub fn create_workspace_manifest(
     Ok(WorkspaceManifest {
         id,
         format_version: 1,
-        name: name.trim().into(),
         created: now.clone(),
         updated: now,
         enabled_plugins: Vec::new(),
@@ -750,9 +745,6 @@ pub fn decode_workspace_manifest(bytes: &[u8]) -> Result<WorkspaceManifest, Form
 pub fn validate_workspace_manifest(manifest: &WorkspaceManifest) -> Result<(), FormatError> {
     if !valid_object_id(&manifest.id, "workspace") {
         return Err(FormatError::InvalidWorkspaceId);
-    }
-    if manifest.name.trim().is_empty() {
-        return Err(FormatError::WorkspaceNameRequired);
     }
     if manifest
         .enabled_plugins
@@ -1313,10 +1305,24 @@ mod tests {
     #[test]
     fn manifest_parser_sorts_and_deduplicates_plugins() {
         let manifest = parse_workspace_manifest(
-            b"id: workspace_01j00000000000000000000000\nformat_version: 1\nname: Example\ncreated: 2026-08-27T12:00:00Z\nupdated: 2026-08-27T12:00:00Z\nenabled_plugins: [tasks, notes, tasks]\nignore: []\n",
+            b"id: workspace_01j00000000000000000000000\nformat_version: 1\ncreated: 2026-08-27T12:00:00Z\nupdated: 2026-08-27T12:00:00Z\nenabled_plugins: [tasks, notes, tasks]\nignore: []\n",
         )
         .unwrap();
         assert_eq!(manifest.enabled_plugins, ["notes", "tasks"]);
+    }
+
+    #[test]
+    fn a_manifest_with_a_name_key_opens_and_drops_it_when_written() {
+        let manifest = parse_workspace_manifest(
+            b"id: workspace_01j00000000000000000000000\nformat_version: 1\nname: Example\ncreated: 2026-08-27T12:00:00Z\nupdated: 2026-08-27T12:00:00Z\nenabled_plugins: []\nignore: []\n",
+        )
+        .unwrap();
+        let written = serialize_workspace_manifest(&manifest).unwrap();
+        assert!(!written.contains("name"), "{written}");
+        assert_eq!(
+            parse_workspace_manifest(written.as_bytes()).unwrap(),
+            manifest
+        );
     }
 
     #[test]

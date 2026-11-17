@@ -285,10 +285,10 @@ pub fn settle(harness: &mut Harness<'static, NouraUi>) {
     }
 }
 
-pub fn create_workspace(app_data: &Path, name: &str, folder: &Path) -> String {
+pub fn create_workspace(app_data: &Path, folder: &Path) -> String {
     std::fs::create_dir_all(folder).unwrap();
     app_core::WorkspaceService::new(app_data)
-        .create(name, folder)
+        .create(folder)
         .unwrap()
         .id()
         .to_owned()

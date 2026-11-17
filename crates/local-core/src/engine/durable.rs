@@ -242,8 +242,7 @@ mod durability_tests {
         let workspace = tempfile::tempdir().unwrap();
         let app_data = tempfile::tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         (workspace, app_data, engine)
     }
 

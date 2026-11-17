@@ -3,8 +3,8 @@
 
 use app_core::NoticeKind;
 use egui::{
-    Color32, Frame, Id, Key, Margin, Response, RichText, Sense, Spinner, Stroke, TextEdit, Ui,
-    UiBuilder, Widget, WidgetInfo, accesskit::Role, vec2,
+    Color32, Frame, Id, Margin, Response, RichText, Sense, Spinner, Stroke, Ui, UiBuilder, Widget,
+    WidgetInfo, accesskit::Role, vec2,
 };
 
 use crate::{
@@ -122,63 +122,6 @@ pub(crate) fn notice(state: &mut NouraUi, ui: &mut Ui) {
                     });
             });
         });
-}
-
-/// The New workspace form: a name, then a folder.
-pub(crate) struct NewWorkspace {
-    name: String,
-    focus: bool,
-}
-
-impl NewWorkspace {
-    pub(crate) fn new() -> Self {
-        Self {
-            name: String::new(),
-            focus: true,
-        }
-    }
-}
-
-/// Draw the open New workspace form. Choose folder… asks for a folder and
-/// creates the workspace there; Cancel or Escape closes the form.
-pub(crate) fn new_workspace_form(state: &mut NouraUi, ui: &mut Ui) {
-    let busy = state.app.is_busy();
-    let Some(form) = &mut state.new_workspace else {
-        return;
-    };
-    let field = ui.add(
-        TextEdit::singleline(&mut form.name)
-            .hint_text("Name")
-            .desired_width(f32::INFINITY),
-    );
-    let field = field.accessible_name("Workspace name");
-    if form.focus {
-        form.focus = false;
-        field.request_focus();
-    }
-    let submitted = field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
-    let escaped = ui.input(|input| input.key_pressed(Key::Escape));
-    let named = !form.name.trim().is_empty();
-    let mut choose = false;
-    let mut cancel = escaped;
-    ui.horizontal(|ui| {
-        choose = primary_button(ui, "Choose folder…", named && !busy).clicked();
-        cancel |= ui.button("Cancel").clicked();
-    });
-    if cancel {
-        state.new_workspace = None;
-        return;
-    }
-    if (choose || submitted) && named && !busy {
-        let name = form.name.trim().to_owned();
-        if let Some(folder) = state
-            .picker
-            .pick_folder("Choose a folder for the new workspace")
-        {
-            state.new_workspace = None;
-            state.app.create_workspace(&name, folder);
-        }
-    }
 }
 
 /// What a [`Btn`] looks like: the legacy app's button variants.

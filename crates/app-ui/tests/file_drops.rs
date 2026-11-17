@@ -20,7 +20,7 @@ type Ui = Harness<'static, app_ui::NouraUi>;
 
 /// A workspace with a folder and two notes, opened at launch.
 fn opened(app_data: &Path, folder: &Path, platform: Platform) -> Ui {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     for (path, bytes) in [
         ("Docs/Guide.md", b"g".as_slice()),
         ("Readme.md", b"r"),

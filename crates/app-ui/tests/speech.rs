@@ -50,7 +50,7 @@ fn speech_settings(
     system: std::sync::Arc<FakeSystem>,
 ) -> (Ui, tempfile::TempDir) {
     let parent = tempfile::tempdir().unwrap();
-    create_workspace(app_data, "Garden", &parent.path().join("Garden"));
+    create_workspace(app_data, &parent.path().join("Garden"));
     let mut harness = harness_with(app_data, FakePicker::default(), system);
     settle(&mut harness);
     harness.state_mut().app_mut().open_settings_at("speech");

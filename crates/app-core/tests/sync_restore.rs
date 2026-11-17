@@ -1327,7 +1327,7 @@ async fn a_frame_changes_no_file_on_a_stopped_workspace() {
     assert_eq!(pair.sync_a.cursor(), cursor);
     assert_eq!(
         pair.sync_a
-            .rename(&mut pair.service, "Elsewhere")
+            .push_profile_name(&mut pair.service, "Elsewhere")
             .await
             .err()
             .and_then(|e| e.code().map(str::to_owned))

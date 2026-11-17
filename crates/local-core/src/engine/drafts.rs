@@ -449,8 +449,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         let created = engine
             .create_object(CreateObjectInput {
                 object_type: "note".into(),
@@ -506,8 +505,7 @@ mod tests {
             let workspace = tempdir().unwrap();
             let app_data = tempdir().unwrap();
             let engine =
-                WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                    .unwrap();
+                WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
             let created = engine
                 .create_object(CreateObjectInput {
                     object_type: "note".into(),
@@ -542,8 +540,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         let created = engine
             .create_object(CreateObjectInput {
                 object_type: "note".into(),
@@ -595,8 +592,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         let created = engine
             .create_object(CreateObjectInput {
                 object_type: "note".into(),

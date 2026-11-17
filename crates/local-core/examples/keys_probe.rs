@@ -61,7 +61,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::TempDir::new()?;
     let engine = WorkspaceEngine::create_with_app_data(
         directory.path().join("workspace"),
-        "Key test",
         directory.path().join("app"),
     )?;
     // Sync is a plugin that new workspaces start with turned off.
@@ -212,7 +211,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     )?;
     let owner_replica = WorkspaceEngine::create_sync_replica(
         directory.path().join("owner"),
-        "Owner",
         &workspace,
         directory.path().join("owner_app"),
     )?;
@@ -246,7 +244,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .map_err(|error| format!("owner upload peer file: {error:?}"))?;
     let peer_replica = WorkspaceSyncCoordinator::join(
         directory.path().join("peer"),
-        "Peer",
         &workspace,
         directory.path().join("peer_app"),
         &peer_connection,
@@ -408,7 +405,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         )?;
         let replica = WorkspaceSyncCoordinator::join(
             directory.path().join(label),
-            label,
             &workspace,
             directory.path().join(format!("{label}_app")),
             &connection,
@@ -482,7 +478,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     assert!(clean_store.read(owner.device_id()).is_err());
     let recovered = WorkspaceSyncCoordinator::join(
         directory.path().join("recovered"),
-        "Recovered",
         &workspace,
         directory.path().join("recovered_app"),
         &peer_connection,

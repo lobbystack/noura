@@ -60,7 +60,7 @@ fn opened_with(files: &[(&str, &str)]) -> Opened {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     for (name, text) in files {
         std::fs::write(folder.join(name), text).unwrap();
     }
@@ -149,7 +149,7 @@ fn the_rail_s_settings_button_opens_settings_with_its_sections_by_group() {
             (
                 "Workspace".to_owned(),
                 vec![
-                    "Name and location".to_owned(),
+                    "Location".to_owned(),
                     "Plugins".to_owned(),
                     "AI".to_owned(),
                     "Sync and devices".to_owned(),
@@ -218,7 +218,7 @@ fn every_section_and_control_carries_a_label() {
         "Editor",
         "Keyboard shortcuts",
         "AI",
-        "Name and location",
+        "Location",
         "Plugins",
         "Ignored files",
         "About Noura",
@@ -435,7 +435,7 @@ fn about_links_open_in_the_browser_and_diagnostics_reach_the_clipboard() {
 fn about_opens_the_license_list_the_package_ships() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    create_workspace(app_data.path(), &parent.path().join("Garden"));
     let list = parent.path().join("THIRD_PARTY_LICENSES.html");
     let system = FakeSystem::new(Platform::MacOs);
     let bundled = list.clone();
@@ -458,34 +458,32 @@ fn about_opens_the_license_list_the_package_ships() {
 }
 
 #[test]
-fn name_and_location_renames_the_workspace_and_shows_its_folder() {
+fn location_shows_the_folder_and_no_name_field() {
     let Opened {
         mut harness,
         system,
-        folder,
         folders: _folders,
         ..
     } = opened();
     open_settings(&mut harness);
-    choose_section(&mut harness, "Name and location");
+    choose_section(&mut harness, "Location");
     let root = harness.state().app().workspace().unwrap().root().to_owned();
     harness.get_by_label(&root);
-
-    let field = harness.get_by_role_and_label(Role::TextInput, "Workspace name");
-    field.focus();
-    harness.run();
-    harness.key_press_modifiers(egui::Modifiers::COMMAND, Key::A);
-    harness
-        .get_by_role_and_label(Role::TextInput, "Workspace name")
-        .type_text("Orchard");
-    harness.run();
-    harness.key_press(Key::Enter);
-    harness.run();
-
-    let app = harness.state().app();
-    assert_eq!(app.workspace().unwrap().name(), "Orchard");
-    assert_eq!(app.recents()[0].name, "Orchard");
-    assert!(folder.is_dir(), "the folder keeps its name");
+    assert!(
+        harness
+            .query_by_role_and_label(Role::TextInput, "Workspace name")
+            .is_none()
+    );
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, "Rename")
+            .is_none()
+    );
+    assert!(
+        harness
+            .query_by_label("The folder keeps its name.")
+            .is_none()
+    );
 
     harness
         .get_by_role_and_label(Role::Button, "Show folder")
@@ -499,7 +497,7 @@ fn name_and_location_renames_the_workspace_and_shows_its_folder() {
 fn opened_on(platform: Platform) -> (Ui, (tempfile::TempDir, tempfile::TempDir)) {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    create_workspace(app_data.path(), &parent.path().join("Garden"));
     let mut harness = harness_for(app_data.path(), platform, |_| {});
     settle(&mut harness);
     (harness, (app_data, parent))

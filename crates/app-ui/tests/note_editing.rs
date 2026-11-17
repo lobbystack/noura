@@ -18,7 +18,7 @@ type Ui = Harness<'static, app_ui::NouraUi>;
 /// A workspace holding the note `Plan.md` with `text`, opened from the
 /// tree, with the caret in the note.
 fn opened_note(app_data: &Path, folder: &Path, text: &str) -> Ui {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     std::fs::write(folder.join("Plan.md"), text).unwrap();
     let mut harness = harness_for(app_data, Platform::Windows, |_| {});
     settle(&mut harness);

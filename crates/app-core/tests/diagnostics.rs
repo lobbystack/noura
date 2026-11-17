@@ -30,7 +30,7 @@ fn workspace(parent: &Path, app_data: &Path) -> std::path::PathBuf {
     let folder = parent.join("Marrowvale Notes");
     std::fs::create_dir_all(&folder).unwrap();
     let root = WorkspaceService::new(app_data)
-        .create("Zephyrine Ledger", &folder)
+        .create(&folder)
         .unwrap()
         .root()
         .to_owned();
@@ -192,7 +192,7 @@ fn names_no_list_knows_stay_out_of_the_report() {
     let folder = parent.path().join("Garden");
     std::fs::create_dir_all(&folder).unwrap();
     let root = WorkspaceService::new(app_data.path())
-        .create("Garden", &folder)
+        .create(&folder)
         .unwrap()
         .root()
         .to_owned();

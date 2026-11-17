@@ -24,7 +24,7 @@ fn launch_shows_a_loading_state_and_never_flashes_the_chooser() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Big");
-    create_workspace(app_data.path(), "Big", &folder);
+    create_workspace(app_data.path(), &folder);
     for index in 0..300 {
         std::fs::write(folder.join(format!("Note {index}.md")), b"x").unwrap();
     }
@@ -56,7 +56,7 @@ fn a_missing_last_workspace_says_why_and_try_again_opens_it_once_it_is_back() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Field notes");
-    create_workspace(app_data.path(), "Field notes", &folder);
+    create_workspace(app_data.path(), &folder);
     std::fs::write(folder.join("Birds.md"), b"x").unwrap();
     let saved_path = app_core::WorkspaceService::new(app_data.path()).recents()[0]
         .path
@@ -89,8 +89,8 @@ fn a_recent_workspace_that_fails_to_open_offers_remove_from_recents() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let gone = parent.path().join("Gone");
-    create_workspace(app_data.path(), "Gone", &gone);
-    create_workspace(app_data.path(), "Last", &parent.path().join("Last"));
+    create_workspace(app_data.path(), &gone);
+    create_workspace(app_data.path(), &parent.path().join("Last"));
     rename_with_retry(
         &parent.path().join("Last"),
         &parent.path().join("Last moved"),
@@ -121,9 +121,9 @@ fn a_recent_workspace_that_fails_to_open_offers_remove_from_recents() {
 fn removing_the_workspace_that_failed_clears_the_problem_and_try_again() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    create_workspace(app_data.path(), "Older", &parent.path().join("Older"));
+    create_workspace(app_data.path(), &parent.path().join("Older"));
     let last = parent.path().join("Last");
-    create_workspace(app_data.path(), "Last", &last);
+    create_workspace(app_data.path(), &last);
     rename_with_retry(&last, &parent.path().join("Away"));
     let mut harness = harness(app_data.path(), FakePicker::default());
     settle(&mut harness);

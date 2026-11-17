@@ -13,7 +13,7 @@ fn new_window_from_the_palette_opens_another_window_on_the_workspace() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Current");
-    create_workspace(app_data.path(), "Current", &folder);
+    create_workspace(app_data.path(), &folder);
     std::fs::write(folder.join("Plan.md"), b"x").unwrap();
     let mut harness = harness_for(app_data.path(), Platform::current(), |_| {});
     settle(&mut harness);
@@ -42,7 +42,7 @@ fn new_window_from_the_palette_opens_another_window_on_the_workspace() {
 fn the_close_window_shortcut_closes_the_window() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    create_workspace(app_data.path(), "Current", &parent.path().join("Current"));
+    create_workspace(app_data.path(), &parent.path().join("Current"));
     let mut harness = harness(app_data.path(), FakePicker::default());
     settle(&mut harness);
     assert!(!harness.state().is_closed());

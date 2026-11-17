@@ -9,7 +9,6 @@ use super::*;
 #[ts(export, optional_fields = nullable)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ManifestUpdateInput {
-    pub name: Option<String>,
     pub enabled_plugins: Option<Vec<String>>,
     pub ignore: Option<Vec<String>>,
     /// Reject the update unless the on-disk manifest still has this
@@ -65,26 +64,11 @@ impl WorkspaceEngine {
     }
 
     pub fn manifest_update(&self, input: ManifestUpdateInput) -> Result<WorkspaceManifest> {
-        let update_name = input.name.is_some();
         let update_enabled = input.enabled_plugins.is_some();
         let update_ignore = input.ignore.is_some();
-        if !update_name && !update_enabled && !update_ignore {
+        if !update_enabled && !update_ignore {
             return self.read_manifest();
         }
-        let name = match &input.name {
-            Some(value) => {
-                let value = value.trim();
-                if value.is_empty() {
-                    return Err(CoreError::validation(
-                        "workspace_name_required",
-                        "A workspace name is required",
-                        "manifest_update",
-                    ));
-                }
-                value.to_owned()
-            }
-            None => String::new(),
-        };
         let mut enabled_plugins = match input.enabled_plugins {
             Some(values) => {
                 let mut values = values;
@@ -134,9 +118,6 @@ impl WorkspaceEngine {
                 "manifest_update",
             ));
         }
-        if update_name {
-            manifest.name = name;
-        }
         if update_enabled {
             manifest.enabled_plugins = std::mem::take(&mut enabled_plugins);
         }
@@ -173,7 +154,6 @@ impl WorkspaceEngine {
             EventSource::Application,
             serde_json::json!({
                 "enabledPlugins": manifest.enabled_plugins,
-                "name": manifest.name,
             }),
         );
         drop(guard);
@@ -301,7 +281,7 @@ impl WorkspaceEngine {
         let Ok(manifest) = self.read_manifest() else {
             return Ok(());
         };
-        let (name, enabled_plugins) = (manifest.name.clone(), manifest.enabled_plugins.clone());
+        let enabled_plugins = manifest.enabled_plugins.clone();
         let ignore_changed = {
             let mut current = self
                 .manifest
@@ -320,7 +300,6 @@ impl WorkspaceEngine {
             EventSource::External,
             serde_json::json!({
                 "enabledPlugins": enabled_plugins,
-                "name": name,
             }),
         );
         if ignore_changed {
@@ -370,11 +349,6 @@ fn map_format_error(error: workspace_format::FormatError, operation: &str) -> Co
         workspace_format::FormatError::InvalidWorkspaceId => CoreError::validation(
             "invalid_workspace_id",
             "The workspace ID must be a lowercase stable workspace ID",
-            operation,
-        ),
-        workspace_format::FormatError::WorkspaceNameRequired => CoreError::validation(
-            "workspace_name_required",
-            "A workspace name is required",
             operation,
         ),
         workspace_format::FormatError::InvalidPluginId => CoreError::validation(
@@ -493,8 +467,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         let id = engine.manifest().id;
         drop(engine);
         let copy = tempdir().unwrap();
@@ -546,8 +519,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         let manifest_path = engine.root().join(WORKSPACE_MANIFEST_PATH);
         let mut events = engine.subscribe();
         let external = std::fs::read_to_string(&manifest_path)
@@ -592,8 +564,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         let mut events = engine.subscribe();
         let before = engine.read_manifest().unwrap();
         engine
@@ -625,8 +596,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         let manifest_path = engine.root().join(WORKSPACE_MANIFEST_PATH);
         let before = engine.manifest();
         let mut events = engine.subscribe();
@@ -651,8 +621,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         engine
             .create_object(CreateObjectInput {
                 object_type: "note".into(),
@@ -689,8 +658,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         engine
             .create_object(CreateObjectInput {
                 object_type: "note".into(),
@@ -743,9 +711,46 @@ mod tests {
         }
     }
 
+    /// Earlier versions wrote a `name` key. Such a workspace opens, and the
+    /// next manifest write leaves the key out.
+    #[test]
+    fn a_manifest_with_a_name_key_opens_and_the_next_write_drops_it() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        std::fs::create_dir(workspace.path().join(".noura")).unwrap();
+        let manifest_path = workspace.path().join(WORKSPACE_MANIFEST_PATH);
+        std::fs::write(
+            &manifest_path,
+            "id: workspace_01j00000000000000000000000\nformat_version: 1\nname: Old name\ncreated: 2026-08-27T12:00:00Z\nupdated: 2026-08-27T12:00:00Z\nenabled_plugins: [notes]\nignore: []\n",
+        )
+        .unwrap();
+
+        let engine =
+            WorkspaceEngine::open_with_app_data(workspace.path(), app_data.path()).unwrap();
+        assert_eq!(engine.manifest().id, "workspace_01j00000000000000000000000");
+        assert_eq!(
+            std::fs::read_to_string(&manifest_path)
+                .unwrap()
+                .lines()
+                .nth(2),
+            Some("name: Old name"),
+            "opening rewrote the manifest"
+        );
+        engine
+            .manifest_update(ManifestUpdateInput {
+                ignore: Some(vec!["drafts/".into()]),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let written = std::fs::read_to_string(&manifest_path).unwrap();
+        assert!(!written.contains("name"), "{written}");
+        assert_eq!(engine.read_manifest().unwrap().enabled_plugins, ["notes"]);
+    }
+
     #[test]
     fn parsing_normalizes_duplicate_and_unsorted_enabled_plugins() {
-        let manifest = "id: workspace_01j00000000000000000000000\nformat_version: 1\nname: Test\ncreated: 2026-08-27T12:00:00Z\nupdated: 2026-08-27T12:00:00Z\nenabled_plugins: [calendar, notes, calendar, tasks]\nignore: []\n";
+        let manifest = "id: workspace_01j00000000000000000000000\nformat_version: 1\ncreated: 2026-08-27T12:00:00Z\nupdated: 2026-08-27T12:00:00Z\nenabled_plugins: [calendar, notes, calendar, tasks]\nignore: []\n";
         let parsed = parse_workspace_manifest(manifest.as_bytes(), "manifest_parse").unwrap();
         assert_eq!(
             parsed.enabled_plugins,

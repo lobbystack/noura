@@ -7,8 +7,7 @@ use local_core::WorkspaceEngine;
 fn a_new_file_lands_once_and_never_outside_the_workspace() {
     let root = tempfile::tempdir().unwrap();
     let app_data = tempfile::tempdir().unwrap();
-    let engine =
-        WorkspaceEngine::create_with_app_data(root.path(), "Audio", app_data.path()).unwrap();
+    let engine = WorkspaceEngine::create_with_app_data(root.path(), app_data.path()).unwrap();
     let wav = b"RIFF....WAVEfmt ".to_vec();
 
     engine

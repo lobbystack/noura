@@ -26,7 +26,7 @@ const PLAN: &str = "See [[Other]] and [the draft](Draft.md).\n";
 /// A workspace whose note `Plan` links to `Other` and `Draft`, with
 /// `Plan` opened from the tree in a preview tab.
 fn opened_plan(app_data: &Path, folder: &Path, platform: Platform) -> Ui {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     std::fs::write(folder.join("Plan.md"), PLAN).unwrap();
     std::fs::write(folder.join("Other.md"), "Other\n").unwrap();
     std::fs::write(folder.join("Draft.md"), "Draft\n").unwrap();
