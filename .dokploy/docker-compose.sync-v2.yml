@@ -1,6 +1,6 @@
-# The Rust sync server on Dokploy. Nothing deploys it yet: the owner creates
-# the Compose service at the go-ahead, after the hosted database is wiped, and
-# that step records both. See "Deploy on Dokploy" in docs/self-hosting.md.
+# The Rust sync server on Dokploy, for anyone who hosts their own. See
+# "Deploy on Dokploy" in docs/self-hosting.md. Noura's own server at
+# sync.noura.app runs docker-compose.noura-app.yml, which extends this file.
 #
 # The file names no secret and no hostname. Dokploy writes the service's
 # environment to a .env beside this file, and the domain and its certificate

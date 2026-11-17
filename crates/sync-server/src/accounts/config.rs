@@ -89,29 +89,37 @@ pub fn normalize_email(text: &str) -> Option<String> {
 }
 
 /// The email allowlist: the addresses that may sign up. An empty list
-/// admits nobody.
+/// admits nobody, and `*` alone admits everyone.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Allowlist(BTreeSet<String>);
+pub struct Allowlist {
+    everyone: bool,
+    emails: BTreeSet<String>,
+}
 
 impl Allowlist {
-    /// The allowlist from a comma-separated list of addresses.
+    /// The allowlist from a comma-separated list of addresses, or `*` for
+    /// everyone. A `*` beside addresses admits only those addresses, so a
+    /// slip in a list can't open the server.
     pub fn parse(text: &str) -> Self {
-        Self(text.split(',').filter_map(normalize_email).collect())
+        Self {
+            everyone: text.trim() == "*",
+            emails: text.split(',').filter_map(normalize_email).collect(),
+        }
     }
 
     /// Whether `email`, already normalized, may sign up.
     pub fn admits(&self, email: &str) -> bool {
-        self.0.contains(email)
+        self.everyone || self.emails.contains(email)
     }
 
     /// How many addresses the list holds.
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.emails.len()
     }
 
     /// Whether the list admits nobody.
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        !self.everyone && self.emails.is_empty()
     }
 }
 
@@ -175,5 +183,18 @@ mod tests {
         assert!(list.admits("alice@example.com"));
         assert_eq!(list.len(), 2);
         assert!(Allowlist::parse("").is_empty());
+    }
+
+    #[test]
+    fn a_star_alone_admits_everyone() {
+        for open in ["*", " * "] {
+            let list = Allowlist::parse(open);
+            assert!(list.admits("anyone@example.com"), "{open:?}");
+            assert!(!list.is_empty());
+        }
+        let list = Allowlist::parse("*, alice@example.com");
+        assert!(list.admits("alice@example.com"));
+        assert!(!list.admits("bob@example.com"));
+        assert!(!Allowlist::parse("**").admits("bob@example.com"));
     }
 }

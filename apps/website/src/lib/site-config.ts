@@ -51,8 +51,8 @@ export const siteConfig: SiteConfig = {
 		contactEmail: 'hello@noura.app',
 		privacyOfficer: 'Raphaël Morency, President',
 		governingLaw: 'the Province of Québec, Canada',
-		websiteHost: 'Railway',
-		effectiveDate: '2026-09-28',
+		websiteHost: 'Cloudflare',
+		effectiveDate: '2026-11-16',
 	},
 	optionalCookies: [],
 	downloads: [
@@ -66,7 +66,7 @@ export const siteConfig: SiteConfig = {
 		{
 			platform: 'Windows',
 			detail: 'Windows 10 and 11',
-			url: `${latest}/Noura-Windows-Setup.exe`,
+			url: `${latest}/Noura-Windows.msi`,
 			installNote:
 				'If Windows SmartScreen warns you, choose More info, then Run anyway.',
 		},
