@@ -55,7 +55,11 @@ fn mod_k_in_a_note_links_the_selection_and_elsewhere_opens_the_palette() {
     press(&mut harness, Modifiers::COMMAND, egui::Key::K);
 
     assert_eq!(note_text(&harness), "[docs]()");
-    assert!(harness.query_by_label("Search commands").is_none());
+    assert!(
+        harness
+            .query_by_role_and_label(Role::TextInput, "Search")
+            .is_none()
+    );
 
     // From the note's name field, Mod-K opens the palette.
     harness
@@ -63,7 +67,7 @@ fn mod_k_in_a_note_links_the_selection_and_elsewhere_opens_the_palette() {
         .focus();
     harness.run_steps(2);
     press(&mut harness, Modifiers::COMMAND, egui::Key::K);
-    harness.get_by_label("Search commands");
+    harness.get_by_role_and_label(Role::TextInput, "Search");
 }
 
 #[test]

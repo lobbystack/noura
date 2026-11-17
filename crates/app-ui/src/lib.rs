@@ -47,7 +47,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use app_core::{App, Appearance, Area, CommandSource, DragOut, Menu, Palette, Screen, TabId};
+use app_core::{App, Appearance, Area, CommandSource, DragOut, Menu, Screen, TabId};
 use egui::{Event, Id, ThemePreference, ViewportId};
 
 /// Finds misspelled words for the notes, such as the system's spell
@@ -429,7 +429,7 @@ impl NouraUi {
                 } => keys::press(*key, *physical_key, *modifiers, platform),
                 _ => None,
             };
-            let before = self.app.palette().map(Palette::mode);
+            let before = self.app.palette().map(|palette| palette.scope);
             if let Some(press) = &press
                 && self.app.command_for_key(press, focus).is_some()
             {
@@ -438,7 +438,7 @@ impl NouraUi {
                 self.notes.commit_drafts(&mut self.app);
             }
             if press.is_some_and(|press| self.app.press_key(&press, focus, now)) {
-                let after = self.app.palette().map(Palette::mode);
+                let after = self.app.palette().map(|palette| palette.scope);
                 palette_opened = after.is_some() && after != before;
             } else {
                 kept.push(event);

@@ -289,7 +289,7 @@ fn new_task_in_the_command_palette_starts_the_same_name_first_flow() {
 
     press_with(&mut harness, Modifiers::COMMAND, Key::K);
     harness
-        .get_by_label("Search commands")
+        .get_by_role_and_label(Role::TextInput, "Search")
         .type_text("New task");
     run(&mut harness);
     press(&mut harness, Key::Enter);

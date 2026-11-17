@@ -1,12 +1,13 @@
-//! Quick open's and search's part of the palette: search's type, folder
-//! and tag filters, and the files that match. `palette.rs` draws the
-//! dialog, its field and the list around them.
+//! Search's contents part: the type, folder and tag filters it offers
+//! filtered to contents, the rows of files found by their text, and why
+//! the index couldn't answer. `palette.rs` draws the dialog, its field
+//! and the list around them.
 
-use app_core::{App, Palette, SearchHit, SearchState};
+use app_core::{App, SearchHit, SearchState};
 use egui::{RichText, TextEdit, Ui, UiBuilder, accesskit::Role};
 
 use crate::{
-    palette::{PaletteView, ROW_HEIGHT, Row, list, note},
+    palette::Row,
     theme::{Palette as Theme, SUPPORTING_SIZE},
 };
 
@@ -16,7 +17,7 @@ const HIT_ROW_HEIGHT: f32 = 48.0;
 /// Search's filters: a radio button per object type the index holds, and
 /// fields for a folder and a tag.
 pub(crate) fn filters(ui: &mut Ui, app: &mut App) {
-    let Some(Palette::Search(search)) = app.palette() else {
+    let Some(search) = app.palette() else {
         return;
     };
     let types = search.types.clone();
@@ -76,69 +77,26 @@ fn type_label(object_type: &str) -> String {
     })
 }
 
-/// What the palette lists: the matching files, or why there are none.
-/// Returns the row you clicked.
-pub(crate) fn results(
-    ui: &mut Ui,
-    app: &App,
-    view: &mut PaletteView,
-    theme: &Theme,
-) -> Option<usize> {
-    let palette = app.palette()?;
-    let selected = palette.selected();
-    match palette {
-        Palette::Commands(_) => None,
-        Palette::QuickOpen(quick_open) if quick_open.query.trim().is_empty() => None,
-        Palette::QuickOpen(quick_open) if quick_open.matches.is_empty() => {
-            note(ui, theme, "No matches");
-            None
-        }
-        Palette::QuickOpen(quick_open) => {
-            let rows: Vec<Row> = quick_open
-                .matches
-                .iter()
-                .map(|found| Row {
-                    label: found.name.clone(),
-                    detail: found.folder.clone(),
-                    second_line: None,
-                    description: found.folder.clone(),
-                    shortcut: None,
-                })
-                .collect();
-            list(ui, view, theme, "Files", &rows, selected, ROW_HEIGHT)
-        }
-        Palette::Search(search) => match &search.state {
-            SearchState::Idle => None,
-            SearchState::Searching => {
-                note(ui, theme, "Searching\u{2026}");
-                None
-            }
-            SearchState::Done(hits) if hits.is_empty() => {
-                note(ui, theme, "No matches");
-                None
-            }
-            SearchState::Done(hits) => {
-                let rows: Vec<Row> = hits.iter().map(hit_row).collect();
-                list(ui, view, theme, "Results", &rows, selected, HIT_ROW_HEIGHT)
-            }
-            SearchState::Failed(error) => {
-                let builder = UiBuilder::new()
-                    .accessibility_role(Role::Alert)
-                    .accessibility_label(&error.message);
-                ui.scope_builder(builder, |ui| {
-                    ui.label(
-                        RichText::new(&error.message)
-                            .size(SUPPORTING_SIZE)
-                            .color(theme.destructive),
-                    );
-                });
-                None
-            }
-        },
-    }
+/// Why the index couldn't answer, as an alert under the rows.
+pub(crate) fn failure(ui: &mut Ui, app: &App, theme: &Theme) {
+    let Some(SearchState::Failed(error)) = app.palette().map(|palette| &palette.state) else {
+        return;
+    };
+    let builder = UiBuilder::new()
+        .accessibility_role(Role::Alert)
+        .accessibility_label(&error.message);
+    ui.scope_builder(builder, |ui| {
+        ui.label(
+            RichText::new(&error.message)
+                .size(SUPPORTING_SIZE)
+                .color(theme.destructive),
+        );
+    });
 }
 
-fn hit_row(hit: &SearchHit) -> Row {
+/// A file found by its text: the title and type, then the folder and
+/// matching text.
+pub(crate) fn hit_row(hit: &SearchHit) -> Row {
     let object_type = hit.object_type.as_deref().map(type_label);
     let second_line = [hit.folder.as_str(), hit.snippet.trim()]
         .into_iter()
@@ -160,5 +118,6 @@ fn hit_row(hit: &SearchHit) -> Row {
         second_line: Some(second_line),
         description,
         shortcut: None,
+        height: HIT_ROW_HEIGHT,
     }
 }

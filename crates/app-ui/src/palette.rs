@@ -1,17 +1,20 @@
-//! The palette: one dialog with a field and a list, in three modes. The
-//! command palette (Mod-K) filters every command as you type and lists
-//! each with its shortcut; quick open (Mod-O) and search (Mod-Shift-F)
-//! list files, drawn by `finder.rs`. `app-core` keeps the mode, the
-//! query, the matches and the highlighted row; Enter runs the highlighted
-//! command through the same dispatch as keys and menus, or opens the
-//! highlighted file the way the file tree opens one.
+//! Search: one dialog with one field, like Spotlight. As you type it
+//! lists files by name, files by contents with the matching text, and
+//! commands with their shortcuts, each group under a heading when more
+//! than one shows. Mod-O and Mod-Shift-F open it filtered to names or
+//! contents, and the filter shows as a chip in the field that a click or
+//! Backspace in the empty field removes. `app-core` keeps the query, the
+//! filter, the rows and the highlighted row; Enter opens the highlighted
+//! file the way the file tree opens one, or runs the highlighted command
+//! through the same dispatch as keys and menus.
 
 use std::{sync::Arc, time::Instant};
 
-use app_core::{App, Palette as Overlay, PaletteMode, Platform};
+use app_core::{App, PaletteGroup, PaletteItem, PaletteStatus, Platform, SearchScope};
 use egui::{
-    Align2, Color32, Event, EventFilter, FontId, Galley, Id, Key, Margin, Modal, Pos2, Rect,
-    RichText, ScrollArea, Sense, TextEdit, TextWrapMode, Ui, UiBuilder, WidgetInfo, WidgetText,
+    Align2, Color32, CursorIcon, Event, EventFilter, FontId, Galley, Id, Key, Margin, Modal, Pos2,
+    Rect, RichText, ScrollArea, Sense, TextEdit, TextWrapMode, Ui, UiBuilder, WidgetInfo,
+    WidgetText,
     accesskit::{Action, Role},
     pos2, vec2,
 };
@@ -22,24 +25,26 @@ use crate::{
 };
 
 const WIDTH: f32 = 576.0 - 16.0;
-const LIST_HEIGHT: f32 = 288.0;
+const LIST_HEIGHT: f32 = 320.0;
 /// A row with one line: a command, or a file name with its folder beside
 /// it.
 pub(crate) const ROW_HEIGHT: f32 = 32.0;
+/// A group's heading above its rows.
+const HEADING_HEIGHT: f32 = 24.0;
 
-/// What the palette remembers between frames.
+/// What search remembers between frames.
 #[derive(Default)]
 pub(crate) struct PaletteView {
-    /// The mode the palette showed last frame, if it showed.
-    shown: Option<PaletteMode>,
-    /// The widget that had the keyboard before the palette opened.
+    /// The filter search showed last frame, if it showed.
+    shown: Option<SearchScope>,
+    /// The widget that had the keyboard before search opened.
     return_focus: Option<Id>,
     /// Scroll the highlighted row into view on the next frame.
     reveal: bool,
 }
 
-/// The palette's field, the same in every mode, so it keeps the keyboard
-/// when one mode replaces another.
+/// Search's field, the same under every filter, so it keeps the keyboard
+/// when the filter changes.
 fn field_id() -> Id {
     Id::unique("palette-field")
 }
@@ -48,25 +53,35 @@ fn row_id(index: usize) -> Id {
     Id::unique(("palette-row", index))
 }
 
-/// The dialog's name, its field's name and the field's hint in `mode`.
-fn names(mode: PaletteMode) -> (&'static str, &'static str, &'static str) {
-    match mode {
-        PaletteMode::Commands => ("Command palette", "Search commands", "Type a command"),
-        PaletteMode::QuickOpen => ("Quick open", "Find a file by name", "Find a file by name"),
-        PaletteMode::Search => ("Search", "Search the workspace", "Search the workspace"),
+/// The chip's text for a filter, and the name its remove button reads
+/// as.
+fn chip(scope: SearchScope) -> Option<(&'static str, &'static str)> {
+    match scope {
+        SearchScope::All => None,
+        SearchScope::Names => Some(("Names", "Remove Names filter")),
+        SearchScope::Contents => Some(("Contents", "Remove Contents filter")),
     }
 }
 
-/// The keys the palette takes: Up and Down move the highlight and Enter
-/// acts on it while the field has the keyboard, and Escape closes the
-/// palette.
+fn heading(group: PaletteGroup) -> &'static str {
+    match group {
+        PaletteGroup::Files => "Files",
+        PaletteGroup::Contents => "Contents",
+        PaletteGroup::Commands => "Commands",
+    }
+}
+
+/// The keys search takes: Up and Down move the highlight, Enter acts on
+/// it and Backspace in the empty field removes the filter while the field
+/// has the keyboard, and Escape closes search.
 enum PaletteKey {
     Move(isize),
     Run,
+    RemoveFilter,
     Close,
 }
 
-fn take_keys(ui: &Ui, from_field: bool) -> Vec<PaletteKey> {
+fn take_keys(ui: &Ui, from_field: bool, filter_removable: bool) -> Vec<PaletteKey> {
     ui.input_mut(|input| {
         let mut taken = Vec::new();
         input.events.retain(|event| {
@@ -86,6 +101,7 @@ fn take_keys(ui: &Ui, from_field: bool) -> Vec<PaletteKey> {
                 Key::ArrowDown if from_field => PaletteKey::Move(1),
                 Key::ArrowUp if from_field => PaletteKey::Move(-1),
                 Key::Enter if from_field => PaletteKey::Run,
+                Key::Backspace if from_field && filter_removable => PaletteKey::RemoveFilter,
                 Key::Escape => PaletteKey::Close,
                 _ => return true,
             };
@@ -96,27 +112,27 @@ fn take_keys(ui: &Ui, from_field: bool) -> Vec<PaletteKey> {
     })
 }
 
-/// Draw the palette while it's open, and give the keyboard back to where
-/// it was once it closes.
+/// Draw search while it's open, and give the keyboard back to where it
+/// was once it closes.
 pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut PaletteView) {
     let ctx = ui.ctx().clone();
-    let Some(mode) = app.palette().map(Overlay::mode) else {
+    let Some(scope) = app.palette().map(|palette| palette.scope) else {
         if view.shown.take().is_some() {
             give_back_keyboard(&ctx, view);
         }
         return;
     };
-    if view.shown.is_none() {
+    let opening = view.shown.is_none();
+    if opening {
         view.return_focus = ctx.memory(|memory| memory.focused());
     }
-    let opening = view.shown != Some(mode);
-    view.shown = Some(mode);
+    view.shown = Some(scope);
 
     let theme = Palette::of(&ctx);
-    let (name, field_name, hint) = names(mode);
     let mut close = false;
     let mut run = false;
     let mut clicked = None;
+    let mut remove_filter = false;
     // The legacy palette's top edge sits a third of the way down.
     let top = ctx.content_rect().height() / 3.0;
     let area =
@@ -133,39 +149,49 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut PaletteView) {
             ui.set_width(WIDTH);
             let builder = UiBuilder::new()
                 .accessibility_role(Role::Dialog)
-                .accessibility_label(name);
+                .accessibility_label("Search");
             ui.scope_builder(builder, |ui| {
+                let mut query = app
+                    .palette()
+                    .map(|palette| palette.query().to_owned())
+                    .unwrap_or_default();
                 let from_field = ui.memory(|memory| memory.has_focus(field_id()));
-                for key in take_keys(ui, from_field) {
+                let removable = scope != SearchScope::All && query.is_empty();
+                for key in take_keys(ui, from_field, removable) {
                     match key {
                         PaletteKey::Move(offset) => {
                             app.move_palette_selection(offset);
                             view.reveal = true;
                         }
                         PaletteKey::Run => run = true,
+                        PaletteKey::RemoveFilter => remove_filter = true,
                         PaletteKey::Close => close = true,
                     }
                 }
-                let mut query = app
-                    .palette()
-                    .map(|palette| palette.query().to_owned())
-                    .unwrap_or_default();
+                let chip = chip(scope).map(|(text, name)| {
+                    let galley = line(ui, text, SUPPORTING_SIZE, f32::INFINITY);
+                    (galley, name)
+                });
+                // Room for the chip's text, its close mark and padding.
+                let chip_width = chip
+                    .as_ref()
+                    .map_or(0.0, |(galley, _)| galley.size().x + 30.0);
                 // The legacy search field: a pill with a faint magnifying
-                // glass at its start.
+                // glass at its start, then the filter's chip.
                 let field = ui
                     .add(
                         TextEdit::singleline(&mut query)
                             .id(field_id())
-                            .hint_text(hint)
+                            .hint_text("Search")
                             .margin(Margin {
-                                left: 32,
+                                left: (32.0 + chip_width).min(127.0) as i8,
                                 right: 10,
                                 top: 6,
                                 bottom: 6,
                             })
                             .desired_width(f32::INFINITY),
                     )
-                    .accessible_name(field_name);
+                    .accessible_name("Search");
                 let glass = Rect::from_center_size(
                     pos2(field.rect.left() + 16.0, field.rect.center().y),
                     vec2(16.0, 16.0),
@@ -177,6 +203,15 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut PaletteView) {
                     theme.foreground.gamma_multiply(0.5),
                     false,
                 );
+                if let Some((galley, name)) = chip {
+                    let rect = Rect::from_min_size(
+                        pos2(field.rect.left() + 28.0, field.rect.center().y - 10.0),
+                        vec2(chip_width - 4.0, 20.0),
+                    );
+                    if chip_button(ui, rect, galley, name, &theme).clicked() {
+                        remove_filter = true;
+                    }
+                }
                 if opening {
                     field.request_focus();
                 }
@@ -195,25 +230,21 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut PaletteView) {
                 if field.changed() {
                     app.set_palette_query(&query);
                 }
-                match mode {
-                    PaletteMode::Commands => {
-                        ui.add_space(4.0);
-                        clicked = commands(ui, app, view, &theme);
-                    }
-                    PaletteMode::QuickOpen | PaletteMode::Search => {
-                        if mode == PaletteMode::Search {
-                            finder::filters(ui, app);
-                        }
-                        ui.add_space(6.0);
-                        clicked = finder::results(ui, app, view, &theme);
-                    }
+                if scope == SearchScope::Contents {
+                    finder::filters(ui, app);
                 }
+                ui.add_space(6.0);
+                clicked = results(ui, app, view, &theme);
             });
         });
     if modal.should_close() {
         close = true;
     }
 
+    if remove_filter {
+        app.set_palette_scope(SearchScope::All);
+        ctx.memory_mut(|memory| memory.request_focus(field_id()));
+    }
     if let Some(row) = clicked {
         app.select_palette_row(row);
         run = true;
@@ -230,6 +261,39 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut PaletteView) {
     }
 }
 
+/// The filter's chip in the field: its name and a close mark, as a
+/// button that removes the filter.
+fn chip_button(
+    ui: &mut Ui,
+    rect: Rect,
+    galley: Arc<Galley>,
+    name: &str,
+    theme: &Palette,
+) -> egui::Response {
+    let response = ui
+        .interact(rect, Id::unique("palette-filter"), Sense::click())
+        .on_hover_cursor(CursorIcon::PointingHand);
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, name));
+    let painter = ui.painter();
+    let fill = if response.hovered() {
+        crate::common::mix(theme.muted, theme.foreground, 0.08)
+    } else {
+        theme.muted
+    };
+    painter.rect_filled(rect, radius(1.0), fill);
+    let text_at = pos2(rect.left() + 8.0, rect.center().y - galley.size().y / 2.0);
+    painter.galley(text_at, galley, theme.foreground);
+    let mark = Rect::from_center_size(pos2(rect.right() - 10.0, rect.center().y), vec2(10.0, 10.0));
+    crate::icons::paint(
+        painter,
+        crate::icons::CLOSE,
+        mark,
+        theme.muted_foreground,
+        false,
+    );
+    response
+}
+
 fn give_back_keyboard(ctx: &egui::Context, view: &mut PaletteView) {
     match view.return_focus.take() {
         Some(id) => ctx.memory_mut(|memory| memory.request_focus(id)),
@@ -237,20 +301,48 @@ fn give_back_keyboard(ctx: &egui::Context, view: &mut PaletteView) {
     }
 }
 
-/// The matching commands, each with its shortcut. Returns the row you
-/// clicked.
-fn commands(ui: &mut Ui, app: &App, view: &mut PaletteView, theme: &Palette) -> Option<usize> {
-    let matches = app.palette_matches();
-    let palette = app.palette()?;
-    if matches.is_empty() {
-        let text = format!("No commands match \u{201c}{}\u{201d}.", palette.query());
-        note(ui, theme, &text);
-        return None;
-    }
-    let platform: Platform = app.platform();
-    let rows: Vec<Row> = matches
-        .iter()
-        .map(|command| {
+/// What search lists: its rows in groups, or what shows instead. Returns
+/// the row you clicked.
+fn results(ui: &mut Ui, app: &App, view: &mut PaletteView, theme: &Palette) -> Option<usize> {
+    let selected = app.palette()?.selected();
+    let status = app.palette_status();
+    let clicked = match status {
+        PaletteStatus::Results => {
+            let platform = app.platform();
+            let rows: Vec<(PaletteGroup, Row)> = app
+                .palette_results()
+                .iter()
+                .map(|item| (item.group(), row(item, platform)))
+                .collect();
+            list(ui, view, theme, &rows, selected)
+        }
+        PaletteStatus::Searching => {
+            note(ui, theme, "Searching\u{2026}");
+            None
+        }
+        PaletteStatus::NoResults => {
+            note(ui, theme, "No results");
+            None
+        }
+        PaletteStatus::Idle | PaletteStatus::Failed => None,
+    };
+    finder::failure(ui, app, theme);
+    clicked
+}
+
+/// How search draws `item`.
+fn row(item: &PaletteItem, platform: Platform) -> Row {
+    match item {
+        PaletteItem::File(found) => Row {
+            label: found.name.clone(),
+            detail: found.folder.clone(),
+            second_line: None,
+            description: found.folder.clone(),
+            shortcut: None,
+            height: ROW_HEIGHT,
+        },
+        PaletteItem::Hit(hit) => finder::hit_row(hit),
+        PaletteItem::Command(command) => {
             let keys = command
                 .shortcuts
                 .first()
@@ -261,18 +353,10 @@ fn commands(ui: &mut Ui, app: &App, view: &mut PaletteView, theme: &Palette) -> 
                 second_line: None,
                 description: keys.clone().unwrap_or_default(),
                 shortcut: keys,
+                height: ROW_HEIGHT,
             }
-        })
-        .collect();
-    list(
-        ui,
-        view,
-        theme,
-        "Commands",
-        &rows,
-        palette.selected(),
-        ROW_HEIGHT,
-    )
+        }
+    }
 }
 
 /// Supporting text in place of the list.
@@ -284,7 +368,7 @@ pub(crate) fn note(ui: &mut Ui, theme: &Palette, text: &str) {
     );
 }
 
-/// One row of the list as the palette draws it.
+/// One row of the list as search draws it.
 pub(crate) struct Row {
     pub(crate) label: String,
     /// Muted text beside the label: a command's shortcut, a file's folder
@@ -296,61 +380,96 @@ pub(crate) struct Row {
     pub(crate) description: String,
     /// The command's shortcut, for screen readers.
     pub(crate) shortcut: Option<String>,
+    pub(crate) height: f32,
 }
 
-/// The rows as a list box named `name`, with the highlighted row
-/// selected. Returns the row you clicked.
-pub(crate) fn list(
+/// The rows, one list box per group named after it, with the highlighted
+/// row selected. A group shows its heading only when another group shows
+/// too. Returns the row you clicked.
+fn list(
     ui: &mut Ui,
     view: &mut PaletteView,
     theme: &Palette,
-    name: &str,
-    rows: &[Row],
+    rows: &[(PaletteGroup, Row)],
     selected: usize,
-    height: f32,
 ) -> Option<usize> {
+    let mut groups: Vec<(PaletteGroup, Vec<(usize, &Row)>)> = Vec::new();
+    for (index, (group, row)) in rows.iter().enumerate() {
+        match groups.last_mut() {
+            Some((last, members)) if last == group => members.push((index, row)),
+            _ => groups.push((*group, vec![(index, row)])),
+        }
+    }
+    let headings = groups.len() > 1;
     let mut clicked = None;
-    let builder = UiBuilder::new()
-        .accessibility_role(Role::ListBox)
-        .accessibility_label(name);
-    ui.scope_builder(builder, |ui| {
-        ScrollArea::vertical()
-            .id_salt(("palette-list", name))
-            .max_height(LIST_HEIGHT)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                for (index, row) in rows.iter().enumerate() {
-                    let (rect, _) =
-                        ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
-                    let id = row_id(index);
-                    let response = ui.interact(rect, id, Sense::CLICK);
-                    let is_selected = index == selected;
-                    response
-                        .widget_info(|| WidgetInfo::labeled(Role::ListBoxOption, true, &row.label));
-                    ui.ctx().accesskit_node_builder(id, |node| {
-                        node.set_selected(is_selected);
-                        node.add_action(Action::Click);
-                        if let Some(shortcut) = &row.shortcut {
-                            node.set_keyboard_shortcut(shortcut.clone());
-                        }
-                        if !row.description.is_empty() {
-                            node.set_description(row.description.clone());
-                        }
-                    });
-                    if is_selected && std::mem::take(&mut view.reveal) {
-                        response.scroll_to_me(None);
-                    }
-                    if response.clicked() {
-                        clicked = Some(index);
-                    }
-                    if ui.is_rect_visible(rect) {
-                        paint_row(ui, rect, row, is_selected || response.hovered(), theme);
-                    }
+    ScrollArea::vertical()
+        .id_salt("palette-list")
+        .max_height(LIST_HEIGHT)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for (group, members) in &groups {
+                let name = heading(*group);
+                if headings {
+                    let (rect, _) = ui.allocate_exact_size(
+                        vec2(ui.available_width(), HEADING_HEIGHT),
+                        Sense::hover(),
+                    );
+                    let galley = line(ui, name, SUPPORTING_SIZE, rect.width());
+                    paint_line(
+                        ui,
+                        galley,
+                        pos2(rect.left() + 8.0, rect.bottom() - 6.0),
+                        Align2::LEFT_BOTTOM,
+                        theme.muted_foreground,
+                    );
                 }
-            });
-    });
+                let builder = UiBuilder::new()
+                    .accessibility_role(Role::ListBox)
+                    .accessibility_label(name);
+                ui.scope_builder(builder, |ui| {
+                    for (index, row) in members {
+                        if let Some(index) = draw_row(ui, view, theme, *index, row, selected) {
+                            clicked = Some(index);
+                        }
+                    }
+                });
+            }
+        });
     clicked
+}
+
+/// Row `index` of the list. Returns `index` when you click it.
+fn draw_row(
+    ui: &mut Ui,
+    view: &mut PaletteView,
+    theme: &Palette,
+    index: usize,
+    row: &Row,
+    selected: usize,
+) -> Option<usize> {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), row.height), Sense::hover());
+    let id = row_id(index);
+    let response = ui.interact(rect, id, Sense::CLICK);
+    let is_selected = index == selected;
+    response.widget_info(|| WidgetInfo::labeled(Role::ListBoxOption, true, &row.label));
+    ui.ctx().accesskit_node_builder(id, |node| {
+        node.set_selected(is_selected);
+        node.add_action(Action::Click);
+        if let Some(shortcut) = &row.shortcut {
+            node.set_keyboard_shortcut(shortcut.clone());
+        }
+        if !row.description.is_empty() {
+            node.set_description(row.description.clone());
+        }
+    });
+    if is_selected && std::mem::take(&mut view.reveal) {
+        response.scroll_to_me(None);
+    }
+    if ui.is_rect_visible(rect) {
+        paint_row(ui, rect, row, is_selected || response.hovered(), theme);
+    }
+    response.clicked().then_some(index)
 }
 
 fn paint_row(ui: &Ui, rect: Rect, row: &Row, highlighted: bool, theme: &Palette) {

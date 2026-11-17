@@ -22,7 +22,7 @@ fn new_window_from_the_palette_opens_another_window_on_the_workspace() {
     harness.key_press_modifiers(Modifiers::COMMAND, Key::K);
     harness.run();
     harness
-        .get_by_label("Search commands")
+        .get_by_role_and_label(Role::TextInput, "Search")
         .type_text("new window");
     harness.run();
     harness.key_press(Key::Enter);

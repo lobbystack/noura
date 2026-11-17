@@ -131,8 +131,5 @@ fn new_workspace_from_the_switcher_asks_for_a_name_then_a_folder() {
         .click();
     settle(&mut harness);
 
-    harness.get_by_role_and_label(
-        Role::Button,
-        "Workspace: Fresh start",
-    );
+    harness.get_by_role_and_label(Role::Button, "Workspace: Fresh start");
 }

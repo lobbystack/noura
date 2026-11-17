@@ -182,7 +182,7 @@ fn an_app_or_script_never_goes_to_the_default_app() {
                 app.follow_note_link(note, path, OpenAs::Kept);
             }),
             ("quick open", &|app| {
-                app.open_quick_open();
+                app.open_palette(app_core::SearchScope::Names);
                 app.set_palette_query(name);
                 // No document opens, so the pick reports false.
                 assert!(!app.run_palette_selection(Instant::now()));

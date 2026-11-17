@@ -76,8 +76,9 @@ pub use ai::{
     DEFAULT_CONTEXT_WINDOW, NEW_CHAT_TITLE, WEB_SEARCH_PROVIDER_NAME, WebSearchRow,
 };
 pub use app::{
-    App, Change, CommandPalette, DragOut, IgnoredFiles, NameDraft, Notice, NoticeKind, Origin,
-    Palette, PaletteMode, PluginPlace, Question, QuickOpen, Rename, Screen, Search, UnsavedPrompt,
+    App, Change, DragOut, EMPTY_COMMANDS, GROUP_LIMIT, IgnoredFiles, NameDraft, Notice, NoticeKind,
+    Origin, Palette, PaletteGroup, PaletteItem, PaletteStatus, PluginPlace, Question, Rename,
+    Screen, SearchScope, UnsavedPrompt,
 };
 pub use app::{
     SPEECH_LANGUAGES, SpeechModelFilter, SpeechModelRow, SpeechModelSection, SpeechModelsPage,
