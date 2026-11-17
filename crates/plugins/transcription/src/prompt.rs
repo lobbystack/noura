@@ -3,7 +3,9 @@
 //! replace, and the user message with your notes and the Transcript. See
 //! `docs/provenance/anarlog.md`.
 
-use minijinja::{Environment, UndefinedBehavior, context};
+use std::collections::BTreeMap;
+
+use crate::jinja::{self, Template, Val};
 
 /// anarlog's default format requirements, which the settings page shows
 /// as the prompt until you change it.
@@ -42,8 +44,8 @@ pub(crate) fn language_name(code: Option<&str>) -> String {
 /// Why your prompt can't be used.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PromptError {
-    /// It names variables other than `current_date` and `language`.
-    UnknownVariables(Vec<String>),
+    /// It uses variables other than `current_date` and `language`.
+    UnknownVariables,
     /// It isn't a template minijinja reads.
     Invalid(String),
 }
@@ -51,24 +53,27 @@ pub(crate) enum PromptError {
 impl std::fmt::Display for PromptError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnknownVariables(names) => write!(
+            Self::UnknownVariables => write!(
                 f,
-                "The prompt can use only {{{{ language }}}} and {{{{ current_date }}}}, not {}.",
-                names.join(", ")
+                "The prompt can use only {{{{ language }}}} and {{{{ current_date }}}}."
             ),
             Self::Invalid(reason) => write!(f, "The prompt isn't a valid template: {reason}"),
         }
     }
 }
 
-fn environment() -> Environment<'static> {
-    let mut env = Environment::new();
-    env.set_undefined_behavior(UndefinedBehavior::Strict);
-    env
+fn context(pairs: Vec<(&str, Val)>) -> BTreeMap<String, Val> {
+    pairs
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect()
 }
 
-fn invalid(error: &minijinja::Error) -> PromptError {
-    PromptError::Invalid(error.to_string())
+fn invalid(error: &jinja::Error) -> PromptError {
+    match error {
+        jinja::Error::Undefined(_) => PromptError::UnknownVariables,
+        jinja::Error::Syntax(reason) => PromptError::Invalid(reason.clone()),
+    }
 }
 
 /// The system instructions in `language`, an ISO 639-1 code, on
@@ -85,31 +90,27 @@ pub(crate) fn system(
     } else {
         custom.as_str()
     };
-    let env = environment();
-    let format_template = env.template_from_str(source).map_err(|e| invalid(&e))?;
-    let mut unknown: Vec<String> = format_template
-        .undeclared_variables(false)
-        .into_iter()
-        .filter(|name| !["current_date", "language"].contains(&name.as_str()))
-        .collect();
-    unknown.sort();
-    if !unknown.is_empty() {
-        return Err(PromptError::UnknownVariables(unknown));
-    }
     let language = language_name(language);
-    let format_requirements = format_template
-        .render(context! { current_date => current_date, language => &language })
-        .map_err(|e| invalid(&e))?;
-    env.template_from_str(SYSTEM)
+    // anarlog lists the template's undeclared variables first. Strict
+    // rendering refuses any other variable the prompt uses instead.
+    let format_requirements = Template::parse(source)
         .and_then(|template| {
-            template.render(context! {
-                current_date => current_date,
-                language => &language,
-                format_requirements => format_requirements.trim(),
-                default_format => custom.is_empty(),
-            })
+            template.render(&context(vec![
+                ("current_date", Val::from(current_date)),
+                ("language", Val::from(language.as_str())),
+            ]))
         })
-        .map_err(|e| invalid(&e))
+        .map_err(|error| invalid(&error))?;
+    Template::parse(SYSTEM)
+        .and_then(|template| {
+            template.render(&context(vec![
+                ("current_date", Val::from(current_date)),
+                ("language", Val::from(language.as_str())),
+                ("format_requirements", Val::from(format_requirements.trim())),
+                ("default_format", Val::from(custom.is_empty())),
+            ]))
+        })
+        .map_err(|error| invalid(&error))
 }
 
 /// Whether `format` replaces the default format requirements.
@@ -120,26 +121,30 @@ pub(crate) fn is_custom(format: &str) -> bool {
 /// The user message: the Transcription's title, attendees, your notes and
 /// the Transcript.
 pub(crate) fn user(meeting: &Meeting<'_>) -> String {
-    let segments: Vec<minijinja::Value> = meeting
+    let segments = meeting
         .lines
         .iter()
         .map(|line| {
-            minijinja::Value::from_iter([
-                ("speaker", minijinja::Value::from(line.speaker.as_str())),
-                ("text", minijinja::Value::from(line.text.as_str())),
-            ])
+            Val::Map(BTreeMap::from([
+                ("speaker".to_owned(), Val::from(line.speaker.as_str())),
+                ("text".to_owned(), Val::from(line.text.as_str())),
+            ]))
         })
         .collect();
-    environment()
-        .template_from_str(USER)
+    let participants = meeting
+        .attendees
+        .iter()
+        .map(|name| Val::from(name.as_str()))
+        .collect();
+    Template::parse(USER)
         .and_then(|template| {
-            template.render(context! {
-                title => meeting.title,
-                participants => meeting.attendees,
-                pre_meeting_memo => "",
-                post_meeting_memo => meeting.notes.trim(),
-                segments => segments,
-            })
+            template.render(&context(vec![
+                ("title", Val::from(meeting.title)),
+                ("participants", Val::List(participants)),
+                ("pre_meeting_memo", Val::from("")),
+                ("post_meeting_memo", Val::from(meeting.notes.trim())),
+                ("segments", Val::List(segments)),
+            ]))
         })
         .expect("the user template renders with these values")
 }
@@ -231,7 +236,7 @@ mod tests {
     fn a_prompt_with_other_variables_is_refused() {
         assert_eq!(
             system(None, "2026-11-16", "Summarize {{ transcript }}.").unwrap_err(),
-            PromptError::UnknownVariables(vec!["transcript".into()])
+            PromptError::UnknownVariables
         );
         assert!(matches!(
             system(None, "2026-11-16", "{% if %}").unwrap_err(),

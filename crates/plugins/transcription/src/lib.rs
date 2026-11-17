@@ -18,6 +18,7 @@
 //! Build it with `crates/plugin-sdk/build-plugins.sh`, then install the
 //! folder holding `plugin.toml` and the built `transcription_plugin.wasm`.
 
+mod jinja;
 mod length;
 mod meeting;
 mod notes;
