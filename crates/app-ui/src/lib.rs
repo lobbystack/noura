@@ -79,7 +79,6 @@ pub struct NouraUi {
     tree: tree::TreeView,
     settings: settings::SettingsView,
     plugin_install: plugins::InstallView,
-    shipped_plugins: plugins::ShippedView,
     /// The prompt that asks before a tool call the model wants runs.
     tool_prompt: ai::ToolPromptView,
     tab_bar: tab_bar::TabBarView,
@@ -114,7 +113,6 @@ impl NouraUi {
             tree: tree::TreeView::default(),
             settings: settings::SettingsView::default(),
             plugin_install: plugins::InstallView::default(),
-            shipped_plugins: plugins::ShippedView::default(),
             tool_prompt: ai::ToolPromptView::default(),
             tab_bar: tab_bar::TabBarView::default(),
             palette: palette::PaletteView::default(),
@@ -356,7 +354,6 @@ impl NouraUi {
             self.notes.spell_checker.is_some(),
         );
         plugins::install_dialog(ui, &mut self.app, &mut self.plugin_install);
-        plugins::shipped_dialog(ui, &mut self.app, &mut self.shipped_plugins);
         ai::tool_prompt(ui, &mut self.app, &mut self.tool_prompt);
         palette::show(ui, &mut self.app, &mut self.palette);
         share::dialog(ui, &mut self.app);

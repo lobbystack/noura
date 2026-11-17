@@ -1,6 +1,6 @@
 //! Plugins through AccessKit: a plugin's page in Settings drawn from its
-//! nodes, the first-run screen for the plugins that ship with Noura, and
-//! the Plugins page, which lists each capability, network host and
+//! nodes, the plugins that ship with Noura, which install with no dialog,
+//! and the Plugins page, which lists each capability, network host and
 //! command target a plugin may use, shipped plugins included, and revokes
 //! them one at a time.
 
@@ -101,7 +101,7 @@ fn shipped_with_hello(hello: &[u8]) -> tempfile::TempDir {
 }
 
 #[test]
-fn the_first_run_screen_lists_each_shipped_plugin_and_one_key_press_approves_them() {
+fn shipped_plugins_install_at_launch_with_no_dialog() {
     let Some(hello) = plugins::built("hello_plugin") else {
         return;
     };
@@ -112,38 +112,7 @@ fn the_first_run_screen_lists_each_shipped_plugin_and_one_key_press_approves_the
     });
     harness.run();
 
-    let screen = dialog(&harness, "Plugins that ship with Noura");
-    let shown = labels(&screen);
-    for expected in [
-        "Hello",
-        "Version 0.1.0",
-        "Read the files and folders in your workspace.",
-        "Add pages to the rail and show panels in them.",
-    ] {
-        assert!(shown.iter().any(|label| label == expected), "{shown:?}");
-    }
-    assert!(
-        screen
-            .get_by_role_and_label(Role::Button, "Allow and continue")
-            .is_focused()
-    );
-    assert!(
-        !harness
-            .state()
-            .app()
-            .plugins()
-            .iter()
-            .any(|row| row.installed)
-    );
-
-    harness.key_press(Key::Enter);
-    harness.run();
-
-    assert!(
-        harness
-            .query_by_role_and_label(Role::Dialog, "Plugins that ship with Noura")
-            .is_none()
-    );
+    assert!(harness.query_by_role(Role::Dialog).is_none());
     let rows = harness.state().app().plugins();
     assert!(
         rows.iter()
@@ -328,11 +297,6 @@ fn the_plugins_page_shows_a_shipped_plugin_and_what_it_may_use() {
     let mut harness = harness_registering(app_data.path(), FakePicker::default(), |app| {
         app.set_shipped_plugins(shipped.path().to_owned());
     });
-    settle(&mut harness);
-    dialog(&harness, "Plugins that ship with Noura")
-        .get_by_role_and_label(Role::Button, "Allow and continue")
-        .click();
-    harness.run();
     settle(&mut harness);
 
     open_settings_section(&mut harness, "Plugins");

@@ -459,19 +459,151 @@ fn the_plugins_page_lists_each_approval_and_a_revoked_one_takes_effect_on_the_ne
     );
 }
 
-/// A folder of the plugins that ship with Noura, holding the hello plugin.
-fn shipped_with_hello() -> Option<tempfile::TempDir> {
+/// The hello plugin's manifest with `version` and a network host it
+/// didn't declare before.
+fn wider_hello(version: &str) -> String {
+    format!(
+        "{}\n[[capabilities]]\nname = \"network\"\nhosts = [\"api.example.com\"]\n",
+        plugins::HELLO_MANIFEST.replacen(
+            "version = \"0.1.0\"",
+            &format!("version = \"{version}\""),
+            1
+        )
+    )
+}
+
+/// A folder of the plugins that ship with Noura, holding the hello plugin
+/// with `manifest`.
+fn shipped_hello_with(manifest: &str) -> Option<tempfile::TempDir> {
     let hello = plugins::built("hello_plugin")?;
     let shipped = tempfile::tempdir().unwrap();
     let folder = shipped.path().join("hello");
     std::fs::create_dir_all(&folder).unwrap();
-    std::fs::write(folder.join("plugin.toml"), plugins::HELLO_MANIFEST).unwrap();
+    std::fs::write(folder.join("plugin.toml"), manifest).unwrap();
     std::fs::write(folder.join("hello_plugin.wasm"), hello).unwrap();
     Some(shipped)
 }
 
+/// A folder of the plugins that ship with Noura, holding the hello plugin.
+fn shipped_with_hello() -> Option<tempfile::TempDir> {
+    shipped_hello_with(plugins::HELLO_MANIFEST)
+}
+
+fn hello_row(app: &App) -> app_core::PluginRow {
+    app.plugins()
+        .into_iter()
+        .find(|row| row.id == "hello")
+        .expect("hello has a row")
+}
+
+fn hello_capabilities() -> Vec<CapabilityLine> {
+    vec![
+        capability(
+            "workspace-read",
+            "Read the files and folders in your workspace.",
+        ),
+        capability("views", "Add pages to the rail and show panels in them."),
+    ]
+}
+
+fn network_line() -> CapabilityLine {
+    line(
+        "network",
+        "Connect to api.example.com.",
+        Grant::Host("api.example.com".into()),
+    )
+}
+
 #[test]
-fn the_first_run_screen_lists_shipped_plugins_and_one_approval_runs_them_on_this_device() {
+fn shipped_plugins_install_approved_and_run_with_no_screen() {
+    let Some(shipped) = shipped_with_hello() else {
+        return;
+    };
+    let fixture = Fixture::new(&[("Plan.md", b"# Plan\n")]);
+    let mut app = fixture.app();
+    assert!(app.set_plugin_enabled("hello", true));
+
+    app.set_shipped_plugins(shipped.path().to_owned());
+    settle(&mut app);
+
+    assert_eq!(rail_titles(&app), ["Inbox", "Files", "Hello"]);
+    let row = hello_row(&app);
+    assert!(row.shipped && row.installed && row.running, "{row:?}");
+    assert_eq!(row.approved, hello_capabilities());
+    assert!(row.revoked.is_empty() && row.update.is_empty(), "{row:?}");
+
+    // The next launch keeps it as it is.
+    drop(app);
+    let mut app = fixture.app();
+    app.set_shipped_plugins(shipped.path().to_owned());
+    settle(&mut app);
+    assert_eq!(rail_titles(&app), ["Inbox", "Files", "Hello"]);
+
+    // One you uninstall stays uninstalled.
+    assert!(app.uninstall_plugin("hello"));
+    drop(app);
+    let mut app = fixture.app();
+    app.set_shipped_plugins(shipped.path().to_owned());
+    settle(&mut app);
+    assert!(!hello_row(&app).installed);
+    assert_eq!(rail_titles(&app), ["Inbox", "Files"]);
+    drop(app);
+
+    // Another device installs it at launch too.
+    let root = fixture.root.clone();
+    let fresh = tempfile::tempdir().unwrap();
+    let mut app = App::launch(fresh.path());
+    app.set_shipped_plugins(shipped.path().to_owned());
+    app.open_folder(root);
+    settle(&mut app);
+    assert_eq!(rail_titles(&app), ["Inbox", "Files", "Hello"]);
+}
+
+#[test]
+fn a_shipped_plugin_recorded_from_a_folder_that_moved_updates_from_the_new_build() {
+    let (Some(old), Some(new)) = (
+        shipped_with_hello(),
+        shipped_hello_with(&wider_hello("0.2.0")),
+    ) else {
+        return;
+    };
+    let fixture = Fixture::new(&[("Plan.md", b"# Plan\n")]);
+    let mut app = fixture.app();
+    assert!(app.set_plugin_enabled("hello", true));
+    app.set_shipped_plugins(old.path().to_owned());
+    settle(&mut app);
+    assert!(app.revoke_plugin_grant("hello", &Grant::Capability("views".into())));
+    drop(app);
+    // The earlier build of Noura is gone, with its plugins folder.
+    drop(old);
+
+    let mut app = fixture.app();
+    app.set_shipped_plugins(new.path().to_owned());
+    settle(&mut app);
+
+    let row = hello_row(&app);
+    let folder = new.path().join("hello");
+    assert_eq!(row.folder.as_deref(), folder.to_str(), "{row:?}");
+    assert_eq!(row.version.as_deref(), Some("0.2.0"));
+    // What the new build adds is approved, and what you revoked stays
+    // revoked.
+    assert_eq!(
+        row.approved,
+        [hello_capabilities()[0].clone(), network_line()]
+    );
+    assert_eq!(row.revoked, [hello_capabilities()[1].clone()]);
+    assert!(row.update.is_empty() && row.running, "{row:?}");
+
+    // The next launch reads the same folder and changes nothing.
+    drop(app);
+    let mut app = fixture.app();
+    app.set_shipped_plugins(new.path().to_owned());
+    settle(&mut app);
+    assert_eq!(hello_row(&app), row);
+}
+
+#[test]
+fn a_new_shipped_build_that_adds_a_capability_runs_at_once_with_it_approved() {
     let Some(shipped) = shipped_with_hello() else {
         return;
     };
@@ -479,66 +611,20 @@ fn the_first_run_screen_lists_shipped_plugins_and_one_approval_runs_them_on_this
     let mut app = fixture.app();
     assert!(app.set_plugin_enabled("hello", true));
     app.set_shipped_plugins(shipped.path().to_owned());
-
-    let review = app.shipped_plugins();
-
-    assert_eq!(review.len(), 1);
-    assert_eq!(
-        (
-            review[0].id.as_str(),
-            review[0].name.as_str(),
-            review[0].version.as_str()
-        ),
-        ("hello", "Hello", "0.1.0")
-    );
-    assert_eq!(
-        review[0].capabilities,
-        [
-            capability(
-                "workspace-read",
-                "Read the files and folders in your workspace."
-            ),
-            capability("views", "Add pages to the rail and show panels in them."),
-        ]
-    );
-    // None of its code runs before you approve.
-    settle(&mut app);
-    assert_eq!(rail_titles(&app), ["Inbox", "Files"]);
-    assert_eq!(
-        plugins::files_under(&fixture.app_data.path().join("plugins")),
-        Vec::<String>::new()
-    );
-
-    assert!(app.approve_shipped_plugins());
     settle(&mut app);
 
-    assert!(app.shipped_plugins().is_empty());
-    assert_eq!(rail_titles(&app), ["Inbox", "Files", "Hello"]);
-    let row = app
-        .plugins()
-        .into_iter()
-        .find(|row| row.id == "hello")
-        .unwrap();
-    assert!(row.shipped && row.installed && row.running, "{row:?}");
-    assert_eq!(row.approved.len(), 2);
+    std::fs::write(
+        shipped.path().join("hello/plugin.toml"),
+        wider_hello("0.2.0"),
+    )
+    .unwrap();
 
-    // The approval stays on this device.
-    drop(app);
-    let mut app = fixture.app();
-    app.set_shipped_plugins(shipped.path().to_owned());
-    assert!(app.shipped_plugins().is_empty());
-    assert_eq!(rail_titles(&app), ["Inbox", "Files", "Hello"]);
-    drop(app);
-
-    // Another device asks again, and runs nothing until then.
-    let root = fixture.root.clone();
-    let fresh = tempfile::tempdir().unwrap();
-    let mut app = App::launch(fresh.path());
-    app.set_shipped_plugins(shipped.path().to_owned());
-    app.open_folder(root);
-    settle(&mut app);
-    assert_eq!(app.shipped_plugins().len(), 1);
-    assert_eq!(rail_titles(&app), ["Inbox", "Files"]);
+    plugins::wait_until(&mut app, "the new build installs", |app| {
+        hello_row(app).version.as_deref() == Some("0.2.0")
+    });
+    let row = hello_row(&app);
+    assert!(row.approved.contains(&network_line()), "{row:?}");
+    assert!(row.update.is_empty() && row.running, "{row:?}");
 }
 
 /// The plugins folder a package ships, with each first-party plugin as
@@ -580,7 +666,7 @@ fn shipped_with_first_party_plugins() -> Option<tempfile::TempDir> {
 }
 
 #[test]
-fn a_package_ships_every_first_party_plugin_and_the_first_run_screen_lists_each() {
+fn a_package_ships_every_first_party_plugin_and_each_installs_at_launch() {
     let Some(shipped) = shipped_with_first_party_plugins() else {
         return;
     };
@@ -589,18 +675,18 @@ fn a_package_ships_every_first_party_plugin_and_the_first_run_screen_lists_each(
 
     let fixture = Fixture::new(&[("Plan.md", b"# Plan\n")]);
     let mut app = fixture.app();
-    // A new workspace turns on the first three. You turn on AI yourself.
+    // You turn on AI yourself.
     assert!(app.set_plugin_enabled("ai", true));
     app.set_shipped_plugins(shipped.path().to_owned());
-    let listed: Vec<_> = app
-        .shipped_plugins()
-        .into_iter()
-        .map(|plugin| plugin.name)
-        .collect();
-    assert_eq!(listed, SHIPPED_PLUGINS.map(|(_, name)| name));
-
-    assert!(app.approve_shipped_plugins());
     settle(&mut app);
+
+    let installed: Vec<_> = app
+        .plugins()
+        .into_iter()
+        .filter(|row| row.installed && row.shipped)
+        .map(|row| row.name)
+        .collect();
+    assert_eq!(installed, SHIPPED_PLUGINS.map(|(_, name)| name));
     assert_eq!(
         rail_titles(&app),
         ["Inbox", "AI", "Files", "Tasks", "Calendar", "Projects"]

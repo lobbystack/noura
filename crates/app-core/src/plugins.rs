@@ -14,7 +14,8 @@
 //! never come from workspace files, so a workspace that
 //! lists a plugin as enabled runs none of its code on a device where you
 //! haven't installed and approved it. The plugins that ship with Noura
-//! wait for one approval on this device's first-run screen.
+//! come from the same signed app as the kernel, so they install approved,
+//! and each new build of Noura updates them with what it adds approved.
 //!
 //! Each running plugin's calls run on a thread of its own, so a plugin that
 //! loops, allocates past its memory cap or crashes never holds up a
@@ -77,8 +78,8 @@ pub(crate) const COMMAND_PREFIX: &str = "plugin-command:";
 /// batch starts at a multiple of this.
 const ROW_BATCH: u32 = 64;
 
-/// A capability, or one host or target of one, as Settings, the install
-/// dialog and the first-run screen show it.
+/// A capability, or one host or target of one, as Settings and the install
+/// dialog show it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityLine {
     /// The name the manifest uses, such as `workspace-read`.
@@ -242,16 +243,6 @@ impl std::fmt::Debug for PluginInstall {
     }
 }
 
-/// A plugin that ships with Noura, as the first-run screen lists it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShippedPlugin {
-    pub id: String,
-    pub name: String,
-    pub version: String,
-    /// Every capability, network host and command target it declares.
-    pub capabilities: Vec<CapabilityLine>,
-}
-
 /// The plugins every package of Noura ships: each one's ID, which names
 /// its folder, and its name.
 pub const SHIPPED_PLUGINS: [(&str, &str); 6] = [
@@ -306,6 +297,31 @@ pub fn check_shipped_plugins(folder: Option<&Path>) -> Vec<ShippedProblem> {
         .collect()
 }
 
+/// The ID and folder of each plugin in `folder`, the plugins shipping with
+/// Noura, by ID. Only their manifests are read.
+fn shipped_folders(folder: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(String, PathBuf)> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.join(plugin_host::MANIFEST_FILE).is_file())
+        .filter_map(|path| match plugin_host::read_manifest(&path) {
+            Ok(manifest) => Some((manifest.id, path)),
+            Err(error) => {
+                tracing::warn!(
+                    code = error.code.as_str(),
+                    "a plugin shipping with Noura can't be read"
+                );
+                None
+            }
+        })
+        .collect();
+    found.sort();
+    found
+}
+
 /// A tool a running plugin offers to AI assistants.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginTool {
@@ -343,7 +359,7 @@ struct Record {
     /// What you approved. A plugin may use what it declares and this
     /// holds.
     approved: Vec<Capability>,
-    /// It ships with Noura, and you approved it on the first-run screen.
+    /// It ships with Noura, which installed it approved.
     #[serde(default)]
     shipped: bool,
 }
@@ -352,8 +368,8 @@ struct Record {
 struct Records {
     #[serde(default)]
     plugins: BTreeMap<String, Record>,
-    /// The plugins shipping with Noura that this device's first-run screen
-    /// showed you.
+    /// The plugins shipping with Noura that this device installed once. One
+    /// you uninstalled stays uninstalled.
     #[serde(default)]
     shipped_reviewed: BTreeSet<String>,
 }
@@ -563,11 +579,6 @@ pub(crate) struct Plugins {
     watchers: BTreeMap<String, Watcher>,
     reload_sender: Sender<Reload>,
     reloads: Receiver<Reload>,
-    /// The folder holding the plugins that ship with Noura.
-    shipped: Option<PathBuf>,
-    /// The manifest and folder of each plugin shipping with Noura that
-    /// this device hasn't shown you yet, read once rather than per frame.
-    shipped_pending: Vec<(PluginManifest, PathBuf)>,
     /// The listing whose file changes the running plugins drew last.
     listing_drawn: u64,
     /// The clock running plugins read.
@@ -626,8 +637,6 @@ impl Plugins {
             watchers: BTreeMap::new(),
             reload_sender,
             reloads,
-            shipped: None,
-            shipped_pending: Vec::new(),
             listing_drawn: 0,
             clock: None,
             openings: Openings::default(),
@@ -1598,18 +1607,25 @@ impl Plugins {
 
     /// Take the builds the reload watchers found and the answers the
     /// running plugins sent. A build that adds nothing to what the
-    /// installed build declares replaces it at once; any other waits for
-    /// your approval while the old build keeps running.
+    /// installed build declares replaces it at once, and so does a build
+    /// of a plugin that ships with Noura, with what it adds approved. Any
+    /// other waits for your approval while the old build keeps running.
     pub(crate) fn poll(&mut self) {
         while let Ok(reload) = self.reloads.try_recv() {
-            if !self.records.plugins.contains_key(&reload.id) {
+            let Some(shipped) = self
+                .records
+                .plugins
+                .get(&reload.id)
+                .map(|record| record.shipped)
+            else {
                 continue;
-            }
+            };
             match reload.result {
                 Ok(candidate) => {
-                    if self.added(&reload.id, &candidate).is_empty() {
+                    let added = self.added(&reload.id, &candidate);
+                    if added.is_empty() || shipped {
                         self.updates.remove(&reload.id);
-                        if let Err(error) = self.apply(&reload.id, &candidate, &[], None) {
+                        if let Err(error) = self.apply(&reload.id, &candidate, &added, None) {
                             self.failed_update(&reload.id, &error);
                         }
                     } else {
@@ -2271,12 +2287,91 @@ impl Plugins {
         self.send(id, Job::Redraw);
     }
 
-    /// Use the plugins in `folder` as the ones that ship with Noura: each
-    /// subfolder that holds a plugin.
-    pub(crate) fn set_shipped(&mut self, folder: PathBuf) {
-        self.shipped = Some(folder);
-        self.shipped_pending = self.shipped_folders();
+    /// Install and keep current the plugins in `folder`, the ones that ship
+    /// with Noura: one per subfolder that holds a plugin. They come from
+    /// the same signed app as the kernel, so each installs once per device
+    /// with everything it declares approved, and one you uninstalled stays
+    /// uninstalled. An installed one recorded from another folder, as from
+    /// an earlier build of Noura, updates from this one: what it adds is
+    /// approved, and what you revoked stays revoked. One that fails is
+    /// noted on the Plugins page and tried again at the next launch.
+    pub(crate) fn set_shipped(&mut self, folder: &Path) {
+        if self.agent {
+            return;
+        }
+        let found = shipped_folders(folder);
+        if found.is_empty() {
+            return;
+        }
+        let host = match self.host() {
+            Ok(host) => host,
+            Err(error) => {
+                tracing::warn!(code = %error.code, "the plugins shipping with Noura didn't install");
+                return;
+            }
+        };
+        for (id, folder) in found {
+            let result = match self.records.plugins.get(&id) {
+                None if self.records.shipped_reviewed.contains(&id) => continue,
+                None => self.install_shipped(&host, &folder),
+                Some(record) if record.shipped => self.update_shipped(&host, &id, &folder),
+                // You installed it yourself, from a folder or GitHub.
+                Some(_) => continue,
+            };
+            if let Err(error) = result {
+                tracing::warn!(code = %error.code, "a plugin shipping with Noura didn't install");
+                self.problems.insert(id, error.message);
+            }
+        }
         self.changed();
+    }
+
+    /// Install the plugin in `folder`, which ships with Noura, with
+    /// everything it declares approved.
+    fn install_shipped(&mut self, host: &PluginHost, folder: &Path) -> Result<(), AppError> {
+        let path = folder.to_str().ok_or_else(AppError::unsupported_path)?;
+        let candidate = host.inspect(folder).map_err(|error| from_install(&error))?;
+        self.install_candidate(&candidate, Some(path), None, true)
+    }
+
+    /// Point the shipped plugin `id` at `folder`, this build's copy, and
+    /// install that copy when it differs from the installed build, with
+    /// what it adds approved.
+    fn update_shipped(
+        &mut self,
+        host: &PluginHost,
+        id: &str,
+        folder: &Path,
+    ) -> Result<(), AppError> {
+        let path = folder.to_str().ok_or_else(AppError::unsupported_path)?;
+        let recorded = self
+            .records
+            .plugins
+            .get(id)
+            .and_then(|record| record.folder.as_deref());
+        // Its watcher, started with the host, reads a new build there.
+        if recorded == Some(path) {
+            return Ok(());
+        }
+        let installed = host.installed(id).map(|(_, digest)| digest).ok();
+        let current = host
+            .folder_digest(folder)
+            .map_err(|error| from_install(&error))?;
+        if installed.as_deref() != Some(current.as_str()) {
+            let candidate = host
+                .inspect_update(id, folder)
+                .map_err(|error| from_install(&error))?;
+            let added = self.added(id, &candidate);
+            self.updates.remove(id);
+            self.apply(id, &candidate, &added, None)?;
+        }
+        self.save_records(|records| {
+            if let Some(record) = records.plugins.get_mut(id) {
+                record.folder = Some(path.to_owned());
+            }
+        })?;
+        self.watch(id, path, current);
+        Ok(())
     }
 
     /// The properties panel of the object `object_id` of type
@@ -2338,82 +2433,6 @@ impl Plugins {
     /// files when this changes.
     pub(crate) fn acts(&self) -> u64 {
         self.acts
-    }
-
-    /// The plugins shipping with Noura that this device hasn't shown you
-    /// yet, each read from its manifest. None of their code has run.
-    pub(crate) fn shipped_review(&self) -> Vec<ShippedPlugin> {
-        self.shipped_pending
-            .iter()
-            .map(|(manifest, _)| ShippedPlugin {
-                id: manifest.id.clone(),
-                name: manifest.name.clone(),
-                version: manifest.version.to_string(),
-                capabilities: lines(&manifest.capabilities),
-            })
-            .collect()
-    }
-
-    /// The manifest and folder of each shipping plugin this device hasn't
-    /// reviewed, by ID.
-    fn shipped_folders(&self) -> Vec<(PluginManifest, PathBuf)> {
-        let Some(folder) = &self.shipped else {
-            return Vec::new();
-        };
-        let Ok(entries) = std::fs::read_dir(folder) else {
-            return Vec::new();
-        };
-        let mut found: Vec<(PluginManifest, PathBuf)> = entries
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| path.join(plugin_host::MANIFEST_FILE).is_file())
-            .filter_map(|path| match plugin_host::read_manifest(&path) {
-                Ok(manifest) => Some((manifest, path)),
-                Err(error) => {
-                    tracing::warn!(
-                        code = error.code.as_str(),
-                        "a plugin shipping with Noura can't be read"
-                    );
-                    None
-                }
-            })
-            .filter(|(manifest, _)| !self.records.shipped_reviewed.contains(&manifest.id))
-            .collect();
-        found.sort_by(|(a, _), (b, _)| a.id.cmp(&b.id));
-        found
-    }
-
-    /// Approve every plugin the first-run screen lists, for this device,
-    /// and install each one. One that can't install is noted on the
-    /// Plugins page and not offered again.
-    pub(crate) fn approve_shipped(&mut self) -> Result<(), AppError> {
-        let host = self.host()?;
-        for (manifest, folder) in std::mem::take(&mut self.shipped_pending) {
-            let id = manifest.id.clone();
-            let installed = folder
-                .to_str()
-                .ok_or_else(AppError::unsupported_path)
-                .and_then(|path| {
-                    let candidate = host
-                        .inspect(&folder)
-                        .map_err(|error| from_install(&error))?;
-                    self.install_candidate(&candidate, Some(path), None, true)
-                });
-            if let Err(error) = installed {
-                tracing::warn!(code = %error.code, "a plugin shipping with Noura didn't install");
-                self.problems.insert(id.clone(), error.message);
-                let reviewed = self.save_records(|records| {
-                    records.shipped_reviewed.insert(id);
-                });
-                if let Err(error) = reviewed {
-                    self.shipped_pending = self.shipped_folders();
-                    return Err(error);
-                }
-            }
-        }
-        self.shipped_pending = self.shipped_folders();
-        self.changed();
-        Ok(())
     }
 }
 
