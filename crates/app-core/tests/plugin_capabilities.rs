@@ -560,6 +560,10 @@ fn shipped_with_first_party_plugins() -> Option<tempfile::TempDir> {
             include_str!("../../plugins/projects/plugin.toml"),
         ),
         ("tasks", include_str!("../../plugins/tasks/plugin.toml")),
+        (
+            "transcription",
+            include_str!("../../plugins/transcription/plugin.toml"),
+        ),
     ];
     for (id, manifest) in manifests {
         let library = format!("{id}_plugin");

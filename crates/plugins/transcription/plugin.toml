@@ -1,0 +1,49 @@
+id = "transcription"
+name = "Transcription"
+version = "0.1.0"
+interface-version = "0.1.0"
+entry = "transcription_plugin.wasm"
+platforms = ["desktop"]
+
+# Lists projects for the project picker, and reads the links between a
+# Transcription, its Transcript and its tasks.
+[[capabilities]]
+name = "workspace-read"
+
+# The transcription, transcript and settings types, and the panel beside
+# a Transcription.
+[[capabilities]]
+name = "object-types"
+
+# Opens a new Transcription and the tasks it created.
+[[capabilities]]
+name = "views"
+
+# The folder rule, the provider, the prompt, the language, system audio
+# and what happens to the audio.
+[[capabilities]]
+name = "settings"
+
+# Records the microphone and system audio and transcribes them on this
+# device.
+[[capabilities]]
+name = "speech"
+
+# Starts and stops a Transcription from any app.
+[[capabilities]]
+name = "global-shortcuts"
+shortcuts = [{ id = "transcription", title = "Transcription", keys = "Ctrl+Alt+T" }]
+
+# Start Transcription and Stop Transcription in the menu bar.
+[[capabilities]]
+name = "menu-bar-items"
+
+# Writes the Summary and finds the action items with your AI provider.
+[[capabilities]]
+name = "ai"
+
+# New Transcription in the command palette. Creates tasks through Tasks
+# and reads the projects through Projects.
+[[capabilities]]
+name = "commands"
+targets = ["tasks", "projects"]
