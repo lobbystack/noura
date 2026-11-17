@@ -262,7 +262,7 @@ fn a_shortcut_shows_its_keys_as_this_system_writes_them() {
     };
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    create_workspace(app_data.path(), &parent.path().join("Garden"));
     let manifest = plugins::probe_manifest_with(&["name = \"global-shortcuts\"\n\
          shortcuts = [{ id = \"paste\", title = \"Dictation\", keys = \"Alt+Space\" }]"]);
     let folder = plugins::folder(parent.path(), &manifest, "plugin.wasm", &probe);
