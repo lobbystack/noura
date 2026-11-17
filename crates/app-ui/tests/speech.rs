@@ -67,13 +67,10 @@ fn onboarding_recommends_parakeet_ultra_and_each_model_has_a_labeled_button() {
 #[test]
 fn a_downloaded_model_shows_on_this_computer_and_delete_removes_its_file() {
     let app_data = tempfile::tempdir().unwrap();
-    let model = speech::catalog::catalog()
-        .model(speech::catalog::ONBOARDING_MODEL)
-        .unwrap();
+    // Parakeet Ultra's file, as the catalog names it.
     let file = app_data
         .path()
-        .join("speech/models")
-        .join(&model.file.filename);
+        .join("speech/models/parakeet-ultra-Q8_0.gguf");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, b"GGUF").unwrap();
     let (mut harness, _parent) = speech_settings(app_data.path());

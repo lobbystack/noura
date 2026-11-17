@@ -142,7 +142,7 @@ fn settings_switches(harness: &mut Ui) -> Vec<String> {
         harness
             .get_by_role_and_label(Role::Navigation, "Settings sections")
             .get_by_role_and_label(Role::Button, &section)
-            .click();
+            .click_accesskit();
         harness.run();
         switches.extend(
             harness

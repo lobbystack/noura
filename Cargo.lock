@@ -492,7 +492,6 @@ dependencies = [
  "resvg",
  "rusqlite",
  "serde_json",
- "speech",
  "tempfile",
  "zeroize",
 ]
