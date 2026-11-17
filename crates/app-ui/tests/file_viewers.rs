@@ -286,9 +286,20 @@ fn a_search_from_the_field_moves_between_matches() {
     field.focus();
     field.type_text("apple");
     harness.key_press(Key::Enter);
-    wait_until(&mut harness, "the matches show", |harness| {
-        harness.query_by_label("1 of 3").is_some()
-    });
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while harness.query_by_label("1 of 3").is_none() {
+        if Instant::now() >= deadline {
+            let app = harness.state().app();
+            let pdf = app.pdf(active(&harness)).unwrap();
+            panic!(
+                "the matches never showed: state {:?}, search {:?}",
+                pdf.state(),
+                pdf.search()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+        harness.step();
+    }
     assert_eq!(page(&harness), 1);
     harness.key_press(Key::Enter);
     harness.run_steps(2);
