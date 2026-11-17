@@ -118,7 +118,7 @@ fn settings_lists_its_sections_under_this_computer_workspace_and_app() {
                     "Ignored files".to_owned()
                 ]
             ),
-            ("App".to_owned(), vec!["About noura".to_owned()]),
+            ("App".to_owned(), vec!["About Noura".to_owned()]),
         ]
     );
     assert_eq!(

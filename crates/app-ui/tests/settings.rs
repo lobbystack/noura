@@ -157,7 +157,7 @@ fn the_rail_s_settings_button_opens_settings_with_its_sections_by_group() {
                     "Ignored files".to_owned()
                 ]
             ),
-            ("App".to_owned(), vec!["About noura".to_owned()]),
+            ("App".to_owned(), vec!["About Noura".to_owned()]),
         ]
     );
     // General shows first, and has the keyboard focus.
@@ -221,7 +221,7 @@ fn every_section_and_control_carries_a_label() {
         "Name and location",
         "Plugins",
         "Ignored files",
-        "About noura",
+        "About Noura",
     ] {
         choose_section(&mut harness, title);
         let controls = controls(&harness);
@@ -404,9 +404,9 @@ fn about_links_open_in_the_browser_and_diagnostics_reach_the_clipboard() {
         ..
     } = opened();
     open_settings(&mut harness);
-    choose_section(&mut harness, "About noura");
+    choose_section(&mut harness, "About Noura");
     harness.get_by_label(app_core::VERSION);
-    harness.get_by_label("MIT, free and open source");
+    harness.get_by_label("MIT");
 
     for link in &ABOUT_LINKS {
         harness
@@ -447,7 +447,7 @@ fn about_opens_the_license_list_the_package_ships() {
     );
     settle(&mut harness);
     open_settings(&mut harness);
-    choose_section(&mut harness, "About noura");
+    choose_section(&mut harness, "About Noura");
 
     harness
         .get_by_role_and_label(Role::Link, "Third-party licenses")
@@ -562,7 +562,7 @@ fn about_from_the_menu_opens_settings_on_its_about_section() {
     );
     harness.run();
     assert_eq!(
-        section(&harness, "About noura")
+        section(&harness, "About Noura")
             .accesskit_node()
             .aria_current(),
         Some(AriaCurrent::Page)

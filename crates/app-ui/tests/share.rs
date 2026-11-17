@@ -73,7 +73,7 @@ fn a_signed_out_computer_says_sharing_needs_an_account() {
     harness.get_by_label(NEEDS_ACCOUNT);
     assert!(
         harness
-            .query_by_role_and_label(Role::Button, "Create and copy link")
+            .query_by_role_and_label(Role::Button, "Copy link")
             .is_none()
     );
     harness.get_by_role_and_label(Role::Button, "Done").click();
@@ -127,7 +127,7 @@ fn the_dialog_creates_copies_and_revokes_links() {
         "Link 02020202 from device abcdabcd, which left the workspace, expires 2026-11-02 08:00",
     );
     harness
-        .get_by_role_and_label(Role::Button, "Create and copy link")
+        .get_by_role_and_label(Role::Button, "Copy link")
         .click();
     harness.run();
     assert_eq!(shares.taken(), vec![ShareAction::Create]);

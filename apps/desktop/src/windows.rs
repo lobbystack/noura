@@ -888,7 +888,7 @@ mod tests {
     use super::*;
     use crate::instance::Claim;
 
-    const SWITCHER: &str = "Switch workspace. Current workspace: Current";
+    const SWITCHER: &str = "Workspace: Current";
 
     struct NoFolder;
 

@@ -290,7 +290,7 @@ fn many_notes(
 /// The part of the window the tree can show: below the workspace switcher.
 fn tree_area(harness: &Harness<'static, app_ui::NouraUi>) -> egui::Rect {
     let switcher = harness
-        .get_by_label_contains("Switch workspace")
+        .get_by_label_contains("Workspace: ")
         .rect()
         .bottom();
     let mut area = harness.ctx.content_rect();

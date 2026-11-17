@@ -37,7 +37,7 @@ fn contents(state: &mut NouraUi, ui: &mut Ui, problem: Option<&str>) {
         Some(problem) => ("Can\u{2019}t open the workspace", problem, icons::WARNING),
         None => (
             "Open a folder",
-            "noura adds a small .noura folder. Your files stay as they are.",
+            "Noura adds a .noura folder to it. Your files stay as they are.",
             icons::FOLDER_OPEN,
         ),
     };

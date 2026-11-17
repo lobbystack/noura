@@ -18,7 +18,7 @@ fn the_switcher_lists_recent_workspaces_and_opens_another() {
     settle(&mut harness);
 
     harness
-        .get_by_role_and_label(Role::Button, "Switch workspace. Current workspace: Second")
+        .get_by_role_and_label(Role::Button, "Workspace: Second")
         .click();
     harness.run();
     assert!(
@@ -37,7 +37,7 @@ fn the_switcher_lists_recent_workspaces_and_opens_another() {
         .click();
     settle(&mut harness);
 
-    harness.get_by_role_and_label(Role::Button, "Switch workspace. Current workspace: First");
+    harness.get_by_role_and_label(Role::Button, "Workspace: First");
     harness.get_by_role_and_label(Role::TreeItem, "Only in first");
 }
 
@@ -63,7 +63,7 @@ fn another_workspace_opens_with_its_tree_scrolled_to_the_top() {
     assert!(harness.query_by_label("Second 000.txt").is_none());
 
     harness
-        .get_by_role_and_label(Role::Button, "Switch workspace. Current workspace: Second")
+        .get_by_role_and_label(Role::Button, "Workspace: Second")
         .click();
     harness.run();
     harness
@@ -84,7 +84,7 @@ fn remove_from_recents_in_the_switcher_drops_the_entry() {
     let mut harness = harness(app_data.path(), FakePicker::default());
     settle(&mut harness);
     harness
-        .get_by_role_and_label(Role::Button, "Switch workspace. Current workspace: Second")
+        .get_by_role_and_label(Role::Button, "Workspace: Second")
         .click();
     harness.run();
 
@@ -95,7 +95,7 @@ fn remove_from_recents_in_the_switcher_drops_the_entry() {
     harness.run();
 
     harness
-        .get_by_role_and_label(Role::Button, "Switch workspace. Current workspace: Second")
+        .get_by_role_and_label(Role::Button, "Workspace: Second")
         .click();
     harness.run();
     assert!(harness.query_by_label("First").is_none());
@@ -114,7 +114,7 @@ fn new_workspace_from_the_switcher_asks_for_a_name_then_a_folder() {
     let mut harness = harness(app_data.path(), picker);
     settle(&mut harness);
     harness
-        .get_by_role_and_label(Role::Button, "Switch workspace. Current workspace: Current")
+        .get_by_role_and_label(Role::Button, "Workspace: Current")
         .click();
     harness.run();
 
@@ -133,6 +133,6 @@ fn new_workspace_from_the_switcher_asks_for_a_name_then_a_folder() {
 
     harness.get_by_role_and_label(
         Role::Button,
-        "Switch workspace. Current workspace: Fresh start",
+        "Workspace: Fresh start",
     );
 }

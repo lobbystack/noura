@@ -204,7 +204,7 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
     let mut create = false;
     let mut reveal = false;
     let reveal_label = state.app.platform().reveal_label();
-    let label = format!("Switch workspace. Current workspace: {name}");
+    let label = format!("Workspace: {name}");
     let trigger = Btn::new(&name)
         .icon(crate::icons::FOLDER_OPEN)
         .variant(Variant::Ghost)

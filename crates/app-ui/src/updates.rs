@@ -78,14 +78,12 @@ pub(crate) fn update_settings(ui: &mut Ui, app: &mut App) {
                     let time = at.to_zoned(app.time_zone()).time();
                     format!("Up to date as of {}.", names.time(time))
                 }
-                None => "noura is up to date.".to_owned(),
+                None => "Noura is up to date.".to_owned(),
             }),
             UpdateStatus::Downloading { version } => {
                 Some(format!("Downloading version {version}…"))
             }
-            UpdateStatus::Installing { version } => Some(format!(
-                "Saving your changes, then installing version {version}…"
-            )),
+            UpdateStatus::Installing { version } => Some(format!("Installing version {version}…")),
             UpdateStatus::Restarting { .. } => Some("Restarting…".to_owned()),
             _ => None,
         };

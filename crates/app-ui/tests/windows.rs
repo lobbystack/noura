@@ -34,7 +34,7 @@ fn new_window_from_the_palette_opens_another_window_on_the_workspace() {
     let mut second =
         support::builder().build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), window);
     second.run();
-    second.get_by_role_and_label(Role::Button, "Switch workspace. Current workspace: Current");
+    second.get_by_role_and_label(Role::Button, "Workspace: Current");
     second.get_by_role_and_label(Role::TreeItem, "Plan");
 }
 

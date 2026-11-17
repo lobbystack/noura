@@ -93,7 +93,7 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
     if screen.busy {
         ui.horizontal(|ui| {
             ui.spinner();
-            description(ui, "Working on it.");
+            description(ui, "Working…");
         });
     }
     if let Some(notice) = &screen.restore {
@@ -137,7 +137,6 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
             ui.label("This workspace doesn't sync.");
             if !screen.on_account.is_empty() {
                 group(ui, "Download a workspace here", |ui| {
-                    ui.label("Your account has these workspaces:");
                     for (workspace, name) in &screen.on_account {
                         let button = format!("Download {name}");
                         if primary_button(ui, &button, !screen.busy).clicked() {

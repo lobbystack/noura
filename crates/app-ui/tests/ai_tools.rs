@@ -137,11 +137,11 @@ fn test_connection_says_when_the_server_answers() {
         .get_by_role_and_label(Role::Button, "Test connection")
         .click_accesskit();
     harness.run();
-    wait_for_label(&mut harness, "It works. noura 0.2.0 answered.");
+    wait_for_label(&mut harness, "Connected to noura 0.2.0.");
 
     harness
         .get_by_role(Role::Status)
-        .get_by_label("It works. noura 0.2.0 answered.");
+        .get_by_label("Connected to noura 0.2.0.");
 }
 
 #[test]
@@ -159,7 +159,7 @@ fn test_connection_says_why_it_doesnt_work() {
         .get_by_role_and_label(Role::Button, "Test connection")
         .click_accesskit();
     harness.run();
-    let message = "It doesn't work. The server didn't answer within 10 seconds.";
+    let message = "Connection failed. The server didn't answer within 10 seconds.";
     wait_for_label(&mut harness, message);
 
     harness.get_by_role(Role::Alert).get_by_label(message);

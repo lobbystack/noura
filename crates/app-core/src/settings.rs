@@ -202,7 +202,7 @@ pub(crate) fn kernel_sections() -> Vec<SettingsSection> {
             "Ignored files",
             SettingsGroup::Workspace,
         ),
-        (settings_section::ABOUT, "About noura", SettingsGroup::App),
+        (settings_section::ABOUT, "About Noura", SettingsGroup::App),
     ]
     .into_iter()
     .map(|(id, title, group)| SettingsSection {

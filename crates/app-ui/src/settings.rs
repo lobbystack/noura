@@ -74,9 +74,7 @@ fn section_icon(id: &str) -> Icon {
 /// The line under a section's title, where the legacy app had one.
 fn section_description(id: &str) -> Option<&'static str> {
     Some(match id {
-        settings_section::IGNORED_FILES => {
-            "noura hides files that match these, as .gitignore does."
-        }
+        settings_section::IGNORED_FILES => "Patterns follow .gitignore.",
         _ => return None,
     })
 }
@@ -595,13 +593,11 @@ fn ai_tools(ui: &mut Ui, app: &mut App) {
         return;
     };
     let palette = Palette::of(ui.ctx());
-    description(ui, "For MCP assistants such as Claude Desktop or Cursor.");
-    ui.add_space(16.0);
     common::alert(
         ui,
         icons::WARNING,
         "Assistants edit files directly",
-        "noura doesn\u{2019}t ask first. Connect only assistants you trust.",
+        "Noura doesn\u{2019}t ask first. Connect only assistants you trust.",
         false,
     );
     ui.add_space(24.0);
@@ -660,8 +656,7 @@ fn ai_tools(ui: &mut Ui, app: &mut App) {
         }
         muted(
             ui,
-            "The configuration points at this workspace and at noura\u{2019}s location on this \
-             computer. If you move either, copy it again.",
+            "If you move this workspace or Noura, copy the configuration again.",
         );
     });
     ui.add_space(24.0);
@@ -688,12 +683,12 @@ fn ai_tools(ui: &mut Ui, app: &mut App) {
                 ),
                 McpTest::Works(server) => (
                     Role::Status,
-                    format!("It works. {server} answered."),
+                    format!("Connected to {server}."),
                     palette.foreground,
                 ),
                 McpTest::Failed(reason) => (
                     Role::Alert,
-                    format!("It doesn't work. {reason}"),
+                    format!("Connection failed. {reason}"),
                     palette.destructive,
                 ),
             };
@@ -750,12 +745,7 @@ fn about(ui: &mut Ui, app: &mut App) {
         }
     };
     about_row(ui, "Version", false, value(VERSION.to_owned()));
-    about_row(
-        ui,
-        "License",
-        false,
-        value(format!("{LICENSE}, free and open source")),
-    );
+    about_row(ui, "License", false, value(LICENSE.to_owned()));
     about_row(ui, "Diagnostics", true, |ui| {
         copy = Btn::new("Copy diagnostics")
             .size(Size::Sm)

@@ -104,7 +104,7 @@ fn draw(
     if screen.busy {
         ui.horizontal(|ui| {
             ui.spinner();
-            description(ui, "Working on it.");
+            description(ui, "Working…");
         });
     }
     let idle = !screen.busy;
@@ -227,7 +227,7 @@ fn draw(
         ui.label(RichText::new("Invitations").strong());
         description(
             ui,
-            "A link works for 7 days. Send it over a channel you trust. Only this computer can approve the new member.",
+            "Links expire in 7 days. Send them over a channel you trust.",
         );
         ui.horizontal(|ui| {
             ui.label("Your name");

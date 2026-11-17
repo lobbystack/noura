@@ -199,13 +199,7 @@ fn page() -> Vec<Node> {
         Err(Refused::Changed | Refused::Other(_)) => None,
     };
     if projects.is_empty() {
-        view.empty_state(
-            View::ROOT,
-            "empty",
-            "No projects",
-            Some("Organize work with projects."),
-            Some(Icon::Folder),
-        );
+        view.empty_state(View::ROOT, "empty", "No projects", None, Some(Icon::Folder));
         return view.into_nodes();
     }
     let list = view.list(View::ROOT, "projects", "Projects");

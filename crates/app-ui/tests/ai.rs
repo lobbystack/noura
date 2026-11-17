@@ -294,7 +294,9 @@ fn a_listed_provider_connects_with_a_pasted_key() {
     // Opening it shows one key field and Save key.
     let openai = (Role::Group, "OpenAI");
     click_in(harness, openai, Role::Button, "OpenAI");
-    harness.get_by_label("Paste a key you created with the provider.");
+    harness
+        .get_by_role_and_label(openai.0, openai.1)
+        .get_by_role_and_label(Role::PasswordInput, "API key");
     type_in(
         harness,
         openai,

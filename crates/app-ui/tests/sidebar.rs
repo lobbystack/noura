@@ -48,7 +48,7 @@ fn cmd_backslash_hides_and_shows_the_sidebar_and_the_choice_lasts() {
     harness.run();
     assert!(!tree_shown(&harness));
     // The workspace switcher stays in reach.
-    harness.get_by_role_and_label(Role::Button, "Switch workspace. Current workspace: Garden");
+    harness.get_by_role_and_label(Role::Button, "Workspace: Garden");
     let mut harness = relaunch(harness, app_data.path());
     assert!(!tree_shown(&harness));
 

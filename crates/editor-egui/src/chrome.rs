@@ -644,7 +644,7 @@ impl Editor {
                         ui.label(bar.find.count_label());
                         let previous = glyph_button(ui, &Icon::Up.into(), None, has_matches)
                             .on_hover_text("Previous match (Shift+Enter)")
-                            .accessible_name("Previous match (Shift+Enter)");
+                            .accessible_name("Previous match");
                         if previous.clicked() {
                             step = Some(true);
                             // The keyboard stays in the query, so Enter and
@@ -653,14 +653,14 @@ impl Editor {
                         }
                         let next = glyph_button(ui, &Icon::Down.into(), None, has_matches)
                             .on_hover_text("Next match (Enter)")
-                            .accessible_name("Next match (Enter)");
+                            .accessible_name("Next match");
                         if next.clicked() {
                             step = Some(false);
                             ui.memory_mut(|memory| memory.request_focus(query_id));
                         }
                         let close_button = glyph_button(ui, &Icon::Close.into(), None, true)
                             .on_hover_text("Close (Esc)")
-                            .accessible_name("Close (Esc)");
+                            .accessible_name("Close");
                         close |= close_button.clicked();
                     });
                     ui.horizontal(|ui| {

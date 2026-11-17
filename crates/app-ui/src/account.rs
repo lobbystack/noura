@@ -89,7 +89,7 @@ pub(crate) fn section(
     if screen.busy {
         ui.horizontal(|ui| {
             ui.spinner();
-            description(ui, "Working on it.");
+            description(ui, "Working…");
         });
     }
     let mut download = None;
@@ -101,7 +101,7 @@ pub(crate) fn section(
         AccountPhase::SignedOut => signed_out(ui, &screen, view, &mut actions),
         AccountPhase::SigningIn { user_code } => {
             group(ui, "Signing in", |ui| {
-                ui.label("Sign in on the server's page in your browser, check that it shows this code, and approve:");
+                ui.label("Check that your browser shows this code, then approve:");
                 code(ui, user_code);
                 if ui.button("Cancel").clicked() {
                     actions.push(AccountAction::CancelSignIn);
@@ -114,9 +114,7 @@ pub(crate) fn section(
             confirmed,
         } => {
             group(ui, "Approve this computer", |ui| {
-                ui.label(
-                    "On a device you already use, approve this request in Settings > Sync account.",
-                );
+                ui.label("Approve this computer from another device, in Settings > Account.");
                 ui.label("This computer's fingerprint:");
                 fingerprint_line(ui, fingerprint);
                 match shown {
@@ -144,7 +142,7 @@ pub(crate) fn section(
         }
         AccountPhase::ResetCode => {
             group(ui, "Reset your devices", |ui| {
-                ui.label("We emailed you a code of 8 characters. It works once, for 10 minutes.");
+                ui.label("Enter the code we emailed you. It expires in 10 minutes.");
                 let id = ui.make_persistent_id("reset-code");
                 let mut typed: String = ui.data_mut(|data| data.get_temp(id).unwrap_or_default());
                 ui.add(TextEdit::singleline(&mut typed).hint_text("Reset code"));
@@ -353,7 +351,7 @@ fn invitation_group(
                 if ui.add_enabled(!screen.busy, Button::new(accept)).clicked() {
                     actions.push(AccountAction::AcceptInvitation);
                 }
-                if ui.button("Not now").clicked() {
+                if ui.button("Dismiss").clicked() {
                     actions.push(AccountAction::CancelInvitation);
                 }
             }
@@ -417,8 +415,6 @@ fn signed_out(
     view: &mut AccountView,
     actions: &mut Vec<AccountAction>,
 ) {
-    description(ui, "An account is only for sync and sharing.");
-    ui.add_space(16.0);
     group(ui, "Server address", |ui| {
         let server = view.server.get_or_insert_with(|| screen.server.clone());
         let response = ui
@@ -455,7 +451,6 @@ fn signed_out(
         });
     }
     group(ui, "Sign in", |ui| {
-        description(ui, "Noura never sees your passkey.");
         let ready = screen.server_problem.is_none() && !screen.server.trim().is_empty();
         if ui
             .add_enabled(
@@ -468,12 +463,16 @@ fn signed_out(
         }
     });
     group(ui, "Recover with a kit", |ui| {
-        description(ui, "Open the kit you exported and type its secret.");
-        ui.add(TextEdit::singleline(&mut view.kit_path).desired_width(320.0))
-            .accessible_name("Kit file");
+        ui.add(
+            TextEdit::singleline(&mut view.kit_path)
+                .hint_text("Kit file path")
+                .desired_width(320.0),
+        )
+        .accessible_name("Kit file");
         ui.add(
             TextEdit::singleline(&mut view.kit_secret)
                 .password(true)
+                .hint_text("Secret")
                 .desired_width(320.0),
         )
         .accessible_name("Kit secret");
@@ -492,9 +491,9 @@ fn signed_out(
 
 fn recovering(ui: &mut Ui, review: &RecoveryView, actions: &mut Vec<AccountAction>) {
     group(ui, "Review your account", |ui| {
-        ui.label("These changed after you exported the kit. Recover only if you recognize them.");
+        ui.label("Changed since you exported the kit. Recover only if you recognize them.");
         if review.changes.is_empty() {
-            description(ui, "Nothing changed since the kit.");
+            description(ui, "Nothing changed.");
         }
         for change in &review.changes {
             ui.label(change);
@@ -563,7 +562,7 @@ fn reset_groups(ui: &mut Ui, view: &SignedInView, actions: &mut Vec<AccountActio
                 if wait.set_up_again {
                     description(
                         ui,
-                        "No other owner or admin? Start this workspace over from this folder. Members keep their files, and you invite them again.",
+                        "No other owner or admin? Start the workspace over from this folder. Members keep their files, and you invite them again.",
                     );
                     if ui.button("Set up sync again").clicked() {
                         actions.push(AccountAction::SetUpAfterReset(index));
@@ -658,11 +657,7 @@ fn signed_in_section(
                 for (index, request) in view.requests.iter().enumerate() {
                     ui.horizontal(|ui| {
                         fingerprint_line(ui, &request.fingerprint);
-                        if ui
-                            .add(Button::new("Approve"))
-                            .on_hover_text("Shows a code to compare on both devices")
-                            .clicked()
-                        {
+                        if ui.add(Button::new("Approve")).clicked() {
                             actions.push(AccountAction::Approve(index));
                         }
                     });
@@ -694,7 +689,7 @@ fn signed_in_section(
     });
     if let Some(removal) = &view.removal {
         group(ui, "Remove a device", |ui| {
-            ui.label("This removes the device with this fingerprint. It can't read anything written after.");
+            ui.label("Once removed, it can't read anything written after.");
             fingerprint_line(ui, &removal.fingerprint);
             if !removal.with_it.is_empty() {
                 ui.label("Devices it approved go too. Keep any you recognize:");
@@ -758,7 +753,7 @@ fn signed_in_section(
                 {
                     actions.push(AccountAction::ConfirmExportKit);
                 }
-                if ui.button("Keep the current kit").clicked() {
+                if ui.button("Keep current kit").clicked() {
                     actions.push(AccountAction::CancelExportKit);
                 }
             });
@@ -798,7 +793,7 @@ fn signed_in_section(
                 if ui.button("Sign out").clicked() {
                     actions.push(AccountAction::ConfirmSignOut);
                 }
-                if ui.button("Stay signed in").clicked() {
+                if ui.button("Cancel").clicked() {
                     actions.push(AccountAction::CancelSignOut);
                 }
             });
