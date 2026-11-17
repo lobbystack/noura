@@ -56,6 +56,10 @@ pub struct FakeSystem {
     pub credentials: Arc<local_core::MemoryCredentials>,
     /// What plugins pasted and copied, as `paste <text>` and `copy <text>`.
     pub pasted: Arc<Mutex<Vec<String>>>,
+    /// The speech engine, which answers with the texts a test gives it.
+    pub engine: Arc<speech::engine::FakeEngine>,
+    /// The microphone and system audio, which hear what a test feeds them.
+    pub audio: Arc<speech::audio::FakeAudio>,
 }
 
 /// Records what plugins paste, in place of the keyboard and clipboard.
@@ -105,6 +109,8 @@ impl FakeSystem {
             time_zone: Mutex::new(None),
             credentials: Arc::new(local_core::MemoryCredentials::new()),
             pasted: Arc::new(Mutex::new(Vec::new())),
+            engine: Arc::new(speech::engine::FakeEngine::default()),
+            audio: speech::audio::FakeAudio::new(),
         })
     }
 
@@ -141,6 +147,8 @@ impl System for FakeSystem {
 
     fn speech_devices(&self) -> app_core::SpeechDevices {
         app_core::SpeechDevices {
+            engine: self.engine.clone(),
+            audio: Arc::new(speech::audio::FakeBackend(self.audio.clone())),
             paster: Arc::new(RecordingPaste(self.pasted.clone())),
             ..app_core::SpeechDevices::fake()
         }

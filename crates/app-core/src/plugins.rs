@@ -254,9 +254,10 @@ pub struct ShippedPlugin {
 
 /// The plugins every package of Noura ships: each one's ID, which names
 /// its folder, and its name.
-pub const SHIPPED_PLUGINS: [(&str, &str); 4] = [
+pub const SHIPPED_PLUGINS: [(&str, &str); 5] = [
     ("ai", "AI"),
     ("calendar", "Calendar"),
+    ("dictation", "Dictation"),
     ("projects", "Projects"),
     ("tasks", "Tasks"),
 ];

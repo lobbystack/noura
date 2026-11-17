@@ -22,6 +22,7 @@ members = [
     "crates/plugin-sdk",
     "crates/plugins/ai",
     "crates/plugins/calendar",
+    "crates/plugins/dictation",
     "crates/plugins/hello",
     "crates/plugins/projects",
     "crates/plugins/tasks",

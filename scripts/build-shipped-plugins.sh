@@ -11,7 +11,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-plugins=(ai calendar projects tasks)
+plugins=(ai calendar dictation projects tasks)
 out=apps/desktop/packaging/plugins
 
 packages=()

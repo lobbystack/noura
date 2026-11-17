@@ -552,6 +552,10 @@ fn shipped_with_first_party_plugins() -> Option<tempfile::TempDir> {
             include_str!("../../plugins/calendar/plugin.toml"),
         ),
         (
+            "dictation",
+            include_str!("../../plugins/dictation/plugin.toml"),
+        ),
+        (
             "projects",
             include_str!("../../plugins/projects/plugin.toml"),
         ),
