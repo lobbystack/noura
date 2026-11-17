@@ -76,8 +76,10 @@ pub(super) fn show(
             }
         }
     });
+    // The caller forgets the open menu, which closes the popup. Closing
+    // `ui` here would close the nearest closable parent instead, such as
+    // the Settings window a plugin's page sits in.
     if let Some(chosen) = chosen {
-        ui.close();
         return Outcome::Chose(chosen);
     }
     if open { Outcome::Open } else { Outcome::Closed }

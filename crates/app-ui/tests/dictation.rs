@@ -202,14 +202,8 @@ fn a_word_already_in_the_list_says_so_and_a_menu_removes_one() {
     let text = file(&opened);
     assert!(text.contains("words: []"), "{text}");
     let harness = &mut opened.harness;
-    // Choosing a menu item on a page in Settings closes Settings for now
-    // (app-ui's plugin menus close the closest closable parent).
-    if harness
-        .query_by_role_and_label(Role::Dialog, "Settings")
-        .is_none()
-    {
-        open_page(harness);
-    }
+    // Choosing a menu item keeps Settings open.
+    harness.get_by_role_and_label(Role::Dialog, "Settings");
     assert!(
         page(harness)
             .query_by_role_and_label(Role::ListBox, "Custom words")
