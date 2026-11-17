@@ -578,6 +578,8 @@ jobs:
       - name: Check the kit's npm licenses
         working-directory: sdk/typescript
         run: npm run licenses
+      # Only what the published packages install: the test and license
+      # tools are dev dependencies that never reach a plugin author's project.
       - name: Check the kit's npm advisories
         working-directory: sdk/typescript
         run: npm run advisories
