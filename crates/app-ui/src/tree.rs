@@ -439,7 +439,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
             .as_ref()
             .filter(|menu| menu.relative_path == row.relative_path)
         {
-            let shown = row_menu(ui, &response, row, menu, can_open_terminal, reveal_label);
+            let shown = row_menu(&response, row, menu, can_open_terminal, reveal_label);
             match shown {
                 MenuOutcome::Open => {}
                 MenuOutcome::Closed => menu_closed = true,
@@ -748,7 +748,6 @@ enum MenuOutcome {
 
 /// The row's menu, below the row or where a right-click opened it.
 fn row_menu(
-    ui: &mut Ui,
     response: &Response,
     row: &TreeRow,
     menu: &RowMenu,
@@ -835,8 +834,10 @@ fn row_menu(
                 chosen = Some(Command::Trash(path.clone()));
             }
         });
+    // The caller forgets the open menu, which closes the popup. Closing
+    // `ui` here would close the nearest closable parent instead, or warn
+    // when there is none.
     if let Some(chosen) = chosen {
-        ui.close();
         return MenuOutcome::Chose(chosen);
     }
     if open {
