@@ -178,7 +178,7 @@ fn open_folder_and_new_workspace_open_the_workspace() {
 
     app.create_workspace(fresh.clone());
     settle(&mut app);
-    assert_eq!(app.workspace().unwrap().name(), "Fresh start");
+    assert_eq!(app.workspace().unwrap().name(), "Fresh");
     assert_eq!(app.recents().len(), 2);
 }
 

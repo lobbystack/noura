@@ -43,7 +43,6 @@ struct Opened {
     harness: Ui,
     system: Arc<FakeSystem>,
     login: Arc<FakeLoginItem>,
-    folder: std::path::PathBuf,
     /// The app data and the workspace's parent folder, which last as long
     /// as the test binds them.
     folders: (tempfile::TempDir, tempfile::TempDir),
@@ -78,7 +77,6 @@ fn opened_with(files: &[(&str, &str)]) -> Opened {
         harness,
         system,
         login,
-        folder,
         folders: (app_data, parent),
     }
 }

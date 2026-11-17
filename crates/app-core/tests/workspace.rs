@@ -8,16 +8,24 @@ fn manifest(folder: &Path) -> String {
     std::fs::read_to_string(folder.join(".noura/workspace.yaml")).unwrap()
 }
 
+/// An empty folder named `name` in `parent`.
+fn named(parent: &tempfile::TempDir, name: &str) -> std::path::PathBuf {
+    let folder = parent.path().join(name);
+    std::fs::create_dir(&folder).unwrap();
+    folder
+}
+
 #[test]
-fn new_workspace_writes_a_manifest_with_a_new_id_and_the_name() {
+fn new_workspace_writes_a_manifest_with_a_new_id_and_takes_the_folder_s_name() {
     let app_data = tempfile::tempdir().unwrap();
-    let folder = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = named(&parent, "Research");
     let service = WorkspaceService::new(app_data.path());
 
-    let workspace = service.create(folder.path()).unwrap();
+    let workspace = service.create(&folder).unwrap();
 
-    let on_disk = manifest(folder.path());
-    assert!(on_disk.contains("name: Research"), "{on_disk}");
+    let on_disk = manifest(&folder);
+    assert!(!on_disk.contains("name"), "{on_disk}");
     assert!(workspace.id().starts_with("workspace_"));
     assert!(
         on_disk.contains(&format!("id: {}", workspace.id())),
@@ -47,22 +55,6 @@ fn new_workspace_leaves_existing_files_byte_for_byte() {
 }
 
 #[test]
-fn new_workspace_with_a_blank_name_changes_nothing() {
-    let app_data = tempfile::tempdir().unwrap();
-    let parent = tempfile::tempdir().unwrap();
-    let folder = parent.path().join("Not yet");
-
-    let error = WorkspaceService::new(app_data.path())
-        .create(&folder)
-        .err()
-        .unwrap();
-
-    assert_eq!(error.code, "workspace_name_required");
-    assert_eq!(error.message, "Enter a name for the workspace.");
-    assert!(!folder.exists(), "a failed create must not make the folder");
-}
-
-#[test]
 fn new_workspace_where_one_exists_changes_nothing_and_says_so() {
     let app_data = tempfile::tempdir().unwrap();
     let folder = tempfile::tempdir().unwrap();
@@ -83,18 +75,19 @@ fn new_workspace_where_one_exists_changes_nothing_and_says_so() {
 #[test]
 fn open_folder_opens_an_existing_workspace() {
     let app_data = tempfile::tempdir().unwrap();
-    let folder = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = named(&parent, "Existing");
     let service = WorkspaceService::new(app_data.path());
-    let id = service.create(folder.path()).unwrap().id().to_owned();
-    let before = manifest(folder.path());
+    let id = service.create(&folder).unwrap().id().to_owned();
+    let before = manifest(&folder);
 
-    let workspace = service.open_folder(folder.path()).unwrap();
+    let workspace = service.open_folder(&folder).unwrap();
 
     assert_eq!(
         (workspace.id(), workspace.name().as_str()),
         (id.as_str(), "Existing")
     );
-    assert_eq!(manifest(folder.path()), before);
+    assert_eq!(manifest(&folder), before);
 }
 
 #[test]
@@ -118,7 +111,7 @@ fn open_folder_opens_the_workspace_now_in_a_folder_recents_remember_differently(
 
     assert_eq!(
         (workspace.id(), workspace.name().as_str()),
-        (new_id.as_str(), "New")
+        (new_id.as_str(), "Reused")
     );
     assert_eq!(service.recents()[0].workspace_id, new_id);
 }
@@ -274,20 +267,21 @@ fn recent_ids(service: &WorkspaceService) -> Vec<String> {
 #[test]
 fn recents_list_the_most_recent_first_once_per_workspace_id() {
     let app_data = tempfile::tempdir().unwrap();
-    let first = tempfile::tempdir().unwrap();
-    let second = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let first = named(&parent, "A");
+    let second = named(&parent, "B");
     let service = WorkspaceService::new(app_data.path());
-    let a = service.create(first.path()).unwrap().id().to_owned();
-    let b = service.create(second.path()).unwrap().id().to_owned();
+    let a = service.create(&first).unwrap().id().to_owned();
+    let b = service.create(&second).unwrap().id().to_owned();
 
-    service.open_folder(first.path()).unwrap();
+    service.open_folder(&first).unwrap();
 
     assert_eq!(recent_ids(&service), [a.clone(), b]);
     let recent = &service.recents()[0];
     assert_eq!(recent.name, "A");
     assert_eq!(
         std::path::Path::new(&recent.path),
-        first.path().canonicalize().unwrap()
+        first.canonicalize().unwrap()
     );
 }
 
@@ -346,11 +340,12 @@ fn walk(root: &std::path::Path) -> Vec<String> {
 #[test]
 fn the_switcher_opens_another_recent_workspace() {
     let app_data = tempfile::tempdir().unwrap();
-    let first = tempfile::tempdir().unwrap();
-    let second = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let first = named(&parent, "A");
+    let second = named(&parent, "B");
     let service = WorkspaceService::new(app_data.path());
-    let a = service.create(first.path()).unwrap().id().to_owned();
-    let b = service.create(second.path()).unwrap().id().to_owned();
+    let a = service.create(&first).unwrap().id().to_owned();
+    let b = service.create(&second).unwrap().id().to_owned();
 
     let workspace = service.open_recent(&a).unwrap();
 

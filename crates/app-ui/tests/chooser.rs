@@ -3,7 +3,7 @@
 mod support;
 
 use egui::accesskit::Role;
-use egui_kittest::kittest::{NodeT, Queryable};
+use egui_kittest::kittest::Queryable;
 use support::{FakePicker, harness, settle};
 
 #[test]
