@@ -16,6 +16,13 @@ path = "src/main.rs"
 app-core = { version = "0.2.0", path = "../../crates/app-core" }
 app-ui = { version = "0.2.0", path = "../../crates/app-ui" }
 auto-launch.workspace = true
+# Global shortcuts for plugins, and Noura's menu bar or tray item.
+global-hotkey.workspace = true
+png = "0.18.1"
+plugin-host = { version = "0.2.0", path = "../../crates/plugin-host" }
+# Recording, transcribe.cpp and pasting (ADR 0006).
+speech = { version = "0.2.0", path = "../../crates/speech" }
+tray-icon.workspace = true
 cargo-packager-updater.workspace = true
 dunce.workspace = true
 eframe.workspace = true

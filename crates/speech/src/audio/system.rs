@@ -336,8 +336,10 @@ mod windows {
             mono.clear();
             for chunk in bytes.chunks_exact(frame) {
                 let sum: f32 = chunk
-                    .chunks_exact(4)
-                    .map(|sample| f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|sample| f32::from_le_bytes(*sample))
                     .sum();
                 mono.push(sum / loopback.channels as f32);
             }

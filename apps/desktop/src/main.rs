@@ -24,6 +24,7 @@ mod mcp;
     allow(dead_code, reason = "Linux shows no native menu bar")
 )]
 mod menu;
+mod speech_shell;
 mod spelling;
 mod system;
 mod updates;
@@ -181,6 +182,13 @@ fn main() -> ExitCode {
     if arguments.next().as_deref() == Some(OsStr::new("mcp")) {
         return noura_mcp::run(arguments);
     }
+    let shortcut = match shortcut_argument() {
+        Ok(shortcut) => shortcut,
+        Err(problem) => {
+            eprintln!("{problem}");
+            return ExitCode::FAILURE;
+        }
+    };
     let smoke = std::env::args_os()
         .skip(1)
         .any(|argument| argument == "--smoke");
@@ -194,7 +202,7 @@ fn main() -> ExitCode {
     if smoke.is_some() {
         limit_smoke_run();
     }
-    let code = match run_app(smoke) {
+    let code = match run_app(smoke, shortcut) {
         Ok(()) => 0,
         Err(error) => {
             eprintln!("Noura stopped: {error}");
@@ -232,8 +240,33 @@ fn limit_smoke_run() {
     });
 }
 
-/// Run the app. `smoke` is the plugins line of a smoke run's report.
-fn run_app(smoke: Option<String>) -> eframe::Result {
+/// The shortcut `noura --toggle-dictation` or `noura --shortcut
+/// <plugin>/<shortcut>` runs, as `<plugin>/<shortcut>`. Under Wayland you
+/// bind one of these in the desktop's settings in place of a global
+/// shortcut.
+fn shortcut_argument() -> Result<Option<String>, String> {
+    let mut arguments = std::env::args().skip(1);
+    while let Some(argument) = arguments.next() {
+        if argument == "--toggle-dictation" {
+            return Ok(Some("dictation/dictation".to_owned()));
+        }
+        if argument == "--shortcut" {
+            let name = arguments.next().unwrap_or_default();
+            if !instance::valid_shortcut_name(&name) {
+                return Err(
+                    "Use --shortcut <plugin>/<shortcut>, as in --shortcut dictation/dictation."
+                        .to_owned(),
+                );
+            }
+            return Ok(Some(name));
+        }
+    }
+    Ok(None)
+}
+
+/// Run the app. `smoke` is the plugins line of a smoke run's report, and
+/// `shortcut` a shortcut to run, as `--toggle-dictation` asks.
+fn run_app(smoke: Option<String>, shortcut: Option<String>) -> eframe::Result {
     let launched = Instant::now();
     let app_data = app_core::default_app_data_dir();
     let has_app_data = app_data.is_some();
@@ -242,10 +275,21 @@ fn run_app(smoke: Option<String>) -> eframe::Result {
     if !has_app_data {
         tracing::warn!("the system has no app data folder; using the temporary folder");
     }
+    // A shortcut goes to the running copy, and this launch stops.
+    if let Some(name) = &shortcut
+        && instance::send_shortcut(&app_data, name)
+    {
+        return Ok(());
+    }
     // A launch while Noura runs brings the running copy forward and stops
     // here, before it opens a workspace or an index.
     let instance: Option<Instance> = match instance::claim(&app_data) {
-        Ok(Claim::First(instance)) => Some(instance),
+        Ok(Claim::First(instance)) => {
+            if let Some(name) = &shortcut {
+                instance.queue_shortcut(name);
+            }
+            Some(instance)
+        }
         Ok(Claim::Running) => return Ok(()),
         Err(error) => {
             tracing::warn!(%error, "couldn't check for a running copy of Noura");

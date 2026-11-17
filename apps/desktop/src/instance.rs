@@ -30,6 +30,11 @@ use interprocess::local_socket::{
 
 /// What a later launch sends, and what the running copy answers.
 const ACTIVATE: &[u8] = b"activate\n";
+/// A later launch with `--shortcut <plugin>/<shortcut>` sends this, then
+/// the name and a newline.
+const SHORTCUT: &[u8] = b"shortcut ";
+/// The longest request a later launch may send.
+const MAX_REQUEST: u64 = 256;
 const DONE: &[u8] = b"ok\n";
 
 /// How long a later launch waits for a running copy that is starting up
@@ -70,6 +75,9 @@ struct Shared {
     requests: Mutex<Requests>,
     /// Wakes the UI when a later launch asks.
     wake: Mutex<Option<Box<dyn Fn() + Send>>>,
+    /// Shortcuts later launches ran, as `<plugin>/<shortcut>`, until the
+    /// UI takes them.
+    shortcuts: Mutex<Vec<String>>,
 }
 
 #[derive(Default)]
@@ -134,6 +142,28 @@ impl Instance {
             }
         }
         asked
+    }
+
+    /// The shortcuts later launches ran since the last call, as
+    /// `<plugin>/<shortcut>`, oldest first.
+    pub fn take_shortcuts(&self) -> Vec<String> {
+        std::mem::take(
+            &mut *self
+                .shared
+                .shortcuts
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        )
+    }
+
+    /// Keep a shortcut this launch was run with, for the UI to take once
+    /// the plugins start.
+    pub fn queue_shortcut(&self, name: &str) {
+        self.shared
+            .shortcuts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(name.to_owned());
     }
 
     /// Whether a later launch's request waits for the UI to take it.
@@ -255,15 +285,67 @@ fn answer(stream: Stream, shared: Arc<Shared>) {
         .spawn(move || {
             let mut request = Vec::new();
             let read = BufReader::new(&stream)
-                .take(ACTIVATE.len() as u64)
+                .take(MAX_REQUEST)
                 .read_until(b'\n', &mut request);
-            if read.is_ok() && request == ACTIVATE {
+            if read.is_err() {
+                return;
+            }
+            if request == ACTIVATE {
                 shared.ask(stream);
+            } else if let Some(name) = request
+                .strip_prefix(SHORTCUT)
+                .and_then(|rest| rest.strip_suffix(b"\n"))
+                .and_then(|name| std::str::from_utf8(name).ok())
+                .filter(|name| valid_shortcut_name(name))
+            {
+                if shared.is_stopping() {
+                    return;
+                }
+                shared
+                    .shortcuts
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(name.to_owned());
+                let _ = (&stream).write_all(DONE);
+                if let Some(wake) = &*shared
+                    .wake
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                {
+                    wake();
+                }
             }
         });
     if let Err(error) = spawned {
         tracing::debug!(%error, "could not answer a later launch");
     }
+}
+
+/// Whether `name` reads as `<plugin>/<shortcut>`: two IDs of lowercase
+/// letters, digits and hyphens.
+pub fn valid_shortcut_name(name: &str) -> bool {
+    let id = |part: &str| {
+        !part.is_empty()
+            && part.len() <= 64
+            && part.starts_with(|ch: char| ch.is_ascii_lowercase())
+            && part
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+    };
+    name.split_once('/')
+        .is_some_and(|(plugin, shortcut)| id(plugin) && id(shortcut))
+}
+
+/// Send the shortcut `name` to the copy that runs for `app_data`, if one
+/// does. Returns whether it heard.
+pub fn send_shortcut(app_data: &Path, name: &str) -> bool {
+    let Ok(socket) = socket_name(app_data) else {
+        return false;
+    };
+    let mut message = SHORTCUT.to_vec();
+    message.extend_from_slice(name.as_bytes());
+    message.push(b'\n');
+    matches!(ask(&socket, &message), Asked::CameForward)
 }
 
 /// What a running copy did when asked to come forward.
@@ -277,11 +359,16 @@ enum Asked {
 
 /// Ask the copy listening at `name` to come forward.
 fn ask_to_activate(name: &Name<'static>) -> Asked {
+    ask(name, ACTIVATE)
+}
+
+/// Send `message` to the copy listening at `name` and wait for its answer.
+fn ask(name: &Name<'static>, message: &[u8]) -> Asked {
     let stream = match Stream::connect(name.clone()) {
         Ok(stream) => stream,
         Err(error) => return Asked::Unreachable(error),
     };
-    if let Err(error) = (&stream).write_all(ACTIVATE) {
+    if let Err(error) = (&stream).write_all(message) {
         return Asked::Unreachable(error);
     }
     // Wait for the answer, so the request is read before this launch
@@ -393,6 +480,34 @@ mod tests {
         wait_for_activation(&running);
         assert!(answered(later));
         assert!(!running.take_activation(), "one launch asks once");
+    }
+
+    /// `noura --shortcut dictation/dictation` reaches the running copy,
+    /// which wakes, keeps the shortcut for the UI, and brings no window
+    /// forward. A malformed name reaches nothing.
+    #[test]
+    fn a_shortcut_from_a_later_launch_reaches_the_running_copy() {
+        let app_data = tempfile::tempdir().unwrap();
+        let Claim::First(running) = claim(app_data.path()).unwrap() else {
+            panic!("nothing else runs on this app data folder");
+        };
+        let (woken, wakes) = mpsc::channel();
+        running.on_activate(move || {
+            let _ = woken.send(());
+        });
+
+        assert!(send_shortcut(app_data.path(), "dictation/dictation"));
+
+        assert!(wakes.recv_timeout(Duration::from_secs(10)).is_ok());
+        assert_eq!(running.take_shortcuts(), ["dictation/dictation"]);
+        assert!(running.take_shortcuts().is_empty());
+        assert!(!running.take_activation());
+        assert!(!send_shortcut(app_data.path(), "Dictation/../x"));
+        assert!(running.take_shortcuts().is_empty());
+        assert!(valid_shortcut_name("my-plugin/push-to-talk"));
+        assert!(!valid_shortcut_name("dictation"));
+        let other = tempfile::tempdir().unwrap();
+        assert!(!send_shortcut(other.path(), "dictation/dictation"));
     }
 
     /// The running copy answers once its UI took the request, and the
