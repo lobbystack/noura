@@ -66,6 +66,7 @@ impl System for DesktopSystem {
             paster: std::sync::Arc::new(speech::paste::SystemPaste),
             microphone_watch: Some(std::time::Duration::from_secs(1)),
             notifier: std::sync::Arc::new(crate::notifier::SystemNotifier),
+            download_endpoint: speech::download::HUGGING_FACE.to_owned(),
         }
     }
 }

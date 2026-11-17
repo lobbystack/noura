@@ -8,14 +8,14 @@ use egui::{Key, accesskit::Role};
 use egui_kittest::kittest::Queryable;
 use support::{FakePicker, FakeSystem, create_workspace, harness_with, settle};
 
-const SWITCHER: &str = "Switch workspace. Current workspace: Garden";
+const SWITCHER: &str = "Workspace: Garden";
 
 #[test]
 fn the_switcher_reveals_the_workspace_folder() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     let system = FakeSystem::new(Platform::Windows);
     let mut harness = harness_with(app_data.path(), FakePicker::default(), system.clone());
     settle(&mut harness);
@@ -38,7 +38,7 @@ fn the_ignored_files_page_adds_and_removes_patterns() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     std::fs::create_dir_all(folder.join("build")).unwrap();
     std::fs::write(folder.join("build/out.txt"), b"o").unwrap();
     std::fs::write(folder.join("Readme.md"), b"r").unwrap();

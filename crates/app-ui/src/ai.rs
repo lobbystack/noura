@@ -178,7 +178,6 @@ fn key_field(
                 );
                 crate::common::field_label(ui, name);
             });
-            description(ui, "Paste a key you created with the provider.");
             ui.horizontal(|ui| {
                 let button = Btn::new("Save key")
                     .variant(Variant::Default)

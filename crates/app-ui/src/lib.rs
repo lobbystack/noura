@@ -74,8 +74,6 @@ pub struct NouraUi {
     picker: Box<dyn FolderPicker>,
     /// Quit ran in this window.
     quitting: bool,
-    /// The New workspace form, while it is open.
-    new_workspace: Option<common::NewWorkspace>,
     tree: tree::TreeView,
     settings: settings::SettingsView,
     plugin_install: plugins::InstallView,
@@ -109,7 +107,6 @@ impl NouraUi {
             picker,
             title: String::new(),
             quitting: false,
-            new_workspace: None,
             tree: tree::TreeView::default(),
             settings: settings::SettingsView::default(),
             plugin_install: plugins::InstallView::default(),
@@ -453,6 +450,17 @@ impl NouraUi {
     fn pick_and_open(&mut self) {
         if let Some(folder) = self.picker.pick_folder("Open a folder") {
             self.app.open_folder(folder);
+        }
+    }
+
+    /// New workspace: ask for a folder and make it a workspace named after
+    /// it.
+    fn pick_and_create(&mut self) {
+        if let Some(folder) = self
+            .picker
+            .pick_folder("Choose a folder for the new workspace")
+        {
+            self.app.create_workspace(folder);
         }
     }
 }

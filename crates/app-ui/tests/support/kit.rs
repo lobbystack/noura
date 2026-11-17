@@ -26,7 +26,7 @@ pub struct Opened {
 pub fn opened(kit: &[u8]) -> Opened {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    create_workspace(app_data.path(), &parent.path().join("Garden"));
     let folder = plugins::folder(parent.path(), &plugins::kit_manifest(), "plugin.wasm", kit);
     plugins::install_and_enable(app_data.path(), &folder, "kit");
     let mut harness = harness(app_data.path(), FakePicker::default());

@@ -2,7 +2,7 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, PoisonError, RwLock},
+    sync::Arc,
 };
 
 use local_core::{ManifestUpdateInput, WORKSPACE_MANIFEST_PATH, WorkspaceEngine};
@@ -19,9 +19,6 @@ pub struct Workspace {
     engine: Arc<WorkspaceEngine>,
     system: Arc<dyn System>,
     id: String,
-    /// The display name, which any window can change while the other
-    /// windows and background searches share the workspace.
-    name: RwLock<String>,
     root: String,
 }
 
@@ -43,7 +40,6 @@ impl Workspace {
             engine: Arc::new(engine),
             system,
             id: manifest.id,
-            name: RwLock::new(manifest.name),
             root,
         })
     }
@@ -53,11 +49,9 @@ impl Workspace {
         &self.id
     }
 
+    /// The workspace's name, which is always its folder's name.
     pub fn name(&self) -> String {
-        self.name
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        folder_name(Path::new(&self.root))
     }
 
     /// The workspace folder's absolute path.
@@ -73,33 +67,6 @@ impl Workspace {
     /// a thread that saves a note.
     pub(crate) fn shared_engine(&self) -> Arc<WorkspaceEngine> {
         self.engine.clone()
-    }
-
-    /// The revision of the manifest on disk, and the name in it.
-    pub(crate) fn manifest_revision(&self) -> Result<(String, String), AppError> {
-        let (manifest, revision) = self
-            .engine
-            .read_manifest_revision()
-            .map_err(|error| AppError::from_change(error, WORKSPACE_MANIFEST_PATH))?;
-        Ok((revision, manifest.name))
-    }
-
-    /// Give the workspace the display name `name` in its manifest, unless
-    /// the manifest changed on disk since `revision` was read. The folder
-    /// keeps its name. Returns the manifest's new revision once the new
-    /// manifest is on disk.
-    pub(crate) fn save_name(&self, name: &str, revision: &str) -> Result<String, AppError> {
-        let manifest = self
-            .engine
-            .manifest_update(ManifestUpdateInput {
-                name: Some(name.to_owned()),
-                expected_revision: Some(revision.to_owned()),
-                ..ManifestUpdateInput::default()
-            })
-            .map_err(|error| AppError::from_change(error, WORKSPACE_MANIFEST_PATH))?;
-        self.set_name(manifest.name);
-        let (revision, _) = self.manifest_revision()?;
-        Ok(revision)
     }
 
     /// Add the plugin `id` to the manifest's enabled plugins list, or take
@@ -127,21 +94,12 @@ impl Workspace {
         Ok(())
     }
 
-    /// Show the name in the manifest on disk, as after an outside edit.
-    pub(crate) fn set_name(&self, name: String) {
-        *self.name.write().unwrap_or_else(PoisonError::into_inner) = name;
-    }
-
     pub(crate) fn system(&self) -> &dyn System {
         self.system.as_ref()
     }
 
     fn recent(&self) -> RecentWorkspace {
-        RecentWorkspace {
-            workspace_id: self.id.clone(),
-            name: self.name(),
-            path: self.root.clone(),
-        }
+        RecentWorkspace::new(self.id.clone(), self.root.clone())
     }
 }
 
@@ -212,26 +170,20 @@ impl WorkspaceService {
         self.recents.remove(workspace_id)
     }
 
-    /// Create a workspace named `name` in `folder`. Files already in the
-    /// folder keep their bytes, and a folder that already holds a workspace
-    /// stays unchanged. A blank name changes nothing on disk.
-    pub fn create(&self, name: &str, folder: &Path) -> Result<Workspace, AppError> {
-        if name.trim().is_empty() {
-            return Err(AppError::new(
-                "workspace_name_required",
-                "Enter a name for the workspace.",
-            ));
-        }
+    /// Create a workspace in `folder`, named after the folder. Files
+    /// already in the folder keep their bytes, and a folder that already
+    /// holds a workspace stays unchanged.
+    pub fn create(&self, folder: &Path) -> Result<Workspace, AppError> {
         let path = representable(folder)?;
         check_links(folder, path)?;
-        let engine = WorkspaceEngine::create_with_app_data(folder, name, &self.app_data)
+        let engine = WorkspaceEngine::create_with_app_data(folder, &self.app_data)
             .map_err(|error| AppError::from_core(error, path, Access::SetUpWorkspace))?;
         self.opened(engine)
     }
 
     /// Open the workspace in `folder`, whichever workspace it holds now. A
-    /// plain folder becomes a new workspace with a new ID, named after the
-    /// folder, and its files keep their bytes. The recent list never lends
+    /// plain folder becomes a new workspace with a new ID, and its files
+    /// keep their bytes. The recent list never lends
     /// a folder an identity because of its path. An invalid manifest opens
     /// nothing and stays as it is.
     pub fn open_folder(&self, folder: &Path) -> Result<Workspace, AppError> {
@@ -243,13 +195,9 @@ impl WorkspaceService {
             Ok(false) => Access::SetUpWorkspace,
             Err(error) => return Err(unreadable(&error, path)),
         };
-        let engine = WorkspaceEngine::open_or_initialize_with_app_data(
-            folder,
-            &folder_name(folder),
-            None,
-            &self.app_data,
-        )
-        .map_err(|error| AppError::from_core(error, path, access))?;
+        let engine =
+            WorkspaceEngine::open_or_initialize_with_app_data(folder, None, &self.app_data)
+                .map_err(|error| AppError::from_core(error, path, access))?;
         self.opened(engine)
     }
 
@@ -309,7 +257,7 @@ impl WorkspaceService {
         self.opened(engine)
     }
 
-    /// Put `workspace` first in the recent list, under its current name.
+    /// Put `workspace` first in the recent list.
     pub(crate) fn remember(&self, workspace: &Workspace) -> Result<Vec<RecentWorkspace>, AppError> {
         self.recents.record(workspace.recent())
     }
@@ -423,7 +371,8 @@ pub(crate) fn identity_changed(path: &str) -> AppError {
     )
 }
 
-fn folder_name(folder: &Path) -> String {
+/// A workspace's name: its folder's name.
+pub(crate) fn folder_name(folder: &Path) -> String {
     folder
         .file_name()
         .and_then(|name| name.to_str())

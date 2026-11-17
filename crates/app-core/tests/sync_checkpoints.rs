@@ -2407,7 +2407,7 @@ async fn a_new_device_fetches_older_epochs_only_when_a_live_operation_names_one(
     // Once the profile and every live operation move to epoch 2, a new
     // device fetches no older epoch record.
     sync_a
-        .rename(&mut laptop.service, "Field notes, renamed")
+        .push_profile_name(&mut laptop.service, "Field notes, renamed")
         .await
         .expect("renamed");
     a.write("First.md", b"# First, again\n");

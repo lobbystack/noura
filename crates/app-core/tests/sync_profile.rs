@@ -1,6 +1,6 @@
 //! The workspace profile (seam 4, sync-v2.md §25, with the records of
-//! `sync-v2-profile.json`): owners and admins rename the workspace by
-//! pushing a new profile, other devices take the new name, a client
+//! `sync-v2-profile.json`): when an owner or admin device pushes a new
+//! profile, as another client may, other devices take the new name, a client
 //! reports `sync_profile_rollback` for an older profile or another one at
 //! the same revision, and when a change takes the profile's signer out of
 //! the workspace, an owner device signs the profile again.
@@ -35,7 +35,7 @@ async fn a_rename_reaches_the_other_desktop_and_an_older_profile_is_refused() {
     let mut pair = pair().await;
     let first = latest_profile(&mut pair).await;
     pair.sync_a
-        .rename(&mut pair.service, "Garden notes")
+        .push_profile_name(&mut pair.service, "Garden notes")
         .await
         .expect("renamed");
     assert_eq!(pair.sync_a.name(), "Garden notes");
@@ -116,7 +116,7 @@ async fn a_removed_signers_profile_is_signed_again() {
     .await
     .expect("the third device downloads");
     sync_c
-        .rename(&mut third.service, "Named on the third device")
+        .push_profile_name(&mut third.service, "Named on the third device")
         .await
         .expect("renamed");
     assert_eq!(latest_profile(&mut pair).await.body.signer, third.id());

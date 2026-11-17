@@ -178,7 +178,6 @@ impl WorkspaceSyncCoordinator {
     }
     pub async fn join(
         root: impl AsRef<std::path::Path>,
-        name: &str,
         workspace: &str,
         app_data: impl AsRef<std::path::Path>,
         connection: &DeviceConnection,
@@ -189,7 +188,7 @@ impl WorkspaceSyncCoordinator {
         if !remote.iter().any(|entry| entry.id == workspace) {
             return Err(invalid("sync_membership_required"));
         }
-        let engine = WorkspaceEngine::create_sync_replica(root, name, workspace, app_data)?;
+        let engine = WorkspaceEngine::create_sync_replica(root, workspace, app_data)?;
         Self::enable(&engine, connection, store).await?;
         engine.sync_pause(true)?;
         Ok(engine)
@@ -566,7 +565,7 @@ mod tests {
         let directory = tempfile::TempDir::new().unwrap();
         let root = directory.path().join("workspace");
         let app = directory.path().join("app");
-        let engine = WorkspaceEngine::create_with_app_data(&root, "Replica", &app).unwrap();
+        let engine = WorkspaceEngine::create_with_app_data(&root, &app).unwrap();
         let credentials = Memory::default();
         let device = DeviceKeys::create(&credentials).unwrap();
         let key = device.signer().public_key();
@@ -627,15 +626,11 @@ mod tests {
         assert!(engine.sync_save_configuration(&invalid_config).is_err());
         let other = WorkspaceEngine::create_with_app_data(
             directory.path().join("other"),
-            "Other",
             directory.path().join("other_app"),
         )
         .unwrap();
         assert!(other.sync_save_configuration(&config).is_err());
-        assert!(
-            WorkspaceEngine::create_sync_replica(&root, "Overwrite", "other_workspace", &app)
-                .is_err()
-        );
+        assert!(WorkspaceEngine::create_sync_replica(&root, "other_workspace", &app).is_err());
         assert_eq!(
             std::fs::read(root.join("moved.txt")).unwrap(),
             b"canonical bytes"

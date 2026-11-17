@@ -28,7 +28,7 @@ fn opened(app_data: &std::path::Path, folder: &std::path::Path) -> Ui {
 /// A workspace whose `Docs` folder holds the note `Plan.md` and `files`,
 /// each a name and its text, opened.
 fn opened_with(app_data: &std::path::Path, folder: &std::path::Path, files: &[(&str, &str)]) -> Ui {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     std::fs::create_dir_all(folder.join("Docs")).unwrap();
     std::fs::write(folder.join("Docs/Plan.md"), NOTE).unwrap();
     for (name, text) in files {
@@ -94,7 +94,7 @@ fn a_markdown_file_without_an_id_opens_without_a_properties_panel() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     std::fs::write(folder.join("Plain.md"), "---\ntags: [a]\n---\nText\n").unwrap();
     let mut harness = harness(app_data.path(), FakePicker::default());
     settle(&mut harness);
@@ -120,7 +120,7 @@ fn a_file_with_a_lone_carriage_return_in_its_frontmatter_opens_in_the_preview() 
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     let bytes = "---\na\rb\n---\n> [!note] A\n";
     std::fs::write(folder.join("Odd.md"), bytes).unwrap();
     let mut harness = harness(app_data.path(), FakePicker::default());
@@ -386,7 +386,7 @@ fn try_again_opens_a_file_that_couldn_t_open_before() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     std::fs::write(folder.join("Bytes.md"), b"\xff\xfe not UTF-8").unwrap();
     let mut harness = harness(app_data.path(), FakePicker::default());
     settle(&mut harness);
@@ -568,7 +568,7 @@ mod failed_saves {
         let app_data = tempfile::tempdir().unwrap();
         let parent = tempfile::tempdir().unwrap();
         let folder = parent.path().join("Garden");
-        create_workspace(app_data.path(), "Garden", &folder);
+        create_workspace(app_data.path(), &folder);
         std::fs::create_dir_all(folder.join("Docs")).unwrap();
         std::fs::write(folder.join("Docs/Plan.md"), NOTE).unwrap();
         std::fs::write(folder.join("Docs/Other.md"), "Other text\n").unwrap();

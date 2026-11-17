@@ -24,7 +24,7 @@ impl Session {
             .map_err(|error| format!("The workspace folder can't be made: {error}"))?;
         drop(
             WorkspaceService::new(app_data)
-                .create("Kit", workspace)
+                .create(workspace)
                 .map_err(|error| error.message)?,
         );
         let mut app = App::launch_with(app_data, Arc::new(NoSystem));

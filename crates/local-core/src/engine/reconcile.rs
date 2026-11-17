@@ -467,8 +467,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         drop(engine);
         let manifest_path = workspace.path().join(WORKSPACE_MANIFEST_PATH);
         let manifest = std::fs::read_to_string(&manifest_path)
@@ -515,8 +514,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         engine
             .create_object(CreateObjectInput {
                 object_type: "note".into(),
@@ -544,8 +542,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         let mut events = engine.subscribe();
         engine
             .create_object(CreateObjectInput {
@@ -590,8 +587,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         for (path, bytes) in [
             ("Plan.md", "# Plan\n"),
             ("scan.pdf", "%PDF-1.7\n"),
@@ -835,8 +831,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         // A listener that never reads falls behind once the channel fills.
         let mut events = engine.subscribe();
         let before = engine.change_counts();
@@ -873,8 +868,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         let path = engine.root().join("watched.md");
         let mut events = engine.subscribe();
         std::fs::write(&path, "# Watched\n\nBody\n").unwrap();
@@ -908,8 +902,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         let created = engine
             .create_object(CreateObjectInput {
                 object_type: "note".into(),
@@ -942,8 +935,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         let created = engine
             .create_object(CreateObjectInput {
                 object_type: "task".into(),

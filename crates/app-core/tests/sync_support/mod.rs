@@ -1713,12 +1713,20 @@ pub struct Folder {
 }
 
 impl Folder {
-    /// A new workspace named `name` in an empty folder.
+    /// A new workspace in an empty folder named `name`, which is the
+    /// workspace's name. The folder sits in the app data folder, so the
+    /// two go together.
     pub fn new(name: &str) -> Self {
-        let dir = tempfile::tempdir().expect("a folder");
         let app_data = tempfile::tempdir().expect("app data");
+        let parent = app_data.path().join("folders");
+        std::fs::create_dir(&parent).expect("a parent folder");
+        let dir = tempfile::Builder::new()
+            .prefix(name)
+            .rand_bytes(0)
+            .tempdir_in(&parent)
+            .expect("a folder");
         let engine = Arc::new(
-            local_core::WorkspaceEngine::create_with_app_data(dir.path(), name, app_data.path())
+            local_core::WorkspaceEngine::create_with_app_data(dir.path(), app_data.path())
                 .expect("the workspace opens"),
         );
         let registry =

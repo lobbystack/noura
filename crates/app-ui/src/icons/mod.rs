@@ -85,6 +85,9 @@ icons! {
     BACK => ARROW_LEFT_REGULAR, ARROW_LEFT_FILL;
     FAILED => X_CIRCLE_REGULAR, X_CIRCLE_FILL;
     KEY => KEY_REGULAR, KEY_FILL;
+    DOWNLOAD => DOWNLOAD_SIMPLE_REGULAR, DOWNLOAD_SIMPLE_FILL;
+    TRANSLATE => TRANSLATE_REGULAR, TRANSLATE_FILL;
+    BROADCAST => BROADCAST_REGULAR, BROADCAST_FILL;
 }
 
 /// Draw `icon` in `rect`, in `color`, filled when `filled`.
@@ -210,6 +213,9 @@ mod tests {
             BACK,
             FAILED,
             KEY,
+            DOWNLOAD,
+            TRANSLATE,
+            BROADCAST,
         ] {
             for paths in [icon.regular, icon.fill] {
                 let image = render(paths, 24).expect(icon.name);

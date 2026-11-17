@@ -396,6 +396,59 @@ fn choices_shortcuts_and_the_last_dictation_survive_a_relaunch() {
 }
 
 #[test]
+fn the_model_you_select_is_every_plugins_until_one_picks_its_own() {
+    let kit = kit_with(FakeEngine::default());
+    downloaded(kit.folder.path(), ONBOARDING_MODEL);
+    downloaded(kit.folder.path(), "whisper-small");
+    let chosen = |plugin: &str| kit.speech.preferences(plugin).model;
+    kit.speech
+        .set_preferences(
+            "dictation",
+            PluginSpeech {
+                model: Some(ONBOARDING_MODEL.into()),
+                ..PluginSpeech::default()
+            },
+        )
+        .unwrap();
+
+    kit.speech.select_model("whisper-small").unwrap();
+    assert_eq!(kit.speech.selected_model().unwrap().id, "whisper-small");
+    assert_eq!(chosen("dictation").as_deref(), Some("whisper-small"));
+    assert_eq!(chosen("transcription").as_deref(), Some("whisper-small"));
+
+    // A plugin that saves the selected model keeps following Settings.
+    kit.speech
+        .set_preferences(
+            "transcription",
+            PluginSpeech {
+                model: Some("whisper-small".into()),
+                ..PluginSpeech::default()
+            },
+        )
+        .unwrap();
+    kit.speech
+        .set_preferences(
+            "dictation",
+            PluginSpeech {
+                model: Some(ONBOARDING_MODEL.into()),
+                ..PluginSpeech::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(chosen("dictation").as_deref(), Some(ONBOARDING_MODEL));
+    assert_eq!(kit.speech.state().plugins["transcription"].model, None);
+
+    kit.speech.delete_model("whisper-small").unwrap();
+    assert_eq!(kit.speech.state().model, None);
+    assert_eq!(chosen("transcription"), None);
+    assert_eq!(kit.speech.selected_model().unwrap().id, ONBOARDING_MODEL);
+    assert_eq!(
+        kit.speech.select_model("whisper-small").unwrap_err().code,
+        "model_missing"
+    );
+}
+
+#[test]
 fn kept_audio_stays_until_its_date_and_paste_goes_to_the_paster() {
     let kit = kit_with(FakeEngine::default());
     downloaded(kit.folder.path(), ONBOARDING_MODEL);

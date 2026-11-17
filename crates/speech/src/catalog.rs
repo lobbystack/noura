@@ -113,6 +113,18 @@ impl CatalogModel {
             .map(|speed| methodology().dictation_seconds / speed)
     }
 
+    /// How Handy ranks models for `language`: the error rate, plus half a
+    /// point per second of wait past the first 3. Lower is better, and a
+    /// model nobody timed counts as a minute's wait. `None` when the
+    /// model doesn't hear the language.
+    pub fn cost(&self, language: &str) -> Option<f64> {
+        let methodology = methodology();
+        let wait = self.wait_seconds().unwrap_or(60.0);
+        self.errors.get(language).map(|error| {
+            error + methodology.wait_weight * (wait - methodology.free_wait_seconds).max(0.0)
+        })
+    }
+
     pub fn speaks(&self, language: &str) -> bool {
         self.languages.iter().any(|known| known == language)
     }
@@ -131,6 +143,8 @@ struct RawCatalog {
 #[serde(rename_all = "camelCase")]
 struct Methodology {
     dictation_seconds: f64,
+    free_wait_seconds: f64,
+    wait_weight: f64,
     overall_max_wait_seconds: f64,
     max_language_error_percent: f64,
 }
@@ -381,5 +395,16 @@ mod tests {
             .expect("a model for English and German");
         assert!(both.speaks("en") && both.speaks("de"));
         assert!(catalog.recommended(&["xx".to_owned()]).is_none());
+    }
+
+    #[test]
+    fn a_slow_model_costs_more_than_a_fast_one_as_accurate() {
+        let catalog = catalog();
+        let ultra = catalog.model(ONBOARDING_MODEL).unwrap();
+        let voxtral = catalog.model("Voxtral-Mini-3B-2507").unwrap();
+        // Voxtral makes fewer French errors but takes far longer.
+        assert!(voxtral.errors["fr"] < ultra.errors["fr"]);
+        assert!(ultra.cost("fr").unwrap() < voxtral.cost("fr").unwrap());
+        assert!(ultra.cost("xx").is_none());
     }
 }

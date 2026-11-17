@@ -44,7 +44,7 @@ struct Folders {
 fn workspace() -> Option<Folders> {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    create_workspace(app_data.path(), &parent.path().join("Garden"));
     for (id, library, manifest) in PLUGINS {
         let component = plugins::built(library)?;
         let place = parent.path().join(format!("{id}-plugin"));

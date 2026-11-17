@@ -1,5 +1,6 @@
 //! This device's speech choices, in `speech/state.json` under the app data
-//! folder: the language you speak, the keys you gave each shortcut, each
+//! folder: the language you speak, the model in use, the keys you gave
+//! each shortcut, each
 //! plugin's model, microphone and system audio choice, the last dictation
 //! of each plugin, and the recordings whose audio a plugin kept. None of it
 //! is workspace content, so none of it syncs.
@@ -42,12 +43,13 @@ pub struct DeviceState {
     pub version: u32,
     /// The language you speak, as an ISO 639-1 code.
     pub language: Option<String>,
+    /// The model you picked in Settings > Speech. A plugin's own choice
+    /// wins over it.
+    pub model: Option<String>,
     /// Keys you gave a shortcut, by `<plugin>/<shortcut>`.
     pub shortcuts: BTreeMap<String, String>,
     pub plugins: BTreeMap<String, PluginSpeech>,
     pub kept: Vec<KeptAudio>,
-    /// Whether you finished the speech onboarding.
-    pub onboarded: bool,
 }
 
 impl Default for DeviceState {
@@ -55,10 +57,10 @@ impl Default for DeviceState {
         Self {
             version: VERSION,
             language: None,
+            model: None,
             shortcuts: BTreeMap::new(),
             plugins: BTreeMap::new(),
             kept: Vec::new(),
-            onboarded: false,
         }
     }
 }

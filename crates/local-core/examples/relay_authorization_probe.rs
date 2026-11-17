@@ -43,7 +43,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let source = WorkspaceEngine::create_with_app_data(
         directory.path().join("source"),
-        "Synthetic attack test",
         directory.path().join("app1"),
     )?;
     // Sync is a plugin that new workspaces start with turned off.

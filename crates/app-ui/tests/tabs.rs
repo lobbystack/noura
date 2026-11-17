@@ -13,7 +13,7 @@ type Ui = Harness<'static, app_ui::NouraUi>;
 
 /// A workspace with three notes, opened at launch with two test pages.
 fn opened(app_data: &std::path::Path, folder: &std::path::Path) -> Ui {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     for name in ["Alpha.md", "Beta.md", "Gamma.md"] {
         std::fs::write(folder.join(name), b"x").unwrap();
     }
@@ -322,7 +322,7 @@ fn tabs_fit_the_title_bar_row_with_no_scrollbar_and_still_scroll() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     let names: Vec<String> = (1..=12).map(|n| format!("A long note name {n}")).collect();
     for name in &names {
         std::fs::write(folder.join(format!("{name}.md")), b"x").unwrap();

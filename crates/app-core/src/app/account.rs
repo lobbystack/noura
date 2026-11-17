@@ -23,32 +23,32 @@ impl App {
 
     /// Downloads the workspace you joined into `folder` once the windows
     /// show it (§11).
-    pub fn download_invited(&mut self, name: &str, folder: PathBuf) {
+    pub fn download_invited(&mut self, folder: PathBuf) {
         let action = AccountAction::DownloadInvited(folder.clone());
-        self.download_into(action, name, folder);
+        self.download_into(action, folder);
     }
 
     /// Downloads `workspace` of your account into `folder` once the windows
     /// show it (§15, §18).
-    pub fn download_workspace(&mut self, workspace: Id, name: &str, folder: PathBuf) {
+    pub fn download_workspace(&mut self, workspace: Id, folder: PathBuf) {
         let action = AccountAction::Download {
             workspace,
             folder: folder.clone(),
         };
-        self.download_into(action, name, folder);
+        self.download_into(action, folder);
     }
 
     /// Starts `action` and shows `folder`: an empty folder becomes a new
-    /// workspace named `name`, and a folder that holds a workspace opens,
+    /// workspace named after it, and a folder that holds a workspace opens,
     /// as the folder you synced before an owner set this workspace up again
     /// does (§14). A plain folder with files stays as it is.
-    fn download_into(&mut self, action: AccountAction, name: &str, folder: PathBuf) {
+    fn download_into(&mut self, action: AccountAction, folder: PathBuf) {
         if folder.join(local_core::WORKSPACE_MANIFEST_PATH).exists() {
             self.account_action(action);
             self.open_folder(folder);
         } else if is_empty_folder(&folder).unwrap_or(false) {
             self.account_action(action);
-            self.create_workspace(name, folder);
+            self.create_workspace(folder);
         } else {
             self.account_action(AccountAction::FolderNotEmpty);
         }

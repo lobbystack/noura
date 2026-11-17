@@ -28,9 +28,7 @@ fn mcp_mode_answers_on_stdout_alone_while_the_app_has_the_workspace_open() {
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
     std::fs::create_dir_all(&folder).unwrap();
-    let workspace = WorkspaceService::new(app_data)
-        .create("Garden", &folder)
-        .unwrap();
+    let workspace = WorkspaceService::new(app_data).create(&folder).unwrap();
     let root = std::path::PathBuf::from(workspace.root());
     drop(workspace);
     std::fs::write(root.join("Plan.md"), "Plant tomatoes.\n").unwrap();
@@ -181,7 +179,7 @@ fn test_connection_in_settings_starts_the_real_binary_and_says_it_works() {
     let folder = parent.path().join("Garden");
     std::fs::create_dir_all(&folder).unwrap();
     let workspace = WorkspaceService::new(app_data.path())
-        .create("Garden", &folder)
+        .create(&folder)
         .unwrap();
     drop(workspace);
     let mut app = App::launch(app_data.path());

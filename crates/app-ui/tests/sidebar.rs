@@ -12,7 +12,7 @@ use support::{FakePicker, create_workspace, harness, settle};
 type Ui = Harness<'static, app_ui::NouraUi>;
 
 fn opened(app_data: &std::path::Path, folder: &std::path::Path) -> Ui {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     std::fs::write(folder.join("Note.md"), b"x").unwrap();
     let mut harness = harness(app_data, FakePicker::default());
     settle(&mut harness);
@@ -48,7 +48,7 @@ fn cmd_backslash_hides_and_shows_the_sidebar_and_the_choice_lasts() {
     harness.run();
     assert!(!tree_shown(&harness));
     // The workspace switcher stays in reach.
-    harness.get_by_role_and_label(Role::Button, "Switch workspace. Current workspace: Garden");
+    harness.get_by_role_and_label(Role::Button, "Workspace: Garden");
     let mut harness = relaunch(harness, app_data.path());
     assert!(!tree_shown(&harness));
 

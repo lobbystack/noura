@@ -563,7 +563,7 @@ fn signing_out_the_last_device_warns_first() {
         "This is your last device. After you sign out, you need your recovery kit or a device reset to read synced data.",
     );
     harness
-        .get_by_role_and_label(Role::Button, "Stay signed in")
+        .get_by_role_and_label(Role::Button, "Cancel")
         .click_accesskit();
     harness.run();
     assert_eq!(account.taken(), vec![AccountAction::CancelSignOut]);
@@ -685,7 +685,7 @@ fn replacing_a_kit_lists_the_devices_it_recovered_with_keep_choices() {
         .click_accesskit();
     harness.run();
     harness
-        .get_by_role_and_label(Role::Button, "Keep the current kit")
+        .get_by_role_and_label(Role::Button, "Keep current kit")
         .click_accesskit();
     harness.run();
     assert_eq!(

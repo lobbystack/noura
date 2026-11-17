@@ -57,7 +57,7 @@ fn a_recipe_opens_with_the_plugins_panel_whose_button_changes_the_file() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     std::fs::create_dir_all(folder.join("recipes")).unwrap();
     std::fs::write(folder.join("recipes/Tiramisu.md"), RECIPE).unwrap();
     let plugin = plugins::folder(parent.path(), MANIFEST, "plugin.wasm", &component);

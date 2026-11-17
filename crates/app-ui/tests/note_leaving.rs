@@ -29,7 +29,7 @@ fn note(id_end: char, body: &str) -> String {
 /// A workspace holding `notes`, each a file name, the end of its ID and
 /// its text, opened at launch.
 fn opened(app_data: &Path, folder: &Path, notes: &[(&str, char, &str)]) -> Ui {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     for (name, id_end, body) in notes {
         std::fs::write(folder.join(name), note(*id_end, body)).unwrap();
     }

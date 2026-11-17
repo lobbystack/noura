@@ -67,7 +67,7 @@ fn opened() -> Option<Opened> {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     for (path, text) in [
         ("Meetings/Standup/Standup.md", STANDUP),
         ("Meetings/Standup/Transcript.md", TRANSCRIPT),

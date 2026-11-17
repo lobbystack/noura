@@ -8,8 +8,7 @@ use tempfile::tempdir;
 fn engine() -> (tempfile::TempDir, tempfile::TempDir, WorkspaceEngine) {
     let workspace = tempdir().unwrap();
     let app_data = tempdir().unwrap();
-    let engine =
-        WorkspaceEngine::create_with_app_data(workspace.path(), "Embeds", app_data.path()).unwrap();
+    let engine = WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
     (workspace, app_data, engine)
 }
 

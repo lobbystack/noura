@@ -559,8 +559,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Scan", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         (workspace, app_data, engine)
     }
 

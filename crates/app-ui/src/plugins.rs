@@ -545,10 +545,7 @@ fn capability_list(ui: &mut Ui, lines: &[CapabilityLine]) {
     ui.label("It asks to:");
     capabilities(ui, lines);
     ui.add_space(4.0);
-    description(
-        ui,
-        "It runs only once installed, with only these capabilities.",
-    );
+    description(ui, "It gets only these capabilities.");
 }
 
 /// A caution in a frame of its own.

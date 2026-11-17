@@ -18,7 +18,7 @@ type Ui = Harness<'static, app_ui::NouraUi>;
 
 /// A workspace holding `files`, opened at launch.
 fn opened(app_data: &std::path::Path, folder: &std::path::Path, files: &[(&str, &str)]) -> Ui {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     for (path, text) in files {
         let path = folder.join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -423,7 +423,7 @@ fn quick_open_and_search_are_modes_of_the_command_palette() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     std::fs::write(folder.join("Groceries.md"), "milk").unwrap();
     // Mod is Ctrl on Windows.
     let mut harness = harness_for(app_data.path(), app_core::Platform::Windows, |_| {});

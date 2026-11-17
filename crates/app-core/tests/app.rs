@@ -21,10 +21,10 @@ fn settle(app: &mut App) {
     }
 }
 
-fn create(app_data: &Path, name: &str, folder: &Path) -> String {
+fn create(app_data: &Path, folder: &Path) -> String {
     std::fs::create_dir_all(folder).unwrap();
     WorkspaceService::new(app_data)
-        .create(name, folder)
+        .create(folder)
         .unwrap()
         .id()
         .to_owned()
@@ -57,7 +57,7 @@ fn launch_reopens_the_last_workspace_in_the_background() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Last");
-    let id = create(app_data.path(), "Last", &folder);
+    let id = create(app_data.path(), &folder);
     std::fs::write(folder.join("Note.md"), b"x").unwrap();
 
     let mut app = App::launch(app_data.path());
@@ -85,7 +85,7 @@ fn a_missing_last_workspace_says_why_and_try_again_opens_it_once_it_is_back() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Last");
-    let id = create(app_data.path(), "Last", &folder);
+    let id = create(app_data.path(), &folder);
     let saved_path = WorkspaceService::new(app_data.path()).recents()[0]
         .path
         .clone();
@@ -119,8 +119,8 @@ fn a_recent_workspace_that_fails_to_open_offers_remove_from_recents() {
     let parent = tempfile::tempdir().unwrap();
     let gone = parent.path().join("Gone");
     let kept = parent.path().join("Kept");
-    let gone_id = create(app_data.path(), "Gone", &gone);
-    let kept_id = create(app_data.path(), "Kept", &kept);
+    let gone_id = create(app_data.path(), &gone);
+    let kept_id = create(app_data.path(), &kept);
     let mut app = App::launch(app_data.path());
     settle(&mut app);
     rename_with_retry(&gone, &parent.path().join("Moved"));
@@ -149,8 +149,8 @@ fn a_recent_workspace_that_fails_to_open_offers_remove_from_recents() {
 fn the_switcher_moves_to_another_workspace() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    let first = create(app_data.path(), "First", &parent.path().join("First"));
-    create(app_data.path(), "Second", &parent.path().join("Second"));
+    let first = create(app_data.path(), &parent.path().join("First"));
+    create(app_data.path(), &parent.path().join("Second"));
     let mut app = App::launch(app_data.path());
     settle(&mut app);
 
@@ -176,9 +176,9 @@ fn open_folder_and_new_workspace_open_the_workspace() {
     assert_eq!(app.screen(), &Screen::Workspace);
     assert_eq!(app.workspace().unwrap().name(), "Plain");
 
-    app.create_workspace("Fresh start", fresh.clone());
+    app.create_workspace(fresh.clone());
     settle(&mut app);
-    assert_eq!(app.workspace().unwrap().name(), "Fresh start");
+    assert_eq!(app.workspace().unwrap().name(), "Fresh");
     assert_eq!(app.recents().len(), 2);
 }
 
@@ -187,11 +187,11 @@ fn a_failed_new_workspace_keeps_the_chooser_and_says_why() {
     let app_data = tempfile::tempdir().unwrap();
     let folder = tempfile::tempdir().unwrap();
     WorkspaceService::new(tempfile::tempdir().unwrap().path())
-        .create("Taken", folder.path())
+        .create(folder.path())
         .unwrap();
     let mut app = App::launch(app_data.path());
 
-    app.create_workspace("Another", folder.path().to_owned());
+    app.create_workspace(folder.path().to_owned());
     settle(&mut app);
 
     assert_eq!(app.screen(), &Screen::Chooser { problem: None });
@@ -254,9 +254,9 @@ fn opening_a_file_cloud_storage_has_not_downloaded_says_so_and_shows_nothing() {
 fn try_again_retries_only_the_workspace_that_failed() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    create(app_data.path(), "Older", &parent.path().join("Older"));
+    create(app_data.path(), &parent.path().join("Older"));
     let last = parent.path().join("Last");
-    let last_id = create(app_data.path(), "Last", &last);
+    let last_id = create(app_data.path(), &last);
     rename_with_retry(&last, &parent.path().join("Away"));
     let mut app = App::launch(app_data.path());
     settle(&mut app);
@@ -284,7 +284,7 @@ fn a_last_workspace_that_lost_its_manifest_says_why_and_stays_as_it_was() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Last");
-    create(app_data.path(), "Last", &folder);
+    create(app_data.path(), &folder);
     std::fs::remove_file(folder.join(".noura/workspace.yaml")).unwrap();
     let saved_path = WorkspaceService::new(app_data.path()).recents()[0]
         .path
@@ -354,11 +354,11 @@ fn a_joined_workspace_opens_a_folder_that_holds_a_workspace() {
     let mut app = App::launch(app_data.path());
     settle(&mut app);
     let earlier = tempfile::tempdir().unwrap();
-    create(app_data.path(), "Earlier", earlier.path());
+    create(app_data.path(), earlier.path());
     let account = std::sync::Arc::new(JoinedAccount::default());
     app.set_account_backend(account.clone());
 
-    app.download_invited("Field notes", earlier.path().to_owned());
+    app.download_invited(earlier.path().to_owned());
     settle(&mut app);
     assert_eq!(
         app.workspace().map(|w| std::path::PathBuf::from(w.root())),
@@ -388,7 +388,7 @@ fn a_folder_that_wont_open_ends_the_download() {
     let account = std::sync::Arc::new(JoinedAccount::default());
     app.set_account_backend(account.clone());
 
-    app.download_invited("Field notes", broken.path().to_owned());
+    app.download_invited(broken.path().to_owned());
     settle(&mut app);
     assert_eq!(
         account.taken(),
@@ -411,12 +411,8 @@ fn a_folder_with_files_takes_no_download() {
     let account = std::sync::Arc::new(JoinedAccount::default());
     app.set_account_backend(account.clone());
 
-    app.download_invited("Field notes", full.path().to_owned());
-    app.download_workspace(
-        app_core::account::Id([1; 16]),
-        "Field notes",
-        full.path().to_owned(),
-    );
+    app.download_invited(full.path().to_owned());
+    app.download_workspace(app_core::account::Id([1; 16]), full.path().to_owned());
     settle(&mut app);
     assert_eq!(
         account.taken(),

@@ -1553,9 +1553,16 @@ impl WorkspaceSync {
         Ok(revision)
     }
 
-    /// Renames the workspace by pushing a new profile, as an owner or admin
-    /// device may (§25).
-    pub async fn rename(&mut self, service: &mut SyncService, name: &str) -> Result<(), SyncError> {
+    /// Test hook: push a new profile named `name`, as an owner or admin
+    /// device of another client may (§25). Noura names a workspace after
+    /// its folder and never renames one, but it takes a newer profile that
+    /// another device pushed.
+    #[cfg(feature = "test-hooks")]
+    pub async fn push_profile_name(
+        &mut self,
+        service: &mut SyncService,
+        name: &str,
+    ) -> Result<(), SyncError> {
         self.refuse_halted()?;
         if self.remote.is_none() {
             self.connect(service).await?;

@@ -388,7 +388,7 @@ fn an_invited_request_reaches_a_closed_section_and_outlives_its_ten_minutes() {
         || FolderSyncBackend::screen(&ana),
         |s| {
             s.attention.as_deref()
-                == Some("Someone you invited waits for approval in Settings > Members.")
+                == Some("Someone you invited waits for approval in Settings > People.")
         },
     );
     let first = wait(

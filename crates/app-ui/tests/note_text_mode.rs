@@ -47,7 +47,7 @@ impl FolderSyncBackend for Bridged {
 /// A workspace holding `Plan.md` with `text`, open in a window whose sync
 /// thread the test plays.
 fn opened(app_data: &Path, folder: &Path, text: &str) -> (Ui, Arc<TextBridge>) {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     std::fs::write(folder.join("Plan.md"), text).unwrap();
     let backend = Arc::new(Bridged::default());
     let bridge = backend.bridge.clone();

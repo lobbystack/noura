@@ -4,12 +4,14 @@
 //! a choice reaches it, a notification it shows comes back when you
 //! choose it, what a kernel event opens shows in the window you used
 //! last, a plugin without the capabilities gets nothing, and Settings
-//! lists the catalog's models graded for your language.
+//! lists the catalog's models in sections, graded for English and your
+//! language, searched, filtered and selected.
 
 mod support;
 
 use std::time::Instant;
 
+use app_core::{SpeechModelFilter, SpeechModelSection, SpeechModelsPage};
 use support::{
     FakeSystem, Fixture,
     plugins::{self, folder_for, wait_until},
@@ -144,38 +146,140 @@ fn a_plugin_without_the_capabilities_hears_no_shortcut() {
     assert!(system.pasted.lock().unwrap().is_empty());
 }
 
+fn section(
+    page: &SpeechModelsPage,
+    section: SpeechModelSection,
+) -> Option<&Vec<app_core::SpeechModelRow>> {
+    page.sections
+        .iter()
+        .find(|(shown, _)| *shown == section)
+        .map(|(_, rows)| rows)
+}
+
 #[test]
-fn settings_lists_the_catalog_graded_for_your_language_and_recommends_parakeet_ultra() {
+fn settings_sorts_the_catalog_into_sections_graded_for_english_and_your_language() {
     let fixture = Fixture::new(&[]);
     let mut app = fixture.app();
-    let onboarding = app.speech_onboarding().expect("onboarding shows");
-    assert_eq!(onboarding.name, "Parakeet Ultra");
-    assert_eq!(onboarding.license, "cc-by-4.0");
-    assert!(!onboarding.downloaded);
+    let all = SpeechModelFilter::default();
 
-    app.set_speech_language(Some("fr")).unwrap();
-    assert_eq!(app.speech_language().as_deref(), Some("fr"));
-    let models = app.speech_models();
+    let page = app.speech_models(&all);
+    assert_eq!(page.languages, ["en"]);
     assert!(
-        models
+        section(&page, SpeechModelSection::OnThisComputer)
+            .unwrap()
+            .is_empty()
+    );
+    let yours = section(&page, SpeechModelSection::ForYourLanguages).unwrap();
+    assert!(yours[0].recommended, "the recommendation comes first");
+    assert!(yours.iter().all(|row| row.grades[0].is_some()));
+    assert!(
+        yours
             .iter()
             .all(|row| row.license != "other" && !row.license.contains("-nc"))
     );
-    let ultra = models
-        .iter()
-        .find(|row| row.id == "parakeet-ultra")
-        .unwrap();
-    assert_eq!(ultra.grade, Some("A"));
-    assert!(models.iter().any(|row| row.recommended));
-    // A model that doesn't speak French has no grade.
-    assert!(models.iter().any(|row| row.grade.is_none()));
+    assert!(section(&page, SpeechModelSection::Others).is_none());
 
-    app.finish_speech_onboarding().unwrap();
-    assert!(app.speech_onboarding().is_none());
-    app.set_speech_language(Some("de")).unwrap();
+    app.set_speech_language(Some("fr")).unwrap();
+    assert_eq!(app.speech_language().as_deref(), Some("fr"));
+    let page = app.speech_models(&all);
+    assert_eq!(page.languages, ["en", "fr"]);
+    let yours = section(&page, SpeechModelSection::ForYourLanguages).unwrap();
+    let ultra = yours.iter().find(|row| row.id == "parakeet-ultra").unwrap();
+    assert_eq!(ultra.grades, [Some("A"), Some("A")]);
+    assert!(ultra.speed.is_some());
+    // A model that doesn't hear French isn't for your languages.
+    assert!(yours.iter().all(|row| row.grades[1].is_some()));
+    assert!(yours.iter().all(|row| row.id != "parakeet-tdt-0.6b-v2"));
+
     // The choices live in the app data folder, not the workspace.
     assert!(fixture.app_data.path().join("speech/state.json").exists());
     assert!(!fixture.root.join("speech").exists());
+}
+
+#[test]
+fn search_and_the_filters_narrow_the_models_and_hide_empty_sections() {
+    let fixture = Fixture::new(&[]);
+    let app = fixture.app();
+
+    let whisper = app.speech_models(&SpeechModelFilter {
+        search: "WHISPER large".to_owned(),
+        ..SpeechModelFilter::default()
+    });
+    assert!(section(&whisper, SpeechModelSection::OnThisComputer).is_none());
+    let rows: Vec<&app_core::SpeechModelRow> =
+        whisper.sections.iter().flat_map(|(_, rows)| rows).collect();
+    assert!(!rows.is_empty());
+    assert!(rows.iter().all(|row| row.name.contains("Whisper Large")));
+    // A search reaches past the curated models.
+    assert!(rows.iter().any(|row| row.id == "whisper-large-v2"));
+
+    let french = app.speech_models(&SpeechModelFilter {
+        search: "french".to_owned(),
+        ..SpeechModelFilter::default()
+    });
+    assert!(
+        french
+            .sections
+            .iter()
+            .flat_map(|(_, rows)| rows)
+            .any(|row| row.id == "parakeet-ultra")
+    );
+
+    let live = app.speech_models(&SpeechModelFilter {
+        live_preview: true,
+        ..SpeechModelFilter::default()
+    });
+    let rows: Vec<_> = live.sections.iter().flat_map(|(_, rows)| rows).collect();
+    assert!(!rows.is_empty() && rows.iter().all(|row| row.streaming));
+
+    let both = app.speech_models(&SpeechModelFilter {
+        live_preview: true,
+        translates: true,
+        ..SpeechModelFilter::default()
+    });
+    assert!(both.sections.is_empty());
+}
+
+#[test]
+fn a_downloaded_model_is_on_this_computer_and_selecting_it_reaches_the_plugins() {
+    let fixture = Fixture::new(&[]);
+    let models = fixture.app_data.path().join("speech/models");
+    std::fs::create_dir_all(&models).unwrap();
+    let catalog = speech::catalog::catalog();
+    for id in ["parakeet-ultra", "whisper-small"] {
+        let file = &catalog.model(id).unwrap().file.filename;
+        std::fs::write(models.join(file), b"GGUF").unwrap();
+    }
+    let mut app = fixture.app();
+    let all = SpeechModelFilter::default();
+
+    let page = app.speech_models(&all);
+    let here = section(&page, SpeechModelSection::OnThisComputer).unwrap();
+    assert_eq!(here.len(), 2);
+    assert_eq!(here[0].id, "parakeet-ultra");
+    assert!(here[0].selected && !here[1].selected);
+    assert!(
+        section(&page, SpeechModelSection::ForYourLanguages)
+            .unwrap()
+            .iter()
+            .all(|row| !row.downloaded)
+    );
+
+    app.select_speech_model("whisper-small").unwrap();
+    let page = app.speech_models(&all);
+    let here = section(&page, SpeechModelSection::OnThisComputer).unwrap();
+    assert_eq!(here[0].id, "whisper-small");
+    assert!(here[0].selected);
+    assert_eq!(
+        app.select_speech_model("whisper-medium").unwrap_err().code,
+        "model_missing"
+    );
+
+    app.delete_speech_model("whisper-small").unwrap();
+    let page = app.speech_models(&all);
+    let here = section(&page, SpeechModelSection::OnThisComputer).unwrap();
+    assert_eq!(here.len(), 1);
+    assert!(here[0].selected, "the recommendation takes over");
 }
 
 #[test]

@@ -811,7 +811,6 @@ mod tests {
         let directory = tempfile::TempDir::new().unwrap();
         let engine = WorkspaceEngine::create_with_app_data(
             directory.path().join("workspace"),
-            "Recovery",
             directory.path().join("app"),
         )
         .unwrap();

@@ -703,9 +703,11 @@ fn restart_waits_for_a_workspace_that_is_still_being_set_up() {
     app.enable_updates("0.2.0", Arc::new(source.clone()), launched);
     let now = launched + FIRST_UPDATE_CHECK;
     settle(&mut app, now);
-    let folder = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Plans");
+    std::fs::create_dir(&folder).unwrap();
 
-    app.create_workspace("Plans", folder.path().to_owned());
+    app.create_workspace(folder);
     app.restart_to_update();
     std::thread::sleep(Duration::from_millis(200));
     app.poll_at(now);

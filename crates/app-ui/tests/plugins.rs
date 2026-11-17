@@ -30,7 +30,7 @@ fn opened(prepare: impl FnOnce(&std::path::Path, &std::path::Path)) -> Opened {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     for name in ["One.md", "Two.md"] {
         std::fs::write(folder.join(name), b"x").unwrap();
     }

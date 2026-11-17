@@ -35,7 +35,7 @@ fn opened() -> Option<Opened> {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let workspace = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &workspace);
+    create_workspace(app_data.path(), &workspace);
     let plugin_parent = parent.path().join("plugin");
     std::fs::create_dir_all(&plugin_parent).unwrap();
     let folder = plugins::folder(

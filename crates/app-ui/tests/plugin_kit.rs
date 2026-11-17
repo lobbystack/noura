@@ -646,7 +646,7 @@ fn show(harness: &mut Pair, index: usize) {
 fn two_windows(kit: &[u8]) -> TwoWindows {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    create_workspace(app_data.path(), &parent.path().join("Garden"));
     let folder = plugins::folder(parent.path(), &plugins::kit_manifest(), "plugin.wasm", kit);
     install_and_enable(app_data.path(), &folder, "kit");
     let platform = app_core::Platform::current();

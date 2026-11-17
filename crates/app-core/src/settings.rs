@@ -178,7 +178,7 @@ pub(crate) fn kernel_sections() -> Vec<SettingsSection> {
         ),
         (
             settings_section::WORKSPACE,
-            "Name and location",
+            "Location",
             SettingsGroup::Workspace,
         ),
         (
@@ -202,7 +202,7 @@ pub(crate) fn kernel_sections() -> Vec<SettingsSection> {
             "Ignored files",
             SettingsGroup::Workspace,
         ),
-        (settings_section::ABOUT, "About noura", SettingsGroup::App),
+        (settings_section::ABOUT, "About Noura", SettingsGroup::App),
     ]
     .into_iter()
     .map(|(id, title, group)| SettingsSection {
@@ -225,9 +225,6 @@ pub struct Settings {
     /// What the last action in Settings did: why it failed, or where its
     /// result went. Choosing another section clears it.
     pub notice: Option<Notice>,
-    /// The revision of the workspace manifest when Settings read it, so a
-    /// rename never overwrites an outside edit made since.
-    pub(crate) manifest_revision: Option<String>,
     /// What Search settings holds. The section list shows only the
     /// sections that match it.
     pub query: String,

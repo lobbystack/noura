@@ -28,7 +28,7 @@ fn opened(prepare: impl FnOnce(&Path, &Path)) -> (Ui, (tempfile::TempDir, tempfi
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     for name in ["One.md", "Two.md"] {
         std::fs::write(folder.join(name), b"x").unwrap();
     }
@@ -293,7 +293,7 @@ fn the_plugins_page_shows_a_shipped_plugin_and_what_it_may_use() {
     let shipped = shipped_with_hello(&hello);
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    create_workspace(app_data.path(), &parent.path().join("Garden"));
     let mut harness = harness_registering(app_data.path(), FakePicker::default(), |app| {
         app.set_shipped_plugins(shipped.path().to_owned());
     });

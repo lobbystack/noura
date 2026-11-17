@@ -26,8 +26,7 @@ impl Fixture {
         for (path, text) in files {
             write(root.path(), path, text);
         }
-        let engine =
-            WorkspaceEngine::create_with_app_data(root.path(), "Links", app_data.path()).unwrap();
+        let engine = WorkspaceEngine::create_with_app_data(root.path(), app_data.path()).unwrap();
         engine.reconcile().unwrap();
         Self {
             root,

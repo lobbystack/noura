@@ -296,7 +296,7 @@ impl Fixture {
         let folder = parent.path().join("Garden");
         std::fs::create_dir_all(&folder).unwrap();
         let workspace = WorkspaceService::new(app_data.path())
-            .create("Garden", &folder)
+            .create(&folder)
             .unwrap();
         let root = PathBuf::from(workspace.root());
         drop(workspace);

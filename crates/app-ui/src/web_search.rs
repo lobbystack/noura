@@ -26,11 +26,6 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut WebSettingsView) {
         alert(ui, &problem);
         return;
     }
-    description(
-        ui,
-        "Uses your own Brave Search key, kept in this computer's credential store.",
-    );
-    ui.add_space(8.0);
     if let Some(problem) = &view.problem {
         alert(ui, problem);
     }

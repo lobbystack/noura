@@ -35,7 +35,7 @@ fn all_labels(harness: &Ui) -> Vec<String> {
 fn the_key_field_hides_the_key_and_no_prompt_asks_per_workspace() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    create_workspace(app_data.path(), &parent.path().join("Garden"));
     let system = FakeSystem::new(Platform::current());
     let mut harness = harness_with(app_data.path(), FakePicker::default(), system.clone());
     settle(&mut harness);

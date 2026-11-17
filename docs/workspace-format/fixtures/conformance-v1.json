@@ -6,6 +6,18 @@
 			"value": {
 				"id": "workspace_01j00000000000000000000000",
 				"format_version": 1,
+				"created": "2026-08-27T12:00:00Z",
+				"updated": "2026-08-27T12:00:00Z",
+				"enabled_plugins": [],
+				"ignore": []
+			}
+		},
+		{
+			"name": "a name key from an earlier version is ignored",
+			"valid": true,
+			"value": {
+				"id": "workspace_01j00000000000000000000000",
+				"format_version": 1,
 				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
@@ -19,7 +31,6 @@
 			"value": {
 				"id": "workspace_01j00000000000000000000000",
 				"formatVersion": 1,
-				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
 				"enabledPlugins": [],
@@ -32,7 +43,6 @@
 			"value": {
 				"id": "../../outside",
 				"format_version": 1,
-				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
 				"enabled_plugins": [],
@@ -45,7 +55,6 @@
 			"value": {
 				"id": "workspace_01j00000000000000000000000",
 				"format_version": 1,
-				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
 				"enabled_plugins": ["tasks", "my-plugin-2"],
@@ -58,7 +67,6 @@
 			"value": {
 				"id": "workspace_01j00000000000000000000000",
 				"format_version": 1,
-				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
 				"enabled_plugins": ["tasks", "notes", "tasks"],
@@ -71,7 +79,6 @@
 			"value": {
 				"id": "workspace_01j00000000000000000000000",
 				"format_version": 1,
-				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
 				"enabled_plugins": ["Tasks"],
@@ -84,7 +91,6 @@
 			"value": {
 				"id": "workspace_01j00000000000000000000000",
 				"format_version": 1,
-				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
 				"enabled_plugins": ["1tasks"],
@@ -97,7 +103,6 @@
 			"value": {
 				"id": "workspace_01j00000000000000000000000",
 				"format_version": 1,
-				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
 				"enabled_plugins": [""],
@@ -110,7 +115,6 @@
 			"value": {
 				"id": "workspace_01j00000000000000000000000",
 				"format_version": 1,
-				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
 				"enabled_plugins": [
@@ -125,7 +129,6 @@
 			"value": {
 				"id": "workspace_01j00000000000000000000000",
 				"format_version": 1,
-				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
 				"enabled_plugins": [
@@ -140,7 +143,6 @@
 			"value": {
 				"id": "workspace_01j00000000000000000000000",
 				"format_version": 1,
-				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
 				"enabled_plugins": "tasks",
