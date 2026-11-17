@@ -6,7 +6,7 @@ Keys are modifiers among `Ctrl`, `Alt`, `Shift` and `Cmd`, joined by `+`, then o
 
 Noura hands each press and release to your plugin as a [kernel event](kernel-events.md), which counts as something you did. It goes to the workspace you used last that has your plugin on. With no such workspace, the shortcut does nothing.
 
-On Wayland, Noura asks the desktop's GlobalShortcuts portal for the shortcuts. Where the desktop has none, you bind `noura --shortcut <plugin>/<shortcut>` in the desktop's settings, and each run sends a press, then a release.
+Under Wayland, where apps can't see keys pressed elsewhere, you bind `noura --shortcut <plugin>/<shortcut>` in the desktop's settings, and each run sends a press, then a release.
 
 ## Functions
 

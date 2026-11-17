@@ -1727,11 +1727,10 @@ a kernel event, which counts as something you did, in the workspace
 you used last that has the plugin on. With no such workspace, the
 shortcut does nothing.
 
-On Wayland, Noura asks the desktop's GlobalShortcuts portal for the
-shortcuts. Where the desktop has none, you bind `noura --shortcut
-<plugin>/<shortcut>`, or `noura --toggle-dictation` for the Dictation
-plugin's `dictation` shortcut, in the desktop's settings, and each run
-sends a press, then a release.
+Under Wayland, where apps can't see keys pressed elsewhere, you bind
+`noura --shortcut <plugin>/<shortcut>`, or `noura --toggle-dictation`
+for the Dictation plugin's `dictation` shortcut, in the desktop's
+settings, and each run sends a press, then a release.
 
 ----
 
@@ -1794,9 +1793,9 @@ of the plugin's views or panels. Any other call gets `failed`.
 
 - <a id="method.clipboard"></a>`clipboard`
   <p>Noura puts the text on the clipboard, presses the paste keys, and
-  once the app has read it puts back what the clipboard held. On
-  Linux it presses Shift+Insert and puts back the primary selection
-  too.
+  puts back what the clipboard held: on macOS once the app has read
+  it, elsewhere after half a second. On Linux it presses Shift+Insert
+  and puts back the primary selection too.
 
 - <a id="method.typing"></a>`typing`
   <p>Noura types the text key by key and leaves the clipboard alone.
