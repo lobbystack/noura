@@ -495,8 +495,11 @@ impl WorkspaceEngine {
             )
         })?;
         let source = resolve_for_write(&self.root, &object.relative_path, "object_move")?;
-        let destination_path = resolve_for_write(&self.root, destination, "object_move")?;
         let _guard = self.write_lock("object_move")?;
+        // On a case-insensitive disk the file lands in the folder that
+        // already exists, so record that spelling.
+        let destination = &crate::path::match_existing_folder_case(&self.root, destination);
+        let destination_path = resolve_for_write(&self.root, destination, "object_move")?;
         self.collaboration_guard_file_mutation(&object.relative_path)?;
         let bytes = read_downloaded(&source, &object.relative_path, "object_move")?;
         check_revision(&bytes, expected_revision, "object_move")?;
@@ -1133,6 +1136,54 @@ mod tests {
         if !insensitive {
             eprintln!("this disk keeps case, so only the folder choice was checked");
         }
+    }
+
+    /// Moving an object to `notes/Moved.md` while `Notes/` exists puts the
+    /// file in `Notes/` on a case-insensitive disk, so the path Noura
+    /// records, returns and indexes must be `Notes/Moved.md`, or the next
+    /// scan finds a second file with the object's ID.
+    #[test]
+    fn a_move_into_a_folder_spelled_with_other_case_records_the_folder_on_disk() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join("Notes")).unwrap();
+        if !workspace.path().join("notes").exists() {
+            eprintln!("skipped: this disk keeps case");
+            return;
+        }
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
+                .unwrap();
+        let created = engine
+            .create_object(CreateObjectInput {
+                object_type: "note".into(),
+                title: "Plan".into(),
+                body: String::new(),
+                relative_path: None,
+                properties: BTreeMap::new(),
+            })
+            .unwrap();
+        assert_eq!(created.value.relative_path, "Notes/Plan.md");
+
+        let moved = engine
+            .move_object(&created.value.id, "notes/Moved.md", &created.revision)
+            .unwrap();
+        assert_eq!(moved.value.relative_path, "Notes/Moved.md");
+        assert_eq!(
+            engine.read_object(&created.value.id).unwrap().relative_path,
+            "Notes/Moved.md"
+        );
+        engine.reconcile().unwrap();
+        assert_eq!(
+            engine.read_object(&created.value.id).unwrap().relative_path,
+            "Notes/Moved.md"
+        );
+        let names: Vec<String> = std::fs::read_dir(workspace.path().join("Notes"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names, ["Moved.md"]);
     }
 
     #[test]
