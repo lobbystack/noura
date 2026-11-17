@@ -23,7 +23,7 @@ Each call runs under these limits:
 - **Imports**: only `noura:plugin` interfaces. WASI imports trap, so a plugin gets no filesystem or sockets of its own.
 - **Failures**: a failed call restarts the plugin's store, and three failures in a short window stop the plugin until Noura restarts
 
-`crates/app-core` runs each plugin's calls on a thread of its own, so a plugin that loops or crashes never holds up a window. The four plugins that ship with Noura, `ai`, `calendar`, `projects` and `tasks`, live in `crates/plugins/` and wait for one approval on each device's first-run screen.
+`crates/app-core` runs each plugin's calls on a thread of its own, so a plugin that loops or crashes never holds up a window. The six plugins that ship with Noura, `ai`, `calendar`, `dictation`, `projects`, `tasks` and `transcription`, live in `crates/plugins/`. They come from the same signed app as the kernel, so Noura installs them at launch with every capability they declare approved, and shows no screen. Each new build of Noura updates them and approves what they add, while a capability you revoked stays revoked. A plugin you install from a folder or from GitHub asks for your approval first, and asks again when a new build adds a capability.
 
 ## Turn plugins on and off
 

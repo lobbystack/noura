@@ -1,7 +1,6 @@
 //! The Plugins page and what plugins add: installing a plugin from a
-//! folder, the first-run screen for the plugins that ship with Noura,
-//! turning a plugin on or off in the open workspace, revoking and allowing
-//! what it may use, approving or declining a new build, starting a plugin
+//! folder, installing the plugins that ship with Noura, turning a plugin
+//! on or off in the open workspace, revoking and allowing what it may use, approving or declining a new build, starting a plugin
 //! that failed, the pages, commands, Inbox sections, Settings pages and
 //! tools running plugins add, and the properties panel a plugin draws
 //! beside an object of its own type. Every window shares the session's
@@ -15,7 +14,7 @@ use plugin_host::{Event, Naming, ViewKind, ViewNode, VirtualRow};
 use super::{App, Change};
 use crate::{
     AppError, Grant, NoticeKind, OpenAs, PluginInstall, PluginRow, PluginTool, PluginView,
-    SettingsGroup, ShippedPlugin, TabId,
+    SettingsGroup, TabId,
     plugins::{Opening, SETTINGS_PREFIX, is_plugin_page},
     settings::settings_section,
 };
@@ -179,32 +178,12 @@ impl App {
         }
     }
 
-    /// Use the plugins in `folder`, one per subfolder, as the plugins that
-    /// ship with Noura. A packaged copy of Noura calls this at launch.
+    /// Install the plugins in `folder`, one per subfolder, as the plugins
+    /// that ship with Noura, approved, and update the installed ones to
+    /// these builds. A packaged copy of Noura calls this at launch.
     pub fn set_shipped_plugins(&mut self, folder: PathBuf) {
-        self.session.plugins().set_shipped(folder);
-        self.listeners.emit(Change::Plugins);
-    }
-
-    /// The first-run screen: the plugins that ship with Noura that this
-    /// device hasn't shown you, with what each may use. Empty once you
-    /// approved them. None of their code runs before you do.
-    pub fn shipped_plugins(&self) -> Vec<ShippedPlugin> {
-        self.session.plugins().shipped_review()
-    }
-
-    /// Approve every plugin the first-run screen lists, for this device,
-    /// and install each one. The ones the open workspace enables start.
-    pub fn approve_shipped_plugins(&mut self) -> bool {
-        let approved = self.session.plugins().approve_shipped();
+        self.session.plugins().set_shipped(&folder);
         self.plugins_changed();
-        match approved {
-            Ok(()) => true,
-            Err(error) => {
-                self.show_notice("Couldn't install the plugins", error, None);
-                false
-            }
-        }
     }
 
     /// Turn the plugin `id` on or off in the open workspace. The

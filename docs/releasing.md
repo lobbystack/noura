@@ -106,7 +106,7 @@ The **Third-party licenses** link in **Settings** > **About Noura** opens this f
 
 ## Plugins in the app
 
-Every package ships Tasks, Projects, Calendar, AI, Dictation and Transcription. `scripts/build-shipped-plugins.sh` builds them for `wasm32-wasip2` into `apps/desktop/packaging/plugins`, with a folder for each plugin that holds its `plugin.toml` and its component. cargo-packager copies that folder into the same resources folder as the license list, as `plugins`. On first run, Noura lists the plugins and installs them once you approve.
+Every package ships Tasks, Projects, Calendar, AI, Dictation and Transcription. `scripts/build-shipped-plugins.sh` builds them for `wasm32-wasip2` into `apps/desktop/packaging/plugins`, with a folder for each plugin that holds its `plugin.toml` and its component. cargo-packager copies that folder into the same resources folder as the license list, as `plugins`. At launch, Noura installs each of them that this computer lacks, with every capability it declares approved, and updates the installed ones to the package's builds.
 
 To ship another plugin, add it to that script, to `SHIPPED_PLUGINS` in `crates/app-core/src/plugins.rs` and to the report line `scripts/check-desktop-packages.sh` expects.
 
@@ -128,7 +128,7 @@ On Linux, only the AppImage updates itself. The `.deb` package runs without the 
 
 ## Release checks in CI
 
-The `packages` job in `.github/workflows/ci.yml` runs on every push and pull request. On macOS, Windows, and Ubuntu 22.04, it builds each package, signs it with a throwaway updater key, and runs `scripts/check-desktop-packages.sh`. The check fails unless each installed app draws its first window, finds its license list and holds the four plugins that ship with Noura. It also checks that the `.dmg`, the `.msi` and the AppImage update themselves and the `.deb` doesn't.
+The `packages` job in `.github/workflows/ci.yml` runs on every push and pull request. On macOS, Windows, and Ubuntu 22.04, it builds each package, signs it with a throwaway updater key, and runs `scripts/check-desktop-packages.sh`. The check fails unless each installed app draws its first window, finds its license list and holds every plugin that ships with Noura. It also checks that the `.dmg`, the `.msi` and the AppImage update themselves and the `.deb` doesn't.
 
 The desktop crate's tests run the real updater against a feed served on a local port. They check that it accepts a bundle signed with the expected key and rejects a changed bundle or another key's signature.
 
