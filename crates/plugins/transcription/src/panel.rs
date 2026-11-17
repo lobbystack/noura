@@ -138,6 +138,10 @@ fn project_picker(view: &mut View, object: &Object) {
 
 /// Answer an event in the panel of the Transcription `id`.
 pub(crate) fn handle(id: &str, event: Event) {
+    let event_node = match &event {
+        Event::Pressed(node) => Some(node.clone()),
+        _ => None,
+    };
     let outcome: Result<(), String> = match event {
         Event::Pressed(node) => match node.as_str() {
             "start" => record::start(id),
@@ -181,6 +185,9 @@ pub(crate) fn handle(id: &str, event: Event) {
     };
     let mut state = state();
     match outcome {
+        // Start and Stop keep the problem a recording that ended left;
+        // a recording that starts clears it.
+        Ok(()) if matches!(&event_node, Some(node) if node == "start" || node == "stop") => {}
         Ok(()) => {
             state.problems.remove(id);
         }

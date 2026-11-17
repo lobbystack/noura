@@ -51,6 +51,7 @@ const ITEMS: &str = r#"{"action_items":[{"title":"Send the notes","due":"2026-11
 struct SpeechSystem {
     inner: Arc<FakeSystem>,
     audio: Arc<FakeAudio>,
+    engine: Arc<FakeEngine>,
     watch: Option<Duration>,
     notifier: Arc<support::FakeNotifier>,
 }
@@ -61,7 +62,7 @@ impl System for SpeechSystem {
     }
     fn speech_devices(&self) -> SpeechDevices {
         SpeechDevices {
-            engine: Arc::new(FakeEngine::default()),
+            engine: self.engine.clone(),
             audio: Arc::new(FakeBackend(self.audio.clone())),
             paster: Arc::new(app_core::NoPaste),
             microphone_watch: self.watch,
@@ -308,6 +309,16 @@ fn transcription_folder() -> Option<PluginFolder> {
 /// clock and, when `provider`, an AI provider. `None` when the plugins
 /// aren't built.
 fn kit(files: &[(&str, &[u8])], provider: bool, watch: Option<Duration>) -> Option<Kit> {
+    kit_with(files, provider, watch, FakeEngine::default())
+}
+
+/// [`kit`] with the speech engine `engine`.
+fn kit_with(
+    files: &[(&str, &[u8])],
+    provider: bool,
+    watch: Option<Duration>,
+    engine: FakeEngine,
+) -> Option<Kit> {
     let fixture = Fixture::new(files);
     model_downloaded(fixture.app_data.path());
     let inner = FakeSystem::new();
@@ -317,6 +328,7 @@ fn kit(files: &[(&str, &[u8])], provider: bool, watch: Option<Duration>) -> Opti
     let system = Arc::new(SpeechSystem {
         inner,
         audio: audio.clone(),
+        engine: Arc::new(engine),
         watch,
         notifier: notifier.clone(),
     });
@@ -946,4 +958,67 @@ fn calendar_shows_a_transcription() {
                 )
         })
     });
+}
+
+/// The panel's problem, once it shows one.
+fn problem(app: &mut App, tab: TabId) -> String {
+    wait_until(app, "the panel shows a problem", |app| {
+        app.plugin_panel(tab)
+            .and_then(Result::ok)
+            .is_some_and(|view| find(view.root(), "problem").is_some())
+    });
+    let view = app.plugin_panel(tab).unwrap().unwrap();
+    match &find(view.root(), "problem").unwrap().kind {
+        ViewKind::Text(text) => text.clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_transcription_that_fails_says_why_in_the_panel() {
+    let Some(mut kit) = kit_with(
+        &[],
+        false,
+        None,
+        FakeEngine {
+            failing: true,
+            ..FakeEngine::default()
+        },
+    ) else {
+        return;
+    };
+    kit.press_shortcut();
+    kit.wait_for(NOTE, "start:");
+    let tab = open(&mut kit.app, NOTE);
+    kit.speak();
+    assert_eq!(
+        problem(&mut kit.app, tab),
+        "The recording stopped: Noura couldn't transcribe this audio. Try another model in Settings."
+    );
+    assert!(panel(&mut kit.app, tab, "start").contains(&"[Start]".to_owned()));
+}
+
+#[test]
+fn a_recording_that_hears_no_speech_says_so_after_stop() {
+    let Some(mut kit) = kit(&[], false, None) else {
+        return;
+    };
+    let tab = {
+        kit.press_shortcut();
+        kit.wait_for(NOTE, "start:");
+        open(&mut kit.app, NOTE)
+    };
+    panel(&mut kit.app, tab, "stop");
+    feed(
+        &kit.audio,
+        Source::Microphone,
+        &vec![0.0; SAMPLE_RATE as usize],
+    );
+    // Stop from the panel, whose press must keep the problem the
+    // recording leaves.
+    kit.app.press_panel_button(tab, "stop");
+    assert_eq!(
+        problem(&mut kit.app, tab),
+        "Noura heard no speech. Check your microphone and try again."
+    );
 }

@@ -23,6 +23,9 @@ pub(crate) const SHORTCUT: &str = "transcription";
 /// The notification that offers to transcribe a call.
 const OFFER: &str = "offer";
 
+/// What the panel says when a recording ends with no text.
+pub(crate) const NO_SPEECH: &str = "Noura heard no speech. Check your microphone and try again.";
+
 /// Offer to transcribe the call another app, named `app` when the system
 /// says, turned the microphone on for.
 fn offer(app: Option<&str>) {
@@ -233,8 +236,10 @@ fn finish(active: &Active, recording: &speech::Recording) {
         .clone()
         .map(|failure| format!("The recording stopped: {failure}"));
     let written = write_transcript(active, recording);
-    if let Err(error) = &written {
-        problem = Some(error.clone());
+    match &written {
+        Err(error) => problem = Some(error.clone()),
+        Ok(0) if problem.is_none() => problem = Some(NO_SPEECH.to_owned()),
+        Ok(_) => {}
     }
     if let Err(error) = keep_audio(&active.recording, &object) {
         problem.get_or_insert(error);
