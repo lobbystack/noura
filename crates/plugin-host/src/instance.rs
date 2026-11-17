@@ -961,8 +961,49 @@ pub fn trap_foreign_imports<T: 'static>(
     let engine = component.engine();
     let plugin = component.component_type();
     for (name, import) in plugin.imports(engine) {
-        if !name.starts_with("noura:plugin/") {
+        if name.starts_with("wasi:random/") {
+            random(&mut linker.root(), name, &import.ty, engine)?;
+        } else if !name.starts_with("noura:plugin/") {
             trap(&mut linker.root(), name, &import.ty, engine)?;
+        }
+    }
+    Ok(())
+}
+
+/// The most random bytes one call hands a plugin.
+const MAX_RANDOM_BYTES: u64 = 1 << 20;
+
+/// Serves the WASI random interfaces from the operating system's random
+/// source, so a plugin's `HashMap` seeds itself and libraries such as
+/// minijinja run. Noura hands out no other WASI interface; a function of
+/// these it doesn't know traps like any other.
+fn random<T: 'static>(
+    linker: &mut LinkerInstance<'_, T>,
+    name: &str,
+    item: &ComponentItem,
+    engine: &Engine,
+) -> wasmtime::Result<()> {
+    let ComponentItem::ComponentInstance(instance) = item else {
+        return trap(linker, name, item, engine);
+    };
+    let mut inner = linker.instance(name)?;
+    for (export, item) in instance.exports(engine) {
+        match export {
+            "insecure-seed" => inner.func_wrap("insecure-seed", |_, (): ()| {
+                Ok(((rand::random::<u64>(), rand::random::<u64>()),))
+            })?,
+            "get-random-u64" | "get-insecure-random-u64" => {
+                inner.func_wrap(export, |_, (): ()| Ok((rand::random::<u64>(),)))?;
+            }
+            "get-random-bytes" | "get-insecure-random-bytes" => {
+                inner.func_wrap(export, |_, (length,): (u64,)| {
+                    let length = length.min(MAX_RANDOM_BYTES) as usize;
+                    let mut bytes = vec![0u8; length];
+                    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+                    Ok((bytes,))
+                })?;
+            }
+            other => trap(&mut inner, other, &item.ty, engine)?,
         }
     }
     Ok(())

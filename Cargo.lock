@@ -8789,6 +8789,7 @@ dependencies = [
  "local-core",
  "parking_lot",
  "plugin-host",
+ "rand 0.8.8",
  "semver",
  "serde",
  "serde_json",

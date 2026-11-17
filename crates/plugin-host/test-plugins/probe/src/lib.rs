@@ -41,6 +41,8 @@
 //!   node whose ID is `paste:<text>` pastes too.
 //! - `menu-bar:<labels>`: show these comma-separated menu bar items, the
 //!   first one a submenu holding the rest.
+//! - `random`: count words in a std `HashMap`, which needs WASI's random
+//!   seed, as `hashmap <distinct> <times a>`.
 //! - `speech-paste` and `speech-menu`: pages that paste `hello` and show
 //!   the menu `Model` holding `Parakeet Ultra`.
 //! - `clock`: the clock's reading, as `now <instant> <time zone>`.
@@ -195,6 +197,13 @@ impl Plugin for Probe {
             ai_call(call)
         } else if let Some(call) = page.strip_prefix("speech:") {
             speech_call(call)
+        } else if page == "random" {
+            // A std HashMap seeds itself from WASI's random interface.
+            let mut seen = std::collections::HashMap::new();
+            for word in ["a", "b", "a", "c"] {
+                *seen.entry(word).or_insert(0) += 1;
+            }
+            vec![format!("hashmap {} {}", seen.len(), seen["a"])]
         } else if page == "speech-paste" {
             vec![pasted(paste::paste("hello", paste::Method::Clipboard))]
         } else if page == "speech-menu" {
