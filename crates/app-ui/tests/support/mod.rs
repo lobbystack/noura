@@ -131,6 +131,9 @@ pub struct FakeSystem {
     /// Keys the AI providers' settings save, in memory, so no test reaches
     /// this computer's credential store.
     pub credentials: Arc<app_core::MemoryCredentials>,
+    /// Where speech models download from, so no test reaches Hugging
+    /// Face. The default refuses every connection.
+    pub speech_endpoint: Mutex<String>,
 }
 
 impl FakeSystem {
@@ -141,6 +144,7 @@ impl FakeSystem {
             hour: AtomicU8::new(9),
             now: Mutex::new(None),
             credentials: Arc::new(app_core::MemoryCredentials::new()),
+            speech_endpoint: Mutex::new("http://127.0.0.1:9".to_owned()),
         })
     }
 
@@ -166,6 +170,13 @@ impl FakeSystem {
 impl System for FakeSystem {
     fn platform(&self) -> Platform {
         self.platform
+    }
+
+    fn speech_devices(&self) -> app_core::SpeechDevices {
+        app_core::SpeechDevices {
+            download_endpoint: self.speech_endpoint.lock().unwrap().clone(),
+            ..app_core::SpeechDevices::fake()
+        }
     }
 
     fn has_trash(&self) -> bool {

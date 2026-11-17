@@ -343,6 +343,9 @@ impl Speech {
         }
         #[cfg(feature = "download")]
         let _ = std::fs::remove_file(crate::download::part_path(&path));
+        if self.state.lock().model.as_deref() == Some(id) {
+            self.update(|state| state.model = None)?;
+        }
         self.tell(Event::Models);
         Ok(())
     }
@@ -374,17 +377,67 @@ impl Speech {
         self.update(|state| state.language = language)
     }
 
-    pub fn set_onboarded(&self) -> Result<()> {
-        self.update(|state| state.onboarded = true)
+    /// The model in use for plugins without a choice of their own: the
+    /// one you picked, the recommendation, or any downloaded model, as
+    /// long as it's on this device.
+    pub fn selected_model(&self) -> Option<&'static CatalogModel> {
+        let catalog = self.catalog();
+        let picked = self.state.lock().model.clone();
+        picked
+            .and_then(|id| catalog.model(&id))
+            .filter(|model| self.is_downloaded(model))
+            .or_else(|| {
+                catalog
+                    .recommended(&self.languages(None))
+                    .filter(|model| self.is_downloaded(model))
+            })
+            .or_else(|| {
+                catalog
+                    .models()
+                    .iter()
+                    .find(|model| self.is_downloaded(model))
+            })
     }
 
+    /// Use the downloaded model `id` wherever no plugin chose another,
+    /// and drop the plugins' own choices.
+    pub fn select_model(&self, id: &str) -> Result<()> {
+        let model = self
+            .catalog()
+            .model(id)
+            .ok_or_else(|| SpeechError::not_found(id))?;
+        if !self.is_downloaded(model) {
+            return Err(SpeechError::failed(
+                "model_missing",
+                &format!("Download {} first.", model.name),
+            ));
+        }
+        self.update(|state| {
+            state.model = Some(id.to_owned());
+            for plugin in state.plugins.values_mut() {
+                plugin.model = None;
+            }
+        })
+    }
+
+    /// `plugin`'s choices. Without a model of its own, it gets the one you
+    /// picked in Settings, while that one is on this device.
     pub fn preferences(&self, plugin: &str) -> PluginSpeech {
-        self.state
-            .lock()
-            .plugins
-            .get(plugin)
-            .cloned()
-            .unwrap_or_default()
+        let (mut preferences, picked) = {
+            let state = self.state.lock();
+            (
+                state.plugins.get(plugin).cloned().unwrap_or_default(),
+                state.model.clone(),
+            )
+        };
+        if preferences.model.is_none() {
+            preferences.model = picked.filter(|id| {
+                self.catalog()
+                    .model(id)
+                    .is_some_and(|model| self.is_downloaded(model))
+            });
+        }
+        preferences
     }
 
     /// Keep `plugin`'s choices, once the model is downloaded and the
@@ -414,9 +467,15 @@ impl Speech {
             ));
         }
         self.update(|state| {
+            // The model you picked in Settings stays the plugin's until
+            // the plugin picks another.
+            let model = preferences
+                .model
+                .filter(|id| state.model.as_ref() != Some(id));
             let entry = state.plugins.entry(plugin.to_owned()).or_default();
             let last = entry.last_dictation.take();
             *entry = PluginSpeech {
+                model,
                 last_dictation: last,
                 ..preferences
             };

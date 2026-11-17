@@ -306,6 +306,12 @@ impl<'a> Btn<'a> {
         self
     }
 
+    /// Read as a toggle that is on when `on`, as a filter does.
+    pub(crate) fn selected(mut self, on: bool) -> Self {
+        self.selected = Some(on);
+        self
+    }
+
     /// Fill the button with `color` while it isn't hovered.
     pub(crate) fn fill(mut self, color: Color32) -> Self {
         self.fill = Some(color);

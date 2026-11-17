@@ -66,6 +66,7 @@ impl System for SpeechSystem {
             paster: Arc::new(app_core::NoPaste),
             microphone_watch: self.watch,
             notifier: self.notifier.clone(),
+            ..SpeechDevices::fake()
         }
     }
     fn has_trash(&self) -> bool {

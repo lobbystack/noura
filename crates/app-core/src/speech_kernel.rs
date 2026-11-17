@@ -44,6 +44,9 @@ pub struct SpeechDevices {
     pub microphone_watch: Option<Duration>,
     /// The system's notification center.
     pub notifier: Arc<dyn Notifier>,
+    /// Where models download from: Hugging Face, or a local server in
+    /// tests.
+    pub download_endpoint: String,
 }
 
 /// A notification as the system shows it.
@@ -94,6 +97,7 @@ impl SpeechDevices {
             paster: Arc::new(NoPaste),
             microphone_watch: None,
             notifier: Arc::new(NoNotifier),
+            download_endpoint: speech::download::HUGGING_FACE.to_owned(),
         }
     }
 }
@@ -162,7 +166,10 @@ impl SpeechKernel {
             audio: devices.audio,
             paster: devices.paster,
             catalog: speech::catalog::catalog(),
-            download: speech::download::DownloadOptions::default(),
+            download: speech::download::DownloadOptions {
+                endpoint: devices.download_endpoint,
+                ..speech::download::DownloadOptions::default()
+            },
             microphone_watch: devices.microphone_watch,
         });
         let notifier = devices.notifier;
