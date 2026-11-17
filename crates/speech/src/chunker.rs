@@ -16,10 +16,65 @@ const MIN_SPEECH_MS: u64 = 250;
 /// Silence kept before and after the speech.
 const PAD_MS: u64 = 200;
 /// A chunk never grows past this, so a long monologue still arrives.
-const MAX_CHUNK_MS: u64 = 25_000;
+pub(crate) const MAX_CHUNK_MS: u64 = 25_000;
 
-fn samples(ms: u64) -> usize {
+/// How loud [`Leveled`] makes the loudest recent audio.
+const TARGET_PEAK: f32 = 0.3;
+/// The most [`Leveled`] lifts quiet audio, so a silent room stays quiet.
+const MAX_GAIN: f32 = 30.0;
+/// How long the loudest recent audio takes to count half as loud.
+const PEAK_HALF_LIFE_MS: u64 = 5_000;
+
+pub(crate) fn samples(ms: u64) -> usize {
     (ms * u64::from(SAMPLE_RATE) / 1000) as usize
+}
+
+/// A voice activity model that hears quiet audio louder. Silero misses
+/// speech whose peaks stay under about 1% of full scale, as a Bluetooth
+/// headset's microphone can send, so each frame is lifted toward
+/// [`TARGET_PEAK`] by the loudest audio of the last few seconds, at most
+/// [`MAX_GAIN`] times. Only the voice activity model hears the lifted
+/// audio.
+pub struct Leveled {
+    inner: Box<dyn Vad>,
+    peak: f32,
+    decay: f32,
+    lifted: Vec<f32>,
+}
+
+impl Leveled {
+    pub fn new(inner: Box<dyn Vad>) -> Self {
+        let frame = inner.frame_samples().max(1);
+        let half_life = samples(PEAK_HALF_LIFE_MS) as f32;
+        Self {
+            inner,
+            peak: 0.0,
+            decay: 0.5f32.powf(frame as f32 / half_life),
+            lifted: Vec::with_capacity(frame),
+        }
+    }
+}
+
+impl Vad for Leveled {
+    fn frame_samples(&self) -> usize {
+        self.inner.frame_samples()
+    }
+
+    fn speech(&mut self, frame: &[f32]) -> f32 {
+        let loudest = frame
+            .iter()
+            .fold(0.0f32, |most, sample| most.max(sample.abs()));
+        self.peak = loudest.max(self.peak * self.decay);
+        let gain = if self.peak > 0.0 {
+            (TARGET_PEAK / self.peak).clamp(1.0, MAX_GAIN)
+        } else {
+            1.0
+        };
+        self.lifted.clear();
+        self.lifted
+            .extend(frame.iter().map(|sample| (sample * gain).clamp(-1.0, 1.0)));
+        self.inner.speech(&self.lifted)
+    }
 }
 
 /// A stretch of speech, and where it starts in the channel.
@@ -48,6 +103,10 @@ pub struct Chunker {
     /// Samples of silence since the last speech frame.
     quiet: usize,
     in_speech: bool,
+    /// The highest speech probability so far, for the log.
+    most_speech: f32,
+    /// Chunks handed out so far.
+    cut: usize,
 }
 
 impl Chunker {
@@ -63,7 +122,19 @@ impl Chunker {
             speech_samples: 0,
             quiet: 0,
             in_speech: false,
+            most_speech: 0.0,
+            cut: 0,
         }
+    }
+
+    /// The highest speech probability the model gave a frame so far.
+    pub fn most_speech(&self) -> f32 {
+        self.most_speech
+    }
+
+    /// How many chunks it handed out.
+    pub fn chunks(&self) -> usize {
+        self.cut
     }
 
     /// Add audio, and return the chunks it completes.
@@ -89,6 +160,7 @@ impl Chunker {
 
     fn frame(&mut self, frame: &[f32]) -> Option<Chunk> {
         let probability = self.vad.speech(frame);
+        self.most_speech = self.most_speech.max(probability);
         self.in_speech = if self.in_speech {
             probability >= SILENCE
         } else {
@@ -140,7 +212,9 @@ impl Chunker {
         self.speech_samples = 0;
         self.quiet = 0;
         self.in_speech = false;
-        (had_speech && !audio.is_empty()).then_some(Chunk { start, audio })
+        let chunk = (had_speech && !audio.is_empty()).then_some(Chunk { start, audio });
+        self.cut += usize::from(chunk.is_some());
+        chunk
     }
 }
 
@@ -192,6 +266,28 @@ mod tests {
         // Each holds its speech and some padding, not the whole pause.
         assert!(found[0].audio.len() >= samples(1500));
         assert!(found[0].audio.len() < samples(2400));
+    }
+
+    #[test]
+    fn quiet_speech_is_heard_once_leveled() {
+        let quiet: Vec<f32> = speech_then_silence(1500, 1000)
+            .iter()
+            .map(|sample| sample * 0.02)
+            .collect();
+        assert!(chunks(&quiet).is_empty());
+        let mut chunker = Chunker::new(Box::new(Leveled::new(Box::new(EnergyVad::default()))));
+        let mut found = Vec::new();
+        for piece in quiet.chunks(480) {
+            found.extend(chunker.push(piece));
+        }
+        found.extend(chunker.finish());
+        assert_eq!(found.len(), 1);
+        assert_eq!(chunker.chunks(), 1);
+        assert!(chunker.most_speech() > 0.9);
+        // Silence stays silence.
+        let mut chunker = Chunker::new(Box::new(Leveled::new(Box::new(EnergyVad::default()))));
+        assert!(chunker.push(&vec![0.0; samples(3000)]).is_empty());
+        assert!(chunker.finish().is_none());
     }
 
     #[test]

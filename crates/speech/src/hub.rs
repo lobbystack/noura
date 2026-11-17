@@ -10,7 +10,8 @@ use parking_lot::Mutex;
 
 use crate::audio::{AudioBackend, Microphone, Source};
 use crate::catalog::{Catalog, CatalogModel, VAD_MODEL};
-use crate::engine::{EnergyVad, Engine, Model, Options};
+use crate::chunker::Leveled;
+use crate::engine::{EnergyVad, Engine, Model, Options, Vad};
 use crate::paste::Paster;
 use crate::recording::{Change, Plan, Recording, Snapshot, State};
 use crate::state::{DeviceState, KeptAudio, PluginSpeech, StateFile};
@@ -362,7 +363,20 @@ impl Speech {
                 &format!("Download {} in Settings first.", model.name),
             ));
         }
-        let loaded = self.config.engine.load(&self.model_path(model))?;
+        let began = std::time::Instant::now();
+        let loaded = self
+            .config
+            .engine
+            .load(&self.model_path(model))
+            .inspect_err(|error| {
+                tracing::warn!(model = %model.id, code = %error.code, "a speech model didn't load");
+            })?;
+        tracing::info!(
+            model = %model.id,
+            streams = loaded.streams(),
+            took_ms = began.elapsed().as_millis() as u64,
+            "loaded a speech model"
+        );
         *self.loaded.lock() = Some((model.id.clone(), loaded.clone()));
         Ok(loaded)
     }
@@ -576,13 +590,24 @@ impl Speech {
             .map(str::to_owned)
             .or(preferences.language.clone())
             .or_else(|| self.state.lock().language.clone());
-        let chosen = self.choose_model(plugin, model, language.as_deref())?;
+        let chosen = self
+            .choose_model(plugin, model, language.as_deref())
+            .inspect_err(|error| {
+                tracing::warn!(plugin, code = %error.code, "no speech model for a recording");
+            })?;
         let loaded = self.load(chosen)?;
         let vad_path = self
             .catalog()
             .helper(VAD_MODEL)
             .map(|vad| self.model_path(vad))
             .filter(|path| path.is_file());
+        tracing::info!(
+            plugin,
+            model = %chosen.id,
+            ?sources,
+            voice_activity_model = vad_path.is_some(),
+            "starting a recording"
+        );
         let engine = self.config.engine.clone();
         let id = format!("recording_{}", self.next.fetch_add(1, Ordering::SeqCst));
         let speech = Arc::downgrade(self);
@@ -597,7 +622,13 @@ impl Speech {
                 vad: Box::new(move || {
                     vad_path
                         .as_ref()
-                        .and_then(|path| engine.load_vad(path).ok())
+                        .and_then(|path| match engine.load_vad(path) {
+                            Ok(vad) => Some(Box::new(Leveled::new(vad)) as Box<dyn Vad>),
+                            Err(error) => {
+                                tracing::warn!(code = %error.code, "the voice activity model didn't load");
+                                None
+                            }
+                        })
                         .unwrap_or_else(|| Box::new(EnergyVad::default()))
                 }),
                 audio_folder: self.config.folder.join("audio"),
