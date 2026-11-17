@@ -18,6 +18,8 @@ pub mod recording;
 pub mod state;
 
 mod hub;
+#[cfg(any(target_os = "macos", test))]
+mod main_thread;
 
 pub use hub::{Event, ModelRow, Speech, SpeechConfig};
 

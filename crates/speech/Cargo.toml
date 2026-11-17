@@ -37,9 +37,12 @@ enigo.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cidre.workspace = true
+# Runs pastes on the main queue, where macOS wants its keyboard and
+# pasteboard calls. Zlib OR Apache-2.0 OR MIT; objc2 already pulls it in.
+dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "objc2"] }
 objc2.workspace = true
 objc2-app-kit = { workspace = true, features = ["std", "NSPasteboard"] }
-objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSString"] }
+objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSDate", "NSObjCRuntime", "NSRunLoop", "NSString"] }
 rtrb = "0.4.0"
 
 # Whether another app records: the sound server's source outputs, over
@@ -55,3 +58,12 @@ windows = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gd
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2-app-kit = { workspace = true, features = ["std", "NSApplication", "NSEvent", "NSGraphics", "NSMenu", "NSMenuItem", "NSResponder", "NSRunningApplication", "NSText", "NSTextView", "NSView", "NSWindow"] }
+objc2-foundation = { workspace = true, features = ["std", "NSDate", "NSGeometry", "NSObjCRuntime", "NSRunLoop"] }
+
+# Its main thread runs AppKit's run loop, which the test harness's doesn't.
+[[test]]
+name = "paste_main_thread"
+harness = false

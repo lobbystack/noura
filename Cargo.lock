@@ -11137,6 +11137,7 @@ dependencies = [
  "arboard",
  "atomic-write-file",
  "cidre",
+ "dispatch2",
  "enigo",
  "futures",
  "handy-recorder",

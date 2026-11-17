@@ -11,6 +11,13 @@
 //! which pastes in terminals too, and puts back the primary selection.
 //! Under Wayland it presses the keys with `wtype`, `dotool` or `ydotool`,
 //! whichever is installed.
+//!
+//! On macOS every pasteboard and key call runs on the main thread, which
+//! the system asserts for its input source calls, as Handy's `with_enigo`
+//! does: a paste from a plugin's thread hops there and waits, and the wait
+//! for the read runs back on the calling thread. Windows and Linux take
+//! the clipboard and the keys from any thread, so their pastes run where
+//! they're called.
 
 use std::time::{Duration, Instant};
 
@@ -101,15 +108,44 @@ pub struct SystemPaste;
 impl Paster for SystemPaste {
     fn paste(&self, text: &str, typing: bool) -> Result<()> {
         if typing {
+            // macOS traps when enigo looks up keys off the main thread.
+            #[cfg(target_os = "macos")]
+            {
+                let text = text.to_owned();
+                return crate::main_thread::run(move |_| type_text(&text))
+                    .map_err(|_| busy("paste"))?;
+            }
+            #[cfg(not(target_os = "macos"))]
             return type_text(text);
         }
         platform::paste(text)
     }
 
     fn copy(&self, text: &str) -> Result<()> {
-        let mut clipboard = arboard::Clipboard::new().map_err(|_| clipboard_failed())?;
-        clipboard.set_text(text).map_err(|_| clipboard_failed())
+        // The pasteboard belongs to the main thread on macOS. Windows and
+        // Linux take the clipboard from any thread.
+        #[cfg(target_os = "macos")]
+        {
+            let text = text.to_owned();
+            crate::main_thread::run(move |_| set_clipboard(&text)).map_err(|_| busy("copy"))?
+        }
+        #[cfg(not(target_os = "macos"))]
+        set_clipboard(text)
     }
+}
+
+fn set_clipboard(text: &str) -> Result<()> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|_| clipboard_failed())?;
+    clipboard.set_text(text).map_err(|_| clipboard_failed())
+}
+
+/// The main thread didn't get to a paste or copy in time.
+#[cfg(target_os = "macos")]
+fn busy(doing: &str) -> SpeechError {
+    SpeechError::failed(
+        "main_thread_busy",
+        &format!("Noura was busy and couldn't {doing}. Try again."),
+    )
 }
 
 fn enigo() -> Result<enigo::Enigo> {
@@ -716,10 +752,13 @@ mod platform {
 mod platform {
     use std::sync::{Arc, Mutex};
 
+    use dispatch2::MainThreadBound;
     use objc2::rc::Retained;
-    use objc2::{AnyThread, DefinedClass, define_class, msg_send};
+    use objc2::{AnyThread, DefinedClass, MainThreadMarker, define_class, msg_send};
     use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
-    use objc2_foundation::{NSArray, NSInteger, NSObject, NSString};
+    use objc2_foundation::{
+        NSArray, NSDate, NSDefaultRunLoopMode, NSInteger, NSObject, NSRunLoop, NSString,
+    };
 
     use super::*;
 
@@ -776,11 +815,43 @@ mod platform {
         }
     }
 
+    /// The promise on the pasteboard, until the clipboard comes back.
+    struct Published {
+        saved: Option<String>,
+        change: NSInteger,
+        /// Made, answered and dropped on the main thread.
+        provider: MainThreadBound<Retained<PasteProvider>>,
+        pressed: Result<()>,
+    }
+
+    /// Every pasteboard and enigo call runs on the main thread, where
+    /// macOS asserts its input source and keyboard calls run. The wait for
+    /// the app to read the text runs on the calling thread, so the main
+    /// thread stays free to answer that read.
     pub(super) fn paste(text: &str) -> Result<()> {
+        let transaction = Arc::new(Mutex::new(Transaction::new(Instant::now())));
+        let marked = transaction.clone();
+        let text = text.to_owned();
+        let published = crate::main_thread::run(move |mtm| publish_and_press(mtm, &marked, text))
+            .map_err(|_| busy("paste"))??;
+        wait_for_read(&transaction);
+        let lost = transaction
+            .lock()
+            .map_or(true, |transaction| transaction.ownership_lost);
+        let pressed = crate::main_thread::run(move |mtm| restore(mtm, published, lost));
+        // A main thread too busy to restore leaves the text on the
+        // clipboard, which is no reason to say the paste failed.
+        pressed.unwrap_or(Ok(()))
+    }
+
+    fn publish_and_press(
+        mtm: MainThreadMarker,
+        transaction: &Arc<Mutex<Transaction>>,
+        text: String,
+    ) -> Result<Published> {
         let mut clipboard = arboard::Clipboard::new().map_err(|_| clipboard_failed())?;
         let saved = clipboard.get_text().ok();
-        let transaction = Arc::new(Mutex::new(Transaction::new(Instant::now())));
-        let provider = PasteProvider::new(transaction.clone(), text.to_owned());
+        let provider = PasteProvider::new(transaction.clone(), text);
         let pasteboard = NSPasteboard::generalPasteboard();
         let mut kinds: Vec<Retained<NSString>> = vec![NSString::from_str("public.utf8-plain-text")];
         kinds.extend(CONCEALED.iter().map(|kind| NSString::from_str(kind)));
@@ -802,31 +873,55 @@ mod platform {
         {
             transaction.press_failed = true;
         }
+        Ok(Published {
+            saved,
+            change,
+            provider: MainThreadBound::new(provider, mtm),
+            pressed,
+        })
+    }
+
+    /// Wait until the app read the text or the time runs out. On the main
+    /// thread, as in a test, its run loop answers the reads meanwhile.
+    fn wait_for_read(transaction: &Mutex<Transaction>) {
+        let main = MainThreadMarker::new().is_some();
         loop {
             let done = transaction
                 .lock()
                 .map_or(true, |transaction| transaction.done(Instant::now()));
             if done {
-                break;
+                return;
             }
-            std::thread::sleep(Duration::from_millis(20));
+            if main {
+                let until = NSDate::dateWithTimeIntervalSinceNow(0.02);
+                // SAFETY: NSDefaultRunLoopMode is a framework constant.
+                let mode = unsafe { NSDefaultRunLoopMode };
+                NSRunLoop::currentRunLoop().runMode_beforeDate(mode, &until);
+            } else {
+                std::thread::sleep(Duration::from_millis(20));
+            }
         }
-        let lost = transaction
-            .lock()
-            .map_or(true, |transaction| transaction.ownership_lost);
+    }
+
+    fn restore(mtm: MainThreadMarker, published: Published, lost: bool) -> Result<()> {
+        let Published {
+            saved,
+            change,
+            provider,
+            pressed,
+        } = published;
         // Restore only while the promise is still on the pasteboard: a
         // copy made meanwhile wins.
-        if !lost && pasteboard.changeCount() == change {
-            match saved {
-                Some(saved) => {
-                    let _ = clipboard.set_text(saved);
-                }
-                None => {
-                    let _ = clipboard.clear();
-                }
-            }
+        if !lost
+            && NSPasteboard::generalPasteboard().changeCount() == change
+            && let Ok(mut clipboard) = arboard::Clipboard::new()
+        {
+            let _ = match saved {
+                Some(saved) => clipboard.set_text(saved),
+                None => clipboard.clear(),
+            };
         }
-        drop(provider);
+        drop(provider.into_inner(mtm));
         pressed
     }
 }
