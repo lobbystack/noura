@@ -175,16 +175,25 @@ fn start_records_and_shows_stop_and_the_timer() {
     wait_until(harness, "Start", |harness| {
         has(&panel(harness), "Button: Start")
     });
+    // A pointer click, which once reached the editor's toolbar under
+    // the panel and made the note a checklist.
     harness
         .get_by_role_and_label(Role::Group, "Properties")
         .get_by_role_and_label(Role::Button, "Start")
-        .click_accesskit();
+        .click();
     wait_until(harness, "Stop", |harness| {
         has(&panel(harness), "Button: Stop")
     });
     let shown = panel(harness);
     assert!(has(&shown, "Label: 00:00:00"), "{shown:?}");
     assert!(!has(&shown, "Button: Start"), "{shown:?}");
+    let tab = harness
+        .state()
+        .app()
+        .active_tab()
+        .map(|tab| tab.id())
+        .unwrap();
+    assert_eq!(harness.state().app().note(tab).unwrap().text(), "Agenda.\n");
 
     harness
         .get_by_role_and_label(Role::Group, "Properties")

@@ -196,15 +196,15 @@ fn glyph_button(ui: &mut Ui, glyph: &Glyph, selected: Option<bool>, enabled: boo
     } else {
         vec2(28.0, 28.0)
     };
-    let response = ui
-        .scope(|ui| {
-            // No padding or row height of its own, so the glyph can't make
-            // the button any bigger than its size.
-            ui.spacing_mut().button_padding = vec2(0.0, 0.0);
-            ui.spacing_mut().interact_size.y = size.y;
-            ui.add_enabled(enabled, button.min_size(size))
-        })
-        .inner;
+    // No padding or row height of its own, so the glyph can't make the
+    // button any bigger than its size. The spacing changes in place and
+    // comes back after: a nested scope would stop a wrapping toolbar from
+    // wrapping the button, which then spills past the editor's edge.
+    let spacing = ui.spacing().clone();
+    ui.spacing_mut().button_padding = vec2(0.0, 0.0);
+    ui.spacing_mut().interact_size.y = size.y;
+    let response = ui.add_enabled(enabled, button.min_size(size));
+    *ui.spacing_mut() = spacing;
     if let Glyph::Icon(icon) = glyph {
         let visuals = ui
             .style()
