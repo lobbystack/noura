@@ -986,14 +986,19 @@ mod tests {
         press(harness, Modifiers::SHIFT, Key::W)
     }
 
-    /// Run New Window from the first window's command palette.
+    /// Run New Window from the first window's search.
     fn open_new_window(harness: &mut Harness<'static, Windows>) {
         harness.key_press_modifiers(Modifiers::COMMAND, Key::K);
         harness.run();
         harness
-            .get_by_label("Search commands")
+            .get_by_role_and_label(egui::accesskit::Role::TextInput, "Search")
             .type_text("new window");
-        harness.run();
+        // The contents search answers from another thread, which asks for
+        // frames of its own.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while harness.try_run().is_err() {
+            assert!(std::time::Instant::now() < deadline, "search never settled");
+        }
         harness.key_press(Key::Enter);
         harness.run();
     }

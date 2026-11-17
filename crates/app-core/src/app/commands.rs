@@ -3,7 +3,7 @@
 
 use std::{sync::Arc, time::Instant};
 
-use super::{App, Change};
+use super::{App, Change, SearchScope};
 use crate::{
     Area, Command, CommandSource, KeyPress, Menu, MenuName, Platform, ShortcutEntry, ShortcutGroup,
     Tab,
@@ -45,12 +45,16 @@ impl App {
                     app.new_folder(None);
                 }),
             ),
-            (QUICK_OPEN, "Quick Open…", Arc::new(App::open_quick_open)),
-            (SEARCH, "Search Files…", Arc::new(App::open_search)),
+            (COMMAND_PALETTE, "Search…", Arc::new(App::toggle_palette)),
             (
-                COMMAND_PALETTE,
-                "Command Palette",
-                Arc::new(App::toggle_palette),
+                QUICK_OPEN,
+                "Search File Names…",
+                Arc::new(|app| app.open_palette(SearchScope::Names)),
+            ),
+            (
+                SEARCH,
+                "Search File Contents…",
+                Arc::new(|app| app.open_palette(SearchScope::Contents)),
             ),
             (RENAME_FILE, "Rename File", Arc::new(App::rename_open_file)),
             (SHARE_LINK, "Share Link…", Arc::new(App::share_open_note)),

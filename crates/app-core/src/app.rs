@@ -58,10 +58,11 @@ mod web;
 
 pub use drops::DragOut;
 pub use file_actions::{Question, Rename};
-pub use finder::{QuickOpen, Search};
 pub use ignored_files::IgnoredFiles;
 pub use notes::UnsavedPrompt;
-pub use palette::{CommandPalette, Palette, PaletteMode};
+pub use palette::{
+    EMPTY_COMMANDS, GROUP_LIMIT, Palette, PaletteGroup, PaletteItem, PaletteStatus, SearchScope,
+};
 pub use plugins::{NameDraft, PluginPlace};
 pub use speech::{
     SPEECH_LANGUAGES, SpeechModelFilter, SpeechModelRow, SpeechModelSection, SpeechModelsPage,
@@ -312,8 +313,7 @@ pub struct App {
     registry: Registry,
     /// The PDF and image tabs' viewers.
     viewers: crate::viewers::Viewers,
-    /// Commands, quick open or search, while this window's palette is
-    /// open.
+    /// Search, while it's open in this window.
     palette: Option<Palette>,
     /// This window's searches, which run off the UI thread.
     searcher: Searcher,

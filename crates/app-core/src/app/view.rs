@@ -451,7 +451,7 @@ impl App {
 
     /// Show `tree`, keeping the old tree's open folders, current row and
     /// drag, which follow the items in `moves`, and let the tabs follow
-    /// their files into it. Quick open ranks the files again when they
+    /// their files into it. Search ranks the files again when they
     /// changed. The watch thread may list files that look as they did, so
     /// only what changed is announced and saved.
     fn show_tree(&mut self, mut tree: FileTree, moves: &[(&str, &str)]) {

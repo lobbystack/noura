@@ -1,4 +1,4 @@
-//! Quick open: find any file in the tree by name from the keyboard.
+//! Finding files by name, as search does when you type.
 //!
 //! A file matches when its name holds every typed word's letters in
 //! order, or failing that, its path does, folders and extension included,
@@ -20,10 +20,10 @@ use crate::{
     files::{parent_of, shown_name, sort_key},
 };
 
-/// Quick open lists at most this many matches.
+/// Search lists at most this many files by name.
 pub const QUICK_OPEN_LIMIT: usize = 50;
 
-/// One file quick open lists.
+/// One file search lists by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuickOpenMatch {
     /// The name the file tree shows: Markdown files appear without `.md`.
@@ -59,6 +59,16 @@ impl Ranked {
             // A shorter name that matches as well is the closer match.
             .then_with(|| self.found.name.len().cmp(&other.found.name.len()))
             .then_with(|| self.found.relative_path.cmp(&other.found.relative_path))
+    }
+}
+
+/// The row for the file at `path`, as quick open lists it.
+pub(crate) fn file_match(path: &str) -> QuickOpenMatch {
+    let file_name = path.rsplit('/').next().unwrap_or(path);
+    QuickOpenMatch {
+        name: shown_name(file_name, EntryKind::File),
+        folder: parent_of(path).unwrap_or("").to_owned(),
+        relative_path: path.to_owned(),
     }
 }
 
