@@ -6,7 +6,7 @@ Noura records what other apps play with code adapted from anarlog's audio crate,
 
 - Repository: https://github.com/fastrepl/anarlog
 - Commit: `ad5cc8b4542c2d352318b3a91560969442cba450`
-- License: MIT, `LICENSE` at the repository root, "Copyright (c) 2023-present Fastrepl, Inc.". `LICENSING.md` puts every path outside `enterprise/` under that license. Noura took nothing from `enterprise/`, and `crates/audio-actual` holds no nearer license file.
+- License: MIT, `LICENSE` at the repository root, "Copyright (c) 2023-present Fastrepl, Inc.". `LICENSING.md` puts every path outside `enterprise/` under that license. Noura took nothing from `enterprise/`, and neither `crates/audio-actual` nor `crates/detect` holds a nearer license file.
 
 ## Code adapted
 
@@ -14,6 +14,9 @@ Noura records what other apps play with code adapted from anarlog's audio crate,
 |---|---|---|
 | `crates/audio-actual/src/speaker/macos.rs`: the mono global process tap, the private aggregate device description and the IO proc that reads the tap's buffer | `crates/speech/src/audio/system.rs`, `macos` module | Ported from cidre 0.15 to 0.30. The IO proc pushes f32 samples into an `rtrb` ring instead of anarlog's ring and waker, and a worker thread resamples to 16 kHz with Noura's `MonoResampler`. Only f32 tap formats are read. No async stream, sample rate probe or dropped-sample counters. |
 | `crates/audio-actual/src/speaker/windows.rs`: `capture_audio_loop`, `open_loopback_capture`, `open_endpoint_loopback_client` and `drain_packets` | `crates/speech/src/audio/system.rs`, `windows` module | Ported from wasapi 0.23 to 0.27, which fixes RUSTSEC-2026-0332. Opens the loopback stream at 16 kHz with WASAPI's conversion and mixes every channel to mono instead of keeping the first. Follows the default output device once a second without anarlog's confirmation count, and doesn't follow a non-default device that another app plays to. No ring buffer, waker or integer formats. |
+| `crates/detect/src/list/windows.rs`: `list_mic_using_apps`, the walk over every capture device's active WASAPI audio sessions and their process IDs | `crates/speech/src/audio/in_use.rs`: `microphone_in_use` for Windows | Answers whether any process other than Noura has an active session, instead of listing the apps by name, so no `sysinfo` lookup or registry walk. Ported to wasapi 0.27. |
+| `crates/detect/src/list/linux.rs`: `list_mic_using_apps`, `wait_for_context_ready`, `wait_for_source_output_query`, `iterate_mainloop` and the 2 s timeout | `crates/speech/src/audio/in_use.rs`: `microphone_in_use` for Linux | Answers whether any uncorked source output belongs to a process other than Noura, by `application.process.id`, instead of listing apps. One main loop and one query, without anarlog's error type. |
+| `crates/detect/src/mic/windows.rs` and `mic/linux.rs`: polling once a second and telling only changes | `crates/speech/src/hub.rs`: `check_microphone`, which already polled once a second for macOS | Nothing copied: the existing loop serves every system. |
 
 ## Transcription plugin
 

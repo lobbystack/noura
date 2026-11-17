@@ -6,7 +6,7 @@ Noura pastes only in answer to something you did: a [kernel event](kernel-events
 
 ## Functions
 
-- `paste(text, method)`: paste `text` into the focused app. With `clipboard`, Noura puts the text on the clipboard, presses the paste keys and puts back what the clipboard held: on macOS once the app has read it, on Windows and Linux after half a second. On Linux it presses Shift+Insert and puts back the primary selection too. With `typing`, Noura types the text key by key and leaves the clipboard alone, for apps that refuse a paste. The call returns once the text is in, and the wait doesn't count toward the call's deadline.
+- `paste(text, method)`: paste `text` into the focused app. With `clipboard`, Noura puts the text on the clipboard, presses the paste keys and puts back what the clipboard held: on macOS and Windows once the app has read it, on Linux after half a second. On Linux it presses Shift+Insert and puts back the primary selection too. With `typing`, Noura types the text key by key and leaves the clipboard alone, for apps that refuse a paste. The call returns once the text is in, and the wait doesn't count toward the call's deadline.
 - `copy(text)`: put `text` on the clipboard and leave it there, as Copy does.
 
 ## Example

@@ -856,9 +856,9 @@ interface paste {
 
   enum method {
     // Noura puts the text on the clipboard, presses the paste keys, and
-    // puts back what the clipboard held: on macOS once the app has read
-    // it, elsewhere after half a second. On Linux it presses Shift+Insert
-    // and puts back the primary selection too.
+    // puts back what the clipboard held: on macOS and Windows once the
+    // app has read it, on Linux after half a second. On Linux it presses
+    // Shift+Insert and puts back the primary selection too.
     clipboard,
     // Noura types the text key by key and leaves the clipboard alone.
     // Slower, for apps that refuse a paste.

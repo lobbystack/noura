@@ -308,12 +308,12 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 ## Speech (Handy, anarlog and handy-computer/models)
 
-`crates/speech` records audio, runs speech-to-text models and pastes into other apps. It uses transcribe-cpp (MIT), which builds transcribe.cpp and ggml (MIT), handy-recorder (MIT), hf-hub (Apache-2.0), rubato (MIT/Apache-2.0), hound (Apache-2.0), enigo (MIT), arboard (MIT/Apache-2.0), rtrb (MIT/Apache-2.0), cidre (MIT) on macOS and wasapi (MIT) on Windows. The desktop app adds global-hotkey and tray-icon (MIT/Apache-2.0). The Dictation plugin matches custom words with strsim (MIT) and natural (MIT), and names languages with isolang (Apache-2.0). These are dependencies, and the generated license file carries their license texts.
+`crates/speech` records audio, runs speech-to-text models and pastes into other apps. It uses transcribe-cpp (MIT), which builds transcribe.cpp and ggml (MIT), handy-recorder (MIT), hf-hub (Apache-2.0), rubato (MIT/Apache-2.0), hound (Apache-2.0), enigo (MIT), arboard (MIT/Apache-2.0), rtrb (MIT/Apache-2.0), cidre (MIT) on macOS, wasapi (MIT) and windows (MIT/Apache-2.0) on Windows, and libpulse-binding (MIT/Apache-2.0) on Linux. The desktop app adds global-hotkey and tray-icon (MIT/Apache-2.0), objc2-user-notifications (Zlib/Apache-2.0/MIT) on macOS, and ashpd (MIT) and zbus (MIT) on Linux. The Dictation plugin matches custom words with strsim (MIT) and natural (MIT), and names languages with isolang (Apache-2.0). These are dependencies, and the generated license file carries their license texts.
 
 Three donors' code came along, each recorded in `docs/provenance/`:
 
-- [Handy](docs/provenance/handy.md): the macOS paste that waits for the target app to read the clipboard, the model grades, and the Dictation plugin's shortcut modes, custom words and menu.
-- [anarlog](docs/provenance/anarlog.md): system audio capture on macOS and Windows, and the Transcription plugin's Summary prompts and length policy.
+- [Handy](docs/provenance/handy.md): the macOS and Windows pastes that wait for the target app to read the clipboard, the model grades, and the Dictation plugin's shortcut modes, custom words and menu.
+- [anarlog](docs/provenance/anarlog.md): system audio capture on macOS and Windows, the check on Windows and Linux for another app using the microphone, and the Transcription plugin's Summary prompts and length policy.
 - [handy-computer/models](docs/provenance/handy-models.md): the model catalog, `crates/speech/catalog/catalog.json`.
 
 Noura ships no speech model. You download each one from Hugging Face in Settings, under the license Settings shows; Parakeet Ultra uses CC BY 4.0.

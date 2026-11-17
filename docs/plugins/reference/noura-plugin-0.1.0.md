@@ -1817,9 +1817,9 @@ of the plugin's views or panels. Any other call gets `failed`.
 
 - <a id="method.clipboard"></a>`clipboard`
   <p>Noura puts the text on the clipboard, presses the paste keys, and
-  puts back what the clipboard held: on macOS once the app has read
-  it, elsewhere after half a second. On Linux it presses Shift+Insert
-  and puts back the primary selection too.
+  puts back what the clipboard held: on macOS and Windows once the
+  app has read it, on Linux after half a second. On Linux it presses
+  Shift+Insert and puts back the primary selection too.
 
 - <a id="method.typing"></a>`typing`
   <p>Noura types the text key by key and leaves the clipboard alone.

@@ -16,6 +16,8 @@ use std::sync::Arc;
 
 use crate::{Result, SpeechError};
 
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod in_use;
 mod mic;
 mod resample;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -103,7 +105,11 @@ impl AudioBackend for SystemAudio {
         {
             system::microphone_in_use()
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        {
+            in_use::microphone_in_use()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
         {
             None
         }

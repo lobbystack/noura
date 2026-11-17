@@ -1,6 +1,6 @@
 # Handy: paste receipts, model grades and dictation
 
-Noura's paste on macOS, the grades on Settings > Speech and the Dictation plugin adapt code from Handy, the open source dictation app. This record lists each source path and what changed.
+Noura's paste on macOS and Windows, the grades on Settings > Speech and the Dictation plugin adapt code from Handy, the open source dictation app. This record lists each source path and what changed.
 
 ## Source
 
@@ -14,6 +14,7 @@ Noura's paste on macOS, the grades on Settings > Speech and the Dictation plugin
 |---|---|---|
 | `src-tauri/src/paste_tx/mod.rs`: `TxState`, `evaluate`, `QUIET_PERIOD`, `RESTORE_TIMEOUT`, `FAILED_INJECTION_TIMEOUT` and the 100 ms chord hold | `crates/speech/src/paste.rs`: `Transaction`, `Transaction::done` and the constants | Renamed, without Tauri, logging or auto-submit. The wait runs on the calling thread instead of a waiter thread. |
 | `src-tauri/src/paste_tx/macos.rs`: the `HandyPasteProvider` class, the concealment types and the `declareTypes:owner:` publish | `crates/speech/src/paste.rs`, `platform` module for macOS (`NouraPasteProvider`) | The class is renamed. The saved clipboard is text only, read and restored through `arboard` instead of Tauri's clipboard plugin. No image restore, auto-submit or "keep the transcript" mode. |
+| `src-tauri/src/paste_tx/windows.rs`: the message-only window and its procedure (`WM_RENDERFORMAT` as the read receipt, `WM_RENDERALLFORMATS`, `WM_DESTROYCLIPBOARD`, the 25 ms timer), `render_text`, `restore_snapshot`, `snapshot_clipboard` with its skipped formats and bitmap copy, `publish` and `publish_formats` with the three clipboard-history markers and the delayed-render `SetClipboardData` check | `crates/speech/src/paste.rs`, `platform` module for Windows (`NouraPasteWindow`) | Uses Noura's `Transaction` for the receipts and the timeouts. `paste` holds a lock so one paste owns the clipboard at a time, which replaces Handy's `PENDING` and `flush_pending`, and it waits for the window's thread, so it returns once the clipboard is back. No auto-submit or "keep the transcript" mode, no Tauri handle or logging. |
 | `src-tauri/src/catalog/mod.rs`: `CatalogModel::is_offered` (a transcription model whose default file sits at the repository's top level) | `crates/speech/src/catalog.rs`, `Catalog::parse` | Rewritten in Noura's types, with Noura's license filter added. |
 | `src/lib/models/catalog.ts`: `GRADE_CEILINGS` (A 5%, B 10%, C 20%, D 30%) | `crates/speech/src/catalog.rs`: `GRADE_CEILINGS` and `Grade` | Letters only, without plus and minus. |
 | `src/lib/models/grading.ts`: the geometric mean over your languages | `crates/speech/src/catalog.rs`: `Catalog::recommended` | Rewritten in Rust. |
@@ -27,7 +28,7 @@ Noura's paste on macOS, the grades on Settings > Speech and the Dictation plugin
 
 ## Left behind
 
-Handy's Windows paste receipts (`src-tauri/src/paste_tx/windows.rs`, delayed rendering with `WM_RENDERFORMAT`) didn't come along. Noura's Windows paste restores the clipboard after a fixed 500 ms.
+Linux keeps a timed restore after 500 ms: neither X11 nor Wayland tells the clipboard's owner when an app reads it in a way Noura can tie to one paste.
 
 Handy's recording overlay, history, filler-word removal and post-processing didn't come along: the plugin has no window of its own, and the spec leaves them out.
 
@@ -37,4 +38,4 @@ Settings > Speech follows the layout of Handy's Models page (`src/components/set
 
 `THIRD_PARTY_NOTICES.md` carries Handy's MIT notice.
 
-Reviewed by the implementing agents on 2026-11-16 for the owner's approval.
+Reviewed by the implementing agents on 2026-11-16 for the owner's approval. The Windows paste row was added on 2026-11-16 from the same commit.
