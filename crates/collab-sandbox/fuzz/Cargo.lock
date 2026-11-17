@@ -3751,6 +3751,7 @@ dependencies = [
  "libc",
  "local-core",
  "parking_lot",
+ "rand 0.8.8",
  "semver",
  "serde",
  "serde_json",

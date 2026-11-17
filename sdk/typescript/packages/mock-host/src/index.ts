@@ -80,7 +80,7 @@ export interface Provider {
 export type Opening =
 	| { kind: 'object'; id: string; placement: 'preview' | 'new-tab' }
 	| { kind: 'page'; page: string }
-	| { kind: 'settings'; section: 'plugins' | 'ai' | 'sync' }
+	| { kind: 'settings'; section: 'plugins' | 'ai' | 'sync' | 'speech' }
 	| { kind: 'trash'; id: string };
 
 export interface MockHostOptions {
