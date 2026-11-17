@@ -16,7 +16,7 @@ use std::thread;
 use parking_lot::Mutex;
 
 use crate::audio::{AudioBackend, Capture, Source};
-use crate::chunker::{Chunk, Chunker};
+use crate::chunker::{Chunk, Chunker, MAX_CHUNK_MS, samples};
 use crate::engine::{Cancel, Live, Model, Options, Piece, SAMPLE_RATE, Transcriber, Vad};
 use crate::{Result, SpeechError};
 
@@ -268,7 +268,8 @@ impl Recording {
                         chunker,
                         &jobs,
                         &shared,
-                        streaming.then_some((model, options, cancel)),
+                        &cancel,
+                        streaming.then_some((model, options)),
                     );
                 })
                 .map_err(|error| SpeechError::io(&error, "channel thread"))?;
@@ -371,6 +372,68 @@ impl Recording {
     }
 }
 
+/// Audio whose peaks stay under this, about -54 dBFS, is a silent room.
+const SOUND_PEAK: f32 = 0.002;
+
+/// How loud a channel was, for the log and for [`whole_channel`].
+#[derive(Default)]
+struct Level {
+    samples: usize,
+    peak: f32,
+    squares: f64,
+}
+
+impl Level {
+    fn add(&mut self, samples: &[f32]) {
+        self.samples += samples.len();
+        for sample in samples {
+            self.peak = self.peak.max(sample.abs());
+            self.squares += f64::from(*sample) * f64::from(*sample);
+        }
+    }
+
+    fn rms(&self) -> f64 {
+        if self.samples == 0 {
+            0.0
+        } else {
+            (self.squares / self.samples as f64).sqrt()
+        }
+    }
+}
+
+/// The spooled audio of `file`, cut every [`MAX_CHUNK_MS`] where it isn't
+/// silent, for when the voice activity model found no speech in sound.
+fn whole_channel(file: &Path, mut send: impl FnMut(Chunk)) {
+    let Ok(reader) = hound::WavReader::open(file) else {
+        tracing::warn!("a channel's spooled audio can't be read back");
+        return;
+    };
+    let window = samples(MAX_CHUNK_MS);
+    let mut start = 0;
+    let mut audio = Vec::with_capacity(window);
+    let mut flush = |start: usize, audio: &mut Vec<f32>| {
+        if audio.iter().any(|sample| sample.abs() >= SOUND_PEAK) {
+            send(Chunk {
+                start,
+                audio: std::mem::take(audio),
+            });
+        }
+        audio.clear();
+    };
+    for sample in reader
+        .into_samples::<i16>()
+        .filter_map(|sample| sample.ok())
+    {
+        audio.push(f32::from(sample) / f32::from(i16::MAX));
+        if audio.len() == window {
+            flush(start, &mut audio);
+            start += window;
+        }
+    }
+    flush(start, &mut audio);
+}
+
+#[allow(clippy::too_many_arguments)]
 fn channel_thread(
     channel: Source,
     received: Receiver<Vec<f32>>,
@@ -378,8 +441,10 @@ fn channel_thread(
     mut chunker: Option<Chunker>,
     jobs: &Sender<Job>,
     shared: &Arc<Shared>,
-    stream: Option<(Arc<dyn Model>, Options, Cancel)>,
+    cancel: &Cancel,
+    stream: Option<(Arc<dyn Model>, Options)>,
 ) {
+    let mut level = Level::default();
     let mut writer = std::fs::File::create(file)
         .ok()
         .and_then(|out| hound::WavWriter::new(BufWriter::new(out), wav_spec()).ok());
@@ -388,9 +453,10 @@ fn channel_thread(
     }
     // A streaming model gets the audio on its own thread.
     let (to_stream, streamer) = match stream {
-        Some((model, options, cancel)) => {
+        Some((model, options)) => {
             let (send, from_channel) = mpsc::channel::<Vec<f32>>();
             let shared = shared.clone();
+            let cancel = cancel.clone();
             let handle = thread::spawn(move || {
                 let mut session = match model.session() {
                     Ok(session) => session,
@@ -412,7 +478,10 @@ fn channel_thread(
                         shared.set_state(State::Finished, None);
                     }
                     Err(error) if error.code == "cancelled" => {}
-                    Err(error) => shared.set_state(State::Failed, Some(error.message)),
+                    Err(error) => {
+                        tracing::warn!(code = %error.code, "a streaming transcription failed");
+                        shared.set_state(State::Failed, Some(error.message));
+                    }
                 }
             });
             (Some(send), Some(handle))
@@ -421,6 +490,7 @@ fn channel_thread(
     };
     while let Ok(samples) = received.recv() {
         shared.heard(channel, samples.len());
+        level.add(&samples);
         if let Some(writer) = writer.as_mut() {
             for sample in &samples {
                 let _ = writer.write_sample(to_i16(*sample));
@@ -435,13 +505,31 @@ fn channel_thread(
             let _ = to_stream.send(samples);
         }
     }
-    if let Some(writer) = writer {
-        let _ = writer.finalize();
-    }
-    if let Some(chunker) = chunker.as_mut()
-        && let Some(chunk) = chunker.finish()
-    {
-        let _ = jobs.send(Job::Chunk(channel, chunk));
+    let spooled = writer.is_some_and(|writer| writer.finalize().is_ok());
+    if let Some(chunker) = chunker.as_mut() {
+        if let Some(chunk) = chunker.finish() {
+            let _ = jobs.send(Job::Chunk(channel, chunk));
+        }
+        tracing::info!(
+            ?channel,
+            seconds = level.samples as f64 / f64::from(SAMPLE_RATE),
+            peak = level.peak,
+            rms = level.rms(),
+            most_speech = chunker.most_speech(),
+            chunks = chunker.chunks(),
+            "a channel stopped recording"
+        );
+        // The voice activity model can miss speech, as in an odd
+        // microphone's sound: then the model hears the whole channel.
+        if chunker.chunks() == 0 && level.peak >= SOUND_PEAK && spooled && !cancel.is_cancelled() {
+            tracing::warn!(
+                ?channel,
+                "the voice activity model found no speech in sound; transcribing the whole channel"
+            );
+            whole_channel(file, |chunk| {
+                let _ = jobs.send(Job::Chunk(channel, chunk));
+            });
+        }
     }
     let _ = jobs.send(Job::Done);
     drop(to_stream);
@@ -491,6 +579,7 @@ fn worker(
             match model.session() {
                 Ok(opened) => session = Some(opened),
                 Err(error) => {
+                    tracing::warn!(code = %error.code, "a speech model session didn't open");
                     shared.set_state(State::Failed, Some(error.message));
                     return;
                 }
@@ -499,8 +588,18 @@ fn worker(
         let Some(transcriber) = session.as_mut() else {
             return;
         };
-        match transcriber.transcribe(&chunk.audio, options, cancel) {
+        let began = std::time::Instant::now();
+        let audio = lifted(&chunk.audio);
+        match transcriber.transcribe(&audio, options, cancel) {
             Ok(pieces) => {
+                tracing::debug!(
+                    ?channel,
+                    start_ms = ms(chunk.start),
+                    length_ms = ms(chunk.audio.len()),
+                    pieces = pieces.len(),
+                    took_ms = began.elapsed().as_millis() as u64,
+                    "transcribed a chunk"
+                );
                 let mut found = segments(channel, chunk.start, pieces);
                 // A model without timestamps gets the chunk's span.
                 for segment in &mut found {
@@ -513,12 +612,34 @@ fn worker(
             }
             Err(error) if error.code == "cancelled" => return,
             Err(error) => {
+                tracing::warn!(?channel, code = %error.code, "a chunk didn't transcribe");
                 shared.set_state(State::Failed, Some(error.message));
                 return;
             }
         }
     }
     if !cancel.is_cancelled() {
+        if shared.snapshot.lock().segments.is_empty() {
+            tracing::warn!("a recording finished with no text");
+        }
         shared.set_state(State::Finished, None);
     }
+}
+
+/// The loudest a quiet chunk becomes before the model hears it.
+const LIFTED_PEAK: f32 = 0.5;
+/// The most a quiet chunk is lifted.
+const MAX_LIFT: f32 = 30.0;
+
+/// `audio`, louder when its peaks are quiet, since a model hears speech
+/// at a few percent of full scale poorly.
+fn lifted(audio: &[f32]) -> std::borrow::Cow<'_, [f32]> {
+    let peak = audio
+        .iter()
+        .fold(0.0f32, |most, sample| most.max(sample.abs()));
+    if peak <= 0.0 || peak >= LIFTED_PEAK / 4.0 {
+        return std::borrow::Cow::Borrowed(audio);
+    }
+    let gain = (LIFTED_PEAK / peak).min(MAX_LIFT);
+    std::borrow::Cow::Owned(audio.iter().map(|sample| sample * gain).collect())
 }

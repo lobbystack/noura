@@ -251,11 +251,14 @@ impl SpeechShell {
         match &self.tray {
             Some(tray) => tray.set_menu(Some(Box::new(menu))),
             None => {
-                let built = TrayIconBuilder::new()
+                let builder = TrayIconBuilder::new()
                     .with_menu(Box::new(menu))
-                    .with_tooltip("Noura")
-                    .with_icon(icon())
-                    .build();
+                    .with_tooltip("Noura");
+                #[cfg(target_os = "macos")]
+                let builder = builder.with_icon_templated(icon());
+                #[cfg(not(target_os = "macos"))]
+                let builder = builder.with_icon(icon());
+                let built = builder.build();
                 match built {
                     Ok(tray) => self.tray = Some(tray),
                     Err(error) => tracing::warn!(%error, "the menu bar item didn't show"),
@@ -343,26 +346,120 @@ fn append(
     }
 }
 
-/// The tray icon: Noura's 32-pixel app icon.
+/// The tray icon. On macOS, Noura's glyph as a template image, which the
+/// system draws white or black to match the menu bar and highlights when
+/// clicked, as every other menu bar icon; elsewhere, the 32-pixel app
+/// icon.
 fn icon() -> tray_icon::Icon {
-    let decoded = (|| {
-        let decoder = png::Decoder::new(std::io::Cursor::new(include_bytes!("../icons/32x32.png")));
-        let mut reader = decoder.read_info().ok()?;
-        let mut buffer = vec![0; reader.output_buffer_size()?];
-        let frame = reader.next_frame(&mut buffer).ok()?;
-        let rgba = match frame.color_type {
-            png::ColorType::Rgba => buffer[..frame.buffer_size()].to_vec(),
-            png::ColorType::Rgb => buffer[..frame.buffer_size()]
-                .as_chunks::<3>()
-                .0
-                .iter()
-                .flat_map(|[red, green, blue]| [*red, *green, *blue, 255])
-                .collect(),
-            _ => return None,
-        };
-        tray_icon::Icon::from_rgba(rgba, frame.width, frame.height).ok()
-    })();
-    decoded.unwrap_or_else(|| {
+    let (rgba, width, height) = icon_pixels().unwrap_or_else(|| (vec![0; 32 * 32 * 4], 32, 32));
+    tray_icon::Icon::from_rgba(rgba, width, height).unwrap_or_else(|_| {
         tray_icon::Icon::from_rgba(vec![0; 32 * 32 * 4], 32, 32).expect("a blank icon")
     })
+}
+
+/// Whether [`icon`] is a template image.
+const TEMPLATE_ICON: bool = cfg!(target_os = "macos");
+
+/// The 18 pt glyph at 2x, in black with alpha.
+const TEMPLATE_2X: &[u8] = include_bytes!("../icons/tray-template@2x.png");
+
+/// The menu bar's height in points. `tray-icon` draws an icon this many
+/// pixels tall or taller at this height.
+const MENU_BAR_POINTS: u32 = 22;
+
+/// The pixels of [`icon`], as RGBA with its width and height.
+fn icon_pixels() -> Option<(Vec<u8>, u32, u32)> {
+    if TEMPLATE_ICON {
+        template_pixels()
+    } else {
+        decode_png(include_bytes!("../icons/32x32.png"))
+    }
+}
+
+/// The 18 pt glyph at 2x, centered in a 22 pt square. `tray-icon` sizes
+/// an icon in points by its pixels, up to the menu bar's 22 pt, so 44
+/// pixels draw at 22 pt, exactly 2x on a Retina display, and the glyph
+/// keeps its 18 pt with the menu bar's margin around it.
+fn template_pixels() -> Option<(Vec<u8>, u32, u32)> {
+    let (glyph, width, height) = decode_png(TEMPLATE_2X)?;
+    let side = MENU_BAR_POINTS * 2;
+    let (left, top) = ((side - width) / 2, (side - height) / 2);
+    let mut rgba = vec![0; (side * side * 4) as usize];
+    for (row, line) in glyph.chunks_exact((width * 4) as usize).enumerate() {
+        let at = (((top + row as u32) * side + left) * 4) as usize;
+        rgba[at..at + line.len()].copy_from_slice(line);
+    }
+    Some((rgba, side, side))
+}
+
+/// A PNG's pixels as RGBA, with its width and height.
+fn decode_png(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    let mut reader = decoder.read_info().ok()?;
+    let mut buffer = vec![0; reader.output_buffer_size()?];
+    let frame = reader.next_frame(&mut buffer).ok()?;
+    let rgba = match frame.color_type {
+        png::ColorType::Rgba => buffer[..frame.buffer_size()].to_vec(),
+        png::ColorType::Rgb => buffer[..frame.buffer_size()]
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|[red, green, blue]| [*red, *green, *blue, 255])
+            .collect(),
+        _ => return None,
+    };
+    Some((rgba, frame.width, frame.height))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_menu_bar_template_is_a_black_glyph_at_2x_with_a_margin() {
+        let (glyph, width, height) = decode_png(TEMPLATE_2X).unwrap();
+        assert_eq!((width, height), (36, 36));
+        // Black, so only its alpha counts, as for every template image.
+        assert!(
+            glyph
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| pixel[..3] == [0, 0, 0])
+        );
+        assert!(glyph.as_chunks::<4>().0.iter().any(|pixel| pixel[3] == 255));
+
+        let (rgba, side, _) = template_pixels().unwrap();
+        assert_eq!(side, 44);
+        let alpha = |x: u32, y: u32| rgba[((y * side + x) * 4 + 3) as usize];
+        // Nothing within 2 pt of an edge.
+        for along in 0..side {
+            for inset in 0..4 {
+                assert_eq!(alpha(along, inset), 0);
+                assert_eq!(alpha(along, side - 1 - inset), 0);
+                assert_eq!(alpha(inset, along), 0);
+                assert_eq!(alpha(side - 1 - inset, along), 0);
+            }
+        }
+        let shown = rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|pixel| pixel[3] > 0)
+            .count();
+        let drawn = glyph
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|pixel| pixel[3] > 0)
+            .count();
+        assert_eq!(shown, drawn);
+    }
+
+    #[test]
+    fn the_tray_icon_decodes() {
+        let (rgba, width, height) = icon_pixels().unwrap();
+        assert_eq!(rgba.len(), (width * height * 4) as usize);
+        assert!(decode_png(include_bytes!("../icons/32x32.png")).is_some());
+    }
 }

@@ -93,7 +93,22 @@ else
 	echo "actool and iconutil not found; keeping the checked-in icon.icns" >&2
 fi
 
-# 4. Web assets: the glyph on transparency.
+# 4. macOS menu bar template: the glyph's shape in black on transparency,
+#    18 pt with a @2x copy, inside a 16x14 pt box so it keeps the margin
+#    menu bar icons have. macOS colors it to match the menu bar.
+magick "$work/glyph.png" -alpha extract -level 20%,70% -trim +repage "$work/tray-mask.png"
+for scale in 1 2; do
+	canvas=$((18 * scale))
+	box="$((16 * scale))x$((14 * scale))"
+	name="tray-template.png"
+	[ "$scale" = 2 ] && name="tray-template@2x.png"
+	magick "$work/tray-mask.png" -filter Lanczos -resize "$box" -background black \
+		-gravity center -extent "${canvas}x${canvas}" "$work/tray-mask-$scale.png"
+	magick -size "${canvas}x${canvas}" xc:black "$work/tray-mask-$scale.png" -alpha off \
+		-compose CopyOpacity -composite -strip "PNG32:$icons_dir/$name"
+done
+
+# 5. Web assets: the glyph on transparency.
 web="$root/apps/website/static"
 magick "$master" -resize 48x48 "$web/favicon.png"
 magick "$master" -resize 180x180 "$web/apple-touch-icon.png"

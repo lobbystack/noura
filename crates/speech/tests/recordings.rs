@@ -505,3 +505,115 @@ fn another_app_turning_the_microphone_on_is_an_event() {
         [Event::MicrophoneInUse(true), Event::MicrophoneInUse(false)]
     );
 }
+
+#[test]
+fn with_no_model_picked_a_recording_uses_a_downloaded_one_and_text_arrives_while_it_records() {
+    // Only a model Noura doesn't recommend is on this device, and the
+    // state file names none.
+    let recommended = catalog()
+        .recommended(&["en".to_owned()])
+        .map(|model| model.id.clone());
+    let other = catalog()
+        .models()
+        .iter()
+        .find(|model| Some(&model.id) != recommended.as_ref())
+        .unwrap();
+    let kit = kit_with(FakeEngine::default());
+    downloaded(kit.folder.path(), &other.id);
+    assert_eq!(kit.speech.state().model, None);
+    assert_eq!(kit.speech.selected_model().map(|m| &m.id), Some(&other.id));
+
+    let id = kit
+        .speech
+        .start("transcription", vec![Source::Microphone], None, None, None)
+        .unwrap();
+    let speech = recorded(&kit.folder.path().join("me.wav"), &[(1500, 1500)]);
+    feed(&kit.audio, Source::Microphone, &speech);
+    // The chunk is transcribed before you stop.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let now = kit.speech.read("transcription", &id).unwrap();
+        assert_eq!(now.state, State::Recording);
+        if !now.segments.is_empty() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no text while recording");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    kit.speech.stop("transcription", &id).unwrap();
+    let done = wait_for(&kit.speech, "transcription", &id, State::Finished);
+    assert_eq!(done.segments.len(), 1, "{:?}", done.segments);
+}
+
+#[test]
+fn with_no_model_on_this_device_a_recording_says_so() {
+    let kit = kit_with(FakeEngine::default());
+    let error = kit
+        .speech
+        .start("transcription", vec![Source::Microphone], None, None, None)
+        .unwrap_err();
+    assert_eq!(error.code, "model_missing");
+    assert_eq!(error.message, "Download a speech model in Settings first.");
+    assert_eq!(kit.audio.open_count(), 0);
+}
+
+#[test]
+fn a_model_that_fails_to_load_or_transcribe_fails_the_recording_with_a_reason() {
+    let kit = kit_with(FakeEngine {
+        broken: true,
+        ..FakeEngine::default()
+    });
+    downloaded(kit.folder.path(), ONBOARDING_MODEL);
+    let error = kit
+        .speech
+        .start("transcription", vec![Source::Microphone], None, None, None)
+        .unwrap_err();
+    assert_eq!(error.code, "model_unreadable");
+
+    let kit = kit_with(FakeEngine {
+        failing: true,
+        ..FakeEngine::default()
+    });
+    downloaded(kit.folder.path(), ONBOARDING_MODEL);
+    let id = kit
+        .speech
+        .start("transcription", vec![Source::Microphone], None, None, None)
+        .unwrap();
+    let speech = recorded(&kit.folder.path().join("me.wav"), &[(1500, 1500)]);
+    feed(&kit.audio, Source::Microphone, &speech);
+    let failed = wait_for(&kit.speech, "transcription", &id, State::Failed);
+    assert_eq!(
+        failed.failure.as_deref(),
+        Some("Noura couldn't transcribe this audio. Try another model in Settings.")
+    );
+}
+
+#[test]
+fn sound_the_voice_activity_model_misses_is_still_transcribed() {
+    // A quiet voice: the loudness detector hears no speech in it.
+    let kit = kit_with(FakeEngine::default());
+    downloaded(kit.folder.path(), ONBOARDING_MODEL);
+    let id = kit
+        .speech
+        .start("transcription", vec![Source::Microphone], None, None, None)
+        .unwrap();
+    let quiet: Vec<f32> = recorded(&kit.folder.path().join("me.wav"), &[(2000, 1000)])
+        .iter()
+        .map(|sample| sample * 0.02)
+        .collect();
+    feed(&kit.audio, Source::Microphone, &quiet);
+    kit.speech.stop("transcription", &id).unwrap();
+    let done = wait_for(&kit.speech, "transcription", &id, State::Finished);
+    assert_eq!(done.segments.len(), 1, "{:?}", done.segments);
+    assert_eq!(kit.engine.heard.lock().clone(), [samples(3000)]);
+
+    // Silence stays empty.
+    let id = kit
+        .speech
+        .start("transcription", vec![Source::Microphone], None, None, None)
+        .unwrap();
+    feed(&kit.audio, Source::Microphone, &vec![0.0; samples(2000)]);
+    kit.speech.stop("transcription", &id).unwrap();
+    let done = wait_for(&kit.speech, "transcription", &id, State::Finished);
+    assert!(done.segments.is_empty());
+}

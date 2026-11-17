@@ -165,6 +165,8 @@ pub struct FakeEngine {
     pub heard: Arc<Mutex<Vec<usize>>>,
     /// Makes loading fail, as for a broken file.
     pub broken: bool,
+    /// Makes every transcription fail, as for a model the engine can't run.
+    pub failing: bool,
 }
 
 impl Engine for FakeEngine {
@@ -179,6 +181,7 @@ impl Engine for FakeEngine {
             streaming: self.streaming,
             texts: self.texts.clone(),
             heard: self.heard.clone(),
+            failing: self.failing,
         }))
     }
 
@@ -191,6 +194,7 @@ struct FakeModel {
     streaming: bool,
     texts: Arc<Mutex<Vec<String>>>,
     heard: Arc<Mutex<Vec<usize>>>,
+    failing: bool,
 }
 
 impl Model for FakeModel {
@@ -203,11 +207,19 @@ impl Model for FakeModel {
             streaming: self.streaming,
             texts: self.texts.clone(),
             heard: self.heard.clone(),
+            failing: self.failing,
         }))
     }
 }
 
 impl FakeModel {
+    fn failure() -> SpeechError {
+        SpeechError::failed(
+            "engine_failed",
+            "Noura couldn't transcribe this audio. Try another model in Settings.",
+        )
+    }
+
     fn answer(&self, samples: usize) -> String {
         self.heard.lock().push(samples);
         let mut texts = self.texts.lock();
@@ -233,6 +245,9 @@ impl Transcriber for FakeModel {
         if cancel.is_cancelled() {
             return Err(SpeechError::cancelled());
         }
+        if self.failing {
+            return Err(Self::failure());
+        }
         Ok(vec![Piece {
             start_ms: 0,
             end_ms: ms(pcm.len()),
@@ -247,6 +262,9 @@ impl Transcriber for FakeModel {
         live: &mut dyn FnMut(Live),
         cancel: &Cancel,
     ) -> Result<Vec<Piece>, SpeechError> {
+        if self.failing {
+            return Err(Self::failure());
+        }
         let mut total = 0;
         while let Ok(buffer) = input.recv() {
             if cancel.is_cancelled() {
