@@ -84,7 +84,7 @@ rustup target add wasm32-wasip2
 
 Then run `scripts/package-desktop.sh` from the repository root. It writes the license list, builds the app and the plugins that ship with it in release mode, and packages them for your operating system. The packages land in `target/release`. On macOS, `--universal` builds one app for Apple silicon and Intel instead, which needs the `aarch64-apple-darwin` and `x86_64-apple-darwin` Rust targets.
 
-To check the result, run `scripts/check-desktop-packages.sh`. It installs or mounts each package and launches the installed app with `--smoke`, which opens the first window, prints a short report, and quits. If the app lacks Tasks, Projects, Calendar or AI, or can't compile one, `--smoke` names the plugin and exits with an error before it opens a window. On Linux, run it under `xvfb-run` when you have no display.
+To check the result, run `scripts/check-desktop-packages.sh`. It installs or mounts each package and launches the installed app with `--smoke`, which opens the first window, prints a short report, and quits. If the app lacks a plugin it should ship, or can’t compile one, `--smoke` names the plugin and exits with an error before it opens a window. On Linux, run it under `xvfb-run` when you have no display.
 
 Set `CARGO_PACKAGER_SIGN_PRIVATE_KEY` to a key file or key, and `CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD` to its password, to sign each package for the updater. cargo-packager then writes a `.sig` file beside each package.
 
@@ -106,7 +106,7 @@ The **Third-party licenses** link in **Settings** > **About Noura** opens this f
 
 ## Plugins in the app
 
-Every package ships Tasks, Projects, Calendar and AI. `scripts/build-shipped-plugins.sh` builds them for `wasm32-wasip2` into `apps/desktop/packaging/plugins`, with a folder for each plugin that holds its `plugin.toml` and its component. cargo-packager copies that folder into the same resources folder as the license list, as `plugins`. On first run, Noura lists the plugins and installs them once you approve.
+Every package ships Tasks, Projects, Calendar, AI, Dictation and Transcription. `scripts/build-shipped-plugins.sh` builds them for `wasm32-wasip2` into `apps/desktop/packaging/plugins`, with a folder for each plugin that holds its `plugin.toml` and its component. cargo-packager copies that folder into the same resources folder as the license list, as `plugins`. On first run, Noura lists the plugins and installs them once you approve.
 
 To ship another plugin, add it to that script, to `SHIPPED_PLUGINS` in `crates/app-core/src/plugins.rs` and to the report line `scripts/check-desktop-packages.sh` expects.
 

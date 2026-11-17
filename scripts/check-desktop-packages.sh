@@ -98,8 +98,8 @@ check() {
     echo "::error::$name doesn't ship THIRD_PARTY_LICENSES.html."
     exit 1
   fi
-  grep -q "^Plugins: AI, Calendar, Projects, Tasks$" <<<"$report" || {
-    echo "::error::$name doesn't ship Tasks, Projects, Calendar and AI."
+  grep -q "^Plugins: AI, Calendar, Dictation, Projects, Tasks, Transcription$" <<<"$report" || {
+    echo "::error::$name doesn't ship every plugin that comes with Noura."
     exit 1
   }
   grep -q "^Updates: $updates" <<<"$report" || {
