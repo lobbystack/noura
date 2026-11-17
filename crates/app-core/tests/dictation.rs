@@ -158,6 +158,105 @@ fn a_tap_records_until_the_next_press_and_an_empty_result_pastes_nothing() {
     );
 }
 
+/// Whether Dictation's entry `label` shows and can be chosen.
+fn enabled(app: &app_core::App, label: &str) -> bool {
+    app.tray_menu()
+        .into_iter()
+        .filter(|items| items.plugin == "dictation")
+        .flat_map(|items| items.entries)
+        .any(|entry| entry.label == label && entry.enabled)
+}
+
+/// Wait until `done`, handing plugins their events as the desktop does
+/// while every window is covered: no window draws, so none polls.
+fn wait_undrawn(app: &mut app_core::App, what: &str, done: impl Fn(&app_core::App) -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        app.deliver_plugin_events();
+        if done(app) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting until {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn dictation_pastes_while_you_type_in_another_app_and_no_window_draws() {
+    let fixture = Fixture::new(&[]);
+    downloaded(&fixture);
+    let system = FakeSystem::new();
+    system.engine.texts.lock().push("into the other app".into());
+    let mut app = fixture.app_with(system.clone());
+    let Some(folder) = dictation() else {
+        return;
+    };
+    plugins::install_and_enable(&mut app, folder.path(), "dictation");
+    wait_until(&mut app, "the menu shows", |app| {
+        showing(app, "Copy Last Dictation")
+    });
+
+    // A tap starts, a second tap stops, as with ⌥Space twice.
+    press(&mut app, true, 0);
+    press(&mut app, false, 100);
+    wait_undrawn(&mut app, "the recording starts", |app| {
+        showing(app, "Cancel Dictation")
+    });
+    speak(&system);
+    press(&mut app, true, 5000);
+    press(&mut app, false, 5100);
+    wait_undrawn(&mut app, "the text is pasted", |_| {
+        !pasted(&system).is_empty()
+    });
+    assert_eq!(pasted(&system), ["paste into the other app"]);
+    wait_undrawn(&mut app, "the menu is back", |app| {
+        enabled(app, "Copy Last Dictation") && !showing(app, "Cancel Dictation")
+    });
+}
+
+#[test]
+fn a_paste_that_fails_says_why_and_keeps_the_text_for_copy_last_dictation() {
+    let fixture = Fixture::new(&[]);
+    downloaded(&fixture);
+    let system = FakeSystem::new();
+    system.engine.texts.lock().push("kept for later".into());
+    system
+        .paste_fails
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut app = fixture.app_with(system.clone());
+    let Some(folder) = dictation() else {
+        return;
+    };
+    plugins::install_and_enable(&mut app, folder.path(), "dictation");
+
+    press(&mut app, true, 0);
+    wait_until(&mut app, "the recording starts", |app| {
+        showing(app, "Cancel Dictation")
+    });
+    speak(&system);
+    press(&mut app, false, 2000);
+    wait_until(&mut app, "Dictation is idle again", |app| {
+        enabled(app, "Copy Last Dictation") && !showing(app, "Cancel Dictation")
+    });
+    let shown = system.notifier.shown();
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    assert_eq!(shown[0].key, "dictation/finish-failed");
+    assert_eq!(shown[0].title, "Dictation didn't paste");
+    assert_eq!(shown[0].body, "Allow Noura in Accessibility.");
+
+    system
+        .paste_fails
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    app.choose_menu_item("dictation", "copy-last");
+    wait_until(&mut app, "the dictation is copied", |_| {
+        !pasted(&system).is_empty()
+    });
+    assert_eq!(pasted(&system), ["copy kept for later"]);
+}
+
 #[test]
 fn the_menu_follows_the_models_with_no_other_event() {
     let fixture = Fixture::new(&[]);

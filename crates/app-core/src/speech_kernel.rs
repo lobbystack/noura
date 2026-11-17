@@ -582,6 +582,7 @@ impl ShortcutService for Access {
 impl PasteService for Access {
     fn paste(&self, text: &str, method: PasteMethod) -> Result<(), ServiceError> {
         if !self.navigator.answering() {
+            tracing::warn!(plugin = %self.plugin, "a plugin pasted outside an event you caused");
             return Err(ServiceError::Failed(
                 "Noura pastes only when you act.".to_owned(),
             ));
@@ -589,6 +590,9 @@ impl PasteService for Access {
         self.kernel
             .speech
             .paste(text, matches!(method, PasteMethod::Typing))
+            .inspect_err(|error| {
+                tracing::warn!(plugin = %self.plugin, code = %error.code, "a paste failed");
+            })
             .map_err(service_error)
     }
 

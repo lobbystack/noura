@@ -361,6 +361,14 @@ impl App {
         self.session.plugins().kernel_event(plugin, event);
     }
 
+    /// Hand the running plugins what the kernel queued for them, such as a
+    /// recording that finished. [`App::poll`] does this too, but only a
+    /// window that draws polls, and a window under the app you dictate
+    /// into draws nothing, so the desktop calls this in every pass.
+    pub fn deliver_plugin_events(&mut self) {
+        self.session.plugins().poll();
+    }
+
     /// The menu bar entries of the running plugins.
     pub fn tray_menu(&self) -> Vec<MenuBarItems> {
         self.speech_kernel()

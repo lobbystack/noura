@@ -619,8 +619,11 @@ fn worker(
         }
     }
     if !cancel.is_cancelled() {
-        if shared.snapshot.lock().segments.is_empty() {
+        let segments = shared.snapshot.lock().segments.len();
+        if segments == 0 {
             tracing::warn!("a recording finished with no text");
+        } else {
+            tracing::info!(segments, "a recording finished");
         }
         shared.set_state(State::Finished, None);
     }

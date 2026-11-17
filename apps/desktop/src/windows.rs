@@ -637,6 +637,9 @@ impl Windows {
         let mut asked = crate::speech_shell::Asked::default();
         self.in_recent_window(|window| {
             let app = window.app_mut();
+            // A recording that finished reaches its plugin even while no
+            // window draws, as when you dictate into another app.
+            app.deliver_plugin_events();
             for run in &runs {
                 if let Some((plugin, shortcut)) = run.split_once('/') {
                     let now = std::time::Instant::now();

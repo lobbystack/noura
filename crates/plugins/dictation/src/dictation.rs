@@ -24,6 +24,8 @@ pub(crate) const SHORTCUT: &str = "dictation";
 /// The notification that says why a recording didn't start, as when no
 /// model is downloaded.
 pub(crate) const START_FAILED: &str = "start-failed";
+/// The notification that says why a recording you stopped didn't paste.
+pub(crate) const FINISH_FAILED: &str = "finish-failed";
 const OPEN_SETTINGS: &str = "open-settings";
 
 const ACTIVATION: &str = "activation";
@@ -47,6 +49,8 @@ pub(crate) struct Dictation {
     problem: Option<String>,
     /// The start-failed notification may still show.
     notified: bool,
+    /// The finish-failed notification may still show.
+    notified_finish: bool,
 }
 
 impl Dictation {
@@ -59,6 +63,7 @@ impl Dictation {
             typed: String::new(),
             problem: None,
             notified: false,
+            notified_finish: false,
         }
     }
 
@@ -88,6 +93,9 @@ impl Dictation {
                 Ok(id) => {
                     if std::mem::take(&mut self.notified) {
                         host.withdraw(START_FAILED);
+                    }
+                    if std::mem::take(&mut self.notified_finish) {
+                        host.withdraw(FINISH_FAILED);
                     }
                     self.recording = Some(id);
                 }
@@ -141,8 +149,12 @@ impl Dictation {
                 let settings = Self::settings(host);
                 let text = words::finish(&said(&recording), &settings.words);
                 if !text.is_empty() {
+                    // Remembered first, so Copy Last Dictation has it
+                    // when the paste fails.
                     host.remember(&text);
-                    host.paste(&text, settings.paste.method());
+                    if let Err(why) = host.paste(&text, settings.paste.method()) {
+                        self.finish_failed(host, "Dictation didn't paste", &why);
+                    }
                 }
                 self.end(host);
             }
@@ -154,10 +166,22 @@ impl Dictation {
                 if !text.is_empty() {
                     host.remember(&text);
                 }
+                let why = recording
+                    .failure
+                    .as_deref()
+                    .filter(|why| !why.trim().is_empty())
+                    .unwrap_or("Noura couldn't turn your speech into text. Try again.");
+                self.finish_failed(host, "Dictation didn't finish", why);
                 self.end(host);
             }
             RecordingState::Cancelled => self.end(host),
         }
+    }
+
+    /// Say why the recording you stopped didn't go into the app.
+    fn finish_failed(&mut self, host: &impl Host, title: &str, why: &str) {
+        host.notify(FINISH_FAILED, title, why, &[]);
+        self.notified_finish = true;
     }
 
     /// The recording is over: forget it, and start the next one if a

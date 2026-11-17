@@ -29,6 +29,8 @@ struct Fake {
     next: Cell<u32>,
     /// Why the next start fails.
     refuse: RefCell<Option<String>>,
+    /// Why the next paste fails.
+    refuse_paste: RefCell<Option<String>>,
     /// Every call that reaches outside the plugin, in order.
     calls: RefCell<Vec<String>>,
     last: RefCell<Option<String>>,
@@ -169,12 +171,17 @@ impl Host for Fake {
             .retain(|recording| recording.id != id);
     }
 
-    fn paste(&self, text: &str, method: Method) {
+    fn paste(&self, text: &str, method: Method) -> Result<(), String> {
+        if let Some(why) = self.refuse_paste.borrow_mut().take() {
+            self.push(format!("paste refused {text}"));
+            return Err(why);
+        }
         let how = match method {
             Method::Clipboard => "paste",
             Method::Typing => "paste by typing",
         };
         self.push(format!("{how} {text}"));
+        Ok(())
     }
 
     fn copy(&self, text: &str) {
@@ -381,9 +388,59 @@ fn a_failed_recording_pastes_nothing_but_copy_last_dictation_has_it() {
     fake.calls();
     fake.finish("recording_1", RecordingState::Failed);
     dictation.recording_changed(&fake, "recording_1");
-    assert_eq!(fake.calls(), ["forget recording_1"]);
+    assert_eq!(
+        fake.calls(),
+        [
+            "notify finish-failed: Dictation didn't finish: Noura couldn't turn your speech \
+             into text. Try again. []",
+            "forget recording_1"
+        ]
+    );
     dictation.menu_chosen(&fake, "copy-last");
     assert_eq!(fake.pasted(), ["copy Half a thought"]);
+}
+
+#[test]
+fn a_failed_paste_says_why_keeps_the_text_and_leaves_dictation_idle() {
+    let fake = Fake::new();
+    let mut dictation = Dictation::new();
+    fake.hears(&["Lost words"]);
+    dictate(&mut dictation, &fake, 0, 1_000);
+    fake.calls();
+    *fake.refuse_paste.borrow_mut() = Some("Allow Noura in Accessibility.".into());
+    finish_last(&mut dictation, &fake);
+    assert_eq!(
+        fake.calls(),
+        [
+            "paste refused Lost words",
+            "notify finish-failed: Dictation didn't paste: Allow Noura in Accessibility. []",
+            "forget recording_1"
+        ]
+    );
+    assert_eq!(fake.last_dictation().as_deref(), Some("Lost words"));
+    dictation.refresh_menu(&fake);
+    let labels: Vec<String> = fake
+        .menu
+        .borrow()
+        .iter()
+        .map(|entry| entry.label.clone())
+        .collect();
+    assert!(labels.iter().any(|label| label == "Copy Last Dictation"));
+    assert!(!labels.iter().any(|label| label == "Cancel Dictation"));
+
+    // The next dictation starts, and takes the notification away.
+    fake.hears(&["Found"]);
+    dictate(&mut dictation, &fake, 10_000, 1_000);
+    assert_eq!(
+        fake.calls(),
+        [
+            "start recording_2",
+            "withdraw finish-failed",
+            "stop recording_2"
+        ]
+    );
+    finish_last(&mut dictation, &fake);
+    assert_eq!(fake.pasted(), ["paste Found"]);
 }
 
 #[test]

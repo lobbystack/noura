@@ -56,8 +56,12 @@ pub struct FakeSystem {
     pub credentials: Arc<local_core::MemoryCredentials>,
     /// What plugins pasted and copied, as `paste <text>` and `copy <text>`.
     pub pasted: Arc<Mutex<Vec<String>>>,
+    /// Pastes fail, as without Accessibility permission on macOS.
+    pub paste_fails: Arc<std::sync::atomic::AtomicBool>,
     /// The speech engine, which answers with the texts a test gives it.
     pub engine: Arc<speech::engine::FakeEngine>,
+    /// An engine in place of [`Self::engine`], such as the real one.
+    pub real_engine: Mutex<Option<Arc<dyn speech::engine::Engine>>>,
     /// The microphone and system audio, which hear what a test feeds them.
     pub audio: Arc<speech::audio::FakeAudio>,
     /// The notification center, which keeps what plugins show.
@@ -117,10 +121,16 @@ impl app_core::Notifier for FakeNotifier {
 }
 
 /// Records what plugins paste, in place of the keyboard and clipboard.
-struct RecordingPaste(Arc<Mutex<Vec<String>>>);
+struct RecordingPaste(Arc<Mutex<Vec<String>>>, Arc<std::sync::atomic::AtomicBool>);
 
 impl speech::paste::Paster for RecordingPaste {
     fn paste(&self, text: &str, typing: bool) -> speech::Result<()> {
+        if self.1.load(Ordering::SeqCst) {
+            return Err(speech::SpeechError::failed(
+                "paste_keys_failed",
+                "Allow Noura in Accessibility.",
+            ));
+        }
         let how = if typing { "type" } else { "paste" };
         self.0.lock().unwrap().push(format!("{how} {text}"));
         Ok(())
@@ -164,7 +174,9 @@ impl FakeSystem {
             credentials: Arc::new(local_core::MemoryCredentials::new()),
             notifier: Arc::new(FakeNotifier::default()),
             pasted: Arc::new(Mutex::new(Vec::new())),
+            paste_fails: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             engine: Arc::new(speech::engine::FakeEngine::default()),
+            real_engine: Mutex::new(None),
             audio: speech::audio::FakeAudio::new(),
         })
     }
@@ -202,9 +214,17 @@ impl System for FakeSystem {
 
     fn speech_devices(&self) -> app_core::SpeechDevices {
         app_core::SpeechDevices {
-            engine: self.engine.clone(),
+            engine: self
+                .real_engine
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| self.engine.clone()),
             audio: Arc::new(speech::audio::FakeBackend(self.audio.clone())),
-            paster: Arc::new(RecordingPaste(self.pasted.clone())),
+            paster: Arc::new(RecordingPaste(
+                self.pasted.clone(),
+                self.paste_fails.clone(),
+            )),
             notifier: self.notifier.clone(),
             ..app_core::SpeechDevices::fake()
         }

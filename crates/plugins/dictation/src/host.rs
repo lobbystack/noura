@@ -39,7 +39,8 @@ pub(crate) trait Host {
     fn cancel(&self, id: &str);
     fn read(&self, id: &str) -> Option<Recording>;
     fn forget(&self, id: &str);
-    fn paste(&self, text: &str, method: Method);
+    /// Paste `text` into the focused app. The error is in words for you.
+    fn paste(&self, text: &str, method: Method) -> Result<(), String>;
     fn copy(&self, text: &str);
     fn remember(&self, text: &str);
     fn last_dictation(&self) -> Option<String>;
@@ -108,8 +109,12 @@ impl Host for Kernel {
         let _ = speech::forget(id);
     }
 
-    fn paste(&self, text: &str, method: Method) {
-        let _ = paste::paste(text, method);
+    fn paste(&self, text: &str, method: Method) -> Result<(), String> {
+        paste::paste(text, method).map_err(|error| match error {
+            Error::Failed(message) => message,
+            Error::CapabilityNotDeclared(_) => "Pasting isn't allowed for Dictation.".to_owned(),
+            _ => "Dictation couldn't paste. Use Copy Last Dictation.".to_owned(),
+        })
     }
 
     fn copy(&self, text: &str) {

@@ -285,8 +285,15 @@ impl NouraUi {
             let ctx = ui.ctx().clone();
             // Each window is its own viewport, which repaints on its own.
             let viewport = ctx.viewport_id();
-            self.app
-                .subscribe(move |_| ctx.request_repaint_of(viewport));
+            self.app.subscribe(move |change| {
+                ctx.request_repaint_of(viewport);
+                // Only the root viewport runs the desktop's logic, which
+                // hands plugins what the kernel queued even while no
+                // window draws, as when a recording ends.
+                if viewport != ViewportId::ROOT && change == app_core::Change::WorkFinished {
+                    ctx.request_repaint_of(ViewportId::ROOT);
+                }
+            });
         }
         if self.app.is_closed() {
             return;
