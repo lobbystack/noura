@@ -4,8 +4,9 @@
 //! the presses and choices that reach plugins as kernel events.
 
 use std::sync::Arc;
+use std::time::Instant;
 
-use plugin_host::KernelEvent;
+use plugin_host::{KernelEvent, ShortcutEvent};
 
 use super::App;
 use crate::speech_kernel::SpeechKernel;
@@ -161,20 +162,6 @@ impl App {
         kernel.speech.set_onboarded().map_err(speech_error)
     }
 
-    /// Whether pastes type key by key instead of using the clipboard.
-    pub fn paste_by_typing(&self) -> bool {
-        self.speech_kernel()
-            .is_some_and(|kernel| kernel.speech.state().paste_by_typing)
-    }
-
-    pub fn set_paste_by_typing(&mut self, typing: bool) -> Result<(), AppError> {
-        let kernel = self.speech_kernel().ok_or_else(unavailable)?;
-        kernel
-            .speech
-            .set_paste_by_typing(typing)
-            .map_err(speech_error)
-    }
-
     /// The shortcuts of the plugins running in the open workspace, which
     /// the desktop app registers with the system.
     pub fn global_shortcuts(&self) -> Vec<GlobalShortcut> {
@@ -223,13 +210,20 @@ impl App {
         }
     }
 
-    /// The keys of `plugin`'s shortcut `id` went down, or up with
+    /// The keys of `plugin`'s shortcut `id` went down at `at`, or up with
     /// `pressed` false. It reaches the plugin as something you did.
-    pub fn press_shortcut(&mut self, plugin: &str, id: &str, pressed: bool) {
+    pub fn press_shortcut(&mut self, plugin: &str, id: &str, pressed: bool, at: Instant) {
+        let Some(kernel) = self.speech_kernel() else {
+            return;
+        };
+        let event = ShortcutEvent {
+            id: id.to_owned(),
+            at_ms: kernel.since_start(at),
+        };
         let event = if pressed {
-            KernelEvent::ShortcutPressed(id.to_owned())
+            KernelEvent::ShortcutPressed(event)
         } else {
-            KernelEvent::ShortcutReleased(id.to_owned())
+            KernelEvent::ShortcutReleased(event)
         };
         self.session.plugins().kernel_event(plugin, event);
     }

@@ -14,9 +14,6 @@ crate-type = ["cdylib"]
 # English names for the language codes in the Language submenu, as Handy
 # names them. Apache-2.0.
 isolang = "2.4"
-# Reads the instant the plugin's clock gives, to time a hold. No time zone
-# database: only the instant matters.
-jiff = { version = "0.2", default-features = false, features = ["std"] }
 # Soundex, for custom words that sound like what the model heard, as
 # Handy matches them. MIT.
 natural = { version = "0.5", default-features = false }

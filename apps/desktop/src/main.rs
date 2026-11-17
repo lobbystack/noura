@@ -17,6 +17,8 @@
 mod file_drag;
 mod instance;
 mod licenses;
+#[cfg(target_os = "linux")]
+mod linux_portal;
 mod login;
 mod mcp;
 #[cfg_attr(
@@ -24,6 +26,7 @@ mod mcp;
     allow(dead_code, reason = "Linux shows no native menu bar")
 )]
 mod menu;
+mod notifier;
 mod speech_shell;
 mod spelling;
 mod system;

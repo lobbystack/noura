@@ -17,6 +17,7 @@
     - interface `noura:plugin/global-shortcuts@0.1.0`
     - interface `noura:plugin/paste@0.1.0`
     - interface `noura:plugin/menu-bar@0.1.0`
+    - interface `noura:plugin/notifications@0.1.0`
     - interface `noura:plugin/ui@0.1.0`
  - Exports:
     - interface `noura:plugin/view@0.1.0`
@@ -455,6 +456,25 @@ name changes. The object keeps its ID.
 
 - <a id="move_to.0"></a> result<[`object`](#object), [`error`](#error)>
 
+#### <a id="move_folder"></a>`move-folder: func`
+
+Move the folder that holds the object's file to `folder`, with every
+file in it, and remove the folder it leaves, as when a recording's
+notes and audio move into a project. Every Markdown file in the
+folder must be an object of one of the plugin's types, and the folder
+may hold no other folder. Fails with `already-exists` when something
+is at `folder` already. Returns the object at its new path.
+
+##### Params
+
+- <a id="move_folder.id"></a>`id`: `string`
+- <a id="move_folder.expected_revision"></a>`expected-revision`: `string`
+- <a id="move_folder.folder"></a>`folder`: `string`
+
+##### Return values
+
+- <a id="move_folder.0"></a> result<[`object`](#object), [`error`](#error)>
+
 #### <a id="delete"></a>`delete: func`
 
 Move an object's file to the system trash, or to the workspace's
@@ -626,7 +646,8 @@ Shows things in the window you acted in, and moves objects to the trash
 there. Needs the `views` capability. Noura acts once the call returns,
 and only for a call that answers something you did: an event in one of
 the plugin's views or panels, or a command you ran from the command
-palette. Any other call gets `failed`.
+palette. Any other call gets `failed`. A call that answers a kernel
+event, such as a shortcut press, acts in the window you used last.
 
 ----
 
@@ -666,6 +687,9 @@ A section of Settings a plugin may open.
 - <a id="settings_section.sync"></a>`sync`
   <p>Sync and devices.
 
+- <a id="settings_section.speech"></a>`speech`
+  <p>Speech, where you download speech models and set the shortcuts.
+
 
 ----
 
@@ -700,7 +724,7 @@ Show the plugin's own page with this ID.
 #### <a id="open_settings"></a>`open-settings: func`
 
 Open Settings on `section`, as a page's "Open AI settings" button
-does.
+does. A plugin that holds `settings` may call it without `views`.
 
 ##### Params
 
@@ -1907,6 +1931,85 @@ and Quit. An empty list takes them away.
 
 - <a id="set_entries.0"></a> result<_, [`error`](#error)>
 
+## <a id="noura_plugin_notifications_0_1_0"></a>Import interface noura:plugin/notifications@0.1.0
+
+Notifications in the system's notification center. Needs the
+`notifications` capability. Noura shows one only in answer to
+something you did: a kernel event, or an event in one of the plugin's
+views or panels. Any other call gets `failed`. Choosing the
+notification or one of its actions hands the plugin a kernel event,
+which counts as something you did. When you turned off Noura's
+notifications in the system's settings, nothing shows and the call
+still succeeds.
+
+----
+
+### Types
+
+#### <a id="error"></a>`type error`
+[`error`](#error)
+<p>
+
+#### <a id="action"></a>`record action`
+
+
+
+##### Record Fields
+
+- <a id="action.id"></a>`id`: `string`
+  <p>Unique among the notification's actions. It comes back in
+  `notification-chosen`.
+
+- <a id="action.label"></a>`label`: `string`
+  <p>One or two words, such as `Record`.
+
+
+#### <a id="notification"></a>`record notification`
+
+
+
+##### Record Fields
+
+- <a id="notification.id"></a>`id`: `string`
+  <p>Unique among the plugin's notifications. A notification with the
+  ID of one that still shows takes its place.
+
+- <a id="notification.title"></a>`title`: `string`
+- <a id="notification.body"></a>`body`: `string`
+  <p>One sentence, or empty.
+
+- <a id="notification.actions"></a>`actions`: list<[`action`](#action)>
+  <p>At most 3. Some systems show only the first.
+
+
+----
+
+### Functions
+
+#### <a id="notify"></a>`notify: func`
+
+Show `notification`.
+
+##### Params
+
+- <a id="notify.notification"></a>`notification`: [`notification`](#notification)
+
+##### Return values
+
+- <a id="notify.0"></a> result<_, [`error`](#error)>
+
+#### <a id="withdraw"></a>`withdraw: func`
+
+Take away the notification with this ID, if it still shows.
+
+##### Params
+
+- <a id="withdraw.id"></a>`id`: `string`
+
+##### Return values
+
+- <a id="withdraw.0"></a> result<_, [`error`](#error)>
+
 ## <a id="noura_plugin_ui_0_1_0"></a>Import interface noura:plugin/ui@0.1.0
 
 UI as data. WIT has no recursive types, so a view is a flat list of nodes
@@ -2893,17 +2996,49 @@ Another app turned the microphone on, as for a call.
   <p>The app's name, when the system says.
 
 
+#### <a id="shortcut_event"></a>`record shortcut-event`
+
+A shortcut's keys went down or came up.
+
+##### Record Fields
+
+- <a id="shortcut_event.id"></a>`id`: `string`
+  <p>The shortcut's ID, as the manifest declares it.
+
+- <a id="shortcut_event.at_ms"></a>`at-ms`: `u64`
+  <p>When, in milliseconds on a clock that starts with Noura and only
+  moves forward. The time between a press and its release tells a
+  tap from a hold.
+
+
+#### <a id="notification_choice"></a>`record notification-choice`
+
+You chose a notification the plugin showed.
+
+##### Record Fields
+
+- <a id="notification_choice.id"></a>`id`: `string`
+  <p>The notification's ID.
+
+- <a id="notification_choice.action"></a>`action`: option<`string`>
+  <p>The action you chose, or none when you chose the notification.
+
+
 #### <a id="kernel_event"></a>`variant kernel-event`
 
 
 
 ##### Variant Cases
 
-- <a id="kernel_event.shortcut_pressed"></a>`shortcut-pressed`: `string`
-  <p>The shortcut with this ID went down. Needs `global-shortcuts`.
+- <a id="kernel_event.shortcut_pressed"></a>`shortcut-pressed`: [`shortcut-event`](#shortcut_event)
+  <p>A shortcut's keys went down. Needs `global-shortcuts`.
 
-- <a id="kernel_event.shortcut_released"></a>`shortcut-released`: `string`
-  <p>The shortcut with this ID came back up. Needs `global-shortcuts`.
+- <a id="kernel_event.shortcut_released"></a>`shortcut-released`: [`shortcut-event`](#shortcut_event)
+  <p>A shortcut's keys came back up. Needs `global-shortcuts`.
+
+- <a id="kernel_event.notification_chosen"></a>`notification-chosen`: [`notification-choice`](#notification_choice)
+  <p>You chose a notification or one of its actions. Needs
+  `notifications`.
 
 - <a id="kernel_event.menu_item_chosen"></a>`menu-item-chosen`: `string`
   <p>The menu bar entry with this ID was chosen. Needs

@@ -219,7 +219,8 @@ interface clock {
 // there. Needs the `views` capability. Noura acts once the call returns,
 // and only for a call that answers something you did: an event in one of
 // the plugin's views or panels, or a command you ran from the command
-// palette. Any other call gets `failed`.
+// palette. Any other call gets `failed`. A call that answers a kernel
+// event, such as a shortcut press, acts in the window you used last.
 interface navigation {
   use types.{error};
 
@@ -248,10 +249,12 @@ interface navigation {
     ai,
     // Sync and devices.
     sync,
+    // Speech, where you download speech models and set the shortcuts.
+    speech,
   }
 
   // Open Settings on `section`, as a page's "Open AI settings" button
-  // does.
+  // does. A plugin that holds `settings` may call it without `views`.
   open-settings: func(section: settings-section) -> result<_, error>;
 
   // Move the object with this stable ID, one of the plugin's own types,
@@ -909,6 +912,43 @@ interface menu-bar {
   set-entries: func(entries: list<entry>) -> result<_, error>;
 }
 
+// Notifications in the system's notification center. Needs the
+// `notifications` capability. Noura shows one only in answer to
+// something you did: a kernel event, or an event in one of the plugin's
+// views or panels. Any other call gets `failed`. Choosing the
+// notification or one of its actions hands the plugin a kernel event,
+// which counts as something you did. When you turned off Noura's
+// notifications in the system's settings, nothing shows and the call
+// still succeeds.
+interface notifications {
+  use types.{error};
+
+  record action {
+    // Unique among the notification's actions. It comes back in
+    // `notification-chosen`.
+    id: string,
+    // One or two words, such as `Record`.
+    label: string,
+  }
+
+  record notification {
+    // Unique among the plugin's notifications. A notification with the
+    // ID of one that still shows takes its place.
+    id: string,
+    title: string,
+    // One sentence, or empty.
+    body: string,
+    // At most 3. Some systems show only the first.
+    actions: list<action>,
+  }
+
+  // Show `notification`.
+  notify: func(notification: notification) -> result<_, error>;
+
+  // Take away the notification with this ID, if it still shows.
+  withdraw: func(id: string) -> result<_, error>;
+}
+
 // UI as data. WIT has no recursive types, so a view is a flat list of nodes
 // whose `children` hold indices into the list. The first node is the root.
 //
@@ -1521,6 +1561,14 @@ interface objects {
   // name changes. The object keeps its ID.
   move-to: func(id: string, expected-revision: string, path: string) -> result<object, error>;
 
+  // Move the folder that holds the object's file to `folder`, with every
+  // file in it, and remove the folder it leaves, as when a recording's
+  // notes and audio move into a project. Every Markdown file in the
+  // folder must be an object of one of the plugin's types, and the folder
+  // may hold no other folder. Fails with `already-exists` when something
+  // is at `folder` already. Returns the object at its new path.
+  move-folder: func(id: string, expected-revision: string, folder: string) -> result<object, error>;
+
   // Move an object's file to the system trash, or to the workspace's
   // trash folder when the system has none.
   delete: func(id: string, expected-revision: string) -> result<_, error>;
@@ -1559,7 +1607,7 @@ interface object-types {
 }
 
 // Events Noura hands the plugin from outside its views: a shortcut, a
-// menu bar item, the microphone. Noura calls this only for the
+// menu bar item, a notification, the microphone. Noura calls this only for the
 // capabilities the manifest declares, and each event counts as something
 // you did.
 interface kernel-events {
@@ -1569,11 +1617,32 @@ interface kernel-events {
     app: option<string>,
   }
 
+  // A shortcut's keys went down or came up.
+  record shortcut-event {
+    // The shortcut's ID, as the manifest declares it.
+    id: string,
+    // When, in milliseconds on a clock that starts with Noura and only
+    // moves forward. The time between a press and its release tells a
+    // tap from a hold.
+    at-ms: u64,
+  }
+
+  // You chose a notification the plugin showed.
+  record notification-choice {
+    // The notification's ID.
+    id: string,
+    // The action you chose, or none when you chose the notification.
+    action: option<string>,
+  }
+
   variant kernel-event {
-    // The shortcut with this ID went down. Needs `global-shortcuts`.
-    shortcut-pressed(string),
-    // The shortcut with this ID came back up. Needs `global-shortcuts`.
-    shortcut-released(string),
+    // A shortcut's keys went down. Needs `global-shortcuts`.
+    shortcut-pressed(shortcut-event),
+    // A shortcut's keys came back up. Needs `global-shortcuts`.
+    shortcut-released(shortcut-event),
+    // You chose a notification or one of its actions. Needs
+    // `notifications`.
+    notification-chosen(notification-choice),
     // The menu bar entry with this ID was chosen. Needs
     // `menu-bar-items`.
     menu-item-chosen(string),
@@ -1603,6 +1672,7 @@ world plugin {
   import global-shortcuts;
   import paste;
   import menu-bar;
+  import notifications;
   export view;
   export object-types;
   export commands;

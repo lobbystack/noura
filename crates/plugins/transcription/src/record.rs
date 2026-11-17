@@ -5,6 +5,7 @@
 use plugin_sdk::{
     KernelEvent,
     menu_bar::{self, Entry, EntryKind},
+    notifications::{self, Action, Notification},
     objects::Changes,
     speech::{self, RecordingOptions, RecordingState, Source},
 };
@@ -18,6 +19,27 @@ use crate::{
 
 /// The shortcut the manifest declares.
 pub(crate) const SHORTCUT: &str = "transcription";
+
+/// The notification that offers to transcribe a call.
+const OFFER: &str = "offer";
+
+/// Offer to transcribe the call another app, named `app` when the system
+/// says, turned the microphone on for.
+fn offer(app: Option<&str>) {
+    if state().active.is_some() {
+        return;
+    }
+    let body = app.map_or_else(String::new, |app| format!("{app} is using the microphone."));
+    let _ = notifications::notify(&Notification {
+        id: OFFER.to_owned(),
+        title: "Transcribe this call?".to_owned(),
+        body,
+        actions: vec![Action {
+            id: "transcribe".to_owned(),
+            label: "Transcribe".to_owned(),
+        }],
+    });
+}
 
 /// Show the menu bar entries that fit the state now: Start or Stop
 /// Transcription, and Transcribe This Call while another app uses the
@@ -83,6 +105,7 @@ pub(crate) fn start(object: &str) -> Result<(), String> {
             reason(&error)
         ));
     }
+    let _ = notifications::withdraw(OFFER);
     {
         let mut state = state();
         state.problems.remove(object);
@@ -133,7 +156,7 @@ pub(crate) fn stop() -> Result<(), String> {
 
 pub(crate) fn handle_kernel_event(event: KernelEvent) {
     match event {
-        KernelEvent::ShortcutPressed(id) if id == SHORTCUT => {
+        KernelEvent::ShortcutPressed(event) if event.id == SHORTCUT => {
             let recording = state()
                 .active
                 .as_ref()
@@ -151,14 +174,24 @@ pub(crate) fn handle_kernel_event(event: KernelEvent) {
                 _ => Ok(()),
             };
         }
-        // Noura never records by itself: the menu offers a recording.
-        KernelEvent::MicrophoneInUse(_) => {
+        // Noura never records by itself: a notification and the menu
+        // offer a recording.
+        KernelEvent::MicrophoneInUse(using) => {
             state().offer = true;
+            offer(using.app.as_deref());
             refresh_menu();
         }
         KernelEvent::MicrophoneFree => {
             state().offer = false;
+            let _ = notifications::withdraw(OFFER);
             refresh_menu();
+        }
+        // Choosing the notification records, as its action does.
+        KernelEvent::NotificationChosen(choice) if choice.id == OFFER => {
+            let _ = notifications::withdraw(OFFER);
+            if state().active.is_none() {
+                let _ = start_new();
+            }
         }
         KernelEvent::RecordingChanged(id) => changed(&id),
         _ => {}

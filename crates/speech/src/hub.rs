@@ -378,10 +378,6 @@ impl Speech {
         self.update(|state| state.onboarded = true)
     }
 
-    pub fn set_paste_by_typing(&self, typing: bool) -> Result<()> {
-        self.update(|state| state.paste_by_typing = typing)
-    }
-
     pub fn preferences(&self, plugin: &str) -> PluginSpeech {
         self.state
             .lock()
@@ -577,6 +573,20 @@ impl Speech {
             .ok_or_else(|| SpeechError::not_found(id))
     }
 
+    /// The plugins with a recording that hasn't ended, each once.
+    pub fn recording_plugins(&self) -> Vec<String> {
+        let mut plugins: Vec<String> = self
+            .recordings
+            .lock()
+            .values()
+            .filter(|owned| !owned.recording.snapshot().state.ended())
+            .map(|owned| owned.plugin.clone())
+            .collect();
+        plugins.sort();
+        plugins.dedup();
+        plugins
+    }
+
     pub fn read(&self, plugin: &str, id: &str) -> Result<Snapshot> {
         Ok(self.owned(plugin, id)?.snapshot())
     }
@@ -650,7 +660,6 @@ impl Speech {
     // Pasting.
 
     pub fn paste(&self, text: &str, typing: bool) -> Result<()> {
-        let typing = typing || self.state.lock().paste_by_typing;
         self.config.paster.paste(text, typing)
     }
 

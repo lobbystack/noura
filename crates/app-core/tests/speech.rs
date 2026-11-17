@@ -1,10 +1,14 @@
 //! Speech through the app (ADR 0006): a plugin's declared shortcut is
 //! listed with the keys you gave it, a press reaches the plugin as
 //! something you did so it may paste, a menu bar entry it adds shows and
-//! a choice reaches it, a plugin without the capabilities gets nothing,
-//! and Settings lists the catalog's models graded for your language.
+//! a choice reaches it, a notification it shows comes back when you
+//! choose it, what a kernel event opens shows in the window you used
+//! last, a plugin without the capabilities gets nothing, and Settings
+//! lists the catalog's models graded for your language.
 
 mod support;
+
+use std::time::Instant;
 
 use support::{
     FakeSystem, Fixture,
@@ -59,8 +63,8 @@ fn a_shortcut_press_reaches_the_plugin_which_pastes_and_its_menu_shows() {
     app.set_shortcut_keys("probe", "paste", None).unwrap();
     assert_eq!(app.global_shortcuts()[0].keys, "Alt+Space");
 
-    app.press_shortcut("probe", "paste", true);
-    app.press_shortcut("probe", "paste", false);
+    app.press_shortcut("probe", "paste", true, Instant::now());
+    app.press_shortcut("probe", "paste", false, Instant::now());
     wait_until(&mut app, "the press reaches the plugin", |app| {
         events(app)
             .iter()
@@ -106,7 +110,7 @@ fn a_plugin_without_the_capabilities_hears_no_shortcut() {
     plugins::install_and_enable(&mut app, probe.path(), "probe");
 
     assert!(app.global_shortcuts().is_empty());
-    app.press_shortcut("probe", "paste", true);
+    app.press_shortcut("probe", "paste", true, Instant::now());
     app.choose_menu_item("probe", "item-0");
     support::settle(&mut app);
     assert!(events(&app).iter().all(|line| !line.starts_with("kernel")));
@@ -141,10 +145,68 @@ fn settings_lists_the_catalog_graded_for_your_language_and_recommends_parakeet_u
 
     app.finish_speech_onboarding().unwrap();
     assert!(app.speech_onboarding().is_none());
-    assert!(!app.paste_by_typing());
-    app.set_paste_by_typing(true).unwrap();
-    assert!(app.paste_by_typing());
+    app.set_speech_language(Some("de")).unwrap();
     // The choices live in the app data folder, not the workspace.
     assert!(fixture.app_data.path().join("speech/state.json").exists());
     assert!(!fixture.root.join("speech").exists());
+}
+
+#[test]
+fn a_kernel_event_notifies_and_opens_in_the_window_you_used_last() {
+    let fixture = Fixture::new(&[]);
+    let system = FakeSystem::new();
+    let mut app = fixture.app_with(system.clone());
+    let Some(probe) = folder_for(
+        "probe_plugin",
+        "probe",
+        &[
+            "name = \"views\"",
+            "name = \"global-shortcuts\"\n\
+             shortcuts = [{ id = \"notify\", title = \"Notify\", keys = \"Alt+N\" }, \
+             { id = \"open\", title = \"Open\", keys = \"Alt+O\" }]",
+            "name = \"notifications\"",
+        ],
+    ) else {
+        return;
+    };
+    plugins::install_and_enable(&mut app, probe.path(), "probe");
+    let mut other = app.new_window().expect("a second window opens");
+    support::settle(&mut other);
+
+    // Outside something you did, nothing shows.
+    assert_eq!(
+        plugins::texts(&app, "plugin:probe:notify").unwrap(),
+        ["error failed Noura shows notifications only when you act."]
+    );
+    assert!(system.notifier.shown().is_empty());
+
+    app.press_shortcut("probe", "notify", true, Instant::now());
+    wait_until(&mut app, "the notification shows", |_| {
+        !system.notifier.shown().is_empty()
+    });
+    let shown = system.notifier.shown();
+    assert_eq!(shown[0].key, "probe/hello");
+    assert_eq!(shown[0].title, "Hello");
+    assert_eq!(shown[0].actions, [("wave".to_owned(), "Wave".to_owned())]);
+    system.notifier.choose("probe/hello", Some("wave"));
+    wait_until(&mut app, "the choice reaches the plugin", |app| {
+        events(app)
+            .iter()
+            .any(|line| line.contains("NotificationChosen"))
+    });
+    assert!(events(&app).contains(
+        &"kernel KernelEvent::NotificationChosen(NotificationChoice { id: \"hello\", action: Some(\"wave\") })"
+            .to_owned()
+    ));
+
+    // You used the second window last: the page opens there.
+    other.window_used();
+    let events_page = "plugin:probe:events";
+    app.press_shortcut("probe", "open", true, Instant::now());
+    wait_until(&mut other, "the page opens in the second window", |other| {
+        other.current_page() == events_page
+    });
+    support::settle(&mut app);
+    assert_ne!(app.current_page(), events_page);
+    assert!(events(&app).contains(&"kernel open ok".to_owned()));
 }

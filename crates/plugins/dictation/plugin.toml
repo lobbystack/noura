@@ -10,10 +10,11 @@ platforms = ["desktop"]
 [[capabilities]]
 name = "speech"
 
-# The dictation shortcut, in any app.
+# The dictation shortcut, in any app: Alt+Space on macOS, Ctrl+Space on
+# Windows and Linux.
 [[capabilities]]
 name = "global-shortcuts"
-shortcuts = [{ id = "dictation", title = "Dictation", keys = "Alt+Space" }]
+shortcuts = [{ id = "dictation", title = "Dictation", keys = "Ctrl+Space", macos-keys = "Alt+Space" }]
 
 # Pastes the text into the app you're typing in, and Copy Last Dictation.
 [[capabilities]]
@@ -22,6 +23,10 @@ name = "paste"
 # Copy Last Dictation and the model and language submenus.
 [[capabilities]]
 name = "menu-bar-items"
+
+# Says why a recording didn't start, as when no model is downloaded.
+[[capabilities]]
+name = "notifications"
 
 # Custom words, the shortcut's behavior and the paste method.
 [[capabilities]]

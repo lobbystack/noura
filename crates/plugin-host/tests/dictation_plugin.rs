@@ -30,11 +30,15 @@ fn the_manifest_declares_speech_the_shortcut_paste_the_menu_and_settings() {
                 shortcuts: vec![ShortcutDeclaration {
                     id: "dictation".into(),
                     title: "Dictation".into(),
-                    keys: "Alt+Space".into(),
+                    keys: "Ctrl+Space".into(),
+                    macos_keys: Some("Alt+Space".into()),
+                    windows_keys: None,
+                    linux_keys: None,
                 }],
             },
             Capability::Paste,
             Capability::MenuBarItems,
+            Capability::Notifications,
             Capability::Settings,
             Capability::ObjectTypes,
         ]

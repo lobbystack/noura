@@ -38,6 +38,10 @@ shortcuts = [{ id = "transcription", title = "Transcription", keys = "Ctrl+Alt+T
 [[capabilities]]
 name = "menu-bar-items"
 
+# Offers to transcribe a call when another app turns on the microphone.
+[[capabilities]]
+name = "notifications"
+
 # Writes the Summary and finds the action items with your AI provider.
 [[capabilities]]
 name = "ai"

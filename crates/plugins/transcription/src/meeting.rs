@@ -243,8 +243,8 @@ pub(crate) fn set(id: &str, properties: Value) -> Result<Object, Error> {
 }
 
 /// Give the Transcription `id` the project `project`, or none, and move
-/// it with its Transcript into that project's folder when the setting
-/// puts Transcriptions there.
+/// its folder into that project's folder when the setting puts
+/// Transcriptions there.
 pub(crate) fn set_project(id: &str, project: Option<&str>) -> Result<(), Error> {
     let object = match project {
         Some(project) => set(id, json!({ "project": workspace::link_to(project)? }))?,
@@ -269,6 +269,12 @@ pub(crate) fn set_project(id: &str, project: Option<&str>) -> Result<(), Error> 
     let name = folder.rsplit('/').next().unwrap_or(folder);
     let own_folder = !folder.is_empty() && name == object.title;
     let (destination, _) = free_folder(&base, if own_folder { name } else { &object.title });
+    // The whole folder moves, the saved audio with it, and leaves no
+    // empty folder behind. A folder that also holds other notes keeps
+    // them: then only the Transcription and its Transcript move.
+    if own_folder && objects::move_folder(&object.id, &object.revision, &destination).is_ok() {
+        return Ok(());
+    }
     let transcript = transcript_of(&object);
     objects::move_to(
         &object.id,

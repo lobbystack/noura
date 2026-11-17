@@ -57,7 +57,9 @@ pub mod __private {
 
 pub use exports::noura::plugin::commands::Command;
 pub use exports::noura::plugin::inbox::Section as InboxSection;
-pub use exports::noura::plugin::kernel_events::{KernelEvent, MicrophoneUse};
+pub use exports::noura::plugin::kernel_events::{
+    KernelEvent, MicrophoneUse, NotificationChoice, ShortcutEvent,
+};
 pub use exports::noura::plugin::object_types::ObjectType;
 pub use exports::noura::plugin::tools::Tool;
 pub use exports::noura::plugin::view::Page;
@@ -80,7 +82,7 @@ pub mod workspace {
 /// the plugin registered. Needs the `object-types` capability.
 pub mod objects {
     pub use crate::noura::plugin::objects::{
-        Changes, NewObject, Object, create, delete, get, list, move_to, update,
+        Changes, NewObject, Object, create, delete, get, list, move_folder, move_to, update,
     };
 }
 
@@ -206,6 +208,13 @@ pub mod paste {
 /// capability. A chosen entry comes to [`Plugin::handle_kernel_event`].
 pub mod menu_bar {
     pub use crate::noura::plugin::menu_bar::{Entry, EntryKind, set_entries};
+}
+
+/// Notifications in the system's notification center. Needs the
+/// `notifications` capability, and works only in answer to something you
+/// did. A chosen notification comes to [`Plugin::handle_kernel_event`].
+pub mod notifications {
+    pub use crate::noura::plugin::notifications::{Action, Notification, notify, withdraw};
 }
 
 /// What a plugin adds to Noura. Noura calls each method only when the

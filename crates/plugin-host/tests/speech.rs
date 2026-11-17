@@ -246,12 +246,20 @@ fn without_their_capabilities_the_calls_reach_no_service() {
         lines(&plugin, "menu-bar:Model,Parakeet"),
         ["error capability-not-declared menu-bar-items"]
     );
+    assert_eq!(
+        lines(&plugin, "notify"),
+        ["error capability-not-declared notifications"]
+    );
     assert_eq!(calls.take(), Vec::<String>::new());
 
     // Kernel events need their capabilities too.
     for event in [
-        KernelEvent::ShortcutPressed("paste".into()),
+        KernelEvent::ShortcutPressed(shortcut("paste", 0)),
         KernelEvent::MenuItemChosen("item-0".into()),
+        KernelEvent::NotificationChosen(plugin_host::NotificationChoice {
+            id: "hello".into(),
+            action: None,
+        }),
         KernelEvent::MicrophoneFree,
     ] {
         assert!(matches!(
@@ -371,10 +379,10 @@ fn a_shortcut_press_counts_as_something_you_did_and_may_paste() {
         ["shortcut paste Alt+Space true"]
     );
     plugin
-        .handle_kernel_event(&KernelEvent::ShortcutPressed("paste".into()))
+        .handle_kernel_event(&KernelEvent::ShortcutPressed(shortcut("paste", 10)))
         .unwrap();
     plugin
-        .handle_kernel_event(&KernelEvent::ShortcutReleased("paste".into()))
+        .handle_kernel_event(&KernelEvent::ShortcutReleased(shortcut("paste", 400)))
         .unwrap();
     assert_eq!(lines(&plugin, "copy:Buy milk"), ["pasted"]);
     assert_eq!(
@@ -388,9 +396,9 @@ fn a_shortcut_press_counts_as_something_you_did_and_may_paste() {
     assert_eq!(
         lines(&plugin, "events"),
         [
-            "kernel KernelEvent::ShortcutPressed(\"paste\")",
+            "kernel KernelEvent::ShortcutPressed(ShortcutEvent { id: \"paste\", at-ms: 10 })",
             "kernel paste pasted",
-            "kernel KernelEvent::ShortcutReleased(\"paste\")",
+            "kernel KernelEvent::ShortcutReleased(ShortcutEvent { id: \"paste\", at-ms: 400 })",
             "kernel KernelEvent::MenuItemChosen(\"item-0\")",
         ]
     );
@@ -421,8 +429,29 @@ fn the_manifest_declares_shortcuts_with_keys_and_refuses_bad_ones() {
             id: "paste".into(),
             title: "Dictation".into(),
             keys: "Alt+Space".into(),
+            macos_keys: None,
+            windows_keys: None,
+            linux_keys: None,
         }]
     );
+    // Keys for one system replace `keys` there.
+    let parsed = manifest(
+        "name = \"global-shortcuts\"\nshortcuts = [{ id = \"p\", title = \"D\", keys = \"Ctrl+Space\", \
+         macos-keys = \"Alt+Space\", linux-keys = \"Super+Space\" }]",
+    );
+    assert!(parsed.is_err(), "Super isn't a modifier");
+    let parsed = manifest(
+        "name = \"global-shortcuts\"\nshortcuts = [{ id = \"p\", title = \"D\", keys = \"Ctrl+Space\", \
+         macos-keys = \"Alt+Space\" }]",
+    )
+    .unwrap();
+    let declared = &plugin_host::Capability::shortcuts(&parsed.capabilities)[0];
+    let here = if cfg!(target_os = "macos") {
+        "Alt+Space"
+    } else {
+        "Ctrl+Space"
+    };
+    assert_eq!(declared.keys_here(), here);
     for bad in [
         "name = \"global-shortcuts\"",
         "name = \"global-shortcuts\"\nshortcuts = []",
@@ -466,4 +495,12 @@ fn menu_entries_must_make_a_menu() {
         ["error failed The menu entry menu needs a label."]
     );
     assert_eq!(calls.take(), Vec::<String>::new());
+}
+
+/// The shortcut `id`'s keys at `at_ms`.
+fn shortcut(id: &str, at_ms: u64) -> plugin_host::ShortcutEvent {
+    plugin_host::ShortcutEvent {
+        id: id.into(),
+        at_ms,
+    }
 }

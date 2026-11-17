@@ -61,12 +61,14 @@ fn speak(system: &FakeSystem) {
     }
 }
 
-fn at(system: &FakeSystem, seconds: &str) {
-    system.set_clock(&format!("2026-11-16T10:00:{seconds}Z"), "UTC");
-}
+/// The moment the first press counts from.
+static START: std::sync::LazyLock<std::time::Instant> =
+    std::sync::LazyLock::new(std::time::Instant::now);
 
-fn press(app: &mut app_core::App, pressed: bool) {
-    app.press_shortcut("dictation", "dictation", pressed);
+/// The shortcut's keys go down, or up, `ms` after [`START`].
+fn press(app: &mut app_core::App, pressed: bool, ms: u64) {
+    let at = *START + std::time::Duration::from_millis(ms);
+    app.press_shortcut("dictation", "dictation", pressed, at);
 }
 
 fn pasted(system: &FakeSystem) -> Vec<String> {
@@ -95,14 +97,12 @@ fn a_held_shortcut_pastes_what_you_said_with_your_custom_words() {
         [("dictation", "dictation")]
     );
 
-    at(&system, "00");
-    press(&mut app, true);
+    press(&mut app, true, 0);
     wait_until(&mut app, "the recording starts", |app| {
         showing(app, "Cancel Dictation")
     });
     speak(&system);
-    at(&system, "02");
-    press(&mut app, false);
+    press(&mut app, false, 2000);
     wait_until(&mut app, "the text is pasted", |_| {
         !pasted(&system).is_empty()
     });
@@ -136,22 +136,18 @@ fn a_tap_records_until_the_next_press_and_an_empty_result_pastes_nothing() {
     };
     plugins::install_and_enable(&mut app, folder.path(), "dictation");
 
-    at(&system, "00");
-    press(&mut app, true);
+    press(&mut app, true, 0);
     wait_until(&mut app, "the recording starts", |app| {
         showing(app, "Cancel Dictation")
     });
     // A tap, under the 300 ms hold threshold.
-    system.set_clock("2026-11-16T10:00:00.100Z", "UTC");
-    press(&mut app, false);
+    press(&mut app, false, 100);
     speak(&system);
     support::settle(&mut app);
     assert!(showing(&app, "Cancel Dictation"), "still recording");
 
-    at(&system, "05");
-    press(&mut app, true);
-    at(&system, "06");
-    press(&mut app, false);
+    press(&mut app, true, 5000);
+    press(&mut app, false, 6000);
     wait_until(&mut app, "the recording ends", |app| {
         showing(app, "Copy Last Dictation") && !showing(app, "Cancel Dictation")
     });
@@ -160,4 +156,26 @@ fn a_tap_records_until_the_next_press_and_an_empty_result_pastes_nothing() {
         !fixture.exists("Settings/Dictation.md"),
         "only a change on the settings page writes the file"
     );
+}
+
+#[test]
+fn the_menu_follows_the_models_with_no_other_event() {
+    let fixture = Fixture::new(&[]);
+    downloaded(&fixture);
+    let system = FakeSystem::new();
+    let mut app = fixture.app_with(system.clone());
+    let Some(folder) = dictation() else {
+        return;
+    };
+    plugins::install_and_enable(&mut app, folder.path(), "dictation");
+    wait_until(&mut app, "the model shows", |app| {
+        showing(app, "Parakeet Ultra")
+    });
+
+    // Deleting the model redraws Dictation, so its menu drops it.
+    app.delete_speech_model(speech::catalog::ONBOARDING_MODEL)
+        .unwrap();
+    wait_until(&mut app, "the model goes from the menu", |app| {
+        !showing(app, "Parakeet Ultra")
+    });
 }

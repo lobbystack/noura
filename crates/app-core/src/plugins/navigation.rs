@@ -1,9 +1,9 @@
 //! What a running plugin asks the window you acted in to show, Settings
-//! included, or move to the trash, and the clock it reads. A plugin's request waits here until
-//! that window polls,
-//! and only a call that answers something you did may make one: an event
-//! in one of the plugin's views or panels, or a command you ran from the
-//! command palette. Such a call runs on the plugin's own thread, so a call
+//! included, or move to the trash, and the clock it reads. A plugin's
+//! request waits here until that window polls, and only a call that
+//! answers something you did may make one: an event in one of the
+//! plugin's views or panels, a command you ran from the command palette,
+//! or a kernel event, whose request goes to the window you used last. Such a call runs on the plugin's own thread, so a call
 //! into the plugin from another thread, such as another plugin's command
 //! call or a tool call, opens nothing even while one waits its turn.
 
@@ -106,9 +106,17 @@ impl Navigator {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let here = thread::current().id();
+        // A kernel event, such as a shortcut press, came from no window:
+        // what it opens shows in the window you used last.
+        let kernel = *self
+            .kernel
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            == Some(here);
         let Some(window) = origin
             .filter(|(thread, _)| *thread == here)
             .map(|(_, window)| window)
+            .or(kernel.then_some(WindowKey::LAST_USED))
         else {
             return Err(ServiceError::Failed(refusal.to_owned()));
         };
@@ -145,6 +153,7 @@ impl Navigation for Navigator {
             SettingsSection::Plugins => settings_section::PLUGINS,
             SettingsSection::Ai => settings_section::AI,
             SettingsSection::Sync => settings_section::SYNC,
+            SettingsSection::Speech => settings_section::SPEECH,
         };
         self.request(Opening::Settings(id))
     }

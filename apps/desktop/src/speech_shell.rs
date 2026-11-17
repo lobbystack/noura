@@ -5,13 +5,16 @@
 //! Quit Noura. While the menu shows, closing the last window hides it and
 //! Noura keeps running there, so a shortcut and a recording keep working.
 //!
-//! Under Wayland, `global-hotkey` can't see keys. There you bind
+//! Under Wayland, `global-hotkey` can't see keys, so the shortcuts go
+//! through the XDG GlobalShortcuts portal, which asks you to confirm them
+//! once and hears each press and release. Without the portal you bind
 //! `noura --toggle-dictation`, or `noura --shortcut <plugin>/<shortcut>`,
 //! in the desktop's keyboard settings; the running copy hears it through
 //! its single-instance socket and sends a press, then a release.
 
 use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::Instant;
 
 use app_core::{App, GlobalShortcut, MenuBarItems};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
@@ -26,7 +29,11 @@ const QUIT: &str = "tray:quit";
 
 /// What the shell heard from the system.
 pub enum Heard {
-    Hotkey(u32, bool),
+    /// A hotkey's keys went down, or up, at that moment.
+    Hotkey(u32, bool, Instant),
+    /// The GlobalShortcuts portal heard something.
+    #[cfg(target_os = "linux")]
+    Portal(crate::linux_portal::Heard),
     Tray(String),
 }
 
@@ -51,6 +58,19 @@ pub struct SpeechShell {
     sender: Sender<Heard>,
 }
 
+/// Whether the shortcuts go through the GlobalShortcuts portal: under
+/// Wayland.
+fn portal() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        crate::linux_portal::wayland()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 /// The item ID of `plugin`'s entry `id`.
 fn entry_id(plugin: &str, id: &str) -> String {
     format!("{TRAY_PREFIX}{plugin}/{id}")
@@ -61,17 +81,35 @@ impl SpeechShell {
     /// again, as a press arrives while they're hidden.
     pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
         let (sender, heard) = channel();
-        let hotkeys = match GlobalHotKeyManager::new() {
-            Ok(manager) => Some(manager),
-            Err(error) => {
-                tracing::warn!(%error, "global shortcuts aren't available");
-                None
+        let wake = std::sync::Arc::new(wake);
+        #[cfg(target_os = "linux")]
+        if crate::linux_portal::wayland() {
+            let tell = sender.clone();
+            let wake = wake.clone();
+            crate::linux_portal::Portal::get().listen(move |heard| {
+                if tell.send(Heard::Portal(heard)).is_ok() {
+                    wake();
+                }
+            });
+        }
+        let hotkeys = if portal() {
+            None
+        } else {
+            match GlobalHotKeyManager::new() {
+                Ok(manager) => Some(manager),
+                Err(error) => {
+                    tracing::warn!(%error, "global shortcuts aren't available");
+                    None
+                }
             }
         };
         let tell = sender.clone();
         GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
             let pressed = event.state() == HotKeyState::Pressed;
-            if tell.send(Heard::Hotkey(event.id(), pressed)).is_ok() {
+            if tell
+                .send(Heard::Hotkey(event.id(), pressed, Instant::now()))
+                .is_ok()
+            {
                 wake();
             }
         }));
@@ -107,9 +145,28 @@ impl SpeechShell {
         let mut asked = Asked::default();
         while let Ok(heard) = self.heard.try_recv() {
             match heard {
-                Heard::Hotkey(id, pressed) => {
+                Heard::Hotkey(id, pressed, at) => {
                     if let Some((plugin, shortcut, _)) = self.registered.get(&id) {
-                        app.press_shortcut(plugin, shortcut, pressed);
+                        app.press_shortcut(plugin, shortcut, pressed, at);
+                    }
+                }
+                #[cfg(target_os = "linux")]
+                Heard::Portal(crate::linux_portal::Heard::Shortcut { id, pressed, at }) => {
+                    if let Some((plugin, shortcut)) = id.split_once('/') {
+                        app.press_shortcut(plugin, shortcut, pressed, at);
+                    }
+                }
+                #[cfg(target_os = "linux")]
+                Heard::Portal(crate::linux_portal::Heard::Bound(bound)) => {
+                    // Without the portal, `noura --shortcut` still works.
+                    let bound = bound.unwrap_or_default();
+                    for shortcut in &self.shortcuts {
+                        let id = format!("{}/{}", shortcut.plugin, shortcut.id);
+                        app.shortcut_registered(
+                            &shortcut.plugin,
+                            &shortcut.id,
+                            bound.contains(&id),
+                        );
                     }
                 }
                 Heard::Tray(id) if id == OPEN => asked.open = true,
@@ -127,6 +184,20 @@ impl SpeechShell {
     fn register(&mut self, app: &mut App) {
         let wanted = app.global_shortcuts();
         if wanted == self.shortcuts {
+            return;
+        }
+        #[cfg(target_os = "linux")]
+        if portal() {
+            let bindings = wanted
+                .iter()
+                .map(|shortcut| crate::linux_portal::Binding {
+                    id: format!("{}/{}", shortcut.plugin, shortcut.id),
+                    title: shortcut.title.clone(),
+                    keys: shortcut.keys.clone(),
+                })
+                .collect();
+            crate::linux_portal::Portal::get().bind(bindings);
+            self.shortcuts = wanted;
             return;
         }
         let Some(manager) = &self.hotkeys else {

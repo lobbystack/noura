@@ -18,10 +18,11 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use plugin_host::{
-    Capability, KernelEvent, MenuBarEntry, MenuBarService, MicrophoneUse, PasteMethod,
-    PasteService, Recording, RecordingOptions, RecordingState, ServiceError, ShortcutDeclaration,
-    ShortcutService, ShortcutState, SpeechChannel, SpeechMicrophone, SpeechModel,
-    SpeechPreferences, SpeechSegment, SpeechService, SpeechSource, WorkspacePath,
+    Capability, KernelEvent, MenuBarEntry, MenuBarService, MicrophoneUse, Notification,
+    NotificationChoice, NotificationService, PasteMethod, PasteService, Recording,
+    RecordingOptions, RecordingState, ServiceError, ShortcutDeclaration, ShortcutService,
+    ShortcutState, SpeechChannel, SpeechMicrophone, SpeechModel, SpeechPreferences, SpeechSegment,
+    SpeechService, SpeechSource, WorkspacePath,
 };
 use speech::audio::{AudioBackend, FakeAudio, FakeBackend, Source};
 use speech::engine::{Engine, FakeEngine};
@@ -41,6 +42,47 @@ pub struct SpeechDevices {
     pub paster: Arc<dyn Paster>,
     /// How often to check whether another app turned the microphone on.
     pub microphone_watch: Option<Duration>,
+    /// The system's notification center.
+    pub notifier: Arc<dyn Notifier>,
+}
+
+/// A notification as the system shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemNotification {
+    /// Unique on this computer: the plugin's ID, a slash, then the
+    /// notification's ID.
+    pub key: String,
+    pub title: String,
+    pub body: String,
+    /// Each action's ID and label.
+    pub actions: Vec<(String, String)>,
+}
+
+/// Called with the action you chose, or `None` when you chose the
+/// notification itself. It may run on any thread.
+pub type NotificationChosen = Arc<dyn Fn(Option<String>) + Send + Sync>;
+
+/// The system's notification center.
+pub trait Notifier: Send + Sync {
+    /// Show `notification` in place of any with its key.
+    fn show(
+        &self,
+        notification: SystemNotification,
+        chosen: NotificationChosen,
+    ) -> Result<(), String>;
+    /// Take away the notification with this key, if it still shows.
+    fn withdraw(&self, key: &str);
+}
+
+/// A notification center that shows nothing.
+pub struct NoNotifier;
+
+impl Notifier for NoNotifier {
+    fn show(&self, _: SystemNotification, _: NotificationChosen) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn withdraw(&self, _: &str) {}
 }
 
 impl SpeechDevices {
@@ -51,6 +93,7 @@ impl SpeechDevices {
             audio: Arc::new(FakeBackend(FakeAudio::new())),
             paster: Arc::new(NoPaste),
             microphone_watch: None,
+            notifier: Arc::new(NoNotifier),
         }
     }
 }
@@ -103,6 +146,11 @@ pub(crate) struct SpeechKernel {
     pending: Mutex<Vec<(String, Option<KernelEvent>)>>,
     /// Counts the changes Settings and the menu bar show.
     version: AtomicU64,
+    notifier: Arc<dyn Notifier>,
+    /// The keys of the notifications each plugin showed.
+    notified: Mutex<BTreeMap<String, Vec<String>>>,
+    /// Where shortcut times count from.
+    epoch: std::time::Instant,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
@@ -117,12 +165,16 @@ impl SpeechKernel {
             download: speech::download::DownloadOptions::default(),
             microphone_watch: devices.microphone_watch,
         });
+        let notifier = devices.notifier;
         let kernel = Arc::new(Self {
             speech,
             menus: Mutex::new(BTreeMap::new()),
             registered: Mutex::new(BTreeMap::new()),
             pending: Mutex::new(Vec::new()),
             version: AtomicU64::new(0),
+            notifier,
+            notified: Mutex::new(BTreeMap::new()),
+            epoch: std::time::Instant::now(),
             wake: Mutex::new(None),
         });
         let weak = Arc::downgrade(&kernel);
@@ -131,6 +183,28 @@ impl SpeechKernel {
                 kernel.heard(event);
             }
         });
+        // A plugin that records draws again each second, so its timer
+        // moves.
+        let weak = Arc::downgrade(&kernel);
+        let _ = std::thread::Builder::new()
+            .name("noura-recording-tick".into())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(Duration::from_secs(1));
+                    let Some(kernel) = weak.upgrade() else {
+                        return;
+                    };
+                    let recording = kernel.speech.recording_plugins();
+                    if recording.is_empty() {
+                        continue;
+                    }
+                    kernel
+                        .pending
+                        .lock()
+                        .extend(recording.into_iter().map(|plugin| (plugin, None)));
+                    kernel.wake();
+                }
+            });
         kernel
     }
 
@@ -169,7 +243,12 @@ impl SpeechKernel {
                 // Every plugin that holds `speech` hears it.
                 self.pending.lock().push((String::new(), Some(event)));
             }
-            Event::Models => self.changed(),
+            Event::Models => {
+                // A model finished downloading or went: Settings and every
+                // plugin that holds `speech` draw again.
+                self.pending.lock().push((String::new(), None));
+                self.changed();
+            }
         }
         self.wake();
     }
@@ -179,9 +258,18 @@ impl SpeechKernel {
         std::mem::take(&mut *self.pending.lock())
     }
 
-    /// The plugin `plugin` stopped: its recordings and menu entries go.
+    /// Milliseconds from Noura's start to `at`, for shortcut events.
+    pub(crate) fn since_start(&self, at: std::time::Instant) -> u64 {
+        u64::try_from(at.saturating_duration_since(self.epoch).as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// The plugin `plugin` stopped: its recordings, menu entries and
+    /// notifications go.
     pub(crate) fn forget_plugin(&self, plugin: &str) {
         self.speech.forget_plugin(plugin);
+        for key in self.notified.lock().remove(plugin).unwrap_or_default() {
+            self.notifier.withdraw(&key);
+        }
         if self.menus.lock().remove(plugin).is_some() {
             self.changed();
         }
@@ -226,7 +314,8 @@ impl SpeechKernel {
             speech: access.clone(),
             shortcuts: access.clone(),
             paste: access.clone(),
-            menu_bar: access,
+            menu_bar: access.clone(),
+            notifications: access,
         }
     }
 }
@@ -237,6 +326,7 @@ pub(crate) struct PluginSpeechServices {
     pub(crate) shortcuts: Arc<dyn ShortcutService>,
     pub(crate) paste: Arc<dyn PasteService>,
     pub(crate) menu_bar: Arc<dyn MenuBarService>,
+    pub(crate) notifications: Arc<dyn NotificationService>,
 }
 
 /// The shortcuts `approved` grants.
@@ -468,10 +558,11 @@ impl ShortcutService for Access {
             .map(|shortcut| ShortcutState {
                 id: shortcut.id.clone(),
                 title: shortcut.title.clone(),
-                keys: self
-                    .kernel
-                    .speech
-                    .shortcut_keys(&self.plugin, &shortcut.id, &shortcut.keys),
+                keys: self.kernel.speech.shortcut_keys(
+                    &self.plugin,
+                    &shortcut.id,
+                    shortcut.keys_here(),
+                ),
                 registered: registered
                     .get(&(self.plugin.clone(), shortcut.id.clone()))
                     .copied()
@@ -509,6 +600,65 @@ impl MenuBarService for Access {
         }
         drop(menus);
         self.kernel.changed();
+        Ok(())
+    }
+}
+
+impl NotificationService for Access {
+    fn notify(&self, notification: Notification) -> Result<(), ServiceError> {
+        if !self.navigator.answering() {
+            return Err(ServiceError::Failed(
+                "Noura shows notifications only when you act.".to_owned(),
+            ));
+        }
+        let key = format!("{}/{}", self.plugin, notification.id);
+        let weak = Arc::downgrade(&self.kernel);
+        let plugin = self.plugin.clone();
+        let id = notification.id.clone();
+        let chosen: NotificationChosen = Arc::new(move |action| {
+            let Some(kernel) = weak.upgrade() else {
+                return;
+            };
+            let event = KernelEvent::NotificationChosen(NotificationChoice {
+                id: id.clone(),
+                action,
+            });
+            kernel.pending.lock().push((plugin.clone(), Some(event)));
+            kernel.wake();
+        });
+        self.kernel
+            .notifier
+            .show(
+                SystemNotification {
+                    key: key.clone(),
+                    title: notification.title,
+                    body: notification.body,
+                    actions: notification
+                        .actions
+                        .into_iter()
+                        .map(|action| (action.id, action.label))
+                        .collect(),
+                },
+                chosen,
+            )
+            .map_err(|message| {
+                tracing::warn!(%message, "a notification didn't show");
+                ServiceError::Failed("Noura couldn't show the notification.".to_owned())
+            })?;
+        let mut notified = self.kernel.notified.lock();
+        let keys = notified.entry(self.plugin.clone()).or_default();
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+        Ok(())
+    }
+
+    fn withdraw(&self, id: &str) -> Result<(), ServiceError> {
+        let key = format!("{}/{id}", self.plugin);
+        if let Some(keys) = self.kernel.notified.lock().get_mut(&self.plugin) {
+            keys.retain(|known| *known != key);
+        }
+        self.kernel.notifier.withdraw(&key);
         Ok(())
     }
 }

@@ -566,6 +566,59 @@ export class MockWorkspace {
 		return moved;
 	}
 
+	/** Move the folder holding the object's file to `folder`, with every
+	 * file in it, as `objects.move-folder` does. */
+	moveFolder(
+		id: string,
+		expectedRevision: string,
+		folder: string,
+		mayWrite: (objectType: string) => boolean,
+	): MockObject {
+		const object = this.current(id, expectedRevision);
+		checkPath(folder);
+		const slash = object.path.lastIndexOf('/');
+		if (slash < 0) {
+			refuse('failed', "The object isn't in a folder of its own.");
+		}
+		const from = object.path.slice(0, slash + 1);
+		const to = `${folder}/`;
+		const inside = (path: string) => path.startsWith(from);
+		const objects = [...this.objects.values()].filter((known) => inside(known.path));
+		const files = [...this.files.keys()].filter(inside);
+		for (const path of [...objects.map((known) => known.path), ...files]) {
+			if (path.slice(from.length).includes('/')) {
+				refuse('failed', 'The folder holds another folder.');
+			}
+		}
+		if (files.some((path) => path.toLowerCase().endsWith('.md'))) {
+			refuse('failed', "The folder holds a note the plugin can't move.");
+		}
+		if (objects.some((known) => !mayWrite(known.objectType))) {
+			refuse('failed', "The folder holds a note the plugin can't move.");
+		}
+		const everything = [
+			...this.files.keys(),
+			...[...this.objects.values()].map((known) => known.path),
+		];
+		if (everything.some((path) => path === folder || path.startsWith(to))) {
+			refuse('already-exists', folder);
+		}
+		for (const known of objects) {
+			const path = to + known.path.slice(from.length);
+			const moved = { ...known, path, title: titleOf(path) };
+			moved.revision = this.revise(moved);
+			this.objects.set(known.id, moved);
+		}
+		for (const path of files) {
+			const bytes = this.files.get(path);
+			this.files.delete(path);
+			if (bytes) {
+				this.files.set(to + path.slice(from.length), bytes);
+			}
+		}
+		return this.get(id);
+	}
+
 	delete(id: string, expectedRevision: string): void {
 		this.current(id, expectedRevision);
 		this.objects.delete(id);

@@ -128,9 +128,11 @@ interface Interfaces {
 	'noura:plugin/global-shortcuts': typeof import('noura:plugin/global-shortcuts@0.1.0');
 	'noura:plugin/paste': typeof import('noura:plugin/paste@0.1.0');
 	'noura:plugin/menu-bar': typeof import('noura:plugin/menu-bar@0.1.0');
+	'noura:plugin/notifications': typeof import('noura:plugin/notifications@0.1.0');
 }
 
 type MenuEntry = import('noura:plugin/menu-bar@0.1.0').Entry;
+type Notification = import('noura:plugin/notifications@0.1.0').Notification;
 type KernelEvent = import('noura:plugin/kernel-events@0.1.0').KernelEvent;
 
 type Chat = import('noura:plugin/ai@0.1.0').Chat;
@@ -153,6 +155,10 @@ export const PLUGIN_TYPES: Readonly<Record<string, string>> = {
 	project: 'projects',
 	chat: 'ai',
 	'chat-message': 'ai',
+	transcription: 'transcription',
+	transcript: 'transcription',
+	'transcription-settings': 'transcription',
+	'dictation-settings': 'dictation',
 };
 
 /**
@@ -284,6 +290,8 @@ export class MockHost {
 	readonly copies: string[] = [];
 	/** The plugin's menu bar entries now. */
 	menuEntries: MenuEntry[] = [];
+	/** The plugin's notifications that show now, by ID. */
+	readonly notifications = new Map<string, Notification>();
 	/** The dictation the plugin kept last. */
 	private lastDictation: string | undefined;
 
@@ -486,6 +494,15 @@ export class MockHost {
 				) => objectsToWriteFor(id).update(id, revision, changes),
 				moveTo: (id: string, revision: string, path: string) =>
 					objectsToWriteFor(id).moveTo(id, revision, path),
+				moveFolder: (id: string, revision: string, folder: string) =>
+					objectsToWriteFor(id).moveFolder(id, revision, folder, (objectType) => {
+						try {
+							objectsToWrite(objectType);
+							return true;
+						} catch {
+							return false;
+						}
+					}),
 				delete: (id: string, revision: string) =>
 					objectsToWriteFor(id).delete(id, revision),
 			},
@@ -560,8 +577,13 @@ export class MockHost {
 					navigation();
 					this.openings.push({ kind: 'page', page });
 				},
-				openSettings: (section: 'plugins' | 'ai' | 'sync') => {
-					navigation();
+				openSettings: (section: 'plugins' | 'ai' | 'sync' | 'speech') => {
+					// A plugin with a page in Settings may open Settings too.
+					if (!this.declares('settings')) {
+						navigation();
+					} else if (!this.acting) {
+						throw { tag: 'failed', val: 'Noura opens things only when you act.' };
+					}
 					this.openings.push({ kind: 'settings', section });
 				},
 				trashObject: (id: string) => {
@@ -781,6 +803,29 @@ export class MockHost {
 					this.menuEntries = entries.map((entry) => ({ ...entry }));
 				},
 			},
+			'noura:plugin/notifications': {
+				notify: (notification: Notification) => {
+					if (!this.declares('notifications')) {
+						refused('notifications');
+					}
+					if (!this.acting) {
+						throw {
+							tag: 'failed',
+							val: 'Noura shows notifications only when you act.',
+						};
+					}
+					this.notifications.set(notification.id, {
+						...notification,
+						actions: notification.actions.map((action) => ({ ...action })),
+					});
+				},
+				withdraw: (id: string) => {
+					if (!this.declares('notifications')) {
+						refused('notifications');
+					}
+					this.notifications.delete(id);
+				},
+			},
 		};
 	}
 
@@ -848,9 +893,26 @@ export class MockHost {
 				? 'global-shortcuts'
 				: event.tag === 'menu-item-chosen'
 					? 'menu-bar-items'
-					: 'speech';
+					: event.tag === 'notification-chosen'
+						? 'notifications'
+						: 'speech';
 		this.needs(needed);
 		this.act(() => this.call('kernelEvents', 'handleKernelEvent', event));
+	}
+
+	/**
+	 * Choose the notification `id` that shows, or its action `action`, as
+	 * you would in the notification center. The notification goes, and
+	 * the plugin hears a `notification-chosen` kernel event.
+	 */
+	async chooseNotification(id: string, action?: string): Promise<void> {
+		if (!this.notifications.delete(id)) {
+			throw new Error(`The notification ${id} doesn't show.`);
+		}
+		await this.kernelEvent({
+			tag: 'notification-chosen',
+			val: { id, action },
+		});
 	}
 
 	/** Press the button `node` in the page's view. */

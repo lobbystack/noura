@@ -2,11 +2,11 @@
 
 The `global-shortcuts` interface lists the keyboard shortcuts your plugin answers in any app, even with Noura's windows closed. Import it from `noura:plugin/global-shortcuts@0.1.0`. It needs the `global-shortcuts` capability, whose `shortcuts` list declares each shortcut with an `id`, a `title` and the `keys` it starts with, as the example's manifest shows.
 
-Keys are modifiers among `Ctrl`, `Alt`, `Shift` and `Cmd`, joined by `+`, then one key: a capital letter, a digit, `F1` to `F24`, or `Space`, `Enter`, `Tab`, `Escape`, `Backspace`, `Delete`, an arrow such as `Up`, `Home`, `End`, `PageUp` or `PageDown`. You can change them in Settings > Speech. An update that adds a shortcut waits for your approval.
+Keys are modifiers among `Ctrl`, `Alt`, `Shift` and `Cmd`, joined by `+`, then one key: a capital letter, a digit, `F1` to `F24`, or `Space`, `Enter`, `Tab`, `Escape`, `Backspace`, `Delete`, an arrow such as `Up`, `Home`, `End`, `PageUp` or `PageDown`. To start with other keys on one system, add `macos-keys`, `windows-keys` or `linux-keys`, as in `{ id = "talk", title = "Talk", keys = "Ctrl+Space", macos-keys = "Alt+Space" }`. You can change the keys in Settings > Speech. An update that adds a shortcut waits for your approval.
 
 Noura hands each press and release to your plugin as a [kernel event](kernel-events.md), which counts as something you did. It goes to the workspace you used last that has your plugin on. With no such workspace, the shortcut does nothing.
 
-Under Wayland, where apps can't see keys pressed elsewhere, you bind `noura --shortcut <plugin>/<shortcut>` in the desktop's settings, and each run sends a press, then a release.
+Under Wayland, where apps can't see keys pressed elsewhere, Noura binds the shortcuts through the desktop's GlobalShortcuts portal, which asks you once to confirm them. On a desktop without the portal, you bind `noura --shortcut <plugin>/<shortcut>` in the desktop's settings, and each run sends a press, then a release.
 
 ## Functions
 
@@ -60,7 +60,7 @@ function listed(): string {
 
 export const kernelEvents: KernelEventsExports = {
 	handleKernelEvent(event: KernelEvent) {
-		if (event.tag === 'shortcut-pressed' && event.val === 'count') {
+		if (event.tag === 'shortcut-pressed' && event.val.id === 'count') {
 			presses += 1;
 		}
 	},
@@ -78,4 +78,4 @@ export const view: ViewExports = {
 
 ## Notes
 
-- The mock host lists the manifest's shortcuts as registered. Send a press with `host.kernelEvent({ tag: 'shortcut-pressed', val: 'count' })`.
+- The mock host lists the manifest's shortcuts as registered. Send a press with `host.kernelEvent({ tag: 'shortcut-pressed', val: { id: 'count', atMs: 0n } })`.

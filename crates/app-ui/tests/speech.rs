@@ -50,7 +50,12 @@ fn onboarding_recommends_parakeet_ultra_and_each_model_has_a_labeled_button() {
             .any(|label| label.starts_with("Download "))
     );
     harness.get_by_label("Language");
-    harness.get_by_role_and_label(Role::Switch, "Paste by typing");
+    // Dictation's settings hold how text goes in.
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Switch, "Paste by typing")
+            .is_none()
+    );
     assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
 
     harness

@@ -13,9 +13,9 @@ use wasmtime::{Engine, Store, UpdateDeadline};
 
 use crate::{
     AiChats, Capability, ClockReading, DeviceClock, EntryKind, Limits, Listed, MenuBarService,
-    Navigation, NewObject, ObjectChanges, ObjectRead, ObjectRecord, ObjectTypes, PasteService,
-    PropertyProblem, Router, SERVICE_WRITTEN_TYPES, ServiceError, ShortcutService, SpeechService,
-    TypeError, WorkspaceObjects, WorkspacePath, WorkspaceReads,
+    Navigation, NewObject, NotificationService, ObjectChanges, ObjectRead, ObjectRecord,
+    ObjectTypes, PasteService, PropertyProblem, Router, SERVICE_WRITTEN_TYPES, ServiceError,
+    ShortcutService, SpeechService, TypeError, WorkspaceObjects, WorkspacePath, WorkspaceReads,
     object_types::type_of_id,
     runtime::{EpochTicker, Failure, StoreLimiter, deadline_ticks},
 };
@@ -31,7 +31,9 @@ mod bindings {
 use bindings::Plugin;
 pub use bindings::exports::noura::plugin::commands::Command;
 pub use bindings::exports::noura::plugin::inbox::Section as InboxSection;
-pub use bindings::exports::noura::plugin::kernel_events::{KernelEvent, MicrophoneUse};
+pub use bindings::exports::noura::plugin::kernel_events::{
+    KernelEvent, MicrophoneUse, NotificationChoice, ShortcutEvent,
+};
 pub use bindings::exports::noura::plugin::object_types::ObjectType;
 pub use bindings::exports::noura::plugin::tools::Tool;
 pub use bindings::exports::noura::plugin::view::Page;
@@ -51,6 +53,7 @@ pub use bindings::noura::plugin::ai::{
 pub use bindings::noura::plugin::global_shortcuts::Shortcut as ShortcutState;
 pub use bindings::noura::plugin::menu_bar::{Entry as MenuBarEntry, EntryKind as MenuBarEntryKind};
 pub use bindings::noura::plugin::navigation::{Placement, SettingsSection};
+pub use bindings::noura::plugin::notifications::{Action as NotificationAction, Notification};
 pub use bindings::noura::plugin::paste::Method as PasteMethod;
 pub use bindings::noura::plugin::speech::{
     Channel as SpeechChannel, Microphone as SpeechMicrophone, Model as SpeechModel,
@@ -64,8 +67,8 @@ pub use bindings::noura::plugin::ui::{
     Naming, Node, NodeKind, SortOrder, Submission, Table, Target, Value, VirtualList, VirtualRow,
 };
 use bindings::noura::plugin::{
-    ai, clock, command_calls, global_shortcuts, menu_bar, navigation, network, objects, paste,
-    speech, types, workspace,
+    ai, clock, command_calls, global_shortcuts, menu_bar, navigation, network, notifications,
+    objects, paste, speech, types, workspace,
 };
 
 /// The capability behind object types, their panels and object writes.
@@ -153,6 +156,8 @@ pub struct Services {
     pub paste: Option<Arc<dyn PasteService>>,
     /// The plugin's menu bar entries, for `menu-bar-items`.
     pub menu_bar: Option<Arc<dyn MenuBarService>>,
+    /// The plugin's notifications, for `notifications`.
+    pub notifications: Option<Arc<dyn NotificationService>>,
 }
 
 /// How long the current call has run.
@@ -505,6 +510,63 @@ impl menu_bar::Host for HostState {
     }
 }
 
+impl notifications::Host for HostState {
+    fn notify(&mut self, notification: Notification) -> Result<(), types::Error> {
+        let service = self.service("notifications", |services| services.notifications.clone())?;
+        check_notification(&notification)?;
+        service.notify(notification).map_err(wit_error)
+    }
+
+    fn withdraw(&mut self, id: String) -> Result<(), types::Error> {
+        let service = self.service("notifications", |services| services.notifications.clone())?;
+        service.withdraw(&id).map_err(wit_error)
+    }
+}
+
+/// The most actions one notification holds.
+const MAX_NOTIFICATION_ACTIONS: usize = 3;
+
+/// The longest title, body, ID or action label of a notification, in
+/// characters.
+const MAX_NOTIFICATION_TEXT: usize = 300;
+
+/// A notification shows a title of text, at most three actions with
+/// distinct IDs and labels of text, and nothing too long.
+fn check_notification(notification: &Notification) -> Result<(), types::Error> {
+    let refused = |message: &str| Err(types::Error::Failed(message.to_owned()));
+    let text = |value: &str| {
+        value.chars().count() <= MAX_NOTIFICATION_TEXT && !value.chars().any(char::is_control)
+    };
+    if notification.id.is_empty() || !text(&notification.id) {
+        return refused("A notification needs an ID of text.");
+    }
+    if notification.title.trim().is_empty() || !text(&notification.title) {
+        return refused("A notification needs a title of text.");
+    }
+    if !text(&notification.body) {
+        return refused("A notification's body is one line of text.");
+    }
+    if notification.actions.len() > MAX_NOTIFICATION_ACTIONS {
+        return refused("A notification holds at most 3 actions.");
+    }
+    for (index, action) in notification.actions.iter().enumerate() {
+        if action.id.is_empty()
+            || !text(&action.id)
+            || action.label.trim().is_empty()
+            || !text(&action.label)
+        {
+            return refused("A notification's action needs an ID and a label of text.");
+        }
+        if notification.actions[..index]
+            .iter()
+            .any(|known| known.id == action.id)
+        {
+            return refused("A notification lists an action twice.");
+        }
+    }
+    Ok(())
+}
+
 /// The most entries a plugin may show in the menu bar menu.
 const MAX_MENU_ENTRIES: usize = 200;
 
@@ -664,7 +726,15 @@ impl navigation::Host for HostState {
     }
 
     fn open_settings(&mut self, section: navigation::SettingsSection) -> Result<(), types::Error> {
-        self.navigation()?.open_settings(section).map_err(wit_error)
+        // A plugin with a page in Settings may open Settings too.
+        let navigation = if self.holds("settings") && !self.holds("views") {
+            self.services.navigation.as_deref().ok_or_else(|| {
+                types::Error::Failed("Noura can't open anything for this plugin here.".to_owned())
+            })?
+        } else {
+            self.navigation()?
+        };
+        navigation.open_settings(section).map_err(wit_error)
     }
 
     fn trash_object(&mut self, id: String) -> Result<(), types::Error> {
@@ -854,6 +924,25 @@ impl objects::Host for HostState {
     fn delete(&mut self, id: String, expected_revision: String) -> Result<(), types::Error> {
         self.objects_to_write_for(&id)?
             .delete(&id, &expected_revision)
+            .map_err(wit_error)
+    }
+
+    fn move_folder(
+        &mut self,
+        id: String,
+        expected_revision: String,
+        folder: String,
+    ) -> Result<objects::Object, types::Error> {
+        let service = self.objects_to_write_for(&id)?;
+        let folder = WorkspacePath::new(&folder).map_err(wit_error)?;
+        // The folder's objects must be ones the plugin may write itself.
+        let may_write = |object_type: &str| {
+            self.services.types.held_by(object_type, self.instance)
+                && !SERVICE_WRITTEN_TYPES.contains(&object_type)
+        };
+        service
+            .move_folder(&id, &expected_revision, &folder, &may_write)
+            .map(wit_object)
             .map_err(wit_error)
     }
 }
@@ -1225,13 +1314,15 @@ impl PluginInstance {
 
     /// Hand the plugin `event`, when it holds the capability the event
     /// needs: `global-shortcuts` for a shortcut, `menu-bar-items` for a
-    /// menu entry and `speech` for the microphone and recordings.
+    /// menu entry, `notifications` for a notification and `speech` for
+    /// the microphone and recordings.
     pub(crate) fn handle_kernel_event(&mut self, event: &KernelEvent) -> Result<(), PluginError> {
         self.needs(match event {
             KernelEvent::ShortcutPressed(_) | KernelEvent::ShortcutReleased(_) => {
                 "global-shortcuts"
             }
             KernelEvent::MenuItemChosen(_) => "menu-bar-items",
+            KernelEvent::NotificationChosen(_) => "notifications",
             KernelEvent::MicrophoneInUse(_)
             | KernelEvent::MicrophoneFree
             | KernelEvent::RecordingChanged(_) => "speech",

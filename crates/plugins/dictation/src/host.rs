@@ -4,8 +4,10 @@
 //! one, through the plugin interface.
 
 use plugin_sdk::{
-    Error, clock,
+    Error,
     menu_bar::{self, Entry},
+    navigation::{self, SettingsSection},
+    notifications::{self, Action, Notification},
     objects::{self, Changes, NewObject},
     paste::{self, Method},
     speech::{self, Model, Preferences, Recording, RecordingOptions, Source},
@@ -30,8 +32,6 @@ pub(crate) enum WriteError {
 }
 
 pub(crate) trait Host {
-    /// The time now, in milliseconds since 1970.
-    fn now_ms(&self) -> i64;
     /// Start recording the microphone with this plugin's model, microphone
     /// and language. The error is in words for you.
     fn start(&self) -> Result<String, String>;
@@ -47,6 +47,11 @@ pub(crate) trait Host {
     fn preferences(&self) -> Option<Preferences>;
     fn set_preferences(&self, preferences: &Preferences);
     fn set_menu(&self, entries: &[Entry]);
+    /// Show the notification `id`, with actions by ID and label.
+    fn notify(&self, id: &str, title: &str, body: &str, actions: &[(&str, &str)]);
+    fn withdraw(&self, id: &str);
+    /// Open Settings on Speech, where you download models.
+    fn open_speech_settings(&self);
     /// The settings file, or `None` when there is none yet.
     fn read_settings(&self) -> Result<Option<Stored>, ()>;
     fn create_settings(&self, settings: &Settings) -> Result<(), WriteError>;
@@ -77,13 +82,6 @@ fn write_error(error: &Error) -> WriteError {
 }
 
 impl Host for Kernel {
-    fn now_ms(&self) -> i64 {
-        clock::now()
-            .instant
-            .parse::<jiff::Timestamp>()
-            .map_or(0, |instant| instant.as_millisecond())
-    }
-
     fn start(&self) -> Result<String, String> {
         speech::start(&RecordingOptions {
             sources: vec![Source::Microphone],
@@ -140,6 +138,29 @@ impl Host for Kernel {
 
     fn set_menu(&self, entries: &[Entry]) {
         let _ = menu_bar::set_entries(entries);
+    }
+
+    fn notify(&self, id: &str, title: &str, body: &str, actions: &[(&str, &str)]) {
+        let _ = notifications::notify(&Notification {
+            id: id.to_owned(),
+            title: title.to_owned(),
+            body: body.to_owned(),
+            actions: actions
+                .iter()
+                .map(|(id, label)| Action {
+                    id: (*id).to_owned(),
+                    label: (*label).to_owned(),
+                })
+                .collect(),
+        });
+    }
+
+    fn withdraw(&self, id: &str) {
+        let _ = notifications::withdraw(id);
+    }
+
+    fn open_speech_settings(&self) {
+        let _ = navigation::open_settings(SettingsSection::Speech);
     }
 
     fn read_settings(&self) -> Result<Option<Stored>, ()> {

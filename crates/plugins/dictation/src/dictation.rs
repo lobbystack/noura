@@ -21,6 +21,11 @@ use crate::{
 /// The shortcut the manifest declares.
 pub(crate) const SHORTCUT: &str = "dictation";
 
+/// The notification that says why a recording didn't start, as when no
+/// model is downloaded.
+pub(crate) const START_FAILED: &str = "start-failed";
+const OPEN_SETTINGS: &str = "open-settings";
+
 const ACTIVATION: &str = "activation";
 const PASTE: &str = "paste";
 const ADD_WORD: &str = "add-word";
@@ -40,6 +45,8 @@ pub(crate) struct Dictation {
     typed: String,
     /// Why the last change on the settings page didn't go in.
     problem: Option<String>,
+    /// The start-failed notification may still show.
+    notified: bool,
 }
 
 impl Dictation {
@@ -51,6 +58,7 @@ impl Dictation {
             drawn_words: Vec::new(),
             typed: String::new(),
             problem: None,
+            notified: false,
         }
     }
 
@@ -62,10 +70,10 @@ impl Dictation {
             .unwrap_or_default()
     }
 
-    /// The shortcut went down, or came up.
-    pub(crate) fn shortcut(&mut self, host: &impl Host, pressed: bool) {
+    /// The shortcut went down, or came up, at `at_ms` on Noura's clock.
+    pub(crate) fn shortcut(&mut self, host: &impl Host, pressed: bool, at_ms: u64) {
         let mode = Self::settings(host).activation;
-        let now = host.now_ms();
+        let now = i64::try_from(at_ms).unwrap_or(i64::MAX);
         let effect = if pressed {
             self.activation.press(mode, now)
         } else {
@@ -77,8 +85,24 @@ impl Dictation {
     fn run(&mut self, host: &impl Host, effect: Option<Effect>) {
         match effect {
             Some(Effect::Start) => match host.start() {
-                Ok(id) => self.recording = Some(id),
-                Err(_) => self.activation.start_failed(),
+                Ok(id) => {
+                    if std::mem::take(&mut self.notified) {
+                        host.withdraw(START_FAILED);
+                    }
+                    self.recording = Some(id);
+                }
+                Err(why) => {
+                    // Handy shows its overlay; Noura says why in a
+                    // notification, which opens Settings > Speech.
+                    host.notify(
+                        START_FAILED,
+                        "Dictation didn't start",
+                        &why,
+                        &[(OPEN_SETTINGS, "Open Settings")],
+                    );
+                    self.notified = true;
+                    self.activation.start_failed();
+                }
             },
             Some(Effect::Stop) => {
                 let stopped = self.recording.as_deref().map(|id| host.stop(id));
@@ -88,6 +112,13 @@ impl Dictation {
                 }
             }
             None => {}
+        }
+    }
+
+    /// You chose the notification `id`, or its action `action`.
+    pub(crate) fn notification_chosen(&mut self, host: &impl Host, id: &str) {
+        if id == START_FAILED {
+            host.open_speech_settings();
         }
     }
 

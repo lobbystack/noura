@@ -43,6 +43,9 @@
 //!   first one a submenu holding the rest.
 //! - `random`: count words in a std `HashMap`, which needs WASI's random
 //!   seed, as `hashmap <distinct> <times a>`.
+//! - `notify`: show the notification `hello`, which only a call that
+//!   answers you may, as `ok` or the error. A press of the shortcut
+//!   `notify` shows it, and one of `open` opens the page `events`.
 //! - `speech-paste` and `speech-menu`: pages that paste `hello` and show
 //!   the menu `Model` holding `Parakeet Ultra`.
 //! - `clock`: the clock's reading, as `now <instant> <time zone>`.
@@ -88,7 +91,7 @@ use plugin_sdk::{
     Calendar, CalendarEntry, CalendarMode, Choice, Column, Command, Error, Event, InboxSection,
     Input, Item, ItemList, KernelEvent, MenuItem, NameField, Node, NodeKind, Page, Plugin, Table,
     Tool, Value, View, VirtualList, VirtualRow, ai, clock, command_calls, global_shortcuts,
-    menu_bar, navigation, network, objects, paste, speech, workspace,
+    menu_bar, navigation, network, notifications, objects, paste, speech, workspace,
 };
 
 static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -114,11 +117,23 @@ struct Probe;
 impl Plugin for Probe {
     fn handle_kernel_event(event: KernelEvent) {
         record(format!("kernel {event:?}"));
-        if matches!(&event, KernelEvent::ShortcutPressed(id) if id == "paste") {
-            record(format!(
+        let KernelEvent::ShortcutPressed(press) = &event else {
+            return;
+        };
+        match press.id.as_str() {
+            "paste" => record(format!(
                 "kernel paste {}",
                 pasted(paste::paste("pasted", paste::Method::Clipboard))
-            ));
+            )),
+            // A notification with an action, which only a call that
+            // answers you may show.
+            "notify" => record(format!("kernel notify {}", answered(hello()))),
+            // What a kernel event opens shows in the window you used last.
+            "open" => record(format!(
+                "kernel open {}",
+                answered(navigation::open_page("events"))
+            )),
+            _ => {}
         }
     }
 
@@ -151,6 +166,10 @@ impl Plugin for Probe {
             Page {
                 id: "speech-paste".into(),
                 title: "Paste".into(),
+            },
+            Page {
+                id: "notify".into(),
+                title: "Notify".into(),
             },
             Page {
                 id: "speech-menu".into(),
@@ -206,6 +225,8 @@ impl Plugin for Probe {
             vec![format!("hashmap {} {}", seen.len(), seen["a"])]
         } else if page == "speech-paste" {
             vec![pasted(paste::paste("hello", paste::Method::Clipboard))]
+        } else if page == "notify" {
+            vec![answered(hello())]
         } else if page == "speech-menu" {
             vec![menu("Model,Parakeet Ultra")]
         } else if page == "shortcuts" {
@@ -1271,6 +1292,26 @@ fn shortcuts() -> Vec<String> {
 }
 
 /// What a paste or a copy answered.
+/// Show the notification `hello`, with the action `wave`.
+fn hello() -> Result<(), Error> {
+    notifications::notify(&notifications::Notification {
+        id: "hello".into(),
+        title: "Hello".into(),
+        body: String::new(),
+        actions: vec![notifications::Action {
+            id: "wave".into(),
+            label: "Wave".into(),
+        }],
+    })
+}
+
+fn answered(result: Result<(), Error>) -> String {
+    match result {
+        Ok(()) => "ok".to_owned(),
+        Err(error) => describe(&error),
+    }
+}
+
 fn pasted(result: Result<(), Error>) -> String {
     match result {
         Ok(()) => "pasted".to_owned(),

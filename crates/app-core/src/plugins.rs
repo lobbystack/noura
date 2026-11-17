@@ -574,6 +574,8 @@ pub(crate) struct Plugins {
     clock: Option<Arc<dyn DeviceClock>>,
     /// What running plugins asked each window to show.
     openings: Openings,
+    /// The window you used last, which takes what kernel events open.
+    last_window: Option<WindowKey>,
     /// Wakes every window, as a reload watcher does once it read a build.
     wake: Option<Wake>,
     /// Counts the changes the windows show: plugins, pages and views.
@@ -629,6 +631,7 @@ impl Plugins {
             listing_drawn: 0,
             clock: None,
             openings: Openings::default(),
+            last_window: None,
             wake: None,
             version: 0,
             agent: false,
@@ -681,10 +684,10 @@ impl Plugins {
                         plugin: id.clone(),
                         keys: kernel
                             .speech
-                            .shortcut_keys(id, &shortcut.id, &shortcut.keys),
+                            .shortcut_keys(id, &shortcut.id, shortcut.keys_here()),
+                        declared: shortcut.keys_here().to_owned(),
                         id: shortcut.id,
                         title: shortcut.title,
-                        declared: shortcut.keys,
                     })
             })
             .collect()
@@ -709,6 +712,7 @@ impl Plugins {
                 "global-shortcuts"
             }
             KernelEvent::MenuItemChosen(_) => "menu-bar-items",
+            KernelEvent::NotificationChosen(_) => "notifications",
             _ => "speech",
         };
         let targets: Vec<String> = if id.is_empty() {
@@ -743,13 +747,15 @@ impl Plugins {
     /// Take what running plugins asked the window `window` to show,
     /// oldest first.
     pub(crate) fn take_openings(&mut self, window: WindowKey) -> Vec<Opening> {
+        // The first window to ask, until you use one.
+        let last_used = *self.last_window.get_or_insert(window) == window;
         let mut openings = self
             .openings
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let mut taken = Vec::new();
         openings.retain(|(asked, opening)| {
-            if *asked == window {
+            if *asked == window || (last_used && *asked == WindowKey::LAST_USED) {
                 taken.push(opening.clone());
                 false
             } else {
@@ -762,7 +768,20 @@ impl Plugins {
     /// Forget what running plugins asked the window `window` to show, as
     /// when it closes.
     pub(crate) fn forget_openings(&mut self, window: WindowKey) {
-        self.take_openings(window);
+        let mut openings = self
+            .openings
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        openings.retain(|(asked, _)| *asked != window);
+        drop(openings);
+        if self.last_window == Some(window) {
+            self.last_window = None;
+        }
+    }
+
+    /// Note `window` as the one you used last.
+    pub(crate) fn window_used(&mut self, window: WindowKey) {
+        self.last_window = Some(window);
     }
 
     pub(crate) fn version(&self) -> u64 {
@@ -1044,6 +1063,9 @@ impl Plugins {
             shortcuts: speech.as_ref().map(|services| services.shortcuts.clone()),
             paste: speech.as_ref().map(|services| services.paste.clone()),
             menu_bar: speech.as_ref().map(|services| services.menu_bar.clone()),
+            notifications: speech
+                .as_ref()
+                .map(|services| services.notifications.clone()),
         };
         let plugin = host.start(&loaded, &record.approved, services);
         self.manifests
@@ -1621,6 +1643,19 @@ impl Plugins {
         for (plugin, event) in queued {
             match event {
                 Some(event) => self.kernel_event(&plugin, event),
+                // Every plugin that holds `speech` draws again, as after
+                // a model download.
+                None if plugin.is_empty() => {
+                    let speakers: Vec<String> = self
+                        .running
+                        .keys()
+                        .filter(|id| self.holds(id, "speech"))
+                        .cloned()
+                        .collect();
+                    for id in speakers {
+                        self.send(&id, Job::Redraw);
+                    }
+                }
                 None => self.send(&plugin, Job::Redraw),
             }
         }
@@ -1682,7 +1717,9 @@ impl Plugins {
         }
         if outcome.acted {
             self.acts += 1;
-            // What it did may change any of its panels.
+        }
+        // What it did may change any of its panels.
+        if outcome.acted || outcome.panels_again {
             for panel in running.panels.values_mut() {
                 panel.draw_again();
             }

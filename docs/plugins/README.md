@@ -94,6 +94,7 @@ Each `[[capabilities]]` table asks for one capability:
 | `global-shortcuts` with `shortcuts` | Answer the keyboard shortcuts it lists in any app | [`global-shortcuts`](interfaces/global-shortcuts.md), [`kernel-events`](interfaces/kernel-events.md) |
 | `paste` | Paste text into the app you're typing in, and copy text | [`paste`](interfaces/paste.md) |
 | `menu-bar-items` | Add items to Noura's menu bar or tray menu | [`menu-bar`](interfaces/menu-bar.md), [`kernel-events`](interfaces/kernel-events.md) |
+| `notifications` | Show notifications with actions in the system's notification center | [`notifications`](interfaces/notifications.md), [`kernel-events`](interfaces/kernel-events.md) |
 
 A call the manifest doesn't cover fails with `capability-not-declared`, naming the capability, and Noura runs nothing for it. The [`clock`](interfaces/clock.md) needs no capability. You approve each capability, network host and command target on each device, and you can revoke any of them in Settings > Plugins. An update that asks for more waits for your approval.
 

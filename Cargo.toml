@@ -208,9 +208,11 @@ notify = "8"
 # Ranks the command palette's and quick open's matches. MPL-2.0, used
 # unmodified.
 nucleo-matcher = "0.3.1"
+block2 = "0.6.2"
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false }
 objc2-foundation = { version = "0.3.2", default-features = false }
+objc2-user-notifications = { version = "0.3.2", default-features = false }
 # `reveal` shows an item selected in Finder, Explorer or a Linux file manager.
 opener = { version = "0.9.0", features = ["reveal"] }
 openssl = "0.10"

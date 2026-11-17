@@ -65,6 +65,7 @@ impl System for DesktopSystem {
             audio: std::sync::Arc::new(speech::audio::SystemAudio),
             paster: std::sync::Arc::new(speech::paste::SystemPaste),
             microphone_watch: Some(std::time::Duration::from_secs(1)),
+            notifier: std::sync::Arc::new(crate::notifier::SystemNotifier),
         }
     }
 }

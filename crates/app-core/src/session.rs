@@ -64,6 +64,11 @@ impl ToolBox for SessionTools {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WindowKey(u64);
 
+impl WindowKey {
+    /// Whichever window you used last, for what a kernel event opens.
+    pub(crate) const LAST_USED: Self = Self(u64::MAX);
+}
+
 #[cfg(test)]
 impl WindowKey {
     /// The key of the `index`th window a session opened.

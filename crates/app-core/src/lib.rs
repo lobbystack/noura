@@ -107,7 +107,10 @@ pub use local_core::WatchFault;
 pub use local_core::{
     AI_PROVIDER_KINDS, AiStreamer, CredentialStore, MemoryCredentials, RemoteImage,
 };
-pub use speech_kernel::{GlobalShortcut, MenuBarItems, NoPaste, SpeechDevices};
+pub use speech_kernel::{
+    GlobalShortcut, MenuBarItems, NoNotifier, NoPaste, NotificationChosen, Notifier, SpeechDevices,
+    SystemNotification,
+};
 
 /// What a client passes to [`App::set_ai_client`] talks to providers in
 /// these terms. Noura uses `genai`'s client unless a client sets another,

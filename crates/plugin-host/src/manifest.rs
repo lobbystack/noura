@@ -97,6 +97,8 @@ pub enum Capability {
     Paste,
     /// Add items to Noura's menu bar or tray menu.
     MenuBarItems,
+    /// Show notifications in the system's notification center.
+    Notifications,
 }
 
 /// A keyboard shortcut a plugin declares under `global-shortcuts`. You can
@@ -112,6 +114,41 @@ pub struct ShortcutDeclaration {
     /// The keys it starts with, such as `Alt+Space`: modifiers among
     /// `Ctrl`, `Alt`, `Shift` and `Cmd`, joined by `+`, then one key.
     pub keys: String,
+    /// The keys it starts with on macOS, when they differ from `keys`.
+    #[serde(
+        default,
+        rename = "macos-keys",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub macos_keys: Option<String>,
+    /// The keys it starts with on Windows, when they differ from `keys`.
+    #[serde(
+        default,
+        rename = "windows-keys",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub windows_keys: Option<String>,
+    /// The keys it starts with on Linux, when they differ from `keys`.
+    #[serde(
+        default,
+        rename = "linux-keys",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub linux_keys: Option<String>,
+}
+
+impl ShortcutDeclaration {
+    /// The keys it starts with on this computer's system.
+    pub fn keys_here(&self) -> &str {
+        let here = if cfg!(target_os = "macos") {
+            &self.macos_keys
+        } else if cfg!(target_os = "windows") {
+            &self.windows_keys
+        } else {
+            &self.linux_keys
+        };
+        here.as_deref().unwrap_or(&self.keys)
+    }
 }
 
 /// One thing you approved for a plugin that you can revoke on its own: a
@@ -143,6 +180,7 @@ impl Capability {
             Self::GlobalShortcuts { .. } => "global-shortcuts",
             Self::Paste => "paste",
             Self::MenuBarItems => "menu-bar-items",
+            Self::Notifications => "notifications",
         }
     }
 
@@ -204,7 +242,7 @@ impl Capability {
             Self::GlobalShortcuts { shortcuts } => {
                 let keys: Vec<String> = shortcuts
                     .iter()
-                    .map(|shortcut| format!("{} ({})", shortcut.title, shortcut.keys))
+                    .map(|shortcut| format!("{} ({})", shortcut.title, shortcut.keys_here()))
                     .collect();
                 whole(&format!(
                     "Answer keyboard shortcuts in any app, even with Noura's windows closed: {}.",
@@ -213,6 +251,7 @@ impl Capability {
             }
             Self::Paste => whole("Paste text into the app you're typing in."),
             Self::MenuBarItems => whole("Add items to Noura's menu bar menu."),
+            Self::Notifications => whole("Show notifications."),
         }
     }
 
@@ -617,13 +656,22 @@ impl RawCapability {
                     ),
                 ));
             }
-            if !valid_keys(&shortcut.keys) {
+            let every_keys = [
+                Some(&shortcut.keys),
+                shortcut.macos_keys.as_ref(),
+                shortcut.windows_keys.as_ref(),
+                shortcut.linux_keys.as_ref(),
+            ];
+            if let Some(keys) = every_keys
+                .into_iter()
+                .flatten()
+                .find(|keys| !valid_keys(keys))
+            {
                 return Err(invalid(
                     span,
                     format!(
-                        "The keys \u{201c}{}\u{201d} aren't modifiers among Ctrl, Alt, Shift and \
-                         Cmd joined by + and then one key, such as Alt+Space.",
-                        shortcut.keys
+                        "The keys \u{201c}{keys}\u{201d} aren't modifiers among Ctrl, Alt, Shift \
+                         and Cmd joined by + and then one key, such as Alt+Space."
                     ),
                 ));
             }
@@ -637,6 +685,9 @@ impl RawCapability {
                 id: shortcut.id.clone(),
                 title: title.to_owned(),
                 keys: shortcut.keys.clone(),
+                macos_keys: shortcut.macos_keys.clone(),
+                windows_keys: shortcut.windows_keys.clone(),
+                linux_keys: shortcut.linux_keys.clone(),
             });
         }
         Ok(shortcuts)
@@ -693,6 +744,7 @@ impl RawCapability {
             "speech" => Ok(Capability::Speech),
             "paste" => Ok(Capability::Paste),
             "menu-bar-items" => Ok(Capability::MenuBarItems),
+            "notifications" => Ok(Capability::Notifications),
             "global-shortcuts" => Ok(Capability::GlobalShortcuts {
                 shortcuts: self.shortcuts(text)?,
             }),

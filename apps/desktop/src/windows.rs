@@ -289,7 +289,7 @@ impl Windows {
         let ctx = ui.ctx().clone();
         if let Some(first) = &mut self.first {
             first.ui(ui);
-            note_focus(&ctx, ViewportId::ROOT, &self.recent);
+            note_focus(&ctx, ViewportId::ROOT, &self.recent, first);
             self.file_drags
                 .lock()
                 .entry(ViewportId::ROOT)
@@ -639,8 +639,9 @@ impl Windows {
             let app = window.app_mut();
             for run in &runs {
                 if let Some((plugin, shortcut)) = run.split_once('/') {
-                    app.press_shortcut(plugin, shortcut, true);
-                    app.press_shortcut(plugin, shortcut, false);
+                    let now = std::time::Instant::now();
+                    app.press_shortcut(plugin, shortcut, true, now);
+                    app.press_shortcut(plugin, shortcut, false, now);
                 }
             }
             asked = speech.pass(app);
@@ -778,7 +779,7 @@ impl Window {
             }
             window.ui(ui);
             let ctx = ui.ctx();
-            note_focus(ctx, id, &recent);
+            note_focus(ctx, id, &recent, window);
             file_drags
                 .lock()
                 .entry(id)
@@ -797,11 +798,16 @@ impl Window {
     }
 }
 
-/// Remember the viewport `id` as the window that had focus last when it
-/// has focus now.
-fn note_focus(ctx: &Context, id: ViewportId, recent: &Mutex<ViewportId>) {
+/// Remember the viewport `id`, which shows `window`, as the window that
+/// had focus last when it has focus now. What a shortcut, a menu bar item
+/// or a notification opens shows there.
+fn note_focus(ctx: &Context, id: ViewportId, recent: &Mutex<ViewportId>, window: &mut NouraUi) {
     if ctx.input(|input| input.viewport().focused == Some(true)) {
-        *recent.lock() = id;
+        let mut recent = recent.lock();
+        if *recent != id {
+            *recent = id;
+            window.app_mut().window_used();
+        }
     }
 }
 

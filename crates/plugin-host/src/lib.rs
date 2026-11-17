@@ -45,8 +45,9 @@ pub use instance::{
 };
 pub use instance::{
     AiCompletion, AiCompletionRequest, KernelEvent, MenuBarEntry, MenuBarEntryKind, MicrophoneUse,
-    PasteMethod, Recording, RecordingOptions, RecordingState, ShortcutState, SpeechChannel,
-    SpeechMicrophone, SpeechModel, SpeechPreferences, SpeechSegment, SpeechSource,
+    Notification, NotificationAction, NotificationChoice, PasteMethod, Recording, RecordingOptions,
+    RecordingState, ShortcutEvent, ShortcutState, SpeechChannel, SpeechMicrophone, SpeechModel,
+    SpeechPreferences, SpeechSegment, SpeechSource,
 };
 pub use manifest::{
     Capability, Grant, INTERFACE_VERSIONS, MANIFEST_FILE, MODIFIERS, NAMED_KEYS, Platform,
@@ -62,7 +63,8 @@ pub use running::{
 pub use runtime::{Backend, Limits, StoreLimiter, wasmtime_config};
 pub use services::{
     AiChats, ClockReading, DeviceClock, Entry, EntryKind, FileRead, Listed, MenuBarService,
-    Navigation, NewObject, ObjectChanges, ObjectRead, ObjectRecord, PasteService, PropertyProblem,
-    ServiceError, ShortcutService, SpeechService, WorkspaceObjects, WorkspacePath, WorkspaceReads,
+    Navigation, NewObject, NotificationService, ObjectChanges, ObjectRead, ObjectRecord,
+    PasteService, PropertyProblem, ServiceError, ShortcutService, SpeechService, WorkspaceObjects,
+    WorkspacePath, WorkspaceReads,
 };
 pub use view::{MAX_DEPTH, MAX_NODES, MAX_ROWS, View, ViewError, ViewKind, ViewNode, check_rows};

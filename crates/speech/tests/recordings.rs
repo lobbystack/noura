@@ -427,8 +427,7 @@ fn kept_audio_stays_until_its_date_and_paste_goes_to_the_paster() {
     assert_eq!(kit.speech.state().kept.len(), 1);
 
     kit.speech.paste("Buy milk", false).unwrap();
-    kit.speech.set_paste_by_typing(true).unwrap();
-    kit.speech.paste("Eggs", false).unwrap();
+    kit.speech.paste("Eggs", true).unwrap();
     kit.speech.copy("Bread").unwrap();
     assert_eq!(
         *kit.paste.0.lock(),

@@ -60,6 +60,60 @@ pub struct FakeSystem {
     pub engine: Arc<speech::engine::FakeEngine>,
     /// The microphone and system audio, which hear what a test feeds them.
     pub audio: Arc<speech::audio::FakeAudio>,
+    /// The notification center, which keeps what plugins show.
+    pub notifier: Arc<FakeNotifier>,
+}
+
+/// A notification center in memory: what shows now, and a way to choose
+/// one as you would.
+#[derive(Default)]
+pub struct FakeNotifier {
+    shown: Mutex<Vec<(app_core::SystemNotification, app_core::NotificationChosen)>>,
+}
+
+impl FakeNotifier {
+    /// The notifications that show now, oldest first.
+    pub fn shown(&self) -> Vec<app_core::SystemNotification> {
+        self.shown
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(notification, _)| notification.clone())
+            .collect()
+    }
+
+    /// Choose the notification `key`, or its action `action`. The
+    /// notification goes, as the system takes it away.
+    pub fn choose(&self, key: &str, action: Option<&str>) {
+        let mut shown = self.shown.lock().unwrap();
+        let index = shown
+            .iter()
+            .position(|(notification, _)| notification.key == key)
+            .unwrap_or_else(|| panic!("{key} doesn't show"));
+        let (_, chosen) = shown.remove(index);
+        drop(shown);
+        chosen(action.map(str::to_owned));
+    }
+}
+
+impl app_core::Notifier for FakeNotifier {
+    fn show(
+        &self,
+        notification: app_core::SystemNotification,
+        chosen: app_core::NotificationChosen,
+    ) -> Result<(), String> {
+        let mut shown = self.shown.lock().unwrap();
+        shown.retain(|(known, _)| known.key != notification.key);
+        shown.push((notification, chosen));
+        Ok(())
+    }
+
+    fn withdraw(&self, key: &str) {
+        self.shown
+            .lock()
+            .unwrap()
+            .retain(|(known, _)| known.key != key);
+    }
 }
 
 /// Records what plugins paste, in place of the keyboard and clipboard.
@@ -108,6 +162,7 @@ impl FakeSystem {
             now: Mutex::new(None),
             time_zone: Mutex::new(None),
             credentials: Arc::new(local_core::MemoryCredentials::new()),
+            notifier: Arc::new(FakeNotifier::default()),
             pasted: Arc::new(Mutex::new(Vec::new())),
             engine: Arc::new(speech::engine::FakeEngine::default()),
             audio: speech::audio::FakeAudio::new(),
@@ -150,6 +205,7 @@ impl System for FakeSystem {
             engine: self.engine.clone(),
             audio: Arc::new(speech::audio::FakeBackend(self.audio.clone())),
             paster: Arc::new(RecordingPaste(self.pasted.clone())),
+            notifier: self.notifier.clone(),
             ..app_core::SpeechDevices::fake()
         }
     }

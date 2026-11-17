@@ -1,5 +1,5 @@
-//! The Dictation plugin. Hold or tap its shortcut, Alt+Space to start
-//! with, speak, and it pastes what you said into the app you're typing
+//! The Dictation plugin. Hold or tap its shortcut, Alt+Space on macOS
+//! and Ctrl+Space on Windows and Linux to start with, speak, and it pastes what you said into the app you're typing
 //! in, as Handy does. Noura records and transcribes on this device with
 //! the model you pick; the plugin applies your custom words and pastes
 //! the text. Its menu bar or tray entries copy the last dictation and
@@ -70,8 +70,15 @@ impl Plugin for DictationPlugin {
     fn handle_kernel_event(event: KernelEvent) {
         let mut state = state();
         match event {
-            KernelEvent::ShortcutPressed(id) if id == SHORTCUT => state.shortcut(&Kernel, true),
-            KernelEvent::ShortcutReleased(id) if id == SHORTCUT => state.shortcut(&Kernel, false),
+            KernelEvent::ShortcutPressed(event) if event.id == SHORTCUT => {
+                state.shortcut(&Kernel, true, event.at_ms);
+            }
+            KernelEvent::ShortcutReleased(event) if event.id == SHORTCUT => {
+                state.shortcut(&Kernel, false, event.at_ms);
+            }
+            KernelEvent::NotificationChosen(choice) => {
+                state.notification_chosen(&Kernel, &choice.id);
+            }
             KernelEvent::MenuItemChosen(id) => state.menu_chosen(&Kernel, &id),
             KernelEvent::RecordingChanged(id) => state.recording_changed(&Kernel, &id),
             _ => {}

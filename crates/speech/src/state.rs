@@ -48,8 +48,6 @@ pub struct DeviceState {
     pub kept: Vec<KeptAudio>,
     /// Whether you finished the speech onboarding.
     pub onboarded: bool,
-    /// Paste by typing key by key instead of through the clipboard.
-    pub paste_by_typing: bool,
 }
 
 impl Default for DeviceState {
@@ -61,7 +59,6 @@ impl Default for DeviceState {
             plugins: BTreeMap::new(),
             kept: Vec::new(),
             onboarded: false,
-            paste_by_typing: false,
         }
     }
 }

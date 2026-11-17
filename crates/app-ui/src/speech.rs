@@ -8,7 +8,7 @@ use egui::{RichText, Ui, UiBuilder, accesskit::Role};
 
 use crate::{
     ai::{alert, boxed, text_field},
-    common::{self, badge, description, muted, primary_button},
+    common::{badge, description, muted, primary_button},
 };
 
 /// What the Speech section remembers between frames.
@@ -223,14 +223,6 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut SpeechSettingsView
             }
         });
     }
-
-    let mut typing = app.paste_by_typing();
-    ui.horizontal(|ui| {
-        ui.label("Paste by typing");
-        if common::switch(ui, &mut typing, "Paste by typing", true).changed() {
-            changed = Some(app.set_paste_by_typing(typing));
-        }
-    });
 
     if let Some(action) = action {
         changed = Some(match action {

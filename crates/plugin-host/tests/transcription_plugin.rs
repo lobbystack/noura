@@ -35,9 +35,13 @@ fn the_manifest_declares_speech_ai_and_tasks_and_projects_as_targets() {
                     id: "transcription".to_owned(),
                     title: "Transcription".to_owned(),
                     keys: "Ctrl+Alt+T".to_owned(),
+                    macos_keys: None,
+                    windows_keys: None,
+                    linux_keys: None,
                 }]
             },
             Capability::MenuBarItems,
+            Capability::Notifications,
             Capability::Ai,
             Capability::Commands {
                 targets: vec!["projects".to_owned(), "tasks".to_owned()]

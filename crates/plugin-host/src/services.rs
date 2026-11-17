@@ -7,8 +7,8 @@ use std::fmt;
 use crate::{
     AiChat, AiCompletion, AiCompletionRequest, AiFailure, AiMessage, AiProvider, AiRequest,
     AiRetention, AiRun, AiToolDefinition, AiToolResult, AiWebPage, AiWebResult, MenuBarEntry,
-    PasteMethod, Recording, RecordingOptions, ShortcutState, SpeechMicrophone, SpeechModel,
-    SpeechPreferences,
+    Notification, PasteMethod, Recording, RecordingOptions, ShortcutState, SpeechMicrophone,
+    SpeechModel, SpeechPreferences,
 };
 
 /// A workspace-relative path that crossed the plugin boundary: not empty,
@@ -231,6 +231,21 @@ pub trait WorkspaceObjects: Send + Sync {
 
     /// Move the object's file to the trash.
     fn delete(&self, id: &str, expected_revision: &str) -> Result<(), ServiceError>;
+
+    /// Move the folder that holds the object's file to `folder`, with
+    /// everything in it. Each Markdown file in it must be an object whose
+    /// type `may_write` accepts, and it may hold no folder.
+    fn move_folder(
+        &self,
+        _id: &str,
+        _expected_revision: &str,
+        _folder: &WorkspacePath,
+        _may_write: &dyn Fn(&str) -> bool,
+    ) -> Result<ObjectRecord, ServiceError> {
+        Err(ServiceError::Failed(
+            "Noura can't move folders here.".to_owned(),
+        ))
+    }
 }
 
 /// The instant now and this device's time zone, as a plugin reads them.
@@ -431,6 +446,13 @@ pub trait PasteService: Send + Sync {
 /// The menu bar or tray entries of one plugin that holds `menu-bar-items`.
 pub trait MenuBarService: Send + Sync {
     fn set_entries(&self, entries: Vec<MenuBarEntry>) -> Result<(), ServiceError>;
+}
+
+/// The notifications of one plugin that holds `notifications`. The app
+/// refuses one outside a call that answers something you did.
+pub trait NotificationService: Send + Sync {
+    fn notify(&self, notification: Notification) -> Result<(), ServiceError>;
+    fn withdraw(&self, id: &str) -> Result<(), ServiceError>;
 }
 
 /// What a web call to a service without web access returns.

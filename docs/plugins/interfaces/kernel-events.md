@@ -1,13 +1,14 @@
 # Answer events from outside your views
 
-The `kernel-events` interface is one your plugin exports: Noura calls `handleKernelEvent` for things that happen outside your views, such as a shortcut press, a menu bar item you chose, or another app turning on the microphone. Export it as `kernelEvents`, typed with `KernelEventsExports` from `@noura/plugin-types/0.1.0`.
+The `kernel-events` interface is one your plugin exports: Noura calls `handleKernelEvent` for things that happen outside your views, such as a shortcut press, a menu bar item or notification you chose, or another app turning on the microphone. Export it as `kernelEvents`, typed with `KernelEventsExports` from `@noura/plugin-types/0.1.0`.
 
 Noura calls it only for the capabilities your manifest declares, and each event counts as something you did, so your plugin may paste or open things in answer. Noura draws your views again afterwards.
 
 ## Events
 
-- `shortcut-pressed` and `shortcut-released`, with the shortcut's ID. Need `global-shortcuts`.
+- `shortcut-pressed` and `shortcut-released`, with the shortcut's `id` and the time its keys went down or came up (`atMs`), in milliseconds on a clock that starts with Noura. Compare a press's time with its release's to tell a tap from a hold. Need `global-shortcuts`.
 - `menu-item-chosen`, with the menu bar entry's ID. Needs `menu-bar-items`.
+- `notification-chosen`, with the notification's `id` and the `action` you chose, or none when you chose the notification itself. Needs `notifications`.
 - `microphone-in-use`, with the name of the app when the system gives it (`app`), when another app turns on the microphone, as for a call. Noura never records by itself, so your plugin may ask you first. Needs `speech`.
 - `microphone-free`, when no other app uses the microphone. Needs `speech`.
 - `recording-changed`, with a recording's ID, when it changes state, as when it finishes after `stop`. Needs `speech`.

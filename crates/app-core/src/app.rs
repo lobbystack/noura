@@ -525,6 +525,14 @@ impl App {
         self.leave(notes::Leave::CloseWindow);
     }
 
+    /// You used this window: what a shortcut, a menu bar item or a
+    /// notification opens shows here.
+    pub fn window_used(&mut self) {
+        if !self.closed {
+            self.session.plugins().window_used(self.key);
+        }
+    }
+
     /// Close this window now: its notes are on disk.
     fn close_window_now(&mut self) {
         if self.closed {

@@ -45,7 +45,7 @@ let last = 'Press Ctrl+Alt+G in any app.';
 
 export const kernelEvents: KernelEventsExports = {
 	handleKernelEvent(event: KernelEvent) {
-		if (event.tag !== 'shortcut-pressed' || event.val !== 'greet') {
+		if (event.tag !== 'shortcut-pressed' || event.val.id !== 'greet') {
 			return;
 		}
 		try {

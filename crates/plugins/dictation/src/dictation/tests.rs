@@ -23,7 +23,6 @@ use crate::{
 /// engine heard once the plugin stops it.
 #[derive(Default)]
 struct Fake {
-    now: Cell<i64>,
     /// What the engine hears in the next recording, one segment each.
     heard: RefCell<Vec<String>>,
     recordings: RefCell<Vec<Recording>>,
@@ -64,11 +63,6 @@ impl Fake {
             settings,
         });
         fake
-    }
-
-    fn at(&self, ms: i64) -> &Self {
-        self.now.set(ms);
-        self
     }
 
     fn hears(&self, segments: &[&str]) {
@@ -121,10 +115,6 @@ impl Fake {
 }
 
 impl Host for Fake {
-    fn now_ms(&self) -> i64 {
-        self.now.get()
-    }
-
     fn start(&self) -> Result<String, String> {
         if let Some(why) = self.refuse.borrow_mut().take() {
             self.push("start refused".into());
@@ -216,6 +206,25 @@ impl Host for Fake {
         self.menu_sets.set(self.menu_sets.get() + 1);
     }
 
+    fn notify(&self, id: &str, title: &str, body: &str, actions: &[(&str, &str)]) {
+        let actions: Vec<String> = actions
+            .iter()
+            .map(|(id, label)| format!("{id}={label}"))
+            .collect();
+        self.push(format!(
+            "notify {id}: {title}: {body} [{}]",
+            actions.join(", ")
+        ));
+    }
+
+    fn withdraw(&self, id: &str) {
+        self.push(format!("withdraw {id}"));
+    }
+
+    fn open_speech_settings(&self) {
+        self.push("open Settings > Speech".into());
+    }
+
     fn read_settings(&self) -> Result<Option<Stored>, ()> {
         Ok(self.settings.borrow().clone())
     }
@@ -261,9 +270,9 @@ fn mode(activation: Mode) -> Fake {
 
 /// Press, wait `held` ms, release, then let the engine finish with what
 /// it heard.
-fn dictate(dictation: &mut Dictation, fake: &Fake, at: i64, held: i64) {
-    dictation.shortcut(fake.at(at), true);
-    dictation.shortcut(fake.at(at + held), false);
+fn dictate(dictation: &mut Dictation, fake: &Fake, at: u64, held: u64) {
+    dictation.shortcut(fake, true, at);
+    dictation.shortcut(fake, false, at + held);
 }
 
 fn finish_last(dictation: &mut Dictation, fake: &Fake) {
@@ -316,7 +325,7 @@ fn toggle_starts_and_stops_on_presses_only() {
     dictate(&mut dictation, &fake, 0, 2_000);
     assert_eq!(fake.calls(), ["start recording_1"]);
     fake.hears(&["Done"]);
-    dictation.shortcut(fake.at(6_000), true);
+    dictation.shortcut(&fake, true, 6_000);
     assert_eq!(fake.calls(), ["stop recording_1"]);
     finish_last(&mut dictation, &fake);
     assert_eq!(fake.pasted(), ["paste Done"]);
@@ -354,9 +363,9 @@ fn an_empty_result_pastes_nothing_and_keeps_the_last_dictation() {
     let mut dictation = Dictation::new();
     fake.remember("Earlier");
     let cases: [&[&str]; 3] = [&[], &["  "], &["."]];
-    for heard in cases {
+    for (index, heard) in (1..).zip(cases) {
         fake.hears(heard);
-        dictate(&mut dictation, &fake, fake.now.get() + 10_000, 1_000);
+        dictate(&mut dictation, &fake, index * 10_000, 1_000);
         finish_last(&mut dictation, &fake);
         assert!(fake.pasted().is_empty());
     }
@@ -396,9 +405,9 @@ fn copy_last_dictation_copies_and_nothing_else_touches_the_clipboard() {
 fn a_press_while_the_text_is_on_its_way_starts_the_next_dictation_after_the_paste() {
     let fake = mode(Mode::Toggle);
     let mut dictation = Dictation::new();
-    dictation.shortcut(fake.at(0), true);
-    dictation.shortcut(fake.at(1_000), true);
-    dictation.shortcut(fake.at(1_200), true);
+    dictation.shortcut(&fake, true, 0);
+    dictation.shortcut(&fake, true, 1_000);
+    dictation.shortcut(&fake, true, 1_200);
     assert_eq!(fake.calls(), ["start recording_1", "stop recording_1"]);
     fake.hears(&["First"]);
     finish_last(&mut dictation, &fake);
@@ -412,18 +421,29 @@ fn a_press_while_the_text_is_on_its_way_starts_the_next_dictation_after_the_past
 fn a_start_that_fails_leaves_the_shortcut_ready() {
     let fake = mode(Mode::Toggle);
     let mut dictation = Dictation::new();
-    *fake.refuse.borrow_mut() = Some("Download a model in Settings.".into());
-    dictation.shortcut(fake.at(0), true);
-    assert_eq!(fake.calls(), ["start refused"]);
-    dictation.shortcut(fake.at(1_000), true);
-    assert_eq!(fake.calls(), ["start recording_1"]);
+    *fake.refuse.borrow_mut() = Some("Download Parakeet Ultra in Settings first.".into());
+    dictation.shortcut(&fake, true, 0);
+    // A notification says why, and choosing it opens Settings > Speech.
+    assert_eq!(
+        fake.calls(),
+        [
+            "start refused",
+            "notify start-failed: Dictation didn't start: Download Parakeet Ultra in Settings \
+             first. [open-settings=Open Settings]"
+        ]
+    );
+    dictation.notification_chosen(&fake, "start-failed");
+    assert_eq!(fake.calls(), ["open Settings > Speech"]);
+    // The next start takes the notification away.
+    dictation.shortcut(&fake, true, 1_000);
+    assert_eq!(fake.calls(), ["start recording_1", "withdraw start-failed"]);
 }
 
 #[test]
 fn other_shortcut_events_and_old_recordings_change_nothing() {
     let fake = Fake::new();
     let mut dictation = Dictation::new();
-    dictation.shortcut(fake.at(0), false);
+    dictation.shortcut(&fake, false, 0);
     assert!(fake.calls().is_empty());
     // A recording from before the plugin started again goes once it ends.
     fake.start().unwrap();
@@ -440,7 +460,7 @@ fn other_shortcut_events_and_old_recordings_change_nothing() {
 fn cancel_dictation_drops_the_recording() {
     let fake = mode(Mode::Toggle);
     let mut dictation = Dictation::new();
-    dictation.shortcut(fake.at(0), true);
+    dictation.shortcut(&fake, true, 0);
     dictation.refresh_menu(&fake);
     assert_eq!(fake.menu.borrow()[0].label, "Cancel Dictation");
     dictation.menu_chosen(&fake, "cancel");
@@ -455,7 +475,7 @@ fn cancel_dictation_drops_the_recording() {
     dictation.refresh_menu(&fake);
     assert_eq!(fake.menu.borrow()[0].label, "Copy Last Dictation");
     // The next press starts afresh.
-    dictation.shortcut(fake.at(2_000), true);
+    dictation.shortcut(&fake, true, 2_000);
     assert_eq!(fake.calls(), ["start recording_2"]);
 }
 

@@ -154,6 +154,9 @@ pub(super) struct Outcome {
     /// The plugin ran code that may have written files: it handled an
     /// event or ran a command.
     pub(super) acted: bool,
+    /// The plugin's panels draw again though it didn't act, as when its
+    /// recording's text changed.
+    pub(super) panels_again: bool,
     pub(super) health: Health,
     /// Why the job's event or command failed: the view the event happened
     /// in, or none for a command, and the reason in words.
@@ -196,6 +199,7 @@ impl Worker {
             let mut rows = None;
             let mut acted = true;
             let mut draws = true;
+            let mut panels_again = false;
             match job {
                 Job::Refresh => {
                     acted = false;
@@ -290,6 +294,7 @@ impl Worker {
                 }
                 Job::Redraw => {
                     acted = false;
+                    panels_again = true;
                     self.redraw_queued.store(false, Ordering::Relaxed);
                 }
             }
@@ -303,6 +308,7 @@ impl Worker {
                 panel,
                 rows,
                 acted,
+                panels_again,
                 health: self.plugin.health(),
                 failed,
             };

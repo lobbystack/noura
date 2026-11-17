@@ -15,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use app_core::{
@@ -52,6 +52,7 @@ struct SpeechSystem {
     inner: Arc<FakeSystem>,
     audio: Arc<FakeAudio>,
     watch: Option<Duration>,
+    notifier: Arc<support::FakeNotifier>,
 }
 
 impl System for SpeechSystem {
@@ -64,6 +65,7 @@ impl System for SpeechSystem {
             audio: Arc::new(FakeBackend(self.audio.clone())),
             paster: Arc::new(app_core::NoPaste),
             microphone_watch: self.watch,
+            notifier: self.notifier.clone(),
         }
     }
     fn has_trash(&self) -> bool {
@@ -170,6 +172,7 @@ struct Kit {
     fixture: Fixture,
     app: App,
     audio: Arc<FakeAudio>,
+    notifier: Arc<support::FakeNotifier>,
     provider: Arc<Provider>,
     _plugins: Vec<PluginFolder>,
 }
@@ -199,9 +202,9 @@ impl Kit {
 
     fn press_shortcut(&mut self) {
         self.app
-            .press_shortcut("transcription", "transcription", true);
+            .press_shortcut("transcription", "transcription", true, Instant::now());
         self.app
-            .press_shortcut("transcription", "transcription", false);
+            .press_shortcut("transcription", "transcription", false, Instant::now());
     }
 }
 
@@ -309,10 +312,12 @@ fn kit(files: &[(&str, &[u8])], provider: bool, watch: Option<Duration>) -> Opti
     let inner = FakeSystem::new();
     inner.set_clock("2026-11-16T14:00:00Z", "America/Toronto");
     let audio = FakeAudio::new();
+    let notifier = inner.notifier.clone();
     let system = Arc::new(SpeechSystem {
         inner,
         audio: audio.clone(),
         watch,
+        notifier: notifier.clone(),
     });
     let mut app = App::launch_with(fixture.app_data.path(), system);
     support::settle(&mut app);
@@ -334,6 +339,7 @@ fn kit(files: &[(&str, &[u8])], provider: bool, watch: Option<Duration>) -> Opti
         fixture,
         app,
         audio,
+        notifier,
         provider: ai,
         _plugins: vec![tasks, transcription],
     })
@@ -624,6 +630,7 @@ fn the_settings_pick_the_provider_the_prompt_and_the_folder_and_tasks_get_the_pr
             ("Projects/Garden/Garden.md", GARDEN.as_bytes()),
             ("Meetings/Standup/Standup.md", standup.as_bytes()),
             ("Meetings/Standup/Transcript.md", transcript.as_bytes()),
+            ("Meetings/Standup/Standup.wav", b"RIFF"),
         ],
         true,
         None,
@@ -710,11 +717,13 @@ fn the_settings_pick_the_provider_the_prompt_and_the_folder_and_tasks_get_the_pr
         );
         support::settle(&mut kit.app);
     }
+    // The whole folder moves, its audio too, and leaves nothing behind.
     wait_until(&mut kit.app, "Standup moves to Garden", |_| {
         kit.fixture.exists("Projects/Garden/Standup/Standup.md")
             && kit.fixture.exists("Projects/Garden/Standup/Transcript.md")
     });
-    assert!(!kit.fixture.exists("Meetings/Standup/Standup.md"));
+    assert!(kit.fixture.exists("Projects/Garden/Standup/Standup.wav"));
+    assert!(!kit.fixture.exists("Meetings/Standup"));
 }
 
 #[test]
@@ -756,6 +765,45 @@ fn a_microphone_in_use_offers_a_recording_and_never_starts_one() {
 }
 
 #[test]
+fn the_notification_for_a_call_records_and_opens_the_transcription() {
+    let Some(mut kit) = kit(&[], false, Some(Duration::from_millis(20))) else {
+        return;
+    };
+    *kit.audio.in_use.lock() = Some(true);
+    let notifier = kit.notifier.clone();
+    wait_until(&mut kit.app, "the notification shows", |_| {
+        !notifier.shown().is_empty()
+    });
+    let shown = kit.notifier.shown();
+    assert_eq!(shown[0].key, "transcription/offer");
+    assert_eq!(shown[0].title, "Transcribe this call?");
+    assert_eq!(
+        shown[0].actions,
+        [("transcribe".to_owned(), "Transcribe".to_owned())]
+    );
+    assert_eq!(kit.audio.open_count(), 0, "nothing records by itself");
+
+    // Choosing it records into a new Transcription, which opens in the
+    // window you used last.
+    kit.notifier
+        .choose("transcription/offer", Some("transcribe"));
+    kit.wait_for(NOTE, "start:");
+    wait_until(&mut kit.app, "the Transcription opens", |app| {
+        app.active_tab()
+            .and_then(|tab| app.note(tab.id()))
+            .is_some_and(|note| note.relative_path() == NOTE)
+    });
+    assert_eq!(kit.audio.open_count(), 1);
+    assert!(kit.notifier.shown().is_empty());
+
+    *kit.audio.in_use.lock() = Some(false);
+    kit.app.choose_menu_item("transcription", "stop");
+    wait_until(&mut kit.app, "the menu goes back", |app| {
+        menu(app) == ["Start Transcription"]
+    });
+}
+
+#[test]
 fn the_panel_starts_a_transcription_you_made_and_the_menu_starts_a_new_one() {
     let transcription = "---\nid: transcription_01jbcdefghjkmnpqrstvwxyz0a\ntype: transcription\n\
                          attendees: []\ncreated: 2026-11-16T13:00:00Z\nupdated: 2026-11-16T13:00:00Z\n\
@@ -776,6 +824,20 @@ fn the_panel_starts_a_transcription_you_made_and_the_menu_starts_a_new_one() {
         "start: 2026-11-16T09:00:00-05:00",
     );
     panel(&mut kit.app, tab, "stop");
+    // The timer moves each second with no other event: silence makes no
+    // text.
+    for piece in vec![0.0_f32; 2 * SAMPLE_RATE as usize].chunks(480) {
+        kit.audio.feed(Source::Microphone, piece);
+    }
+    wait_until(&mut kit.app, "the timer moves", |app| {
+        app.plugin_panel(tab)
+            .and_then(Result::ok)
+            .is_some_and(|view| {
+                let mut found = Vec::new();
+                texts(view.root(), &mut found);
+                found.iter().any(|text| text.contains("00:00:02"))
+            })
+    });
     // A second recording waits for this one.
     kit.app.choose_menu_item("transcription", "start");
     support::settle(&mut kit.app);
@@ -783,7 +845,7 @@ fn the_panel_starts_a_transcription_you_made_and_the_menu_starts_a_new_one() {
     kit.speak();
     kit.app.press_panel_button(tab, "stop");
     // The Transcript goes beside it, made when it had none.
-    kit.wait_for("Meetings/Standup/Transcript.md", "**Me** · 00:00:00");
+    kit.wait_for("Meetings/Standup/Transcript.md", "**Me** · 00:00:01");
     assert!(
         kit.read("Meetings/Standup/Transcript.md")
             .contains("transcription: '[[Standup]]'")
