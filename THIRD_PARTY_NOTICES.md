@@ -313,7 +313,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 Three donors' code came along, each recorded in `docs/provenance/`:
 
 - [Handy](docs/provenance/handy.md): the macOS paste that waits for the target app to read the clipboard, and the model grades.
-- [anarlog](docs/provenance/anarlog.md): system audio capture on macOS and Windows.
+- [anarlog](docs/provenance/anarlog.md): system audio capture on macOS and Windows, and the Transcription plugin's Summary prompts and length policy.
 - [handy-computer/models](docs/provenance/handy-models.md): the model catalog, `crates/speech/catalog/catalog.json`.
 
 Noura ships no speech model. You download each one from Hugging Face in Settings, under the license Settings shows; Parakeet Ultra uses CC BY 4.0.

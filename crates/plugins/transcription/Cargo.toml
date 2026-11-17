@@ -1,0 +1,28 @@
+[package]
+name = "transcription-plugin"
+description = "The Transcription plugin: records a meeting, writes its Transcript, adds a Summary below your notes and creates tasks for what you agreed to."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# ISO 639-1 codes to language names for the Summary's prompt, as anarlog
+# does. Apache-2.0.
+isolang = { version = "2", default-features = false, features = ["english_names"] }
+# Instants, days and the device's time zone. Plugins get no file access,
+# so the time zone database is compiled in.
+jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
+# Renders anarlog's Jinja prompt templates. Pure Rust, so it builds for
+# wasm32-wasip2. Apache-2.0.
+minijinja = { version = "2", default-features = false, features = ["builtins", "macros", "serde"] }
+plugin-sdk = { version = "0.2.0", path = "../../plugin-sdk" }
+serde_json.workspace = true
+
+[dev-dependencies]
+# Checks the plugin's types against their fixture. Tests only.
+workspace-format = { version = "0.2.0", path = "../../workspace-format" }

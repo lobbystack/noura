@@ -25,6 +25,7 @@ members = [
     "crates/plugins/hello",
     "crates/plugins/projects",
     "crates/plugins/tasks",
+    "crates/plugins/transcription",
     "crates/speech",
     "crates/spell-check",
     "crates/sync-key-envelope",
