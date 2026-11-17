@@ -22,7 +22,8 @@
 //! - `NOURA_PUBLIC_ORIGIN` (or `--origin`): the HTTPS origin people reach the
 //!   server at. A server on a loopback address defaults to
 //!   `http://localhost:{port}`.
-//! - `NOURA_ALLOWED_EMAILS`: the comma-separated addresses that may sign up.
+//! - `NOURA_ALLOWED_EMAILS`: the comma-separated addresses that may sign up,
+//!   or `*` for everyone.
 //!   Empty admits nobody.
 //! - `NOURA_MAIL_FROM`: the sender of sign-in mail.
 //! - `NOURA_SMTP_URL`, or `NOURA_RESEND_API_KEY` with an optional

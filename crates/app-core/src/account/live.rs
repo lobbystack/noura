@@ -53,9 +53,20 @@ const RECONNECT_FIRST: Duration = Duration::from_secs(2);
 /// The longest wait between tries.
 const RECONNECT_MOST: Duration = Duration::from_secs(60);
 
-#[derive(Default, Serialize, Deserialize)]
+/// The server a device that never chose one signs in to: Noura's own.
+pub const DEFAULT_SERVER: &str = "https://sync.noura.app";
+
+#[derive(Serialize, Deserialize)]
 struct Remembered {
     server: String,
+}
+
+impl Default for Remembered {
+    fn default() -> Self {
+        Self {
+            server: DEFAULT_SERVER.to_owned(),
+        }
+    }
 }
 
 /// Opens a web page in the system browser.

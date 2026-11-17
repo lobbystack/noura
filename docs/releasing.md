@@ -63,7 +63,7 @@ The workflow in `.github/workflows/release.yml` runs these jobs in order:
 | `Noura-Linux.AppImage` | Linux x86_64                   |
 | `Noura-Linux.deb`      | Debian and Ubuntu              |
 
-The website links to `releases/latest/download/<file>`, so its buttons serve the newest release without a site change. The Tauri app shipped `Noura-Windows-Setup.exe` instead of the `.msi`. When you publish the first cargo-packager release, change the website's Windows link to `Noura-Windows.msi` in `apps/website/src/lib/site-config.ts`.
+The website links to `releases/latest/download/<file>`, so its buttons serve the newest release without a site change.
 
 ## Build the packages on your computer
 
