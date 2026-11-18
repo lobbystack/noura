@@ -150,7 +150,7 @@ async fn the_tasks_and_projects_tools_work_through_the_plugin_host() {
     let project = answer(&call(&client, "projects.create", json!({ "title": "Orchard" })).await);
     assert!(
         fixture
-            .read("projects/Orchard/Orchard.md")
+            .read("Projects/Orchard/Orchard.md")
             .contains("status: planned")
     );
     let task = answer(
@@ -217,7 +217,7 @@ async fn the_tasks_and_projects_tools_work_through_the_plugin_host() {
         "{not_a_task}"
     );
     assert_eq!(std::fs::read(fixture.root.join("Plan.md")).unwrap(), plan);
-    let project_file = fixture.read("projects/Orchard/Orchard.md");
+    let project_file = fixture.read("Projects/Orchard/Orchard.md");
     let invalid = failure(
         &call(
             &client,
@@ -231,7 +231,7 @@ async fn the_tasks_and_projects_tools_work_through_the_plugin_host() {
         .await,
     );
     assert_eq!(invalid["code"], "plugin_tool_arguments_invalid");
-    assert_eq!(fixture.read("projects/Orchard/Orchard.md"), project_file);
+    assert_eq!(fixture.read("Projects/Orchard/Orchard.md"), project_file);
     client.cancel().await.unwrap();
 }
 

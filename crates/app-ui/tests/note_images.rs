@@ -29,7 +29,7 @@ fn opened_note_with(
     note: &str,
     files: &[(&str, &[u8])],
 ) -> Ui {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     std::fs::write(folder.join("Plan.md"), note).unwrap();
     std::fs::write(folder.join("pic.png"), png(4, 3)).unwrap();
     for (name, bytes) in files {
@@ -274,7 +274,7 @@ fn an_image_two_tabs_draw_stays_drawn_until_neither_draws_it() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     std::fs::write(folder.join("Plan.md"), "Intro\n\n![[pic.png]]\n").unwrap();
     std::fs::create_dir(folder.join("Notes")).unwrap();
     std::fs::write(folder.join("Notes/Other.md"), "Other\n\n![[pic.png]]\n").unwrap();

@@ -217,7 +217,7 @@ fn a_create_whose_index_update_fails_is_on_disk_and_the_index_catches_up() {
 
     let created = object(&mut app, r#"create|recipe|Soup|-|{"servings":3}|Body"#);
 
-    assert_eq!(revision(&fixture.read("recipes/Soup.md")), created.revision);
+    assert_eq!(revision(&fixture.read("Recipes/Soup.md")), created.revision);
     connection
         .execute_batch(
             "DROP TRIGGER refuse_insert; DROP TRIGGER refuse_update; DROP TRIGGER refuse_delete;",
@@ -238,7 +238,7 @@ fn moves_keep_the_id_and_the_bytes() {
         return;
     };
     let created = object(&mut app, "create|recipe|Soup|-|{}|Body");
-    let bytes = fixture.read("recipes/Soup.md");
+    let bytes = fixture.read("Recipes/Soup.md");
 
     let moved = object(
         &mut app,

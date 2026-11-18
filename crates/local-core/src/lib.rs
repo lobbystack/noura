@@ -5,7 +5,6 @@
 
 mod ai;
 mod chat;
-mod consent;
 mod credentials;
 #[cfg(any(test, feature = "durability-probe"))]
 pub mod durability_probe;
@@ -32,10 +31,6 @@ mod web_search;
 
 pub use ai::*;
 pub use chat::*;
-pub use consent::{
-    AiConsentDataCategory, AiConsentGrant, AiConsentGrantInput, AiConsentReadInput,
-    AiConsentRevokeInput, AiConsentRevokeOutcome,
-};
 pub use credentials::{CredentialStore, MemoryCredentials, NoCredentials, SystemCredentials};
 #[cfg(any(test, feature = "test-hooks"))]
 pub use engine::ChatRecoveryPoint;
@@ -59,7 +54,7 @@ pub use watcher::WatchCoordinator;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use watcher::WatchFault;
 pub use web_access::*;
-pub use web_search::{BraveClient, WEB_SEARCH_PROVIDER, WebClient, WebConsentGrant, WebFoundation};
+pub use web_search::{BraveClient, WEB_SEARCH_PROVIDER, WebClient, WebFoundation};
 pub use workspace_format::merge::merge_text;
 pub use workspace_format::{
     MAX_FILE_NAME_CHARS, WORKSPACE_MANIFEST_PATH, WorkspaceManifest, WorkspaceObject,

@@ -242,8 +242,7 @@ mod durability_tests {
         let workspace = tempfile::tempdir().unwrap();
         let app_data = tempfile::tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         (workspace, app_data, engine)
     }
 
@@ -374,7 +373,7 @@ mod durability_tests {
         });
         let chat = created.unwrap().value;
         let folder = chat.relative_path.trim_end_matches("/chat.md").to_owned();
-        assert_synced(&engine, &synced, &["", "chats", &folder]);
+        assert_synced(&engine, &synced, &["", "Chats", &folder]);
 
         let (appended, synced) = durability_probe::record(|| {
             engine.append_chat_user_message(crate::AppendChatUserMessageInput {

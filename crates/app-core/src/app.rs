@@ -51,17 +51,23 @@ mod palette;
 mod plugins;
 mod preferences;
 mod settings;
+mod speech;
 mod view;
 mod viewers;
 mod web;
 
 pub use drops::DragOut;
 pub use file_actions::{Question, Rename};
-pub use finder::{QuickOpen, Search};
 pub use ignored_files::IgnoredFiles;
 pub use notes::UnsavedPrompt;
-pub use palette::{CommandPalette, Palette, PaletteMode};
+pub use palette::{
+    EMPTY_COMMANDS, GROUP_LIMIT, Palette, PaletteGroup, PaletteItem, PaletteStatus, SearchScope,
+};
 pub use plugins::{NameDraft, PluginPlace};
+pub use speech::{
+    SPEECH_LANGUAGES, SpeechModelFilter, SpeechModelRow, SpeechModelSection, SpeechModelsPage,
+    speech_language_name,
+};
 
 /// What the window shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,7 +186,6 @@ enum Job {
     },
     OpenFolder(PathBuf),
     Create {
-        name: String,
         folder: PathBuf,
     },
     OpenRecent {
@@ -308,8 +313,7 @@ pub struct App {
     registry: Registry,
     /// The PDF and image tabs' viewers.
     viewers: crate::viewers::Viewers,
-    /// Commands, quick open or search, while this window's palette is
-    /// open.
+    /// Search, while it's open in this window.
     palette: Option<Palette>,
     /// This window's searches, which run off the UI thread.
     searcher: Searcher,
@@ -523,6 +527,14 @@ impl App {
         self.leave(notes::Leave::CloseWindow);
     }
 
+    /// You used this window: what a shortcut, a menu bar item or a
+    /// notification opens shows here.
+    pub fn window_used(&mut self) {
+        if !self.closed {
+            self.session.plugins().window_used(self.key);
+        }
+    }
+
     /// Close this window now: its notes are on disk.
     fn close_window_now(&mut self) {
         if self.closed {
@@ -650,13 +662,10 @@ impl App {
         self.depart(notes::Departure::Open(Job::OpenFolder(folder)));
     }
 
-    /// Create a workspace named `name` in `folder` and open it. Every
-    /// window's open notes save first.
-    pub fn create_workspace(&mut self, name: &str, folder: PathBuf) {
-        self.depart(notes::Departure::Open(Job::Create {
-            name: name.to_owned(),
-            folder,
-        }));
+    /// Create a workspace in `folder`, named after the folder, and open
+    /// it. Every window's open notes save first.
+    pub fn create_workspace(&mut self, folder: PathBuf) {
+        self.depart(notes::Departure::Open(Job::Create { folder }));
     }
 
     /// Open a workspace from the recent list. Every window's open notes
@@ -1114,7 +1123,7 @@ fn run(
             service.open_recent(workspace_id)?
         }
         Job::OpenFolder(folder) => service.open_folder(folder)?,
-        Job::Create { name, folder } => service.create(name, folder)?,
+        Job::Create { folder } => service.create(folder)?,
     };
     let (snapshot, counts) = Snapshot::of(workspace.engine(), workspace.root())?;
     let tree = FileTree::from_entries(&snapshot.entries);

@@ -76,7 +76,7 @@ Each command reads `NOURA_DATA_DIR`, `NOURA_DATABASE_URL` and `NOURA_LISTEN`, an
 | `NOURA_SERVER_SECRET` | none | PostgreSQL mode: the secret as 64 hexadecimal digits |
 | `NOURA_SERVER_SECRET_FILE` | none | PostgreSQL mode: a mounted file that holds the secret |
 | `NOURA_PUBLIC_ORIGIN` | `http://localhost:{port}` on loopback | The HTTPS origin people reach the server at |
-| `NOURA_ALLOWED_EMAILS` | empty | The addresses that may sign up, separated by commas; empty admits nobody |
+| `NOURA_ALLOWED_EMAILS` | empty | The addresses that may sign up, separated by commas, or `*` for anyone; empty admits nobody |
 | `NOURA_MAIL_FROM` | `Noura <noura@localhost>` | The sender of sign-in mail |
 | `NOURA_SMTP_URL` | none | Send mail through this SMTP server |
 | `NOURA_RESEND_API_KEY` | none | Send mail through Resend, when no SMTP URL is set |
@@ -95,7 +95,7 @@ Keep the process's file descriptor limit above `NOURA_MAX_CONNECTIONS`. Give a c
 
 ### Choose who can sign up
 
-Only addresses in `NOURA_ALLOWED_EMAILS` can create an account, and an empty list admits nobody. Sign-up and email sign-in also need a mail transport.
+Only addresses in `NOURA_ALLOWED_EMAILS` can create an account, and an empty list admits nobody. Set it to `*` to let anyone sign up. A `*` mixed into a list of addresses counts for nothing, so a slip in the list can't open your server. Sign-up and email sign-in also need a mail transport.
 
 ### Set the trusted proxy header
 

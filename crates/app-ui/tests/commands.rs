@@ -1,4 +1,4 @@
-//! Commands through AccessKit: the command palette, the shortcuts page,
+//! Commands through AccessKit: commands in search, the shortcuts page,
 //! and shortcuts pressed in the window.
 
 mod support;
@@ -28,7 +28,7 @@ fn opened(
     platform: Platform,
     register: impl FnOnce(&mut App),
 ) -> Harness<'static, NouraUi> {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     for name in ["Ideas.md", "Plan.md"] {
         std::fs::write(folder.join(name), b"x").unwrap();
     }
@@ -50,7 +50,7 @@ fn listed(harness: &Harness<'static, NouraUi>) -> Vec<String> {
 
 fn palette_open(harness: &Harness<'static, NouraUi>) -> bool {
     harness
-        .query_by_role_and_label(Role::Dialog, "Command palette")
+        .query_by_role_and_label(Role::Dialog, "Search")
         .is_some()
 }
 
@@ -64,7 +64,7 @@ fn tree_row<'a>(harness: &'a Harness<'static, NouraUi>, name: &'a str) -> egui_k
 }
 
 #[test]
-fn mod_k_opens_a_palette_of_every_command_with_its_shortcut() {
+fn mod_k_opens_search_with_recent_notes_and_commands_with_their_shortcuts() {
     for (platform, new_note, palette) in [
         (Platform::MacOs, "⌘N", "⌘K"),
         (Platform::Windows, "Ctrl+N", "Ctrl+K"),
@@ -82,30 +82,51 @@ fn mod_k_opens_a_palette_of_every_command_with_its_shortcut() {
         press(&mut harness, Modifiers::COMMAND, Key::K);
 
         assert!(palette_open(&harness), "{platform:?}");
-        let every: Vec<String> = harness
-            .state()
-            .app()
-            .commands()
+        let app = harness.state().app();
+        let first: Vec<String> = app
+            .inbox()
+            .recent
             .into_iter()
-            .map(|command| command.label)
+            .map(|note| note.title)
+            .chain(
+                app.commands()
+                    .into_iter()
+                    .take(app_core::EMPTY_COMMANDS)
+                    .map(|command| command.label),
+            )
             .collect();
-        assert_eq!(listed(&harness), every);
-        let shortcut = |label| {
-            row(&harness, label)
+        assert_eq!(listed(&harness), first);
+        // Two groups show, each under its heading.
+        assert!(
+            harness
+                .query_by_role_and_label(Role::ListBox, "Files")
+                .is_some()
+        );
+        assert!(
+            harness
+                .query_by_role_and_label(Role::ListBox, "Commands")
+                .is_some()
+        );
+        let shortcut = |harness: &Harness<'static, NouraUi>, label| {
+            row(harness, label)
                 .accesskit_node()
                 .data()
                 .keyboard_shortcut()
                 .map(str::to_owned)
         };
-        assert_eq!(shortcut("New Note").as_deref(), Some(new_note));
-        assert_eq!(shortcut("Command Palette").as_deref(), Some(palette));
-        assert_eq!(shortcut("Keyboard Shortcuts"), None);
+        assert_eq!(shortcut(&harness, "New Note").as_deref(), Some(new_note));
+        assert_eq!(shortcut(&harness, "Search…").as_deref(), Some(palette));
         assert!(harness.unnamed_widgets().is_empty());
+        harness
+            .get_by_role_and_label(Role::TextInput, "Search")
+            .type_text("keyboard shortcuts");
+        harness.run();
+        assert_eq!(shortcut(&harness, "Keyboard Shortcuts"), None);
     }
 }
 
 #[test]
-fn typing_filters_the_palette_and_enter_runs_the_highlighted_command() {
+fn typing_filters_commands_and_enter_runs_the_highlighted_one() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let mut harness = opened(
@@ -115,9 +136,15 @@ fn typing_filters_the_palette_and_enter_runs_the_highlighted_command() {
         |_| {},
     );
     press(&mut harness, Modifiers::COMMAND, Key::K);
-    assert!(harness.get_by_label("Search commands").is_focused());
+    assert!(
+        harness
+            .get_by_role_and_label(Role::TextInput, "Search")
+            .is_focused()
+    );
 
-    harness.get_by_label("Search commands").type_text("tab");
+    harness
+        .get_by_role_and_label(Role::TextInput, "Search")
+        .type_text("tab");
     harness.run();
     assert_eq!(listed(&harness), ["Close Tab", "Next Tab", "Previous Tab"]);
     assert_eq!(
@@ -130,7 +157,11 @@ fn typing_filters_the_palette_and_enter_runs_the_highlighted_command() {
         row(&harness, "Next Tab").accesskit_node().is_selected(),
         Some(true)
     );
-    assert!(harness.get_by_label("Search commands").is_focused());
+    assert!(
+        harness
+            .get_by_role_and_label(Role::TextInput, "Search")
+            .is_focused()
+    );
 
     // Enter runs the highlighted command, as its shortcut would.
     harness
@@ -152,19 +183,26 @@ fn typing_filters_the_palette_and_enter_runs_the_highlighted_command() {
         .map(|tab| tab.title().to_owned());
     assert_eq!(active.as_deref(), Some("Ideas"));
 
-    // No match says so. The note's text has the keyboard now, where Mod-K
-    // inserts a link, so the palette opens from the tree.
+    // No match says so once the index answers. The note's text has the
+    // keyboard now, where Mod-K inserts a link, so search opens from the
+    // tree.
     tree_row(&harness, "Plan").focus();
     harness.run();
     press(&mut harness, Modifiers::COMMAND, Key::K);
-    harness.get_by_label("Search commands").type_text("zzz");
-    harness.run();
+    harness
+        .get_by_role_and_label(Role::TextInput, "Search")
+        .type_text("zzz");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while harness.query_by_label("No results").is_none() {
+        assert!(std::time::Instant::now() < deadline, "no empty state");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        harness.step();
+    }
     assert!(listed(&harness).is_empty());
-    harness.get_by_label("No commands match \u{201c}zzz\u{201d}.");
 }
 
 #[test]
-fn the_rail_s_search_button_opens_the_palette_and_a_click_runs_a_command() {
+fn the_rail_s_search_button_opens_search_and_a_click_runs_a_command() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let mut harness = opened(
@@ -185,7 +223,9 @@ fn the_rail_s_search_button_opens_the_palette_and_a_click_runs_a_command() {
 
     // The list is taller than the palette, so narrow it to bring the row
     // into view.
-    harness.get_by_label("Search commands").type_text("sidebar");
+    harness
+        .get_by_role_and_label(Role::TextInput, "Search")
+        .type_text("sidebar");
     harness.run();
     row(&harness, "Toggle Sidebar").click();
     harness.run();
@@ -194,7 +234,7 @@ fn the_rail_s_search_button_opens_the_palette_and_a_click_runs_a_command() {
 }
 
 #[test]
-fn keys_typed_right_after_mod_k_land_in_the_palette_and_escape_returns_focus() {
+fn keys_typed_right_after_mod_k_land_in_search_and_escape_returns_focus() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let mut harness = opened(
@@ -223,7 +263,7 @@ fn keys_typed_right_after_mod_k_land_in_the_palette_and_escape_returns_focus() {
     harness.run();
 
     assert!(palette_open(&harness));
-    let field = harness.get_by_label("Search commands");
+    let field = harness.get_by_role_and_label(Role::TextInput, "Search");
     assert!(field.is_focused());
     assert_eq!(field.value().as_deref(), Some("pl"));
     // Keys typed in later frames land there too.
@@ -445,7 +485,7 @@ fn the_shortcuts_page_lists_every_shortcut_by_area() {
     );
     press(&mut harness, Modifiers::COMMAND, Key::K);
     harness
-        .get_by_label("Search commands")
+        .get_by_role_and_label(Role::TextInput, "Search")
         .type_text("keyboard");
     harness.run();
     press(&mut harness, Modifiers::NONE, Key::Enter);
@@ -514,7 +554,7 @@ fn the_shortcuts_page_lists_every_shortcut_by_area() {
 }
 
 #[test]
-fn a_test_command_shows_in_the_palette_and_the_shortcuts_page() {
+fn a_test_command_shows_in_search_and_the_shortcuts_page() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let mut harness = opened(
@@ -529,6 +569,10 @@ fn a_test_command_shows_in_the_palette_and_the_shortcuts_page() {
     );
 
     press(&mut harness, Modifiers::COMMAND, Key::K);
+    harness
+        .get_by_role_and_label(Role::TextInput, "Search")
+        .type_text("ping");
+    harness.run();
     assert_eq!(
         row(&harness, "Ping")
             .accesskit_node()

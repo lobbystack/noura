@@ -51,20 +51,26 @@ CREATE TABLE IF NOT EXISTS object_tags(
   PRIMARY KEY(file_id, tag)
 );
 CREATE INDEX IF NOT EXISTS object_tags_tag ON object_tags(tag);
+CREATE TABLE IF NOT EXISTS file_links(
+  source_file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  target TEXT NOT NULL, name TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS file_links_name ON file_links(name);
+CREATE INDEX IF NOT EXISTS file_links_source ON file_links(source_file_id);
 CREATE TABLE IF NOT EXISTS plugin_state(plugin_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, PRIMARY KEY(plugin_id,key));
 CREATE TABLE IF NOT EXISTS reconciliation_runs(id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT, changed_files INTEGER NOT NULL DEFAULT 0, diagnostic TEXT);
 CREATE VIRTUAL TABLE IF NOT EXISTS object_fts USING fts5(stable_id UNINDEXED, relative_path, filename, title, body, metadata, tokenize='unicode61 remove_diacritics 2');
 "#;
 
 /// Every row the index derives from workspace files.
-const CLEAR_FILES: &str = "DELETE FROM object_fts; DELETE FROM object_tags; \
+const CLEAR_FILES: &str = "DELETE FROM object_fts; DELETE FROM object_tags; DELETE FROM file_links; \
      DELETE FROM object_links; DELETE FROM object_properties; DELETE FROM objects; \
      DELETE FROM files;";
 
 /// The version of what the index derives from each file. Version 2 adds
 /// tags, the frontmatter of notes without an ID, and paths without `.md`
-/// for search.
-const INDEX_VERSION: i64 = 2;
+/// for search. Version 3 adds each file's `[[…]]` links.
+const INDEX_VERSION: i64 = 3;
 
 /// An index from an older version lacks rows this version reads, and a
 /// walk reads again only the files that changed, so the index forgets
@@ -809,6 +815,72 @@ impl IndexStore {
         Ok(conflicts)
     }
 
+    /// The type of the object the file at `path` holds, if it holds one.
+    pub(crate) fn object_type_at(&self, path: &str) -> Result<Option<String>> {
+        self.connection
+            .prepare_cached(
+                "SELECT o.object_type FROM objects o JOIN files f ON f.id=o.file_id \
+                 WHERE f.relative_path=?1",
+            )
+            .and_then(|mut statement| statement.query_row([path], |row| row.get(0)).optional())
+            .map_err(|error| CoreError::index(error, "links_read"))
+    }
+
+    /// Every Markdown file the index holds, by path.
+    pub fn markdown_paths(&self) -> Result<Vec<String>> {
+        let mut statement = self
+            .connection
+            .prepare_cached("SELECT relative_path FROM files ORDER BY relative_path")
+            .map_err(|error| CoreError::index(error, "links_read"))?;
+        let rows = statement
+            .query_map([], |row| row.get(0))
+            .map_err(|error| CoreError::index(error, "links_read"))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| CoreError::index(error, "links_read"))
+    }
+
+    /// The files holding a link whose file name is one of `names`, as
+    /// [`workspace_format::links::link_name`] gives it, each with its
+    /// revision and the targets of those links.
+    pub(crate) fn link_sources(
+        &self,
+        names: &[String],
+    ) -> Result<Vec<(String, String, Vec<String>)>> {
+        let mut found: std::collections::BTreeMap<String, (String, Vec<String>)> =
+            Default::default();
+        let mut statement = self
+            .connection
+            .prepare_cached(
+                "SELECT f.relative_path,f.hash,l.target FROM file_links l \
+                 JOIN files f ON f.id=l.source_file_id WHERE l.name=?1",
+            )
+            .map_err(|error| CoreError::index(error, "links_read"))?;
+        for name in names {
+            let rows = statement
+                .query_map([name], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(|error| CoreError::index(error, "links_read"))?;
+            for row in rows {
+                let (path, hash, target) =
+                    row.map_err(|error| CoreError::index(error, "links_read"))?;
+                found
+                    .entry(path)
+                    .or_insert_with(|| (hash, Vec::new()))
+                    .1
+                    .push(target);
+            }
+        }
+        Ok(found
+            .into_iter()
+            .map(|(path, (hash, targets))| (path, hash, targets))
+            .collect())
+    }
+
     pub fn diagnostics(&self) -> Result<Vec<crate::Diagnostic>> {
         let mut values = Vec::new();
         let mut malformed = self
@@ -948,6 +1020,30 @@ impl PlainTextQuery {
     }
 }
 
+/// The targets of the `[[…]]` links a parsed file holds, in its body and
+/// in its properties, each once.
+fn file_link_targets(parsed: &ParsedMarkdown) -> std::collections::BTreeSet<String> {
+    use workspace_format::links::{body_links, property_links};
+    let (body, properties) = match parsed {
+        ParsedMarkdown::Managed(object) => (object.body.as_str(), Some(&object.properties)),
+        ParsedMarkdown::Unmanaged {
+            body, frontmatter, ..
+        } => (body.as_str(), frontmatter.as_ref()),
+        ParsedMarkdown::Malformed { body, .. } => (body.as_str(), None),
+    };
+    let mut targets: std::collections::BTreeSet<String> = body_links(body)
+        .into_iter()
+        .map(|link| body[link.target].to_owned())
+        .collect();
+    for value in properties
+        .into_iter()
+        .flat_map(|properties| properties.values())
+    {
+        targets.extend(property_links(value).into_iter().map(str::to_owned));
+    }
+    targets
+}
+
 fn upsert_markdown_tx(
     tx: &rusqlite::Transaction<'_>,
     relative_path: &str,
@@ -999,6 +1095,17 @@ fn upsert_markdown_tx(
     )?;
     run("DELETE FROM objects WHERE file_id=?1", params![file_id])?;
     run("DELETE FROM object_tags WHERE file_id=?1", params![file_id])?;
+    run(
+        "DELETE FROM file_links WHERE source_file_id=?1",
+        params![file_id],
+    )?;
+    for target in file_link_targets(parsed) {
+        let name = workspace_format::links::link_name(&target);
+        run(
+            "INSERT INTO file_links(source_file_id,target,name) VALUES(?1,?2,?3)",
+            params![file_id, target, name],
+        )?;
+    }
     let tags = match parsed {
         ParsedMarkdown::Managed(object) => tags(object.properties.get("tags")),
         ParsedMarkdown::Unmanaged {

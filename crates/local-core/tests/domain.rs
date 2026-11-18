@@ -16,9 +16,7 @@ use tempfile::tempdir;
 fn engine() -> (tempfile::TempDir, tempfile::TempDir, WorkspaceEngine) {
     let workspace = tempdir().unwrap();
     let app_data = tempdir().unwrap();
-    let engine =
-        WorkspaceEngine::create_with_app_data(workspace.path(), "Domain tests", app_data.path())
-            .unwrap();
+    let engine = WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
     (workspace, app_data, engine)
 }
 
@@ -55,7 +53,7 @@ fn chats_are_canonical_revision_checked_and_rebuildable() {
         created
             .value
             .relative_path
-            .starts_with("chats/release-planning--")
+            .starts_with("Chats/release-planning--")
     );
     assert!(created.value.relative_path.ends_with("/chat.md"));
 
@@ -1545,9 +1543,7 @@ fn workspace_entries_classify_visible_workspace_content() {
 fn workspace_entries_apply_manifest_ignores_and_reserved_paths() {
     let workspace = tempdir().unwrap();
     let app_data = tempdir().unwrap();
-    let engine =
-        WorkspaceEngine::create_with_app_data(workspace.path(), "Visibility", app_data.path())
-            .unwrap();
+    let engine = WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
     drop(engine);
     let manifest_path = workspace.path().join(WORKSPACE_MANIFEST_PATH);
     let mut manifest: WorkspaceManifest =
@@ -2330,6 +2326,27 @@ fn plugin_state_rejects_invalid_plugin_ids_and_accepts_hyphenated_ids() {
 }
 
 #[test]
+fn a_new_workspace_enables_the_shipped_plugins_but_ai() {
+    let (workspace, _app_data, engine) = engine();
+    let expected = [
+        "calendar",
+        "dictation",
+        "projects",
+        "tasks",
+        "transcription",
+    ];
+
+    assert_eq!(engine.read_manifest().unwrap().enabled_plugins, expected);
+    let on_disk = std::fs::read_to_string(workspace.path().join(".noura/workspace.yaml")).unwrap();
+    assert!(
+        on_disk.contains(
+            "enabled_plugins:\n- calendar\n- dictation\n- projects\n- tasks\n- transcription\n"
+        ),
+        "{on_disk}"
+    );
+}
+
+#[test]
 fn manifest_update_rewrites_enabled_plugins_durably_and_in_memory() {
     let (workspace, _app_data, engine) = engine();
     let before = engine.read_manifest().unwrap();
@@ -2416,13 +2433,6 @@ fn manifest_update_rejects_invalid_fields_and_leaves_no_op_patches_untouched() {
         })
         .unwrap_err();
     assert_eq!(error.code, "invalid_plugin_id");
-    let error = engine
-        .manifest_update(ManifestUpdateInput {
-            name: Some("   ".into()),
-            ..Default::default()
-        })
-        .unwrap_err();
-    assert_eq!(error.code, "workspace_name_required");
     assert_eq!(
         engine.read_manifest().unwrap().enabled_plugins,
         unchanged.enabled_plugins
@@ -2433,21 +2443,22 @@ fn manifest_update_rejects_invalid_fields_and_leaves_no_op_patches_untouched() {
 fn manifest_read_reflects_external_edits_to_workspace_manifest() {
     let (workspace, _app_data, engine) = engine();
     let bytes = std::fs::read_to_string(workspace.path().join(WORKSPACE_MANIFEST_PATH)).unwrap();
-    assert!(bytes.contains("name: Domain tests"));
+    assert!(bytes.contains("ignore: []"));
     std::fs::write(
         workspace.path().join(WORKSPACE_MANIFEST_PATH),
-        bytes.replace("name: Domain tests", "name: External name"),
+        bytes.replace("ignore: []", "ignore:\n- external/"),
     )
     .unwrap();
-    assert_eq!(engine.read_manifest().unwrap().name, "External name");
+    assert_eq!(engine.read_manifest().unwrap().ignore, ["external/"]);
     // The in-memory snapshot follows the file after a durable update.
     engine
         .manifest_update(ManifestUpdateInput {
-            name: Some("Renamed".into()),
+            ignore: Some(vec!["updated/".into()]),
             ..Default::default()
         })
         .unwrap();
-    assert_eq!(engine.read_manifest().unwrap().name, "Renamed");
+    assert_eq!(engine.read_manifest().unwrap().ignore, ["updated/"]);
+    assert_eq!(engine.manifest().ignore, ["updated/"]);
 }
 
 #[test]

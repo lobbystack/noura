@@ -1,0 +1,69 @@
+[package]
+name = "speech"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Recording, speech-to-text models and pasting for Noura's kernel."
+publish = false
+
+[features]
+default = ["transcribe", "download"]
+# The transcribe.cpp engine, which builds C++ with CMake. Without it the
+# crate offers only the engine trait, for tests and for checking other
+# targets' code.
+transcribe = ["dep:transcribe-cpp"]
+# Model downloads from Hugging Face, which pull in a TLS stack that builds
+# C code.
+download = ["dep:hf-hub"]
+
+[dependencies]
+atomic-write-file.workspace = true
+futures.workspace = true
+handy-recorder.workspace = true
+hf-hub = { workspace = true, optional = true }
+hound.workspace = true
+parking_lot.workspace = true
+rubato.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true }
+tracing.workspace = true
+transcribe-cpp = { workspace = true, optional = true }
+arboard.workspace = true
+enigo.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cidre.workspace = true
+# Runs pastes on the main queue, where macOS wants its keyboard and
+# pasteboard calls. Zlib OR Apache-2.0 OR MIT; objc2 already pulls it in.
+dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "objc2"] }
+objc2.workspace = true
+objc2-app-kit = { workspace = true, features = ["std", "NSPasteboard"] }
+objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSDate", "NSObjCRuntime", "NSRunLoop", "NSString"] }
+rtrb = "0.4.0"
+
+# Whether another app records: the sound server's source outputs, over
+# the PulseAudio protocol that PipeWire serves too. MIT OR Apache-2.0.
+[target.'cfg(target_os = "linux")'.dependencies]
+libpulse-binding = { version = "2.30", default-features = false }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wasapi.workspace = true
+# The clipboard's delayed rendering for pastes, and the audio sessions that
+# say whether another app records.
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_DataExchange", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Ole", "Win32_UI_WindowsAndMessaging"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2-app-kit = { workspace = true, features = ["std", "NSApplication", "NSEvent", "NSGraphics", "NSMenu", "NSMenuItem", "NSResponder", "NSRunningApplication", "NSText", "NSTextView", "NSView", "NSWindow"] }
+objc2-foundation = { workspace = true, features = ["std", "NSDate", "NSGeometry", "NSObjCRuntime", "NSRunLoop"] }
+
+# Its main thread runs AppKit's run loop, which the test harness's doesn't.
+[[test]]
+name = "paste_main_thread"
+harness = false

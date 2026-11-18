@@ -242,12 +242,12 @@ fn creates_whose_index_update_fails_are_on_disk_and_the_index_catches_up() {
     let project =
         call(&mut app, "projects", "create", &json!({"title": "Orchard"})).expect("a project");
 
-    assert_eq!(task["path"], "tasks/Weed.md");
+    assert_eq!(task["path"], "Tasks/Weed.md");
     assert_eq!(
         property(&written(&fixture, &task), "status"),
         Some("todo".into())
     );
-    assert_eq!(project["path"], "projects/Orchard/Orchard.md");
+    assert_eq!(project["path"], "Projects/Orchard/Orchard.md");
     assert_eq!(
         property(&written(&fixture, &project), "status"),
         Some("planned".into())
@@ -363,9 +363,9 @@ fn a_title_never_takes_a_new_task_or_project_out_of_its_folder() {
     )
     .expect("a project");
 
-    assert_eq!(task["path"], "tasks/Escape.md");
+    assert_eq!(task["path"], "Tasks/Escape.md");
     written(&fixture, &task);
-    assert_eq!(project["path"], "projects/Escape now/Escape now.md");
+    assert_eq!(project["path"], "Projects/Escape now/Escape now.md");
     written(&fixture, &project);
     assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
 }
@@ -417,5 +417,5 @@ fn deleting_every_index_file_rebuilds_the_same_tasks_and_projects_from_the_files
         }),
     )
     .expect("the rebuilt index finds the project");
-    assert_eq!(projects["path"], "projects/Orchard/Orchard.md");
+    assert_eq!(projects["path"], "Projects/Orchard/Orchard.md");
 }

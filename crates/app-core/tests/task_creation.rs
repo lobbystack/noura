@@ -47,7 +47,7 @@ fn new_task_writes_nothing_until_you_name_the_task() {
     assert!(!naming(&app));
     // The field went away, so a close has no name left to send again.
     assert!(app.plugin_name_drafts().is_empty());
-    let bytes = fixture.read("tasks/Buy seeds.md");
+    let bytes = fixture.read("Tasks/Buy seeds.md");
     let id = support::object_id(&bytes);
     assert!(id.starts_with("task_"), "{id}");
     assert_eq!(property(&bytes, "status"), Some("todo".into()));
@@ -81,8 +81,8 @@ fn escape_or_an_empty_name_creates_nothing() {
 
 #[test]
 fn a_failed_create_keeps_the_field_open_so_you_can_try_again() {
-    // A file named `tasks` stands where the tasks folder goes.
-    let fixture = Fixture::new(&[("tasks", b"in the way")]);
+    // A file named `Tasks` stands where the Tasks folder goes.
+    let fixture = Fixture::new(&[("Tasks", b"in the way")]);
     let mut app = fixture.app();
     let Some(_folder) = with_tasks(&mut app) else {
         return;
@@ -99,12 +99,12 @@ fn a_failed_create_keeps_the_field_open_so_you_can_try_again() {
     );
     assert_eq!(fixture.snapshot(), before);
 
-    std::fs::remove_file(fixture.root.join("tasks")).unwrap();
+    std::fs::remove_file(fixture.root.join("Tasks")).unwrap();
     send(&mut app, named("Buy seeds"));
 
     assert!(!naming(&app));
     assert_eq!(text(&app, "new-task-problem"), None);
-    assert!(fixture.exists("tasks/Buy seeds.md"));
+    assert!(fixture.exists("Tasks/Buy seeds.md"));
 }
 
 #[test]
@@ -124,7 +124,7 @@ fn a_name_still_in_the_field_when_the_window_closes_is_created_first() {
     app.close_window();
     support::plugins::wait_until(&mut app, "the window closes", |app| app.is_closed());
 
-    let bytes = fixture.read("tasks/Call the plumber.md");
+    let bytes = fixture.read("Tasks/Call the plumber.md");
     assert_eq!(property(&bytes, "status"), Some("todo".into()));
     settle(&mut other);
     assert_eq!(labels(&other), ["Call the plumber"]);
@@ -132,7 +132,7 @@ fn a_name_still_in_the_field_when_the_window_closes_is_created_first() {
 
 #[test]
 fn a_name_left_in_the_field_after_a_failed_create_is_created_when_the_window_closes() {
-    let fixture = Fixture::new(&[("tasks", b"in the way")]);
+    let fixture = Fixture::new(&[("Tasks", b"in the way")]);
     let mut app = fixture.app();
     let Some(_folder) = with_tasks(&mut app) else {
         return;
@@ -147,11 +147,11 @@ fn a_name_left_in_the_field_after_a_failed_create_is_created_when_the_window_clo
     assert!(text(&app, "new-task-problem").is_some());
 
     // The name stays in the field, so closing the window sends it again.
-    std::fs::remove_file(fixture.root.join("tasks")).unwrap();
+    std::fs::remove_file(fixture.root.join("Tasks")).unwrap();
     app.close_window();
     support::plugins::wait_until(&mut app, "the window closes", |app| app.is_closed());
 
-    let bytes = fixture.read("tasks/Buy seeds.md");
+    let bytes = fixture.read("Tasks/Buy seeds.md");
     assert_eq!(property(&bytes, "status"), Some("todo".into()));
     settle(&mut other);
     assert_eq!(labels(&other), ["Buy seeds"]);
@@ -195,7 +195,7 @@ fn a_new_task_opens_selected_and_the_list_switches_to_all_when_the_view_would_hi
     // Today holds only dated tasks, so the list shows All.
     assert_eq!(text(&app, "view").as_deref(), Some("All"));
     assert_eq!(labels(&app), ["Plan the trip"]);
-    let id = support::object_id(&fixture.read("tasks/Plan the trip.md"));
+    let id = support::object_id(&fixture.read("Tasks/Plan the trip.md"));
     assert_eq!(selected(&app).as_deref(), Some(id.as_str()));
     let views = &sidebar(&app)[0];
     assert_eq!(views.selected.as_deref(), Some("view:all"));
@@ -204,7 +204,7 @@ fn a_new_task_opens_selected_and_the_list_switches_to_all_when_the_view_would_hi
     let tab = app.active_tab().expect("the task opens");
     assert_eq!(
         tab.file().map(|file| file.relative_path.as_str()),
-        Some("tasks/Plan the trip.md")
+        Some("Tasks/Plan the trip.md")
     );
     assert!(app.tabs().iter().any(|tab| matches!(
         tab.content(),
@@ -225,8 +225,8 @@ fn a_task_named_in_a_project_view_joins_the_project_and_the_view_stays() {
 
     name_new_task(&mut app, "Turn the compost");
 
-    let bytes = fixture.read("tasks/Turn the compost.md");
-    assert_eq!(property(&bytes, "project"), Some(project.clone().into()));
+    let bytes = fixture.read("Tasks/Turn the compost.md");
+    assert_eq!(property(&bytes, "project"), Some("[[Garden]]".into()));
     assert_eq!(text(&app, "view").as_deref(), Some("Garden"));
     assert_eq!(labels(&app), ["Turn the compost"]);
 }

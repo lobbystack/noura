@@ -29,9 +29,7 @@ fn native_queries_match_the_shared_browser_fixture() {
     let fixture = fixture();
     let workspace = tempdir().unwrap();
     let app_data = tempdir().unwrap();
-    let engine =
-        WorkspaceEngine::create_with_app_data(workspace.path(), "Queries", app_data.path())
-            .unwrap();
+    let engine = WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
     for file in fixture["files"].as_array().unwrap() {
         let path = workspace.path().join(file["path"].as_str().unwrap());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

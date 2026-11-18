@@ -18,7 +18,7 @@ type Ui = Harness<'static, app_ui::NouraUi>;
 /// A workspace holding the note `Plan.md` with `text`, opened from the
 /// tree, with the caret in the note.
 fn opened_note(app_data: &Path, folder: &Path, text: &str) -> Ui {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     std::fs::write(folder.join("Plan.md"), text).unwrap();
     let mut harness = harness_for(app_data, Platform::Windows, |_| {});
     settle(&mut harness);
@@ -55,7 +55,11 @@ fn mod_k_in_a_note_links_the_selection_and_elsewhere_opens_the_palette() {
     press(&mut harness, Modifiers::COMMAND, egui::Key::K);
 
     assert_eq!(note_text(&harness), "[docs]()");
-    assert!(harness.query_by_label("Search commands").is_none());
+    assert!(
+        harness
+            .query_by_role_and_label(Role::TextInput, "Search")
+            .is_none()
+    );
 
     // From the note's name field, Mod-K opens the palette.
     harness
@@ -63,7 +67,7 @@ fn mod_k_in_a_note_links_the_selection_and_elsewhere_opens_the_palette() {
         .focus();
     harness.run_steps(2);
     press(&mut harness, Modifiers::COMMAND, egui::Key::K);
-    harness.get_by_label("Search commands");
+    harness.get_by_role_and_label(Role::TextInput, "Search");
 }
 
 #[test]

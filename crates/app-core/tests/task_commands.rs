@@ -77,7 +77,7 @@ fn a_write_with_a_value_outside_the_task_fields_fails_with_a_structured_error() 
         (r#"{"status":"blocked"}"#, "status", "not_allowed"),
         (r#"{"priority":3}"#, "priority", "wrong_type"),
         (r#"{"due":"next week"}"#, "due", "invalid_date"),
-        (r#"{"project":"Garden"}"#, "project", "invalid_reference"),
+        (r#"{"project":"Nowhere"}"#, "project", "invalid_reference"),
         (r#"{"kanban_order":7}"#, "kanban_order", "wrong_type"),
     ] {
         let refused = call(
@@ -177,7 +177,7 @@ fn update_accepts_every_task_field_the_board_order_key_included() {
     let text = String::from_utf8(bytes).unwrap();
     let start = format!(
         "---\nid: task_{A}\ntype: task\nstatus: in-progress\npriority: high\n\
-         project: project_{B}\ndue: 2026-10-30T09:00:00-04:00\nkanban_order: a0V\nestimate: 3\n"
+         project: '[[Garden]]'\ndue: 2026-10-30T09:00:00-04:00\nkanban_order: a0V\nestimate: 3\n"
     );
     assert!(text.starts_with(&start), "{text}");
     assert!(text.ends_with("---\nThree coats.\n"), "{text}");
@@ -239,8 +239,8 @@ fn a_task_created_by_another_plugin_gets_the_task_defaults_in_tasks() {
 
     let id = created["id"].as_str().unwrap();
     assert!(id.starts_with("task_"), "{id}");
-    assert_eq!(created["path"], "tasks/Rake the leaves.md");
-    let bytes = fixture.read("tasks/Rake the leaves.md");
+    assert_eq!(created["path"], "Tasks/Rake the leaves.md");
+    let bytes = fixture.read("Tasks/Rake the leaves.md");
     assert_eq!(created["revision"], revision(&bytes));
     let text = String::from_utf8(bytes).unwrap();
     let start =

@@ -3,6 +3,8 @@
 
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
 use plugin_sdk::objects::Object;
+
+use crate::links::Resolver;
 use serde_json::{Map, Value};
 
 /// The object type Tasks registers.
@@ -16,12 +18,20 @@ pub(crate) const SCHEMA: &str = r#"{"properties":[
   {"name":"status","kind":{"enum":["todo","in-progress","done","cancelled"]},"default":"todo"},
   {"name":"priority","kind":{"enum":["low","medium","high","urgent"]},"default":"medium"},
   {"name":"project","kind":{"reference":"project"},"nullable":true},
+  {"name":"source","kind":{"reference":"*"},"nullable":true},
   {"name":"due","kind":"date","nullable":true},
   {"name":"kanban_order","kind":"string"}
 ]}"#;
 
 /// The properties a task has, which the update command accepts.
-pub(crate) const FIELDS: [&str; 5] = ["status", "priority", "project", "due", "kanban_order"];
+pub(crate) const FIELDS: [&str; 6] = [
+    "status",
+    "priority",
+    "project",
+    "source",
+    "due",
+    "kanban_order",
+];
 
 /// Each status's value and the name people see, in the order the panel
 /// lists them.
@@ -87,17 +97,27 @@ pub(crate) struct Task {
     pub(crate) status: String,
     pub(crate) priority: String,
     pub(crate) due: Option<Due>,
-    /// The project's stable ID, when the task names one.
+    /// The stable ID of the project the task's `project` link leads to,
+    /// when it leads to one.
     pub(crate) project: Option<String>,
+    /// The `project` link as the file holds it, such as `[[Garden]]`.
+    pub(crate) project_link: Option<String>,
     /// When the file says the task last changed, in RFC 3339.
     pub(crate) updated: String,
 }
 
 impl Task {
+    /// The task `object` holds, asking Noura where its project link leads.
     pub(crate) fn of(object: &Object) -> Self {
+        Self::read(object, &mut Resolver::default())
+    }
+
+    /// [`Self::of`], with links resolved through `resolver`.
+    pub(crate) fn read(object: &Object, resolver: &mut Resolver) -> Self {
         let properties: Map<String, Value> =
             serde_json::from_str(&object.properties).unwrap_or_default();
         let text = |key: &str| properties.get(key).and_then(Value::as_str);
+        let project_link = text("project").map(str::to_owned);
         Self {
             id: object.id.clone(),
             title: object.title.clone(),
@@ -106,7 +126,10 @@ impl Task {
             status: text("status").unwrap_or("todo").to_owned(),
             priority: text("priority").unwrap_or("medium").to_owned(),
             due: text("due").and_then(Due::parse),
-            project: text("project").map(str::to_owned),
+            project: project_link
+                .as_deref()
+                .and_then(|link| resolver.project(link, &object.path)),
+            project_link,
             updated: object.updated.clone().unwrap_or_default(),
         }
     }

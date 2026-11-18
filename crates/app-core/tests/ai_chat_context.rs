@@ -39,7 +39,6 @@ impl Chatting {
         let mut input = ai::provider("Local", "ollama", "llama3", None);
         input.context_window = window;
         let id = app.save_ai_provider(input).unwrap();
-        app.grant_ai_consent(&id).unwrap();
         support::settle(&mut app);
         Some(Self {
             app,
@@ -195,7 +194,6 @@ fn a_tool_round_after_a_summary_asks_for_no_second_summary() {
     let mut input = ai::provider("Local", "ollama", "llama3", None);
     input.context_window = Some(300);
     let id = app.save_ai_provider(input).unwrap();
-    app.grant_ai_consent(&id).unwrap();
     support::settle(&mut app);
     ai::chat_once(&mut app, &provider, &id, &"a".repeat(100), &"b".repeat(200));
 

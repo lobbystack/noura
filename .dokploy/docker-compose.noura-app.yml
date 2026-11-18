@@ -1,0 +1,40 @@
+# Noura's own sync server at sync.noura.app, on Dokploy behind Cloudflare's
+# proxy. It runs the service from docker-compose.sync-v2.yml and adds the
+# Traefik router itself, so the router can refuse every address outside
+# Cloudflare's ranges. Without that, a client could reach the server
+# directly and forge CF-Connecting-IP to escape the sign-in limits.
+#
+# Don't add a domain for this service in Dokploy: these labels are the
+# domain. Traefik gets the certificate from Let's Encrypt through
+# Cloudflare, which needs the zone's SSL mode on Full or Full (strict).
+# Refresh the ranges from https://api.cloudflare.com/client/v4/ips when
+# Cloudflare changes them.
+services:
+  sync-server:
+    extends:
+      file: docker-compose.sync-v2.yml
+      service: sync-server
+    environment:
+      # Cloudflare sets this header on every request it proxies, and the
+      # router below admits only Cloudflare.
+      NOURA_TRUSTED_PROXY_HEADER: cf-connecting-ip
+    networks:
+      - dokploy-network
+      - default
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.services.noura-sync.loadbalancer.server.port=8080
+      - traefik.http.middlewares.noura-cloudflare-only.ipallowlist.sourcerange=173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18,190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,104.24.0.0/14,172.64.0.0/13,131.0.72.0/22,2400:cb00::/32,2606:4700::/32,2803:f800::/32,2405:b500::/32,2405:8100::/32,2a06:98c0::/29,2c0f:f248::/32
+      - traefik.http.routers.noura-sync.rule=Host(`sync.noura.app`)
+      - traefik.http.routers.noura-sync.entrypoints=websecure
+      - traefik.http.routers.noura-sync.tls.certresolver=letsencrypt
+      - traefik.http.routers.noura-sync.middlewares=noura-cloudflare-only
+      - traefik.http.routers.noura-sync.service=noura-sync
+
+networks:
+  dokploy-network:
+    external: true
+
+volumes:
+  sync-data:

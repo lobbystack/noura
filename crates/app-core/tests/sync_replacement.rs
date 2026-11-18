@@ -436,7 +436,7 @@ async fn a_reader_of_the_skipped_epoch_writes_a_gone_rotators_record_and_profile
         .await
         .expect("the desktop pushes under epoch 2");
     pair.sync_b
-        .rename(&mut pair.desktop.service, "Garden notes")
+        .push_profile_name(&mut pair.desktop.service, "Garden notes")
         .await
         .expect("renamed under epoch 2");
     let round = sync_d.round(&mut fourth.service, 0).await.unwrap();

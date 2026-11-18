@@ -1,0 +1,29 @@
+# Context
+
+{% if title %}
+Session: {{ title }}
+{%- endif %}
+{%- if participants %}
+Participants:
+{% for name in participants -%}
+- {{ name }}
+{% endfor -%}
+{%- endif %}
+{% if pre_meeting_memo %}
+
+# Pre-Meeting Notes
+
+{{ pre_meeting_memo }}
+{% endif %}
+{% if post_meeting_memo %}
+
+# Meeting Notes
+
+{{ post_meeting_memo }}
+{% endif %}
+
+# Transcript
+
+{% for segment in segments %}
+{{ segment.speaker }}: {{ segment.text }}
+{%- endfor %}

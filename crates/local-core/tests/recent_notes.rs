@@ -13,9 +13,7 @@ use tempfile::{TempDir, tempdir};
 fn engine() -> (TempDir, TempDir, WorkspaceEngine) {
     let workspace = tempdir().unwrap();
     let app_data = tempdir().unwrap();
-    let engine =
-        WorkspaceEngine::create_with_app_data(workspace.path(), "Recent notes", app_data.path())
-            .unwrap();
+    let engine = WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
     (workspace, app_data, engine)
 }
 

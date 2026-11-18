@@ -29,7 +29,7 @@ fn opened(files: &[(&str, &str)], register: impl FnOnce(&mut App)) -> Opened {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     for (relative, text) in files {
         write(&folder, relative, text);
     }
@@ -142,7 +142,7 @@ fn settings_switches(harness: &mut Ui) -> Vec<String> {
         harness
             .get_by_role_and_label(Role::Navigation, "Settings sections")
             .get_by_role_and_label(Role::Button, &section)
-            .click();
+            .click_accesskit();
         harness.run();
         switches.extend(
             harness

@@ -1,8 +1,7 @@
 //! Web search and page reads for the AI: your Brave Search key, kept in
-//! the operating system's credential store, and your web consent for each
-//! workspace, kept on this device apart from AI provider consent. Both
-//! stay outside the workspace. A search or a page read fails closed, with
-//! nothing sent, until the key and the consent are both there.
+//! the operating system's credential store, outside the workspace. A
+//! search or a page read fails closed, with nothing sent, until the key is
+//! there. Adding the key is your say-so, so nothing asks per workspace.
 
 use std::{
     path::{Path, PathBuf},
@@ -17,11 +16,10 @@ use crate::{
     WebFetchResponse, WebSearchInput, WebSearchResponse,
 };
 
-/// The ID of the web search provider web consent names.
+/// The ID of the web search provider.
 pub const WEB_SEARCH_PROVIDER: &str = "brave-search";
 
 const SETTINGS_VERSION: u32 = 1;
-const CONSENT_VERSION: u32 = 1;
 
 /// Makes the provider that searches with your key and reads pages:
 /// Brave Search over this device's network, or a stand-in in tests.
@@ -39,18 +37,6 @@ impl WebClient for BraveClient {
     }
 }
 
-/// Your consent for the AI to search the web and read pages in one
-/// workspace, under one version of what Noura told you.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WebConsentGrant {
-    pub workspace_id: String,
-    /// The provider that receives searches: [`WEB_SEARCH_PROVIDER`].
-    pub provider_id: String,
-    pub policy_version: String,
-    pub granted_at: String,
-}
-
 #[derive(Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SettingsFile {
@@ -60,20 +46,11 @@ struct SettingsFile {
     brave_search_key: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ConsentFile {
-    version: u32,
-    grants: Vec<WebConsentGrant>,
-}
-
-/// The Brave Search key and web consents on this device.
+/// The Brave Search key on this device.
 pub struct WebFoundation {
     settings_path: PathBuf,
-    consent_path: PathBuf,
     /// The credential store's reference to the key, if there is one.
     key: Mutex<Option<String>>,
-    grants: Mutex<Vec<WebConsentGrant>>,
     credentials: Arc<dyn CredentialStore>,
     limits: WebAccessLimits,
 }
@@ -83,27 +60,23 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl WebFoundation {
-    /// Open the web settings at `settings_path` and the consents at
-    /// `consent_path`, with the key in the operating system's credential
-    /// store.
-    pub fn open(settings_path: impl AsRef<Path>, consent_path: impl AsRef<Path>) -> Result<Self> {
-        Self::open_with(settings_path, consent_path, Arc::new(SystemCredentials))
+    /// Open the web settings at `settings_path`, with the key in the
+    /// operating system's credential store.
+    pub fn open(settings_path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with(settings_path, Arc::new(SystemCredentials))
     }
 
     /// [`WebFoundation::open`] with the key in `credentials`.
     ///
     /// A file Noura can't read moves aside, to the same name with
     /// `.unreadable` added, and Noura starts again without it: with no
-    /// key, or with no web consent, so web calls fail closed until you set
-    /// them up again. A file a newer version of Noura wrote stays where it
+    /// key, so web calls fail closed until you add it again. A file a newer version of Noura wrote stays where it
     /// is, and opening fails.
     pub fn open_with(
         settings_path: impl AsRef<Path>,
-        consent_path: impl AsRef<Path>,
         credentials: Arc<dyn CredentialStore>,
     ) -> Result<Self> {
         let settings_path = settings_path.as_ref().to_owned();
-        let consent_path = consent_path.as_ref().to_owned();
         let settings = match read::<SettingsFile>(&settings_path)? {
             Read::Missing => SettingsFile::default(),
             Read::Value(file) if file.version > SETTINGS_VERSION => return Err(invalid()),
@@ -115,32 +88,9 @@ impl WebFoundation {
                 SettingsFile::default()
             }
         };
-        let grants = match read::<ConsentFile>(&consent_path)? {
-            Read::Missing => Vec::new(),
-            Read::Value(file) if file.version > CONSENT_VERSION => return Err(invalid()),
-            Read::Value(file)
-                if file.version == CONSENT_VERSION
-                    && file.grants.iter().all(|grant| {
-                        validate(
-                            &grant.workspace_id,
-                            &grant.policy_version,
-                            "web_consent_load",
-                        )
-                        .is_ok()
-                    }) =>
-            {
-                file.grants
-            }
-            Read::Value(_) | Read::Unreadable => {
-                set_aside(&consent_path)?;
-                Vec::new()
-            }
-        };
         Ok(Self {
             settings_path,
-            consent_path,
             key: Mutex::new(settings.brave_search_key),
-            grants: Mutex::new(grants),
             credentials,
             limits: WebAccessLimits::default(),
         })
@@ -188,105 +138,34 @@ impl WebFoundation {
         self.credentials.delete(&reference)
     }
 
-    /// Your web consent for the workspace `workspace_id` under
-    /// `policy_version`, if you gave it.
-    pub fn consent(
-        &self,
-        workspace_id: &str,
-        policy_version: &str,
-    ) -> Result<Option<WebConsentGrant>> {
-        validate(workspace_id, policy_version, "web_consent_read")?;
-        Ok(lock(&self.grants)
-            .iter()
-            .find(|grant| {
-                grant.workspace_id == workspace_id && grant.policy_version == policy_version
-            })
-            .cloned())
-    }
-
-    /// Consent to the AI searching the web and reading pages in the
-    /// workspace `workspace_id`, under `policy_version`.
-    pub fn grant(&self, workspace_id: &str, policy_version: &str) -> Result<WebConsentGrant> {
-        validate(workspace_id, policy_version, "web_consent_grant")?;
-        let grant = WebConsentGrant {
-            workspace_id: workspace_id.to_owned(),
-            provider_id: WEB_SEARCH_PROVIDER.to_owned(),
-            policy_version: policy_version.to_owned(),
-            granted_at: crate::now_rfc3339(),
-        };
-        let mut grants = lock(&self.grants);
-        let mut next: Vec<WebConsentGrant> = grants
-            .iter()
-            .filter(|known| known.workspace_id != workspace_id)
-            .cloned()
-            .collect();
-        next.push(grant.clone());
-        self.write_consents(&next)?;
-        *grants = next;
-        Ok(grant)
-    }
-
-    /// Withdraw your web consent for the workspace `workspace_id`, under
-    /// every policy version. Returns whether there was one.
-    pub fn revoke(&self, workspace_id: &str) -> Result<bool> {
-        let mut grants = lock(&self.grants);
-        let next: Vec<WebConsentGrant> = grants
-            .iter()
-            .filter(|known| known.workspace_id != workspace_id)
-            .cloned()
-            .collect();
-        if next.len() == grants.len() {
-            return Ok(false);
-        }
-        self.write_consents(&next)?;
-        *grants = next;
-        Ok(true)
-    }
-
-    /// Search the web for the workspace `workspace_id` through `client`.
+    /// Search the web through `client`.
     pub async fn search(
         &self,
-        workspace_id: &str,
-        policy_version: &str,
         client: &dyn WebClient,
         input: WebSearchInput,
     ) -> Result<WebSearchResponse> {
-        self.access(workspace_id, policy_version, client, "web_search")?
-            .search(input)
-            .await
+        self.access(client, "web_search")?.search(input).await
     }
 
-    /// Read a page for the workspace `workspace_id` through `client`.
+    /// Read a page through `client`.
     pub async fn fetch(
         &self,
-        workspace_id: &str,
-        policy_version: &str,
         client: &dyn WebClient,
         input: WebFetchInput,
     ) -> Result<WebFetchResponse> {
-        self.access(workspace_id, policy_version, client, "web_fetch")?
-            .fetch(input)
-            .await
+        self.access(client, "web_fetch")?.fetch(input).await
     }
 
-    /// Fail as a web call for the workspace `workspace_id` would without
-    /// the key or your consent, and succeed once both are there.
-    pub fn check_ready(&self, workspace_id: &str, policy_version: &str) -> Result<()> {
-        self.key_reference(workspace_id, policy_version, "web_access")
-            .map(|_| ())
+    /// Fail as a web call would without the key, and succeed once it's
+    /// there.
+    pub fn check_ready(&self) -> Result<()> {
+        self.key_reference("web_access").map(|_| ())
     }
 
     /// The web access boundary with a provider for your key, once the key
-    /// and your consent for the workspace are both there. Without either,
-    /// nothing reaches `client`.
-    fn access(
-        &self,
-        workspace_id: &str,
-        policy_version: &str,
-        client: &dyn WebClient,
-        operation: &str,
-    ) -> Result<WebAccessService> {
-        let reference = self.key_reference(workspace_id, policy_version, operation)?;
+    /// is there. Without it, nothing reaches `client`.
+    fn access(&self, client: &dyn WebClient, operation: &str) -> Result<WebAccessService> {
+        let reference = self.key_reference(operation)?;
         let key = zeroize::Zeroizing::new(self.credentials.get(&reference)?);
         let mut service = WebAccessService::new(self.limits)?;
         service.configure(
@@ -299,14 +178,8 @@ impl WebFoundation {
         Ok(service)
     }
 
-    /// The credential store's reference to the key, once the key and your
-    /// consent for the workspace are both there.
-    fn key_reference(
-        &self,
-        workspace_id: &str,
-        policy_version: &str,
-        operation: &str,
-    ) -> Result<String> {
+    /// The credential store's reference to the key, once it's there.
+    fn key_reference(&self, operation: &str) -> Result<String> {
         let reference = lock(&self.key).clone().ok_or_else(|| {
             CoreError::new(
                 "web_search_key_missing",
@@ -315,14 +188,6 @@ impl WebFoundation {
                 operation,
             )
         })?;
-        if self.consent(workspace_id, policy_version)?.is_none() {
-            return Err(CoreError::new(
-                "web_consent_required",
-                ErrorCategory::Permission,
-                "Web search needs your consent for this workspace",
-                operation,
-            ));
-        }
         Ok(reference)
     }
 
@@ -332,18 +197,6 @@ impl WebFoundation {
             &SettingsFile {
                 version: SETTINGS_VERSION,
                 brave_search_key: reference.map(str::to_owned),
-            },
-        )
-    }
-
-    fn write_consents(&self, grants: &[WebConsentGrant]) -> Result<()> {
-        let mut grants = grants.to_vec();
-        grants.sort_by(|left, right| left.workspace_id.cmp(&right.workspace_id));
-        write(
-            &self.consent_path,
-            &ConsentFile {
-                version: CONSENT_VERSION,
-                grants,
             },
         )
     }
@@ -393,27 +246,6 @@ fn valid_reference(reference: &str) -> bool {
         .is_some_and(|rest| uuid::Uuid::parse_str(rest).is_ok())
 }
 
-fn validate(workspace_id: &str, policy_version: &str, operation: &str) -> Result<()> {
-    if !crate::valid_object_id(workspace_id, "workspace") {
-        return Err(CoreError::validation(
-            "invalid_workspace_id",
-            "The workspace ID must be a lowercase stable workspace ID",
-            operation,
-        ));
-    }
-    if policy_version.is_empty()
-        || policy_version.len() > 128
-        || policy_version.chars().any(char::is_control)
-    {
-        return Err(CoreError::validation(
-            "web_consent_invalid",
-            "Policy versions must be non-empty plain text",
-            operation,
-        ));
-    }
-    Ok(())
-}
-
 fn invalid() -> CoreError {
     CoreError::new(
         "web_settings_invalid",
@@ -443,9 +275,6 @@ mod tests {
         MemoryCredentials, WebAccessFuture, WebFetchRequest, WebSearchRequest, WebSearchResult,
     };
 
-    const A: &str = "workspace_01jbcdefghjkmnpqrstvwxyz0a";
-    const B: &str = "workspace_01jbcdefghjkmnpqrstvwxyz0b";
-    const POLICY: &str = "2026-10";
     const KEY: &str = "BSA-secret-0123456789";
 
     /// A web provider that records the key it was made with and each
@@ -487,12 +316,7 @@ mod tests {
     }
 
     fn open(root: &Path, credentials: &Arc<MemoryCredentials>) -> WebFoundation {
-        WebFoundation::open_with(
-            root.join("ai/web.json"),
-            root.join("ai/web-consents.json"),
-            credentials.clone(),
-        )
-        .unwrap()
+        WebFoundation::open_with(root.join("ai/web.json"), credentials.clone()).unwrap()
     }
 
     fn query() -> WebSearchInput {
@@ -528,62 +352,21 @@ mod tests {
         assert_eq!(web.set_key("   ").unwrap_err().code, "credential_empty");
     }
 
-    #[test]
-    fn consent_holds_for_one_workspace_on_this_device_apart_from_provider_consent() {
-        let root = tempdir().unwrap();
-        let credentials = Arc::new(MemoryCredentials::new());
-        let web = open(root.path(), &credentials);
-
-        let grant = web.grant(A, POLICY).unwrap();
-
-        assert_eq!(grant.provider_id, WEB_SEARCH_PROVIDER);
-        assert_eq!(web.consent(A, POLICY).unwrap(), Some(grant.clone()));
-        assert_eq!(web.consent(B, POLICY).unwrap(), None);
-        assert_eq!(web.consent(A, "2027-01").unwrap(), None);
-        assert!(!root.path().join("ai/consents.json").exists());
-        drop(web);
-
-        let web = open(root.path(), &credentials);
-        assert_eq!(web.consent(A, POLICY).unwrap(), Some(grant));
-        web.grant(B, POLICY).unwrap();
-        assert!(web.revoke(A).unwrap());
-        assert!(!web.revoke(A).unwrap());
-        assert_eq!(web.consent(A, POLICY).unwrap(), None);
-        assert!(web.consent(B, POLICY).unwrap().is_some());
-        drop(web);
-        assert_eq!(
-            open(root.path(), &credentials).consent(A, POLICY).unwrap(),
-            None
-        );
-    }
-
     #[tokio::test]
-    async fn without_the_key_or_consent_nothing_reaches_the_web() {
+    async fn without_the_key_nothing_reaches_the_web() {
         let root = tempdir().unwrap();
         let credentials = Arc::new(MemoryCredentials::new());
         let web = open(root.path(), &credentials);
         let fake = Arc::new(FakeWeb::default());
 
-        web.grant(A, POLICY).unwrap();
-        let error = web.search(A, POLICY, &fake, query()).await.unwrap_err();
+        let error = web.search(&fake, query()).await.unwrap_err();
         assert_eq!(error.code, "web_search_key_missing");
         assert_eq!(
-            web.check_ready(A, POLICY).unwrap_err().code,
+            web.check_ready().unwrap_err().code,
             "web_search_key_missing"
-        );
-
-        web.revoke(A).unwrap();
-        web.set_key(KEY).unwrap();
-        let error = web.search(A, POLICY, &fake, query()).await.unwrap_err();
-        assert_eq!(error.code, "web_consent_required");
-        assert_eq!(
-            web.check_ready(A, POLICY).unwrap_err().code,
-            "web_consent_required"
         );
         let error = web
             .fetch(
-                A,
-                POLICY,
                 &fake,
                 WebFetchInput {
                     url: "https://garden.example.com/".into(),
@@ -591,21 +374,16 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert_eq!(error.code, "web_consent_required");
+        assert_eq!(error.code, "web_search_key_missing");
         assert!(fake.keys.lock().unwrap().is_empty());
         assert!(fake.searches.lock().unwrap().is_empty());
 
-        web.grant(A, POLICY).unwrap();
-        web.check_ready(A, POLICY).unwrap();
-        let found = web.search(A, POLICY, &fake, query()).await.unwrap();
+        web.set_key(KEY).unwrap();
+        web.check_ready().unwrap();
+        let found = web.search(&fake, query()).await.unwrap();
         assert_eq!(found.results[0].title, "Tomatoes");
         assert_eq!(*fake.keys.lock().unwrap(), [KEY.to_owned()]);
         assert_eq!(*fake.searches.lock().unwrap(), ["tomatoes".to_owned()]);
-
-        // Consent in one workspace doesn't reach another.
-        let error = web.search(B, POLICY, &fake, query()).await.unwrap_err();
-        assert_eq!(error.code, "web_consent_required");
-        assert_eq!(fake.searches.lock().unwrap().len(), 1);
     }
 
     /// A file Noura can't read moves aside and Noura starts again without
@@ -620,19 +398,7 @@ mod tests {
                 r#"{"version":1,"braveSearchKey":"BSA-secret"}"#,
                 true,
             ),
-            (
-                "ai/web-consents.json",
-                r#"{"version":1,"grants":[{"workspaceId":"../x","providerId":"brave-search","policyVersion":"1","grantedAt":"t"}]}"#,
-                true,
-            ),
-            ("ai/web-consents.json", "[BSA-secret", true),
-            ("ai/web-consents.json", r#"{"version":0,"grants":[]}"#, true),
             ("ai/web.json", r#"{"version":9}"#, false),
-            (
-                "ai/web-consents.json",
-                r#"{"version":9,"grants":[]}"#,
-                false,
-            ),
         ] {
             let root = tempdir().unwrap();
             std::fs::create_dir_all(root.path().join("ai")).unwrap();
@@ -642,7 +408,6 @@ mod tests {
 
             let opened = WebFoundation::open_with(
                 root.path().join("ai/web.json"),
-                root.path().join("ai/web-consents.json"),
                 Arc::new(MemoryCredentials::new()),
             );
 
@@ -652,18 +417,14 @@ mod tests {
                     assert!(!path.exists(), "{text}");
                     assert_eq!(std::fs::read_to_string(&aside).unwrap(), text);
                     assert!(!foundation.has_key(), "{text}");
-                    assert_eq!(foundation.consent(A, POLICY).unwrap(), None, "{text}");
                     // The next change writes a fresh file.
-                    foundation.grant(A, POLICY).unwrap();
                     foundation.set_key("BSA-new").unwrap();
                     let reopened = WebFoundation::open_with(
                         root.path().join("ai/web.json"),
-                        root.path().join("ai/web-consents.json"),
                         Arc::new(MemoryCredentials::new()),
                     )
                     .unwrap();
                     assert!(reopened.has_key());
-                    assert!(reopened.consent(A, POLICY).unwrap().is_some());
                 }
                 Err(error) => {
                     assert!(!opens, "{text} should move aside: {}", error.code);

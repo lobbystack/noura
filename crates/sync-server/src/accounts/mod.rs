@@ -296,7 +296,7 @@ async fn invite_page<B: Backend>(
         Ok(_) => page(
             StatusCode::OK,
             "Open this invitation in Noura",
-            "Someone invited you to a Noura workspace. Copy this page's address and paste it in the Noura desktop app, under Settings > Sync account, to see who invited you and join.",
+            "Someone invited you to a Noura workspace. Copy this page's address and paste it in the Noura desktop app, under Settings > Account, to see who invited you and join.",
         ),
         Err(sync_store::Error::Refused(_)) => gone(),
         Err(error) => {

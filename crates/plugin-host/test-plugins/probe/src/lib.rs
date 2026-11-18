@@ -27,6 +27,27 @@
 //!   line per provider, chat, message, run, search result or page. A press
 //!   on a node whose ID is `ai:<call>` makes the call too, and the `events`
 //!   page shows each line as `<page> ai <line>`.
+//! - `ai:complete:<prompt>` and `ai:complete-json:<prompt>`: complete a
+//!   prompt with the first provider, as `completion <provider> <model>
+//!   <text>` or `completion-failed <code> <message>`.
+//! - `speech:<call>`: call the speech interface: `models`, `microphones`,
+//!   `preferences`, `set-preferences:<model>`, `start`, which records the
+//!   microphone and the system audio, `read:<id>`, `stop:<id>`,
+//!   `cancel:<id>`, `forget:<id>`, `keep-audio:<id>`,
+//!   `save-audio:<id>:<object>`, `remember:<text>` and `last-dictation`.
+//! - `shortcuts`: the plugin's global shortcuts, as `shortcut <id>
+//!   <keys> <registered>`.
+//! - `paste:<text>` and `copy:<text>`: paste or copy text. A press on a
+//!   node whose ID is `paste:<text>` pastes too.
+//! - `menu-bar:<labels>`: show these comma-separated menu bar items, the
+//!   first one a submenu holding the rest.
+//! - `random`: count words in a std `HashMap`, which needs WASI's random
+//!   seed, as `hashmap <distinct> <times a>`.
+//! - `notify`: show the notification `hello`, which only a call that
+//!   answers you may, as `ok` or the error. A press of the shortcut
+//!   `notify` shows it, and one of `open` opens the page `events`.
+//! - `speech-paste` and `speech-menu`: pages that paste `hello` and show
+//!   the menu `Model` holding `Parakeet Ultra`.
 //! - `clock`: the clock's reading, as `now <instant> <time zone>`.
 //! - `markdown`: a Markdown node with a heading, emphasis, a link, a
 //!   list and a remote image.
@@ -34,8 +55,9 @@
 //!   nested a hundred thousand deep.
 //! - `nodes:<case>`: return a node list that breaks a rule of views.
 //! - `events`: the events, commands and tool calls the plugin received,
-//!   oldest first: a press as `<page> pressed <node>`, any other event in
-//!   its debug form. A press on a node whose ID is
+//!   oldest first: a press as `<page> pressed <node>`, a kernel event as
+//!   `kernel <event>`, any other event in its debug form. A kernel event
+//!   `shortcut-pressed(paste)` pastes `pasted`, as Dictation would. A press on a node whose ID is
 //!   `call:<plugin>/<command>:<input>` runs that command instead, and
 //!   shows as `<page> call` and what came back. A press on
 //!   `open-object:<id>:<preview or new-tab>` or `open-page:<page>` asks
@@ -67,9 +89,9 @@ use std::sync::Mutex;
 
 use plugin_sdk::{
     Calendar, CalendarEntry, CalendarMode, Choice, Column, Command, Error, Event, InboxSection,
-    Input, Item, ItemList, MenuItem, NameField, Node, NodeKind, Page, Plugin, Table, Tool, Value,
-    View, VirtualList, VirtualRow, ai, clock, command_calls, navigation, network, objects,
-    workspace,
+    Input, Item, ItemList, KernelEvent, MenuItem, NameField, Node, NodeKind, Page, Plugin, Table,
+    Tool, Value, View, VirtualList, VirtualRow, ai, clock, command_calls, global_shortcuts,
+    menu_bar, navigation, network, notifications, objects, paste, speech, workspace,
 };
 
 static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -93,6 +115,28 @@ const ECHO_SCHEMA: &str = r#"{"type":"object","properties":{"text":{"type":"stri
 struct Probe;
 
 impl Plugin for Probe {
+    fn handle_kernel_event(event: KernelEvent) {
+        record(format!("kernel {event:?}"));
+        let KernelEvent::ShortcutPressed(press) = &event else {
+            return;
+        };
+        match press.id.as_str() {
+            "paste" => record(format!(
+                "kernel paste {}",
+                pasted(paste::paste("pasted", paste::Method::Clipboard))
+            )),
+            // A notification with an action, which only a call that
+            // answers you may show.
+            "notify" => record(format!("kernel notify {}", answered(hello()))),
+            // What a kernel event opens shows in the window you used last.
+            "open" => record(format!(
+                "kernel open {}",
+                answered(navigation::open_page("events"))
+            )),
+            _ => {}
+        }
+    }
+
     fn pages() -> Vec<Page> {
         vec![
             Page {
@@ -118,6 +162,18 @@ impl Plugin for Probe {
             Page {
                 id: "events".into(),
                 title: "Events".into(),
+            },
+            Page {
+                id: "speech-paste".into(),
+                title: "Paste".into(),
+            },
+            Page {
+                id: "notify".into(),
+                title: "Notify".into(),
+            },
+            Page {
+                id: "speech-menu".into(),
+                title: "Menu".into(),
             },
             Page {
                 id: "opens".into(),
@@ -158,6 +214,29 @@ impl Plugin for Probe {
             vec![relay(call)]
         } else if let Some(call) = page.strip_prefix("ai:") {
             ai_call(call)
+        } else if let Some(call) = page.strip_prefix("speech:") {
+            speech_call(call)
+        } else if page == "random" {
+            // A std HashMap seeds itself from WASI's random interface.
+            let mut seen = std::collections::HashMap::new();
+            for word in ["a", "b", "a", "c"] {
+                *seen.entry(word).or_insert(0) += 1;
+            }
+            vec![format!("hashmap {} {}", seen.len(), seen["a"])]
+        } else if page == "speech-paste" {
+            vec![pasted(paste::paste("hello", paste::Method::Clipboard))]
+        } else if page == "notify" {
+            vec![answered(hello())]
+        } else if page == "speech-menu" {
+            vec![menu("Model,Parakeet Ultra")]
+        } else if page == "shortcuts" {
+            shortcuts()
+        } else if let Some(text) = page.strip_prefix("paste:") {
+            vec![pasted(paste::paste(text, paste::Method::Clipboard))]
+        } else if let Some(text) = page.strip_prefix("copy:") {
+            vec![pasted(paste::copy(text))]
+        } else if let Some(labels) = page.strip_prefix("menu-bar:") {
+            vec![menu(labels)]
         } else if page == "clock" {
             let now = clock::now();
             vec![format!("now {} {}", now.instant, now.time_zone)]
@@ -204,6 +283,15 @@ impl Plugin for Probe {
             for line in ai_call(call) {
                 record(format!("{page} ai {line}"));
             }
+            return;
+        }
+        if let Event::Pressed(node) = &event
+            && let Some(text) = node.strip_prefix("paste:")
+        {
+            record(format!(
+                "{page} paste {}",
+                pasted(paste::paste(text, paste::Method::Clipboard))
+            ));
             return;
         }
         if let Event::Pressed(node) = &event
@@ -415,6 +503,21 @@ fn ai_call(call: &str) -> Vec<String> {
                 .map(|run| vec![run_line(&run)])
         }
         "web-ready" => ai::web_ready().map(|ready| vec![format!("web-ready {ready}")]),
+        "complete" | "complete-json" => {
+            let request = ai::CompletionRequest {
+                provider: None,
+                instructions: Some("Answer briefly.".into()),
+                prompt: rest.to_owned(),
+                json: name == "complete-json",
+            };
+            return vec![match ai::complete(&request) {
+                Ok(done) => format!("completion {} {} {}", done.provider, done.model, done.text),
+                Err(ai::CompletionError::Refused(error)) => describe(&error),
+                Err(ai::CompletionError::Failed(failure)) => {
+                    format!("completion-failed {} {}", failure.code, failure.message)
+                }
+            }];
+        }
         "web-search" => {
             return web_lines(ai::web_search(rest, Some(3)).map(|results| {
                 results
@@ -1094,3 +1197,154 @@ fn requiring(label: &str, input: &str) -> NodeKind {
 }
 
 plugin_sdk::export!(Probe);
+
+/// A speech call, as lines.
+fn speech_call(call: &str) -> Vec<String> {
+    let (name, rest) = call.split_once(':').unwrap_or((call, ""));
+    let lines = match name {
+        "models" => speech::models().map(|models| {
+            models
+                .iter()
+                .map(|model| {
+                    format!(
+                        "model {} {} downloaded={} streaming={}",
+                        model.id, model.name, model.downloaded, model.streaming
+                    )
+                })
+                .collect()
+        }),
+        "microphones" => speech::microphones().map(|microphones| {
+            microphones
+                .iter()
+                .map(|microphone| format!("microphone {} {}", microphone.id, microphone.name))
+                .collect()
+        }),
+        "preferences" => speech::read_preferences().map(|preferences| {
+            vec![format!(
+                "preferences {:?} {:?} {} {:?}",
+                preferences.model,
+                preferences.microphone,
+                preferences.system_audio,
+                preferences.language
+            )]
+        }),
+        "set-preferences" => speech::set_preferences(&speech::Preferences {
+            model: Some(rest.to_owned()),
+            microphone: None,
+            system_audio: true,
+            language: Some("en".to_owned()),
+        })
+        .map(|()| vec!["preferences set".to_owned()]),
+        "start" => speech::start(&speech::RecordingOptions {
+            sources: vec![speech::Source::Microphone, speech::Source::SystemAudio],
+            model: None,
+            microphone: None,
+            language: None,
+        })
+        .map(|id| vec![format!("started {id}")]),
+        "read" => speech::read_recording(rest).map(|recording| {
+            let mut lines = vec![format!(
+                "recording {} {:?} {}",
+                recording.id, recording.state, recording.elapsed_ms
+            )];
+            for segment in recording.segments.iter().chain(&recording.pending) {
+                lines.push(format!(
+                    "segment {:?} {} {} {}",
+                    segment.channel, segment.start_ms, segment.end_ms, segment.text
+                ));
+            }
+            lines.extend(
+                recording
+                    .failure
+                    .map(|failure| format!("failure {failure}")),
+            );
+            lines
+        }),
+        "stop" => speech::stop(rest).map(|()| vec!["stopped".to_owned()]),
+        "cancel" => speech::cancel(rest).map(|()| vec!["cancelled".to_owned()]),
+        "forget" => speech::forget(rest).map(|()| vec!["forgotten".to_owned()]),
+        "keep-audio" => speech::keep_audio(rest, 7).map(|()| vec!["kept".to_owned()]),
+        "save-audio" => {
+            let (id, object) = rest.split_once(':').unwrap_or((rest, ""));
+            speech::save_audio(id, object).map(|path| vec![format!("saved {path}")])
+        }
+        "remember" => speech::remember_dictation(rest).map(|()| vec!["remembered".to_owned()]),
+        "last-dictation" => speech::last_dictation().map(|text| vec![format!("last {text:?}")]),
+        other => Ok(vec![format!("no speech call {other}")]),
+    };
+    lines.unwrap_or_else(|error| vec![describe(&error)])
+}
+
+/// The plugin's global shortcuts, as lines.
+fn shortcuts() -> Vec<String> {
+    match global_shortcuts::shortcuts() {
+        Ok(shortcuts) => shortcuts
+            .iter()
+            .map(|shortcut| {
+                format!(
+                    "shortcut {} {} {}",
+                    shortcut.id, shortcut.keys, shortcut.registered
+                )
+            })
+            .collect(),
+        Err(error) => vec![describe(&error)],
+    }
+}
+
+/// What a paste or a copy answered.
+/// Show the notification `hello`, with the action `wave`.
+fn hello() -> Result<(), Error> {
+    notifications::notify(&notifications::Notification {
+        id: "hello".into(),
+        title: "Hello".into(),
+        body: String::new(),
+        actions: vec![notifications::Action {
+            id: "wave".into(),
+            label: "Wave".into(),
+        }],
+    })
+}
+
+fn answered(result: Result<(), Error>) -> String {
+    match result {
+        Ok(()) => "ok".to_owned(),
+        Err(error) => describe(&error),
+    }
+}
+
+fn pasted(result: Result<(), Error>) -> String {
+    match result {
+        Ok(()) => "pasted".to_owned(),
+        Err(error) => describe(&error),
+    }
+}
+
+/// Show `labels` in the menu bar: the first a submenu holding the rest.
+fn menu(labels: &str) -> String {
+    let mut labels = labels.split(',');
+    let mut entries = Vec::new();
+    if let Some(first) = labels.next() {
+        entries.push(menu_bar::Entry {
+            id: "menu".to_owned(),
+            kind: menu_bar::EntryKind::Submenu,
+            label: first.to_owned(),
+            enabled: true,
+            checked: None,
+            parent: None,
+        });
+    }
+    for (index, label) in labels.enumerate() {
+        entries.push(menu_bar::Entry {
+            id: format!("item-{index}"),
+            kind: menu_bar::EntryKind::Item,
+            label: label.to_owned(),
+            enabled: true,
+            checked: Some(index == 0),
+            parent: Some("menu".to_owned()),
+        });
+    }
+    match menu_bar::set_entries(&entries) {
+        Ok(()) => format!("menu {}", entries.len()),
+        Err(error) => describe(&error),
+    }
+}

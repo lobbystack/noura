@@ -14,6 +14,7 @@
 
 mod commands;
 mod inbox;
+mod links;
 mod menus;
 mod task;
 mod tools;
@@ -195,7 +196,11 @@ impl Plugin for Tasks {
 
 /// Every task, read from its file.
 fn tasks() -> Result<Vec<Task>, Error> {
-    Ok(objects::list(TASK)?.iter().map(Task::of).collect())
+    let mut resolver = links::Resolver::default();
+    Ok(objects::list(TASK)?
+        .iter()
+        .map(|object| Task::read(object, &mut resolver))
+        .collect())
 }
 
 /// Every project in the workspace, as (stable ID, title), by title. Two
@@ -692,7 +697,17 @@ fn create(name: &str) {
         Choice::Project(id) => Some(id.clone()),
         _ => None,
     };
-    let properties = project.map_or_else(|| json!({}), |id| json!({ "project": id }));
+    let properties = match project.map(|id| links::link_for(&id)).transpose() {
+        Ok(Some(link)) => json!({ "project": link }),
+        Ok(None) => json!({}),
+        Err(error) => {
+            state().naming_problem = Some(format!(
+                "Couldn't create \u{201c}{name}\u{201d}. {}",
+                reason(&error)
+            ));
+            return;
+        }
+    };
     let created = objects::create(&NewObject {
         object_type: TASK.to_owned(),
         title: name.to_owned(),
@@ -819,7 +834,13 @@ fn task_fields(view: &mut View, parent: u32, id: &str, prefix: &str, state: &mut
     view.input(parent, &node("due"), "Due", due);
     let mut projects: Vec<(String, String)> = vec![("none".to_owned(), "No project".to_owned())];
     projects.extend(self::projects());
-    let chosen = task.project.clone().unwrap_or_else(|| "none".to_owned());
+    // A link that leads to no project, as after you delete the project,
+    // shows as an unknown one until you choose another.
+    let chosen = match (&task.project, &task.project_link) {
+        (Some(id), _) => id.clone(),
+        (None, Some(_)) => "unknown".to_owned(),
+        (None, None) => "none".to_owned(),
+    };
     if !projects.iter().any(|(id, _)| *id == chosen) {
         projects.push((chosen.clone(), "Unknown project".to_owned()));
     }
@@ -857,10 +878,20 @@ fn panel_event(id: &str, event: Event) {
             (json!({ "due": day }), Vec::new())
         }
         ("due", Value::Date(None) | Value::DateTime(None)) => (json!({}), vec!["due".to_owned()]),
+        ("project", Value::Choice(Some(project))) if project == "unknown" => return,
         ("project", Value::Choice(Some(project))) if project == "none" => {
             (json!({}), vec!["project".to_owned()])
         }
-        ("project", Value::Choice(Some(project))) => (json!({ "project": project }), Vec::new()),
+        ("project", Value::Choice(Some(project))) => match links::link_for(&project) {
+            Ok(link) => (json!({ "project": link }), Vec::new()),
+            Err(error) => {
+                state().panel_notices.insert(
+                    id.to_owned(),
+                    format!("Couldn't change the project. {}", reason(&error)),
+                );
+                return;
+            }
+        },
         _ => return,
     };
     let Some(revision) = state().panels.get(id).cloned() else {

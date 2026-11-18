@@ -64,6 +64,11 @@ impl ToolBox for SessionTools {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WindowKey(u64);
 
+impl WindowKey {
+    /// Whichever window you used last, for what a kernel event opens.
+    pub(crate) const LAST_USED: Self = Self(u64::MAX);
+}
+
 #[cfg(test)]
 impl WindowKey {
     /// The key of the `index`th window a session opened.
@@ -236,6 +241,16 @@ impl Session {
             }));
             ai.set_toolbox(Arc::new(SessionTools(session.clone())));
             plugins.set_ai(ai.clone());
+            // Speech records, transcribes and pastes with the system's
+            // devices, and wakes every window as text arrives.
+            let speech = crate::speech_kernel::SpeechKernel::new(app_data, system.speech_devices());
+            let woken = session.clone();
+            speech.set_wake(Arc::new(move || {
+                if let Some(session) = woken.upgrade() {
+                    session.wake_all();
+                }
+            }));
+            plugins.set_speech(speech);
             Self::with(app_data, system, rescans, writes, updates, plugins, ai)
         })
     }

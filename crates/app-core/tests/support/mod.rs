@@ -54,6 +54,92 @@ pub struct FakeSystem {
     /// The system's credential store, in memory, so no test reaches this
     /// computer's own.
     pub credentials: Arc<local_core::MemoryCredentials>,
+    /// What plugins pasted and copied, as `paste <text>` and `copy <text>`.
+    pub pasted: Arc<Mutex<Vec<String>>>,
+    /// Pastes fail, as without Accessibility permission on macOS.
+    pub paste_fails: Arc<std::sync::atomic::AtomicBool>,
+    /// The speech engine, which answers with the texts a test gives it.
+    pub engine: Arc<speech::engine::FakeEngine>,
+    /// An engine in place of [`Self::engine`], such as the real one.
+    pub real_engine: Mutex<Option<Arc<dyn speech::engine::Engine>>>,
+    /// The microphone and system audio, which hear what a test feeds them.
+    pub audio: Arc<speech::audio::FakeAudio>,
+    /// The notification center, which keeps what plugins show.
+    pub notifier: Arc<FakeNotifier>,
+}
+
+/// A notification center in memory: what shows now, and a way to choose
+/// one as you would.
+#[derive(Default)]
+pub struct FakeNotifier {
+    shown: Mutex<Vec<(app_core::SystemNotification, app_core::NotificationChosen)>>,
+}
+
+impl FakeNotifier {
+    /// The notifications that show now, oldest first.
+    pub fn shown(&self) -> Vec<app_core::SystemNotification> {
+        self.shown
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(notification, _)| notification.clone())
+            .collect()
+    }
+
+    /// Choose the notification `key`, or its action `action`. The
+    /// notification goes, as the system takes it away.
+    pub fn choose(&self, key: &str, action: Option<&str>) {
+        let mut shown = self.shown.lock().unwrap();
+        let index = shown
+            .iter()
+            .position(|(notification, _)| notification.key == key)
+            .unwrap_or_else(|| panic!("{key} doesn't show"));
+        let (_, chosen) = shown.remove(index);
+        drop(shown);
+        chosen(action.map(str::to_owned));
+    }
+}
+
+impl app_core::Notifier for FakeNotifier {
+    fn show(
+        &self,
+        notification: app_core::SystemNotification,
+        chosen: app_core::NotificationChosen,
+    ) -> Result<(), String> {
+        let mut shown = self.shown.lock().unwrap();
+        shown.retain(|(known, _)| known.key != notification.key);
+        shown.push((notification, chosen));
+        Ok(())
+    }
+
+    fn withdraw(&self, key: &str) {
+        self.shown
+            .lock()
+            .unwrap()
+            .retain(|(known, _)| known.key != key);
+    }
+}
+
+/// Records what plugins paste, in place of the keyboard and clipboard.
+struct RecordingPaste(Arc<Mutex<Vec<String>>>, Arc<std::sync::atomic::AtomicBool>);
+
+impl speech::paste::Paster for RecordingPaste {
+    fn paste(&self, text: &str, typing: bool) -> speech::Result<()> {
+        if self.1.load(Ordering::SeqCst) {
+            return Err(speech::SpeechError::failed(
+                "paste_keys_failed",
+                "Allow Noura in Accessibility.",
+            ));
+        }
+        let how = if typing { "type" } else { "paste" };
+        self.0.lock().unwrap().push(format!("{how} {text}"));
+        Ok(())
+    }
+
+    fn copy(&self, text: &str) -> speech::Result<()> {
+        self.0.lock().unwrap().push(format!("copy {text}"));
+        Ok(())
+    }
 }
 
 impl FakeSystem {
@@ -86,6 +172,12 @@ impl FakeSystem {
             now: Mutex::new(None),
             time_zone: Mutex::new(None),
             credentials: Arc::new(local_core::MemoryCredentials::new()),
+            notifier: Arc::new(FakeNotifier::default()),
+            pasted: Arc::new(Mutex::new(Vec::new())),
+            paste_fails: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            engine: Arc::new(speech::engine::FakeEngine::default()),
+            real_engine: Mutex::new(None),
+            audio: speech::audio::FakeAudio::new(),
         })
     }
 
@@ -118,6 +210,24 @@ impl FakeSystem {
 impl System for FakeSystem {
     fn platform(&self) -> Platform {
         self.platform
+    }
+
+    fn speech_devices(&self) -> app_core::SpeechDevices {
+        app_core::SpeechDevices {
+            engine: self
+                .real_engine
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| self.engine.clone()),
+            audio: Arc::new(speech::audio::FakeBackend(self.audio.clone())),
+            paster: Arc::new(RecordingPaste(
+                self.pasted.clone(),
+                self.paste_fails.clone(),
+            )),
+            notifier: self.notifier.clone(),
+            ..app_core::SpeechDevices::fake()
+        }
     }
 
     fn has_trash(&self) -> bool {
@@ -206,7 +316,7 @@ impl Fixture {
         let folder = parent.path().join("Garden");
         std::fs::create_dir_all(&folder).unwrap();
         let workspace = WorkspaceService::new(app_data.path())
-            .create("Garden", &folder)
+            .create(&folder)
             .unwrap();
         let root = PathBuf::from(workspace.root());
         drop(workspace);

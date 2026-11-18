@@ -394,11 +394,7 @@ async fn run_bootstrap(input: Input) -> std::result::Result<(), Box<dyn std::err
     }
 
     let transport = HttpSyncTransport::new(&origin, token.clone())?;
-    let engine = WorkspaceEngine::create_with_app_data(
-        &workspace_root,
-        "Desktop to browser test",
-        &app_data,
-    )?;
+    let engine = WorkspaceEngine::create_with_app_data(&workspace_root, &app_data)?;
     // Sync is a plugin that new workspaces start with turned off.
     engine.enable_sync_plugin()?;
     let workspace = engine.manifest().id;

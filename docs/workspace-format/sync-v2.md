@@ -1106,7 +1106,7 @@ A checkpoint whose signer was only demoted after its `policy_revision` still ser
 
 ## 18. Bootstrap
 
-The Sync account screen lists your account's workspaces by the names in their profiles ([§25](#25-workspace-profile)), and you download one you don't keep on this computer into an empty folder of your choice. An empty workspace folder offers the same list in its Sync section. Turn on sync creates no workspace when your account already has one of that name, compared without case. An empty folder downloads that workspace. A folder with files stops and asks you to choose an empty folder or rename the workspace. A computer keeps a workspace in one folder.
+The Sync account screen lists your account's workspaces by the names in their profiles ([§25](#25-workspace-profile)), and you download one you don't keep on this computer into an empty folder of your choice. An empty workspace folder offers the same list in its Sync section. Turn on sync creates no workspace when your account already has one of that name, compared without case. An empty folder downloads that workspace. A folder with files stops and asks you to choose an empty folder or rename the folder. A computer keeps a workspace in one folder.
 
 A new device, or one whose cursor fell below the retention floor, loads current state from the latest checkpoint instead of history:
 
@@ -1383,7 +1383,7 @@ Update link replaces the snapshot under the same token and keys. Revoking or exp
 
 A client forgets its accepted profile revision after a generation change passes the comparison in [§14](#after-a-server-restore), so a restore that lost a rename doesn't read as a rollback here.
 
-The workspace's display name travels encrypted, so a new device can list your workspaces by name and the server stores no plaintext name.
+The workspace's name travels encrypted, so a new device can list your workspaces by name and the server stores no plaintext name. Noura names a workspace after its folder, so the device that turns sync on sends that folder's name in the first profile. Noura never pushes a later profile to rename a workspace, though it accepts one that another client pushes. A device that downloads the workspace shows its own folder's name, and the account's list keeps the name in the profile.
 
 | Field | Type |
 |---|---|

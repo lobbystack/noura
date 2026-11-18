@@ -1,5 +1,4 @@
-//! Settings' Plugins section, the install dialog and the first-run screen
-//! for the plugins that ship with Noura.
+//! Settings' Plugins section and the install dialog.
 //!
 //! The section installs a plugin from a folder or from the address of a
 //! release on GitHub, and lists each plugin installed on this device or
@@ -12,7 +11,7 @@
 
 use app_core::{App, CapabilityLine, Grant, PluginRow, UpdateCheck};
 use egui::{
-    Button, Frame, Id, Key, Margin, RichText, ScrollArea, Spinner, Stroke, TextEdit, Ui, UiBuilder,
+    Button, Frame, Id, Key, Margin, RichText, Spinner, Stroke, TextEdit, Ui, UiBuilder,
     accesskit::Role,
 };
 
@@ -463,77 +462,6 @@ fn release_update(ui: &mut Ui, row: &PluginRow) -> Option<RowAction> {
     action
 }
 
-/// The first-run screen: the plugins that ship with Noura and what each
-/// may use, approved for this device with one click. None of their code
-/// runs before.
-pub(crate) fn shipped_dialog(ui: &mut Ui, app: &mut App, view: &mut ShippedView) {
-    let plugins = app.shipped_plugins();
-    if plugins.is_empty() {
-        view.open = false;
-        return;
-    }
-    let opened = !view.open;
-    view.open = true;
-    let mut approve = false;
-    crate::common::dialog(ui.ctx(), Id::unique("shipped-plugins")).show(ui.ctx(), |ui| {
-        let builder = UiBuilder::new()
-            .accessibility_role(Role::Dialog)
-            .accessibility_label("Plugins that ship with Noura");
-        ui.scope_builder(builder, |ui| {
-            ui.set_width(460.0);
-            ui.label(
-                RichText::new("Plugins that ship with Noura").font(crate::theme::font(
-                    ui.ctx(),
-                    TITLE_SIZE,
-                    crate::theme::Weight::Medium,
-                )),
-            );
-            description(
-                ui,
-                "Each runs with only what it lists. Revoke it in Settings > Plugins.",
-            );
-            ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                for plugin in &plugins {
-                    ui.add_space(8.0);
-                    let builder = UiBuilder::new()
-                        .accessibility_role(Role::Group)
-                        .accessibility_label(&plugin.name);
-                    ui.push_id(("shipped", &plugin.id), |ui| {
-                        ui.scope_builder(builder, |ui| {
-                            ui.label(RichText::new(&plugin.name).strong());
-                            description(ui, &format!("Version {}", plugin.version));
-                            if plugin.capabilities.is_empty() {
-                                ui.label("It asks for no capabilities.");
-                            } else {
-                                capabilities(ui, &plugin.capabilities);
-                            }
-                        });
-                    });
-                }
-            });
-            let button = crate::common::dialog_footer(
-                ui,
-                vec![Btn::new("Allow and continue").variant(Variant::Default)],
-            )
-            .remove(0);
-            if opened {
-                button.request_focus();
-            }
-            approve = button.clicked();
-        });
-    });
-    if approve {
-        app.approve_shipped_plugins();
-    }
-}
-
-/// What the first-run screen remembers between frames.
-#[derive(Default)]
-pub(crate) struct ShippedView {
-    /// The screen showed last frame.
-    open: bool,
-}
-
 /// The install dialog, while it is open. Escape or Cancel closes it
 /// without installing anything.
 pub(crate) fn install_dialog(ui: &mut Ui, app: &mut App, view: &mut InstallView) {
@@ -617,10 +545,7 @@ fn capability_list(ui: &mut Ui, lines: &[CapabilityLine]) {
     ui.label("It asks to:");
     capabilities(ui, lines);
     ui.add_space(4.0);
-    description(
-        ui,
-        "It runs only once installed, with only these capabilities.",
-    );
+    description(ui, "It gets only these capabilities.");
 }
 
 /// A caution in a frame of its own.

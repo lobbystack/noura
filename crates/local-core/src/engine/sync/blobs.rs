@@ -428,11 +428,10 @@ mod tests {
             let directory = tempfile::TempDir::new().unwrap();
             let root = directory.path().join("first");
             let app = directory.path().join("app");
-            let first = WorkspaceEngine::create_with_app_data(&root, "First", &app).unwrap();
+            let first = WorkspaceEngine::create_with_app_data(&root, &app).unwrap();
             let workspace = first.manifest().id;
             let peer = WorkspaceEngine::create_sync_replica(
                 directory.path().join("peer"),
-                "Peer",
                 &workspace,
                 directory.path().join("peer_app"),
             )

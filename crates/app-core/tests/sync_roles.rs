@@ -195,12 +195,12 @@ async fn each_role_holds_the_rights_of_section_8() {
     // An editor doesn't rename the workspace; an admin does.
     assert!(
         dan_sync
-            .rename(&mut dan.service, "Dan's notes")
+            .push_profile_name(&mut dan.service, "Dan's notes")
             .await
             .is_err()
     );
     cleo_sync
-        .rename(&mut cleo.service, "Field notes 2026")
+        .push_profile_name(&mut cleo.service, "Field notes 2026")
         .await
         .expect("an admin renames the workspace");
 

@@ -22,7 +22,7 @@ const FRONTMATTER: &str = "---\nid: note_01jbcdefghjkmnpqrstvwxyz0a\ntype: note\
 /// A workspace holding the note `Plan.md` with `body`, opened from the
 /// tree, with the caret at the start of its text.
 fn opened(app_data: &Path, folder: &Path, body: &str) -> (Ui, PathBuf) {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     let path = folder.join("Plan.md");
     std::fs::write(&path, format!("{FRONTMATTER}{body}")).unwrap();
     let mut harness = harness_for(app_data, Platform::Windows, |_| {});
@@ -230,7 +230,7 @@ fn enter_in_a_new_note_s_name_moves_to_its_text_at_once() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     let mut harness = harness_for(app_data.path(), Platform::Windows, |_| {});
     settle(&mut harness);
 

@@ -14,14 +14,15 @@
 //! never come from workspace files, so a workspace that
 //! lists a plugin as enabled runs none of its code on a device where you
 //! haven't installed and approved it. The plugins that ship with Noura
-//! wait for one approval on this device's first-run screen.
+//! come from the same signed app as the kernel, so they install approved,
+//! and each new build of Noura updates them with what it adds approved.
 //!
 //! Each running plugin's calls run on a thread of its own, so a plugin that
 //! loops, allocates past its memory cap or crashes never holds up a
 //! window: its views, commands, Inbox sections, Settings page and tools
 //! update when its answers arrive, through [`Plugins::poll`].
 
-mod navigation;
+pub(crate) mod navigation;
 mod reader;
 mod reload;
 mod worker;
@@ -77,8 +78,8 @@ pub(crate) const COMMAND_PREFIX: &str = "plugin-command:";
 /// batch starts at a multiple of this.
 const ROW_BATCH: u32 = 64;
 
-/// A capability, or one host or target of one, as Settings, the install
-/// dialog and the first-run screen show it.
+/// A capability, or one host or target of one, as Settings and the install
+/// dialog show it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityLine {
     /// The name the manifest uses, such as `workspace-read`.
@@ -242,23 +243,15 @@ impl std::fmt::Debug for PluginInstall {
     }
 }
 
-/// A plugin that ships with Noura, as the first-run screen lists it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShippedPlugin {
-    pub id: String,
-    pub name: String,
-    pub version: String,
-    /// Every capability, network host and command target it declares.
-    pub capabilities: Vec<CapabilityLine>,
-}
-
 /// The plugins every package of Noura ships: each one's ID, which names
 /// its folder, and its name.
-pub const SHIPPED_PLUGINS: [(&str, &str); 4] = [
+pub const SHIPPED_PLUGINS: [(&str, &str); 6] = [
     ("ai", "AI"),
     ("calendar", "Calendar"),
+    ("dictation", "Dictation"),
     ("projects", "Projects"),
     ("tasks", "Tasks"),
+    ("transcription", "Transcription"),
 ];
 
 /// A plugin a package should ship and can't, and why.
@@ -304,6 +297,31 @@ pub fn check_shipped_plugins(folder: Option<&Path>) -> Vec<ShippedProblem> {
         .collect()
 }
 
+/// The ID and folder of each plugin in `folder`, the plugins shipping with
+/// Noura, by ID. Only their manifests are read.
+fn shipped_folders(folder: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(String, PathBuf)> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.join(plugin_host::MANIFEST_FILE).is_file())
+        .filter_map(|path| match plugin_host::read_manifest(&path) {
+            Ok(manifest) => Some((manifest.id, path)),
+            Err(error) => {
+                tracing::warn!(
+                    code = error.code.as_str(),
+                    "a plugin shipping with Noura can't be read"
+                );
+                None
+            }
+        })
+        .collect();
+    found.sort();
+    found
+}
+
 /// A tool a running plugin offers to AI assistants.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginTool {
@@ -341,7 +359,7 @@ struct Record {
     /// What you approved. A plugin may use what it declares and this
     /// holds.
     approved: Vec<Capability>,
-    /// It ships with Noura, and you approved it on the first-run screen.
+    /// It ships with Noura, which installed it approved.
     #[serde(default)]
     shipped: bool,
 }
@@ -350,8 +368,8 @@ struct Record {
 struct Records {
     #[serde(default)]
     plugins: BTreeMap<String, Record>,
-    /// The plugins shipping with Noura that this device's first-run screen
-    /// showed you.
+    /// The plugins shipping with Noura that this device installed once. One
+    /// you uninstalled stays uninstalled.
     #[serde(default)]
     shipped_reviewed: BTreeSet<String>,
 }
@@ -561,17 +579,14 @@ pub(crate) struct Plugins {
     watchers: BTreeMap<String, Watcher>,
     reload_sender: Sender<Reload>,
     reloads: Receiver<Reload>,
-    /// The folder holding the plugins that ship with Noura.
-    shipped: Option<PathBuf>,
-    /// The manifest and folder of each plugin shipping with Noura that
-    /// this device hasn't shown you yet, read once rather than per frame.
-    shipped_pending: Vec<(PluginManifest, PathBuf)>,
     /// The listing whose file changes the running plugins drew last.
     listing_drawn: u64,
     /// The clock running plugins read.
     clock: Option<Arc<dyn DeviceClock>>,
     /// What running plugins asked each window to show.
     openings: Openings,
+    /// The window you used last, which takes what kernel events open.
+    last_window: Option<WindowKey>,
     /// Wakes every window, as a reload watcher does once it read a build.
     wake: Option<Wake>,
     /// Counts the changes the windows show: plugins, pages and views.
@@ -582,6 +597,9 @@ pub(crate) struct Plugins {
     agent: bool,
     /// The AI service plugins that hold `ai` chat through.
     ai: Option<Arc<Ai>>,
+    /// Speech, shortcuts, paste and the menu bar, for the plugins that
+    /// hold them.
+    speech: Option<Arc<crate::speech_kernel::SpeechKernel>>,
 }
 
 impl Plugins {
@@ -619,15 +637,15 @@ impl Plugins {
             watchers: BTreeMap::new(),
             reload_sender,
             reloads,
-            shipped: None,
-            shipped_pending: Vec::new(),
             listing_drawn: 0,
             clock: None,
             openings: Openings::default(),
+            last_window: None,
             wake: None,
             version: 0,
             agent: false,
             ai: None,
+            speech: None,
         }
     }
 
@@ -646,6 +664,77 @@ impl Plugins {
     /// on.
     pub(crate) fn set_ai(&mut self, ai: Arc<Ai>) {
         self.ai = Some(ai);
+    }
+
+    /// Serve speech, shortcuts, paste and the menu bar from `speech`,
+    /// from the next start on.
+    pub(crate) fn set_speech(&mut self, speech: Arc<crate::speech_kernel::SpeechKernel>) {
+        self.speech = Some(speech);
+    }
+
+    pub(crate) fn speech(&self) -> Option<&Arc<crate::speech_kernel::SpeechKernel>> {
+        self.speech.as_ref()
+    }
+
+    /// The shortcuts the running plugins declare and you approved, with
+    /// the keys they answer to now.
+    pub(crate) fn global_shortcuts(&self) -> Vec<crate::GlobalShortcut> {
+        let Some(kernel) = &self.speech else {
+            return Vec::new();
+        };
+        self.running
+            .iter()
+            .filter(|(_, running)| !running.failed)
+            .filter_map(|(id, _)| Some((id, self.records.plugins.get(id)?)))
+            .flat_map(|(id, record)| {
+                crate::speech_kernel::approved_shortcuts(&record.approved)
+                    .into_iter()
+                    .map(|shortcut| crate::GlobalShortcut {
+                        plugin: id.clone(),
+                        keys: kernel
+                            .speech
+                            .shortcut_keys(id, &shortcut.id, shortcut.keys_here()),
+                        declared: shortcut.keys_here().to_owned(),
+                        id: shortcut.id,
+                        title: shortcut.title,
+                    })
+            })
+            .collect()
+    }
+
+    /// Whether the running plugin `id` was approved `capability`.
+    fn holds(&self, id: &str, capability: &str) -> bool {
+        self.running.contains_key(id)
+            && self
+                .records
+                .plugins
+                .get(id)
+                .is_some_and(|record| Capability::holds(&record.approved, capability))
+    }
+
+    /// Hand the kernel event `event` to the plugin `id`, or to every
+    /// running plugin that holds its capability when `id` is empty.
+    pub(crate) fn kernel_event(&mut self, id: &str, event: plugin_host::KernelEvent) {
+        use plugin_host::KernelEvent;
+        let capability = match &event {
+            KernelEvent::ShortcutPressed(_) | KernelEvent::ShortcutReleased(_) => {
+                "global-shortcuts"
+            }
+            KernelEvent::MenuItemChosen(_) => "menu-bar-items",
+            KernelEvent::NotificationChosen(_) => "notifications",
+            _ => "speech",
+        };
+        let targets: Vec<String> = if id.is_empty() {
+            self.running.keys().cloned().collect()
+        } else {
+            vec![id.to_owned()]
+        };
+        for target in targets {
+            if self.holds(&target, capability) {
+                self.acts += 1;
+                self.send(&target, Job::Kernel(event.clone()));
+            }
+        }
     }
 
     pub(crate) fn set_wake(&mut self, wake: Wake) {
@@ -667,13 +756,15 @@ impl Plugins {
     /// Take what running plugins asked the window `window` to show,
     /// oldest first.
     pub(crate) fn take_openings(&mut self, window: WindowKey) -> Vec<Opening> {
+        // The first window to ask, until you use one.
+        let last_used = *self.last_window.get_or_insert(window) == window;
         let mut openings = self
             .openings
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let mut taken = Vec::new();
         openings.retain(|(asked, opening)| {
-            if *asked == window {
+            if *asked == window || (last_used && *asked == WindowKey::LAST_USED) {
                 taken.push(opening.clone());
                 false
             } else {
@@ -686,7 +777,20 @@ impl Plugins {
     /// Forget what running plugins asked the window `window` to show, as
     /// when it closes.
     pub(crate) fn forget_openings(&mut self, window: WindowKey) {
-        self.take_openings(window);
+        let mut openings = self
+            .openings
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        openings.retain(|(asked, _)| *asked != window);
+        drop(openings);
+        if self.last_window == Some(window) {
+            self.last_window = None;
+        }
+    }
+
+    /// Note `window` as the one you used last.
+    pub(crate) fn window_used(&mut self, window: WindowKey) {
+        self.last_window = Some(window);
     }
 
     pub(crate) fn version(&self) -> u64 {
@@ -905,6 +1009,9 @@ impl Plugins {
         if let Some(running) = self.running.remove(id) {
             running.plugin.release_object_types();
         }
+        if let Some(speech) = &self.speech {
+            speech.forget_plugin(id);
+        }
         self.router.remove(id);
     }
 
@@ -941,9 +1048,17 @@ impl Plugins {
         let (host, loaded) = loaded;
         let reader: Arc<dyn WorkspaceReads> = Arc::new(reader::WorkspaceReader(workspace.clone()));
         let objects: Arc<dyn WorkspaceObjects> =
-            Arc::new(ObjectStore::new(workspace, self.types.clone()));
+            Arc::new(ObjectStore::new(workspace.clone(), self.types.clone()));
         let navigator = Arc::new(Navigator::new(id, self.openings.clone()));
         let navigation: Arc<dyn Navigation> = navigator.clone();
+        let speech = self.speech.as_ref().map(|kernel| {
+            kernel.services(
+                id,
+                crate::speech_kernel::approved_shortcuts(&record.approved),
+                navigator.clone(),
+                workspace.clone(),
+            )
+        });
         let services = Services {
             workspace: Some(reader),
             objects: Some(objects),
@@ -953,6 +1068,13 @@ impl Plugins {
             clock: self.clock.clone(),
             navigation: Some(navigation),
             ai: self.ai.as_ref().map(|ai| ai.access(id)),
+            speech: speech.as_ref().map(|services| services.speech.clone()),
+            shortcuts: speech.as_ref().map(|services| services.shortcuts.clone()),
+            paste: speech.as_ref().map(|services| services.paste.clone()),
+            menu_bar: speech.as_ref().map(|services| services.menu_bar.clone()),
+            notifications: speech
+                .as_ref()
+                .map(|services| services.notifications.clone()),
         };
         let plugin = host.start(&loaded, &record.approved, services);
         self.manifests
@@ -1485,18 +1607,25 @@ impl Plugins {
 
     /// Take the builds the reload watchers found and the answers the
     /// running plugins sent. A build that adds nothing to what the
-    /// installed build declares replaces it at once; any other waits for
-    /// your approval while the old build keeps running.
+    /// installed build declares replaces it at once, and so does a build
+    /// of a plugin that ships with Noura, with what it adds approved. Any
+    /// other waits for your approval while the old build keeps running.
     pub(crate) fn poll(&mut self) {
         while let Ok(reload) = self.reloads.try_recv() {
-            if !self.records.plugins.contains_key(&reload.id) {
+            let Some(shipped) = self
+                .records
+                .plugins
+                .get(&reload.id)
+                .map(|record| record.shipped)
+            else {
                 continue;
-            }
+            };
             match reload.result {
                 Ok(candidate) => {
-                    if self.added(&reload.id, &candidate).is_empty() {
+                    let added = self.added(&reload.id, &candidate);
+                    if added.is_empty() || shipped {
                         self.updates.remove(&reload.id);
-                        if let Err(error) = self.apply(&reload.id, &candidate, &[], None) {
+                        if let Err(error) = self.apply(&reload.id, &candidate, &added, None) {
                             self.failed_update(&reload.id, &error);
                         }
                     } else {
@@ -1521,6 +1650,30 @@ impl Plugins {
         }
         while let Ok(outcome) = self.outcomes.1.try_recv() {
             self.take(outcome);
+        }
+        let queued = self
+            .speech
+            .as_ref()
+            .map(|kernel| kernel.take())
+            .unwrap_or_default();
+        for (plugin, event) in queued {
+            match event {
+                Some(event) => self.kernel_event(&plugin, event),
+                // Every plugin that holds `speech` draws again, as after
+                // a model download.
+                None if plugin.is_empty() => {
+                    let speakers: Vec<String> = self
+                        .running
+                        .keys()
+                        .filter(|id| self.holds(id, "speech"))
+                        .cloned()
+                        .collect();
+                    for id in speakers {
+                        self.send(&id, Job::Redraw);
+                    }
+                }
+                None => self.send(&plugin, Job::Redraw),
+            }
         }
         let called: Vec<String> = self.called.try_iter().collect();
         for id in called {
@@ -1580,7 +1733,9 @@ impl Plugins {
         }
         if outcome.acted {
             self.acts += 1;
-            // What it did may change any of its panels.
+        }
+        // What it did may change any of its panels.
+        if outcome.acted || outcome.panels_again {
             for panel in running.panels.values_mut() {
                 panel.draw_again();
             }
@@ -2132,12 +2287,91 @@ impl Plugins {
         self.send(id, Job::Redraw);
     }
 
-    /// Use the plugins in `folder` as the ones that ship with Noura: each
-    /// subfolder that holds a plugin.
-    pub(crate) fn set_shipped(&mut self, folder: PathBuf) {
-        self.shipped = Some(folder);
-        self.shipped_pending = self.shipped_folders();
+    /// Install and keep current the plugins in `folder`, the ones that ship
+    /// with Noura: one per subfolder that holds a plugin. They come from
+    /// the same signed app as the kernel, so each installs once per device
+    /// with everything it declares approved, and one you uninstalled stays
+    /// uninstalled. An installed one recorded from another folder, as from
+    /// an earlier build of Noura, updates from this one: what it adds is
+    /// approved, and what you revoked stays revoked. One that fails is
+    /// noted on the Plugins page and tried again at the next launch.
+    pub(crate) fn set_shipped(&mut self, folder: &Path) {
+        if self.agent {
+            return;
+        }
+        let found = shipped_folders(folder);
+        if found.is_empty() {
+            return;
+        }
+        let host = match self.host() {
+            Ok(host) => host,
+            Err(error) => {
+                tracing::warn!(code = %error.code, "the plugins shipping with Noura didn't install");
+                return;
+            }
+        };
+        for (id, folder) in found {
+            let result = match self.records.plugins.get(&id) {
+                None if self.records.shipped_reviewed.contains(&id) => continue,
+                None => self.install_shipped(&host, &folder),
+                Some(record) if record.shipped => self.update_shipped(&host, &id, &folder),
+                // You installed it yourself, from a folder or GitHub.
+                Some(_) => continue,
+            };
+            if let Err(error) = result {
+                tracing::warn!(code = %error.code, "a plugin shipping with Noura didn't install");
+                self.problems.insert(id, error.message);
+            }
+        }
         self.changed();
+    }
+
+    /// Install the plugin in `folder`, which ships with Noura, with
+    /// everything it declares approved.
+    fn install_shipped(&mut self, host: &PluginHost, folder: &Path) -> Result<(), AppError> {
+        let path = folder.to_str().ok_or_else(AppError::unsupported_path)?;
+        let candidate = host.inspect(folder).map_err(|error| from_install(&error))?;
+        self.install_candidate(&candidate, Some(path), None, true)
+    }
+
+    /// Point the shipped plugin `id` at `folder`, this build's copy, and
+    /// install that copy when it differs from the installed build, with
+    /// what it adds approved.
+    fn update_shipped(
+        &mut self,
+        host: &PluginHost,
+        id: &str,
+        folder: &Path,
+    ) -> Result<(), AppError> {
+        let path = folder.to_str().ok_or_else(AppError::unsupported_path)?;
+        let recorded = self
+            .records
+            .plugins
+            .get(id)
+            .and_then(|record| record.folder.as_deref());
+        // Its watcher, started with the host, reads a new build there.
+        if recorded == Some(path) {
+            return Ok(());
+        }
+        let installed = host.installed(id).map(|(_, digest)| digest).ok();
+        let current = host
+            .folder_digest(folder)
+            .map_err(|error| from_install(&error))?;
+        if installed.as_deref() != Some(current.as_str()) {
+            let candidate = host
+                .inspect_update(id, folder)
+                .map_err(|error| from_install(&error))?;
+            let added = self.added(id, &candidate);
+            self.updates.remove(id);
+            self.apply(id, &candidate, &added, None)?;
+        }
+        self.save_records(|records| {
+            if let Some(record) = records.plugins.get_mut(id) {
+                record.folder = Some(path.to_owned());
+            }
+        })?;
+        self.watch(id, path, current);
+        Ok(())
     }
 
     /// The properties panel of the object `object_id` of type
@@ -2199,82 +2433,6 @@ impl Plugins {
     /// files when this changes.
     pub(crate) fn acts(&self) -> u64 {
         self.acts
-    }
-
-    /// The plugins shipping with Noura that this device hasn't shown you
-    /// yet, each read from its manifest. None of their code has run.
-    pub(crate) fn shipped_review(&self) -> Vec<ShippedPlugin> {
-        self.shipped_pending
-            .iter()
-            .map(|(manifest, _)| ShippedPlugin {
-                id: manifest.id.clone(),
-                name: manifest.name.clone(),
-                version: manifest.version.to_string(),
-                capabilities: lines(&manifest.capabilities),
-            })
-            .collect()
-    }
-
-    /// The manifest and folder of each shipping plugin this device hasn't
-    /// reviewed, by ID.
-    fn shipped_folders(&self) -> Vec<(PluginManifest, PathBuf)> {
-        let Some(folder) = &self.shipped else {
-            return Vec::new();
-        };
-        let Ok(entries) = std::fs::read_dir(folder) else {
-            return Vec::new();
-        };
-        let mut found: Vec<(PluginManifest, PathBuf)> = entries
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| path.join(plugin_host::MANIFEST_FILE).is_file())
-            .filter_map(|path| match plugin_host::read_manifest(&path) {
-                Ok(manifest) => Some((manifest, path)),
-                Err(error) => {
-                    tracing::warn!(
-                        code = error.code.as_str(),
-                        "a plugin shipping with Noura can't be read"
-                    );
-                    None
-                }
-            })
-            .filter(|(manifest, _)| !self.records.shipped_reviewed.contains(&manifest.id))
-            .collect();
-        found.sort_by(|(a, _), (b, _)| a.id.cmp(&b.id));
-        found
-    }
-
-    /// Approve every plugin the first-run screen lists, for this device,
-    /// and install each one. One that can't install is noted on the
-    /// Plugins page and not offered again.
-    pub(crate) fn approve_shipped(&mut self) -> Result<(), AppError> {
-        let host = self.host()?;
-        for (manifest, folder) in std::mem::take(&mut self.shipped_pending) {
-            let id = manifest.id.clone();
-            let installed = folder
-                .to_str()
-                .ok_or_else(AppError::unsupported_path)
-                .and_then(|path| {
-                    let candidate = host
-                        .inspect(&folder)
-                        .map_err(|error| from_install(&error))?;
-                    self.install_candidate(&candidate, Some(path), None, true)
-                });
-            if let Err(error) = installed {
-                tracing::warn!(code = %error.code, "a plugin shipping with Noura didn't install");
-                self.problems.insert(id.clone(), error.message);
-                let reviewed = self.save_records(|records| {
-                    records.shipped_reviewed.insert(id);
-                });
-                if let Err(error) = reviewed {
-                    self.shipped_pending = self.shipped_folders();
-                    return Err(error);
-                }
-            }
-        }
-        self.shipped_pending = self.shipped_folders();
-        self.changed();
-        Ok(())
     }
 }
 

@@ -33,7 +33,6 @@ impl Chatting {
         let id = app
             .save_ai_provider(ai::provider("Local", "ollama", "llama3", None))
             .unwrap();
-        app.grant_ai_consent(&id).unwrap();
         support::settle(&mut app);
         Some(Self {
             app,

@@ -81,9 +81,74 @@ pub enum Capability {
     Settings,
     /// Offer tools that AI assistants call through MCP.
     Tools,
-    /// Send chats to the AI providers you set up, once you consent for
-    /// each workspace, and keep them in the workspace.
+    /// Send chats and prompts to the AI providers you set up, and keep the
+    /// chats in the workspace.
     Ai,
+    /// Record the microphone and system audio and turn speech into text
+    /// with models on this device.
+    Speech,
+    /// Answer these keyboard shortcuts anywhere on the computer, even
+    /// while Noura's windows are closed.
+    GlobalShortcuts {
+        #[serde(default)]
+        shortcuts: Vec<ShortcutDeclaration>,
+    },
+    /// Paste text into the app you're typing in.
+    Paste,
+    /// Add items to Noura's menu bar or tray menu.
+    MenuBarItems,
+    /// Show notifications in the system's notification center.
+    Notifications,
+}
+
+/// A keyboard shortcut a plugin declares under `global-shortcuts`. You can
+/// change its keys in Settings; the declaration gives the first ones.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShortcutDeclaration {
+    /// Lowercase letters, digits and hyphens, unique within the plugin.
+    /// Events name the shortcut by it.
+    pub id: String,
+    /// What the shortcut does, as Settings lists it, such as `Dictation`.
+    pub title: String,
+    /// The keys it starts with, such as `Alt+Space`: modifiers among
+    /// `Ctrl`, `Alt`, `Shift` and `Cmd`, joined by `+`, then one key.
+    pub keys: String,
+    /// The keys it starts with on macOS, when they differ from `keys`.
+    #[serde(
+        default,
+        rename = "macos-keys",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub macos_keys: Option<String>,
+    /// The keys it starts with on Windows, when they differ from `keys`.
+    #[serde(
+        default,
+        rename = "windows-keys",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub windows_keys: Option<String>,
+    /// The keys it starts with on Linux, when they differ from `keys`.
+    #[serde(
+        default,
+        rename = "linux-keys",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub linux_keys: Option<String>,
+}
+
+impl ShortcutDeclaration {
+    /// The keys it starts with on this computer's system.
+    pub fn keys_here(&self) -> &str {
+        let here = if cfg!(target_os = "macos") {
+            &self.macos_keys
+        } else if cfg!(target_os = "windows") {
+            &self.windows_keys
+        } else {
+            &self.linux_keys
+        };
+        here.as_deref().unwrap_or(&self.keys)
+    }
 }
 
 /// One thing you approved for a plugin that you can revoke on its own: a
@@ -111,6 +176,11 @@ impl Capability {
             Self::Settings => "settings",
             Self::Tools => "tools",
             Self::Ai => "ai",
+            Self::Speech => "speech",
+            Self::GlobalShortcuts { .. } => "global-shortcuts",
+            Self::Paste => "paste",
+            Self::MenuBarItems => "menu-bar-items",
+            Self::Notifications => "notifications",
         }
     }
 
@@ -161,12 +231,41 @@ impl Capability {
             Self::Settings => whole("Add a page to Settings."),
             Self::Tools => whole("Offer tools that AI assistants can use."),
             Self::Ai => whole(
-                "Send your messages and chats to the AI providers you set up, once you consent \
-                 for this workspace, and keep the chats in your workspace. Once you allow web \
-                 search for the workspace, search the web with Brave Search and read public web \
-                 pages when the AI asks to.",
+                "Send your messages, chats and this workspace's content to the AI providers you \
+                 set up, and keep the chats in your workspace. Once you add a Brave Search key, \
+                 search the web and read public web pages when the AI asks to.",
             ),
+            Self::Speech => whole(
+                "Record your microphone and the sound other apps play, and turn speech into \
+                 text on this computer.",
+            ),
+            Self::GlobalShortcuts { shortcuts } => {
+                let keys: Vec<String> = shortcuts
+                    .iter()
+                    .map(|shortcut| {
+                        format!("{} ({})", shortcut.title, keys_label(shortcut.keys_here()))
+                    })
+                    .collect();
+                whole(&format!(
+                    "Answer keyboard shortcuts in any app, even with Noura's windows closed: {}.",
+                    keys.join(", ")
+                ))
+            }
+            Self::Paste => whole("Paste text into the app you're typing in."),
+            Self::MenuBarItems => whole("Add items to Noura's menu bar menu."),
+            Self::Notifications => whole("Show notifications."),
         }
+    }
+
+    /// The shortcuts `capabilities` declares.
+    pub fn shortcuts(capabilities: &[Self]) -> Vec<ShortcutDeclaration> {
+        capabilities
+            .iter()
+            .flat_map(|capability| match capability {
+                Self::GlobalShortcuts { shortcuts } => shortcuts.clone(),
+                _ => Vec::new(),
+            })
+            .collect()
     }
 
     /// Whether `capabilities` holds the capability called `name`.
@@ -223,6 +322,14 @@ impl Capability {
                         let targets = missing(targets, known);
                         (!targets.is_empty()).then_some(Self::Commands { targets })
                     }
+                    // A new shortcut, or new keys for one, waits for you.
+                    (
+                        Self::GlobalShortcuts { shortcuts },
+                        Self::GlobalShortcuts { shortcuts: known },
+                    ) => shortcuts
+                        .iter()
+                        .any(|shortcut| !known.contains(shortcut))
+                        .then(|| capability.clone()),
                     _ => None,
                 }
             })
@@ -405,6 +512,7 @@ struct RawCapability {
     name: Spanned<String>,
     hosts: Option<Spanned<Vec<Spanned<String>>>>,
     targets: Option<Spanned<Vec<Spanned<String>>>>,
+    shortcuts: Option<Spanned<Vec<Spanned<ShortcutDeclaration>>>>,
 }
 
 impl RawManifest {
@@ -506,6 +614,87 @@ impl RawManifest {
 }
 
 impl RawCapability {
+    /// The shortcuts a `global-shortcuts` capability declares: at least
+    /// one, each with a valid ID, a title and keys, and no ID twice.
+    fn shortcuts(&self, text: &str) -> Result<Vec<ShortcutDeclaration>, InstallError> {
+        let invalid = |span: Range<usize>, message: String| {
+            located(InstallErrorCode::InvalidManifest, text, Some(span), message)
+        };
+        let Some(listed) = &self.shortcuts else {
+            return Err(invalid(
+                self.name.span(),
+                "The global-shortcuts capability needs shortcuts.".to_owned(),
+            ));
+        };
+        if listed.get_ref().is_empty() {
+            return Err(invalid(
+                listed.span(),
+                "The global-shortcuts capability needs at least one shortcut.".to_owned(),
+            ));
+        }
+        let mut shortcuts: Vec<ShortcutDeclaration> = Vec::new();
+        for shortcut in listed.get_ref() {
+            let span = shortcut.span();
+            let shortcut = shortcut.get_ref();
+            if !valid_plugin_id(&shortcut.id) {
+                return Err(invalid(
+                    span,
+                    format!(
+                        "The shortcut ID \u{201c}{}\u{201d} must start with a lowercase letter \
+                         and hold only lowercase letters, digits and hyphens.",
+                        shortcut.id
+                    ),
+                ));
+            }
+            let title = shortcut.title.trim();
+            if title.is_empty()
+                || title.chars().count() > MAX_NAME_LENGTH
+                || title.chars().any(char::is_control)
+            {
+                return Err(invalid(
+                    span,
+                    format!(
+                        "A shortcut's title must be 1 to {MAX_NAME_LENGTH} characters of text."
+                    ),
+                ));
+            }
+            let every_keys = [
+                Some(&shortcut.keys),
+                shortcut.macos_keys.as_ref(),
+                shortcut.windows_keys.as_ref(),
+                shortcut.linux_keys.as_ref(),
+            ];
+            if let Some(keys) = every_keys
+                .into_iter()
+                .flatten()
+                .find(|keys| !valid_keys(keys))
+            {
+                return Err(invalid(
+                    span,
+                    format!(
+                        "The keys \u{201c}{keys}\u{201d} aren't modifiers among Ctrl, Alt, Shift \
+                         and Cmd joined by + and then one key, such as Alt+Space."
+                    ),
+                ));
+            }
+            if shortcuts.iter().any(|known| known.id == shortcut.id) {
+                return Err(invalid(
+                    span,
+                    format!("{MANIFEST_FILE} lists the shortcut {} twice.", shortcut.id),
+                ));
+            }
+            shortcuts.push(ShortcutDeclaration {
+                id: shortcut.id.clone(),
+                title: title.to_owned(),
+                keys: shortcut.keys.clone(),
+                macos_keys: shortcut.macos_keys.clone(),
+                windows_keys: shortcut.windows_keys.clone(),
+                linux_keys: shortcut.linux_keys.clone(),
+            });
+        }
+        Ok(shortcuts)
+    }
+
     fn check(&self, text: &str) -> Result<Capability, InstallError> {
         let name = self.name.get_ref().as_str();
         let misplaced = |field: &str, span: Range<usize>| {
@@ -525,6 +714,11 @@ impl RawCapability {
             && let Some(targets) = &self.targets
         {
             return Err(misplaced("targets", targets.span()));
+        }
+        if name != "global-shortcuts"
+            && let Some(shortcuts) = &self.shortcuts
+        {
+            return Err(misplaced("shortcuts", shortcuts.span()));
         }
         match name {
             "workspace-read" => Ok(Capability::WorkspaceRead),
@@ -549,6 +743,13 @@ impl RawCapability {
             "settings" => Ok(Capability::Settings),
             "tools" => Ok(Capability::Tools),
             "ai" => Ok(Capability::Ai),
+            "speech" => Ok(Capability::Speech),
+            "paste" => Ok(Capability::Paste),
+            "menu-bar-items" => Ok(Capability::MenuBarItems),
+            "notifications" => Ok(Capability::Notifications),
+            "global-shortcuts" => Ok(Capability::GlobalShortcuts {
+                shortcuts: self.shortcuts(text)?,
+            }),
             other => Err(located(
                 InstallErrorCode::UnknownCapability,
                 text,
@@ -723,4 +924,124 @@ fn position(text: &str, offset: usize) -> (usize, usize) {
         .map_or(0, |line| line.chars().count())
         + 1;
     (line, column)
+}
+
+/// Whether `keys` names a shortcut: zero or more modifiers among `Ctrl`,
+/// `Alt`, `Shift` and `Cmd`, each once, joined by `+`, then one key, a
+/// letter, a digit, `F1` to `F24` or a named key such as `Space`.
+pub fn valid_keys(keys: &str) -> bool {
+    let parts: Vec<&str> = keys.split('+').collect();
+    let Some((key, modifiers)) = parts.split_last() else {
+        return false;
+    };
+    let mut seen = Vec::new();
+    for modifier in modifiers {
+        if !MODIFIERS.contains(modifier) || seen.contains(modifier) {
+            return false;
+        }
+        seen.push(*modifier);
+    }
+    let single = key.len() == 1
+        && key
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit());
+    let function = key
+        .strip_prefix('F')
+        .and_then(|number| number.parse::<u8>().ok())
+        .is_some_and(|number| (1..=24).contains(&number));
+    single || function || NAMED_KEYS.contains(key)
+}
+
+/// The modifiers a shortcut's keys may hold, in the order Noura writes them.
+pub const MODIFIERS: [&str; 4] = ["Ctrl", "Alt", "Shift", "Cmd"];
+
+/// The keys a shortcut may end in besides letters, digits and F1 to F24.
+pub const NAMED_KEYS: [&str; 14] = [
+    "Space",
+    "Enter",
+    "Tab",
+    "Escape",
+    "Backspace",
+    "Delete",
+    "Up",
+    "Down",
+    "Left",
+    "Right",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+];
+
+/// Each modifier as macOS menus write it, in the order they write them.
+const MACOS_MODIFIERS: [(&str, char); 4] = [
+    ("Ctrl", '\u{2303}'),
+    ("Alt", '\u{2325}'),
+    ("Shift", '\u{21e7}'),
+    ("Cmd", '\u{2318}'),
+];
+
+/// Other names you may type for a modifier, as macOS labels its keys.
+const MODIFIER_ALIASES: [(&str, &str); 3] =
+    [("Control", "Ctrl"), ("Option", "Alt"), ("Command", "Cmd")];
+
+/// `keys`, such as `Alt+Space`, as this computer's system writes them:
+/// `⌥Space` on macOS, as its menus do, and `Alt+Space` elsewhere.
+pub fn keys_label(keys: &str) -> String {
+    keys_label_on(keys, cfg!(target_os = "macos"))
+}
+
+/// `keys` as macOS menus write them when `macos` holds, with `⌃`, `⌥`,
+/// `⇧` and `⌘` in that order before the key, and as written otherwise.
+/// Keys that aren't valid stay as written.
+pub fn keys_label_on(keys: &str, macos: bool) -> String {
+    let parts: Vec<&str> = keys.split('+').collect();
+    let Some((key, modifiers)) = parts.split_last().filter(|_| macos && valid_keys(keys)) else {
+        return keys.to_owned();
+    };
+    let mut label: String = MACOS_MODIFIERS
+        .iter()
+        .filter(|(name, _)| modifiers.contains(name))
+        .map(|(_, symbol)| *symbol)
+        .collect();
+    label.push_str(key);
+    label
+}
+
+/// Keys you typed, as the manifest writes them: `Alt+Space` from
+/// `Alt+Space`, `Option+Space` or `⌥Space`, with the modifiers in
+/// [`MODIFIERS`] order. `None` when they aren't valid keys.
+pub fn keys_from_label(text: &str) -> Option<String> {
+    let mut rest = text.trim();
+    let mut modifiers: Vec<&str> = Vec::new();
+    while let Some((name, symbol)) = MACOS_MODIFIERS
+        .iter()
+        .find(|(_, symbol)| rest.starts_with(*symbol))
+    {
+        if modifiers.contains(name) {
+            return None;
+        }
+        modifiers.push(name);
+        rest = rest[symbol.len_utf8()..].trim_start_matches('+');
+    }
+    let parts: Vec<&str> = rest.split('+').map(str::trim).collect();
+    let (key, named) = parts.split_last()?;
+    for modifier in named {
+        let modifier = MODIFIER_ALIASES
+            .iter()
+            .find(|(alias, _)| alias == modifier)
+            .map_or(*modifier, |(_, name)| *name);
+        if !MODIFIERS.contains(&modifier) || modifiers.contains(&modifier) {
+            return None;
+        }
+        modifiers.push(modifier);
+    }
+    let mut keys: Vec<&str> = MODIFIERS
+        .iter()
+        .copied()
+        .filter(|name| modifiers.contains(name))
+        .collect();
+    keys.push(key);
+    let keys = keys.join("+");
+    valid_keys(&keys).then_some(keys)
 }

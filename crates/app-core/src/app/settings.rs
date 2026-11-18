@@ -40,12 +40,10 @@ impl App {
         } else {
             settings_section::GENERAL.to_owned()
         };
-        let manifest_revision = self.read_manifest();
         self.settings = Some(Settings {
             section,
             open_at_login: OpenAtLogin::read(self.login_item.as_ref()),
             notice: None,
-            manifest_revision,
             query: String::new(),
             plugin_details: None,
         });
@@ -207,95 +205,6 @@ impl App {
                 .open_at_login
                 .set(self.login_item.as_ref(), enabled);
             self.listeners.emit(Change::Settings);
-        }
-    }
-
-    /// Give the open workspace the display name `name`, trimmed, in its
-    /// manifest. Returns whether the manifest on disk now holds it. The
-    /// folder keeps its name, and the recent list shows the new one. An
-    /// empty name keeps the old one. When the manifest changed on disk
-    /// since Settings read it, nothing is written and Settings says so,
-    /// then shows the manifest as it is now.
-    pub fn rename_workspace(&mut self, name: &str) -> bool {
-        let name = name.trim();
-        let Some(workspace) = &self.workspace else {
-            return false;
-        };
-        if name.is_empty() {
-            return false;
-        }
-        if name == workspace.name() {
-            return true;
-        }
-        let revision = match self
-            .settings
-            .as_ref()
-            .and_then(|settings| settings.manifest_revision.clone())
-        {
-            Some(revision) => Ok(revision),
-            None => workspace.manifest_revision().map(|(revision, _)| revision),
-        };
-        let Some(workspace) = self.workspace.clone() else {
-            return false;
-        };
-        match revision.and_then(|revision| workspace.save_name(name, &revision)) {
-            Ok(revision) => {
-                if let Some(settings) = &mut self.settings {
-                    settings.manifest_revision = Some(revision);
-                    settings.notice = None;
-                }
-                match self.service.remember(&workspace) {
-                    Ok(recents) => self.recents = recents,
-                    Err(error) => {
-                        tracing::warn!(code = %error.code, "the renamed workspace's recent entry wasn't saved");
-                    }
-                }
-                self.listeners.emit(Change::Recents);
-                // The other windows show the new name too.
-                self.recents_seen = self.session.recents_changed(self.key);
-                self.listeners.emit(Change::Settings);
-                // A synced workspace takes the name in its profile (§25).
-                self.session
-                    .folder_sync()
-                    .act(crate::folder_sync::FolderSyncAction::Rename(
-                        name.to_owned(),
-                    ));
-                true
-            }
-            Err(error) => {
-                // Show the manifest as it is now, so trying again starts
-                // from the file.
-                let manifest_revision = self.read_manifest();
-                if let Some(settings) = &mut self.settings {
-                    settings.manifest_revision = manifest_revision;
-                }
-                self.settings_notice(
-                    "Couldn't rename the workspace",
-                    &error.message,
-                    NoticeKind::Problem,
-                );
-                false
-            }
-        }
-    }
-
-    /// Read the open workspace's manifest again: show the name in it, and
-    /// return its revision.
-    fn read_manifest(&mut self) -> Option<String> {
-        let workspace = self.workspace.clone()?;
-        match workspace.manifest_revision() {
-            Ok((revision, name)) => {
-                if name != workspace.name() {
-                    workspace.set_name(name);
-                    self.listeners.emit(Change::Recents);
-                    self.recents_seen = self.session.recents_changed(self.key);
-                }
-                Some(revision)
-            }
-            Err(error) => {
-                tracing::warn!(code = %error.code, "Settings couldn't read the workspace manifest");
-                None
-            }
         }
     }
 

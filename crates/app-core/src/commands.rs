@@ -19,10 +19,11 @@ use crate::{
 pub mod command_id {
     pub const NEW_NOTE: &str = "new-note";
     pub const NEW_FOLDER: &str = "new-folder";
-    /// Open a file by name: quick open.
+    /// Search files by name only.
     pub const QUICK_OPEN: &str = "quick-open";
-    /// Search file contents.
+    /// Search file contents only.
     pub const SEARCH: &str = "search";
+    /// Search files, their contents and commands.
     pub const COMMAND_PALETTE: &str = "command-palette";
     pub const RENAME_FILE: &str = "rename-file";
     /// Share a read-only link to the open note.
@@ -174,9 +175,9 @@ pub fn default_shortcuts(id: &str) -> Vec<Shortcut> {
 const KEYMAP_ORDER: [&str; 17] = [
     command_id::NEW_NOTE,
     command_id::NEW_FOLDER,
+    command_id::COMMAND_PALETTE,
     command_id::QUICK_OPEN,
     command_id::SEARCH,
-    command_id::COMMAND_PALETTE,
     command_id::RENAME_FILE,
     command_id::SAVE,
     command_id::CLOSE_TAB,

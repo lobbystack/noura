@@ -1,13 +1,14 @@
 //! The AI service: the providers you set up on this device, their keys in
-//! the operating system's credential store, your consent per workspace
-//! and provider, and the runs that send a chat to a provider and stream
-//! its answer into the chat's files.
+//! the operating system's credential store, the runs that send a chat to a
+//! provider and stream its answer into the chat's files, and one-off
+//! completions. Choosing a provider is your say-so, so nothing asks before
+//! a request carries workspace content.
 //!
 //! Plugins that hold the `ai` capability reach it through the host AI
-//! interface, and Settings, the consent prompt and the tool prompt through
-//! [`App`]. Every window shares one service. Provider settings and
-//! consents live in this device's app data, never in the workspace, and
-//! nothing the service hands a plugin holds a key.
+//! interface, and Settings and the tool prompt through [`App`]. Every
+//! window shares one service. Provider settings live in this device's app
+//! data, never in the workspace, and nothing the service hands a plugin
+//! holds a key.
 //!
 //! A run writes your message and an in-progress answer to the chat before
 //! the request leaves the computer. The answer streams in on a thread of
@@ -22,9 +23,8 @@
 //! register. Each call waits for the prompt Noura draws, and runs in its
 //! plugin only once you allow that one call.
 //!
-//! The service also holds web search: the Brave Search key, your web
-//! consent per workspace, and the searches and page reads plugins ask
-//! for, in [`web`].
+//! The service also holds web search: the Brave Search key and the
+//! searches and page reads plugins ask for, in [`web`].
 //!
 //! [`App`]: crate::App
 
@@ -33,11 +33,12 @@
     reason = "the run steps pass local-core's structured CoreError along, as local-core does"
 )]
 
+mod complete;
 mod history;
 mod tools;
 mod web;
 
-pub use web::{WEB_POLICY_VERSION, WEB_SEARCH_PROVIDER_NAME, WebConsentPrompt, WebSearchRow};
+pub use web::{WEB_SEARCH_PROVIDER_NAME, WebSearchRow};
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -51,8 +52,7 @@ use std::{
 };
 
 use local_core::{
-    AI_PROVIDER_KINDS, AiConsentDataCategory, AiConsentGrantInput, AiConsentReadInput,
-    AiConsentRevokeInput, AiFoundation, AiModelRef, AiProviderConfig, AiStreamEvent, AiStreamFrame,
+    AI_PROVIDER_KINDS, AiFoundation, AiModelRef, AiProviderConfig, AiStreamEvent, AiStreamFrame,
     AiStreamInput, AiStreamer, AiTransportMessage, AppendChatContextSummaryInput,
     AppendChatToolResultInput, AppendChatUserMessageInput, BeginChatAssistantInput,
     BeginChatToolCallInput, ChangeChatRetentionInput, Chat, ChatMessage, ChatMessageKind,
@@ -69,11 +69,6 @@ pub(crate) use tools::ToolBox;
 use tools::{PLUGIN_DISABLED, Settled, TOOL_NOT_FOUND};
 
 use crate::{AppError, System, Workspace};
-
-/// The version of what Noura tells you before a provider receives your
-/// workspace's content. Consent holds for one version, so a new one asks
-/// again.
-pub const AI_POLICY_VERSION: &str = "2026-09";
 
 /// The title a chat has until its first message names it.
 pub const NEW_CHAT_TITLE: &str = "New chat";
@@ -92,10 +87,8 @@ const EPHEMERAL_DAYS: u32 = 30;
 /// stays open. It also does so each time a workspace opens.
 const EXPIRY_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
-/// Where the provider settings and the consents live, under the app data
-/// folder.
+/// Where the provider settings live, under the app data folder.
 const PROVIDERS_FILE: &str = "ai/providers.json";
-const CONSENTS_FILE: &str = "ai/consents.json";
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
 
@@ -113,9 +106,6 @@ pub struct AiProviderRow {
     pub enabled: bool,
     /// Whether its key is in the credential store.
     pub has_key: bool,
-    /// Whether you consented to it receiving the open workspace's content,
-    /// for this provider's kind, endpoint and model and the current policy.
-    pub consented: bool,
     /// How many tokens its model reads at most, when you set it. Without
     /// it, Noura counts on [`DEFAULT_CONTEXT_WINDOW`].
     pub context_window: Option<u32>,
@@ -155,20 +145,7 @@ impl std::fmt::Debug for AiProviderInput {
     }
 }
 
-/// The question Noura asks before a provider receives the open
-/// workspace's content for the first time.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AiConsentPrompt {
-    pub provider_id: String,
-    pub provider_name: String,
-    pub kind: String,
-    pub model: String,
-    pub endpoint: Option<String>,
-    /// The open workspace's name.
-    pub workspace: String,
-}
-
-/// What a run asks its provider once you consent.
+/// What a run asks its provider.
 enum Ask {
     /// Write this message of yours to the chat, then answer it.
     Message(String),
@@ -219,7 +196,7 @@ struct Run {
     /// The tool-call message of each of `tool_calls`, by call ID.
     tool_messages: HashMap<String, String>,
     failure: Option<AiFailure>,
-    /// While it waits for consent: what to ask.
+    /// What to ask, until the run starts.
     waiting: Option<Ask>,
     /// The stream's operation ID while it streams.
     operation: Option<String>,
@@ -255,7 +232,7 @@ impl Run {
             plugin: plugin.to_owned(),
             chat: chat.to_owned(),
             provider: provider.to_owned(),
-            status: AiRunStatus::WaitingForConsent,
+            status: AiRunStatus::Streaming,
             text: String::new(),
             message: None,
             message_revision: String::new(),
@@ -289,14 +266,12 @@ impl Run {
         }
     }
 
-    /// Whether the run still has work in its chat: it waits for you, it
-    /// streams, or the model's tool calls wait for `run-tools`. Its
-    /// messages in progress are its own.
+    /// Whether the run still has work in its chat: it streams, it waits
+    /// for you about a tool call, or the model's tool calls wait for
+    /// `run-tools`. Its messages in progress are its own.
     fn live(&self) -> bool {
         match self.status {
-            AiRunStatus::Streaming
-            | AiRunStatus::WaitingForConsent
-            | AiRunStatus::WaitingForApproval => true,
+            AiRunStatus::Streaming | AiRunStatus::WaitingForApproval => true,
             AiRunStatus::Completed => !self.tool_calls.is_empty() && self.calls.is_empty(),
             _ => false,
         }
@@ -320,9 +295,6 @@ impl Run {
 struct State {
     workspace: Option<Arc<Workspace>>,
     runs: HashMap<String, Run>,
-    /// The runs waiting for your consent, oldest first. The prompt asks
-    /// about the first one's provider.
-    waiting: VecDeque<String>,
     /// The runs whose tool calls wait for your answers, oldest first.
     approvals: VecDeque<String>,
     /// The chats `create-chat` started whose files aren't written yet:
@@ -334,7 +306,7 @@ struct State {
 }
 
 pub(crate) struct Ai {
-    /// The provider settings and consents, or why they can't be read.
+    /// The provider settings, or why they can't be read.
     store: Result<AiFoundation, AppError>,
     /// The clock that expires chats.
     system: Arc<dyn System>,
@@ -351,18 +323,17 @@ pub(crate) struct Ai {
     /// The plugins to draw again, as text arrived for their runs.
     redraws: Mutex<Vec<String>>,
     wake: Mutex<Option<Wake>>,
-    /// Counts the changes windows show: the prompts, providers and
-    /// consents.
+    /// Counts the changes windows show: the prompts and providers.
     version: AtomicU64,
-    /// The providers or consents changed since the plugins drew, so every
-    /// plugin that holds `ai` draws again.
+    /// The providers changed since the plugins drew, so every plugin that
+    /// holds `ai` draws again.
     settings_changed: std::sync::atomic::AtomicBool,
     /// When the open workspace's chats last expired.
     expired: Mutex<Option<Instant>>,
     /// The expiry threads that may still run. Each holds its workspace's
     /// index open, so the service waits for them when it goes.
     expiries: Mutex<Vec<JoinHandle<()>>>,
-    /// The web search key and consents.
+    /// The web search key.
     web: web::Web,
 }
 
@@ -390,24 +361,20 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Ai {
-    /// The service, with provider settings and consents in `app_data`,
+    /// The service, with provider settings in `app_data`,
     /// keys in `system`'s credential store and chats expiring by its
     /// clock.
     pub(crate) fn new(app_data: &Path, system: Arc<dyn System>) -> Arc<Self> {
         let web = web::Web::new(app_data, system.credentials());
-        let store = AiFoundation::open_with(
-            app_data.join(PROVIDERS_FILE),
-            app_data.join(CONSENTS_FILE),
-            system.credentials(),
-        )
-        .map_err(|error| {
-            tracing::warn!(code = %error.code, "the AI settings can't be read");
-            AppError::new(
-                "ai_settings_unreadable",
-                "Noura can't read its AI provider settings on this computer, so it left them \
+        let store = AiFoundation::open_with(app_data.join(PROVIDERS_FILE), system.credentials())
+            .map_err(|error| {
+                tracing::warn!(code = %error.code, "the AI settings can't be read");
+                AppError::new(
+                    "ai_settings_unreadable",
+                    "Noura can't read its AI provider settings on this computer, so it left them \
                  as they were.",
-            )
-        });
+                )
+            });
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .thread_name("ai")
@@ -518,7 +485,6 @@ impl Ai {
             .filter_map(|run| run.operation.clone())
             .collect();
         state.runs.clear();
-        state.waiting.clear();
         state.approvals.clear();
         state.new_chats.clear();
         state.counted.clear();
@@ -527,8 +493,6 @@ impl Ai {
         // The runs whose tool calls wait find themselves gone, and write a
         // denial for each call to the closing workspace's chat.
         self.answered.notify_all();
-        // The web prompt asked about the workspace that closed.
-        self.web.close_prompt();
         if let Ok(store) = self.store() {
             for operation in operations {
                 let _ = store.cancel_stream(&operation);
@@ -589,26 +553,19 @@ impl Ai {
         let Ok(store) = self.store() else {
             return Vec::new();
         };
-        let workspace = self.workspace();
         store
             .list_providers()
             .unwrap_or_default()
             .into_iter()
-            .map(|provider| {
-                let consented = workspace
-                    .as_ref()
-                    .is_some_and(|workspace| consented(store, workspace.id(), &provider.id));
-                AiProviderRow {
-                    id: provider.id,
-                    name: provider.display_name,
-                    kind: provider.kind,
-                    model: provider.model,
-                    endpoint: provider.endpoint,
-                    enabled: provider.enabled,
-                    has_key: provider.credential_ref.is_some(),
-                    consented,
-                    context_window: provider.context_window,
-                }
+            .map(|provider| AiProviderRow {
+                id: provider.id,
+                name: provider.display_name,
+                kind: provider.kind,
+                model: provider.model,
+                endpoint: provider.endpoint,
+                enabled: provider.enabled,
+                has_key: provider.credential_ref.is_some(),
+                context_window: provider.context_window,
             })
             .collect()
     }
@@ -656,34 +613,10 @@ impl Ai {
         Ok(id)
     }
 
-    /// Remove a provider, its key and its consents. Its running requests
-    /// stop, and the runs that waited for consent to it fail, so the
-    /// prompt moves on to the next provider.
+    /// Remove a provider and its key. Its running requests stop.
     pub(crate) fn remove_provider(&self, id: &str) -> Result<(), AppError> {
         self.store()?.remove_provider(id).map_err(settings_error)?;
-        let plugins: Vec<String> = {
-            let mut state = lock(&self.state);
-            let gone: Vec<String> = state
-                .waiting
-                .iter()
-                .filter(|run| state.runs.get(*run).is_some_and(|run| run.provider == id))
-                .cloned()
-                .collect();
-            state.waiting.retain(|run| !gone.contains(run));
-            gone.iter()
-                .filter_map(|run| {
-                    let run = state.runs.get_mut(run)?;
-                    run.status = AiRunStatus::Failed;
-                    run.failure = Some(failure_of(&provider_missing()));
-                    run.waiting = None;
-                    Some(run.plugin.clone())
-                })
-                .collect()
-        };
         self.changed();
-        for plugin in plugins {
-            self.redraw(&plugin);
-        }
         Ok(())
     }
 
@@ -691,122 +624,6 @@ impl Ai {
     pub(crate) fn remove_key(&self, id: &str) -> Result<(), AppError> {
         self.store()?.clear_credential(id).map_err(settings_error)?;
         self.changed();
-        Ok(())
-    }
-
-    /// Consent to the provider `id` receiving the open workspace's
-    /// content, and send what waited for it.
-    pub(crate) fn grant(self: &Arc<Self>, id: &str) -> Result<(), AppError> {
-        let workspace = self.workspace().ok_or_else(no_workspace)?;
-        self.store()?
-            .grant_consent(
-                workspace.id(),
-                AiConsentGrantInput {
-                    provider_id: id.to_owned(),
-                    policy_version: AI_POLICY_VERSION.to_owned(),
-                    data_category: AiConsentDataCategory::WorkspaceContent,
-                },
-            )
-            .map_err(settings_error)?;
-        let waiting: Vec<String> = {
-            let mut state = lock(&self.state);
-            let ready: Vec<String> = state
-                .waiting
-                .iter()
-                .filter(|run| state.runs.get(*run).is_some_and(|run| run.provider == id))
-                .cloned()
-                .collect();
-            state.waiting.retain(|run| !ready.contains(run));
-            ready
-        };
-        self.changed();
-        for run in waiting {
-            self.start(&run);
-        }
-        Ok(())
-    }
-
-    /// Withdraw your consent for the provider `id` in the open workspace.
-    /// Its running requests stop, and its next request asks again.
-    pub(crate) fn revoke(&self, id: &str) -> Result<(), AppError> {
-        let workspace = self.workspace().ok_or_else(no_workspace)?;
-        self.store()?
-            .revoke_consent(
-                workspace.id(),
-                AiConsentRevokeInput {
-                    provider_id: id.to_owned(),
-                    policy_version: AI_POLICY_VERSION.to_owned(),
-                },
-            )
-            .map_err(settings_error)?;
-        self.changed();
-        Ok(())
-    }
-
-    /// The question waiting for your answer, if one is.
-    pub(crate) fn prompt(&self) -> Option<AiConsentPrompt> {
-        let state = lock(&self.state);
-        let workspace = state.workspace.as_ref()?;
-        let providers = self.store().ok()?.list_providers().ok()?;
-        // A run whose provider went waits for nothing: the prompt asks
-        // about the next one.
-        let provider = state
-            .waiting
-            .iter()
-            .filter_map(|run| state.runs.get(run))
-            .find_map(|run| {
-                providers
-                    .iter()
-                    .find(|provider| provider.id == run.provider)
-            })?
-            .clone();
-        Some(AiConsentPrompt {
-            provider_id: provider.id,
-            provider_name: provider.display_name,
-            kind: provider.kind,
-            model: provider.model,
-            endpoint: provider.endpoint,
-            workspace: workspace.name(),
-        })
-    }
-
-    /// Answer the prompt: allow the provider it names, or not. Saying no
-    /// sends and writes nothing for the runs that waited for it.
-    pub(crate) fn answer_prompt(self: &Arc<Self>, allow: bool) -> Result<(), AppError> {
-        let Some(prompt) = self.prompt() else {
-            return Ok(());
-        };
-        if allow {
-            return self.grant(&prompt.provider_id);
-        }
-        let plugins: Vec<String> = {
-            let mut state = lock(&self.state);
-            let denied: Vec<String> = state
-                .waiting
-                .iter()
-                .filter(|run| {
-                    state
-                        .runs
-                        .get(*run)
-                        .is_some_and(|run| run.provider == prompt.provider_id)
-                })
-                .cloned()
-                .collect();
-            state.waiting.retain(|run| !denied.contains(run));
-            denied
-                .iter()
-                .filter_map(|id| {
-                    let run = state.runs.get_mut(id)?;
-                    run.status = AiRunStatus::Denied;
-                    run.waiting = None;
-                    Some(run.plugin.clone())
-                })
-                .collect()
-        };
-        self.changed();
-        for plugin in plugins {
-            self.redraw(&plugin);
-        }
         Ok(())
     }
 
@@ -864,7 +681,6 @@ impl Ai {
         let mut plugins = Vec::new();
         {
             let mut state = lock(&self.state);
-            let mut stopped = Vec::new();
             for run in state.runs.values_mut() {
                 if !run.relies_on(plugin) {
                     continue;
@@ -880,10 +696,6 @@ impl Ai {
                     }
                     // The run's round writes a result for each call left.
                     AiRunStatus::WaitingForApproval => run.interrupted = true,
-                    AiRunStatus::WaitingForConsent => {
-                        run.interrupt();
-                        stopped.push(run.id.clone());
-                    }
                     AiRunStatus::Completed if run.live() => {
                         // Nobody ran the model's calls: each gets its
                         // result now, and the run ends.
@@ -896,7 +708,6 @@ impl Ai {
                 }
                 plugins.push(run.plugin.clone());
             }
-            state.waiting.retain(|run| !stopped.contains(run));
             for run in &rounds {
                 state.approvals.push_back(run.clone());
             }
@@ -995,8 +806,7 @@ impl Ai {
     }
 
     /// Start a run of `plugin` in `chat` that asks `provider` what `ask`
-    /// says, offering `tools`: now when you consented, otherwise once you
-    /// do.
+    /// says, offering `tools`.
     fn begin_run(
         self: &Arc<Self>,
         plugin: &str,
@@ -1005,13 +815,12 @@ impl Ai {
         ask: Ask,
         tools: Vec<AiToolDefinition>,
     ) -> Result<AiRun, ServiceError> {
-        let workspace = self
-            .workspace()
+        self.workspace()
             .ok_or_else(|| ServiceError::Failed("No workspace is open.".to_owned()))?;
         let provider = self.provider(provider)?;
         check_tools(&tools)?;
         let id = format!("run_{}", uuid_v4());
-        let run = {
+        {
             let mut state = lock(&self.state);
             if state
                 .runs
@@ -1023,20 +832,10 @@ impl Ai {
                 ));
             }
             let run = Run::new(&id, plugin, chat, &provider.id, ask, tools);
-            let public = run.public();
             state.runs.insert(id.clone(), run);
-            public
-        };
-        let store = self
-            .store()
-            .map_err(|error| ServiceError::Failed(error.message))?;
-        if consented(store, workspace.id(), &provider.id) {
-            self.start(&id);
-            return self.read_run(&id);
         }
-        lock(&self.state).waiting.push_back(id);
-        self.changed();
-        Ok(run)
+        self.start(&id);
+        self.read_run(&id)
     }
 
     /// Write the message of the run `id`, unless it answers your last one
@@ -1374,7 +1173,7 @@ impl Ai {
         if !lock(&self.state).runs.contains_key(id) {
             return Ok(None);
         }
-        let workspace = self.workspace().ok_or_else(no_workspace_core)?;
+        self.workspace().ok_or_else(no_workspace_core)?;
         let operation = uuid_v4();
         let input = AiStreamInput {
             operation_id: operation.clone(),
@@ -1384,13 +1183,12 @@ impl Ai {
             },
             messages,
             tools,
-            policy_version: Some(AI_POLICY_VERSION.to_owned()),
         };
         let client = lock(&self.client).clone();
         let store = self.store().map_err(|_| no_workspace_core())?;
         let stream = {
             let _entered = self.runtime.enter();
-            store.start_stream_with(workspace.id(), input, client)?
+            store.start_stream_with(input, client)?
         };
         if self.streaming(id, &operation) {
             let _ = store.cancel_stream(&operation);
@@ -1802,39 +1600,27 @@ impl Ai {
     }
 
     fn stop(&self, id: &str) -> Result<(), ServiceError> {
-        let (operation, plugin) = {
+        let operation = {
             let mut state = lock(&self.state);
             let run = state
                 .runs
                 .get_mut(id)
                 .ok_or_else(|| ServiceError::NotFound(id.to_owned()))?;
             match run.status {
-                AiRunStatus::WaitingForConsent => {
-                    // Nothing was written or sent yet.
-                    run.status = AiRunStatus::Cancelled;
-                    run.waiting = None;
-                    let plugin = run.plugin.clone();
-                    state.waiting.retain(|waiting| waiting != id);
-                    (None, Some(plugin))
-                }
                 AiRunStatus::WaitingForApproval => {
                     // The calls left count as denied, and the run ends.
                     run.stop_requested = true;
-                    (None, None)
+                    None
                 }
                 AiRunStatus::Streaming if run.operation.is_none() => {
                     // The stream hasn't started yet: it stops as it does.
                     run.stop_requested = true;
-                    (None, None)
+                    None
                 }
-                _ => (run.operation.clone(), None),
+                _ => run.operation.clone(),
             }
         };
         self.answered.notify_all();
-        if let Some(plugin) = plugin {
-            self.changed();
-            self.redraw(&plugin);
-        }
         if let Some(operation) = operation {
             self.store()
                 .map_err(|error| ServiceError::Failed(error.message))?
@@ -2214,6 +2000,13 @@ impl AiChats for Access {
     fn web_fetch(&self, url: &str) -> Result<plugin_host::AiWebPage, AiFailure> {
         self.ai.web_fetch(&self.plugin, url)
     }
+
+    fn complete(
+        &self,
+        request: plugin_host::AiCompletionRequest,
+    ) -> Result<plugin_host::AiCompletion, AiFailure> {
+        self.ai.complete(request)
+    }
 }
 
 impl Access {
@@ -2226,23 +2019,6 @@ impl Access {
             _ => Err(ServiceError::NotFound(id.to_owned())),
         }
     }
-}
-
-/// Whether you consented to the provider `provider` receiving the
-/// workspace `workspace`'s content under the current policy, for the
-/// provider's kind, endpoint and model as they are now.
-fn consented(store: &AiFoundation, workspace: &str, provider: &str) -> bool {
-    store
-        .read_consent(
-            workspace,
-            AiConsentReadInput {
-                provider_id: provider.to_owned(),
-                policy_version: AI_POLICY_VERSION.to_owned(),
-            },
-        )
-        .ok()
-        .flatten()
-        .is_some()
 }
 
 /// Finish the assistant message `answer` began with its text, `status`
@@ -2432,7 +2208,6 @@ fn public_message(message: ChatMessage) -> AiMessage {
 /// people. Neither ever holds a provider's own words, headers or a key.
 fn failure_of(error: &CoreError) -> AiFailure {
     let message = match error.code.as_str() {
-        "ai_consent_required" => "This provider needs your consent first.",
         "provider_not_found" => "The provider isn't set up or turned on anymore.",
         "credential_store_error" => "Couldn't read the provider's key from the credential store.",
         "endpoint_insecure" => "Use HTTPS, or HTTP only for a server on this computer.",
@@ -2516,10 +2291,6 @@ fn settings_error(error: CoreError) -> AppError {
         _ => error.message,
     };
     AppError::new(&error.code, message)
-}
-
-fn no_workspace() -> AppError {
-    AppError::new("no_workspace", "Open a workspace first.")
 }
 
 fn unwritten() -> ServiceError {

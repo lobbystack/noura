@@ -13,6 +13,6 @@ name = "object-types"
 [[capabilities]]
 name = "views"
 
-# Chats with the providers you set up, once you consent.
+# Chats with the providers you set up.
 [[capabilities]]
 name = "ai"

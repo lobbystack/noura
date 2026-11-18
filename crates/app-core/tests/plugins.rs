@@ -568,6 +568,9 @@ fn a_new_build_saved_in_the_folder_reloads_and_the_open_page_redraws() {
             "Deep",
             "Broken",
             "Events",
+            "Paste",
+            "Notify",
+            "Menu",
             "Opens"
         ]
     );

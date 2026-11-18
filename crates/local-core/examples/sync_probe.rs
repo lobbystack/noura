@@ -23,11 +23,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let key = ObjectKey::from_bytes([9; 32]);
     let transport = HttpSyncTransport::new(&input.origin, input.token)?;
     let dir = tempfile::TempDir::new()?;
-    let first = WorkspaceEngine::create_with_app_data(
-        dir.path().join("first"),
-        "Native sync test",
-        dir.path().join("app1"),
-    )?;
+    let first =
+        WorkspaceEngine::create_with_app_data(dir.path().join("first"), dir.path().join("app1"))?;
     // Sync is a plugin that new workspaces start with turned off.
     first.enable_sync_plugin()?;
     transport.create_workspace(&first.manifest().id).await?;

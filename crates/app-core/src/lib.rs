@@ -57,6 +57,7 @@ mod search;
 mod session;
 mod settings;
 pub mod shares;
+mod speech_kernel;
 mod store;
 pub mod sync;
 mod system;
@@ -71,13 +72,17 @@ mod writes;
 
 pub use agent::AgentWorkspace;
 pub use ai::{
-    AI_KEY_PROVIDERS, AI_POLICY_VERSION, AiConsentPrompt, AiProviderChoice, AiProviderInput,
-    AiProviderRow, AiToolPrompt, DEFAULT_CONTEXT_WINDOW, NEW_CHAT_TITLE, WEB_POLICY_VERSION,
-    WEB_SEARCH_PROVIDER_NAME, WebConsentPrompt, WebSearchRow,
+    AI_KEY_PROVIDERS, AiProviderChoice, AiProviderInput, AiProviderRow, AiToolPrompt,
+    DEFAULT_CONTEXT_WINDOW, NEW_CHAT_TITLE, WEB_SEARCH_PROVIDER_NAME, WebSearchRow,
 };
 pub use app::{
-    App, Change, CommandPalette, DragOut, IgnoredFiles, NameDraft, Notice, NoticeKind, Origin,
-    Palette, PaletteMode, PluginPlace, Question, QuickOpen, Rename, Screen, Search, UnsavedPrompt,
+    App, Change, DragOut, EMPTY_COMMANDS, GROUP_LIMIT, IgnoredFiles, NameDraft, Notice, NoticeKind,
+    Origin, Palette, PaletteGroup, PaletteItem, PaletteStatus, PluginPlace, Question, Rename,
+    Screen, SearchScope, UnsavedPrompt,
+};
+pub use app::{
+    SPEECH_LANGUAGES, SpeechModelFilter, SpeechModelRow, SpeechModelSection, SpeechModelsPage,
+    speech_language_name,
 };
 pub use calendar_grid::{GridDay, GridEntry, Segment, Span, grid_days, lay_out};
 pub use commands::{
@@ -105,6 +110,10 @@ pub use links::{
 pub use local_core::WatchFault;
 pub use local_core::{
     AI_PROVIDER_KINDS, AiStreamer, CredentialStore, MemoryCredentials, RemoteImage,
+};
+pub use speech_kernel::{
+    GlobalShortcut, MenuBarItems, NoNotifier, NoPaste, NotificationChosen, Notifier, SpeechDevices,
+    SystemNotification,
 };
 
 /// What a client passes to [`App::set_ai_client`] talks to providers in
@@ -149,12 +158,13 @@ pub use plugin_host::fake_github;
 pub use plugin_host::{
     CalendarMode, Check as PluginCheck, Choice, Column, ColumnPress, Event as PluginEvent, Field,
     Grant, HeadingLevel, Icon as PluginIcon, Move as PluginMove, Naming as PluginNaming, SortOrder,
-    Submission, Target, Value as InputValue, View, ViewKind, ViewNode, VirtualRow,
+    Submission, Target, Value as InputValue, View, ViewKind, ViewNode, VirtualRow, keys_from_label,
+    keys_label,
 };
 pub use plugin_inputs::{date_time_fields, date_time_value, date_value};
 pub use plugins::{
     CapabilityLine, PluginInstall, PluginRow, PluginTool, PluginView, SHIPPED_PLUGINS,
-    ShippedPlugin, ShippedProblem, UpdateCheck, check_shipped_plugins,
+    ShippedProblem, UpdateCheck, check_shipped_plugins,
 };
 pub use preferences::{ACTUAL_SIZE, Appearance, LineWidth, Preferences, TextSize, ZOOM_LEVELS};
 pub use problems::Problem;

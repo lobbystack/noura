@@ -44,9 +44,8 @@ fn random<T>(value: Result<T, impl std::fmt::Display>) -> Result<T, SyncError> {
 
 /// What the export screen says about a kit, as the app shows it before you
 /// export one (§12).
-pub const KIT_WARNING: &str = "The kit file and its secret together read everything your account \
-     reads until you revoke the kit. Keep them in different places: store the file somewhere \
-     safe and write the secret down.";
+pub const KIT_WARNING: &str =
+    "Anyone with the kit file and its secret can read everything you can. Keep them apart.";
 
 /// A kit you exported: its file and its secret, which the app shows once.
 pub struct KitExport {

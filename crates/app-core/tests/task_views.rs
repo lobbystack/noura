@@ -26,8 +26,7 @@ const K: &str = "01jbcdefghjkmnpqrstvwxyz0k";
 /// tasks due before, on and after that day, one marked done, two without a
 /// due date, one in a project and the Garden project itself.
 fn garden() -> (Fixture, std::sync::Arc<FakeSystem>) {
-    let project = format!("project_{H}");
-    let in_garden = format!("project: {project}\n");
+    let in_garden = "project: '[[Garden]]'\n".to_owned();
     let fixture = Fixture::new(&[
         (
             "tasks/Water the beds.md",

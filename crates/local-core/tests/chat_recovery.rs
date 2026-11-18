@@ -21,9 +21,7 @@ use tempfile::{TempDir, tempdir};
 fn quiet_engine() -> (TempDir, TempDir, WorkspaceEngine) {
     let workspace = tempdir().unwrap();
     let app_data = tempdir().unwrap();
-    let engine =
-        WorkspaceEngine::create_with_app_data(workspace.path(), "Recovery", app_data.path())
-            .unwrap();
+    let engine = WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
     engine.force_watch_fault(WatchFault::Silent);
     (workspace, app_data, engine)
 }

@@ -418,7 +418,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("workspace");
         let app = directory.path().join("app");
-        let engine = WorkspaceEngine::create_with_app_data(&root, "Test", &app).unwrap();
+        let engine = WorkspaceEngine::create_with_app_data(&root, &app).unwrap();
         let device = DeviceKeys::create(&Credentials).unwrap();
         let public_key = device.signer().public_key();
         let policy = AccessPolicy::sign(

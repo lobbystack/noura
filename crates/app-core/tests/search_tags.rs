@@ -206,11 +206,12 @@ fn an_index_from_before_tags_reads_every_file_again() {
     let app = fixture.app();
     let id = app.workspace().unwrap().id().to_owned();
     drop(app);
-    // An older Noura indexed these files: it kept no tags and no version 2.
+    // An older Noura indexed these files: it kept no tags and no version 2
+    // or later.
     let index = rusqlite::Connection::open(&index_files(&fixture, &id)[0]).unwrap();
     index
         .execute_batch(
-            "DELETE FROM object_tags; DELETE FROM schema_migrations WHERE version=2; \
+            "DELETE FROM object_tags; DELETE FROM schema_migrations WHERE version>=2; \
              UPDATE object_fts SET metadata='';",
         )
         .unwrap();

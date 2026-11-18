@@ -276,8 +276,24 @@ function readable(object: MockObject): ReadObject {
 }
 
 /** Where a new object titled `name` goes without a path, as Noura names it. */
+/** Where a new object goes without a path: a folder named after its type in the plural, with a capital letter, as Noura does. */
 function defaultPath(objectType: string, name: string): string {
-	return `${objectType}s/${name}.md`;
+	return `${objectType.charAt(0).toUpperCase()}${objectType.slice(1)}s/${name}.md`;
+}
+
+/** A link's target without its brackets, heading or label. */
+function linkTarget(link: string): string {
+	const trimmed = link.trim();
+	const inner =
+		trimmed.startsWith('[[') && trimmed.endsWith(']]')
+			? trimmed.slice(2, -2)
+			: trimmed;
+	return inner.split(/[#|^]/)[0]!.trim();
+}
+
+function folderOf(path: string): string {
+	const cut = path.lastIndexOf('/');
+	return cut < 0 ? '' : path.slice(0, cut);
 }
 
 export class MockWorkspace {
@@ -394,6 +410,63 @@ export class MockWorkspace {
 		return found;
 	}
 
+	/** Every path that holds a file or an object. */
+	private paths(): string[] {
+		return [
+			...new Set([
+				...this.files.keys(),
+				...[...this.objects.values()].map((object) => object.path),
+			]),
+		];
+	}
+
+	/** The link Noura writes for the object `id`: its title, or its path when another file shares the title. */
+	linkTo(id: string): string {
+		const path = this.readObject(id).path;
+		const title = titleOf(path).toLowerCase();
+		const shared =
+			this.paths().filter((other) => titleOf(other).toLowerCase() === title)
+				.length > 1;
+		return `[[${shared ? path.replace(/\.md$/, '') : titleOf(path)}]]`;
+	}
+
+	/** The object `link` leads to from `from`, or none, as Noura resolves it. */
+	resolveLink(link: string, from?: string): ReadObject | undefined {
+		const target = linkTarget(link);
+		if (target === '') {
+			return undefined;
+		}
+		const paths = this.paths();
+		const wanted = target.toLowerCase().replace(/\.md$/, '');
+		const folder = from === undefined ? '' : folderOf(from);
+		const direct = [folder ? `${folder}/${target}` : target, target].flatMap(
+			(candidate) => [`${candidate}.md`, candidate],
+		);
+		let found = direct.find((candidate) => paths.includes(candidate));
+		if (found === undefined) {
+			found = paths
+				.filter((path) => {
+					const lower = path.toLowerCase().replace(/\.md$/, '');
+					return lower === wanted || lower.endsWith(`/${wanted}`);
+				})
+				.sort(
+					(left, right) =>
+						Number(folderOf(left) !== folder) -
+							Number(folderOf(right) !== folder) ||
+						left.split('/').length - right.split('/').length ||
+						left.toLowerCase().localeCompare(right.toLowerCase()),
+				)[0];
+		}
+		if (found === undefined || !isMarkdown(found)) {
+			return undefined;
+		}
+		try {
+			return this.readObjectAt(found);
+		} catch {
+			return undefined;
+		}
+	}
+
 	/** The object with the stable ID `id`, refused when more than one file holds it. */
 	readObject(id: string): ReadObject {
 		const found = this.holding(id);
@@ -491,6 +564,59 @@ export class MockWorkspace {
 		moved.revision = this.revise(moved);
 		this.objects.set(id, moved);
 		return moved;
+	}
+
+	/** Move the folder holding the object's file to `folder`, with every
+	 * file in it, as `objects.move-folder` does. */
+	moveFolder(
+		id: string,
+		expectedRevision: string,
+		folder: string,
+		mayWrite: (objectType: string) => boolean,
+	): MockObject {
+		const object = this.current(id, expectedRevision);
+		checkPath(folder);
+		const slash = object.path.lastIndexOf('/');
+		if (slash < 0) {
+			refuse('failed', "The object isn't in a folder of its own.");
+		}
+		const from = object.path.slice(0, slash + 1);
+		const to = `${folder}/`;
+		const inside = (path: string) => path.startsWith(from);
+		const objects = [...this.objects.values()].filter((known) => inside(known.path));
+		const files = [...this.files.keys()].filter(inside);
+		for (const path of [...objects.map((known) => known.path), ...files]) {
+			if (path.slice(from.length).includes('/')) {
+				refuse('failed', 'The folder holds another folder.');
+			}
+		}
+		if (files.some((path) => path.toLowerCase().endsWith('.md'))) {
+			refuse('failed', "The folder holds a note the plugin can't move.");
+		}
+		if (objects.some((known) => !mayWrite(known.objectType))) {
+			refuse('failed', "The folder holds a note the plugin can't move.");
+		}
+		const everything = [
+			...this.files.keys(),
+			...[...this.objects.values()].map((known) => known.path),
+		];
+		if (everything.some((path) => path === folder || path.startsWith(to))) {
+			refuse('already-exists', folder);
+		}
+		for (const known of objects) {
+			const path = to + known.path.slice(from.length);
+			const moved = { ...known, path, title: titleOf(path) };
+			moved.revision = this.revise(moved);
+			this.objects.set(known.id, moved);
+		}
+		for (const path of files) {
+			const bytes = this.files.get(path);
+			this.files.delete(path);
+			if (bytes) {
+				this.files.set(to + path.slice(from.length), bytes);
+			}
+		}
+		return this.get(id);
 	}
 
 	delete(id: string, expectedRevision: string): void {

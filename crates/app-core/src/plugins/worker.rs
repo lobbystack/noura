@@ -34,6 +34,9 @@ pub(super) enum Job {
     Command(String, Option<WindowKey>),
     /// Draw the plugin's views again.
     Redraw,
+    /// Hand the plugin a kernel event, such as a shortcut press, which
+    /// counts as something you did, then draw its views.
+    Kernel(plugin_host::KernelEvent),
     /// Draw the properties panel of the object with this ID, whose file
     /// has this revision.
     Panel(String, String),
@@ -151,6 +154,9 @@ pub(super) struct Outcome {
     /// The plugin ran code that may have written files: it handled an
     /// event or ran a command.
     pub(super) acted: bool,
+    /// The plugin's panels draw again though it didn't act, as when its
+    /// recording's text changed.
+    pub(super) panels_again: bool,
     pub(super) health: Health,
     /// Why the job's event or command failed: the view the event happened
     /// in, or none for a command, and the reason in words.
@@ -193,6 +199,7 @@ impl Worker {
             let mut rows = None;
             let mut acted = true;
             let mut draws = true;
+            let mut panels_again = false;
             match job {
                 Job::Refresh => {
                     acted = false;
@@ -251,6 +258,15 @@ impl Worker {
                         view,
                     });
                 }
+                Job::Kernel(event) => {
+                    self.navigator.set_kernel(true);
+                    let handled = self.plugin.handle_kernel_event(&event);
+                    self.navigator.set_kernel(false);
+                    if let Err(error) = handled {
+                        tracing::warn!(%error, "a plugin failed to handle a kernel event");
+                        failed = Some((None, failure_message(&error, Doing::Handling)));
+                    }
+                }
                 Job::Event(surface, event, origin) => {
                     self.navigator.set_origin(origin);
                     let handled = self.plugin.handle_surface_event(&surface, &event);
@@ -278,6 +294,7 @@ impl Worker {
                 }
                 Job::Redraw => {
                     acted = false;
+                    panels_again = true;
                     self.redraw_queued.store(false, Ordering::Relaxed);
                 }
             }
@@ -291,6 +308,7 @@ impl Worker {
                 panel,
                 rows,
                 acted,
+                panels_again,
                 health: self.plugin.health(),
                 failed,
             };

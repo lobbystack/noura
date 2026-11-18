@@ -1,8 +1,8 @@
-//! The AI page, Noura's consent and tool prompts and the AI providers
-//! section of Settings through AccessKit: an answer streaming in shows as
-//! Markdown, Stop ends it, the consent prompt names the provider, the tool
-//! prompt names the tool, its plugin and its input, both start on Deny,
-//! and the provider form labels each field and hides the key.
+//! The AI page, Noura's tool prompt and the AI providers section of
+//! Settings through AccessKit: an answer streaming in shows as Markdown,
+//! Stop ends it, a message goes out without a prompt, the tool prompt
+//! names the tool, its plugin and its input and starts on Deny, and the
+//! provider form labels each field and hides the key.
 
 mod support;
 
@@ -79,16 +79,16 @@ struct Opened {
     _folders: (tempfile::TempDir, tempfile::TempDir),
 }
 
-/// A workspace with the AI plugin on and the provider Local set up, with
-/// your consent when `consent` holds, opened at launch on the AI page.
-fn opened(consent: bool) -> Option<Opened> {
+/// A workspace with the AI plugin on and the provider Local set up,
+/// opened at launch on the AI page.
+fn opened() -> Option<Opened> {
     let component = plugins::built("ai_plugin")?;
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    create_workspace(app_data.path(), &parent.path().join("Garden"));
     let plugin = plugins::folder(parent.path(), MANIFEST, "ai_plugin.wasm", &component);
     plugins::install_and_enable(app_data.path(), &plugin, "ai");
-    set_up_provider(app_data.path(), consent);
+    set_up_provider(app_data.path());
     let system = FakeSystem::new(Platform::current());
     let mut harness = harness_with(app_data.path(), FakePicker::default(), system);
     let provider = Arc::new(Waiting::default());
@@ -111,7 +111,7 @@ fn opened(consent: bool) -> Option<Opened> {
 }
 
 /// Set up the provider Local in the app data, before the harness starts.
-fn set_up_provider(app_data: &std::path::Path, consent: bool) {
+fn set_up_provider(app_data: &std::path::Path) {
     let mut app = App::launch(app_data);
     let deadline = Instant::now() + Duration::from_secs(20);
     while app.is_busy() || app.workspace().is_none() {
@@ -119,21 +119,17 @@ fn set_up_provider(app_data: &std::path::Path, consent: bool) {
         assert!(Instant::now() < deadline, "the workspace didn't open");
         std::thread::sleep(Duration::from_millis(5));
     }
-    let id = app
-        .save_ai_provider(app_core::AiProviderInput {
-            id: None,
-            name: "Local".into(),
-            kind: "ollama".into(),
-            model: "llama3".into(),
-            endpoint: None,
-            enabled: true,
-            key: None,
-            context_window: None,
-        })
-        .unwrap();
-    if consent {
-        app.grant_ai_consent(&id).unwrap();
-    }
+    app.save_ai_provider(app_core::AiProviderInput {
+        id: None,
+        name: "Local".into(),
+        kind: "ollama".into(),
+        model: "llama3".into(),
+        endpoint: None,
+        enabled: true,
+        key: None,
+        context_window: None,
+    })
+    .unwrap();
 }
 
 /// Run frames, waiting in real time for answers, until `done` holds.
@@ -184,7 +180,7 @@ fn texts<'a>(nodes: impl Iterator<Item = egui_kittest::Node<'a>>) -> Vec<String>
 
 #[test]
 fn the_answer_streams_in_as_markdown_and_stop_ends_it() {
-    let Some(mut opened) = opened(true) else {
+    let Some(mut opened) = opened() else {
         return;
     };
     let harness = &mut opened.harness;
@@ -231,61 +227,18 @@ fn the_answer_streams_in_as_markdown_and_stop_ends_it() {
 }
 
 #[test]
-fn noura_s_prompt_names_the_provider_starts_on_deny_and_escape_denies() {
-    let Some(mut opened) = opened(false) else {
+fn a_message_goes_to_the_provider_without_a_prompt() {
+    let Some(mut opened) = opened() else {
         return;
     };
     let harness = &mut opened.harness;
-    let title = "Let Local receive this workspace's content?";
 
     send(harness, "When do seeds sprout?");
     wait_until(harness, |harness| {
-        harness
-            .query_by_role_and_label(Role::AlertDialog, title)
-            .is_some()
-    });
-    let dialog = harness.get_by_role_and_label(Role::AlertDialog, title);
-    dialog.get_by_role_and_label(Role::Button, "Deny");
-    dialog.get_by_role_and_label(Role::Button, "Allow");
-    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
-    assert!(
-        texts(dialog.query_all(By::new().role(Role::Label))).contains(
-            &"Your messages and this chat go from Garden to Local, model llama3 (Ollama)."
-                .to_owned()
-        )
-    );
-    assert_eq!(focused(harness).as_deref(), Some("Deny"));
-
-    press(harness, Key::Escape);
-    wait_until(harness, |harness| {
-        all_labels(harness).contains(&"You denied Local, so nothing was sent.".to_owned())
-    });
-    assert!(
-        harness
-            .query_by_role_and_label(Role::AlertDialog, title)
-            .is_none()
-    );
-    assert_eq!(opened.provider.requests.load(Ordering::SeqCst), 0);
-
-    let harness = &mut opened.harness;
-    harness
-        .get_by_role_and_label(Role::Form, "Message")
-        .get_by_role_and_label(Role::Button, "Send")
-        .click();
-    run(harness);
-    wait_until(harness, |harness| {
-        harness
-            .query_by_role_and_label(Role::AlertDialog, title)
-            .is_some()
-    });
-    harness
-        .get_by_role_and_label(Role::AlertDialog, title)
-        .get_by_role_and_label(Role::Button, "Allow")
-        .click();
-    run(harness);
-    wait_until(harness, |harness| {
         all_labels(harness).contains(&"sprout".to_owned())
     });
+
+    assert!(harness.query_by_role(Role::AlertDialog).is_none());
     assert_eq!(opened.provider.requests.load(Ordering::SeqCst), 1);
 }
 
@@ -315,8 +268,8 @@ fn type_in(harness: &mut Ui, group: (Role, &str), role: Role, label: &str, text:
 }
 
 #[test]
-fn a_listed_provider_connects_with_a_pasted_key_and_consent_stays_per_provider() {
-    let Some(mut opened) = opened(false) else {
+fn a_listed_provider_connects_with_a_pasted_key() {
+    let Some(mut opened) = opened() else {
         return;
     };
     let harness = &mut opened.harness;
@@ -341,7 +294,9 @@ fn a_listed_provider_connects_with_a_pasted_key_and_consent_stays_per_provider()
     // Opening it shows one key field and Save key.
     let openai = (Role::Group, "OpenAI");
     click_in(harness, openai, Role::Button, "OpenAI");
-    harness.get_by_label("Paste a key you created with the provider.");
+    harness
+        .get_by_role_and_label(openai.0, openai.1)
+        .get_by_role_and_label(Role::PasswordInput, "API key");
     type_in(
         harness,
         openai,
@@ -368,17 +323,6 @@ fn a_listed_provider_connects_with_a_pasted_key_and_consent_stays_per_provider()
             .any(|label| label.contains("sk-ui-test-key"))
     );
 
-    // Consent stays per provider and per workspace.
-    let local = harness.get_by_role_and_label(Role::Group, "Local in this workspace");
-    let shown = texts(local.query_all(By::new().role(Role::Label)));
-    assert!(!shown.contains(&"Granted".to_owned()), "{shown:?}");
-    let consent = (Role::Group, "Local in this workspace");
-    click_in(harness, consent, Role::Button, "Grant");
-    let local = harness.get_by_role_and_label(Role::Group, "Local in this workspace");
-    let shown = texts(local.query_all(By::new().role(Role::Label)));
-    assert!(shown.contains(&"Granted".to_owned()), "{shown:?}");
-    local.get_by_role_and_label(Role::Button, "Revoke");
-
     // A connected provider offers Remove key.
     click_in(harness, (Role::Group, "OpenAI"), Role::Button, "OpenAI");
     click_in(harness, (Role::Group, "OpenAI"), Role::Button, "Remove key");
@@ -389,7 +333,7 @@ fn a_listed_provider_connects_with_a_pasted_key_and_consent_stays_per_provider()
 
 #[test]
 fn local_or_custom_takes_only_an_address_a_model_and_for_a_custom_server_a_key() {
-    let Some(mut opened) = opened(false) else {
+    let Some(mut opened) = opened() else {
         return;
     };
     let harness = &mut opened.harness;
@@ -514,14 +458,14 @@ fn asking_with(arguments: serde_json::Value) -> Option<Tooled> {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let workspace = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &workspace);
+    create_workspace(app_data.path(), &workspace);
     let tasks_folder = parent.path().join("tasks-plugin");
     std::fs::create_dir_all(&tasks_folder).unwrap();
     let tasks = plugins::folder(&tasks_folder, TASKS_MANIFEST, "tasks_plugin.wasm", &tasks);
     plugins::install_and_enable(app_data.path(), &tasks, "tasks");
     let plugin = plugins::folder(parent.path(), MANIFEST, "ai_plugin.wasm", &component);
     plugins::install_and_enable(app_data.path(), &plugin, "ai");
-    set_up_provider(app_data.path(), true);
+    set_up_provider(app_data.path());
     let system = FakeSystem::new(Platform::current());
     let mut harness = harness_with(app_data.path(), FakePicker::default(), system);
     let provider = Arc::new(CallsTool {
@@ -584,7 +528,7 @@ fn noura_s_tool_prompt_names_the_tool_its_plugin_and_input_and_escape_denies() {
     assert!(
         !tooled
             .workspace
-            .join("tasks/Water the tomatoes.md")
+            .join("Tasks/Water the tomatoes.md")
             .exists()
     );
     assert_eq!(tooled.provider.requests.load(Ordering::SeqCst), 2);
@@ -610,7 +554,7 @@ fn tab_and_enter_allow_the_call_once() {
     assert!(
         tooled
             .workspace
-            .join("tasks/Water the tomatoes.md")
+            .join("Tasks/Water the tomatoes.md")
             .exists()
     );
 }
@@ -647,7 +591,7 @@ fn without_a_provider_the_page_offers_open_ai_settings_which_opens_settings_on_a
     };
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    create_workspace(app_data.path(), &parent.path().join("Garden"));
     let plugin = plugins::folder(parent.path(), MANIFEST, "ai_plugin.wasm", &component);
     plugins::install_and_enable(app_data.path(), &plugin, "ai");
     let system = FakeSystem::new(Platform::current());

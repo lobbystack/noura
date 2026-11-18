@@ -344,9 +344,9 @@ fn find_opens_with_the_selection_and_steps_through_matches() {
     assert!(field.is_focused());
     harness.get_by_label("1/3");
     for label in [
-        "Previous match (Shift+Enter)",
-        "Next match (Enter)",
-        "Close (Esc)",
+        "Previous match",
+        "Next match",
+        "Close",
         "Replace with",
         "Replace",
         "Replace all",
@@ -359,7 +359,7 @@ fn find_opens_with_the_selection_and_steps_through_matches() {
     press(&mut harness, Modifiers::SHIFT, Key::Enter);
     press(&mut harness, Modifiers::SHIFT, Key::Enter);
     harness.get_by_label("3/3");
-    click(&mut harness, "Next match (Enter)");
+    click(&mut harness, "Next match");
     harness.get_by_label("1/3");
 
     // Escape closes the bar and hands the keyboard back with the match

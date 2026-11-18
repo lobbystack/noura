@@ -5,8 +5,10 @@
 use std::fmt;
 
 use crate::{
-    AiChat, AiFailure, AiMessage, AiProvider, AiRequest, AiRetention, AiRun, AiToolDefinition,
-    AiToolResult, AiWebPage, AiWebResult,
+    AiChat, AiCompletion, AiCompletionRequest, AiFailure, AiMessage, AiProvider, AiRequest,
+    AiRetention, AiRun, AiToolDefinition, AiToolResult, AiWebPage, AiWebResult, MenuBarEntry,
+    Notification, PasteMethod, Recording, RecordingOptions, ShortcutState, SpeechMicrophone,
+    SpeechModel, SpeechPreferences,
 };
 
 /// A workspace-relative path that crossed the plugin boundary: not empty,
@@ -131,6 +133,23 @@ pub trait WorkspaceReads: Send + Sync {
     /// The object the file at `path` holds, even when another file holds
     /// the same ID. A file that holds no object is `NotFound`.
     fn read_object_at(&self, path: &WorkspacePath) -> Result<ObjectRead, ServiceError>;
+
+    /// The link Noura writes for the object with the stable ID `id`, such
+    /// as `[[Garden]]`.
+    fn link_to(&self, id: &str) -> Result<String, ServiceError> {
+        Err(ServiceError::NotFound(id.to_owned()))
+    }
+
+    /// The object `link` leads to from the file at `from`, or from the top
+    /// of the workspace, or `None` when it leads to no object.
+    fn resolve_link(
+        &self,
+        link: &str,
+        from: Option<&WorkspacePath>,
+    ) -> Result<Option<ObjectRead>, ServiceError> {
+        let _ = (link, from);
+        Ok(None)
+    }
 }
 
 /// A property whose value doesn't fit its object type's schema.
@@ -212,6 +231,21 @@ pub trait WorkspaceObjects: Send + Sync {
 
     /// Move the object's file to the trash.
     fn delete(&self, id: &str, expected_revision: &str) -> Result<(), ServiceError>;
+
+    /// Move the folder that holds the object's file to `folder`, with
+    /// everything in it. Each Markdown file in it must be an object whose
+    /// type `may_write` accepts, and it may hold no folder.
+    fn move_folder(
+        &self,
+        _id: &str,
+        _expected_revision: &str,
+        _folder: &WorkspacePath,
+        _may_write: &dyn Fn(&str) -> bool,
+    ) -> Result<ObjectRecord, ServiceError> {
+        Err(ServiceError::Failed(
+            "Noura can't move folders here.".to_owned(),
+        ))
+    }
 }
 
 /// The instant now and this device's time zone, as a plugin reads them.
@@ -272,10 +306,10 @@ pub trait Navigation: Send + Sync {
     fn trash_object(&self, id: &str) -> Result<(), ServiceError>;
 }
 
-/// Chats with the AI providers you set up, for plugins that hold the `ai`
-/// capability. The app keeps the providers, their keys and your consent on
-/// this device, asks for your consent before a request carries the
-/// workspace's content to a provider, and returns no key from any call.
+/// Chats and prompts with the AI providers you set up, for plugins that
+/// hold the `ai` capability. The app keeps the providers and their keys
+/// on this device and returns no key from any call. Choosing a provider
+/// is your say-so, so nothing asks before a request goes out.
 pub trait AiChats: Send + Sync {
     /// The providers you set up and turned on.
     fn providers(&self) -> Result<Vec<AiProvider>, ServiceError>;
@@ -310,8 +344,7 @@ pub trait AiChats: Send + Sync {
     /// The tools the plugins on in the workspace register, for the model.
     fn workspace_tools(&self) -> Result<Vec<AiToolDefinition>, ServiceError>;
 
-    /// Write the message and an in-progress answer, then ask the provider,
-    /// once you consent.
+    /// Write the message and an in-progress answer, then ask the provider.
     fn send(&self, request: AiRequest) -> Result<AiRun, ServiceError>;
 
     /// Answer the tool calls of the completed run `run` with `results`,
@@ -341,9 +374,8 @@ pub trait AiChats: Send + Sync {
     /// Stop the run `id`.
     fn stop(&self, id: &str) -> Result<(), ServiceError>;
 
-    /// Whether the model may search the web and read pages in the open
-    /// workspace: you added a web search key and allowed web search for
-    /// the workspace. A service without web access says no.
+    /// Whether the model may search the web and read pages: you added a
+    /// web search key. A service without web access says no.
     fn web_ready(&self) -> Result<bool, ServiceError> {
         Ok(false)
     }
@@ -363,6 +395,64 @@ pub trait AiChats: Send + Sync {
     fn web_fetch(&self, _url: &str) -> Result<AiWebPage, AiFailure> {
         Err(web_unavailable())
     }
+
+    /// Complete `request` with one answer from a provider, writing no
+    /// chat. The failure holds a public code and message, never a key or
+    /// what the provider answered.
+    fn complete(&self, _request: AiCompletionRequest) -> Result<AiCompletion, AiFailure> {
+        Err(AiFailure {
+            code: "no_provider".to_owned(),
+            message: "Add an AI provider in Settings first.".to_owned(),
+        })
+    }
+}
+
+/// Speech for one plugin that holds the `speech` capability: recording,
+/// models and per-device choices. Each call returns at once; recording and
+/// transcribing run on the kernel's own threads.
+pub trait SpeechService: Send + Sync {
+    fn models(&self) -> Result<Vec<SpeechModel>, ServiceError>;
+    fn microphones(&self) -> Result<Vec<SpeechMicrophone>, ServiceError>;
+    fn preferences(&self) -> Result<SpeechPreferences, ServiceError>;
+    fn set_preferences(&self, preferences: SpeechPreferences) -> Result<(), ServiceError>;
+    /// Start a recording and return its ID.
+    fn start(&self, options: RecordingOptions) -> Result<String, ServiceError>;
+    /// The plugin's recording `id`; another plugin's is `NotFound`.
+    fn read_recording(&self, id: &str) -> Result<Recording, ServiceError>;
+    fn stop(&self, id: &str) -> Result<(), ServiceError>;
+    fn cancel(&self, id: &str) -> Result<(), ServiceError>;
+    /// Write the finished recording's audio beside the object `object`,
+    /// one of the plugin's own types, and return the file's path.
+    fn save_audio(&self, id: &str, object: &str) -> Result<WorkspacePath, ServiceError>;
+    fn keep_audio(&self, id: &str, days: u32) -> Result<(), ServiceError>;
+    fn forget(&self, id: &str) -> Result<(), ServiceError>;
+    fn remember_dictation(&self, text: &str) -> Result<(), ServiceError>;
+    fn last_dictation(&self) -> Result<Option<String>, ServiceError>;
+}
+
+/// The global shortcuts of one plugin that holds `global-shortcuts`, with
+/// the keys you set.
+pub trait ShortcutService: Send + Sync {
+    fn shortcuts(&self) -> Result<Vec<ShortcutState>, ServiceError>;
+}
+
+/// Pastes into the focused app for a plugin that holds `paste`. The app
+/// refuses a paste outside a call that answers something you did.
+pub trait PasteService: Send + Sync {
+    fn paste(&self, text: &str, method: PasteMethod) -> Result<(), ServiceError>;
+    fn copy(&self, text: &str) -> Result<(), ServiceError>;
+}
+
+/// The menu bar or tray entries of one plugin that holds `menu-bar-items`.
+pub trait MenuBarService: Send + Sync {
+    fn set_entries(&self, entries: Vec<MenuBarEntry>) -> Result<(), ServiceError>;
+}
+
+/// The notifications of one plugin that holds `notifications`. The app
+/// refuses one outside a call that answers something you did.
+pub trait NotificationService: Send + Sync {
+    fn notify(&self, notification: Notification) -> Result<(), ServiceError>;
+    fn withdraw(&self, id: &str) -> Result<(), ServiceError>;
 }
 
 /// What a web call to a service without web access returns.

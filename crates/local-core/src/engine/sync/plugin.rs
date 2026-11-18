@@ -156,7 +156,7 @@ mod tests {
             let directory = TempDir::new().unwrap();
             let root = directory.path().join("workspace");
             let app = directory.path().join("app");
-            WorkspaceEngine::create_with_app_data(&root, "Plugin", &app).unwrap();
+            WorkspaceEngine::create_with_app_data(&root, &app).unwrap();
             let root = root.canonicalize().unwrap();
             Self {
                 _directory: directory,
@@ -357,7 +357,6 @@ mod tests {
         let directory = TempDir::new().unwrap();
         let engine = WorkspaceEngine::create_sync_replica(
             directory.path().join("replica"),
-            "Replica",
             "workspace_01j00000000000000000000000",
             directory.path().join("app"),
         )
@@ -369,7 +368,7 @@ mod tests {
                 .enabled_plugins
                 .contains(&SYNC_PLUGIN_ID.to_owned())
         );
-        assert!(manifest.enabled_plugins.contains(&"notes".to_owned()));
+        assert!(manifest.enabled_plugins.contains(&"tasks".to_owned()));
     }
 
     #[test]

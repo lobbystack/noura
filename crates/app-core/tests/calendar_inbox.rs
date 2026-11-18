@@ -218,7 +218,7 @@ fn a_task_due_today_shows_on_the_calendar_and_in_the_inbox_and_opens() {
     // Its due date goes in from the Tasks page's right pane.
     app.open_page(tasks::PAGE, OpenAs::Preview);
     support::settle(&mut app);
-    let created = fixture.read("tasks/Dentist.md");
+    let created = fixture.read("Tasks/Dentist.md");
     tasks::select_in_pane(&mut app, &local_object_id(&created));
     wait_until(&mut app, "the task's fields show", |app| {
         tasks::pane_input(app, "due").is_some()
@@ -229,7 +229,7 @@ fn a_task_due_today_shows_on_the_calendar_and_in_the_inbox_and_opens() {
         InputValue::Date(Some("2026-10-21".to_owned())),
     );
     support::settle(&mut app);
-    let bytes = fixture.read("tasks/Dentist.md");
+    let bytes = fixture.read("Tasks/Dentist.md");
     assert_eq!(tasks::property(&bytes, "due"), Some("2026-10-21".into()));
     let id = local_object_id(&bytes);
 
@@ -257,7 +257,7 @@ fn a_task_due_today_shows_on_the_calendar_and_in_the_inbox_and_opens() {
     assert_eq!(tab.title(), "Dentist");
     assert_eq!(
         tab.file().map(|file| file.relative_path.as_str()),
-        Some("tasks/Dentist.md")
+        Some("Tasks/Dentist.md")
     );
     let tab = tab.id();
     assert_eq!(app.note(tab).unwrap().text(), "");

@@ -33,7 +33,7 @@ fn opened() -> Option<Opened> {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     let write = |path: &str, text: &str| {
         let path = folder.join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

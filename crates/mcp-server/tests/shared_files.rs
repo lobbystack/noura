@@ -128,7 +128,7 @@ async fn changes_made_through_mcp_show_in_the_open_app_and_survive_an_index_rebu
     assert_eq!(search(agent.workspace(), "MCP"), found);
     let mut wanted = vec!["Docs/Ideas.md".to_owned(), "Docs/Plan.md".to_owned()];
     if plugins.is_some() {
-        wanted.push("tasks/MCP chore.md".to_owned());
+        wanted.push("Tasks/MCP chore.md".to_owned());
     }
     wanted.sort();
     assert_eq!(found, wanted);

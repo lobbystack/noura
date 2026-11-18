@@ -21,7 +21,7 @@ pub(crate) const CHAT_SCHEMA: &str = r#"{"properties":[
 ]}"#;
 
 pub(crate) const CHAT_MESSAGE_SCHEMA: &str = r#"{"properties":[
-  {"name":"chat_id","kind":{"reference":"chat"}},
+  {"name":"chat_id","kind":{"id":"chat"}},
   {"name":"run_id","kind":"string"},
   {"name":"kind","kind":{"enum":["user","assistant","tool-call","tool-result","context-summary"]}},
   {"name":"status","kind":{"enum":["in-progress","completed","interrupted","cancelled","failed"]}},
@@ -31,5 +31,5 @@ pub(crate) const CHAT_MESSAGE_SCHEMA: &str = r#"{"properties":[
   {"name":"tool_call_id","kind":"string","nullable":true},
   {"name":"tool_name","kind":"string","nullable":true},
   {"name":"error_code","kind":"string","nullable":true},
-  {"name":"summarizes_through_message_id","kind":{"reference":"chat-message"},"nullable":true}
+  {"name":"summarizes_through_message_id","kind":{"id":"chat-message"},"nullable":true}
 ]}"#;

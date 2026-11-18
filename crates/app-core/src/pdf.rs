@@ -1377,13 +1377,9 @@ mod tests {
         let app_data = tempfile::tempdir().unwrap();
         let folder = tempfile::tempdir().unwrap();
         std::fs::write(folder.path().join(name), bytes).unwrap();
-        let engine = WorkspaceEngine::open_or_initialize_with_app_data(
-            folder.path(),
-            "Test",
-            None,
-            app_data.path(),
-        )
-        .unwrap();
+        let engine =
+            WorkspaceEngine::open_or_initialize_with_app_data(folder.path(), None, app_data.path())
+                .unwrap();
         let session = PdfSession::open(
             Arc::new(engine),
             name,

@@ -103,13 +103,14 @@ fn settings_lists_its_sections_under_this_computer_workspace_and_app() {
                     "General".to_owned(),
                     "Editor".to_owned(),
                     "Keyboard shortcuts".to_owned(),
+                    "Speech".to_owned(),
                     "Account".to_owned()
                 ]
             ),
             (
                 "Workspace".to_owned(),
                 vec![
-                    "Name and location".to_owned(),
+                    "Location".to_owned(),
                     "Plugins".to_owned(),
                     "AI".to_owned(),
                     "Sync and devices".to_owned(),
@@ -117,7 +118,7 @@ fn settings_lists_its_sections_under_this_computer_workspace_and_app() {
                     "Ignored files".to_owned()
                 ]
             ),
-            ("App".to_owned(), vec!["About noura".to_owned()]),
+            ("App".to_owned(), vec!["About Noura".to_owned()]),
         ]
     );
     assert_eq!(
@@ -143,7 +144,7 @@ fn later_areas_add_their_sections_to_a_group_and_settings_shows_them() {
         (
             "Workspace".to_owned(),
             vec![
-                "Name and location".to_owned(),
+                "Location".to_owned(),
                 "Plugins".to_owned(),
                 "AI".to_owned(),
                 "Sync and devices".to_owned(),

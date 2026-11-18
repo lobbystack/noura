@@ -1,8 +1,6 @@
-//! AI providers in Settings, your consent for each in the open workspace,
-//! and the prompt that asks for it before a provider receives the
-//! workspace's content. Every window shares the session's AI service.
-//! Noura draws the prompt itself, so no plugin can draw one that grants
-//! consent.
+//! AI providers in Settings and the prompt that asks before a tool call
+//! runs. Every window shares the session's AI service. Noura draws the
+//! prompt itself, so no plugin can draw one that allows a call.
 
 use std::sync::Arc;
 
@@ -10,13 +8,13 @@ use local_core::AiStreamer;
 
 use super::{App, Change};
 use crate::{
-    AiConsentPrompt, AiProviderChoice, AiProviderInput, AiProviderRow, AiToolPrompt, AppError,
+    AiProviderChoice, AiProviderInput, AiProviderRow, AiToolPrompt, AppError,
     ai::{provider_choices, provider_kinds},
 };
 
 impl App {
-    /// The AI providers set up on this device, with whether each has a key
-    /// and your consent for the open workspace.
+    /// The AI providers set up on this device, with whether each has a
+    /// key.
     pub fn ai_providers(&self) -> Vec<AiProviderRow> {
         self.session.ai.provider_rows()
     }
@@ -93,8 +91,7 @@ impl App {
     /// Add a provider, or change one. Its key goes to this computer's
     /// credential store, and the settings stay in this device's app data.
     /// An endpoint must use HTTPS unless it points at this computer.
-    /// Returns the provider's ID. Changing a provider's kind, endpoint or
-    /// model lapses your consent for it.
+    /// Returns the provider's ID.
     pub fn save_ai_provider(&mut self, input: AiProviderInput) -> Result<String, AppError> {
         let saved = self.session.ai.save_provider(input);
         self.ai_changed();
@@ -113,46 +110,6 @@ impl App {
         let removed = self.session.ai.remove_key(id);
         self.ai_changed();
         removed
-    }
-
-    /// Consent to the provider `id` receiving the open workspace's content.
-    /// Noura keeps the consent on this device, never in the workspace.
-    pub fn grant_ai_consent(&mut self, id: &str) -> Result<(), AppError> {
-        let granted = self.session.ai.grant(id);
-        self.ai_changed();
-        granted
-    }
-
-    /// Withdraw your consent for the provider `id` in the open workspace.
-    /// Its running requests stop, and its next request asks again.
-    pub fn revoke_ai_consent(&mut self, id: &str) -> Result<(), AppError> {
-        let revoked = self.session.ai.revoke(id);
-        self.ai_changed();
-        revoked
-    }
-
-    /// The question a chat waits on: may this provider receive the open
-    /// workspace's content?
-    pub fn ai_consent_prompt(&self) -> Option<AiConsentPrompt> {
-        self.session.ai.prompt()
-    }
-
-    /// Let the provider the prompt names receive the open workspace's
-    /// content, and send what waited.
-    pub fn allow_ai_consent(&mut self) {
-        if let Err(error) = self.session.ai.answer_prompt(true) {
-            self.show_notice("Couldn't save your consent", error, None);
-        }
-        self.ai_changed();
-    }
-
-    /// Don't let the provider the prompt names receive the workspace's
-    /// content. Nothing waiting for it is sent or written.
-    pub fn deny_ai_consent(&mut self) {
-        if let Err(error) = self.session.ai.answer_prompt(false) {
-            self.show_notice("Couldn't answer", error, None);
-        }
-        self.ai_changed();
     }
 
     /// The tool call waiting for your answer, if one is: the model asked to

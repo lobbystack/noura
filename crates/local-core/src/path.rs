@@ -131,9 +131,75 @@ pub fn resolve_for_write(root: &Path, relative: &str, operation: &str) -> Result
     Ok(destination)
 }
 
+/// `relative` with each folder it names spelled as the folder already on
+/// disk when only the letter case differs, so a new `Notes/Plan.md` lands
+/// in an existing `notes/` folder instead of a second folder beside it, on
+/// any file system. A folder that exists with the exact name wins, and a
+/// folder that doesn't exist yet keeps the name it was given. The file
+/// name itself keeps its case.
+pub fn match_existing_folder_case(root: &Path, relative: &str) -> String {
+    let mut parts: Vec<String> = relative.split('/').map(str::to_owned).collect();
+    let Some((_, folders)) = parts.split_last_mut() else {
+        return relative.to_owned();
+    };
+    let mut cursor = root.to_owned();
+    for folder in folders.iter_mut() {
+        let Ok(entries) = std::fs::read_dir(&cursor) else {
+            break;
+        };
+        let mut folded = None;
+        let mut exact = false;
+        for entry in entries.flatten() {
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            if name == *folder {
+                exact = true;
+                break;
+            }
+            if folded.is_none() && name.to_lowercase() == folder.to_lowercase() {
+                folded = Some(name);
+            }
+        }
+        if !exact {
+            match folded {
+                Some(name) => *folder = name,
+                None => break,
+            }
+        }
+        cursor.push(&*folder);
+    }
+    parts.join("/")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_files_join_a_folder_that_differs_only_in_case() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("notes/plans")).unwrap();
+        assert_eq!(
+            match_existing_folder_case(root.path(), "Notes/Plans/Plan.md"),
+            "notes/plans/Plan.md"
+        );
+        assert_eq!(
+            match_existing_folder_case(root.path(), "Tasks/Plan.md"),
+            "Tasks/Plan.md"
+        );
+        assert_eq!(
+            match_existing_folder_case(root.path(), "Plan.md"),
+            "Plan.md"
+        );
+        assert_eq!(
+            match_existing_folder_case(root.path(), "Notes/New/Plan.md"),
+            "notes/New/Plan.md"
+        );
+    }
 
     #[test]
     fn managed_objects_require_markdown_outside_reserved_directories() {

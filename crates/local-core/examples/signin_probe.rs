@@ -59,8 +59,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 let directory = tempfile::TempDir::new()?;
                 let root = directory.path().join("workspace");
                 let app_data = directory.path().join("app");
-                let engine =
-                    WorkspaceEngine::create_with_app_data(&root, "Desktop sync", &app_data)?;
+                let engine = WorkspaceEngine::create_with_app_data(&root, &app_data)?;
                 // Sync is a plugin that new workspaces start with turned off.
                 engine.enable_sync_plugin()?;
                 std::fs::write(root.join("external.txt"), b"canonical external edit")?;

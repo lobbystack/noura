@@ -53,8 +53,34 @@ pub enum PropertyKind {
     Date,
     /// One of the listed strings.
     Enum(Vec<String>),
-    /// The stable ID of an object of the named type.
+    /// A link, `"[[Title]]"` or `"[[Folder/Title]]"`, to an object of the
+    /// named type, or of any type when the name is [`ANY_TYPE`]. The
+    /// format checks the link's form; the application checks, when it
+    /// writes, that the link leads to an object of that type.
     Reference(String),
+    /// The stable ID of an object of the named type, for objects that
+    /// belong to another one, as a chat message to its chat. Not a link:
+    /// nobody reads it, and nothing rewrites it.
+    Id(String),
+    /// A list of values, each of the inner kind, as a list of links.
+    List(Box<PropertyKind>),
+}
+
+/// The type name a reference uses to accept a link to an object of any
+/// type.
+pub const ANY_TYPE: &str = "*";
+
+/// A link a property of a registered type holds, for the application to
+/// check that it leads to an object of the declared type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredLink {
+    /// The property's name.
+    pub property: String,
+    /// The link's target, between `[[` and `]]`, without a heading or a
+    /// label.
+    pub target: String,
+    /// The type the link must lead to, or [`ANY_TYPE`].
+    pub object_type: String,
 }
 
 /// Why an object type could not be registered.
@@ -87,7 +113,7 @@ pub enum PropertyError {
     NotAllowed { property: String },
     #[error("{property} must use YYYY-MM-DD or RFC 3339 with an explicit offset")]
     InvalidDate { property: String },
-    #[error("{property} must be the stable ID of an object of the declared type")]
+    #[error("{property} must link to an object of the declared type")]
     InvalidReference { property: String },
 }
 
@@ -203,6 +229,38 @@ impl ObjectTypeRegistry {
         self.types.get(object_type)
     }
 
+    /// The links that the reference properties of `object` hold, one for
+    /// each link, in declared order. A property that isn't a link, or a
+    /// type without a schema, gives none.
+    pub fn declared_links(&self, object: &WorkspaceObject) -> Vec<DeclaredLink> {
+        let Some(schema) = self.types.get(&object.object_type) else {
+            return Vec::new();
+        };
+        let mut links = Vec::new();
+        for declaration in &schema.properties {
+            let Some(value) = object.properties.get(&declaration.name) else {
+                continue;
+            };
+            let (kind, values): (&PropertyKind, Vec<&Value>) = match (&declaration.kind, value) {
+                (PropertyKind::List(inner), Value::Array(items)) => (inner, items.iter().collect()),
+                (kind, value) => (kind, vec![value]),
+            };
+            let PropertyKind::Reference(object_type) = kind else {
+                continue;
+            };
+            for value in values {
+                if let Some(target) = value.as_str().and_then(crate::links::property_link) {
+                    links.push(DeclaredLink {
+                        property: declaration.name.clone(),
+                        target: target.to_owned(),
+                        object_type: object_type.clone(),
+                    });
+                }
+            }
+        }
+        links
+    }
+
     /// The names a registered type declares, in declared order.
     fn declared(&self, object_type: &str) -> Option<Vec<&str>> {
         self.types.get(object_type).map(|schema| {
@@ -215,21 +273,44 @@ impl ObjectTypeRegistry {
     }
 }
 
+impl PropertyKind {
+    fn well_formed(&self) -> bool {
+        match self {
+            PropertyKind::Enum(values) => !values.is_empty(),
+            PropertyKind::Reference(object_type) => {
+                object_type == ANY_TYPE || valid_object_type(object_type)
+            }
+            PropertyKind::Id(object_type) => valid_object_type(object_type),
+            PropertyKind::List(inner) => {
+                !matches!(**inner, PropertyKind::List(_)) && inner.well_formed()
+            }
+            _ => true,
+        }
+    }
+}
+
 impl PropertyDeclaration {
     fn well_formed(&self) -> bool {
-        !self.name.is_empty()
-            && match &self.kind {
-                PropertyKind::Enum(values) => !values.is_empty(),
-                PropertyKind::Reference(object_type) => valid_object_type(object_type),
-                _ => true,
-            }
+        !self.name.is_empty() && self.kind.well_formed()
     }
 
     fn check(&self, value: &Value) -> Result<(), PropertyError> {
-        let property = self.name.clone();
-        let fits = |valid: bool, error: PropertyError| if valid { Ok(()) } else { Err(error) };
         match (&self.kind, value) {
             (_, Value::Null) if self.nullable => Ok(()),
+            (PropertyKind::List(inner), Value::Array(items)) => items
+                .iter()
+                .try_for_each(|item| check_kind(&self.name, inner, item)),
+            (kind, value) => check_kind(&self.name, kind, value),
+        }
+    }
+}
+
+/// Whether `value` fits `kind`, for the property `property`.
+fn check_kind(property: &str, kind: &PropertyKind, value: &Value) -> Result<(), PropertyError> {
+    let property = property.to_owned();
+    let fits = |valid: bool, error: PropertyError| if valid { Ok(()) } else { Err(error) };
+    {
+        match (kind, value) {
             (PropertyKind::String, Value::String(_))
             | (PropertyKind::Number, Value::Number(_))
             | (PropertyKind::Boolean, Value::Bool(_)) => Ok(()),
@@ -241,7 +322,11 @@ impl PropertyDeclaration {
                 values.contains(value),
                 PropertyError::NotAllowed { property },
             ),
-            (PropertyKind::Reference(object_type), Value::String(value)) => fits(
+            (PropertyKind::Reference(_), Value::String(value)) => fits(
+                crate::links::property_link(value).is_some(),
+                PropertyError::InvalidReference { property },
+            ),
+            (PropertyKind::Id(object_type), Value::String(value)) => fits(
                 valid_object_id(value, object_type),
                 PropertyError::InvalidReference { property },
             ),

@@ -7,9 +7,9 @@
 use std::{sync::Arc, time::Duration};
 
 use local_core::{
-    AiConsentDataCategory, AiConsentGrantInput, AiContentPart, AiFoundation, AiModelRef,
-    AiProviderConfig, AiStopReason, AiStreamEvent, AiStreamInput, AiStreamOperation, AiToolCall,
-    AiToolDefinition, AiTransportMessage, AiUsage, MemoryCredentials,
+    AiContentPart, AiFoundation, AiModelRef, AiProviderConfig, AiStopReason, AiStreamEvent,
+    AiStreamInput, AiStreamOperation, AiToolCall, AiToolDefinition, AiTransportMessage, AiUsage,
+    MemoryCredentials,
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -19,8 +19,6 @@ use tokio::{
     task::JoinHandle,
 };
 
-const WORKSPACE: &str = "workspace_01jbcdefghjkmnpqrstvwxyz0a";
-const POLICY: &str = "2026-09";
 const OPERATION: &str = "01890a5d-ac96-7000-8000-000000000001";
 const KEY: &str = "sk-local-test-key";
 const PATIENCE: Duration = Duration::from_secs(20);
@@ -163,8 +161,8 @@ async fn answer_request(socket: &mut TcpStream, answer: Answer) -> bool {
     }
 }
 
-/// Noura's AI settings with the provider at `endpoint`, its key in the
-/// credential store, and your consent.
+/// Noura's AI settings with the provider at `endpoint` and its key in the
+/// credential store.
 struct Settings {
     _folder: tempfile::TempDir,
     ai: AiFoundation,
@@ -174,7 +172,6 @@ fn settings(kind: &str, endpoint: &str) -> Settings {
     let folder = tempfile::tempdir().unwrap();
     let ai = AiFoundation::open_with(
         folder.path().join("providers.json"),
-        folder.path().join("consents.json"),
         Arc::new(MemoryCredentials::new()),
     )
     .unwrap();
@@ -190,15 +187,6 @@ fn settings(kind: &str, endpoint: &str) -> Settings {
     })
     .unwrap();
     ai.set_credential("local", KEY).unwrap();
-    ai.grant_consent(
-        WORKSPACE,
-        AiConsentGrantInput {
-            provider_id: "local".into(),
-            policy_version: POLICY.into(),
-            data_category: AiConsentDataCategory::WorkspaceContent,
-        },
-    )
-    .unwrap();
     Settings {
         _folder: folder,
         ai,
@@ -225,19 +213,15 @@ fn add_task() -> AiToolDefinition {
 }
 
 fn stream(ai: &AiFoundation, messages: Vec<AiTransportMessage>) -> AiStreamOperation {
-    ai.start_stream(
-        WORKSPACE,
-        AiStreamInput {
-            operation_id: OPERATION.into(),
-            model: AiModelRef {
-                provider_id: "local".into(),
-                model: "test-model".into(),
-            },
-            messages,
-            tools: Some(vec![add_task()]),
-            policy_version: Some(POLICY.into()),
+    ai.start_stream(AiStreamInput {
+        operation_id: OPERATION.into(),
+        model: AiModelRef {
+            provider_id: "local".into(),
+            model: "test-model".into(),
         },
-    )
+        messages,
+        tools: Some(vec![add_task()]),
+    })
     .unwrap()
 }
 

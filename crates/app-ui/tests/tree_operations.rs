@@ -25,7 +25,7 @@ fn opened_on(
     folder: &Path,
     platform: Platform,
 ) -> (Ui, std::sync::Arc<FakeSystem>) {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     for (path, bytes) in [
         ("Docs/Guide.md", b"g".as_slice()),
         ("Readme.md", b"r"),

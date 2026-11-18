@@ -20,7 +20,7 @@ const MOVE_CHANGED: &str = "The task changed, so it didn't move.";
 fn task(suffix: &str, status: &str, more: &str) -> Vec<u8> {
     task_file(
         suffix,
-        &format!("status: {status}\npriority: medium\n{more}project: project_{H}\n"),
+        &format!("status: {status}\npriority: medium\n{more}project: '[[Garden]]'\n"),
         "2026-10-01T10:00:00Z",
     )
 }
@@ -46,7 +46,7 @@ fn garden() -> Fixture {
             "tasks/Paint.md",
             &task_file(
                 G,
-                "status: todo\npriority: medium\nproject: project_01jbcdefghjkmnpqrstvwxyz0c\n",
+                "status: todo\npriority: medium\nproject: '[[Elsewhere]]'\n",
                 "2026-10-01T10:00:00Z",
             ),
         ),
@@ -341,7 +341,7 @@ fn a_move_against_a_stale_revision_changes_nothing_and_reloads_the_board() {
     // Another app changes Water after the board drew it.
     let outside = task_file(
         B,
-        &format!("status: todo\npriority: high\nkanban_order: a0\nproject: project_{H}\n"),
+        "status: todo\npriority: high\nkanban_order: a0\nproject: '[[Garden]]'\n",
         "2026-10-21T10:00:00Z",
     );
     std::fs::write(fixture.root.join("tasks/Water.md"), &outside).unwrap();
@@ -418,10 +418,7 @@ fn add_task_names_a_task_first_and_creates_it_in_the_project_through_tasks() {
         ["tasks/Sow beans.md"]
     );
     let sown = fixture.read("tasks/Sow beans.md");
-    assert_eq!(
-        property(&sown, "project"),
-        Some(format!("project_{H}").into())
-    );
+    assert_eq!(property(&sown, "project"), Some("[[Garden]]".into()));
     assert_eq!(property(&sown, "status"), Some("todo".into()));
     assert_eq!(property(&sown, "priority"), Some("medium".into()));
     assert!(!name_field_shows(&app, tab));

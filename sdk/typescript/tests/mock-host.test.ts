@@ -70,7 +70,7 @@ test('the objects the plugin writes show in the mock workspace', async () => {
 	await probe('create-object');
 	expect(
 		host.objects().map((object) => [object.objectType, object.path]),
-	).toContainEqual(['probe-note', 'probe-notes/Probe.md']);
+	).toContainEqual(['probe-note', 'Probe-notes/Probe.md']);
 });
 
 test('the mock host keeps from plugins the object types the real host keeps', async (context) => {

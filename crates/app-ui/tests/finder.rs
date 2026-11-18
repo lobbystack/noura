@@ -1,7 +1,8 @@
-//! Quick open and search in the palette overlay, through AccessKit. These
-//! translate the legacy app's quick-open checks and its "content search
-//! finds text inside notes" check. The overlay is the command palette's:
-//! Mod-K, Mod-O and Mod-Shift-F switch one dialog between its modes.
+//! Search through AccessKit: one dialog with one field that finds files by
+//! name, files by the text inside them, and commands. Mod-K and the rail's
+//! magnifier open it unfiltered, Mod-O filtered to names and Mod-Shift-F
+//! to contents. These translate the legacy app's quick-open checks and
+//! its "content search finds text inside notes" check.
 
 mod support;
 
@@ -18,7 +19,7 @@ type Ui = Harness<'static, app_ui::NouraUi>;
 
 /// A workspace holding `files`, opened at launch.
 fn opened(app_data: &std::path::Path, folder: &std::path::Path, files: &[(&str, &str)]) -> Ui {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     for (path, text) in files {
         let path = folder.join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -129,7 +130,7 @@ fn focused_label(harness: &Ui) -> Option<String> {
 }
 
 #[test]
-fn quick_open_finds_a_note_by_name_and_enter_opens_the_best_match() {
+fn mod_o_finds_a_note_by_name_and_enter_opens_the_best_match() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
@@ -145,7 +146,7 @@ fn quick_open_finds_a_note_by_name_and_enter_opens_the_best_match() {
     let before = files(&folder);
 
     shortcut(&mut harness, Modifiers::COMMAND, Key::O);
-    assert!(dialog(&harness, "Quick open").is_some());
+    assert!(dialog(&harness, "Search").is_some());
     type_text(&mut harness, "groc");
     assert_eq!(options(&harness)[0], "Groceries");
     assert!(
@@ -154,7 +155,7 @@ fn quick_open_finds_a_note_by_name_and_enter_opens_the_best_match() {
         harness.unnamed_widgets()
     );
     press(&mut harness, Key::Enter);
-    assert!(dialog(&harness, "Quick open").is_none());
+    assert!(dialog(&harness, "Search").is_none());
     assert_eq!(open_file(&harness), preview("Groceries"));
 
     harness
@@ -164,13 +165,13 @@ fn quick_open_finds_a_note_by_name_and_enter_opens_the_best_match() {
     shortcut(&mut harness, Modifiers::COMMAND, Key::O);
     type_text(&mut harness, "meeting n");
     press(&mut harness, Key::Enter);
-    assert!(dialog(&harness, "Quick open").is_none());
+    assert!(dialog(&harness, "Search").is_none());
     assert_eq!(open_file(&harness), preview("Meeting notes"));
     assert_eq!(files(&folder), before);
 }
 
 #[test]
-fn quick_open_opens_again_right_after_opening_a_file() {
+fn search_opens_again_right_after_opening_a_file() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
@@ -182,7 +183,7 @@ fn quick_open_opens_again_right_after_opening_a_file() {
 
     for name in ["Alpha", "Beta", "Alpha"] {
         shortcut(&mut harness, Modifiers::COMMAND, Key::O);
-        assert!(dialog(&harness, "Quick open").is_some());
+        assert!(dialog(&harness, "Search").is_some());
         type_text(&mut harness, &name.to_lowercase());
         assert_eq!(options(&harness)[0], name);
         press(&mut harness, Key::Enter);
@@ -198,7 +199,7 @@ fn quick_open_opens_again_right_after_opening_a_file() {
 }
 
 #[test]
-fn keys_typed_right_after_mod_o_land_in_quick_open_and_escape_gives_the_keyboard_back() {
+fn keys_typed_right_after_mod_o_land_in_search_and_escape_gives_the_keyboard_back() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
@@ -229,11 +230,11 @@ fn keys_typed_right_after_mod_o_land_in_quick_open_and_escape_gives_the_keyboard
             egui::Event::Text("zeb".to_owned()),
         ]);
         run(harness);
-        let field = harness.get_by_role_and_label(Role::TextInput, "Find a file by name");
+        let field = harness.get_by_role_and_label(Role::TextInput, "Search");
         assert_eq!(field.value().as_deref(), Some("zeb"));
         assert!(field.is_focused());
         press(harness, Key::Escape);
-        assert!(dialog(harness, "Quick open").is_none());
+        assert!(dialog(harness, "Search").is_none());
         // Whatever had the keyboard has it again.
         assert_eq!(focused_label(harness).as_deref(), Some(holder));
     };
@@ -255,7 +256,7 @@ fn keys_typed_right_after_mod_o_land_in_quick_open_and_escape_gives_the_keyboard
 }
 
 #[test]
-fn content_search_finds_text_inside_notes() {
+fn mod_shift_f_finds_text_inside_notes() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
@@ -318,7 +319,12 @@ fn search_filters_and_states_are_reachable_from_the_keyboard() {
         harness.unnamed_widgets()
     );
 
-    // The type filter offers the index's types.
+    // After the filter's chip, the type filter offers the index's types.
+    press(&mut harness, Key::Tab);
+    assert_eq!(
+        focused_label(&harness).as_deref(),
+        Some("Remove Contents filter")
+    );
     press(&mut harness, Key::Tab);
     assert_eq!(focused_label(&harness).as_deref(), Some("Any type"));
     press(&mut harness, Key::Tab);
@@ -348,7 +354,7 @@ fn search_filters_and_states_are_reachable_from_the_keyboard() {
     // A tag nothing holds.
     type_text(&mut harness, "s");
     wait_until(&mut harness, |harness| {
-        harness.query_by_label("No matches").is_some()
+        harness.query_by_label("No results").is_some()
     });
     assert!(options(&harness).is_empty());
 
@@ -418,12 +424,116 @@ fn shortcut_of(harness: &Ui, label: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The filter's chip, which a click removes.
+fn chip<'a>(harness: &'a Ui, name: &'a str) -> Option<egui_kittest::Node<'a>> {
+    harness.query_by_role_and_label(Role::Button, name)
+}
+
+fn rail_search(harness: &mut Ui) {
+    harness
+        .get_by_role_and_label(Role::Button, "Search")
+        .click();
+    run(harness);
+}
+
 #[test]
-fn quick_open_and_search_are_modes_of_the_command_palette() {
+fn the_rail_s_magnifier_opens_search_and_typing_a_file_s_name_finds_it() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    let mut harness = opened(
+        app_data.path(),
+        &folder,
+        &[("salut.md", "bonjour"), ("Other.md", "nothing")],
+    );
+
+    rail_search(&mut harness);
+    assert!(dialog(&harness, "Search").is_some());
+    let field = harness.get_by_role_and_label(Role::TextInput, "Search");
+    assert!(field.is_focused());
+    // Unfiltered, so no chip.
+    assert!(harness.query_all_by_role(Role::Button).all(|button| {
+        !button
+            .accesskit_node()
+            .label()
+            .is_some_and(|label| label.starts_with("Remove"))
+    }));
+    type_text(&mut harness, "salut");
+    assert_eq!(options(&harness)[0], "salut");
+    assert!(
+        harness.unnamed_widgets().is_empty(),
+        "{:?}",
+        harness.unnamed_widgets()
+    );
+    press(&mut harness, Key::Enter);
+    assert!(dialog(&harness, "Search").is_none());
+    assert_eq!(open_file(&harness), preview("salut"));
+}
+
+#[test]
+fn a_word_inside_a_file_finds_it_with_the_matching_text() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let mut harness = opened(
+        app_data.path(),
+        &folder,
+        &[
+            ("Letters/Greeting.md", "Salut tout le monde"),
+            ("Other.md", "nothing here"),
+        ],
+    );
+
+    shortcut(&mut harness, Modifiers::COMMAND, Key::K);
+    type_text(&mut harness, "monde");
+    wait_until(&mut harness, |harness| !options(harness).is_empty());
+    assert_eq!(options(&harness), ["Greeting"]);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::ListBox, "Contents")
+            .is_some()
+    );
+    let result = harness.get_by_role_and_label(Role::ListBoxOption, "Greeting");
+    let described = result.accesskit_node().description().unwrap_or_default();
+    assert!(described.contains("Letters"), "{described}");
+    assert!(described.contains("Salut tout le monde"), "{described}");
+    press(&mut harness, Key::Enter);
+    assert_eq!(open_file(&harness), preview("Greeting"));
+}
+
+#[test]
+fn commands_still_show_with_their_shortcuts_after_the_files() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let mut harness = opened(app_data.path(), &folder, &[("Sidebar notes.md", "x")]);
+
+    rail_search(&mut harness);
+    type_text(&mut harness, "sidebar");
+    wait_until(&mut harness, |harness| {
+        harness.state().app().palette().unwrap().state != app_core::SearchState::Searching
+    });
+    assert_eq!(options(&harness), ["Sidebar notes", "Toggle Sidebar"]);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::ListBox, "Files")
+            .is_some()
+    );
+    assert!(shortcut_of(&harness, "Toggle Sidebar").is_some());
+
+    // Down moves from the file to the command, and Enter runs it.
+    press(&mut harness, Key::ArrowDown);
+    press(&mut harness, Key::Enter);
+    assert!(dialog(&harness, "Search").is_none());
+    assert!(!harness.state().app().layout().sidebar_shown);
+}
+
+#[test]
+fn mod_o_and_mod_shift_f_open_search_filtered_and_the_chip_removes_the_filter() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    create_workspace(app_data.path(), &folder);
     std::fs::write(folder.join("Groceries.md"), "milk").unwrap();
     // Mod is Ctrl on Windows.
     let mut harness = harness_for(app_data.path(), app_core::Platform::Windows, |_| {});
@@ -431,48 +541,65 @@ fn quick_open_and_search_are_modes_of_the_command_palette() {
     let ctrl = Modifiers::CTRL | Modifiers::COMMAND;
 
     shortcut(&mut harness, ctrl, Key::K);
-    assert!(dialog(&harness, "Command palette").is_some());
+    type_text(&mut harness, "search");
     assert_eq!(
-        shortcut_of(&harness, "Quick Open…").as_deref(),
+        shortcut_of(&harness, "Search File Names…").as_deref(),
         Some("Ctrl+O")
     );
     assert_eq!(
-        shortcut_of(&harness, "Search Files…").as_deref(),
+        shortcut_of(&harness, "Search File Contents…").as_deref(),
         Some("Ctrl+Shift+F")
     );
+    press(&mut harness, Key::Escape);
 
-    // Ctrl+O from the command palette's field turns the dialog into quick
-    // open, and keys typed in the same frame land in its field.
+    // Ctrl+O opens search filtered to names, and keys typed in the same
+    // frame land in its field.
     harness.input_mut().events.extend([
         key(Key::O, ctrl, true),
         key(Key::O, ctrl, false),
         egui::Event::Text("groc".to_owned()),
     ]);
     run(&mut harness);
-    assert!(dialog(&harness, "Command palette").is_none());
-    assert!(dialog(&harness, "Quick open").is_some());
-    let field = harness.get_by_role_and_label(Role::TextInput, "Find a file by name");
+    assert!(dialog(&harness, "Search").is_some());
+    assert!(chip(&harness, "Remove Names filter").is_some());
+    let field = harness.get_by_role_and_label(Role::TextInput, "Search");
     assert_eq!(field.value().as_deref(), Some("groc"));
     assert!(field.is_focused());
     assert_eq!(options(&harness), ["Groceries"]);
 
-    // Ctrl+Shift+F turns it into search, and Ctrl+K closes it.
+    // Ctrl+Shift+F changes the filter to contents and keeps the text.
     shortcut(&mut harness, ctrl | Modifiers::SHIFT, Key::F);
-    assert!(dialog(&harness, "Quick open").is_none());
-    let field = harness.get_by_role_and_label(Role::TextInput, "Search the workspace");
+    assert!(chip(&harness, "Remove Names filter").is_none());
+    assert!(chip(&harness, "Remove Contents filter").is_some());
+    let field = harness.get_by_role_and_label(Role::TextInput, "Search");
     assert!(field.is_focused());
-    shortcut(&mut harness, ctrl, Key::K);
-    assert!(dialog(&harness, "Search").is_none());
+    assert_eq!(field.value().as_deref(), Some("groc"));
+    assert!(harness.query_by_label("Any type").is_some());
 
-    // The command palette runs Search Files as its shortcut would.
-    shortcut(&mut harness, ctrl, Key::K);
-    harness
-        .get_by_label("Search commands")
-        .type_text("search files");
+    // A click on the chip removes the filter; commands show again.
+    chip(&harness, "Remove Contents filter").unwrap().click();
     run(&mut harness);
+    assert!(chip(&harness, "Remove Contents filter").is_none());
+    assert!(harness.query_by_label("Any type").is_none());
+    assert!(
+        harness
+            .get_by_role_and_label(Role::TextInput, "Search")
+            .is_focused()
+    );
+
+    // Backspace in the empty field removes the filter too.
+    shortcut(&mut harness, ctrl, Key::K);
+    shortcut(&mut harness, ctrl, Key::O);
+    assert!(chip(&harness, "Remove Names filter").is_some());
+    press(&mut harness, Key::Backspace);
+    assert!(chip(&harness, "Remove Names filter").is_none());
+    assert!(dialog(&harness, "Search").is_some());
+
+    // The File menu's Search File Contents runs as its shortcut would.
+    press(&mut harness, Key::Escape);
+    shortcut(&mut harness, ctrl, Key::K);
+    type_text(&mut harness, "search file contents");
     press(&mut harness, Key::Enter);
-    assert!(dialog(&harness, "Command palette").is_none());
-    let field = harness.get_by_role_and_label(Role::TextInput, "Search the workspace");
-    assert!(field.is_focused());
+    assert!(chip(&harness, "Remove Contents filter").is_some());
     assert!(harness.unnamed_widgets().is_empty());
 }

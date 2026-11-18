@@ -162,6 +162,8 @@ pub struct Windows {
     smoke: Option<Smoke>,
     /// The system's spell checker, which every window's notes share.
     spell_checker: Option<Arc<dyn SpellChecker>>,
+    /// The plugins' global shortcuts and the menu bar item.
+    speech: Option<crate::speech_shell::SpeechShell>,
 }
 
 /// When a later launch asked, and when Noura last tried.
@@ -217,6 +219,7 @@ impl Windows {
             quit_request: QuitRequest::default(),
             smoke: None,
             spell_checker: None,
+            speech: None,
         }
     }
 
@@ -247,8 +250,22 @@ impl Windows {
     pub fn install_menu_bar(&mut self, cc: &eframe::CreationContext<'_>) {
         let sender = self.choice_sender.clone();
         let ctx = cc.egui_ctx.clone();
+        let woken = ctx.clone();
+        let speech = crate::speech_shell::SpeechShell::new(move || {
+            woken.request_repaint_of(ViewportId::ROOT);
+        });
+        let tray = speech.tray_sender();
+        self.speech = Some(speech);
         muda::MenuEvent::set_event_handler(Some(move |event: muda::MenuEvent| {
-            if let Some(choice) = crate::menu::choice_for(event.id())
+            let id = event.id().as_ref();
+            if id.starts_with(crate::speech_shell::TRAY_PREFIX) {
+                if tray
+                    .send(crate::speech_shell::Heard::Tray(id.to_owned()))
+                    .is_ok()
+                {
+                    ctx.request_repaint_of(ViewportId::ROOT);
+                }
+            } else if let Some(choice) = crate::menu::choice_for(event.id())
                 && sender.send(choice).is_ok()
             {
                 ctx.request_repaint_of(ViewportId::ROOT);
@@ -272,7 +289,7 @@ impl Windows {
         let ctx = ui.ctx().clone();
         if let Some(first) = &mut self.first {
             first.ui(ui);
-            note_focus(&ctx, ViewportId::ROOT, &self.recent);
+            note_focus(&ctx, ViewportId::ROOT, &self.recent, first);
             self.file_drags
                 .lock()
                 .entry(ViewportId::ROOT)
@@ -374,7 +391,22 @@ impl Windows {
                     .is_some_and(ViewportInfo::close_requested)
             })
         };
-        if requested(ViewportId::ROOT) {
+        let keeps_running = self
+            .speech
+            .as_ref()
+            .is_some_and(crate::speech_shell::SpeechShell::keeps_running);
+        if requested(ViewportId::ROOT)
+            && keeps_running
+            && self.others.is_empty()
+            && !self.quitting
+            && !self.ending
+        {
+            // The menu bar item keeps Noura running: the last window hides
+            // until Open Noura or a later launch brings it back.
+            ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Visible(false));
+            self.root_hidden = true;
+        } else if requested(ViewportId::ROOT) {
             let first_waits = self
                 .first
                 .as_ref()
@@ -591,6 +623,54 @@ impl Windows {
     /// minimized or covered and eframe skips the ui. The system focuses
     /// only a window that is no longer minimized, so a minimized window is
     /// restored first and focused once it is back.
+    /// Register the plugins' shortcuts, show the menu bar item, and hand
+    /// presses, choices and `noura --shortcut` runs to the app.
+    fn follow_speech(&mut self, ctx: &Context) {
+        let runs = self
+            .instance
+            .as_ref()
+            .map(Instance::take_shortcuts)
+            .unwrap_or_default();
+        let Some(mut speech) = self.speech.take() else {
+            return;
+        };
+        let mut asked = crate::speech_shell::Asked::default();
+        self.in_recent_window(|window| {
+            let app = window.app_mut();
+            // A recording that finished reaches its plugin even while no
+            // window draws, as when you dictate into another app.
+            app.deliver_plugin_events();
+            for run in &runs {
+                if let Some((plugin, shortcut)) = run.split_once('/') {
+                    let now = std::time::Instant::now();
+                    app.press_shortcut(plugin, shortcut, true, now);
+                    app.press_shortcut(plugin, shortcut, false, now);
+                }
+            }
+            asked = speech.pass(app);
+        });
+        self.speech = Some(speech);
+        if asked.quit {
+            self.quit_app(ctx);
+        } else if asked.open {
+            self.show_hidden(ctx);
+            self.forward = Some(Forward {
+                asked: Instant::now(),
+                tried: None,
+            });
+        }
+    }
+
+    /// Bring the first window back from the menu bar, where closing it hid
+    /// it.
+    fn show_hidden(&mut self, ctx: &Context) {
+        if self.root_hidden && self.first.is_some() {
+            self.root_hidden = false;
+            ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Focus);
+        }
+    }
+
     fn come_forward(&mut self, ctx: &Context) {
         let now = Instant::now();
         if self
@@ -598,6 +678,7 @@ impl Windows {
             .as_ref()
             .is_some_and(Instance::take_activation)
         {
+            self.show_hidden(ctx);
             self.forward = Some(Forward {
                 asked: now,
                 tried: None,
@@ -701,7 +782,7 @@ impl Window {
             }
             window.ui(ui);
             let ctx = ui.ctx();
-            note_focus(ctx, id, &recent);
+            note_focus(ctx, id, &recent, window);
             file_drags
                 .lock()
                 .entry(id)
@@ -720,11 +801,16 @@ impl Window {
     }
 }
 
-/// Remember the viewport `id` as the window that had focus last when it
-/// has focus now.
-fn note_focus(ctx: &Context, id: ViewportId, recent: &Mutex<ViewportId>) {
+/// Remember the viewport `id`, which shows `window`, as the window that
+/// had focus last when it has focus now. What a shortcut, a menu bar item
+/// or a notification opens shows there.
+fn note_focus(ctx: &Context, id: ViewportId, recent: &Mutex<ViewportId>, window: &mut NouraUi) {
     if ctx.input(|input| input.viewport().focused == Some(true)) {
-        *recent.lock() = id;
+        let mut recent = recent.lock();
+        if *recent != id {
+            *recent = id;
+            window.app_mut().window_used();
+        }
     }
 }
 
@@ -749,6 +835,7 @@ impl eframe::App for Windows {
         }
         self.come_forward(ctx);
         self.update_menu_bar(ctx);
+        self.follow_speech(ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -804,7 +891,7 @@ mod tests {
     use super::*;
     use crate::instance::Claim;
 
-    const SWITCHER: &str = "Switch workspace. Current workspace: Current";
+    const SWITCHER: &str = "Workspace: Current";
 
     struct NoFolder;
 
@@ -854,7 +941,7 @@ mod tests {
         let folder = app_data.path().join("Current");
         std::fs::create_dir(&folder).unwrap();
         app_core::WorkspaceService::new(app_data.path())
-            .create("Current", &folder)
+            .create(&folder)
             .unwrap();
         app_data
     }
@@ -902,14 +989,19 @@ mod tests {
         press(harness, Modifiers::SHIFT, Key::W)
     }
 
-    /// Run New Window from the first window's command palette.
+    /// Run New Window from the first window's search.
     fn open_new_window(harness: &mut Harness<'static, Windows>) {
         harness.key_press_modifiers(Modifiers::COMMAND, Key::K);
         harness.run();
         harness
-            .get_by_label("Search commands")
+            .get_by_role_and_label(egui::accesskit::Role::TextInput, "Search")
             .type_text("new window");
-        harness.run();
+        // The contents search answers from another thread, which asks for
+        // frames of its own.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while harness.try_run().is_err() {
+            assert!(std::time::Instant::now() < deadline, "search never settled");
+        }
         harness.key_press(Key::Enter);
         harness.run();
     }

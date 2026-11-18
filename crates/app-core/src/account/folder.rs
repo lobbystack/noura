@@ -145,14 +145,10 @@ fn folder_message(error: &SyncError) -> String {
 fn approvals_attention(invited: usize, devices: usize) -> Option<String> {
     match (invited, devices) {
         (0, 0) => None,
-        (0, 1) => Some(
-            "A new device of your account waits for approval in Settings > Sync account.".into(),
-        ),
-        (0, _) => {
-            Some("New devices of your account wait for approval in Settings > Sync account.".into())
-        }
-        (1, _) => Some("Someone you invited waits for approval in Settings > Members.".into()),
-        _ => Some("People you invited wait for approval in Settings > Members.".into()),
+        (0, 1) => Some("A new device waits for approval in Settings > Account.".into()),
+        (0, _) => Some("New devices wait for approval in Settings > Account.".into()),
+        (1, _) => Some("Someone you invited waits for approval in Settings > People.".into()),
+        _ => Some("People you invited wait for approval in Settings > People.".into()),
     }
 }
 
@@ -162,10 +158,10 @@ fn attention(waiting: usize, moved_in: usize) -> Option<String> {
     match (waiting, moved_in) {
         (0, 0) => None,
         (0, _) => Some(
-            "Earlier versions of a file you restricted stay in its old folder. See Settings > Members.".into(),
+            "Earlier versions of a file you restricted stay in its old folder. See Settings > People.".into(),
         ),
         _ => Some(
-            "Files wait for you before reaching more people, in Settings > Members.".into(),
+            "Files wait for you in Settings > People before more people can read them.".into(),
         ),
     }
 }
@@ -710,7 +706,7 @@ impl Folder {
                         )?
                     }
                     _ => {
-                        let name = engine.manifest().name;
+                        let name = crate::workspace::folder_name(engine.root());
                         // A workspace your account has isn't made twice.
                         let same = crate::sync::workspace::synced_workspaces(service)
                             .await?
@@ -719,7 +715,7 @@ impl Folder {
                         if let Some((workspace, other)) = same {
                             if !self.holds_no_files() {
                                 return Err(SyncError::Invalid(format!(
-                                    "Your account already has a workspace named {other}. Rename this one to keep both."
+                                    "Your account already has a workspace named {other}. Rename its folder to keep both."
                                 )));
                             }
                             return self.download(service, workspace, app_data).await;
@@ -752,17 +748,6 @@ impl Folder {
                     && let (Some(sync), Some(service)) = (self.sync.as_mut(), service)
                 {
                     sync.round(service, 0).await?;
-                }
-            }
-            FolderSyncAction::Rename(name) => {
-                if let (Some(sync), Some(service)) = (self.sync.as_mut(), service) {
-                    match sync.rename(service, &name).await {
-                        Ok(()) => {}
-                        // Only an owner or admin renames a shared workspace;
-                        // the folder keeps its own name.
-                        Err(SyncError::Invalid(_)) => {}
-                        Err(error) => return Err(error),
-                    }
                 }
             }
             FolderSyncAction::Choose { rid, key } => {
@@ -868,10 +853,10 @@ mod tests {
     fn the_window_names_the_section_that_answers_an_approval() {
         assert_eq!(approvals_attention(0, 0), None);
         let line = |invited, devices| approvals_attention(invited, devices).unwrap();
-        assert!(line(0, 1).contains("A new device of your account"));
-        assert!(line(0, 1).contains("Settings > Sync account"));
+        assert!(line(0, 1).starts_with("A new device"));
+        assert!(line(0, 1).contains("Settings > Account"));
         assert!(line(0, 2).starts_with("New devices"));
-        assert!(line(1, 1).contains("Settings > Members"));
+        assert!(line(1, 1).contains("Settings > People"));
         assert!(line(2, 0).starts_with("People you invited"));
     }
 }

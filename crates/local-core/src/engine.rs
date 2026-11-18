@@ -44,6 +44,7 @@ mod drafts;
 mod durable;
 mod files;
 mod import;
+mod links;
 mod manifest;
 mod objects;
 mod own_writes;
@@ -124,10 +125,18 @@ pub struct WorkspaceEngine {
     collaboration_sessions: Mutex<HashMap<String, (String, String, bool)>>,
     collaboration_presence: Mutex<HashMap<String, CollaborationPresenceCacheEntry>>,
     system_trash: std::sync::RwLock<Option<SystemTrash>>,
+    /// Moves whose links Noura hasn't followed yet, from and to.
+    moved_links: Mutex<Vec<(String, String)>>,
+    /// The files whose links to a moved file Noura couldn't update, with
+    /// the link they still hold.
+    stale_links: Mutex<std::collections::BTreeMap<String, links::StaleLink>>,
+    /// Test hook: runs before each link rewrite writes its file.
+    #[cfg(any(test, feature = "test-hooks"))]
+    link_rewrite_hook: Mutex<Option<links::LinkRewriteHook>>,
 }
 
 impl WorkspaceEngine {
-    pub fn create(root: impl AsRef<Path>, name: &str) -> Result<Self> {
+    pub fn create(root: impl AsRef<Path>) -> Result<Self> {
         let app_data = directories::ProjectDirs::from("org", "noura", "Noura")
             .ok_or_else(|| {
                 CoreError::new(
@@ -139,22 +148,20 @@ impl WorkspaceEngine {
             })?
             .data_local_dir()
             .to_owned();
-        Self::create_with_app_data(root, name, app_data)
+        Self::create_with_app_data(root, app_data)
     }
 
     pub fn create_with_app_data(
         root: impl AsRef<Path>,
-        name: &str,
         app_data: impl AsRef<Path>,
     ) -> Result<Self> {
-        Self::create_with_identity(root, name, app_data, None, &[])
+        Self::create_with_identity(root, app_data, None, &[])
     }
 
     /// `extra_plugins` are enabled in the new manifest in addition to the
     /// default domain plugins.
     fn create_with_identity(
         root: impl AsRef<Path>,
-        name: &str,
         app_data: impl AsRef<Path>,
         workspace_id: Option<&str>,
         extra_plugins: &[&str],
@@ -173,19 +180,19 @@ impl WorkspaceEngine {
                 "workspace_create",
             ));
         }
-        if name.trim().is_empty() {
-            return Err(CoreError::validation(
-                "workspace_name_required",
-                "A workspace name is required",
-                "workspace_create",
-            ));
-        }
         let now = now_rfc3339();
-        let mut enabled_plugins: Vec<String> =
-            ["folders", "notes", "tasks", "calendar", "projects"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect();
+        // Every plugin that ships with Noura but AI, which you turn on
+        // yourself because it sends workspace content to a provider.
+        let mut enabled_plugins: Vec<String> = [
+            "calendar",
+            "dictation",
+            "projects",
+            "tasks",
+            "transcription",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
         for plugin in extra_plugins {
             if !enabled_plugins.iter().any(|id| id == plugin) {
                 enabled_plugins.push((*plugin).to_owned());
@@ -196,7 +203,6 @@ impl WorkspaceEngine {
                 format!("workspace_{}", ulid::Ulid::new().to_string().to_lowercase())
             }),
             format_version: 1,
-            name: name.trim().to_owned(),
             created: now.clone(),
             updated: now,
             enabled_plugins,
@@ -220,11 +226,7 @@ impl WorkspaceEngine {
     /// Opens a workspace, initializing Noura metadata when an existing
     /// directory has no `.noura/workspace.yaml`. A saved identity can be supplied
     /// when repairing a previously registered workspace.
-    pub fn open_or_initialize(
-        root: impl AsRef<Path>,
-        name: &str,
-        workspace_id: Option<&str>,
-    ) -> Result<Self> {
+    pub fn open_or_initialize(root: impl AsRef<Path>, workspace_id: Option<&str>) -> Result<Self> {
         let app_data = directories::ProjectDirs::from("org", "noura", "Noura")
             .ok_or_else(|| {
                 CoreError::new(
@@ -236,12 +238,11 @@ impl WorkspaceEngine {
             })?
             .data_local_dir()
             .to_owned();
-        Self::open_or_initialize_with_app_data(root, name, workspace_id, app_data)
+        Self::open_or_initialize_with_app_data(root, workspace_id, app_data)
     }
 
     pub fn open_or_initialize_with_app_data(
         root: impl AsRef<Path>,
-        name: &str,
         workspace_id: Option<&str>,
         app_data: impl AsRef<Path>,
     ) -> Result<Self> {
@@ -258,7 +259,7 @@ impl WorkspaceEngine {
         {
             return Self::open_with_app_data(root, app_data);
         }
-        Self::create_with_identity(root, name, app_data, workspace_id, &[])
+        Self::create_with_identity(root, app_data, workspace_id, &[])
     }
 
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
@@ -322,6 +323,10 @@ impl WorkspaceEngine {
             collaboration_sessions: Mutex::new(HashMap::new()),
             collaboration_presence: Mutex::new(HashMap::new()),
             system_trash: std::sync::RwLock::new(None),
+            moved_links: Mutex::new(Vec::new()),
+            stale_links: Mutex::new(Default::default()),
+            #[cfg(any(test, feature = "test-hooks"))]
+            link_rewrite_hook: Mutex::new(None),
         };
         engine.recover_pending_chat_mutations()?;
         if rebuild {
@@ -364,6 +369,7 @@ impl WorkspaceEngine {
         if let Ok(scan) = self.scan_state.lock() {
             diagnostics.extend(scan.diagnostics.iter().cloned());
         }
+        diagnostics.extend(self.stale_link_diagnostics());
         WorkspaceState {
             phase: WorkspacePhase::Ready,
             workspace_id: Some(self.current_workspace_id()),
@@ -423,6 +429,7 @@ impl WorkspaceEngine {
             .map_err(|error| CoreError::io(error, operation, self.lock_path.to_str()))?;
         file.lock_exclusive()
             .map_err(|error| CoreError::io(error, operation, self.lock_path.to_str()))?;
+        WRITE_LOCKS_HELD.with(|held| held.set(held.get() + 1));
         Ok(WorkspaceLock { file, _gate: gate })
     }
 
@@ -680,7 +687,20 @@ struct WorkspaceLock<'a> {
 impl Drop for WorkspaceLock<'_> {
     fn drop(&mut self) {
         let _ = self.file.unlock();
+        WRITE_LOCKS_HELD.with(|held| held.set(held.get().saturating_sub(1)));
     }
+}
+
+thread_local! {
+    /// How many [`WorkspaceLock`]s this thread holds. The file lock isn't
+    /// reentrant, so work that takes it, such as following moved links,
+    /// waits while the thread holds one.
+    static WRITE_LOCKS_HELD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether this thread holds the workspace's write lock.
+fn holds_write_lock() -> bool {
+    WRITE_LOCKS_HELD.with(|held| held.get() > 0)
 }
 
 fn lock_error(operation: &str) -> CoreError {
@@ -702,8 +722,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         let start = engine.change_counts();
         let folders = 120;
         std::thread::scope(|scope| {
@@ -734,10 +753,9 @@ mod tests {
         let app_data = tempdir().unwrap();
         std::fs::create_dir(workspace.path().join(".noura")).unwrap();
         std::fs::write(workspace.path().join(WORKSPACE_MANIFEST_PATH), "sentinel").unwrap();
-        let error =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .err()
-                .unwrap();
+        let error = WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path())
+            .err()
+            .unwrap();
         assert_eq!(error.code, "workspace_exists");
         assert_eq!(
             std::fs::read_to_string(workspace.path().join(WORKSPACE_MANIFEST_PATH)).unwrap(),
@@ -751,7 +769,7 @@ mod tests {
         let app_data = tempdir().unwrap();
         std::fs::write(workspace.path().join("workspace.yaml"), "user content").unwrap();
 
-        WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path()).unwrap();
+        WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
 
         assert_eq!(
             (
@@ -768,15 +786,9 @@ mod tests {
         let app_data = tempdir().unwrap();
         std::fs::write(workspace.path().join("existing.md"), "# Existing\n").unwrap();
 
-        let engine = WorkspaceEngine::open_or_initialize_with_app_data(
-            workspace.path(),
-            "Existing notes",
-            None,
-            app_data.path(),
-        )
-        .unwrap();
+        WorkspaceEngine::open_or_initialize_with_app_data(workspace.path(), None, app_data.path())
+            .unwrap();
 
-        assert_eq!(engine.manifest().name, "Existing notes");
         assert_eq!(
             std::fs::read_to_string(workspace.path().join("existing.md")).unwrap(),
             "# Existing\n"
@@ -791,14 +803,10 @@ mod tests {
         let app_data = tempdir().unwrap();
         let workspace = parent.path().join("missing");
 
-        let error = WorkspaceEngine::open_or_initialize_with_app_data(
-            &workspace,
-            "Missing",
-            None,
-            app_data.path(),
-        )
-        .err()
-        .unwrap();
+        let error =
+            WorkspaceEngine::open_or_initialize_with_app_data(&workspace, None, app_data.path())
+                .err()
+                .unwrap();
 
         assert_eq!(error.operation, "workspace_open");
         assert!(!workspace.exists());
@@ -812,7 +820,6 @@ mod tests {
 
         let engine = WorkspaceEngine::open_or_initialize_with_app_data(
             workspace.path(),
-            "Recovered",
             Some(workspace_id),
             app_data.path(),
         )
@@ -828,7 +835,6 @@ mod tests {
 
         let error = WorkspaceEngine::open_or_initialize_with_app_data(
             workspace.path(),
-            "Recovered",
             Some("../../outside"),
             app_data.path(),
         )
@@ -844,7 +850,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         std::fs::create_dir(workspace.path().join(".noura")).unwrap();
-        std::fs::write(workspace.path().join(WORKSPACE_MANIFEST_PATH), "id: ../../outside\nformat_version: 1\nname: Bad\ncreated: 2026-08-27T12:00:00Z\nupdated: 2026-08-27T12:00:00Z\nenabled_plugins: []\nignore: []\n").unwrap();
+        std::fs::write(workspace.path().join(WORKSPACE_MANIFEST_PATH), "id: ../../outside\nformat_version: 1\ncreated: 2026-08-27T12:00:00Z\nupdated: 2026-08-27T12:00:00Z\nenabled_plugins: []\nignore: []\n").unwrap();
         let error = WorkspaceEngine::open_with_app_data(workspace.path(), app_data.path())
             .err()
             .unwrap();
@@ -859,10 +865,9 @@ mod tests {
         let outside = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         std::os::unix::fs::symlink(outside.path(), workspace.path().join(".noura")).unwrap();
-        let error =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .err()
-                .unwrap();
+        let error = WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path())
+            .err()
+            .unwrap();
         assert_eq!(error.code, "symlink_escape");
         assert!(!outside.path().join("trash").exists());
     }

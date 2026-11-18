@@ -1,0 +1,38 @@
+id = "dictation"
+name = "Dictation"
+version = "0.1.0"
+interface-version = "0.1.0"
+entry = "dictation_plugin.wasm"
+platforms = ["desktop"]
+
+# Records your microphone and turns what you say into text on this
+# device, and keeps the last dictation.
+[[capabilities]]
+name = "speech"
+
+# The dictation shortcut, in any app: Alt+Space on macOS, Ctrl+Space on
+# Windows and Linux.
+[[capabilities]]
+name = "global-shortcuts"
+shortcuts = [{ id = "dictation", title = "Dictation", keys = "Ctrl+Space", macos-keys = "Alt+Space" }]
+
+# Pastes the text into the app you're typing in, and Copy Last Dictation.
+[[capabilities]]
+name = "paste"
+
+# Copy Last Dictation and the model and language submenus.
+[[capabilities]]
+name = "menu-bar-items"
+
+# Says why a recording didn't start, as when no model is downloaded.
+[[capabilities]]
+name = "notifications"
+
+# Custom words, the shortcut's behavior and the paste method.
+[[capabilities]]
+name = "settings"
+
+# The settings file, Settings/Dictation.md, which holds those settings in
+# the workspace.
+[[capabilities]]
+name = "object-types"

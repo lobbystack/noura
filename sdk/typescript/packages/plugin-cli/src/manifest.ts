@@ -15,6 +15,18 @@ export interface Capability {
 	hosts: string[];
 	/** The targets of the `commands` capability. */
 	targets: string[];
+	/** The shortcuts of the `global-shortcuts` capability. */
+	shortcuts: Shortcut[];
+}
+
+/** A shortcut the `global-shortcuts` capability declares. */
+export interface Shortcut {
+	id: string;
+	title: string;
+	/** The keys it starts with on this system, such as `Alt+Space`:
+	 * `macos-keys`, `windows-keys` or `linux-keys` when the manifest gives
+	 * them, `keys` otherwise. */
+	keys: string;
 }
 
 export interface Manifest {
@@ -70,10 +82,38 @@ export async function readManifest(folder: string): Promise<Manifest> {
 		if (typeof capability.name !== 'string') {
 			throw new ManifestError(`${path} lists a capability without a name.`);
 		}
+		const shortcuts = (
+			Array.isArray(capability.shortcuts) ? capability.shortcuts : []
+		).flatMap((shortcut: unknown): Shortcut[] => {
+			const declared = (shortcut ?? {}) as Record<string, unknown>;
+			if (
+				typeof declared.id !== 'string' ||
+				typeof declared.title !== 'string' ||
+				typeof declared.keys !== 'string'
+			) {
+				return [];
+			}
+			// Keys for this system replace `keys`, as Noura does.
+			const system =
+				process.platform === 'darwin'
+					? 'macos-keys'
+					: process.platform === 'win32'
+						? 'windows-keys'
+						: 'linux-keys';
+			const here = declared[system];
+			return [
+				{
+					id: declared.id,
+					title: declared.title,
+					keys: typeof here === 'string' ? here : declared.keys,
+				},
+			];
+		});
 		return {
 			name: capability.name,
 			hosts: strings(capability.hosts),
 			targets: strings(capability.targets),
+			shortcuts,
 		};
 	});
 	return {

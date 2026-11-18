@@ -53,7 +53,7 @@ pub(crate) fn dialog(ui: &mut Ui, app: &mut App) {
         if slider.changed() {
             actions.push(ShareAction::SetDays(days));
         }
-        if primary_button(ui, "Create and copy link", !screen.busy).clicked() {
+        if primary_button(ui, "Copy link", !screen.busy).clicked() {
             actions.push(ShareAction::Create);
         }
         if let Some(notice) = &screen.notice {
@@ -83,17 +83,14 @@ pub(crate) fn dialog(ui: &mut Ui, app: &mut App) {
         if !screen.workspace_links.is_empty() {
             ui.add_space(8.0);
             ui.label(RichText::new("All links in this workspace").strong());
-            muted(
-                ui,
-                "Links from other devices show by ID, since the server can't see their notes.",
-            );
+            muted(ui, "Links from other devices show by ID.");
             ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
                 for link in &screen.workspace_links {
                     ui.horizontal(|ui| {
                         if link.creator_removed {
                             ui.label(RichText::new(&link.label).color(palette.destructive))
                                 .on_hover_text(
-                                    "Its device left the workspace. Revoke it unless you still want it.",
+                                    "Its device left the workspace.",
                                 );
                         } else {
                             ui.label(&link.label);

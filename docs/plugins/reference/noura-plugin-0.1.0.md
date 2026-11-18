@@ -13,6 +13,11 @@
     - interface `noura:plugin/clock@0.1.0`
     - interface `noura:plugin/navigation@0.1.0`
     - interface `noura:plugin/ai@0.1.0`
+    - interface `noura:plugin/speech@0.1.0`
+    - interface `noura:plugin/global-shortcuts@0.1.0`
+    - interface `noura:plugin/paste@0.1.0`
+    - interface `noura:plugin/menu-bar@0.1.0`
+    - interface `noura:plugin/notifications@0.1.0`
     - interface `noura:plugin/ui@0.1.0`
  - Exports:
     - interface `noura:plugin/view@0.1.0`
@@ -21,6 +26,7 @@
     - interface `noura:plugin/inbox@0.1.0`
     - interface `noura:plugin/settings@0.1.0`
     - interface `noura:plugin/tools@0.1.0`
+    - interface `noura:plugin/kernel-events@0.1.0`
 
 ## <a id="noura_plugin_types_0_1_0"></a>Import interface noura:plugin/types@0.1.0
 
@@ -237,6 +243,42 @@ which `read-object` refuses. A file that holds no object returns
 
 - <a id="read_object_at.0"></a> result<[`object`](#object), [`error`](#error)>
 
+#### <a id="link_to"></a>`link-to: func`
+
+The link Noura writes for the object with this stable ID, for a
+reference property such as a task's `project` or `source`, or a body:
+`[[Title]]`, or `[[Folder/Title]]` when another file shares the
+title. Noura keeps every link current when the file moves or gets a
+new title, in Noura or in another app.
+
+##### Params
+
+- <a id="link_to.id"></a>`id`: `string`
+
+##### Return values
+
+- <a id="link_to.0"></a> result<`string`, [`error`](#error)>
+
+#### <a id="resolve_link"></a>`resolve-link: func`
+
+The object a link leads to, or none when it leads to no object, as
+for a plain note or a file that doesn't exist. `link` is written as
+`[[Title]]`, `[[Folder/Title]]` or without the brackets, and may carry
+a heading after `#` or a label after `|`. It resolves as the editor
+resolves it from the file at the workspace-relative path `from`, or
+from the top of the workspace without one: relative to that file,
+then from the top, then by title anywhere, preferring that file's
+folder and then the shortest path.
+
+##### Params
+
+- <a id="resolve_link.link"></a>`link`: `string`
+- <a id="resolve_link.from"></a>`from`: option<`string`>
+
+##### Return values
+
+- <a id="resolve_link.0"></a> result<option<[`object`](#object)>, [`error`](#error)>
+
 ## <a id="noura_plugin_objects_0_1_0"></a>Import interface noura:plugin/objects@0.1.0
 
 Objects of the types the plugin registered: Markdown files in the
@@ -312,9 +354,11 @@ A new object.
 
 - <a id="new_object.path"></a>`path`: option<`string`>
   <p>Where to write the file, relative to the workspace, ending in `.md`.
-  Without it the file goes in a folder named after the type, as
-  `recipes/<title>.md` for `recipe`, with a number added when the
-  name is taken. A plugin that wants another layout passes the path.
+  Without it the file goes in a folder named after the type in the
+  plural with a capital letter, as `Recipes/<title>.md` for `recipe`,
+  with a number added when the name is taken. A plugin that wants
+  another layout passes the path. A folder on the path that exists
+  with another letter case, such as `recipes/`, takes the file.
 
 - <a id="new_object.body"></a>`body`: `string`
   <p>The Markdown after the frontmatter.
@@ -411,6 +455,25 @@ name changes. The object keeps its ID.
 ##### Return values
 
 - <a id="move_to.0"></a> result<[`object`](#object), [`error`](#error)>
+
+#### <a id="move_folder"></a>`move-folder: func`
+
+Move the folder that holds the object's file to `folder`, with every
+file in it, and remove the folder it leaves, as when a recording's
+notes and audio move into a project. Every Markdown file in the
+folder must be an object of one of the plugin's types, and the folder
+may hold no other folder. Fails with `already-exists` when something
+is at `folder` already. Returns the object at its new path.
+
+##### Params
+
+- <a id="move_folder.id"></a>`id`: `string`
+- <a id="move_folder.expected_revision"></a>`expected-revision`: `string`
+- <a id="move_folder.folder"></a>`folder`: `string`
+
+##### Return values
+
+- <a id="move_folder.0"></a> result<[`object`](#object), [`error`](#error)>
 
 #### <a id="delete"></a>`delete: func`
 
@@ -583,7 +646,8 @@ Shows things in the window you acted in, and moves objects to the trash
 there. Needs the `views` capability. Noura acts once the call returns,
 and only for a call that answers something you did: an event in one of
 the plugin's views or panels, or a command you ran from the command
-palette. Any other call gets `failed`.
+palette. Any other call gets `failed`. A call that answers a kernel
+event, such as a shortcut press, acts in the window you used last.
 
 ----
 
@@ -623,6 +687,9 @@ A section of Settings a plugin may open.
 - <a id="settings_section.sync"></a>`sync`
   <p>Sync and devices.
 
+- <a id="settings_section.speech"></a>`speech`
+  <p>Speech, where you download speech models and set the shortcuts.
+
 
 ----
 
@@ -657,7 +724,7 @@ Show the plugin's own page with this ID.
 #### <a id="open_settings"></a>`open-settings: func`
 
 Open Settings on `section`, as a page's "Open AI settings" button
-does.
+does. A plugin that holds `settings` may call it without `views`.
 
 ##### Params
 
@@ -686,12 +753,10 @@ capability too.
 
 ## <a id="noura_plugin_ai_0_1_0"></a>Import interface noura:plugin/ai@0.1.0
 
-Chats with the AI providers you set up in Settings. Needs the `ai`
-capability. Providers, their keys and your consent stay on this device,
-and no call returns a key. Before a request carries this workspace's
-content to a provider, Noura asks you in a prompt of its own whether
-that provider may receive it, and it asks again after you change the
-provider's kind, endpoint or model.
+Chats and prompts with the AI providers you set up in Settings. Needs
+the `ai` capability. Providers and their keys stay on this device, and
+no call returns a key. Choosing a provider is your say-so: Noura sends a
+request, with whatever workspace content it carries, without asking.
 
 A chat is a folder of Markdown files in the workspace, `chat.md` and one
 file per message, in the workspace format's chat layout. Noura writes
@@ -707,9 +772,7 @@ summary in their place. Their files stay in the chat.
 `web-search` and `web-fetch` let the model search the web with Brave
 Search and read pages. Noura sends each request for the plugin, so the
 plugin opens no connection of its own. They work once you add your
-Brave Search key in Settings and allow web search for the workspace in
-Noura's own prompt, which is a separate choice from a provider's
-consent. Noura asks nothing per call.
+Brave Search key in Settings. Noura asks nothing per call.
 
 Noura sends a search or a page read only to answer the model. One of
 the plugin's runs must have completed with a call to the `web_search`
@@ -897,13 +960,6 @@ A message you wrote in a chat, for a provider to answer.
 
 ##### Enum Cases
 
-- <a id="run_status.waiting_for_consent"></a>`waiting-for-consent`
-  <p>Noura is asking you whether the provider may receive this
-  workspace's content. Nothing is written or sent yet.
-
-- <a id="run_status.denied"></a>`denied`
-  <p>You said no. Nothing was written or sent.
-
 - <a id="run_status.streaming"></a>`streaming`
   <p>The answer is streaming in.
 
@@ -912,8 +968,8 @@ A message you wrote in a chat, for a provider to answer.
   `tool-calls` lists them.
 
 - <a id="run_status.cancelled"></a>`cancelled`
-  <p>You stopped it, or revoked the provider's consent. The answer so
-  far stays in the chat as a cancelled message.
+  <p>You stopped it, or removed its provider. The answer so far stays in
+  the chat as a cancelled message.
 
 - <a id="run_status.failed"></a>`failed`
   <p>The provider or Noura failed. `failure` says why.
@@ -959,9 +1015,9 @@ A message you sent and its answer, as it streams in.
   it.
 
 - <a id="run.message_written"></a>`message-written`: `bool`
-  <p>Whether Noura wrote your message to the chat. A run you denied or
-  stopped while it waited, or one that failed before the write, leaves
-  your message unwritten, so the plugin can give it back to you.
+  <p>Whether Noura wrote your message to the chat. A run that failed
+  before the write leaves your message unwritten, so the plugin can
+  give it back to you.
 
 - <a id="run.tool_calls"></a>`tool-calls`: list<[`tool-call`](#tool_call)>
 - <a id="run.failure"></a>`failure`: option<[`failure`](#failure)>
@@ -1014,11 +1070,62 @@ Why a web search or a page read failed.
 
 - <a id="web_error.failed"></a>`failed`: [`failure`](#failure)
   <p>Noura or the web refused or failed. The code says why, such as
-  `web_search_key_missing`, `web_consent_required`,
-  `web_call_not_requested`, `web_search_key_rejected`,
+  `web_search_key_missing`, `web_call_not_requested`, `web_search_key_rejected`,
   `web_search_rate_limited`, `web_url_not_https` or
   `web_url_unsafe_host`. The failure never holds the key or what
   Brave Search or the site answered.
+
+
+#### <a id="completion_request"></a>`record completion-request`
+
+A prompt to complete with one answer, as for a summary, outside any
+chat.
+
+##### Record Fields
+
+- <a id="completion_request.provider"></a>`provider`: option<`string`>
+  <p>The provider's ID, or none for your first provider.
+
+- <a id="completion_request.instructions"></a>`instructions`: option<`string`>
+  <p>What the model should do and how to answer, such as a summary's
+  template. Noura puts it after its own instructions.
+
+- <a id="completion_request.prompt"></a>`prompt`: `string`
+  <p>The text to answer, in Markdown.
+
+- <a id="completion_request.json"></a>`json`: `bool`
+  <p>Whether the answer must be one JSON value, as for a list of action
+  items. Noura asks the provider for JSON and checks that the answer
+  parses.
+
+
+#### <a id="completion"></a>`record completion`
+
+A completed prompt.
+
+##### Record Fields
+
+- <a id="completion.provider"></a>`provider`: `string`
+  <p>The provider and model that answered.
+
+- <a id="completion.model"></a>`model`: `string`
+- <a id="completion.text"></a>`text`: `string`
+  <p>The answer: Markdown, or JSON text when the request asked for JSON.
+
+
+#### <a id="completion_error"></a>`variant completion-error`
+
+Why a completion failed.
+
+##### Variant Cases
+
+- <a id="completion_error.refused"></a>`refused`: [`error`](#error)
+  <p>Noura refused the call as it refuses this interface's other calls.
+
+- <a id="completion_error.failed"></a>`failed`: [`failure`](#failure)
+  <p>There is no provider to ask, or it failed. The code says why, such
+  as `no_provider`, `provider_request_failed` or `invalid_json`. The
+  failure never holds the provider's own answer or a key.
 
 
 ----
@@ -1119,9 +1226,8 @@ the chat before the request leaves this computer, then the answer
 streams in: `read-run` shows it so far, and Noura draws the plugin's views
 again as text arrives. The answer and its status are on disk before
 the run shows as completed, cancelled or failed. The first message of
-a chat titled `New chat` gives the chat its title. Without your
-consent for this workspace and provider, the run waits while Noura
-asks you. A chat answers one message at a time.
+a chat titled `New chat` gives the chat its title. A chat answers one
+message at a time.
 
 ##### Params
 
@@ -1175,7 +1281,7 @@ request offers the tools the run offered whose plugins are still on.
 
 Answer the chat's last message of yours again, as after a crash or a
 quit stopped its answer, with `provider` and `tools`. Noura writes no
-new message of yours, and asks for your consent as `send` does.
+new message of yours.
 
 ##### Params
 
@@ -1216,9 +1322,8 @@ a cancelled message.
 
 #### <a id="web_ready"></a>`web-ready: func`
 
-Whether the model may search the web and read pages in this
-workspace: you added a Brave Search key and allowed web search for the
-workspace. Offer the model web tools only then.
+Whether the model may search the web and read pages: you added a
+Brave Search key. Offer the model web tools only then.
 
 ##### Return values
 
@@ -1258,6 +1363,652 @@ doesn't count toward the call's deadline.
 ##### Return values
 
 - <a id="web_fetch.0"></a> result<[`web-page`](#web_page), [`web-error`](#web_error)>
+
+#### <a id="complete"></a>`complete: func`
+
+Complete `request` and return the answer. Noura writes no chat and
+keeps nothing. The time spent waiting for the provider doesn't count
+toward the call's deadline. Noura gives up after two minutes.
+
+##### Params
+
+- <a id="complete.request"></a>`request`: [`completion-request`](#completion_request)
+
+##### Return values
+
+- <a id="complete.0"></a> result<[`completion`](#completion), [`completion-error`](#completion_error)>
+
+## <a id="noura_plugin_speech_0_1_0"></a>Import interface noura:plugin/speech@0.1.0
+
+Speech: recording the microphone and the sound other apps play, and
+turning speech into text with models on this device. Needs the `speech`
+capability. Noura records and transcribes on threads of its own, so
+each call returns at once: start a recording, then read its text as it
+comes, whenever the plugin draws its views again or answers an event.
+Nothing you say leaves this device.
+
+Models live in this device's app data folder, never in the workspace,
+and never sync. You download and delete them in Settings, Speech, which
+also holds the language you speak. A plugin picks among the downloaded
+ones.
+
+Noura records the microphone and the system audio as two channels,
+`me` and `others`, each at 16 kHz mono. It tells no voices apart
+within a channel. A model that streams shows text as you speak. With
+any other model, Noura cuts the audio where you pause and transcribes
+each part in the background, so text arrives a few seconds behind and
+the transcript is ready soon after you stop.
+
+----
+
+### Types
+
+#### <a id="error"></a>`type error`
+[`error`](#error)
+<p>
+
+#### <a id="model"></a>`record model`
+
+A speech-to-text model in Noura's catalog, which holds only models
+whose license allows commercial use.
+
+##### Record Fields
+
+- <a id="model.id"></a>`id`: `string`
+  <p>Stable, such as `parakeet-ultra`.
+
+- <a id="model.name"></a>`name`: `string`
+  <p>The name Settings shows.
+
+- <a id="model.description"></a>`description`: `string`
+  <p>What it's best at, in one line.
+
+- <a id="model.languages"></a>`languages`: list<`string`>
+  <p>The languages it transcribes, as ISO 639-1 codes such as `en`.
+
+- <a id="model.size"></a>`size`: `u64`
+  <p>The size of its file, in bytes.
+
+- <a id="model.streaming"></a>`streaming`: `bool`
+  <p>Whether it shows text while you speak.
+
+- <a id="model.translation"></a>`translation`: `bool`
+  <p>Whether it can translate what you say into English.
+
+- <a id="model.downloaded"></a>`downloaded`: `bool`
+  <p>Whether its file is on this computer, so a recording can use it.
+
+- <a id="model.recommended"></a>`recommended`: `bool`
+  <p>Whether Noura recommends it for the language you speak.
+
+
+#### <a id="microphone"></a>`record microphone`
+
+A microphone this computer has now.
+
+##### Record Fields
+
+- <a id="microphone.id"></a>`id`: `string`
+  <p>Stable while the microphone stays connected.
+
+- <a id="microphone.name"></a>`name`: `string`
+- <a id="microphone.is_default"></a>`is-default`: `bool`
+  <p>Whether it's the computer's default input.
+
+
+#### <a id="source"></a>`enum source`
+
+What a recording hears.
+
+##### Enum Cases
+
+- <a id="source.microphone"></a>`microphone`
+  <p>The microphone you chose, or the computer's default.
+
+- <a id="source.system_audio"></a>`system-audio`
+  <p>The sound other apps play, as the other side of a call. Needs
+  macOS 14.4 or later on a Mac.
+
+
+#### <a id="channel"></a>`enum channel`
+
+Who spoke.
+
+##### Enum Cases
+
+- <a id="channel.me"></a>`me`
+  <p>You, at the microphone.
+
+- <a id="channel.others"></a>`others`
+  <p>The others, in the sound other apps play.
+
+
+#### <a id="preferences"></a>`record preferences`
+
+This plugin's speech choices on this device, which Noura keeps in the
+app data folder, never in the workspace.
+
+##### Record Fields
+
+- <a id="preferences.model"></a>`model`: option<`string`>
+  <p>The model to transcribe with, or none for Noura's recommendation.
+
+- <a id="preferences.microphone"></a>`microphone`: option<`string`>
+  <p>The microphone's ID, or none for the computer's default.
+
+- <a id="preferences.system_audio"></a>`system-audio`: `bool`
+  <p>Whether recordings hear the system audio too.
+
+- <a id="preferences.language"></a>`language`: option<`string`>
+  <p>The language you speak, as an ISO 639-1 code, or none for the one
+  Settings, Speech holds.
+
+
+#### <a id="recording_options"></a>`record recording-options`
+
+
+
+##### Record Fields
+
+- <a id="recording_options.sources"></a>`sources`: list<[`source`](#source)>
+  <p>At least one.
+
+- <a id="recording_options.model"></a>`model`: option<`string`>
+  <p>The model, or none for the plugin's preference.
+
+- <a id="recording_options.microphone"></a>`microphone`: option<`string`>
+  <p>The microphone's ID, or none for the plugin's preference.
+
+- <a id="recording_options.language"></a>`language`: option<`string`>
+  <p>The language, or none for the plugin's preference.
+
+
+#### <a id="segment"></a>`record segment`
+
+A stretch of speech on one channel.
+
+##### Record Fields
+
+- <a id="segment.channel"></a>`channel`: [`channel`](#channel)
+- <a id="segment.start_ms"></a>`start-ms`: `u64`
+  <p>From the start of the recording, in milliseconds.
+
+- <a id="segment.end_ms"></a>`end-ms`: `u64`
+- <a id="segment.text"></a>`text`: `string`
+
+#### <a id="recording_state"></a>`enum recording-state`
+
+
+
+##### Enum Cases
+
+- <a id="recording_state.recording"></a>`recording`
+  <p>Noura is recording and transcribing as you speak.
+
+- <a id="recording_state.finishing"></a>`finishing`
+  <p>You stopped it, and Noura is transcribing what's left.
+
+- <a id="recording_state.finished"></a>`finished`
+  <p>Every segment is in. The audio stays until the plugin forgets the
+  recording, unless the plugin keeps it.
+
+- <a id="recording_state.failed"></a>`failed`
+  <p>A microphone or a model failed. `failure` says why, and the
+  segments so far stay.
+
+- <a id="recording_state.cancelled"></a>`cancelled`
+  <p>The plugin cancelled it. Its audio and text are gone.
+
+
+#### <a id="recording"></a>`record recording`
+
+A recording as it stands now.
+
+##### Record Fields
+
+- <a id="recording.id"></a>`id`: `string`
+- <a id="recording.state"></a>`state`: [`recording-state`](#recording_state)
+- <a id="recording.elapsed_ms"></a>`elapsed-ms`: `u64`
+  <p>How long it recorded, in milliseconds.
+
+- <a id="recording.segments"></a>`segments`: list<[`segment`](#segment)>
+  <p>The text Noura is sure of, in time order.
+
+- <a id="recording.pending"></a>`pending`: list<[`segment`](#segment)>
+  <p>Text a streaming model may still change, one segment per channel at
+  most, after `segments`. Show it as live text.
+
+- <a id="recording.failure"></a>`failure`: option<`string`>
+  <p>Why it failed, in words for you.
+
+
+----
+
+### Functions
+
+#### <a id="models"></a>`models: func`
+
+The models in the catalog, the downloaded ones first.
+
+##### Return values
+
+- <a id="models.0"></a> result<list<[`model`](#model)>, [`error`](#error)>
+
+#### <a id="microphones"></a>`microphones: func`
+
+The microphones this computer has now.
+
+##### Return values
+
+- <a id="microphones.0"></a> result<list<[`microphone`](#microphone)>, [`error`](#error)>
+
+#### <a id="read_preferences"></a>`read-preferences: func`
+
+This plugin's choices on this device.
+
+##### Return values
+
+- <a id="read_preferences.0"></a> result<[`preferences`](#preferences), [`error`](#error)>
+
+#### <a id="set_preferences"></a>`set-preferences: func`
+
+Keep this plugin's choices on this device. A model that isn't
+downloaded or a microphone that isn't there fails with `failed`.
+
+##### Params
+
+- <a id="set_preferences.preferences"></a>`preferences`: [`preferences`](#preferences)
+
+##### Return values
+
+- <a id="set_preferences.0"></a> result<_, [`error`](#error)>
+
+#### <a id="start"></a>`start: func`
+
+Start a recording and return its ID. It fails with `failed` when the
+model isn't downloaded, a microphone can't open, or you turned off
+Noura's microphone access, in words for you. A device that changes
+while it records, such as headphones you unplug, keeps it going on
+the computer's default.
+
+##### Params
+
+- <a id="start.options"></a>`options`: [`recording-options`](#recording_options)
+
+##### Return values
+
+- <a id="start.0"></a> result<`string`, [`error`](#error)>
+
+#### <a id="read_recording"></a>`read-recording: func`
+
+The recording with this ID, as it stands now. A recording another
+plugin started is `not-found`.
+
+##### Params
+
+- <a id="read_recording.id"></a>`id`: `string`
+
+##### Return values
+
+- <a id="read_recording.0"></a> result<[`recording`](#recording), [`error`](#error)>
+
+#### <a id="stop"></a>`stop: func`
+
+Stop recording. Noura transcribes what's left, and the recording
+turns `finished`.
+
+##### Params
+
+- <a id="stop.id"></a>`id`: `string`
+
+##### Return values
+
+- <a id="stop.0"></a> result<_, [`error`](#error)>
+
+#### <a id="cancel"></a>`cancel: func`
+
+Stop recording and drop its audio and text.
+
+##### Params
+
+- <a id="cancel.id"></a>`id`: `string`
+
+##### Return values
+
+- <a id="cancel.0"></a> result<_, [`error`](#error)>
+
+#### <a id="save_audio"></a>`save-audio: func`
+
+Write a finished recording's audio as a WAV file in the folder that
+holds the object with this stable ID, one of the plugin's own types,
+and return its workspace-relative path. The file syncs like any other.
+Needs the `object-types` capability too.
+
+##### Params
+
+- <a id="save_audio.id"></a>`id`: `string`
+- <a id="save_audio.object"></a>`object`: `string`
+
+##### Return values
+
+- <a id="save_audio.0"></a> result<`string`, [`error`](#error)>
+
+#### <a id="keep_audio"></a>`keep-audio: func`
+
+Keep a finished recording's audio in this device's app data folder
+for this many days, then delete it.
+
+##### Params
+
+- <a id="keep_audio.id"></a>`id`: `string`
+- <a id="keep_audio.days"></a>`days`: `u32`
+
+##### Return values
+
+- <a id="keep_audio.0"></a> result<_, [`error`](#error)>
+
+#### <a id="forget"></a>`forget: func`
+
+Forget a recording that ended, with its audio unless the plugin kept
+it. Noura forgets each one when it quits.
+
+##### Params
+
+- <a id="forget.id"></a>`id`: `string`
+
+##### Return values
+
+- <a id="forget.0"></a> result<_, [`error`](#error)>
+
+#### <a id="remember_dictation"></a>`remember-dictation: func`
+
+Keep `text` as the last dictation, in this device's app data folder,
+so it survives a crash. Noura keeps one per plugin.
+
+##### Params
+
+- <a id="remember_dictation.text"></a>`text`: `string`
+
+##### Return values
+
+- <a id="remember_dictation.0"></a> result<_, [`error`](#error)>
+
+#### <a id="last_dictation"></a>`last-dictation: func`
+
+The last text `remember-dictation` kept, if any.
+
+##### Return values
+
+- <a id="last_dictation.0"></a> result<option<`string`>, [`error`](#error)>
+
+## <a id="noura_plugin_global_shortcuts_0_1_0"></a>Import interface noura:plugin/global-shortcuts@0.1.0
+
+Keyboard shortcuts that work in any app, even with Noura's windows
+closed. Needs the `global-shortcuts` capability, which declares each
+shortcut and the keys it starts with. You can change the keys in
+Settings, Speech. Noura hands each press and release to the plugin as
+a kernel event, which counts as something you did, in the workspace
+you used last that has the plugin on. With no such workspace, the
+shortcut does nothing.
+
+Under Wayland, where apps can't see keys pressed elsewhere, you bind
+`noura --shortcut <plugin>/<shortcut>`, or `noura --toggle-dictation`
+for the Dictation plugin's `dictation` shortcut, in the desktop's
+settings, and each run sends a press, then a release.
+
+----
+
+### Types
+
+#### <a id="error"></a>`type error`
+[`error`](#error)
+<p>
+
+#### <a id="shortcut"></a>`record shortcut`
+
+
+
+##### Record Fields
+
+- <a id="shortcut.id"></a>`id`: `string`
+  <p>As the manifest declares it.
+
+- <a id="shortcut.title"></a>`title`: `string`
+- <a id="shortcut.keys"></a>`keys`: `string`
+  <p>The keys it answers to now, such as `Alt+Space`.
+
+- <a id="shortcut.registered"></a>`registered`: `bool`
+  <p>Whether Noura could register the keys with the system. Another app
+  may hold them already.
+
+
+----
+
+### Functions
+
+#### <a id="shortcuts"></a>`shortcuts: func`
+
+The shortcuts the manifest declares, with their keys now.
+
+##### Return values
+
+- <a id="shortcuts.0"></a> result<list<[`shortcut`](#shortcut)>, [`error`](#error)>
+
+## <a id="noura_plugin_paste_0_1_0"></a>Import interface noura:plugin/paste@0.1.0
+
+Pasting text into the app you're typing in, anywhere on the computer.
+Needs the `paste` capability. Noura pastes only in answer to something
+you did: a kernel event, such as a shortcut press, or an event in one
+of the plugin's views or panels. Any other call gets `failed`.
+
+----
+
+### Types
+
+#### <a id="error"></a>`type error`
+[`error`](#error)
+<p>
+
+#### <a id="method"></a>`enum method`
+
+
+
+##### Enum Cases
+
+- <a id="method.clipboard"></a>`clipboard`
+  <p>Noura puts the text on the clipboard, presses the paste keys, and
+  puts back what the clipboard held: on macOS and Windows once the
+  app has read it, on Linux after half a second. On Linux it presses
+  Shift+Insert and puts back the primary selection too.
+
+- <a id="method.typing"></a>`typing`
+  <p>Noura types the text key by key and leaves the clipboard alone.
+  Slower, for apps that refuse a paste.
+
+
+----
+
+### Functions
+
+#### <a id="paste"></a>`paste: func`
+
+Paste `text` into the focused app. The call returns once the text is
+in, or the clipboard is back, which may take a moment that doesn't
+count toward the call's deadline.
+
+##### Params
+
+- <a id="paste.text"></a>`text`: `string`
+- <a id="paste.method"></a>`method`: [`method`](#method)
+
+##### Return values
+
+- <a id="paste.0"></a> result<_, [`error`](#error)>
+
+#### <a id="copy"></a>`copy: func`
+
+Put `text` on the clipboard and leave it there, as Copy does.
+
+##### Params
+
+- <a id="copy.text"></a>`text`: `string`
+
+##### Return values
+
+- <a id="copy.0"></a> result<_, [`error`](#error)>
+
+## <a id="noura_plugin_menu_bar_0_1_0"></a>Import interface noura:plugin/menu-bar@0.1.0
+
+Items in Noura's menu in the macOS menu bar, the Windows notification
+area or the Linux tray. Needs the `menu-bar-items` capability. Noura
+stays there while every window is closed, so a shortcut and a
+recording keep working. Choosing an item hands the plugin a kernel
+event, which counts as something you did.
+
+----
+
+### Types
+
+#### <a id="error"></a>`type error`
+[`error`](#error)
+<p>
+
+#### <a id="entry_kind"></a>`variant entry-kind`
+
+
+
+##### Variant Cases
+
+- <a id="entry_kind.item"></a>`item`
+  <p>An item you choose. Its ID comes back in `menu-item-chosen`.
+
+- <a id="entry_kind.submenu"></a>`submenu`
+  <p>An item that opens the entries whose `parent` names it.
+
+- <a id="entry_kind.separator"></a>`separator`
+  <p>A line between items.
+
+
+#### <a id="entry"></a>`record entry`
+
+
+
+##### Record Fields
+
+- <a id="entry.id"></a>`id`: `string`
+  <p>Unique among the plugin's entries.
+
+- <a id="entry.kind"></a>`kind`: [`entry-kind`](#entry_kind)
+- <a id="entry.label"></a>`label`: `string`
+  <p>Empty for a separator.
+
+- <a id="entry.enabled"></a>`enabled`: `bool`
+  <p>A disabled item shows but can't be chosen.
+
+- <a id="entry.checked"></a>`checked`: option<`bool`>
+  <p>A check mark before the label, shown or not, as for the chosen
+  model in a submenu. None for no check mark.
+
+- <a id="entry.parent"></a>`parent`: option<`string`>
+  <p>The submenu it goes in, or none for the menu itself.
+
+
+----
+
+### Functions
+
+#### <a id="set_entries"></a>`set-entries: func`
+
+Show these entries, in order, in place of the ones the plugin showed
+before. Noura shows each plugin's entries together, above Settings…
+and Quit. An empty list takes them away.
+
+##### Params
+
+- <a id="set_entries.entries"></a>`entries`: list<[`entry`](#entry)>
+
+##### Return values
+
+- <a id="set_entries.0"></a> result<_, [`error`](#error)>
+
+## <a id="noura_plugin_notifications_0_1_0"></a>Import interface noura:plugin/notifications@0.1.0
+
+Notifications in the system's notification center. Needs the
+`notifications` capability. Noura shows one only in answer to
+something you did: a kernel event, or an event in one of the plugin's
+views or panels. Any other call gets `failed`. Choosing the
+notification or one of its actions hands the plugin a kernel event,
+which counts as something you did. When you turned off Noura's
+notifications in the system's settings, nothing shows and the call
+still succeeds.
+
+----
+
+### Types
+
+#### <a id="error"></a>`type error`
+[`error`](#error)
+<p>
+
+#### <a id="action"></a>`record action`
+
+
+
+##### Record Fields
+
+- <a id="action.id"></a>`id`: `string`
+  <p>Unique among the notification's actions. It comes back in
+  `notification-chosen`.
+
+- <a id="action.label"></a>`label`: `string`
+  <p>One or two words, such as `Record`.
+
+
+#### <a id="notification"></a>`record notification`
+
+
+
+##### Record Fields
+
+- <a id="notification.id"></a>`id`: `string`
+  <p>Unique among the plugin's notifications. A notification with the
+  ID of one that still shows takes its place.
+
+- <a id="notification.title"></a>`title`: `string`
+- <a id="notification.body"></a>`body`: `string`
+  <p>One sentence, or empty.
+
+- <a id="notification.actions"></a>`actions`: list<[`action`](#action)>
+  <p>At most 3. Some systems show only the first.
+
+
+----
+
+### Functions
+
+#### <a id="notify"></a>`notify: func`
+
+Show `notification`.
+
+##### Params
+
+- <a id="notify.notification"></a>`notification`: [`notification`](#notification)
+
+##### Return values
+
+- <a id="notify.0"></a> result<_, [`error`](#error)>
+
+#### <a id="withdraw"></a>`withdraw: func`
+
+Take away the notification with this ID, if it still shows.
+
+##### Params
+
+- <a id="withdraw.id"></a>`id`: `string`
+
+##### Return values
+
+- <a id="withdraw.0"></a> result<_, [`error`](#error)>
 
 ## <a id="noura_plugin_ui_0_1_0"></a>Import interface noura:plugin/ui@0.1.0
 
@@ -2228,4 +2979,92 @@ back to the assistant.
 ##### Return values
 
 - <a id="call_tool.0"></a> result<`string`, `string`>
+
+## <a id="noura_plugin_kernel_events_0_1_0"></a>Export interface noura:plugin/kernel-events@0.1.0
+
+----
+
+### Types
+
+#### <a id="microphone_use"></a>`record microphone-use`
+
+Another app turned the microphone on, as for a call.
+
+##### Record Fields
+
+- <a id="microphone_use.app"></a>`app`: option<`string`>
+  <p>The app's name, when the system says.
+
+
+#### <a id="shortcut_event"></a>`record shortcut-event`
+
+A shortcut's keys went down or came up.
+
+##### Record Fields
+
+- <a id="shortcut_event.id"></a>`id`: `string`
+  <p>The shortcut's ID, as the manifest declares it.
+
+- <a id="shortcut_event.at_ms"></a>`at-ms`: `u64`
+  <p>When, in milliseconds on a clock that starts with Noura and only
+  moves forward. The time between a press and its release tells a
+  tap from a hold.
+
+
+#### <a id="notification_choice"></a>`record notification-choice`
+
+You chose a notification the plugin showed.
+
+##### Record Fields
+
+- <a id="notification_choice.id"></a>`id`: `string`
+  <p>The notification's ID.
+
+- <a id="notification_choice.action"></a>`action`: option<`string`>
+  <p>The action you chose, or none when you chose the notification.
+
+
+#### <a id="kernel_event"></a>`variant kernel-event`
+
+
+
+##### Variant Cases
+
+- <a id="kernel_event.shortcut_pressed"></a>`shortcut-pressed`: [`shortcut-event`](#shortcut_event)
+  <p>A shortcut's keys went down. Needs `global-shortcuts`.
+
+- <a id="kernel_event.shortcut_released"></a>`shortcut-released`: [`shortcut-event`](#shortcut_event)
+  <p>A shortcut's keys came back up. Needs `global-shortcuts`.
+
+- <a id="kernel_event.notification_chosen"></a>`notification-chosen`: [`notification-choice`](#notification_choice)
+  <p>You chose a notification or one of its actions. Needs
+  `notifications`.
+
+- <a id="kernel_event.menu_item_chosen"></a>`menu-item-chosen`: `string`
+  <p>The menu bar entry with this ID was chosen. Needs
+  `menu-bar-items`.
+
+- <a id="kernel_event.microphone_in_use"></a>`microphone-in-use`: [`microphone-use`](#microphone_use)
+  <p>Another app turned the microphone on. Noura never records by
+  itself: the plugin may ask you first. Needs `speech`.
+
+- <a id="kernel_event.microphone_free"></a>`microphone-free`
+  <p>No other app uses the microphone now. Needs `speech`.
+
+- <a id="kernel_event.recording_changed"></a>`recording-changed`: `string`
+  <p>The recording with this ID changed state, as when it finished
+  after `stop`. Needs `speech`.
+
+
+----
+
+### Functions
+
+#### <a id="handle_kernel_event"></a>`handle-kernel-event: func`
+
+Answer `event`. Noura draws the plugin's views again afterwards.
+
+##### Params
+
+- <a id="handle_kernel_event.event"></a>`event`: [`kernel-event`](#kernel_event)
 

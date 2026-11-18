@@ -6,6 +6,18 @@
 			"value": {
 				"id": "workspace_01j00000000000000000000000",
 				"format_version": 1,
+				"created": "2026-08-27T12:00:00Z",
+				"updated": "2026-08-27T12:00:00Z",
+				"enabled_plugins": [],
+				"ignore": []
+			}
+		},
+		{
+			"name": "a name key from an earlier version is ignored",
+			"valid": true,
+			"value": {
+				"id": "workspace_01j00000000000000000000000",
+				"format_version": 1,
 				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
@@ -19,7 +31,6 @@
 			"value": {
 				"id": "workspace_01j00000000000000000000000",
 				"formatVersion": 1,
-				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
 				"enabledPlugins": [],
@@ -32,7 +43,6 @@
 			"value": {
 				"id": "../../outside",
 				"format_version": 1,
-				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
 				"enabled_plugins": [],
@@ -45,7 +55,6 @@
 			"value": {
 				"id": "workspace_01j00000000000000000000000",
 				"format_version": 1,
-				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
 				"enabled_plugins": ["tasks", "my-plugin-2"],
@@ -58,7 +67,6 @@
 			"value": {
 				"id": "workspace_01j00000000000000000000000",
 				"format_version": 1,
-				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
 				"enabled_plugins": ["tasks", "notes", "tasks"],
@@ -71,7 +79,6 @@
 			"value": {
 				"id": "workspace_01j00000000000000000000000",
 				"format_version": 1,
-				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
 				"enabled_plugins": ["Tasks"],
@@ -84,7 +91,6 @@
 			"value": {
 				"id": "workspace_01j00000000000000000000000",
 				"format_version": 1,
-				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
 				"enabled_plugins": ["1tasks"],
@@ -97,7 +103,6 @@
 			"value": {
 				"id": "workspace_01j00000000000000000000000",
 				"format_version": 1,
-				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
 				"enabled_plugins": [""],
@@ -110,7 +115,6 @@
 			"value": {
 				"id": "workspace_01j00000000000000000000000",
 				"format_version": 1,
-				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
 				"enabled_plugins": [
@@ -125,7 +129,6 @@
 			"value": {
 				"id": "workspace_01j00000000000000000000000",
 				"format_version": 1,
-				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
 				"enabled_plugins": [
@@ -140,7 +143,6 @@
 			"value": {
 				"id": "workspace_01j00000000000000000000000",
 				"format_version": 1,
-				"name": "Example",
 				"created": "2026-08-27T12:00:00Z",
 				"updated": "2026-08-27T12:00:00Z",
 				"enabled_plugins": "tasks",
@@ -553,7 +555,7 @@
 	"titles": [
 		{
 			"name": "a managed note is named by its file, not its heading",
-			"path": "notes/Team sync.md",
+			"path": "Notes/Team sync.md",
 			"markdown": "---\nid: note_01j00000000000000000000000\ntype: note\n---\n# Agenda\n",
 			"title": "Team sync",
 			"body": "# Agenda\n"
@@ -567,14 +569,14 @@
 		},
 		{
 			"name": "only the last extension leaves the name",
-			"path": "notes/v1.2 notes.md",
+			"path": "Notes/v1.2 notes.md",
 			"markdown": "---\nid: note_01j00000000000000000000000\ntype: note\n---\n",
 			"title": "v1.2 notes",
 			"body": ""
 		},
 		{
 			"name": "a project folder note is named like its folder",
-			"path": "projects/Launch/Launch.md",
+			"path": "Projects/Launch/Launch.md",
 			"markdown": "---\nid: project_01j00000000000000000000000\ntype: project\nstatus: active\n---\nShip it.\n",
 			"title": "Launch",
 			"body": "Ship it.\n"
@@ -585,6 +587,125 @@
 			"markdown": "\ufeff---\r\nid: note_01j00000000000000000000000\r\ntype: note\r\n---\r\nBody\r\n",
 			"title": "Marked",
 			"body": "Body\n"
+		}
+	],
+	"links": {
+		"files": [
+			"Garden.md",
+			"Projects/Garden/Garden.md",
+			"Projects/Garden/Soil.md",
+			"Notes/Plan.md",
+			"Notes/Plan 2.md",
+			"Report.pdf"
+		],
+		"resolve": [
+			{
+				"name": "a title finds the file of that name anywhere",
+				"source": "Notes/Today.md",
+				"target": "plan",
+				"path": "Notes/Plan.md"
+			},
+			{
+				"name": "a shared title prefers the linking file's folder",
+				"source": "Projects/Garden/Soil.md",
+				"target": "Garden",
+				"path": "Projects/Garden/Garden.md"
+			},
+			{
+				"name": "a shared title prefers the shortest path elsewhere",
+				"source": "Notes/Today.md",
+				"target": "Garden",
+				"path": "Garden.md"
+			},
+			{
+				"name": "a path from the top of the workspace",
+				"source": "Notes/Today.md",
+				"target": "Projects/Garden/Garden",
+				"path": "Projects/Garden/Garden.md"
+			},
+			{
+				"name": "a heading and a label don't change the file",
+				"source": "Notes/Today.md",
+				"target": "Plan 2#Steps|steps",
+				"path": "Notes/Plan 2.md"
+			},
+			{
+				"name": "another file keeps its extension",
+				"source": "Notes/Today.md",
+				"target": "Report.pdf",
+				"path": "Report.pdf"
+			},
+			{
+				"name": "a missing file leads nowhere",
+				"source": "Notes/Today.md",
+				"target": "Missing",
+				"path": null
+			}
+		],
+		"link_for": [
+			{
+				"name": "a unique title links by title",
+				"source": "Notes/Today.md",
+				"path": "Notes/Plan.md",
+				"link": "[[Plan]]"
+			},
+			{
+				"name": "a shared title links by path",
+				"source": "Notes/Today.md",
+				"path": "Projects/Garden/Garden.md",
+				"link": "[[Projects/Garden/Garden]]"
+			},
+			{
+				"name": "the shared title that resolves first keeps the title",
+				"source": "Notes/Today.md",
+				"path": "Garden.md",
+				"link": "[[Garden]]"
+			}
+		],
+		"body_links": [
+			{
+				"name": "links and embeds outside code",
+				"body": "See [[Garden]] and ![[Plan#Steps|the plan]].\n`[[Code]]` \\[[escaped]]\n```\n[[Fenced]]\n```\n",
+				"targets": [
+					"Garden",
+					"Plan"
+				]
+			}
+		],
+		"rewrites": [
+			{
+				"name": "a renamed file's links take its new title and keep headings and labels",
+				"body": "[[Garden]], [[garden#Beds|beds]] and [[Kitchen]]\r\n",
+				"from": "Garden",
+				"to": "Backyard",
+				"expected": "[[Backyard]], [[Backyard#Beds|beds]] and [[Kitchen]]\r\n"
+			}
+		]
+	},
+	"default_paths": [
+		{
+			"name": "a note goes in Notes",
+			"type": "note",
+			"title": " Team: sync ",
+			"path": "Notes/Team sync.md"
+		},
+		{
+			"name": "a task goes in Tasks",
+			"type": "task",
+			"title": "Buy seeds",
+			"path": "Tasks/Buy seeds.md"
+		},
+		{
+			"name": "a project without its own folder goes in Projects",
+			"type": "project",
+			"title": "Launch",
+			"path": "Projects/Launch.md"
+		},
+		{
+			"name": "a plugin type gets a capitalized folder too",
+			"type": "recipe",
+			"title": "///",
+			"path": "Recipes/Untitled.md"
 		}
 	],
 	"file_names": [

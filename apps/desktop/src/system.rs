@@ -55,6 +55,20 @@ impl System for DesktopSystem {
     fn open_file(&self, path: &Path) -> io::Result<()> {
         opener::open(dunce::simplified(path)).map_err(io::Error::other)
     }
+
+    /// This computer's microphone and system audio, transcribe.cpp, and
+    /// the keyboard and clipboard for pastes. Noura checks once a second
+    /// whether another app turned the microphone on.
+    fn speech_devices(&self) -> app_core::SpeechDevices {
+        app_core::SpeechDevices {
+            engine: std::sync::Arc::new(speech::engine::TranscribeCpp),
+            audio: std::sync::Arc::new(speech::audio::SystemAudio),
+            paster: std::sync::Arc::new(speech::paste::SystemPaste),
+            microphone_watch: Some(std::time::Duration::from_secs(1)),
+            notifier: std::sync::Arc::new(crate::notifier::SystemNotifier),
+            download_endpoint: speech::download::HUGGING_FACE.to_owned(),
+        }
+    }
 }
 
 /// Open Terminal in `folder`.

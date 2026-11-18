@@ -46,6 +46,9 @@ pub mod settings_section {
     pub const SYNC: &str = "workspace-sync";
     /// The workspace's members and invitations.
     pub const MEMBERS: &str = "workspace-members";
+    /// Speech models on this computer, the language you speak, the
+    /// plugins' shortcuts and how Noura pastes.
+    pub const SPEECH: &str = "speech";
     /// The sync account: the server, this computer's sign-in, your devices
     /// and the recovery kit.
     pub const SYNC_ACCOUNT: &str = "sync-account";
@@ -99,10 +102,11 @@ impl SettingsSection {
 /// Where the kernel's sections and the sections later areas register by
 /// a known ID go, in the order Settings lists them. Other sections follow
 /// these in their group, in the order they register.
-const SECTION_ORDER: [&str; 12] = [
+const SECTION_ORDER: [&str; 13] = [
     settings_section::GENERAL,
     settings_section::EDITOR,
     settings_section::SHORTCUTS,
+    settings_section::SPEECH,
     settings_section::SYNC_ACCOUNT,
     settings_section::WORKSPACE,
     settings_section::PLUGINS,
@@ -128,6 +132,9 @@ pub(crate) fn section_keywords(id: &str) -> &'static str {
         }
         settings_section::EDITOR => "text size font line width spelling spellcheck",
         settings_section::SHORTCUTS => "keys",
+        settings_section::SPEECH => {
+            "dictation transcription microphone models parakeet whisper language paste"
+        }
         settings_section::SYNC_ACCOUNT => "sign in log out disconnect server",
         settings_section::WORKSPACE => "rename folder path",
         settings_section::PLUGINS => "notes tasks calendar projects folders sync",
@@ -160,13 +167,18 @@ pub(crate) fn kernel_sections() -> Vec<SettingsSection> {
             SettingsGroup::ThisComputer,
         ),
         (
+            settings_section::SPEECH,
+            "Speech",
+            SettingsGroup::ThisComputer,
+        ),
+        (
             settings_section::SYNC_ACCOUNT,
             "Account",
             SettingsGroup::ThisComputer,
         ),
         (
             settings_section::WORKSPACE,
-            "Name and location",
+            "Location",
             SettingsGroup::Workspace,
         ),
         (
@@ -190,7 +202,7 @@ pub(crate) fn kernel_sections() -> Vec<SettingsSection> {
             "Ignored files",
             SettingsGroup::Workspace,
         ),
-        (settings_section::ABOUT, "About noura", SettingsGroup::App),
+        (settings_section::ABOUT, "About Noura", SettingsGroup::App),
     ]
     .into_iter()
     .map(|(id, title, group)| SettingsSection {
@@ -213,9 +225,6 @@ pub struct Settings {
     /// What the last action in Settings did: why it failed, or where its
     /// result went. Choosing another section clears it.
     pub notice: Option<Notice>,
-    /// The revision of the workspace manifest when Settings read it, so a
-    /// rename never overwrites an outside edit made since.
-    pub(crate) manifest_revision: Option<String>,
     /// What Search settings holds. The section list shows only the
     /// sections that match it.
     pub query: String,

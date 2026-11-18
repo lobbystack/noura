@@ -10,6 +10,7 @@ The `objects` interface creates, reads, changes, moves and deletes objects of th
 - `update(id, expectedRevision, changes)`: change the body, set properties or remove them. The rest of the file keeps its bytes.
 - `moveTo(id, expectedRevision, path)`: move or rename the object's file. It keeps its ID.
 - `delete(id, expectedRevision)`: move the file to the system trash, or to the workspace's trash folder when the system has none.
+- `moveFolder(id, expectedRevision, folder)`: move the folder that holds the object's file to `folder`, with every file in it, such as a recording's notes and its audio, and remove the folder it leaves. Every Markdown file in the folder must be an object of one of your types, and the folder can't hold another folder. It fails with `already-exists` when something is at `folder` already.
 
 Each write carries the revision the plugin read. When the file changed since, as after an edit in another app, the write fails with `revision-conflict` and writes nothing. Each write returns once the file is on disk.
 

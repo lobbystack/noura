@@ -78,7 +78,6 @@ fn a_tool_result_a_crash_cut_between_its_two_files_completes_on_the_next_read() 
     let id = app
         .save_ai_provider(ai::provider("Local", "ollama", "llama3", None))
         .unwrap();
-    app.grant_ai_consent(&id).unwrap();
     support::settle(&mut app);
     ai::send(&mut app, "Add a task to water the tomatoes", &id);
     ai::wait_until(&mut app, "the request leaves", |_| {
@@ -546,7 +545,6 @@ fn a_summary_and_a_tool_result_reach_the_disk_while_the_index_refuses_writes() {
     let mut input = ai::provider("Local", "ollama", "llama3", None);
     input.context_window = Some(300);
     let id = app.save_ai_provider(input).unwrap();
-    app.grant_ai_consent(&id).unwrap();
     support::settle(&mut app);
     let root = fixture.root.clone();
     ai::chat_once(&mut app, &provider, &id, &"a".repeat(100), &"b".repeat(200));

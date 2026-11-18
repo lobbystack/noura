@@ -1,4 +1,4 @@
-//! Seam 1: search as the palette runs it, off the UI thread. Results from
+//! Seam 1: search filtered to contents, off the UI thread. Results from
 //! an older query never show under a newer one, clearing the query clears
 //! the results, and a broken index says so.
 
@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use app_core::{App, Change, OpenAs, Palette, SearchState};
+use app_core::{App, Change, OpenAs, SearchScope, SearchState};
 use support::{Fixture, document};
 
 fn fixture() -> Fixture {
@@ -25,18 +25,12 @@ fn fixture() -> Fixture {
 
 /// What the search shows now.
 fn state(app: &App) -> SearchState {
-    match app.palette() {
-        Some(Palette::Search(search)) => search.state.clone(),
-        other => panic!("search isn't open: {other:?}"),
-    }
+    app.palette().expect("search is open").state.clone()
 }
 
 /// The object types the type filter offers.
 fn types(app: &App) -> Vec<String> {
-    match app.palette() {
-        Some(Palette::Search(search)) => search.types.clone(),
-        other => panic!("search isn't open: {other:?}"),
-    }
+    app.palette().expect("search is open").types.clone()
 }
 
 /// The titles search shows, if it shows hits.
@@ -92,7 +86,7 @@ fn search_runs_in_the_background_and_shows_its_hits() {
     let fixture = fixture();
     let mut app = fixture.app();
 
-    app.open_search();
+    app.open_palette(SearchScope::Contents);
     assert_eq!(state(&app), SearchState::Idle);
     app.set_palette_query("saffron");
     assert_eq!(state(&app), SearchState::Searching);
@@ -114,7 +108,7 @@ fn the_type_filter_gets_the_index_types_in_the_background() {
     ]);
     let mut app = fixture.app();
 
-    app.open_search();
+    app.open_palette(SearchScope::Contents);
     // Opening search doesn't wait on the index for the types.
     assert!(types(&app).is_empty());
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -134,7 +128,7 @@ fn results_from_an_older_query_never_show_under_a_newer_one() {
     let mut app = fixture.app();
     let answers = count_answers(&app);
 
-    app.open_search();
+    app.open_palette(SearchScope::Contents);
     app.set_palette_query("last");
     // The type list and the answer for "last" arrive but wait to be taken.
     wait_for(&answers, 2);
@@ -148,7 +142,7 @@ fn typing_faster_than_search_answers_shows_only_the_last_query() {
     let fixture = fixture();
     let mut app = fixture.app();
 
-    app.open_search();
+    app.open_palette(SearchScope::Contents);
     for typed in ["s", "sa", "saf", "saff", "saffron l"] {
         app.set_palette_query(typed);
         app.poll();
@@ -163,7 +157,7 @@ fn clearing_the_query_clears_the_results() {
     let mut app = fixture.app();
     let answers = count_answers(&app);
 
-    app.open_search();
+    app.open_palette(SearchScope::Contents);
     app.set_palette_query("pepper");
     settle(&mut app, "");
     app.set_palette_query("saffron");
@@ -181,7 +175,7 @@ fn a_changed_filter_searches_again() {
     let fixture = fixture();
     let mut app = fixture.app();
 
-    app.open_search();
+    app.open_palette(SearchScope::Contents);
     app.set_palette_query("pepper");
     assert_eq!(settle(&mut app, "").len(), 2);
     app.set_search_folder("Spices");
@@ -196,7 +190,7 @@ fn a_folder_outside_the_workspace_shows_why() {
     let fixture = fixture();
     let mut app = fixture.app();
 
-    app.open_search();
+    app.open_palette(SearchScope::Contents);
     app.set_search_folder("../Elsewhere");
     app.set_palette_query("pepper");
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -226,7 +220,7 @@ fn a_broken_index_says_search_isnt_available() {
         .execute_batch("DROP TABLE object_fts;")
         .unwrap();
 
-    app.open_search();
+    app.open_palette(SearchScope::Contents);
     app.set_palette_query("pepper");
     let deadline = Instant::now() + Duration::from_secs(20);
     let error = loop {
@@ -245,7 +239,7 @@ fn enter_opens_the_highlighted_hit_and_closes_search() {
     let fixture = fixture();
     let mut app = fixture.app();
 
-    app.open_search();
+    app.open_palette(SearchScope::Contents);
     app.set_palette_query("black");
     settle(&mut app, "");
     assert!(app.run_palette_selection(Instant::now()));

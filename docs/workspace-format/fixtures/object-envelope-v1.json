@@ -7,7 +7,8 @@
         { "name": "vegetarian", "kind": "boolean", "default": false },
         { "name": "cooked", "kind": "date", "nullable": true },
         { "name": "book", "kind": { "reference": "book" }, "nullable": true },
-        { "name": "source", "kind": "string" }
+        { "name": "source", "kind": "string" },
+        { "name": "pairings", "kind": { "list": { "reference": "*" } } }
       ]
     },
     "chat": {
@@ -19,7 +20,7 @@
     },
     "chat-message": {
       "properties": [
-        { "name": "chat_id", "kind": { "reference": "chat" } },
+        { "name": "chat_id", "kind": { "id": "chat" } },
         { "name": "run_id", "kind": "string" },
         {
           "name": "kind",
@@ -35,7 +36,7 @@
         { "name": "tool_call_id", "kind": "string", "nullable": true },
         { "name": "tool_name", "kind": "string", "nullable": true },
         { "name": "error_code", "kind": "string", "nullable": true },
-        { "name": "summarizes_through_message_id", "kind": { "reference": "chat-message" }, "nullable": true }
+        { "name": "summarizes_through_message_id", "kind": { "id": "chat-message" }, "nullable": true }
       ]
     }
   },
@@ -206,7 +207,11 @@
           { "name": "vegetarian", "kind": "boolean", "default": false },
           { "name": "cooked", "kind": "date", "nullable": true },
           { "name": "course", "kind": { "enum": ["starter", "main", "dessert"] }, "default": "main" },
-          { "name": "project", "kind": { "reference": "project" }, "nullable": true, "default": null }
+          { "name": "project", "kind": { "reference": "project" }, "nullable": true, "default": null },
+          { "name": "source", "kind": { "reference": "*" }, "nullable": true },
+          { "name": "chat_id", "kind": { "id": "chat" } },
+          { "name": "attendees", "kind": { "list": "string" } },
+          { "name": "related", "kind": { "list": { "reference": "*" } } }
         ]
       }
     },
@@ -351,6 +356,20 @@
       "error": { "code": "invalid_declaration", "property": "book" }
     },
     {
+      "name": "a stable ID kind naming any type",
+      "register": [
+        { "type": "recipe", "schema": { "properties": [{ "name": "book", "kind": { "id": "*" } }] } }
+      ],
+      "error": { "code": "invalid_declaration", "property": "book" }
+    },
+    {
+      "name": "a list of lists",
+      "register": [
+        { "type": "recipe", "schema": { "properties": [{ "name": "grid", "kind": { "list": { "list": "number" } } }] } }
+      ],
+      "error": { "code": "invalid_declaration", "property": "grid" }
+    },
+    {
       "name": "a default that breaks its declaration",
       "register": [
         { "type": "recipe", "schema": { "properties": [{ "name": "servings", "kind": "number", "default": "two" }] } }
@@ -390,7 +409,8 @@
         "servings": 4.5,
         "vegetarian": true,
         "cooked": "2026-09-04",
-        "book": "book_01j00000000000000000000000",
+        "book": "[[Joy of Cooking]]",
+        "pairings": ["[[Bread]]", "[[Drinks/Red wine#Dry|wine]]"],
         "source": "Family recipe",
         "rating": "five stars",
         "tags": ["quick", null, { "nested": 1 }]
@@ -400,7 +420,8 @@
         "servings": 4.5,
         "vegetarian": true,
         "cooked": "2026-09-04",
-        "book": "book_01j00000000000000000000000",
+        "book": "[[Joy of Cooking]]",
+        "pairings": ["[[Bread]]", "[[Drinks/Red wine#Dry|wine]]"],
         "source": "Family recipe",
         "rating": "five stars",
         "tags": ["quick", null, { "nested": 1 }]
@@ -485,16 +506,28 @@
       "error": { "code": "wrong_type", "property": "cooked" }
     },
     {
-      "name": "a reference that isn't a stable ID",
+      "name": "a reference that isn't a link",
       "type": "recipe",
-      "properties": { "book": "book_not-an-id" },
+      "properties": { "book": "Joy of Cooking" },
       "error": { "code": "invalid_reference", "property": "book" }
     },
     {
-      "name": "a reference to an object of another type",
+      "name": "a reference holding a stable ID instead of a link",
       "type": "recipe",
-      "properties": { "book": "recipe_01j00000000000000000000000" },
+      "properties": { "book": "book_01j00000000000000000000000" },
       "error": { "code": "invalid_reference", "property": "book" }
+    },
+    {
+      "name": "a list with a value that isn't a link",
+      "type": "recipe",
+      "properties": { "pairings": ["[[Bread]]", "Cheese"] },
+      "error": { "code": "invalid_reference", "property": "pairings" }
+    },
+    {
+      "name": "a list property holding one value",
+      "type": "recipe",
+      "properties": { "pairings": "[[Bread]]" },
+      "error": { "code": "wrong_type", "property": "pairings" }
     },
     {
       "name": "the first failing property in declared order is named",

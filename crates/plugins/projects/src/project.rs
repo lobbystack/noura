@@ -63,7 +63,7 @@ impl Project {
     }
 
     /// The folder the project's file sits in, which holds its notes and
-    /// files, as `projects/Garden/`. A project file at the top level has
+    /// files, as `Projects/Garden/`. A project file at the top level has
     /// none, so it holds nothing.
     pub(crate) fn folder(&self) -> Option<String> {
         self.path

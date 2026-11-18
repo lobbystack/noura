@@ -334,7 +334,7 @@ fn the_share_dialog_creates_updates_and_revokes_a_link_a_browser_opens() {
     a.share_dialog();
     a.harness.get_by_label("Share \u{201c}Plan\u{201d}");
     a.harness
-        .get_by_role_and_label(Role::Button, "Create and copy link")
+        .get_by_role_and_label(Role::Button, "Copy link")
         .click();
     let link = a.copied_link();
     assert!(link.starts_with(&format!("{base}/s/")), "{link}");

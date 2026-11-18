@@ -1,0 +1,109 @@
+{
+	"description": "The transcription, transcript and transcription-settings types the Transcription plugin declares. The plugin's tests run each case through workspace-format's generic validator and serializer with the plugin's schemas, and plugin-host's tests check that the running plugin registers these schemas.",
+	"schemas": {
+		"transcription": {
+			"properties": [
+				{ "name": "start", "kind": "date", "nullable": true },
+				{ "name": "end", "kind": "date", "nullable": true },
+				{ "name": "project", "kind": { "reference": "project" }, "nullable": true },
+				{ "name": "attendees", "kind": { "list": "string" }, "default": [] }
+			]
+		},
+		"transcript": {
+			"properties": [
+				{ "name": "transcription", "kind": { "reference": "transcription" }, "nullable": true }
+			]
+		},
+		"transcription-settings": {
+			"properties": [
+				{ "name": "folder", "kind": { "enum": ["project", "meetings"] }, "default": "project" },
+				{ "name": "provider", "kind": "string", "nullable": true },
+				{ "name": "language", "kind": "string", "nullable": true },
+				{ "name": "audio", "kind": { "enum": ["none", "folder", "device"] }, "default": "none" },
+				{ "name": "audio_days", "kind": "number", "default": 30 }
+			]
+		}
+	},
+	"properties": [
+		{
+			"name": "a timed transcription with a project and attendees",
+			"type": "transcription",
+			"properties": {
+				"start": "2026-11-16T09:00:00-05:00",
+				"end": "2026-11-16T09:42:10-05:00",
+				"project": "[[Garden]]",
+				"attendees": ["Ada", "Grace"],
+				"room": "kept"
+			},
+			"expected": {
+				"start": "2026-11-16T09:00:00-05:00",
+				"end": "2026-11-16T09:42:10-05:00",
+				"project": "[[Garden]]",
+				"attendees": ["Ada", "Grace"],
+				"room": "kept"
+			}
+		},
+		{
+			"name": "a new transcription gets no attendees",
+			"type": "transcription",
+			"properties": {},
+			"expected": { "attendees": [] }
+		},
+		{
+			"name": "a start without an offset",
+			"type": "transcription",
+			"properties": { "start": "2026-11-16T09:00:00" },
+			"error": { "code": "invalid_date", "property": "start" }
+		},
+		{
+			"name": "a project that isn't a link",
+			"type": "transcription",
+			"properties": { "project": "project_01j00000000000000000000000" },
+			"error": { "code": "invalid_reference", "property": "project" }
+		},
+		{
+			"name": "attendees must be a list",
+			"type": "transcription",
+			"properties": { "attendees": "Ada" },
+			"error": { "code": "wrong_type", "property": "attendees" }
+		},
+		{
+			"name": "a transcript links to its transcription",
+			"type": "transcript",
+			"properties": { "transcription": "[[Meetings/Standup/Standup]]" },
+			"expected": { "transcription": "[[Meetings/Standup/Standup]]" }
+		},
+		{
+			"name": "settings defaults",
+			"type": "transcription-settings",
+			"properties": {},
+			"expected": { "folder": "project", "audio": "none", "audio_days": 30 }
+		},
+		{
+			"name": "an unknown audio choice",
+			"type": "transcription-settings",
+			"properties": { "audio": "cloud" },
+			"error": { "code": "not_allowed", "property": "audio" }
+		},
+		{
+			"name": "days must be a number",
+			"type": "transcription-settings",
+			"properties": { "audio": "device", "audio_days": "7" },
+			"error": { "code": "wrong_type", "property": "audio_days" }
+		}
+	],
+	"serialization": [
+		{
+			"name": "transcription in schema order",
+			"path": "Meetings/Standup/Standup.md",
+			"markdown": "---\nattendees:\n- Ada\nupdated: 2026-11-16T14:42:10Z\nproject: '[[Garden]]'\nid: transcription_01j00000000000000000000000\nend: 2026-11-16T09:42:10-05:00\ntype: transcription\ncreated: 2026-11-16T14:00:00Z\nstart: 2026-11-16T09:00:00-05:00\n---\nAgenda.\n\n## Summary\n\n- Ship Friday.\n",
+			"canonical": "---\nid: transcription_01j00000000000000000000000\ntype: transcription\nstart: 2026-11-16T09:00:00-05:00\nend: 2026-11-16T09:42:10-05:00\nproject: '[[Garden]]'\nattendees:\n- Ada\ncreated: 2026-11-16T14:00:00Z\nupdated: 2026-11-16T14:42:10Z\n---\nAgenda.\n\n## Summary\n\n- Ship Friday.\n"
+		},
+		{
+			"name": "transcript",
+			"path": "Meetings/Standup/Transcript.md",
+			"markdown": "---\nid: transcript_01j00000000000000000000000\ntype: transcript\ntranscription: '[[Standup]]'\ncreated: 2026-11-16T14:00:00Z\nupdated: 2026-11-16T14:42:10Z\n---\n**Me** · 00:00:02\nLet's ship on Friday.\n\n**Others** · 00:00:05\nI'll write the notes.\n",
+			"canonical": "---\nid: transcript_01j00000000000000000000000\ntype: transcript\ntranscription: '[[Standup]]'\ncreated: 2026-11-16T14:00:00Z\nupdated: 2026-11-16T14:42:10Z\n---\n**Me** · 00:00:02\nLet's ship on Friday.\n\n**Others** · 00:00:05\nI'll write the notes.\n"
+		}
+	]
+}

@@ -10,10 +10,10 @@ mod support;
 use std::{path::Path, sync::Arc};
 
 use plugin_host::{
-    Capability, Limits, ObjectTypes, Router, RunningPlugin, Services, WorkspaceObjects,
-    read_manifest,
+    Capability, Limits, ObjectRead, ObjectTypes, Router, RunningPlugin, Services, WorkspaceObjects,
+    WorkspacePath, read_manifest,
 };
-use support::plugins::{self, FakeObjects};
+use support::plugins::{self, FakeObjects, FakeWorkspace};
 use workspace_format::PropertySchema;
 
 /// The Tasks plugin's manifest, as its crate ships it.
@@ -23,6 +23,24 @@ const MANIFEST: &str = include_str!("../../plugins/tasks/plugin.toml");
 const FIXTURE: &str = include_str!("../../plugins/tasks/fixtures/task-v1.json");
 
 const TASK_ID: &str = "task_01jbcdefghjkmnpqrstvwxyz0a";
+
+const GARDEN: &str = "project_01jbcdefghjkmnpqrstvwxyz0b";
+
+/// A workspace holding the project Garden, which tasks link to.
+fn garden() -> FakeWorkspace {
+    FakeWorkspace {
+        objects: vec![ObjectRead {
+            id: GARDEN.to_owned(),
+            object_type: "project".to_owned(),
+            title: "Garden".to_owned(),
+            path: WorkspacePath::new("Projects/Garden/Garden.md").unwrap(),
+            body: String::new(),
+            properties: "{}".to_owned(),
+            revision: "rev-garden".to_owned(),
+        }],
+        ..FakeWorkspace::default()
+    }
+}
 
 /// The Tasks plugin, started with what its manifest declares, the probe
 /// as `caller` with `targets` as its command targets, and the objects the
@@ -55,6 +73,7 @@ impl Workspace {
             &loaded.manifest().capabilities,
             Services {
                 objects: Some(service),
+                workspace: Some(Arc::new(garden())),
                 types: types.clone(),
                 router: Arc::downgrade(&router),
                 ..Services::default()
@@ -194,10 +213,15 @@ fn list_answers_every_task_or_one_projects_tasks_without_their_bodies() {
     assert_eq!(tasks[0]["id"], TASK_ID);
     assert_eq!(tasks[0]["title"], "Weed the beds");
     assert_eq!(tasks[0]["revision"], "rev-1");
-    assert_eq!(tasks[0]["properties"]["project"], garden);
+    // The file holds a link to the project, and the answer names the
+    // project it leads to.
+    assert_eq!(tasks[0]["properties"]["project"], "[[Garden]]");
+    assert_eq!(tasks[0]["project_id"], garden);
     assert_eq!(tasks[0].get("body"), None);
     let garden_tasks = workspace.answer("list", &format!(r#"{{"project":"{garden}"}}"#));
     assert_eq!(garden_tasks["tasks"], all["tasks"]);
+    let by_link = workspace.answer("list", r#"{"project":"[[garden]]"}"#);
+    assert_eq!(by_link["tasks"], all["tasks"]);
     let other = workspace.answer(
         "list",
         r#"{"project":"project_01jbcdefghjkmnpqrstvwxyz0c"}"#,
@@ -229,7 +253,7 @@ fn a_plugin_that_names_tasks_as_a_target_creates_updates_completes_and_reopens_t
     workspace.answer(
         "update",
         &format!(
-            r#"{{{target},"properties":{{"status":"in-progress","priority":"urgent","project":"project_01jbcdefghjkmnpqrstvwxyz0b","due":"2026-10-24","kanban_order":"a0"}}}}"#
+            r#"{{{target},"properties":{{"status":"in-progress","priority":"urgent","project":"project_01jbcdefghjkmnpqrstvwxyz0b","source":"[[Garden]]","due":"2026-10-24","kanban_order":"a0"}}}}"#
         ),
     );
     workspace.answer(
@@ -244,7 +268,7 @@ fn a_plugin_that_names_tasks_as_a_target_creates_updates_completes_and_reopens_t
         [
             "create task Water the plants".to_owned(),
             format!(
-                r#"update {TASK_ID} rev-1 {{"due":"2026-10-24","kanban_order":"a0","priority":"urgent","project":"project_01jbcdefghjkmnpqrstvwxyz0b","status":"in-progress"}}"#
+                r#"update {TASK_ID} rev-1 {{"due":"2026-10-24","kanban_order":"a0","priority":"urgent","project":"[[Garden]]","source":"[[Garden]]","status":"in-progress"}}"#
             ),
             format!("update {TASK_ID} rev-1 {{}}"),
             format!(r#"update {TASK_ID} rev-1 {{"status":"done"}}"#),
@@ -324,4 +348,38 @@ fn tasks_cant_write_an_object_of_another_type() {
         assert_eq!(refused["capability"], "object-types", "{command}");
     }
     assert_eq!(workspace.objects.calls(), Vec::<String>::new());
+}
+
+/// A task's `source` links to the object it came from, of any type. A
+/// stable ID becomes the link Noura gives for its object, and `null`
+/// clears it.
+#[test]
+fn create_and_update_take_a_source_link_or_a_stable_id() {
+    let Some(workspace) = Workspace::new("[\"tasks\"]") else {
+        return;
+    };
+    workspace.tasks.register_object_types().unwrap();
+
+    let created = workspace.answer(
+        "create",
+        r#"{"title":"Send the notes","properties":{"source":"[[Team sync]]"}}"#,
+    );
+    assert_eq!(created["properties"]["source"], "[[Team sync]]");
+
+    let target = format!(r#""id":"{TASK_ID}","expected_revision":"rev-1""#);
+    workspace.answer(
+        "update",
+        &format!(r#"{{{target},"properties":{{"source":"{GARDEN}"}}}}"#),
+    );
+    workspace.answer(
+        "update",
+        &format!(r#"{{{target},"properties":{{"source":null}}}}"#),
+    );
+    assert_eq!(
+        workspace.objects.calls()[1..],
+        [
+            format!(r#"update {TASK_ID} rev-1 {{"source":"[[Garden]]"}}"#),
+            format!("update {TASK_ID} rev-1 {{}}"),
+        ]
+    );
 }

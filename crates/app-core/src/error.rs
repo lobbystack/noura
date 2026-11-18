@@ -51,7 +51,6 @@ impl AppError {
             "workspace_exists" => {
                 "This folder already has a workspace. Use Open folder to open it.".to_owned()
             }
-            "workspace_name_required" => "Enter a name for the workspace.".to_owned(),
             "invalid_workspace_manifest"
             | "invalid_workspace_id"
             | "invalid_plugin_id"

@@ -30,6 +30,7 @@ mod rail;
 mod settings;
 mod share;
 mod shortcuts;
+mod speech;
 mod tab_bar;
 pub mod theme;
 mod tree;
@@ -46,7 +47,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use app_core::{App, Appearance, Area, CommandSource, DragOut, Menu, Palette, Screen, TabId};
+use app_core::{App, Appearance, Area, CommandSource, DragOut, Menu, Screen, TabId};
 use egui::{Event, Id, ThemePreference, ViewportId};
 
 /// Finds misspelled words for the notes, such as the system's spell
@@ -73,18 +74,11 @@ pub struct NouraUi {
     picker: Box<dyn FolderPicker>,
     /// Quit ran in this window.
     quitting: bool,
-    /// The New workspace form, while it is open.
-    new_workspace: Option<common::NewWorkspace>,
     tree: tree::TreeView,
     settings: settings::SettingsView,
     plugin_install: plugins::InstallView,
-    shipped_plugins: plugins::ShippedView,
-    /// The prompt that asks before a provider receives the workspace's
-    /// content.
-    consent: ai::ConsentView,
+    /// The prompt that asks before a tool call the model wants runs.
     tool_prompt: ai::ToolPromptView,
-    /// The prompt that asks before the AI may search the web.
-    web_consent: web_search::WebConsentView,
     tab_bar: tab_bar::TabBarView,
     palette: palette::PaletteView,
     /// The editors of the notes open in tabs.
@@ -113,14 +107,10 @@ impl NouraUi {
             picker,
             title: String::new(),
             quitting: false,
-            new_workspace: None,
             tree: tree::TreeView::default(),
             settings: settings::SettingsView::default(),
             plugin_install: plugins::InstallView::default(),
-            shipped_plugins: plugins::ShippedView::default(),
-            consent: ai::ConsentView::default(),
             tool_prompt: ai::ToolPromptView::default(),
-            web_consent: web_search::WebConsentView::default(),
             tab_bar: tab_bar::TabBarView::default(),
             palette: palette::PaletteView::default(),
             notes: note::NoteView::default(),
@@ -295,8 +285,15 @@ impl NouraUi {
             let ctx = ui.ctx().clone();
             // Each window is its own viewport, which repaints on its own.
             let viewport = ctx.viewport_id();
-            self.app
-                .subscribe(move |_| ctx.request_repaint_of(viewport));
+            self.app.subscribe(move |change| {
+                ctx.request_repaint_of(viewport);
+                // Only the root viewport runs the desktop's logic, which
+                // hands plugins what the kernel queued even while no
+                // window draws, as when a recording ends.
+                if viewport != ViewportId::ROOT && change == app_core::Change::WorkFinished {
+                    ctx.request_repaint_of(ViewportId::ROOT);
+                }
+            });
         }
         if self.app.is_closed() {
             return;
@@ -361,14 +358,7 @@ impl NouraUi {
             self.notes.spell_checker.is_some(),
         );
         plugins::install_dialog(ui, &mut self.app, &mut self.plugin_install);
-        plugins::shipped_dialog(ui, &mut self.app, &mut self.shipped_plugins);
-        ai::consent_prompt(ui, &mut self.app, &mut self.consent);
         ai::tool_prompt(ui, &mut self.app, &mut self.tool_prompt);
-        // One prompt at a time: a provider's question and a tool call go
-        // first.
-        if self.app.ai_consent_prompt().is_none() && self.app.ai_tool_prompt().is_none() {
-            web_search::consent_prompt(ui, &mut self.app, &mut self.web_consent);
-        }
         palette::show(ui, &mut self.app, &mut self.palette);
         share::dialog(ui, &mut self.app);
         note::unsaved_prompt(ui, &mut self.app);
@@ -443,7 +433,7 @@ impl NouraUi {
                 } => keys::press(*key, *physical_key, *modifiers, platform),
                 _ => None,
             };
-            let before = self.app.palette().map(Palette::mode);
+            let before = self.app.palette().map(|palette| palette.scope);
             if let Some(press) = &press
                 && self.app.command_for_key(press, focus).is_some()
             {
@@ -452,7 +442,7 @@ impl NouraUi {
                 self.notes.commit_drafts(&mut self.app);
             }
             if press.is_some_and(|press| self.app.press_key(&press, focus, now)) {
-                let after = self.app.palette().map(Palette::mode);
+                let after = self.app.palette().map(|palette| palette.scope);
                 palette_opened = after.is_some() && after != before;
             } else {
                 kept.push(event);
@@ -467,6 +457,17 @@ impl NouraUi {
     fn pick_and_open(&mut self) {
         if let Some(folder) = self.picker.pick_folder("Open a folder") {
             self.app.open_folder(folder);
+        }
+    }
+
+    /// New workspace: ask for a folder and make it a workspace named after
+    /// it.
+    fn pick_and_create(&mut self) {
+        if let Some(folder) = self
+            .picker
+            .pick_folder("Choose a folder for the new workspace")
+        {
+            self.app.create_workspace(folder);
         }
     }
 }

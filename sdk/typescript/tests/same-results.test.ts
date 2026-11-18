@@ -433,7 +433,7 @@ describe.each(HOSTS)(
 			if (!host) return context.skip();
 			expect(await probe(host, 'create-object')).toEqual({ ok: true });
 			expect(await probe(host, 'list-own')).toEqual({
-				ok: ['probe-notes/Probe.md'],
+				ok: ['Probe-notes/Probe.md'],
 			});
 			expect(await probe(host, 'update-stale')).toMatchObject({
 				error: { tag: 'revision-conflict' },

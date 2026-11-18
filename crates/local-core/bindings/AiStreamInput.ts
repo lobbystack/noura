@@ -3,4 +3,4 @@ import type { AiModelRef } from "./AiModelRef";
 import type { AiToolDefinition } from "./AiToolDefinition";
 import type { AiTransportMessage } from "./AiTransportMessage";
 
-export type AiStreamInput = { operationId: string, model: AiModelRef, messages: Array<AiTransportMessage>, tools?: Array<AiToolDefinition>, policyVersion?: string, };
+export type AiStreamInput = { operationId: string, model: AiModelRef, messages: Array<AiTransportMessage>, tools?: Array<AiToolDefinition>, };

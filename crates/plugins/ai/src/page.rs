@@ -110,12 +110,12 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
     view.into_nodes()
 }
 
-/// Whether a run is still at work: Noura asks you something, or the
-/// answer streams in.
+/// Whether a run is still at work: Noura asks you about a tool call, or
+/// the answer streams in.
 fn busy(run: &Run) -> bool {
     matches!(
         run.status,
-        RunStatus::Streaming | RunStatus::WaitingForConsent | RunStatus::WaitingForApproval
+        RunStatus::Streaming | RunStatus::WaitingForApproval
     )
 }
 
@@ -367,18 +367,10 @@ fn draw_web_call(view: &mut View, message: &Message) {
 }
 
 /// What the run of the last message you sent says, when the messages
-/// don't: it waits for you, you said no, or it ended early.
-fn draw_run_status(view: &mut View, run: &Run, providers: &[Provider], state: &State) {
-    let name = providers
-        .iter()
-        .find(|known| known.id == run.provider)
-        .map_or(run.provider.as_str(), |known| known.name.as_str());
+/// don't: it waits for you, or it ended early.
+fn draw_run_status(view: &mut View, run: &Run, _providers: &[Provider], state: &State) {
     let line = match run.status {
-        RunStatus::WaitingForConsent => {
-            Some(format!("Waiting for your answer on sending to {name}."))
-        }
         RunStatus::WaitingForApproval => Some("Waiting for your answer on a tool call.".to_owned()),
-        RunStatus::Denied => Some(format!("You denied {name}, so nothing was sent.")),
         RunStatus::Failed => run
             .failure
             .as_ref()

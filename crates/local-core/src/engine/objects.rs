@@ -57,7 +57,9 @@ impl WorkspaceEngine {
         properties.remove("updated");
         let id = new_object_id(&input.object_type);
         let relative_path = match input.relative_path {
-            Some(relative_path) => relative_path,
+            Some(relative_path) => {
+                crate::path::match_existing_folder_case(&self.root, &relative_path)
+            }
             None => self.free_object_path(&input.object_type, &input.title),
         };
         let object = WorkspaceObject {
@@ -111,7 +113,9 @@ impl WorkspaceEngine {
             properties.remove(key);
         }
         let relative_path = match input.relative_path {
-            Some(relative_path) => relative_path,
+            Some(relative_path) => {
+                crate::path::match_existing_folder_case(&self.root, &relative_path)
+            }
             None => self.free_object_path(&input.object_type, &input.title),
         };
         let mut object = WorkspaceObject {
@@ -126,6 +130,7 @@ impl WorkspaceEngine {
             properties,
         };
         check_schema(&mut object, schemas)?;
+        self.check_links(&object, schemas, None)?;
         self.commit_object_with(object, None, "object:created", OPERATION, schemas)
     }
 
@@ -155,8 +160,11 @@ impl WorkspaceEngine {
         let (mut object, bytes) = self.read_canonical_object(id, OPERATION)?;
         check_revision(&bytes, &patch.expected_revision, OPERATION)?;
         let expected_revision = patch.expected_revision.clone();
+        let changed: std::collections::BTreeSet<String> =
+            patch.properties.keys().cloned().collect();
         apply_patch(&mut object, patch);
         check_schema(&mut object, schemas)?;
+        self.check_links(&object, schemas, Some(&changed))?;
         object.updated = Some(now_rfc3339());
         self.commit_object_with(
             object,
@@ -282,7 +290,10 @@ impl WorkspaceEngine {
             let room = workspace_format::MAX_FILE_NAME_CHARS - suffix.chars().count();
             let stem: String = base.chars().take(room).collect();
             let name = format!("{}{suffix}", stem.trim_end());
-            candidate = workspace_format::default_managed_object_path(object_type, &name);
+            candidate = crate::path::match_existing_folder_case(
+                &self.root,
+                &workspace_format::default_managed_object_path(object_type, &name),
+            );
             if std::fs::symlink_metadata(self.root.join(&candidate)).is_err() {
                 break;
             }
@@ -455,7 +466,21 @@ impl WorkspaceEngine {
         self.update_object(id, patch)
     }
 
+    /// Move the object with the stable ID `id` to `destination`, which
+    /// renames it when only the file name changes, then rewrite the links
+    /// that led to it. The file must still hold `expected_revision`.
     pub fn move_object(
+        &self,
+        id: &str,
+        destination: &str,
+        expected_revision: &str,
+    ) -> Result<MutationResult<WorkspaceObject>> {
+        let moved = self.move_object_file(id, destination, expected_revision)?;
+        self.follow_moved_links();
+        Ok(moved)
+    }
+
+    fn move_object_file(
         &self,
         id: &str,
         destination: &str,
@@ -470,8 +495,11 @@ impl WorkspaceEngine {
             )
         })?;
         let source = resolve_for_write(&self.root, &object.relative_path, "object_move")?;
-        let destination_path = resolve_for_write(&self.root, destination, "object_move")?;
         let _guard = self.write_lock("object_move")?;
+        // On a case-insensitive disk the file lands in the folder that
+        // already exists, so record that spelling.
+        let destination = &crate::path::match_existing_folder_case(&self.root, destination);
+        let destination_path = resolve_for_write(&self.root, destination, "object_move")?;
         self.collaboration_guard_file_mutation(&object.relative_path)?;
         let bytes = read_downloaded(&source, &object.relative_path, "object_move")?;
         check_revision(&bytes, expected_revision, "object_move")?;
@@ -510,6 +538,7 @@ impl WorkspaceEngine {
             index.upsert_markdown(destination, &bytes, mtime_ns(&destination_path), &parsed)
         })();
         let (index_status, warnings) = self.index_outcome(index_result);
+        self.note_moved_links([(old.clone(), destination.to_owned())]);
         self.emit(
             "object:moved",
             EventSource::Application,
@@ -840,6 +869,57 @@ fn apply_patch(object: &mut WorkspaceObject, patch: ObjectPatch) {
 /// properties as they are. A failing property comes back as
 /// `invalid_property`, naming it and the workspace format's code for what
 /// is wrong, and leaves `object` as it was.
+impl WorkspaceEngine {
+    /// Check that each link a reference property of `object` holds leads
+    /// to an object of the type its schema declares, from where the
+    /// object's file goes. With `only`, just the properties it names.
+    fn check_links(
+        &self,
+        object: &WorkspaceObject,
+        schemas: &ObjectTypeRegistry,
+        only: Option<&std::collections::BTreeSet<String>>,
+    ) -> Result<()> {
+        let links: Vec<_> = schemas
+            .declared_links(object)
+            .into_iter()
+            .filter(|link| only.is_none_or(|only| only.contains(&link.property)))
+            .collect();
+        if links.is_empty() {
+            return Ok(());
+        }
+        let targets = self.link_targets()?;
+        let index = self
+            .index
+            .lock()
+            .map_err(|_| lock_error("object_validate"))?;
+        for link in links {
+            let leads_to = match targets.resolve(&object.relative_path, &link.target) {
+                Some(path) => index.object_type_at(&path)?,
+                None => None,
+            };
+            let fits = leads_to.as_deref().is_some_and(|object_type| {
+                link.object_type == workspace_format::ANY_TYPE || object_type == link.object_type
+            });
+            if !fits {
+                let mut core = CoreError::validation(
+                    "invalid_property",
+                    format!(
+                        "{} doesn't link to an object of the declared type",
+                        link.property
+                    ),
+                    "object_validate",
+                );
+                core.details = Some(serde_json::json!({
+                    "property": link.property,
+                    "code": "invalid_reference",
+                }));
+                return Err(core);
+            }
+        }
+        Ok(())
+    }
+}
+
 fn check_schema(object: &mut WorkspaceObject, schemas: &ObjectTypeRegistry) -> Result<()> {
     schemas.normalize(object).map_err(|error| {
         let details = serde_json::to_value(&error).unwrap_or_default();
@@ -867,8 +947,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         let created = engine
             .create_object(CreateObjectInput {
                 object_type: "task".into(),
@@ -927,8 +1006,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         let input = serde_json::from_value(serde_json::json!({
             "type": "project",
             "title": "Portable project"
@@ -939,9 +1017,168 @@ mod tests {
 
         assert_eq!(created.value.body, "");
         assert!(created.value.properties.is_empty());
-        assert_eq!(created.value.relative_path, "projects/Portable project.md");
+        assert_eq!(created.value.relative_path, "Projects/Portable project.md");
         assert_eq!(created.value.title, "Portable project");
         assert!(workspace.path().join(created.value.relative_path).is_file());
+    }
+
+    /// A workspace made before folders took capitals keeps its `notes/`
+    /// and `tasks/`: objects stay where they are, Noura finds them by ID,
+    /// and new ones join the lowercase folder instead of a second one.
+    #[test]
+    fn lowercase_type_folders_keep_working_and_get_no_capitalized_twin() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let note_id = "note_01j00000000000000000000000";
+        let task_id = "task_01j00000000000000000000000";
+        std::fs::create_dir_all(workspace.path().join("notes")).unwrap();
+        std::fs::create_dir_all(workspace.path().join("tasks")).unwrap();
+        std::fs::write(
+            workspace.path().join("notes/Old.md"),
+            format!("---\nid: {note_id}\ntype: note\n---\nOld\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.path().join("tasks/Old task.md"),
+            format!("---\nid: {task_id}\ntype: task\n---\n"),
+        )
+        .unwrap();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
+        engine.reconcile().unwrap();
+        assert_eq!(
+            engine.read_object(note_id).unwrap().relative_path,
+            "notes/Old.md"
+        );
+        assert_eq!(
+            engine.read_object(task_id).unwrap().relative_path,
+            "tasks/Old task.md"
+        );
+
+        let create = |object_type: &str, title: &str| {
+            engine
+                .create_object(CreateObjectInput {
+                    object_type: object_type.into(),
+                    title: title.into(),
+                    body: String::new(),
+                    relative_path: None,
+                    properties: BTreeMap::new(),
+                })
+                .unwrap()
+                .value
+        };
+        assert_eq!(create("note", "New").relative_path, "notes/New.md");
+        assert_eq!(
+            create("task", "New task").relative_path,
+            "tasks/New task.md"
+        );
+        assert_eq!(
+            create("project", "Garden").relative_path,
+            "Projects/Garden.md"
+        );
+        let given = engine
+            .create_object(CreateObjectInput {
+                object_type: "note".into(),
+                title: "Given".into(),
+                body: String::new(),
+                relative_path: Some("Notes/Given.md".into()),
+                properties: BTreeMap::new(),
+            })
+            .unwrap()
+            .value;
+        assert_eq!(given.relative_path, "notes/Given.md");
+        let mut folders: Vec<String> = std::fs::read_dir(workspace.path())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_type().unwrap().is_dir())
+            .map(|entry| entry.file_name().into_string().unwrap())
+            .filter(|name| !name.starts_with('.'))
+            .collect();
+        folders.sort();
+        assert_eq!(folders, ["Projects", "notes", "tasks"]);
+    }
+
+    /// On a case-insensitive file system, such as macOS's and Windows's
+    /// defaults, writing `Notes/x.md` would land in `notes/` while Noura
+    /// recorded the other spelling. The path Noura records must be the
+    /// one on disk.
+    #[test]
+    fn a_case_insensitive_disk_records_the_folder_it_already_has() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join("notes")).unwrap();
+        let insensitive = workspace.path().join("NOTES").exists();
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
+        let created = engine
+            .create_object(CreateObjectInput {
+                object_type: "note".into(),
+                title: "Plan".into(),
+                body: String::new(),
+                relative_path: None,
+                properties: BTreeMap::new(),
+            })
+            .unwrap()
+            .value;
+        assert_eq!(created.relative_path, "notes/Plan.md");
+        let names: Vec<String> = std::fs::read_dir(workspace.path().join("notes"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names, ["Plan.md"]);
+        // The default macOS and Windows disks ignore case; say so when the
+        // test ran on one that doesn't.
+        if !insensitive {
+            eprintln!("this disk keeps case, so only the folder choice was checked");
+        }
+    }
+
+    /// Moving an object to `notes/Moved.md` while `Notes/` exists puts the
+    /// file in `Notes/` on a case-insensitive disk, so the path Noura
+    /// records, returns and indexes must be `Notes/Moved.md`, or the next
+    /// scan finds a second file with the object's ID.
+    #[test]
+    fn a_move_into_a_folder_spelled_with_other_case_records_the_folder_on_disk() {
+        let workspace = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join("Notes")).unwrap();
+        if !workspace.path().join("notes").exists() {
+            eprintln!("skipped: this disk keeps case");
+            return;
+        }
+        let engine =
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
+        let created = engine
+            .create_object(CreateObjectInput {
+                object_type: "note".into(),
+                title: "Plan".into(),
+                body: String::new(),
+                relative_path: None,
+                properties: BTreeMap::new(),
+            })
+            .unwrap();
+        assert_eq!(created.value.relative_path, "Notes/Plan.md");
+
+        let moved = engine
+            .move_object(&created.value.id, "notes/Moved.md", &created.revision)
+            .unwrap();
+        assert_eq!(moved.value.relative_path, "Notes/Moved.md");
+        assert_eq!(
+            engine.read_object(&created.value.id).unwrap().relative_path,
+            "Notes/Moved.md"
+        );
+        engine.reconcile().unwrap();
+        assert_eq!(
+            engine.read_object(&created.value.id).unwrap().relative_path,
+            "Notes/Moved.md"
+        );
+        let names: Vec<String> = std::fs::read_dir(workspace.path().join("Notes"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names, ["Moved.md"]);
     }
 
     #[test]
@@ -949,8 +1186,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         let project = engine
             .create_object(CreateObjectInput {
                 object_type: "project".into(),
@@ -1099,8 +1335,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         let created = engine
             .create_object(CreateObjectInput {
                 object_type: "note".into(),
@@ -1130,8 +1365,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         (workspace, app_data, engine)
     }
 
@@ -1154,13 +1388,13 @@ mod tests {
         let second = create("Team sync");
         assert_eq!(
             (first.relative_path.as_str(), first.title.as_str()),
-            ("notes/Team sync.md", "Team sync")
+            ("Notes/Team sync.md", "Team sync")
         );
         assert_eq!(
             (second.relative_path.as_str(), second.title.as_str()),
-            ("notes/Team sync 1.md", "Team sync 1")
+            ("Notes/Team sync 1.md", "Team sync 1")
         );
-        let bytes = std::fs::read_to_string(workspace.path().join("notes/Team sync.md")).unwrap();
+        let bytes = std::fs::read_to_string(workspace.path().join("Notes/Team sync.md")).unwrap();
         assert!(bytes.ends_with("---\nBody\n") && !bytes.contains("# "));
     }
 
@@ -1318,8 +1552,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let app_data = tempdir().unwrap();
         let engine =
-            WorkspaceEngine::create_with_app_data(workspace.path(), "Test", app_data.path())
-                .unwrap();
+            WorkspaceEngine::create_with_app_data(workspace.path(), app_data.path()).unwrap();
         let bytes = b"---\ncustom: retained\ncreated: 2026-08-01T10:00:00Z\n---\n# Draft\n\nBody\n";
         std::fs::write(workspace.path().join("draft.md"), bytes).unwrap();
         let adopted = engine

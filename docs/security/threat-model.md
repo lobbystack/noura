@@ -8,7 +8,7 @@ Noura protects workspace bytes, provider credentials, stable identity, and the i
 
 The local core runs workspace operations without a Noura account or network service. It reads and writes canonical workspace files locally, and the desktop host and standalone Model Context Protocol (MCP) server call the same services.
 
-Network-enabled features add separate boundaries. You authorize the client before it sends workspace content to an AI provider. The native web-access boundary requires explicit consent and validates public HTTPS destinations.
+Network-enabled features add separate boundaries. Setting up an AI provider authorizes the client to send it workspace content, and adding a Brave Search key authorizes web search. The native web-access boundary validates public HTTPS destinations.
 
 Experimental account and sync services process authentication metadata and encrypted workspace content. Clients retain workspace content keys; managed sync must never require plaintext workspace bytes on the server. Local workspace operations remain independent of these services.
 

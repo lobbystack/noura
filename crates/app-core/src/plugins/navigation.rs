@@ -1,9 +1,9 @@
 //! What a running plugin asks the window you acted in to show, Settings
-//! included, or move to the trash, and the clock it reads. A plugin's request waits here until
-//! that window polls,
-//! and only a call that answers something you did may make one: an event
-//! in one of the plugin's views or panels, or a command you ran from the
-//! command palette. Such a call runs on the plugin's own thread, so a call
+//! included, or move to the trash, and the clock it reads. A plugin's
+//! request waits here until that window polls, and only a call that
+//! answers something you did may make one: an event in one of the
+//! plugin's views or panels, a command you ran from the command palette,
+//! or a kernel event, whose request goes to the window you used last. Such a call runs on the plugin's own thread, so a call
 //! into the plugin from another thread, such as another plugin's command
 //! call or a tool call, opens nothing even while one waits its turn.
 
@@ -44,6 +44,9 @@ pub(crate) struct Navigator {
     /// The window whose action the plugin's current call answers, if any,
     /// and the thread that call runs on.
     origin: Mutex<Option<(ThreadId, WindowKey)>>,
+    /// The thread whose current call answers a kernel event, such as a
+    /// shortcut press, which counts as something you did without a window.
+    kernel: Mutex<Option<ThreadId>>,
     openings: Openings,
 }
 
@@ -52,6 +55,7 @@ impl Navigator {
         Self {
             plugin: plugin.to_owned(),
             origin: Mutex::new(None),
+            kernel: Mutex::new(None),
             openings,
         }
     }
@@ -66,6 +70,32 @@ impl Navigator {
             window.map(|window| (thread::current().id(), window));
     }
 
+    /// Note that the plugin's next calls on this thread answer a kernel
+    /// event, or don't when `false`.
+    pub(crate) fn set_kernel(&self, answering: bool) {
+        *self
+            .kernel
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = answering.then(|| thread::current().id());
+    }
+
+    /// Whether the call running on this thread answers something you did:
+    /// an action in a window or a kernel event.
+    pub(crate) fn answering(&self) -> bool {
+        let here = thread::current().id();
+        let window = self
+            .origin
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_some_and(|(thread, _)| thread == here);
+        window
+            || *self
+                .kernel
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                == Some(here)
+    }
+
     fn request(&self, opening: Opening) -> Result<(), ServiceError> {
         let refusal = match opening {
             Opening::Trash(_) => "Noura trashes things only when you act.",
@@ -76,9 +106,17 @@ impl Navigator {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let here = thread::current().id();
+        // A kernel event, such as a shortcut press, came from no window:
+        // what it opens shows in the window you used last.
+        let kernel = *self
+            .kernel
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            == Some(here);
         let Some(window) = origin
             .filter(|(thread, _)| *thread == here)
             .map(|(_, window)| window)
+            .or(kernel.then_some(WindowKey::LAST_USED))
         else {
             return Err(ServiceError::Failed(refusal.to_owned()));
         };
@@ -115,6 +153,7 @@ impl Navigation for Navigator {
             SettingsSection::Plugins => settings_section::PLUGINS,
             SettingsSection::Ai => settings_section::AI,
             SettingsSection::Sync => settings_section::SYNC,
+            SettingsSection::Speech => settings_section::SPEECH,
         };
         self.request(Opening::Settings(id))
     }

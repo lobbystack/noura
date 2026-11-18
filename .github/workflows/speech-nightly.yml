@@ -1,0 +1,39 @@
+name: Speech nightly
+
+# Downloads Whisper Tiny from Hugging Face through Noura's model catalog,
+# loads it with transcribe.cpp and transcribes speech
+# (crates/speech/tests/whisper.rs). On macOS the speech comes from `say`.
+on:
+  schedule:
+    - cron: '7 5 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: speech-nightly
+  cancel-in-progress: false
+
+jobs:
+  whisper:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - name: Install the Linux audio libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libxdo-dev
+      - name: Run the Whisper test
+        env:
+          NOURA_WHISPER_TEST: '1'
+        run: cargo test -p speech --test whisper --locked

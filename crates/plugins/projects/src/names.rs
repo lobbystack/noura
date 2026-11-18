@@ -1,5 +1,5 @@
-//! Where a new project's file goes: a folder of its own under `projects/`,
-//! named like the file, as `projects/Garden/Garden.md`, so the folder can
+//! Where a new project's file goes: a folder of its own under `Projects/`,
+//! named like the file, as `Projects/Garden/Garden.md`, so the folder can
 //! hold the project's notes and files. The kernel names an object's file
 //! after its title in a folder named after its type, so Projects picks the
 //! path itself and gives it to the host.
@@ -82,7 +82,7 @@ pub(crate) fn candidates(title: &str) -> impl Iterator<Item = String> {
 
 /// The path of the project named `name`: its file in a folder of its own.
 pub(crate) fn project_path(name: &str) -> String {
-    format!("projects/{name}/{name}.md")
+    format!("Projects/{name}/{name}.md")
 }
 
 #[cfg(test)]
@@ -128,7 +128,7 @@ mod tests {
         assert_eq!(names.next().unwrap(), "Garden v2");
         assert_eq!(names.next().unwrap(), "Garden v2 1");
         assert_eq!(names.next().unwrap(), "Garden v2 2");
-        assert_eq!(project_path("Garden v2"), "projects/Garden v2/Garden v2.md");
+        assert_eq!(project_path("Garden v2"), "Projects/Garden v2/Garden v2.md");
         assert_eq!(candidates("///").next().unwrap(), "Untitled");
     }
 

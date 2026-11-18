@@ -137,6 +137,9 @@ fn in_plain_words(code: &str, path: Option<&str>, message: String) -> String {
         ("unreadable_folder", Some(path)) => {
             format!("Noura has no permission to read the folder {path}.")
         }
+        ("stale_link", Some(path)) => {
+            format!("Noura couldn't update the links in {path}, so check them.")
+        }
         ("unsupported_path", folder) => {
             let place = folder.map_or_else(
                 || "at the top of the workspace".to_owned(),

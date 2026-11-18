@@ -284,6 +284,31 @@ impl WorkspaceEngine {
             .query_non_managed_markdown()
     }
 
+    /// Write `bytes` as a new file at `relative_path`, such as a recording's
+    /// audio beside its Transcription. Returns once the bytes are durably
+    /// on disk. Refuses a path that holds something already.
+    pub fn create_file(&self, relative_path: &str, bytes: &[u8]) -> Result<()> {
+        const OPERATION: &str = "file_create";
+        let path = resolve_for_write(&self.root, relative_path, OPERATION)?;
+        let guard = self.write_lock(OPERATION)?;
+        self.collaboration_guard_file_mutation(relative_path)?;
+        if std::fs::symlink_metadata(&path).is_ok() {
+            return Err(CoreError::new(
+                "path_exists",
+                crate::ErrorCategory::Conflict,
+                "A file or folder already exists at that path",
+                OPERATION,
+            ));
+        }
+        self.expect_own_write(relative_path, None);
+        atomic_write_checked(&self.root, Path::new(relative_path), bytes, None, OPERATION)
+            .inspect_err(|_| self.forget_own_write(relative_path))?;
+        drop(guard);
+        self.reconcile_after_change(OPERATION);
+        self.announce_own_change(&[relative_path]);
+        Ok(())
+    }
+
     /// Rename or move a folder with everything in it, as
     /// [`Self::move_file`] does for a file.
     pub fn move_folder(&self, from: &str, to: &str) -> Result<()> {
@@ -314,6 +339,8 @@ impl WorkspaceEngine {
         drop(guard);
         self.reconcile_after_change("folder_move");
         self.announce_own_change(&[from, to]);
+        self.note_moved_folder(from, to);
+        self.follow_moved_links();
         Ok(())
     }
 
@@ -351,6 +378,8 @@ impl WorkspaceEngine {
         drop(guard);
         self.reconcile_after_change(operation);
         self.announce_own_change(&[from, to]);
+        self.note_moved_links([(from.to_owned(), to.to_owned())]);
+        self.follow_moved_links();
         Ok(())
     }
 

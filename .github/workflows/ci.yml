@@ -54,6 +54,9 @@ jobs:
         with:
           persist-credentials: false
       # rustup reads the version and components from rust-toolchain.toml.
+      - name: Install the Linux build libraries
+        if: runner.os == 'Linux'
+        run: scripts/install-linux-build-deps.sh
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
       - run: rustc --version
@@ -167,6 +170,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      - name: Install the Linux build libraries
+        if: runner.os == 'Linux'
+        run: scripts/install-linux-build-deps.sh --runtime
       - name: Install the pinned Rust toolchain and the WebAssembly target
         run: |
           rustup toolchain install
@@ -394,6 +400,9 @@ jobs:
           done
           echo "::error::The PostgreSQL service didn't come back after its restart."
           exit 1
+      - name: Install the Linux build libraries
+        if: runner.os == 'Linux'
+        run: scripts/install-linux-build-deps.sh
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
       - run: rustc --version
@@ -421,6 +430,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      - name: Install the Linux build libraries
+        if: runner.os == 'Linux'
+        run: scripts/install-linux-build-deps.sh
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
       - run: rustc --version
@@ -566,6 +578,8 @@ jobs:
       - name: Check the kit's npm licenses
         working-directory: sdk/typescript
         run: npm run licenses
+      # Only what the published packages install: the test and license
+      # tools are dev dependencies that never reach a plugin author's project.
       - name: Check the kit's npm advisories
         working-directory: sdk/typescript
         run: npm run advisories

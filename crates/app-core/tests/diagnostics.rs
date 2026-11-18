@@ -10,8 +10,7 @@ use support::{Call, FakeSystem, note, rows, settle, write};
 
 /// Names that appear only in the workspace, its folder's path and the log,
 /// so the report must contain none of them.
-const DISTINCTIVE: [&str; 11] = [
-    "Zephyrine",
+const DISTINCTIVE: [&str; 10] = [
     "Marrowvale",
     "Okapi",
     "Tamarind",
@@ -24,13 +23,13 @@ const DISTINCTIVE: [&str; 11] = [
     "secret agenda",
 ];
 
-/// A workspace named Zephyrine Ledger in the folder Marrowvale Notes, with
+/// A workspace in the folder Marrowvale Notes, which names it, with
 /// a note whose properties can't be read and two notes that share an ID.
 fn workspace(parent: &Path, app_data: &Path) -> std::path::PathBuf {
     let folder = parent.join("Marrowvale Notes");
     std::fs::create_dir_all(&folder).unwrap();
     let root = WorkspaceService::new(app_data)
-        .create("Zephyrine Ledger", &folder)
+        .create(&folder)
         .unwrap()
         .root()
         .to_owned();
@@ -70,7 +69,7 @@ fn log(app_data: &Path, root: &Path) {
          details=Some(Object {\"path\": String(\"Quokka.md\")})"
             .to_owned(),
         "2026-10-20T10:01:06.000000Z  WARN app_core: moved Pangolin beside Quokka in \
-         Zephyrine Ledger"
+         Marrowvale Notes"
             .to_owned(),
         "2026-10-20T10:01:07.000000Z  INFO app_core: searched for 'secret agenda' and \
          `secret agenda`"
@@ -192,7 +191,7 @@ fn names_no_list_knows_stay_out_of_the_report() {
     let folder = parent.path().join("Garden");
     std::fs::create_dir_all(&folder).unwrap();
     let root = WorkspaceService::new(app_data.path())
-        .create("Garden", &folder)
+        .create(&folder)
         .unwrap()
         .root()
         .to_owned();

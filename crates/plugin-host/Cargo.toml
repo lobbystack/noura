@@ -14,6 +14,7 @@ pulley = ["wasmtime/pulley"]
 test-hooks = []
 
 [dependencies]
+rand.workspace = true
 # Names each component's bytes in the compiled code cache.
 blake3.workspace = true
 # Reads this computer's clock and time zone for plugins when the app

@@ -43,7 +43,6 @@ struct Opened {
     harness: Ui,
     system: Arc<FakeSystem>,
     login: Arc<FakeLoginItem>,
-    folder: std::path::PathBuf,
     /// The app data and the workspace's parent folder, which last as long
     /// as the test binds them.
     folders: (tempfile::TempDir, tempfile::TempDir),
@@ -60,7 +59,7 @@ fn opened_with(files: &[(&str, &str)]) -> Opened {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     for (name, text) in files {
         std::fs::write(folder.join(name), text).unwrap();
     }
@@ -78,7 +77,6 @@ fn opened_with(files: &[(&str, &str)]) -> Opened {
         harness,
         system,
         login,
-        folder,
         folders: (app_data, parent),
     }
 }
@@ -101,7 +99,9 @@ fn section<'a>(harness: &'a Ui, title: &'a str) -> egui_kittest::Node<'a> {
 }
 
 fn choose_section(harness: &mut Ui, title: &str) {
-    section(harness, title).click();
+    // A section low in the list may sit below the dialog's edge, so the
+    // click goes through AccessKit.
+    section(harness, title).click_accesskit();
     harness.run();
 }
 
@@ -140,13 +140,14 @@ fn the_rail_s_settings_button_opens_settings_with_its_sections_by_group() {
                     "General".to_owned(),
                     "Editor".to_owned(),
                     "Keyboard shortcuts".to_owned(),
+                    "Speech".to_owned(),
                     "Account".to_owned()
                 ]
             ),
             (
                 "Workspace".to_owned(),
                 vec![
-                    "Name and location".to_owned(),
+                    "Location".to_owned(),
                     "Plugins".to_owned(),
                     "AI".to_owned(),
                     "Sync and devices".to_owned(),
@@ -154,7 +155,7 @@ fn the_rail_s_settings_button_opens_settings_with_its_sections_by_group() {
                     "Ignored files".to_owned()
                 ]
             ),
-            ("App".to_owned(), vec!["About noura".to_owned()]),
+            ("App".to_owned(), vec!["About Noura".to_owned()]),
         ]
     );
     // General shows first, and has the keyboard focus.
@@ -215,10 +216,10 @@ fn every_section_and_control_carries_a_label() {
         "Editor",
         "Keyboard shortcuts",
         "AI",
-        "Name and location",
+        "Location",
         "Plugins",
         "Ignored files",
-        "About noura",
+        "About Noura",
     ] {
         choose_section(&mut harness, title);
         let controls = controls(&harness);
@@ -401,9 +402,9 @@ fn about_links_open_in_the_browser_and_diagnostics_reach_the_clipboard() {
         ..
     } = opened();
     open_settings(&mut harness);
-    choose_section(&mut harness, "About noura");
+    choose_section(&mut harness, "About Noura");
     harness.get_by_label(app_core::VERSION);
-    harness.get_by_label("MIT, free and open source");
+    harness.get_by_label("MIT");
 
     for link in &ABOUT_LINKS {
         harness
@@ -432,7 +433,7 @@ fn about_links_open_in_the_browser_and_diagnostics_reach_the_clipboard() {
 fn about_opens_the_license_list_the_package_ships() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    create_workspace(app_data.path(), &parent.path().join("Garden"));
     let list = parent.path().join("THIRD_PARTY_LICENSES.html");
     let system = FakeSystem::new(Platform::MacOs);
     let bundled = list.clone();
@@ -444,7 +445,7 @@ fn about_opens_the_license_list_the_package_ships() {
     );
     settle(&mut harness);
     open_settings(&mut harness);
-    choose_section(&mut harness, "About noura");
+    choose_section(&mut harness, "About Noura");
 
     harness
         .get_by_role_and_label(Role::Link, "Third-party licenses")
@@ -455,34 +456,32 @@ fn about_opens_the_license_list_the_package_ships() {
 }
 
 #[test]
-fn name_and_location_renames_the_workspace_and_shows_its_folder() {
+fn location_shows_the_folder_and_no_name_field() {
     let Opened {
         mut harness,
         system,
-        folder,
         folders: _folders,
         ..
     } = opened();
     open_settings(&mut harness);
-    choose_section(&mut harness, "Name and location");
+    choose_section(&mut harness, "Location");
     let root = harness.state().app().workspace().unwrap().root().to_owned();
     harness.get_by_label(&root);
-
-    let field = harness.get_by_role_and_label(Role::TextInput, "Workspace name");
-    field.focus();
-    harness.run();
-    harness.key_press_modifiers(egui::Modifiers::COMMAND, Key::A);
-    harness
-        .get_by_role_and_label(Role::TextInput, "Workspace name")
-        .type_text("Orchard");
-    harness.run();
-    harness.key_press(Key::Enter);
-    harness.run();
-
-    let app = harness.state().app();
-    assert_eq!(app.workspace().unwrap().name(), "Orchard");
-    assert_eq!(app.recents()[0].name, "Orchard");
-    assert!(folder.is_dir(), "the folder keeps its name");
+    assert!(
+        harness
+            .query_by_role_and_label(Role::TextInput, "Workspace name")
+            .is_none()
+    );
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, "Rename")
+            .is_none()
+    );
+    assert!(
+        harness
+            .query_by_label("The folder keeps its name.")
+            .is_none()
+    );
 
     harness
         .get_by_role_and_label(Role::Button, "Show folder")
@@ -496,7 +495,7 @@ fn name_and_location_renames_the_workspace_and_shows_its_folder() {
 fn opened_on(platform: Platform) -> (Ui, (tempfile::TempDir, tempfile::TempDir)) {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    create_workspace(app_data.path(), "Garden", &parent.path().join("Garden"));
+    create_workspace(app_data.path(), &parent.path().join("Garden"));
     let mut harness = harness_for(app_data.path(), platform, |_| {});
     settle(&mut harness);
     (harness, (app_data, parent))
@@ -559,7 +558,7 @@ fn about_from_the_menu_opens_settings_on_its_about_section() {
     );
     harness.run();
     assert_eq!(
-        section(&harness, "About noura")
+        section(&harness, "About Noura")
             .accesskit_node()
             .aria_current(),
         Some(AriaCurrent::Page)

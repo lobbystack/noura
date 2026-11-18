@@ -9,7 +9,7 @@ use egui::{
 
 use crate::{
     NouraUi,
-    common::{self, Btn, NewWorkspace, Size, Variant, muted},
+    common::{self, Btn, Size, Variant, muted},
     inbox,
     rail::{self, RAIL_WIDTH},
     tab_bar::{self, BAR_HEIGHT},
@@ -71,7 +71,6 @@ pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
             common::notice(state, ui);
             content(state, ui);
         });
-    new_workspace_dialog(state, ui);
     trash_dialog(state, ui);
 }
 
@@ -204,7 +203,7 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
     let mut create = false;
     let mut reveal = false;
     let reveal_label = state.app.platform().reveal_label();
-    let label = format!("Switch workspace. Current workspace: {name}");
+    let label = format!("Workspace: {name}");
     let trigger = Btn::new(&name)
         .icon(crate::icons::FOLDER_OPEN)
         .variant(Variant::Ghost)
@@ -308,7 +307,7 @@ fn switcher(state: &mut NouraUi, ui: &mut Ui) {
         state.pick_and_open();
     }
     if create {
-        state.new_workspace = Some(NewWorkspace::new());
+        state.pick_and_create();
     }
     if reveal {
         state.app.reveal_workspace();
@@ -427,22 +426,4 @@ fn content(state: &mut NouraUi, ui: &mut Ui) {
             );
         }
     });
-}
-
-fn new_workspace_dialog(state: &mut NouraUi, ui: &mut Ui) {
-    if state.new_workspace.is_none() {
-        return;
-    }
-    let modal = crate::common::dialog(ui.ctx(), Id::unique("new-workspace")).show(ui.ctx(), |ui| {
-        ui.set_width(320.0);
-        ui.label(RichText::new("New workspace").font(crate::theme::font(
-            ui.ctx(),
-            TITLE_SIZE,
-            crate::theme::Weight::Medium,
-        )));
-        common::new_workspace_form(state, ui);
-    });
-    if modal.should_close() {
-        state.new_workspace = None;
-    }
 }

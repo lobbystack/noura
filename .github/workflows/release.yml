@@ -126,6 +126,9 @@ jobs:
         with:
           persist-credentials: false
       # rustup reads the version and components from rust-toolchain.toml.
+      - name: Install the Linux build libraries
+        if: runner.os == 'Linux'
+        run: scripts/install-linux-build-deps.sh --runtime
       - name: Install the pinned Rust toolchain
         shell: bash
         env:

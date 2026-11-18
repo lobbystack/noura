@@ -147,6 +147,52 @@ impl WorkspaceObjects for ObjectStore {
         self.record(object)
     }
 
+    fn move_folder(
+        &self,
+        id: &str,
+        expected_revision: &str,
+        folder: &WorkspacePath,
+        may_write: &dyn Fn(&str) -> bool,
+    ) -> Result<ObjectRecord, ServiceError> {
+        let destination = checked_path(folder)?;
+        let object = self.locate(id)?;
+        if object.revision != expected_revision {
+            return Err(ServiceError::RevisionConflict(id.to_owned()));
+        }
+        let Some((from, _)) = object.relative_path.rsplit_once('/') else {
+            return Err(ServiceError::Failed(
+                "The object isn't in a folder of its own.".to_owned(),
+            ));
+        };
+        let engine = self.workspace.engine();
+        let (entries, _) = engine
+            .list_workspace_entries_counting_unsupported()
+            .map_err(|error| service_error(&error, from))?;
+        let prefix = format!("{from}/");
+        for entry in &entries {
+            let Some(rest) = entry.relative_path.strip_prefix(&prefix) else {
+                continue;
+            };
+            if entry.kind == local_core::WorkspaceEntryKind::Folder || rest.contains('/') {
+                return Err(ServiceError::Failed(
+                    "The folder holds another folder.".to_owned(),
+                ));
+            }
+            let markdown = std::path::Path::new(rest)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"));
+            if markdown && !entry.object_type.as_deref().is_some_and(may_write) {
+                return Err(ServiceError::Failed(
+                    "The folder holds a note the plugin can't move.".to_owned(),
+                ));
+            }
+        }
+        engine
+            .move_folder(from, &destination)
+            .map_err(|error| service_error(&error, &destination))?;
+        self.record(self.locate(id)?)
+    }
+
     fn delete(&self, id: &str, expected_revision: &str) -> Result<(), ServiceError> {
         self.locate(id)?;
         self.workspace

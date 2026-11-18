@@ -430,9 +430,6 @@ pub enum FolderSyncAction {
     KeepDeletedAway(String),
     /// Connect a copied folder, which then syncs as after a lost journal.
     Connect,
-    /// You renamed the workspace: a synced one takes the name in its
-    /// profile, when your role lets you (§25).
-    Rename(String),
     /// Dismiss the restore notice.
     DismissRestore,
     /// Start a new account chain after a restore lost a link of it (§7).

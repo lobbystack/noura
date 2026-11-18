@@ -8,7 +8,7 @@ use egui::{CentralPanel, RichText, Sense, Ui, WidgetInfo, accesskit::Role, vec2}
 
 use crate::{
     NouraUi,
-    common::{self, Btn, NewWorkspace, Size, Variant},
+    common::{self, Btn, Size, Variant},
     icons,
     theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, TITLE_SIZE, Weight, font, radius},
 };
@@ -37,7 +37,7 @@ fn contents(state: &mut NouraUi, ui: &mut Ui, problem: Option<&str>) {
         Some(problem) => ("Can\u{2019}t open the workspace", problem, icons::WARNING),
         None => (
             "Open a folder",
-            "noura adds a small .noura folder. Your files stay as they are.",
+            "Noura adds a .noura folder to it. Your files stay as they are.",
             icons::FOLDER_OPEN,
         ),
     };
@@ -109,20 +109,17 @@ fn contents(state: &mut NouraUi, ui: &mut Ui, problem: Option<&str>) {
 
     ui.separator();
     ui.add_space(8.0);
-    if state.new_workspace.is_some() {
-        ui.label(RichText::new("New workspace").font(font(ui.ctx(), BODY_SIZE, Weight::Medium)));
-        common::new_workspace_form(state, ui);
-    } else {
-        ui.vertical_centered(|ui| {
-            let new = Btn::new("New workspace\u{2026}")
-                .variant(Variant::Ghost)
-                .size(Size::Sm)
-                .enabled(!busy)
-                .show(ui);
-            if new.clicked() {
-                state.new_workspace = Some(NewWorkspace::new());
-            }
-        });
+    let mut create = false;
+    ui.vertical_centered(|ui| {
+        create = Btn::new("New workspace\u{2026}")
+            .variant(Variant::Ghost)
+            .size(Size::Sm)
+            .enabled(!busy)
+            .show(ui)
+            .clicked();
+    });
+    if create {
+        state.pick_and_create();
     }
 }
 

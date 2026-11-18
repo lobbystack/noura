@@ -14,7 +14,7 @@ use support::{
     ai::{self, FakeProvider},
 };
 
-/// A workspace with the AI plugin on, one provider set up and consented,
+/// A workspace with the AI plugin on, one provider set up,
 /// talking to a fake provider.
 /// The app comes first, so it closes before its folders go.
 struct Chatting {
@@ -36,7 +36,6 @@ impl Chatting {
         let id = app
             .save_ai_provider(ai::provider("Local", "ollama", "llama3", None))
             .unwrap();
-        app.grant_ai_consent(&id).unwrap();
         support::settle(&mut app);
         Some(Self {
             fixture,
@@ -116,7 +115,7 @@ fn a_message_and_its_answer_reach_the_chat_files_in_order() {
     // A new chat's files wait for its first message, so its folder takes
     // the title too.
     assert!(
-        chat_file.0.starts_with("chats/plan-the-garden--"),
+        chat_file.0.starts_with("Chats/plan-the-garden--"),
         "{}",
         chat_file.0
     );
@@ -267,7 +266,6 @@ fn chats_come_back_after_a_relaunch_and_continue_with_another_provider() {
             Some("sk-test-key"),
         ))
         .unwrap();
-    chat.app.grant_ai_consent(&second).unwrap();
     ai::send(&mut chat.app, "First question", &first);
     chat.wait("the request leaves", |_| provider.requests().len() == 1);
     provider.say(0, "First answer.");
@@ -456,8 +454,8 @@ fn a_message_noura_couldnt_write_comes_back_to_the_message_box() {
         return;
     };
     let id = chat.id.clone();
-    // The chats folder takes no new file, as on a full or read-only disk.
-    let chats = chat.fixture.root.join("chats");
+    // The Chats folder takes no new file, as on a full or read-only disk.
+    let chats = chat.fixture.root.join("Chats");
     std::fs::create_dir_all(&chats).unwrap();
     std::fs::set_permissions(&chats, std::fs::Permissions::from_mode(0o555)).unwrap();
 

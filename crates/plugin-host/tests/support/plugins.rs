@@ -205,6 +205,35 @@ impl WorkspaceReads for FakeWorkspace {
             .cloned()
             .ok_or_else(|| ServiceError::NotFound(path.to_string()))
     }
+
+    /// `[[Title]]`, as Noura links an object whose title no other shares.
+    fn link_to(&self, id: &str) -> Result<String, ServiceError> {
+        self.calls.lock().unwrap().push(format!("link-to {id}"));
+        self.objects
+            .iter()
+            .find(|object| object.id == id)
+            .map(|object| format!("[[{}]]", object.title))
+            .ok_or_else(|| ServiceError::NotFound(id.to_owned()))
+    }
+
+    /// The object whose title the link names, ignoring case.
+    fn resolve_link(
+        &self,
+        link: &str,
+        from: Option<&WorkspacePath>,
+    ) -> Result<Option<ObjectRead>, ServiceError> {
+        self.calls.lock().unwrap().push(format!(
+            "resolve-link {link} {}",
+            from.map_or("", WorkspacePath::as_str)
+        ));
+        let target = link.trim().trim_start_matches("[[").trim_end_matches("]]");
+        let target = target.split(['#', '|']).next().unwrap_or_default();
+        Ok(self
+            .objects
+            .iter()
+            .find(|object| object.title.eq_ignore_ascii_case(target))
+            .cloned())
+    }
 }
 
 /// An object service that keeps objects in memory, answers every write

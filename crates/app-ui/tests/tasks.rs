@@ -41,7 +41,7 @@ fn opened() -> Option<Opened> {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    create_workspace(app_data.path(), "Garden", &folder);
+    create_workspace(app_data.path(), &folder);
     let write = |path: &str, text: &str| {
         let path = folder.join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -289,7 +289,7 @@ fn new_task_in_the_command_palette_starts_the_same_name_first_flow() {
 
     press_with(&mut harness, Modifiers::COMMAND, Key::K);
     harness
-        .get_by_label("Search commands")
+        .get_by_role_and_label(Role::TextInput, "Search")
         .type_text("New task");
     run(&mut harness);
     press(&mut harness, Key::Enter);
@@ -811,5 +811,19 @@ fn the_page_shows_the_list_beside_the_selected_task_which_edits_in_place() {
         std::fs::read_to_string(folder.join("tasks/Read the manual.md"))
             .unwrap()
             .contains("priority: urgent")
+    });
+
+    // The project picker writes a link to the project, by its title.
+    harness
+        .get_by_role_and_label(Role::RadioGroup, "Project")
+        .get_by_role_and_label(Role::RadioButton, "Garden")
+        .click();
+    wait_until(&mut harness, |_| {
+        std::fs::read_to_string(folder.join("tasks/Read the manual.md"))
+            .unwrap()
+            .contains("project: '[[Garden]]'")
+    });
+    wait_until(&mut harness, |harness| {
+        selected(harness, "Project").as_deref() == Some("Garden")
     });
 }

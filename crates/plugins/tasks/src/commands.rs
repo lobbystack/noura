@@ -8,13 +8,17 @@
 //! - `complete` and `reopen`: `id` and `expected_revision`. They mark the
 //!   task done, or back to todo.
 //!
-//! `list` takes an optional `project`, a project's stable ID, and an
-//! optional `status`, and answers with `tasks`: every task, or the tasks
-//! of that project or with that status, each without its body. It writes
-//! nothing.
+//! `list` takes an optional `project`, a link to a project such as
+//! `[[Garden]]` or its stable ID, and an optional `status`, and answers
+//! with `tasks`: every task, or the tasks of that project or with that
+//! status, each without its body. It writes nothing.
 //!
 //! `properties` holds only task fields: `status`, `priority`, `project`,
-//! `due` and `kanban_order`. A command that fails answers with a JSON
+//! `source`, `due` and `kanban_order`. `project` links to a project and
+//! `source` to the object the task came from, of any type. Each takes a
+//! link, `[[Garden]]`, or a stable ID, which the task's file holds as the
+//! link Noura gives for it. Each task in an answer carries `project_id`,
+//! the stable ID of the project its link leads to, or `null`. A command that fails answers with a JSON
 //! object whose `code` says why, such as `revision_conflict` when the file
 //! no longer holds the expected revision, or `invalid_property` with the
 //! `property` and the workspace format's `problem` code. Nothing is
@@ -26,6 +30,7 @@ use plugin_sdk::{
 };
 use serde_json::{Map, Value, json};
 
+use crate::links::{self, LINK_FIELDS, Resolver};
 use crate::task::{FIELDS, TASK};
 
 /// Run the command `id` with `input`.
@@ -55,25 +60,35 @@ pub(crate) fn run(id: &str, input: &str) -> Result<String, String> {
             ));
         }
     }?;
-    Ok(task_json(&task).to_string())
+    Ok(task_json(&task, &mut Resolver::default()).to_string())
 }
 
 /// Every task, or the tasks of the project and with the status `input`
 /// names, each as the commands answer with it, without its body.
 fn list(input: &Map<String, Value>) -> Result<Vec<Value>, String> {
-    let project = text(input, "project")?;
+    let project = match text(input, "project")? {
+        Some(project) if links::is_stable_id(&project) => Some(Some(project)),
+        Some(link) => Some(
+            plugin_sdk::workspace::resolve_link(&link, None)
+                .map_err(|error| failure(&error))?
+                .map(|object| object.id),
+        ),
+        None => None,
+    };
     let status = text(input, "status")?;
     let tasks = objects::list(TASK).map_err(|error| failure(&error))?;
+    let mut resolver = Resolver::default();
     Ok(tasks
         .iter()
-        .map(task_json)
+        .map(|task| task_json(task, &mut resolver))
         .filter(|task| {
-            project
-                .as_deref()
-                .is_none_or(|project| task["properties"]["project"] == project)
-                && status
+            project.as_ref().is_none_or(|project| {
+                project
                     .as_deref()
-                    .is_none_or(|status| task["properties"]["status"] == status)
+                    .is_some_and(|project| task["project_id"] == project)
+            }) && status
+                .as_deref()
+                .is_none_or(|status| task["properties"]["status"] == status)
         })
         .map(|mut task| {
             if let Some(task) = task.as_object_mut() {
@@ -164,6 +179,11 @@ fn fields(input: &Map<String, Value>) -> Result<(Map<String, Value>, Vec<String>
                 }
                 if value.is_null() {
                     remove.push(key.clone());
+                } else if let (true, Some(link)) =
+                    (LINK_FIELDS.contains(&key.as_str()), value.as_str())
+                {
+                    let link = links::link_for(link).map_err(|error| failure(&error))?;
+                    set.insert(key.clone(), Value::String(link));
                 } else {
                     set.insert(key.clone(), value.clone());
                 }
@@ -192,15 +212,20 @@ fn text(input: &Map<String, Value>, key: &str) -> Result<Option<String>, String>
     }
 }
 
-/// A task as the commands answer with it.
-pub(crate) fn task_json(task: &Object) -> Value {
+/// A task as the commands answer with it, with `project_id`, the stable
+/// ID of the project its `project` link leads to.
+pub(crate) fn task_json(task: &Object, resolver: &mut Resolver) -> Value {
     let properties: Value = serde_json::from_str(&task.properties).unwrap_or_else(|_| json!({}));
+    let project_id = properties["project"]
+        .as_str()
+        .and_then(|link| resolver.project(link, &task.path));
     json!({
         "id": task.id,
         "title": task.title,
         "path": task.path,
         "revision": task.revision,
         "properties": properties,
+        "project_id": project_id,
         "body": task.body,
         "created": task.created,
         "updated": task.updated,

@@ -19,7 +19,7 @@ fn with_pages(app: &mut app_core::App) {
 
 /// A workspace with two notes, opened at launch with the test pages.
 fn opened(app_data: &std::path::Path, folder: &std::path::Path) -> Ui {
-    create_workspace(app_data, "Garden", folder);
+    create_workspace(app_data, folder);
     for name in ["One.md", "Two.md"] {
         std::fs::write(folder.join(name), b"x").unwrap();
     }
