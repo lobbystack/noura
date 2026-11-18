@@ -2,9 +2,7 @@
 //! syntax corpus while the editor draws a frame at each. Nothing panics and
 //! each note keeps its bytes.
 
-#[path = "../../editor-core/tests/corpus/mod.rs"]
-mod corpus;
-
+use crate::corpus;
 use editor_core::offset_types::Grapheme;
 use editor_core::unicode_segs;
 use editor_egui::input::{Event, Location, Region};

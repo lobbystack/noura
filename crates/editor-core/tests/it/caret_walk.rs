@@ -2,8 +2,7 @@
 //! syntax corpus, unknown syntax included. At each position the editor
 //! works out what it draws without a panic, and the note keeps its bytes.
 
-mod corpus;
-
+use crate::corpus;
 use editor_core::MdDoc;
 use editor_core::input::{Event, Location, NoLayout, Region};
 use editor_core::offset_types::Grapheme;

@@ -11,7 +11,7 @@ use egui::{Pos2, RawInput, Rect, Vec2, ViewportId, ViewportInfo};
 use egui_wgpu::wgpu;
 use glyphon::{FontSystem, fontdb};
 
-use crate::script::{Goto, Step};
+use super::script::{Goto, Step};
 
 /// The example's window size.
 pub const WINDOW: Vec2 = Vec2::new(900.0, 700.0);

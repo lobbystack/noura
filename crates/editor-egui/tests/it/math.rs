@@ -1,8 +1,7 @@
 //! Math draws as its source with the dollar signs hidden away from the
 //! caret, and prices stay prose.
 
-mod support;
-
+use crate::support;
 use support::{drew_text, editor, find, find_after, harness, hid_text};
 
 #[test]

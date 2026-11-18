@@ -2,8 +2,7 @@
 //! tree, while the caret is outside it. Clicking a cell puts the caret in
 //! that cell's source, and the table then draws its raw rows.
 
-mod support;
-
+use crate::support;
 use egui::accesskit::Role;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use support::{drew_text, editor, find, harness, hid_text};

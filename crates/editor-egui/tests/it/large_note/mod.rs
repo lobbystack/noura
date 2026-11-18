@@ -6,8 +6,8 @@
 //! machine:
 //!
 //! ```sh
-//! cargo test -p editor-egui --release --test large_note -- \
-//!     --ignored --nocapture --test-threads=1 measure_ replay_
+//! cargo test -p editor-egui --release --test it -- \
+//!     --ignored --nocapture --test-threads=1 large_note::measure_ large_note::replay_
 //! ```
 
 mod fixture;

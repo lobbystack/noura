@@ -2,8 +2,7 @@
 //! comments hidden and `<u>` tags hidden away from the caret, and tags and
 //! block IDs as written.
 
-mod support;
-
+use crate::support;
 use editor_core::offset_types::Grapheme;
 use editor_egui::resolvers::{EmbeddedNote, LinkResolver, LinkState, ResolvedLink};
 use support::{caret_at, drawn_in_place, drew_text, editor, find, harness, hid_text};

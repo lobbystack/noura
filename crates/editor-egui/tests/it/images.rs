@@ -1,8 +1,7 @@
 //! Images draw inline from `![alt](path)` and `![[image.png]]`, and
 //! `![[image.png|300]]` sets the width. The embedding app loads them.
 
-mod support;
-
+use crate::support;
 use std::sync::{Arc, Mutex};
 
 use editor_egui::resolvers::{EmbedResolver, EmbedState};

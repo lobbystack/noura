@@ -2,8 +2,7 @@
 //! paragraph keeps its row, and syntax the editor doesn't know stays on
 //! screen as the text you wrote.
 
-mod support;
-
+use crate::support;
 use support::{drawn_at, drew_text, editor, find, harness};
 
 /// Today's editor shows each line of a paragraph on its own row, and Return

@@ -21,10 +21,10 @@ use editor_egui::SpellChecker;
 use spell_check::SystemSpellChecker;
 
 #[allow(dead_code, reason = "the benchmark uses only part of the replay")]
-#[path = "../tests/large_note/replay.rs"]
+#[path = "../tests/it/large_note/replay.rs"]
 mod replay;
 #[allow(dead_code, reason = "the benchmark uses only part of the script")]
-#[path = "../tests/large_note/script.rs"]
+#[path = "../tests/it/large_note/script.rs"]
 mod script;
 
 /// The spec's budget for the 95th-percentile keystroke-to-frame time.
