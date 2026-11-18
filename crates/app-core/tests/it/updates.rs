@@ -156,6 +156,19 @@ fn settle(app: &mut App, now: Instant) {
     }
 }
 
+/// Run the app until the update restarted Noura. After Restart, the update
+/// can still read as ready for a moment before its install starts, so
+/// waiting for `settle` alone can stop too soon.
+fn wait_for_restart(app: &mut App, source: &FakeSource, now: Instant) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !source.calls().iter().any(|call| call == "restart") {
+        app.poll_at(now);
+        assert!(Instant::now() < deadline, "{:?}", source.calls());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    settle(app, now);
+}
+
 /// Start a durable write of `bytes` to `path` that waits for the returned
 /// sender, as a save on another thread would.
 fn held_write(write: PendingWrite, path: &Path, bytes: &'static [u8]) -> Sender<()> {
@@ -721,7 +734,7 @@ fn restart_waits_for_a_workspace_that_is_still_being_set_up() {
     );
 
     hold.send(()).unwrap();
-    settle(&mut app, now);
+    wait_for_restart(&mut app, &source, now);
     assert_eq!(source.calls(), ["check", "download", "install", "restart"]);
     assert_eq!(app.recents()[0].name, "Plans");
 }
@@ -739,7 +752,7 @@ fn moving_a_file_whose_write_failed_to_the_trash_lets_restart_go_ahead() {
 
     app.trash("Notes/Plan.md");
     app.restart_to_update();
-    settle(&mut app, now);
+    wait_for_restart(&mut app, &source, now);
     assert_eq!(source.calls(), ["check", "download", "install", "restart"]);
 }
 
@@ -770,7 +783,7 @@ fn a_failed_write_follows_its_file_when_you_rename_its_folder() {
 
     app.pending_writes().begin("Archive/Plan.md").finish(Ok(()));
     app.restart_to_update();
-    settle(&mut app, now);
+    wait_for_restart(&mut app, &source, now);
     assert_eq!(source.calls(), ["check", "download", "install", "restart"]);
 }
 
