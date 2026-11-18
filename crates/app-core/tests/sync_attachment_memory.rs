@@ -6,6 +6,7 @@
 //! A counting allocator wraps the system one, so this file holds one test
 //! at a time and each runs alone in the binary's process.
 
+#[path = "it/sync_support/mod.rs"]
 mod sync_support;
 
 use std::alloc::{GlobalAlloc, Layout, System};

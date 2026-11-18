@@ -18,6 +18,7 @@
 //! a time, as the cargo commands in the workflow show.
 
 mod sync_scale_support;
+#[path = "it/sync_support/mod.rs"]
 mod sync_support;
 
 use std::collections::BTreeSet;

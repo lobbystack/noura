@@ -27,6 +27,7 @@
 //! the file the numbers go to.
 
 mod sync_scale_support;
+#[path = "it/sync_support/mod.rs"]
 mod sync_support;
 
 use std::collections::BTreeMap;

@@ -1,0 +1,55 @@
+//! One test binary for the crate's integration tests. Each module was
+//! a test binary of its own, so `--test it <module>::` selects its tests.
+
+mod support;
+
+mod account;
+mod ai;
+mod ai_tools;
+mod calendar;
+mod chooser;
+mod commands;
+mod conflicts;
+mod dictation;
+mod egui_link;
+mod file_drops;
+mod file_viewers;
+mod finder;
+mod folder_sync;
+mod ignored_files;
+mod inbox;
+mod members;
+mod note;
+mod note_editing;
+mod note_images;
+mod note_leaving;
+mod note_links;
+mod note_text_mode;
+mod note_typing;
+mod plugin_boards;
+mod plugin_calendars;
+mod plugin_capabilities;
+mod plugin_kit;
+mod plugin_pages;
+mod plugin_panels;
+mod plugin_releases;
+mod plugins;
+mod projects;
+mod rail;
+mod restore;
+mod settings;
+mod share;
+mod sidebar;
+mod speech;
+mod switcher;
+mod tabs;
+mod tasks;
+mod text_files;
+mod theme;
+mod transcription;
+mod tree;
+mod tree_operations;
+mod tree_scale;
+mod updates;
+mod web_search;
+mod windows;
