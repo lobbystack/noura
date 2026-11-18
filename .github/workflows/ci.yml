@@ -123,11 +123,17 @@ jobs:
         run: |
           brew list postgresql@16 > /dev/null 2>&1 || brew install postgresql@16
           echo "NOURA_POSTGRES_BIN=$(brew --prefix postgresql@16)/bin" >> "$GITHUB_ENV"
-      - run: cargo test --workspace --locked --no-fail-fast
+      # Nextest runs each test in a process of its own, with the limits in
+      # .config/nextest.toml, so the heavy tests that share a crate's `it`
+      # binary don't all compete in one process. It doesn't run doctests.
+      - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
+        with: { tool: cargo-nextest@0.9.152 }
+      - run: cargo nextest run --workspace --locked --profile ci
         timeout-minutes: 120
         env:
           NOURA_S7_REQUIRE_PLUGINS: '1'
           NOURA_REQUIRE_PLUGINS: '1'
+      - run: cargo test --workspace --locked --doc
       # The plugin host's seam 3 suite again on Wasmtime's Pulley
       # interpreter, which a future mobile host runs instead of native code.
       - name: Run the plugin host's tests on the Pulley interpreter
