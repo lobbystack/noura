@@ -1,5 +1,6 @@
 # Noura's own sync server at sync.noura.app, on Dokploy behind Cloudflare's
-# proxy. It runs the service from docker-compose.sync-v2.yml and adds the
+# proxy. It pulls the image CI publishes from main, so the Dokploy host never
+# compiles Rust, and runs it as docker-compose.sync-v2.yml does. It adds the
 # Traefik router itself, so the router can refuse every address outside
 # Cloudflare's ranges. Without that, a client could reach the server
 # directly and forge CF-Connecting-IP to escape the sign-in limits.
@@ -11,13 +12,35 @@
 # Cloudflare changes them.
 services:
   sync-server:
-    extends:
-      file: docker-compose.sync-v2.yml
-      service: sync-server
+    image: ghcr.io/lobbystack/noura-sync-server:main
+    pull_policy: always
+    restart: unless-stopped
+    # The server waits up to 30 seconds for requests in flight.
+    stop_grace_period: 40s
+    expose:
+      - '8080'
     environment:
+      NOURA_PUBLIC_ORIGIN: ${NOURA_PUBLIC_ORIGIN:?set the server's HTTPS origin}
+      NOURA_ALLOWED_EMAILS: ${NOURA_ALLOWED_EMAILS:-}
+      NOURA_MAIL_FROM: ${NOURA_MAIL_FROM:-}
+      NOURA_SMTP_URL: ${NOURA_SMTP_URL:-}
+      NOURA_RESEND_API_KEY: ${NOURA_RESEND_API_KEY:-}
+      NOURA_DATABASE_URL: ${NOURA_DATABASE_URL:-}
+      NOURA_SERVER_SECRET: ${NOURA_SERVER_SECRET:-}
       # Cloudflare sets this header on every request it proxies, and the
       # router below admits only Cloudflare.
       NOURA_TRUSTED_PROXY_HEADER: cf-connecting-ip
+    ulimits:
+      # Above the server's 1,024 connections.
+      nofile: 4096
+    volumes:
+      - sync-data:/data
+    healthcheck:
+      test: ['CMD', 'sync-server', 'healthcheck']
+      interval: 10s
+      timeout: 6s
+      start_period: 30s
+      retries: 3
     networks:
       - dokploy-network
       - default
