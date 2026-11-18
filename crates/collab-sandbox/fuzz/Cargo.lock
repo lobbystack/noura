@@ -1063,7 +1063,7 @@ dependencies = [
 
 [[package]]
 name = "collab-sandbox"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "editor-core",
@@ -1788,7 +1788,7 @@ dependencies = [
 
 [[package]]
 name = "editor-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arborium",
  "comrak",
@@ -3151,7 +3151,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "local-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "age",
@@ -3744,7 +3744,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "plugin-host"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "jiff",
@@ -5013,7 +5013,7 @@ dependencies = [
 
 [[package]]
 name = "sync-key-envelope"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -6394,7 +6394,7 @@ dependencies = [
 
 [[package]]
 name = "workspace-format"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "diffy",

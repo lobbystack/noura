@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-app-core = { version = "0.2.0", path = "../app-core" }
+app-core = { version = "0.3.0", path = "../app-core" }
 # Parses the Markdown that plugins hand Noura, as the editor does.
 comrak.workspace = true
 egui = { workspace = true, features = ["default_fonts", "experimental"] }
@@ -26,7 +26,7 @@ avif-decode = { version = "3.0.0", default-features = false }
 avif-parse = "2.1.0"
 rav1d = { version = "1.1.0", default-features = false }
 # Draws and edits the open note.
-editor-egui = { version = "0.2.0", path = "../editor-egui" }
+editor-egui = { version = "0.3.0", path = "../editor-egui" }
 # Month, weekday and time names on calendar grids, in the computer's
 # locale.
 icu_calendar.workspace = true
@@ -39,7 +39,7 @@ zeroize.workspace = true
 
 [dev-dependencies]
 # The tests hold the PDF threads to watch the window draw meanwhile.
-app-core = { version = "0.2.0", path = "../app-core", features = ["test-hooks"] }
+app-core = { version = "0.3.0", path = "../app-core", features = ["test-hooks"] }
 egui_kittest.workspace = true
 # The fake AI provider streams an answer, then waits.
 futures.workspace = true
