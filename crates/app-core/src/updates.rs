@@ -137,6 +137,18 @@ enum Event {
     Restarting,
 }
 
+impl Event {
+    /// Whether the thread that sent this event sends nothing after it.
+    fn is_last(&self) -> bool {
+        match self {
+            Event::Downloading(_) | Event::Restarting => false,
+            Event::UpToDate | Event::Ready(_) | Event::Failed(_) | Event::NotRestarted { .. } => {
+                true
+            }
+        }
+    }
+}
+
 /// Wakes every window with a change.
 pub(crate) type Notify = Arc<dyn Fn(Change) + Send + Sync>;
 
@@ -453,7 +465,17 @@ impl State {
         let mut events = Vec::new();
         let finished = loop {
             match receiver.try_recv() {
-                Ok(event) => events.push(event),
+                Ok(event) => {
+                    // The thread sends nothing after its last result, so
+                    // the work is over then, even before the thread ends.
+                    // Waiting for it to end would refuse a Restart or a
+                    // check that comes in between.
+                    let last = event.is_last();
+                    events.push(event);
+                    if last {
+                        break true;
+                    }
+                }
                 Err(TryRecvError::Empty) => break false,
                 Err(TryRecvError::Disconnected) => break true,
             }
@@ -573,4 +595,97 @@ fn unsaved_problem(failure: &WriteFailure) -> String {
          it, then restart; quitting loses that change.",
         failure.file, failure.message
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::NoPendingSaves;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct Source {
+        restarted: Mutex<bool>,
+    }
+
+    impl UpdateSource for Source {
+        fn check(&self) -> Result<Option<Box<dyn PendingUpdate>>, UpdateError> {
+            Ok(Some(Box::new(Update)))
+        }
+
+        fn restart(&self) -> Result<(), UpdateError> {
+            *self.restarted.lock().unwrap() = true;
+            Ok(())
+        }
+    }
+
+    struct Update;
+
+    impl PendingUpdate for Update {
+        fn version(&self) -> &str {
+            "0.3.0"
+        }
+
+        fn notes(&self) -> Option<&str> {
+            None
+        }
+
+        fn download(&mut self) -> Result<(), UpdateError> {
+            Ok(())
+        }
+
+        fn install(&mut self) -> Result<(), UpdateError> {
+            Ok(())
+        }
+    }
+
+    /// The check thread has sent the downloaded update but hasn't ended
+    /// yet, as when the window it wakes takes a moment. Restart goes ahead
+    /// anyway instead of doing nothing.
+    #[test]
+    fn restart_goes_ahead_before_the_thread_that_downloaded_the_update_ends() {
+        let (release, held) = channel::<()>();
+        let held = Mutex::new(held);
+        let wakes = AtomicUsize::new(0);
+        let notify: Notify = Arc::new(move |change| {
+            let checking = std::thread::current().name() == Some("update-check");
+            // The second wake follows the downloaded update.
+            if checking
+                && change == Change::WorkFinished
+                && wakes.fetch_add(1, Ordering::SeqCst) == 1
+            {
+                held.lock().unwrap().recv().unwrap();
+            }
+        });
+        let updates = Updates::new(
+            PendingWrites::default(),
+            notify,
+            Arc::new(jiff::Timestamp::now),
+        );
+        let source = Arc::new(Source::default());
+        let launched = Instant::now();
+        updates.enable("0.2.0", source.clone(), launched);
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !matches!(updates.status(), UpdateStatus::Ready { .. }) {
+            updates.poll(launched + FIRST_UPDATE_CHECK);
+            assert!(Instant::now() < deadline, "{:?}", updates.status());
+            std::thread::yield_now();
+        }
+
+        updates.restart(Arc::new(NoPendingSaves));
+        assert_eq!(
+            updates.status(),
+            UpdateStatus::Installing {
+                version: "0.3.0".into()
+            }
+        );
+
+        release.send(()).unwrap();
+        while !*source.restarted.lock().unwrap() {
+            updates.poll(launched + FIRST_UPDATE_CHECK);
+            assert!(Instant::now() < deadline, "{:?}", updates.status());
+            std::thread::yield_now();
+        }
+    }
 }

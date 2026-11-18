@@ -138,35 +138,19 @@ impl PendingUpdate for FakeUpdate {
     }
 }
 
-/// Poll at `now` until no update work runs in the background.
+/// Poll at `now` until no update work runs in the background. The status
+/// can read Restarting before the restart itself runs, so this waits for
+/// the update's thread rather than for a status.
 fn settle(app: &mut App, now: Instant) {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         app.poll_at(now);
-        if !matches!(
-            app.updates().status(),
-            UpdateStatus::Checking
-                | UpdateStatus::Downloading { .. }
-                | UpdateStatus::Installing { .. }
-        ) {
+        if !app.updates().is_busy() {
             return;
         }
         assert!(Instant::now() < deadline, "update work never finished");
         std::thread::sleep(Duration::from_millis(5));
     }
-}
-
-/// Run the app until the update restarted Noura. After Restart, the update
-/// can still read as ready for a moment before its install starts, so
-/// waiting for `settle` alone can stop too soon.
-fn wait_for_restart(app: &mut App, source: &FakeSource, now: Instant) {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while !source.calls().iter().any(|call| call == "restart") {
-        app.poll_at(now);
-        assert!(Instant::now() < deadline, "{:?}", source.calls());
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    settle(app, now);
 }
 
 /// Start a durable write of `bytes` to `path` that waits for the returned
@@ -734,7 +718,7 @@ fn restart_waits_for_a_workspace_that_is_still_being_set_up() {
     );
 
     hold.send(()).unwrap();
-    wait_for_restart(&mut app, &source, now);
+    settle(&mut app, now);
     assert_eq!(source.calls(), ["check", "download", "install", "restart"]);
     assert_eq!(app.recents()[0].name, "Plans");
 }
@@ -752,7 +736,7 @@ fn moving_a_file_whose_write_failed_to_the_trash_lets_restart_go_ahead() {
 
     app.trash("Notes/Plan.md");
     app.restart_to_update();
-    wait_for_restart(&mut app, &source, now);
+    settle(&mut app, now);
     assert_eq!(source.calls(), ["check", "download", "install", "restart"]);
 }
 
@@ -783,7 +767,7 @@ fn a_failed_write_follows_its_file_when_you_rename_its_folder() {
 
     app.pending_writes().begin("Archive/Plan.md").finish(Ok(()));
     app.restart_to_update();
-    wait_for_restart(&mut app, &source, now);
+    settle(&mut app, now);
     assert_eq!(source.calls(), ["check", "download", "install", "restart"]);
 }
 
