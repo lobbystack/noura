@@ -112,7 +112,7 @@ dependencies = [
 
 [[package]]
 name = "account-web"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chromiumoxide",
  "futures-util",
@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "ai-plugin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "plugin-sdk",
  "serde_json",
@@ -419,7 +419,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aho-corasick",
  "app-core",
@@ -471,7 +471,7 @@ dependencies = [
 
 [[package]]
 name = "app-ui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "app-core",
  "avif-decode",
@@ -1920,7 +1920,7 @@ dependencies = [
 
 [[package]]
 name = "calendar-plugin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "jiff",
  "plugin-sdk",
@@ -2364,7 +2364,7 @@ dependencies = [
 
 [[package]]
 name = "collab-sandbox"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -3271,7 +3271,7 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "app-core",
  "app-ui",
@@ -3322,7 +3322,7 @@ checksum = "abd57806937c9cc163efc8ea3910e00a62e2aeb0b8119f1793a978088f8f6b04"
 
 [[package]]
 name = "dictation-plugin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "isolang",
  "natural",
@@ -3618,7 +3618,7 @@ dependencies = [
 
 [[package]]
 name = "editor-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arborium",
  "comrak",
@@ -3634,7 +3634,7 @@ dependencies = [
 
 [[package]]
 name = "editor-egui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "atomic-write-file",
  "comrak",
@@ -5511,7 +5511,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hello-plugin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "plugin-sdk",
 ]
@@ -6649,7 +6649,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kit-host"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "app-core",
  "plugin-host",
@@ -6658,7 +6658,7 @@ dependencies = [
 
 [[package]]
 name = "kit-plugin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "jiff",
  "plugin-sdk",
@@ -6913,7 +6913,7 @@ checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 
 [[package]]
 name = "live-tests"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "app-core",
  "app-ui",
@@ -6940,7 +6940,7 @@ dependencies = [
 
 [[package]]
 name = "local-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "age",
@@ -7212,7 +7212,7 @@ dependencies = [
 
 [[package]]
 name = "misbehave-plugin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "plugin-sdk",
 ]
@@ -7464,7 +7464,7 @@ dependencies = [
 
 [[package]]
 name = "noura-mcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "app-core",
  "lexopt",
@@ -8827,7 +8827,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "plugin-host"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "egui",
@@ -8856,7 +8856,7 @@ dependencies = [
 
 [[package]]
 name = "plugin-sdk"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "wit-bindgen 0.63.0",
 ]
@@ -9065,7 +9065,7 @@ dependencies = [
 
 [[package]]
 name = "probe-plugin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "plugin-sdk",
 ]
@@ -9176,7 +9176,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "projects-plugin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "jiff",
  "plugin-sdk",
@@ -9579,7 +9579,7 @@ dependencies = [
 
 [[package]]
 name = "recipes-plugin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "plugin-sdk",
  "serde_json",
@@ -10421,7 +10421,7 @@ dependencies = [
 
 [[package]]
 name = "s7-rust-hello"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "wit-bindgen 0.63.0",
 ]
@@ -11132,7 +11132,7 @@ dependencies = [
 
 [[package]]
 name = "speech"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arboard",
  "atomic-write-file",
@@ -11164,7 +11164,7 @@ dependencies = [
 
 [[package]]
 name = "spell-check"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
@@ -11628,7 +11628,7 @@ dependencies = [
 
 [[package]]
 name = "sync-key-envelope"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -11669,7 +11669,7 @@ dependencies = [
 
 [[package]]
 name = "sync-server"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "askama",
  "async-trait",
@@ -11713,7 +11713,7 @@ dependencies = [
 
 [[package]]
 name = "sync-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hashlink 0.11.1",
  "serde",
@@ -11726,7 +11726,7 @@ dependencies = [
 
 [[package]]
 name = "sync-store-postgres"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "sqlx",
@@ -11738,7 +11738,7 @@ dependencies = [
 
 [[package]]
 name = "sync-store-sqlite"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "sqlx",
  "sync-protocol",
@@ -11850,7 +11850,7 @@ checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
 name = "tasks-plugin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "jiff",
  "plugin-sdk",
@@ -12419,7 +12419,7 @@ dependencies = [
 
 [[package]]
 name = "transcription-plugin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "isolang",
  "jiff",
@@ -12804,7 +12804,7 @@ checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
 
 [[package]]
 name = "uses-files-plugin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "plugin-sdk",
 ]
@@ -14754,7 +14754,7 @@ dependencies = [
 
 [[package]]
 name = "workspace-format"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "diffy",

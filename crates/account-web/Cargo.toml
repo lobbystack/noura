@@ -52,9 +52,9 @@ webauthn-rs-proto = { workspace = true, features = ["wasm"] }
 chromiumoxide = { version = "0.9.1", default-features = false }
 futures-util = "0.3"
 serde.workspace = true
-sync-server = { version = "0.2.0", path = "../sync-server" }
+sync-server = { version = "0.3.0", path = "../sync-server" }
 # The device-code test starts a grant on the server's store directly.
-sync-store = { version = "0.2.0", path = "../sync-store", features = ["conformance"] }
-sync-store-sqlite = { version = "0.2.0", path = "../sync-store-sqlite" }
+sync-store = { version = "0.3.0", path = "../sync-store", features = ["conformance"] }
+sync-store-sqlite = { version = "0.3.0", path = "../sync-store-sqlite" }
 tempfile.workspace = true
 tokio.workspace = true
