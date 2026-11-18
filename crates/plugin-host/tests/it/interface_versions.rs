@@ -4,8 +4,7 @@
 //! names every interface at 0.1.1, as a release that adds to the interface
 //! would, and runs the real hello plugin, built against 0.1.0.
 
-mod support;
-
+use crate::support;
 use plugin_host::trap_foreign_imports;
 use support::plugins::built;
 use wasmtime::component::{Component, Linker, Val};

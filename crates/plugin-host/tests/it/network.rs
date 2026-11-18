@@ -4,8 +4,7 @@
 //! hosts, and refuses an undeclared host, a plain-HTTP URL, a redirect to
 //! an undeclared host and a private address before any connection opens.
 
-mod support;
-
+use crate::support;
 use std::{
     net::IpAddr,
     sync::{Arc, Mutex},

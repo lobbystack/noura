@@ -3,8 +3,7 @@
 //! objects and its own pages in the window you acted in, and adds a
 //! section to the sidebar beside one of its pages.
 
-mod support;
-
+use crate::support;
 use std::sync::{Arc, Mutex};
 
 use plugin_host::{

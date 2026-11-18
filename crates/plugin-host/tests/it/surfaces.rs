@@ -3,8 +3,7 @@
 //! it draws there. Events come back by node ID, and the host stores no
 //! setting values for the plugin.
 
-mod support;
-
+use crate::support;
 use std::path::Path;
 
 use plugin_host::{Event, PluginError, Surface};

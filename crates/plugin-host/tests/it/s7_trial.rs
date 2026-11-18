@@ -1,8 +1,7 @@
 //! Seam 3 for trial S7: the Rust and TypeScript hello plugins run in the real
 //! Wasmtime host.
 
-mod support;
-
+use crate::support;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 

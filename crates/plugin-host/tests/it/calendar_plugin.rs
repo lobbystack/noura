@@ -6,8 +6,7 @@
 //! listing's revision differs from the bytes read. The app-core suite
 //! runs the plugin against real files.
 
-mod support;
-
+use crate::support;
 use std::sync::{Arc, Mutex};
 
 use plugin_host::{
@@ -18,7 +17,7 @@ use plugin_host::{
 use support::plugins;
 
 /// The Calendar plugin's manifest, as its crate ships it.
-const MANIFEST: &str = include_str!("../../plugins/calendar/plugin.toml");
+const MANIFEST: &str = include_str!("../../../plugins/calendar/plugin.toml");
 
 #[test]
 fn calendar_declares_workspace_reads_a_view_and_an_inbox_section_and_nothing_that_writes() {

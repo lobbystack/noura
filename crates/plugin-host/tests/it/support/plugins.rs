@@ -38,7 +38,7 @@ pub fn host_with(library: &Path, limits: Limits) -> PluginHost {
 }
 
 /// The hello plugin's manifest, as `crates/plugins/hello` ships it.
-pub const HELLO_MANIFEST: &str = include_str!("../../../plugins/hello/plugin.toml");
+pub const HELLO_MANIFEST: &str = include_str!("../../../../plugins/hello/plugin.toml");
 
 /// The component the build script built for the crate whose library is
 /// `name`, such as `hello_plugin`, or `None` when it isn't built and CI

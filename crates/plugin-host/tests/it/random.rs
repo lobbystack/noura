@@ -2,8 +2,7 @@
 //! `HashMap` works, and the types Transcription and Dictation register
 //! are held for them.
 
-mod support;
-
+use crate::support;
 use plugin_host::{Limits, ObjectTypes, PLUGIN_TYPES, Services};
 use support::plugins;
 

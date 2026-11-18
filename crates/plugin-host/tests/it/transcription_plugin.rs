@@ -3,16 +3,15 @@
 //! and Projects, and the running plugin registers the schemas its fixture
 //! holds.
 
-mod support;
-
+use crate::support;
 use std::path::Path;
 
 use plugin_host::{Capability, ObjectTypes, Services, ShortcutDeclaration, read_manifest};
 use support::plugins;
 use workspace_format::PropertySchema;
 
-const MANIFEST: &str = include_str!("../../plugins/transcription/plugin.toml");
-const FIXTURE: &str = include_str!("../../plugins/transcription/fixtures/transcription-v1.json");
+const MANIFEST: &str = include_str!("../../../plugins/transcription/plugin.toml");
+const FIXTURE: &str = include_str!("../../../plugins/transcription/fixtures/transcription-v1.json");
 
 #[test]
 fn the_manifest_declares_speech_ai_and_tasks_and_projects_as_targets() {

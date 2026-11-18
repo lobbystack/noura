@@ -5,8 +5,7 @@
 //! The drawing code lives here because `plugin-host` stays free of UI code.
 //! Ticket 24 builds the real widget kit in `app-ui`.
 
-mod support;
-
+use crate::support;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use plugin_host::trial::{Node, NodeKind, PluginInstance, TrialHost};

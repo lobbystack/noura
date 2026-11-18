@@ -2,8 +2,7 @@
 //! path, objects by stable ID, each with its content revision. Paths from
 //! a plugin are checked before any service sees them.
 
-mod support;
-
+use crate::support;
 use std::sync::Arc;
 
 use plugin_host::{Entry, EntryKind, FileRead, Listed, ObjectRead, WorkspacePath};

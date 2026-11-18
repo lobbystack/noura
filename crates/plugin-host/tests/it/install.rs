@@ -2,8 +2,7 @@
 //! component on this device, caches the compiled code in its library, and
 //! never accepts code compiled elsewhere.
 
-mod support;
-
+use crate::support;
 use plugin_host::{CodeSource, InstallErrorCode, PluginHost, Services};
 use support::plugins::{self, HELLO_MANIFEST};
 

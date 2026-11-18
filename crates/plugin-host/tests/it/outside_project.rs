@@ -3,8 +3,7 @@
 //! repository, as an author's copy does, and runs in the real host. The
 //! guide holds the template's files as they are.
 
-mod support;
-
+use crate::support;
 use std::path::Path;
 use std::process::Command;
 

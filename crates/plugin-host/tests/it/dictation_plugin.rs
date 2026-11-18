@@ -3,15 +3,14 @@
 //! settings, and it registers its settings type and its page in Settings.
 //! The app-core suite dictates with it through the fake engine.
 
-mod support;
-
+use crate::support;
 use std::{path::Path, sync::Arc};
 
 use plugin_host::{Capability, ObjectTypes, Services, ShortcutDeclaration, Surface, read_manifest};
 use support::plugins::{self, FakeObjects};
 
 /// The Dictation plugin's manifest, as its crate ships it.
-const MANIFEST: &str = include_str!("../../plugins/dictation/plugin.toml");
+const MANIFEST: &str = include_str!("../../../plugins/dictation/plugin.toml");
 
 #[test]
 fn the_manifest_declares_speech_the_shortcut_paste_the_menu_and_settings() {

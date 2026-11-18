@@ -4,8 +4,7 @@
 //! for the capabilities it declares. Every call returns at once: the
 //! services stand in for the kernel's own threads.
 
-mod support;
-
+use crate::support;
 use std::sync::{Arc, Mutex};
 
 use plugin_host::{

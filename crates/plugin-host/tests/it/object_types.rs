@@ -5,8 +5,7 @@
 //! plugin's own types, and cross with their revisions, schema problems and
 //! structured errors.
 
-mod support;
-
+use crate::support;
 use std::sync::Arc;
 
 use plugin_host::{

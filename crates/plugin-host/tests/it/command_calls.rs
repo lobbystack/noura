@@ -8,8 +8,7 @@
 //! that fails tells the caller only that it failed, and the router's
 //! listener hears of each failure, so the app learns when it stops.
 
-mod support;
-
+use crate::support;
 use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},

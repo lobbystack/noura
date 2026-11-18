@@ -5,8 +5,7 @@
 //! itself can't write an object of another type. The app-core suite runs
 //! the same commands against real files.
 
-mod support;
-
+use crate::support;
 use std::{path::Path, sync::Arc};
 
 use plugin_host::{
@@ -17,10 +16,10 @@ use support::plugins::{self, FakeObjects, FakeWorkspace};
 use workspace_format::PropertySchema;
 
 /// The Tasks plugin's manifest, as its crate ships it.
-const MANIFEST: &str = include_str!("../../plugins/tasks/plugin.toml");
+const MANIFEST: &str = include_str!("../../../plugins/tasks/plugin.toml");
 
 /// The Tasks plugin's fixture, which holds today's v1 task schema.
-const FIXTURE: &str = include_str!("../../plugins/tasks/fixtures/task-v1.json");
+const FIXTURE: &str = include_str!("../../../plugins/tasks/fixtures/task-v1.json");
 
 const TASK_ID: &str = "task_01jbcdefghjkmnpqrstvwxyz0a";
 

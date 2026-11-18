@@ -4,8 +4,7 @@
 //! itself, never loads compiled code from an archive, and refuses a hostile
 //! or broken archive before anything lands in its library.
 
-mod support;
-
+use crate::support;
 use std::sync::Arc;
 
 use plugin_host::{

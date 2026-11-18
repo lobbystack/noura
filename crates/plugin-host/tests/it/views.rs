@@ -4,8 +4,7 @@
 //! and input changes and form submits with typed values. A virtual list's
 //! rows come from the plugin as Noura asks for them.
 
-mod support;
-
+use crate::support;
 use plugin_host::{
     CalendarMode, Check, ColumnPress, EmptyState, Event, Field, Heading, HeadingLevel, Icon, Item,
     Move, Naming, Node, NodeKind, PluginError, RunningPlugin, Services, Submission, Target, Value,

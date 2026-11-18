@@ -6,8 +6,7 @@
 //! for its call, and a call that waits too long in all fails naming the
 //! limit it passed.
 
-mod support;
-
+use crate::support;
 use std::{
     net::IpAddr,
     sync::Arc,

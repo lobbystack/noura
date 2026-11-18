@@ -5,8 +5,7 @@
 //! plugin with Projects' manifest is denied, and a call to Tasks goes
 //! through. The app-core suite runs the board against real files.
 
-mod support;
-
+use crate::support;
 use std::{path::Path, sync::Arc};
 
 use plugin_host::{
@@ -17,13 +16,13 @@ use support::plugins::{self, FakeObjects};
 use workspace_format::PropertySchema;
 
 /// The Projects plugin's manifest, as its crate ships it.
-const MANIFEST: &str = include_str!("../../plugins/projects/plugin.toml");
+const MANIFEST: &str = include_str!("../../../plugins/projects/plugin.toml");
 
 /// The Tasks plugin's manifest, as its crate ships it.
-const TASKS_MANIFEST: &str = include_str!("../../plugins/tasks/plugin.toml");
+const TASKS_MANIFEST: &str = include_str!("../../../plugins/tasks/plugin.toml");
 
 /// The Projects plugin's fixture, which holds today's project schema.
-const FIXTURE: &str = include_str!("../../plugins/projects/fixtures/project-v1.json");
+const FIXTURE: &str = include_str!("../../../plugins/projects/fixtures/project-v1.json");
 
 const PROJECT_ID: &str = "project_01jbcdefghjkmnpqrstvwxyz0a";
 const TASK_ID: &str = "task_01jbcdefghjkmnpqrstvwxyz0b";

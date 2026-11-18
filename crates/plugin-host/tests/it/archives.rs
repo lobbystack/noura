@@ -3,8 +3,7 @@
 //! archives `releases.rs` doesn't cover: a manifest past its size limit, a
 //! file larger than its headers say, and one path held twice.
 
-mod support;
-
+use crate::support;
 use std::io::Write;
 
 use plugin_host::{Archive, InstallErrorCode, PluginHost, Services};

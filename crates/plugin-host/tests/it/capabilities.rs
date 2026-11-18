@@ -2,8 +2,7 @@
 //! declares, and the host links no WASI filesystem, socket or HTTP
 //! interface.
 
-mod support;
-
+use crate::support;
 use std::sync::Arc;
 
 use plugin_host::{Capability, InstallErrorCode, PluginError};

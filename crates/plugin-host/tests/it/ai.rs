@@ -4,8 +4,7 @@
 //! AI plugin registers the chat and chat-message types with the schemas
 //! the shared fixtures hold.
 
-mod support;
-
+use crate::support;
 use std::{
     path::Path,
     sync::{Arc, Mutex},
@@ -21,13 +20,13 @@ use support::plugins::{self, FakeObjects};
 use workspace_format::{PropertySchema, WorkspaceObject};
 
 /// The AI plugin's manifest, as its crate ships it.
-const MANIFEST: &str = include_str!("../../plugins/ai/plugin.toml");
+const MANIFEST: &str = include_str!("../../../plugins/ai/plugin.toml");
 
 const SCHEMAS: &str =
-    include_str!("../../../docs/workspace-format/fixtures/object-envelope-v1.json");
+    include_str!("../../../../docs/workspace-format/fixtures/object-envelope-v1.json");
 
 const CONFORMANCE: &str =
-    include_str!("../../../docs/workspace-format/fixtures/conformance-v1.json");
+    include_str!("../../../../docs/workspace-format/fixtures/conformance-v1.json");
 
 /// An AI service that answers from fixed values and records each call.
 #[derive(Default)]
