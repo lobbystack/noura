@@ -1,0 +1,44 @@
+# cargo-nextest settings. Nextest runs each test in a process of its own,
+# so tests that share the `it` binary under `cargo test` don't share state
+# here. CONTRIBUTING.md shows the commands.
+
+[store]
+dir = "target/nextest"
+
+[test-groups]
+# Each PostgreSQL test starts a throwaway cluster when
+# NOURA_TEST_POSTGRES_URL is unset, since the shared cluster lasts one
+# process. Four at a time keeps initdb and the connections in bounds.
+postgres = { max-threads = 4 }
+# The memory and scale measurements: each binary counts its process's
+# allocations, and other tests running beside it would skew the timings.
+measurements = { max-threads = 1 }
+
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+# The first override that matches a test applies.
+[[profile.default.overrides]]
+filter = "binary(sync_scale) | binary(sync_soak) | binary(sync_attachment_memory)"
+test-group = "measurements"
+threads-required = "num-test-threads"
+
+[[profile.default.overrides]]
+filter = "test(/postgres/)"
+test-group = "postgres"
+
+[profile.ci]
+fail-fast = false
+retries = 0
+
+[profile.ci.junit]
+path = "junit.xml"
+
+# Tests known to fail now and then on a loaded runner. Each gets one retry;
+# a retry that passes shows as flaky in the summary.
+[[profile.ci.overrides]]
+# The task's file write counts toward the Tasks plugin's one-second call
+# limit. On a busy disk the call can pass it after the file is written; the
+# plugin restarts with its counter reset and draws the old field.
+filter = "test(=task_inbox::the_add_field_creates_a_task_due_on_the_devices_date_then_clears)"
+retries = 1

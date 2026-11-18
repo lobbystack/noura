@@ -1,5 +1,5 @@
 {
-	"description": "Workspace read queries. The native index (crates/local-core/tests/query_conformance.rs) must give these answers for these files. Queries name the property they filter on, since the index knows no object type's fields. The calendar cases over these files live with the Calendar plugin, in crates/plugins/calendar/fixtures/calendar-v1.json.",
+	"description": "Workspace read queries. The native index (crates/local-core/tests/it/query_conformance.rs) must give these answers for these files. Queries name the property they filter on, since the index knows no object type's fields. The calendar cases over these files live with the Calendar plugin, in crates/plugins/calendar/fixtures/calendar-v1.json.",
 	"files": [
 		{
 			"path": "Tasks/ship.md",

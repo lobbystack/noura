@@ -34,6 +34,37 @@ If you change the website, also run `bun run check:website` and `bun run build:w
 
 Describe what changed and why in the pull request. Link the issue when one exists.
 
+## Run tests while you edit
+
+Each crate's integration tests build into one test binary named `it`. The file `tests/it/main.rs` declares one module per former test file, so a module path such as `sync_restore::` selects the tests that file holds:
+
+```sh
+cargo test -p app-core --test it sync_restore::
+cargo test -p app-core --test it sync_restore::many_devices -- --nocapture
+```
+
+A filter matches any part of a test's name, so `sync::` also selects `workspace_sync::`. Add `-- --skip workspace_sync::` or use `--exact` when a module's name ends another's.
+
+Three app-core tests keep binaries of their own: `sync_scale`, `sync_soak` and `sync_attachment_memory`. Each one installs a counting global allocator to measure the process's peak memory, and a process holds one global allocator.
+
+Tests in one binary share a process, so a test must not change process-wide state such as environment variables, the current directory or the global tracing subscriber. To read the logs, open a capture with `support::logs::Capture` in app-core's tests. To set environment variables, run the test's work in a copy of the test binary, as `local-core`'s `remote_image_proxy` does.
+
+Keep the loop short:
+
+- Run the tests near your change, by module or by name, and leave the full suite to CI
+- Keep incremental compilation on, which Cargo does by default; don't set `CARGO_INCREMENTAL=0`
+- Give each worktree its own `target` folder. Two worktrees that share one overwrite each other's builds of the workspace crates, and each rebuilds every time
+- When `target` grows past what your disk holds, run `cargo clean -p <crate>` for the crates you build most, or `cargo clean` now and then
+
+[cargo-nextest](https://nexte.st) runs each test in a process of its own and reads its settings from `.config/nextest.toml`:
+
+```sh
+cargo nextest run -p app-core -E 'test(sync_restore::)'
+cargo nextest run --profile ci --workspace
+```
+
+The `ci` profile retries the tests listed there once and keeps going after a failure.
+
 ## Share a build cache across worktrees
 
 Dev and test builds keep only line tables for debug info, so each `target` folder stays smaller. If you build in several worktrees, install [sccache](https://github.com/mozilla/sccache) and add these lines to your shell profile so your worktrees share one cache capped at 30 GB:

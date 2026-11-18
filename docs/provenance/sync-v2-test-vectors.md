@@ -19,4 +19,4 @@ The sync v2 crates run the published test vectors that [sync-v2.md §3](../works
 
 ## BLAKE3
 
-`crates/sync-protocol/tests/published_vectors.rs` holds the published outputs for input lengths 0 and 1 of the BLAKE3 reference vectors (BLAKE3-team/BLAKE3, `test_vectors/test_vectors.json`, CC0-1.0 or Apache-2.0): the first 32 bytes of the hash, keyed hash and derived key at length 0, and of the hash at length 1. These are factual test values with no notice duty. The full file needs the owner's approval to download into the repository, so it isn't here yet.
+`crates/sync-protocol/tests/it/published_vectors.rs` holds the published outputs for input lengths 0 and 1 of the BLAKE3 reference vectors (BLAKE3-team/BLAKE3, `test_vectors/test_vectors.json`, CC0-1.0 or Apache-2.0): the first 32 bytes of the hash, keyed hash and derived key at length 0, and of the hash at length 1. These are factual test values with no notice duty. The full file needs the owner's approval to download into the repository, so it isn't here yet.
