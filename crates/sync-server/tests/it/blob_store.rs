@@ -1,8 +1,7 @@
 //! The blob store suite (§21) against local disk, memory and an
 //! S3-compatible emulator, and the migration from disk to S3.
 
-mod emulator;
-
+use crate::emulator;
 use emulator::Emulator;
 use sync_server::blobs::{DiskStore, Objects, SegmentStore, conformance};
 

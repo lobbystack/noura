@@ -2,8 +2,7 @@
 //! request IDs and status codes, for at most 14 days, and never account
 //! IDs, record bodies, tokens, `rid`s or ciphertext.
 
-mod support;
-
+use crate::support;
 use jiff::tz::TimeZone;
 use sqlx::{ConnectOptions, Connection};
 use support::{Client, Server, push_body, run, seed};

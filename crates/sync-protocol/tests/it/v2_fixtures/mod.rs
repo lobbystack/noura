@@ -15,7 +15,7 @@ use sync_protocol::codec::{Decode, Encode};
 use sync_protocol::crypto::SigningKey;
 use sync_protocol::messages::*;
 use sync_protocol::records::*;
-use sync_protocol::types::{Digest, Id, Key, SecretKey, from_hex, to_hex};
+use sync_protocol::types::{Digest, Id, Key, SecretKey, from_hex};
 
 /// Every fixture file §32 names.
 const FILES: &[&str] = &[
@@ -376,10 +376,6 @@ fn every_case_reaches_its_stated_outcome() {
         failures.len(),
         failures.join("\n")
     );
-}
-
-pub fn to_hex_string(bytes: &[u8]) -> String {
-    to_hex(bytes)
 }
 
 pub fn id_of(value: &Value) -> Id {

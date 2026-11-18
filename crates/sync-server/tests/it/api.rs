@@ -2,8 +2,7 @@
 //! error bodies with the statuses `sync-v2-encoding.json` pins, the read
 //! routes, and a pull that wakes through the event hub.
 
-mod support;
-
+use crate::support;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 

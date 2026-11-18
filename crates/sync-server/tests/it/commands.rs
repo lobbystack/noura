@@ -1,8 +1,7 @@
 //! The binary's commands at seam 4: `migrate`, `serve` and `healthcheck`
 //! on a data directory, with the secret file beside the database (§14).
 
-mod support;
-
+use crate::support;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;

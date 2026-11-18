@@ -2,8 +2,7 @@
 //! uploads, digest checks, termination and range reads, over HTTP against a
 //! disk blob store.
 
-mod emulator;
-
+use crate::emulator;
 use std::io;
 use std::ops::Range;
 use std::sync::Arc;

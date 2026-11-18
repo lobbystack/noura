@@ -4,8 +4,7 @@
 //! their sessions, `device_removed` and approval requests, offers and
 //! reveals answer as §26 sets.
 
-mod support;
-
+use crate::support;
 use std::path::PathBuf;
 use std::sync::Arc;
 

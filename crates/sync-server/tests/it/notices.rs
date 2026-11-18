@@ -3,9 +3,9 @@
 
 use std::collections::BTreeMap;
 
-const NOTICE: &str = include_str!("../THIRD_PARTY_NOTICES.txt");
-const LOCK: &str = include_str!("../../../Cargo.lock");
-const DOCKERFILE: &str = include_str!("../Dockerfile");
+const NOTICE: &str = include_str!("../../THIRD_PARTY_NOTICES.txt");
+const LOCK: &str = include_str!("../../../../Cargo.lock");
+const DOCKERFILE: &str = include_str!("../../Dockerfile");
 
 /// Every locked package's versions.
 fn locked() -> BTreeMap<&'static str, Vec<&'static str>> {

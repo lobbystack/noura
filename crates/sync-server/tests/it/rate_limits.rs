@@ -4,8 +4,7 @@
 //! per client IP read only from a configured header, and in PostgreSQL mode
 //! the limits hold across two instances.
 
-mod support;
-
+use crate::support;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;

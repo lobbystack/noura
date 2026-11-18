@@ -10,8 +10,7 @@
 //! report the rate and check only that every push commits and both
 //! instances serve every record in one order; CI's soak job sets it to 300.
 
-mod support;
-
+use crate::support;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

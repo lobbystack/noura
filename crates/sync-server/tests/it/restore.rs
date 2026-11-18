@@ -2,8 +2,7 @@
 //! the generation, the secret, the lease and the check against the blob
 //! store, on a real data directory with the real binary.
 
-mod support;
-
+use crate::support;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

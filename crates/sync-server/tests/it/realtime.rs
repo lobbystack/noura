@@ -6,8 +6,7 @@
 //! frames. Two PostgreSQL instances deliver the same frames, with the
 //! notification sent after commit.
 
-mod support;
-
+use crate::support;
 use std::sync::Arc;
 use std::time::Duration;
 

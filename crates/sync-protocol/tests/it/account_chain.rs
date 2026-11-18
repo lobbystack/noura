@@ -1,7 +1,6 @@
 //! Account chain verification (§7) from the links alone.
 
-mod support;
-
+use crate::support;
 use std::collections::BTreeSet;
 
 use support::{ChainBuilder, Device, account, device, remove_kind};

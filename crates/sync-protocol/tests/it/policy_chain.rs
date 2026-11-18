@@ -1,7 +1,6 @@
 //! Policy verification (§8): chain links, account heads and authority.
 
-mod support;
-
+use crate::support;
 use support::{ChainBuilder, Device, Person, PolicyBuilder, account, chains, device};
 use sync_protocol::codec::Sorted;
 use sync_protocol::policy::{

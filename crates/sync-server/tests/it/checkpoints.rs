@@ -2,8 +2,7 @@
 //! `checkpoints/{digest}`, `checkpoint-chain`, `live` and `manifest`, their
 //! query parameters and the statuses of their refusals.
 
-mod support;
-
+use crate::support;
 use reqwest::StatusCode;
 use support::Client;
 use sync_protocol::manifest::{bucket_of, verify_buckets};

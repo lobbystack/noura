@@ -3,8 +3,7 @@
 //! `POST /v2/accounts/chains` with the chains each session may read, and
 //! `POST /v2/recovery`.
 
-mod support;
-
+use crate::support;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;

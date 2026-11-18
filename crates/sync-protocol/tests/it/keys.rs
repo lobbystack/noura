@@ -1,8 +1,7 @@
 //! Key domains (§9): key checks, lineage, epoch acceptance, replacements,
 //! envelope signers and the rules that judge records by log position.
 
-mod support;
-
+use crate::support;
 use std::collections::{BTreeMap, BTreeSet};
 
 use support::{Device, Person, PolicyBuilder, chains};

@@ -3,8 +3,7 @@
 //! acceptance from the invitee's session, the invitee's approval request
 //! in `pending-devices`, and the invitation page, which loads no script.
 
-mod support;
-
+use crate::support;
 use reqwest::StatusCode;
 use support::Client;
 use sync_protocol::codec::{Encode, Nested};

@@ -2,8 +2,7 @@
 //! bodies time out, connections stop at a limit, realtime channels among
 //! them, and a shutdown stops waiting for requests in flight.
 
-mod support;
-
+use crate::support;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;

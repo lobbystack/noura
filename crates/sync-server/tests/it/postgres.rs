@@ -6,9 +6,8 @@
 //! two instances on one database serve the same log and wake each other's
 //! pulls only after a commit (§15).
 
-mod emulator;
-mod support;
-
+use crate::emulator;
+use crate::support;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
