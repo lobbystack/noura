@@ -138,15 +138,15 @@ jobs:
       # The large note takes minutes through a debug build, so
       # `the_large_note_keeps_its_bytes` runs only in release mode.
       - name: Check that the editor keeps a large note's bytes
-        run: cargo test -p editor-egui --release --locked --test it byte_identity::
+        run: 'cargo test -p editor-egui --release --locked --test it byte_identity::'
       # A report, not a gate: each checkpoint enforces the budget on the
       # owner's Mac.
       - name: Report the file tree's frame times
         if: matrix.os == 'macos-latest'
-        run: cargo test -p app-ui --release --locked --test it tree_scale:: -- --ignored --nocapture
+        run: 'cargo test -p app-ui --release --locked --test it tree_scale:: -- --ignored --nocapture'
       - name: Report a plugin's 10,000-row list's frame times
         if: matrix.os == 'macos-latest'
-        run: cargo test -p app-ui --release --locked --test it plugin_kit:: -- --ignored --nocapture
+        run: 'cargo test -p app-ui --release --locked --test it plugin_kit:: -- --ignored --nocapture'
         env:
           NOURA_REQUIRE_PLUGINS: '1'
       # Also a report: the 95th-percentile keystroke-to-frame time of typing
@@ -426,11 +426,11 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with: { key: postgres }
       - run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p sync-store-postgres -p sync-server
-      - run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p app-core --test it sync:: -- --skip workspace_sync::
+      - run: 'cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p app-core --test it sync:: -- --skip workspace_sync::'
       # The 500 ms bar is for the server as it ships, so the soak builds
       # Noura's own crates optimized too.
       - name: Run the push soak for five minutes
-        run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" --config profile.dev.opt-level=2 --config profile.test.opt-level=2 -p sync-server --test it soak:: -- --nocapture
+        run: 'cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" --config profile.dev.opt-level=2 --config profile.test.opt-level=2 -p sync-server --test it soak:: -- --nocapture'
         env:
           NOURA_SOAK_SECONDS: '300'
 
@@ -456,7 +456,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with: { key: restore-fleet }
       - name: Restore with 200 devices
-        run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p app-core --test it sync_restore::many_devices_pick_one_writer_for_a_lost_object -- --nocapture
+        run: 'cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p app-core --test it sync_restore::many_devices_pick_one_writer_for_a_lost_object -- --nocapture'
         env:
           NOURA_RESTORE_DEVICES: '200'
 

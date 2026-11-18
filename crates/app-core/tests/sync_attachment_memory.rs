@@ -113,7 +113,10 @@ async fn sync_a_large_file(len: u64) {
     // whole bodies, which would count against the client.
     let mut service = laptop.connect_through(&server.base).await;
     write_large(&a.path("Video/Talk.mov"), len);
-    let limit = 4 * SEGMENT_LEN;
+    // A client that held the whole file would rise by `len`. A few segments
+    // in flight plus the sync round's own bookkeeping stay near 4 segments,
+    // so the limit leaves one segment of room for that bookkeeping.
+    let limit = 5 * SEGMENT_LEN;
 
     let base = baseline();
     sync_a

@@ -166,6 +166,6 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with: { key: threats }
       - name: List every detected row with its tests
-        run: cargo test --locked -p app-core --test it sync_threats:: -- --nocapture
+        run: 'cargo test --locked -p app-core --test it sync_threats:: -- --nocapture'
       - name: Run the named tests
         run: scripts/threat-tests.sh
