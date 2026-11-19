@@ -27,6 +27,13 @@ threads-required = "num-test-threads"
 filter = "test(/postgres/)"
 test-group = "postgres"
 
+# Enrolls 257 device cards, each signed and checked: 17 s alone on a fast
+# machine, and past ten minutes on a CI runner shared with other tests.
+[[profile.default.overrides]]
+filter = "test(=chains::a_removed_device_id_never_enrolls_again_and_a_257th_card_is_refused)"
+threads-required = 4
+slow-timeout = { period = "60s", terminate-after = 20 }
+
 [profile.ci]
 fail-fast = false
 retries = 0
