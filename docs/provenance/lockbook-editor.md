@@ -51,7 +51,7 @@ Paths on the left are relative to `libs/lb/lb-rs/src/model/text/`. Each destinat
 
 | Source | Destination |
 |---|---|
-| `buffer.rs` | `crates/editor-core/src/buffer.rs`, with its tests in `crates/editor-core/tests/history.rs` |
+| `buffer.rs` | `crates/editor-core/src/buffer.rs`, with its tests in `crates/editor-core/tests/it/history.rs` |
 | `mod.rs` (the word diff `diff`) | `crates/editor-core/src/diff.rs` |
 | `offset_types.rs` | `crates/editor-core/src/offset_types.rs` |
 | `operation_types.rs` | `crates/editor-core/src/operation_types.rs` |
@@ -154,8 +154,8 @@ These 52 didn't come along:
 | `tests/link_card.rs`: all 15 tests (`angle_bracket_autolink_is_not_a_card`, `bare_url_alone_on_a_line_is_a_card`, `bare_url_in_a_sentence_is_not_a_card`, `bare_url_under_a_heading_is_a_card`, `cached_metadata_renders_a_card`, `capsule_selection_rects_hug_pill`, `enter_atom_reveals_link_card_source`, `labeled_link_is_not_a_card`, `previews_off_does_not_fetch_autolink_titles`, `rate_limited_meta_degrades_and_gates_refetch`, `setting_mirrors_onto_renderer_each_frame`, `two_urls_on_one_line_are_not_cards`, `url_in_a_container_block_is_not_a_card`, `url_in_list_renders_no_card_even_when_cached`, `wrapped_capsule_edge_carets`) | Link cards and capsules came out with network fetching |
 | `widget/inline/link/meta.rs`: `description_absent_is_none`, `falls_back_to_html_title`, `favicon_falls_back_to_origin_root`, `full_card_metadata`, `no_title_yields_none`, `prefers_open_graph_over_html_title`, `real_titles_are_not_junk`, `site_name_falls_back_to_host_without_www`, `twitter_card_fallbacks`, `wall_titles_and_markers_are_junk` | They test scraping fetched pages for link cards |
 | `widget/emoji_completions.rs`: `colon_after_space_or_start_does_trigger`, `colon_after_word_does_not_trigger`, `empty_note_has_no_in_doc_recents`, `in_doc_recents_first_appearance_and_cap`, `parse_shortcode_token` | The emoji completion popup stayed behind |
-| `widget/link_completions.rs`: `destination_completion_replaces_link_keeping_title`, `destination_context_detected_and_title_kept`, `list_markers_hold_the_popup`, `out_of_scope_links_insert_the_external_url`, `path_query_matches_folder_and_leaf`, `wikilink_completions_resolve_back` | They test the Markdown link modes, which stayed behind, and build their files with `lb-rs`'s file cache. Ticket 20 tests the `[[` query and the inserted text in `crates/editor-core/tests/link_completion.rs`, and `app-core`'s `every_suggestion_links_to_its_own_file` does the job of `wikilink_completions_resolve_back` |
-| `tests/regressions.rs`: `find_esc_closes_widget` | It tested Lockbook's find bar; `crates/editor-egui/tests/editing_commands.rs` checks that Escape closes Noura's |
+| `widget/link_completions.rs`: `destination_completion_replaces_link_keeping_title`, `destination_context_detected_and_title_kept`, `list_markers_hold_the_popup`, `out_of_scope_links_insert_the_external_url`, `path_query_matches_folder_and_leaf`, `wikilink_completions_resolve_back` | They test the Markdown link modes, which stayed behind, and build their files with `lb-rs`'s file cache. Ticket 20 tests the `[[` query and the inserted text in `crates/editor-core/tests/it/link_completion.rs`, and `app-core`'s `every_suggestion_links_to_its_own_file` does the job of `wikilink_completions_resolve_back` |
+| `tests/regressions.rs`: `find_esc_closes_widget` | It tested Lockbook's find bar; `crates/editor-egui/tests/it/editing_commands.rs` checks that Escape closes Noura's |
 | `tests/regressions.rs`: `icon_glyphs_skip_emoji_font` | The icon fonts and Twemoji routing came out with `lb-fonts` |
 | `tests/regressions.rs`: `layout_cache_consistent_under_link_title` | Link titles came from fetched metadata |
 | `tests/regressions.rs`: `out_of_scope_embed_leaves_image_cache_alone` | It tests `lb-rs`'s image cache and share scope |
@@ -180,7 +180,7 @@ Ticket 18 removed 28 more ported tests, because they test folding, which Noura n
 
 The five `lb-rs` files hold 32 tests, and 30 came along:
 
-- `buffer.rs`: the selection, undo-unit and merge tests, in `crates/editor-core/tests/history.rs`. `Buffer::merge` stayed behind, so the merge tests type one version into the editor and load the other from disk, which queues the same operations against the same base. `typing_long_pause_splits` gives its keystrokes times instead of sleeping.
+- `buffer.rs`: the selection, undo-unit and merge tests, in `crates/editor-core/tests/it/history.rs`. `Buffer::merge` stayed behind, so the merge tests type one version into the editor and load the other from disk, which queues the same operations against the same base. `typing_long_pause_splits` gives its keystrokes times instead of sleeping.
 - `mod.rs`: `diff_full_replace`, `diff_partial_replace` and `diff_word_boundary_inside_grapheme` became `replaces_everything_when_nothing_matches`, `replaces_the_changed_word` and `a_word_boundary_inside_a_cluster_still_yields_valid_ranges` in `diff.rs`. `diff_fuzz` became `random_texts_diff_and_apply_to_the_target`, which also applies each diff.
 - `offset_types.rs`: all 3, in `offset_types.rs`.
 
@@ -192,7 +192,7 @@ These 2 didn't come along:
 
 ### Tests removed by ticket 19
 
-Ticket 19 removed seven ported tests that checked Lockbook's Tab handling, which the legacy app's list nesting replaced. `crates/editor-core/tests/formatting.rs` checks the new rules. The paths below are relative to `crates/editor-egui/`.
+Ticket 19 removed seven ported tests that checked Lockbook's Tab handling, which the legacy app's list nesting replaced. `crates/editor-core/tests/it/formatting.rs` checks the new rules. The paths below are relative to `crates/editor-egui/`.
 
 | Test | What it checked |
 |---|---|

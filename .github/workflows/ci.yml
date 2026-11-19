@@ -123,11 +123,17 @@ jobs:
         run: |
           brew list postgresql@16 > /dev/null 2>&1 || brew install postgresql@16
           echo "NOURA_POSTGRES_BIN=$(brew --prefix postgresql@16)/bin" >> "$GITHUB_ENV"
-      - run: cargo test --workspace --locked --no-fail-fast
+      # Nextest runs each test in a process of its own, with the limits in
+      # .config/nextest.toml, so the heavy tests that share a crate's `it`
+      # binary don't all compete in one process. It doesn't run doctests.
+      - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
+        with: { tool: cargo-nextest@0.9.152 }
+      - run: cargo nextest run --workspace --locked --profile ci
         timeout-minutes: 120
         env:
           NOURA_S7_REQUIRE_PLUGINS: '1'
           NOURA_REQUIRE_PLUGINS: '1'
+      - run: cargo test --workspace --locked --doc
       # The plugin host's seam 3 suite again on Wasmtime's Pulley
       # interpreter, which a future mobile host runs instead of native code.
       - name: Run the plugin host's tests on the Pulley interpreter
@@ -138,15 +144,15 @@ jobs:
       # The large note takes minutes through a debug build, so
       # `the_large_note_keeps_its_bytes` runs only in release mode.
       - name: Check that the editor keeps a large note's bytes
-        run: cargo test -p editor-egui --release --locked --test byte_identity
+        run: 'cargo test -p editor-egui --release --locked --test it byte_identity::'
       # A report, not a gate: each checkpoint enforces the budget on the
       # owner's Mac.
       - name: Report the file tree's frame times
         if: matrix.os == 'macos-latest'
-        run: cargo test -p app-ui --release --locked --test tree_scale -- --ignored --nocapture
+        run: 'cargo test -p app-ui --release --locked --test it tree_scale:: -- --ignored --nocapture'
       - name: Report a plugin's 10,000-row list's frame times
         if: matrix.os == 'macos-latest'
-        run: cargo test -p app-ui --release --locked --test plugin_kit -- --ignored --nocapture
+        run: 'cargo test -p app-ui --release --locked --test it plugin_kit:: -- --ignored --nocapture'
         env:
           NOURA_REQUIRE_PLUGINS: '1'
       # Also a report: the 95th-percentile keystroke-to-frame time of typing
@@ -321,14 +327,31 @@ jobs:
           echo "::error::The server on PostgreSQL never passed its health check."
           exit 1
 
-  # The image the self-hosting guide and the Dokploy compose file run.
+  # The image the self-hosting guide and the Dokploy compose file run. On
+  # main it also goes to GitHub's container registry, where sync.noura.app
+  # pulls it, so the Dokploy host never compiles Rust.
   server-image:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - run: scripts/check-server-image.sh
+      - name: Publish the image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/noura-sync-server
+        run: |
+          echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker tag noura-sync-server "$IMAGE:main"
+          docker tag noura-sync-server "$IMAGE:$GITHUB_SHA"
+          docker push "$IMAGE:main"
+          docker push "$IMAGE:$GITHUB_SHA"
 
   # Both stores' queries are checked at compile time against offline data in
   # crates/sync-store-sqlite/.sqlx and crates/sync-store-postgres/.sqlx, so
@@ -409,11 +432,11 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with: { key: postgres }
       - run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p sync-store-postgres -p sync-server
-      - run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p app-core --test sync
+      - run: 'cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p app-core --test it sync:: -- --skip workspace_sync::'
       # The 500 ms bar is for the server as it ships, so the soak builds
       # Noura's own crates optimized too.
       - name: Run the push soak for five minutes
-        run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" --config profile.dev.opt-level=2 --config profile.test.opt-level=2 -p sync-server --test soak -- --nocapture
+        run: 'cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" --config profile.dev.opt-level=2 --config profile.test.opt-level=2 -p sync-server --test it soak:: -- --nocapture'
         env:
           NOURA_SOAK_SECONDS: '300'
 
@@ -439,7 +462,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with: { key: restore-fleet }
       - name: Restore with 200 devices
-        run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p app-core --test sync_restore many_devices_pick_one_writer_for_a_lost_object -- --nocapture
+        run: 'cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p app-core --test it sync_restore::many_devices_pick_one_writer_for_a_lost_object -- --nocapture'
         env:
           NOURA_RESTORE_DEVICES: '200'
 

@@ -70,6 +70,8 @@ The project uses the MIT license. Verify the license for each source path before
 
 Run focused tests while editing and the full checks before handoff. Storage changes require tests for malformed input, round trips, external edits, stale indexes, interrupted index updates, moves, duplicate IDs, path traversal, and rebuilds. Mutations must prove that durable bytes reach disk before the call resolves. MCP, plugin, and UI adapters must call shared services. Documentation examples must compile in CI.
 
+Each crate's integration tests form one binary, `tests/it`, with a module per test file: add a test file as a module there, not as a new file in `tests/`. Run focused tests with `cargo test -p <crate> --test it <module>::<name>` or `cargo nextest run -p <crate> -E 'test(<name>)'`, and leave the full suite to CI. Keep incremental compilation on, give each worktree its own `target` folder, and run `cargo clean -p <crate>` when `target` grows too large. Tests share a process, so never set environment variables, the current directory or a global subscriber in one. `CONTRIBUTING.md` explains the alternatives.
+
 Any change to workspace-format parsing, validation, normalization, or serialization must update the shared conformance fixtures. The editor must leave an unchanged note byte-for-byte identical through open, display, and close. Test UI through AccessKit with `egui_kittest`. Run the sync store conformance suite against both SQLite and PostgreSQL.
 
 ## Scope Discipline

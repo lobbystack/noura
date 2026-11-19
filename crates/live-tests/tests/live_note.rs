@@ -3,10 +3,10 @@
 //! and these tests type, select and share through AccessKit, then read the
 //! other desktop's editor and file, or open the link as a browser would.
 
-#[path = "../../app-ui/tests/support/mod.rs"]
+#[path = "../../app-ui/tests/it/support/mod.rs"]
 mod support;
 
-#[path = "../../app-core/tests/sync_support/mod.rs"]
+#[path = "../../app-core/tests/it/sync_support/mod.rs"]
 mod sync_support;
 
 use std::path::{Path, PathBuf};
