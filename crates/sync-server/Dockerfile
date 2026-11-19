@@ -13,6 +13,9 @@ RUN cargo build -p sync-server --release --locked \
 	&& cp target/release/sync-server /out/sync-server
 
 FROM alpine:3.22
+# Ties the image GitHub's registry holds to this repository, which lets CI
+# publish it with the workflow's own token.
+LABEL org.opencontainers.image.source="https://github.com/lobbystack/noura"
 RUN apk add --no-cache ca-certificates su-exec \
 	&& addgroup -S -g 10001 noura \
 	&& adduser -S -D -H -u 10001 -G noura noura \
