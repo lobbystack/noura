@@ -210,6 +210,9 @@ async fn launch() -> (Browser, tokio::task::JoinHandle<()>, tempfile::TempDir) {
             // CI runners keep unprivileged user namespaces off, which
             // Chrome's sandbox needs; the test loads only its own server.
             .no_sandbox()
+            // The tests start several browsers at once, which a busy runner
+            // can take longer than the default 20 seconds to bring up.
+            .launch_timeout(std::time::Duration::from_secs(60))
             .build()
             .expect("a browser configuration"),
     )
