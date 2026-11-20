@@ -15,17 +15,17 @@ If a workflow references an environment that doesn't exist, GitHub creates it wi
 
 ### Add the updater key
 
-The updater installs only bundles signed with Noura's updater key, a [minisign](https://jedisct1.github.io/minisign/) key pair. Its public key is `RELEASE_PUBLIC_KEY` in `apps/desktop/src/updates.rs`. Keep the private key outside the repository, and back it up. If you lose it, installed copies can't accept future updates, and people must reinstall by hand.
+The updater installs only bundles signed with Noura's updater key, a [minisign](https://jedisct1.github.io/minisign/) key pair. Its public key is `RELEASE_PUBLIC_KEY` in `apps/desktop/src/updates.rs`. The private key has no password, so keep it outside the repository and back it up somewhere safe. If you lose it, installed copies can't accept future updates, and people must reinstall by hand.
 
-The public key is the one the Tauri app used, so the private key you already have still works. Store it under the names the workflow reads, then remove the old secret:
+Store the private key in the `release` environment:
 
 ```bash
-gh secret set NOURA_UPDATER_PRIVATE_KEY --env release < ~/.tauri/noura-updater.key
-gh secret set NOURA_UPDATER_PRIVATE_KEY_PASSWORD --env release
-gh secret delete TAURI_SIGNING_PRIVATE_KEY --env release
+gh secret set NOURA_UPDATER_PRIVATE_KEY --env release < ~/.noura/updater.key
 ```
 
-The second command asks for the key's password. Skip it if the key has none. To start over with a new key, run `cargo packager signer generate --path ~/.noura/updater.key`, put the contents of `updater.key.pub` in `RELEASE_PUBLIC_KEY`, and store the new private key as above. Copies that shipped with the old public key won't install updates signed with the new one.
+If you protect the key with a password instead, also store it with `gh secret set NOURA_UPDATER_PRIVATE_KEY_PASSWORD --env release`, run in a terminal so it can prompt you. The `build` job signs a test file before it compiles anything, so a wrong key or password stops the release within seconds.
+
+To replace the key, run `cargo packager signer generate --path ~/.noura/updater.key --password ""`, put the contents of `updater.key.pub` in `RELEASE_PUBLIC_KEY`, and store the new private key as above. Copies that shipped with the old public key won't install updates signed with the new one.
 
 ### Sign the macOS app with a Developer ID
 

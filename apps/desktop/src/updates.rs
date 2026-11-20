@@ -20,7 +20,7 @@ pub const RELEASE_FEED: &str =
 /// Noura's updater public key: a minisign key, base64-encoded as
 /// cargo-packager writes it. The `release` environment holds the private
 /// key; docs/releasing.md explains it.
-pub const RELEASE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk1NkJDREI4NUNEOUE4MkYKUldRdnFObGN1TTFybFRqNEY3cFJicGJOdVpLZjR0N2Q2S2VHNlB1U0t3cnJTbkVGQ2xEejdTYSsK";
+pub const RELEASE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU4RDM5MkVCNjdBQkZFNTkKUldSWi9xdG42NUxUV0p1bnMybTBOeE8xWjh3bE13YnZNbDU1RXRoV2pONXNlejk1clN0WGZtRzMK";
 
 /// reqwest's blocking client gives up after 30 seconds by default, too soon
 /// for a large download on a slow connection.
