@@ -2,9 +2,10 @@
 //! view opens on today in the device's time zone, and week and day views
 //! place timed entries on the device's local day, side by side where they
 //! overlap. Previous, Next and Today move the range for the current mode,
-//! and switching modes keeps the focused date. Selecting an entry shows
-//! its panel, Open shows its object in a tab with its plugin's properties
-//! panel, and outside edits reach the open view without a reload.
+//! and switching modes keeps the focused date. Selecting an entry opens
+//! a popover beside it that says what it is and when, Open shows its
+//! object in a tab with its plugin's properties panel, and outside edits
+//! reach the open view without a reload.
 
 use crate::support;
 use std::sync::Arc;
@@ -285,7 +286,7 @@ fn previous_next_and_today_move_the_range_and_switching_modes_keeps_the_focused_
 }
 
 #[test]
-fn selecting_an_entry_shows_its_panel_and_open_shows_its_task_in_the_note_editor() {
+fn selecting_an_entry_shows_its_popover_and_open_shows_its_task_in_the_note_editor() {
     let (fixture, system) = week();
     let mut app = fixture.app_with(system);
     let Some(_tasks) = with_tasks(&mut app) else {
@@ -299,32 +300,28 @@ fn selecting_an_entry_shows_its_panel_and_open_shows_its_task_in_the_note_editor
     app.open_page(calendar::PAGE, OpenAs::Preview);
     support::settle(&mut app);
     let standup = format!("task_{A}:start");
-    assert_eq!(texts_under(&app, "entry"), None);
+    assert_eq!(texts_under(&app, "details"), None);
 
     select(&mut app, &standup);
 
-    assert_eq!(
-        texts_under(&app, "entry"),
-        Some(vec!["Standup".to_owned(), "Type: task".to_owned()])
-    );
+    // The popover points at the entry and says what it is in words, with
+    // no property names.
     let view = page(&app);
-    let table = find(view.root(), "entry-properties").expect("the panel lists the properties");
-    let rows: Vec<Vec<String>> = table
-        .children
-        .iter()
-        .filter_map(|row| match &row.kind {
-            ViewKind::Row { cells } => Some(cells.clone()),
-            _ => None,
-        })
-        .collect();
+    let popover = find(view.root(), "details").expect("the popover shows");
     assert_eq!(
-        rows,
-        [
-            ["end", "2026-10-21T13:30:00Z"],
-            ["priority", "high"],
-            ["start", "2026-10-21T13:00:00Z"],
-            ["status", "todo"],
-        ]
+        popover.kind,
+        ViewKind::Popover {
+            label: "Standup".to_owned(),
+            anchor: standup.clone(),
+        }
+    );
+    assert_eq!(
+        texts_under(&app, "details"),
+        Some(vec![
+            "Task".to_owned(),
+            "Oct 21, 09:00 to 09:30".to_owned(),
+            "To do".to_owned(),
+        ])
     );
     assert_eq!(button(&app, "open").as_deref(), Some("Open"));
 
@@ -349,7 +346,7 @@ fn selecting_an_entry_shows_its_panel_and_open_shows_its_task_in_the_note_editor
 }
 
 #[test]
-fn the_panel_of_an_entry_whose_id_another_file_shares_says_open_might_show_that_file() {
+fn the_popover_of_an_entry_whose_id_another_file_shares_says_open_might_show_that_file() {
     let fixture = Fixture::new(&[
         (
             "Plan.md",
@@ -391,31 +388,31 @@ fn the_panel_of_an_entry_whose_id_another_file_shares_says_open_might_show_that_
     // Paths order the copies, so the copy's file comes first.
     select(&mut app, &format!("note_{A}:date"));
     assert_eq!(
-        texts_under(&app, "entry"),
+        texts_under(&app, "details"),
         Some(vec![
-            "Plan copy".to_owned(),
-            "Type: note".to_owned(),
+            "Note".to_owned(),
+            "Tomorrow".to_owned(),
             shared.to_owned()
         ])
     );
     select(&mut app, &format!("note_{A}:date:2"));
     assert_eq!(
-        texts_under(&app, "entry"),
+        texts_under(&app, "details"),
         Some(vec![
-            "Plan".to_owned(),
-            "Type: note".to_owned(),
+            "Note".to_owned(),
+            "Today".to_owned(),
             shared.to_owned()
         ])
     );
     select(&mut app, &format!("note_{B}:date"));
     assert_eq!(
-        texts_under(&app, "entry"),
-        Some(vec!["Review".to_owned(), "Type: note".to_owned()])
+        texts_under(&app, "details"),
+        Some(vec!["Note".to_owned(), "Today".to_owned()])
     );
 }
 
 #[test]
-fn opening_an_entry_from_the_grid_shows_its_object_and_close_hides_the_panel() {
+fn opening_an_entry_from_the_grid_shows_its_object_and_cancelling_closes_the_popover() {
     let (fixture, system) = week();
     let mut app = fixture.app_with(system);
     let Some(_calendar) = with_calendar(&mut app) else {
@@ -433,11 +430,12 @@ fn opening_an_entry_from_the_grid_shows_its_object_and_close_hides_the_panel() {
 
     assert_eq!(app.active_tab().map(|tab| tab.title()), Some("Review"));
     assert_eq!(
-        texts_under(&app, "entry").unwrap_or_default().first(),
-        Some(&"Review".to_owned())
+        texts_under(&app, "details").unwrap_or_default().first(),
+        Some(&"Note".to_owned())
     );
-    press(&mut app, "close-entry");
-    assert_eq!(texts_under(&app, "entry"), None);
+    // Escape or a click outside the popover sends this.
+    calendar::send(&mut app, PluginEvent::Cancelled("details".to_owned()));
+    assert_eq!(texts_under(&app, "details"), None);
 }
 
 #[test]
