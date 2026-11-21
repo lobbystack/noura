@@ -526,10 +526,14 @@ impl TextureLoader for FittingTextureLoader {
             None => {}
         }
         drop(textures);
-        // egui's loader waits for an image that's still decoding, and says
-        // why one can't load.
-        let Ok(ImagePoll::Ready { image }) = ctx.try_load_image(uri, size_hint) else {
-            return Err(LoadError::NotSupported);
+        // While the image decodes, this loader keeps the address: handing it
+        // on would let egui's own texture loader upload the image at full
+        // size if decoding finishes in between. egui's loader still says why
+        // an image can't load.
+        let image = match ctx.try_load_image(uri, size_hint) {
+            Ok(ImagePoll::Ready { image }) => image,
+            Ok(ImagePoll::Pending { size }) => return Ok(TexturePoll::Pending { size }),
+            Err(_) => return Err(LoadError::NotSupported),
         };
         let [width, height] = image.size;
         if width == 0 || height == 0 {
