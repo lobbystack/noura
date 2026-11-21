@@ -21,6 +21,7 @@ mod ai_web;
 mod app;
 mod approval;
 mod broken_notes;
+mod calendar_calendars;
 mod calendar_entries;
 mod calendar_grid;
 mod calendar_inbox;

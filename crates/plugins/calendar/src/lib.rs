@@ -1,9 +1,16 @@
 //! The Calendar plugin. It reads the workspace and places every object
 //! with a due date, a date, or a start and end on month, week and day
-//! views, whichever plugin owns the object's type. Selecting an entry
-//! shows its properties beside an Open button, and the Inbox gains a Next
-//! 7 days section. Calendar writes nothing: its manifest declares no
-//! capability that could.
+//! views, whichever plugin owns the object's type, and the Inbox gains a
+//! Next 7 days section.
+//!
+//! Each entry belongs to a calendar and draws in its color. Your
+//! calendars are files of the `calendar` type, and your events files of
+//! the `event` type that name their calendar by ID. Every other type with
+//! dates gets a built-in calendar of its own, such as Tasks. The sidebar
+//! lists them all with a checkbox that hides a calendar's entries in every
+//! view, and the settings file keeps what you hid. Selecting an event
+//! shows its form; selecting another entry shows its properties beside an
+//! Open button. Calendar writes only files of its own types.
 //!
 //! The rules that pick and order a range's entries are the kernel's,
 //! moved here from `workspace-format` in [`rules`].
@@ -11,24 +18,31 @@
 //! Build it with `crates/plugin-sdk/build-plugins.sh`, then install the
 //! folder holding `plugin.toml` and the built `calendar_plugin.wasm`.
 
+mod calendars;
 mod dates;
+mod editor;
 mod entries;
+mod names;
 mod rules;
+mod sidebar;
 mod types;
 
 use std::sync::Mutex;
 
 use jiff::{ToSpan, civil::Date};
 use plugin_sdk::{
-    CalendarMode, Column, Event, Icon, InboxSection, Node, ObjectType, Page, Plugin, Target, Value,
-    View,
+    CalendarMode, Color, Column, Event, Icon, InboxSection, Node, ObjectType, Page, Plugin, Target,
+    Value, View,
     navigation::{self, Placement},
 };
 use serde_json::Value as Json;
 
+use calendars::{Key, Own, Settings, built_in, key_of};
 use dates::{Now, add_days};
+use editor::Draft;
 use entries::{Entries, Entry};
 use rules::select_calendar_entries;
+use types::{CALENDAR, EVENT};
 
 /// The Calendar page.
 const PAGE: &str = "calendar";
@@ -120,14 +134,26 @@ impl Mode {
 }
 
 /// What the page shows, between calls.
-struct State {
+pub(crate) struct State {
     mode: Mode,
     /// The day the grid shows the period of, or none for today.
     focus: Option<Date>,
     /// The key of the entry whose panel shows.
     selected: Option<String>,
+    /// The event form: a new event, or the selected event's.
+    draft: Option<Draft>,
     /// Why the last Open failed.
     notice: Option<String>,
+    /// The calendar you selected in the sidebar, which new events go to.
+    pub(crate) calendar: Option<String>,
+    /// Whether the sidebar shows a name field for a new calendar.
+    pub(crate) naming_calendar: bool,
+    /// The calendar whose name field shows in its place.
+    pub(crate) renaming: Option<String>,
+    /// The calendar whose deletion waits for you to confirm it.
+    deleting: Option<String>,
+    /// Why the last change to a calendar failed.
+    pub(crate) sidebar_notice: Option<String>,
     entries: Entries,
 }
 
@@ -135,7 +161,13 @@ static STATE: Mutex<State> = Mutex::new(State {
     mode: Mode::Month,
     focus: None,
     selected: None,
+    draft: None,
     notice: None,
+    calendar: None,
+    naming_calendar: false,
+    renaming: None,
+    deleting: None,
+    sidebar_notice: None,
     entries: Entries::new(),
 });
 
@@ -165,6 +197,10 @@ impl Plugin for Calendar {
 
     fn render(_page: String) -> Vec<Node> {
         page()
+    }
+
+    fn sidebar(_page: String) -> Vec<Node> {
+        sidebar_nodes()
     }
 
     fn handle_event(_page: String, event: Event) {
@@ -203,12 +239,97 @@ fn all_entries(state: &mut State) -> Result<Vec<Entry>, String> {
         .map_err(|_| "Noura couldn't read the workspace.".to_owned())
 }
 
+/// The calendars, what you hid, and the entries of the calendars you
+/// show, each with its calendar's color.
+struct Shown {
+    own: Vec<Own>,
+    entries: Vec<(Entry, Color)>,
+}
+
+/// The entries of `all` whose calendars you show, each with its
+/// calendar's color.
+fn visible(all: Vec<Entry>, own: &[Own], settings: &Settings) -> Vec<(Entry, Color)> {
+    all.into_iter()
+        .filter_map(|entry| {
+            let key = key_of(&entry.source_type, &entry.properties, own);
+            if settings.hides(&key) {
+                return None;
+            }
+            let color = match &key {
+                Key::Own(id) => own
+                    .iter()
+                    .find(|calendar| calendar.id == *id)
+                    .map_or(Color::Blue, |calendar| calendar.color),
+                Key::Type(object_type) => built_in(object_type).1,
+            };
+            Some((entry, color))
+        })
+        .collect()
+}
+
+/// Every entry of the calendars you show, or why the workspace couldn't
+/// be read.
+fn shown(state: &mut State) -> Result<Shown, String> {
+    let all = all_entries(state)?;
+    let own = calendars::own(state.entries.of_type(CALENDAR));
+    let settings = Settings::read();
+    Ok(Shown {
+        entries: visible(all, &own, &settings),
+        own,
+    })
+}
+
+/// Your calendars, read with the workspace's dated entries. None when
+/// the workspace can't be read.
+fn own_calendars(state: &mut State) -> Vec<Own> {
+    if all_entries(state).is_err() {
+        return Vec::new();
+    }
+    calendars::own(state.entries.of_type(CALENDAR))
+}
+
+/// The calendar new events go to: the one you selected, or your first.
+fn default_calendar(state: &State, own: &[Own]) -> Option<String> {
+    state
+        .calendar
+        .as_ref()
+        .filter(|id| own.iter().any(|calendar| calendar.id == **id))
+        .cloned()
+        .or_else(|| own.first().map(|calendar| calendar.id.clone()))
+}
+
 /// The entries of `all` in the `count` days from `first`, in the order
 /// the rules set.
-fn within(all: Vec<Entry>, now: &Now, first: Date, count: i64) -> Result<Vec<Entry>, String> {
+fn within<T: rules::CalendarItem>(
+    all: Vec<T>,
+    now: &Now,
+    first: Date,
+    count: i64,
+) -> Result<Vec<T>, String> {
     let start = now.midnight(first);
     let end = now.midnight(add_days(first, count));
     select_calendar_entries(all, &start, &end).map_err(|_| "The period has no days.".to_owned())
+}
+
+impl rules::CalendarItem for (Entry, Color) {
+    fn start(&self) -> &str {
+        self.0.start()
+    }
+    fn end(&self) -> Option<&str> {
+        self.0.end()
+    }
+    fn all_day(&self) -> bool {
+        self.0.all_day()
+    }
+    fn title(&self) -> &str {
+        self.0.title()
+    }
+    fn source_id(&self) -> &str {
+        self.0.source_id()
+    }
+    fn property(&self) -> &str {
+        self.0.property()
+    }
 }
 
 /// The Calendar page: Previous, Today and Next, the mode, the selected
@@ -219,19 +340,54 @@ fn page() -> Vec<Node> {
     let focus = state.focus.unwrap_or(now.today);
     let mode = state.mode;
     let (first, count) = mode.days(focus);
-    let all = all_entries(&mut state);
+    let all = shown(&mut state);
+    let own = all.as_ref().map(|all| all.own.clone()).unwrap_or_default();
     let selected = match (&state.selected, &all) {
         (Some(key), Ok(all)) => {
-            let found = all.iter().find(|entry| &entry.key == key).cloned();
+            let found = all
+                .entries
+                .iter()
+                .map(|(entry, _)| entry)
+                .find(|entry| &entry.key == key)
+                .cloned();
             if found.is_none() {
-                // Its date or its object went away.
+                // Its date or its object went away, or you hid its
+                // calendar.
                 state.selected = None;
             }
             found
         }
         _ => None,
     };
-    let shown = all.and_then(|all| within(all, &now, first, count));
+    // A selected event shows its form, from its file unless you're
+    // editing it.
+    match &selected {
+        Some(entry) if entry.source_type == EVENT => {
+            let current = state.draft.as_ref().and_then(|draft| draft.event.as_ref());
+            if current != Some(&entry.source_id) {
+                let calendar = match key_of(&entry.source_type, &entry.properties, &own) {
+                    Key::Own(id) => Some(id),
+                    Key::Type(_) => None,
+                };
+                state.draft = Some(Draft::of(
+                    &entry.source_id,
+                    &entry.title,
+                    &entry.properties,
+                    calendar,
+                ));
+            }
+        }
+        // An event's form closes with its event.
+        _ if state
+            .draft
+            .as_ref()
+            .is_some_and(|draft| draft.event.is_some()) =>
+        {
+            state.draft = None;
+        }
+        _ => {}
+    }
+    let shown = all.and_then(|all| within(all.entries, &now, first, count));
 
     let mut view = View::panel("root", None);
     // The heading names the month under the title, with the mode, then
@@ -246,6 +402,7 @@ fn page() -> Vec<Node> {
     );
     let modes: Vec<(&str, &str)> = Mode::ALL.iter().map(|(_, id, name)| (*id, *name)).collect();
     view.choice_input(heading, "mode", "View", &modes, Some(mode.id()));
+    view.button(heading, "new-event", "New event");
     let (previous, next) = mode.steps();
     view.button(heading, "previous", previous);
     view.button(heading, "today", "Today");
@@ -253,7 +410,25 @@ fn page() -> Vec<Node> {
     if let Some(notice) = &state.notice {
         view.text(View::ROOT, "notice", notice);
     }
-    if let Some(entry) = &selected {
+    if let Some(id) = &state.deleting {
+        delete_panel(&mut view, &own, id);
+    }
+    if let Some(draft) = &state.draft {
+        let title = if draft.event.is_some() {
+            "Event"
+        } else {
+            "New event"
+        };
+        let panel = view.add_panel(View::ROOT, "event-panel", Some(title));
+        editor::render(&mut view, panel, draft, &own);
+        if draft.event.is_some() {
+            view.button(panel, "open", "Open");
+            view.button(panel, "delete-event", "Delete");
+            view.button(panel, "close-entry", "Close");
+        } else {
+            view.button(panel, "close-entry", "Cancel");
+        }
+    } else if let Some(entry) = &selected {
         entry_panel(&mut view, entry);
     }
     let entries = match shown {
@@ -277,12 +452,55 @@ fn page() -> Vec<Node> {
         mode.grid(),
         &focus.to_string(),
     );
-    for entry in entries.iter().take(MOST_SHOWN) {
+    for (entry, color) in entries.iter().take(MOST_SHOWN) {
         if let Some((start, end)) = entry.span() {
-            view.entry(grid, &entry.key, &entry.title, &start, end.as_deref());
+            let node = view.entry(grid, &entry.key, &entry.title, &start, end.as_deref());
+            view.color(node, *color);
         }
     }
     view.into_nodes()
+}
+
+/// The question before a calendar that holds events moves to the trash.
+fn delete_panel(view: &mut View, own: &[Own], id: &str) {
+    let Some(calendar) = own.iter().find(|calendar| calendar.id == id) else {
+        return;
+    };
+    let count = calendars::events_of(id).map_or(0, |events| events.len());
+    let panel = view.add_panel(View::ROOT, "delete-calendar", Some("Delete calendar"));
+    view.text(
+        panel,
+        "delete-title",
+        &format!("Delete \u{201c}{}\u{201d}?", calendar.name),
+    );
+    let detail = match count {
+        1 => "Its event moves to the trash too.".to_owned(),
+        count => format!("Its {count} events move to the trash too."),
+    };
+    view.text(panel, "delete-detail", &detail);
+    view.button(panel, "confirm-delete", "Delete");
+    view.button(panel, "cancel-delete", "Cancel");
+}
+
+/// The sidebar: your calendars, then the built-in ones of the types whose
+/// objects have dates.
+fn sidebar_nodes() -> Vec<Node> {
+    let mut state = state();
+    let all = all_entries(&mut state).unwrap_or_default();
+    let own = calendars::own(state.entries.of_type(CALENDAR));
+    let settings = Settings::read();
+    let mut types: Vec<String> = all
+        .iter()
+        .filter_map(
+            |entry| match key_of(&entry.source_type, &entry.properties, &own) {
+                Key::Type(object_type) => Some(object_type),
+                Key::Own(_) => None,
+            },
+        )
+        .collect();
+    types.sort();
+    types.dedup();
+    sidebar::render(&state, &own, &types, &settings)
 }
 
 /// The selected entry's title, type and properties, and Open.
@@ -332,6 +550,47 @@ fn shown_value(value: &Json) -> String {
 fn handle(event: Event) {
     match event {
         Event::Pressed(node) => match node.as_str() {
+            "new-event" => {
+                let now = Now::read();
+                let mut state = state();
+                let own = own_calendars(&mut state);
+                let day = state.focus.unwrap_or(now.today);
+                let calendar = default_calendar(&state, &own);
+                state.draft = Some(Draft::new(&now, day, calendar));
+                state.selected = None;
+                state.notice = None;
+            }
+            "delete-event" => {
+                let id = state().draft.as_ref().and_then(|draft| draft.event.clone());
+                if let Some(id) = id {
+                    let result = editor::delete(&id);
+                    let mut state = state();
+                    match result {
+                        Ok(()) => {
+                            state.draft = None;
+                            state.selected = None;
+                        }
+                        Err(problem) => {
+                            if let Some(draft) = &mut state.draft {
+                                draft.problem = Some(problem);
+                            }
+                        }
+                    }
+                }
+            }
+            sidebar::NEW => {
+                let mut state = state();
+                state.naming_calendar = true;
+                state.renaming = None;
+                state.sidebar_notice = None;
+            }
+            "confirm-delete" => {
+                let id = state().deleting.take();
+                if let Some(id) = id {
+                    delete_calendar(&id);
+                }
+            }
+            "cancel-delete" => state().deleting = None,
             "previous" | "next" => {
                 let today = Now::read().today;
                 let mut state = state();
@@ -350,9 +609,100 @@ fn handle(event: Event) {
                     open(&key);
                 }
             }
-            "close-entry" => state().selected = None,
+            "close-entry" => {
+                let mut state = state();
+                state.selected = None;
+                state.draft = None;
+            }
             _ => {}
         },
+        Event::Changed(field) if field.node.starts_with("event-") => {
+            let now = Now::read();
+            if let Some(draft) = &mut state().draft {
+                draft.change(&now, &field.node, field.value);
+            }
+        }
+        Event::Submitted(submission) if submission.node == editor::FORM => {
+            let now = Now::read();
+            let own = own_calendars(&mut state());
+            let draft = {
+                let mut state = state();
+                let Some(draft) = &mut state.draft else {
+                    return;
+                };
+                for field in submission.fields {
+                    draft.change(&now, &field.node, field.value);
+                }
+                draft.clone()
+            };
+            let saved = editor::save(&draft, &own);
+            let mut state = state();
+            match saved {
+                Ok(id) => {
+                    // The event shows selected, with its form read from
+                    // its file again.
+                    state.selected = Some(format!("{id}:start"));
+                    state.draft = None;
+                }
+                Err(problem) => {
+                    if let Some(draft) = &mut state.draft {
+                        draft.problem = Some(problem);
+                    }
+                }
+            }
+        }
+        Event::Checked(check) if check.node == sidebar::MINE || check.node == sidebar::OTHER => {
+            if let Some(key) = Key::of_node(&check.item) {
+                let notice = Settings::set_hidden(&key, !check.checked)
+                    .err()
+                    .map(|_| "Noura couldn't save which calendars show. Try again.".to_owned());
+                state().sidebar_notice = notice;
+            }
+        }
+        Event::Selected(Target { node, item }) if node == sidebar::MINE => {
+            if let Some(Key::Own(id)) = Key::of_node(&item) {
+                state().calendar = Some(id);
+            }
+        }
+        Event::Selected(Target { node, .. }) | Event::Activated(Target { node, .. })
+            if node == sidebar::OTHER || node == sidebar::MINE => {}
+        Event::Named(naming) if naming.node == sidebar::NEW_NAME => {
+            if !state().naming_calendar {
+                return;
+            }
+            let own = own_calendars(&mut state());
+            let created = calendars::create(&naming.name, &own);
+            let mut state = state();
+            state.naming_calendar = false;
+            match created {
+                Ok(id) => {
+                    state.calendar = Some(id);
+                    state.sidebar_notice = None;
+                }
+                Err(error) => state.sidebar_notice = Some(calendar_problem(&error)),
+            }
+        }
+        Event::Cancelled(node) if node == sidebar::NEW_NAME => state().naming_calendar = false,
+        Event::Named(naming) if naming.node == sidebar::RENAME => {
+            let Some(id) = state().renaming.clone() else {
+                return;
+            };
+            let renamed = calendars::rename(&id, &naming.name);
+            let mut state = state();
+            match renamed {
+                Ok(()) => {
+                    state.renaming = None;
+                    state.sidebar_notice = None;
+                }
+                Err(error) => state.sidebar_notice = Some(calendar_problem(&error)),
+            }
+        }
+        Event::Cancelled(node) if node == sidebar::RENAME => {
+            let mut state = state();
+            state.renaming = None;
+            state.sidebar_notice = None;
+        }
+        Event::Chosen(node) => choose(&node),
         Event::Changed(field) if field.node == "mode" => {
             if let Value::Choice(Some(id)) = field.value
                 && let Some(mode) = Mode::named(&id)
@@ -367,6 +717,7 @@ fn handle(event: Event) {
         Event::Selected(Target { item, .. }) => {
             let mut state = state();
             state.selected = Some(item);
+            state.draft = None;
             state.notice = None;
         }
         Event::Activated(Target { item, .. }) => {
@@ -374,6 +725,60 @@ fn handle(event: Event) {
             open(&item);
         }
         _ => {}
+    }
+}
+
+/// Answer a choice in a calendar's menu: rename it, recolor it, or delete
+/// it, after asking when it holds events.
+fn choose(node: &str) {
+    if let Some(id) = node.strip_prefix(sidebar::RENAME_ITEM) {
+        let mut state = state();
+        state.renaming = Some(id.to_owned());
+        state.naming_calendar = false;
+        state.sidebar_notice = None;
+    } else if let Some(rest) = node.strip_prefix(sidebar::COLOR_ITEM) {
+        let Some((color, id)) = rest.split_once(':') else {
+            return;
+        };
+        let Some(color) = calendars::color_named(color) else {
+            return;
+        };
+        let notice = calendars::recolor(id, color)
+            .err()
+            .map(|error| calendar_problem(&error));
+        state().sidebar_notice = notice;
+    } else if let Some(id) = node.strip_prefix(sidebar::DELETE_ITEM) {
+        match calendars::events_of(id) {
+            Ok(events) if events.is_empty() => delete_calendar(id),
+            Ok(_) => state().deleting = Some(id.to_owned()),
+            Err(error) => state().sidebar_notice = Some(calendar_problem(&error)),
+        }
+    }
+}
+
+/// Move the calendar `id` and its events to the trash.
+fn delete_calendar(id: &str) {
+    let deleted = calendars::delete(id);
+    let mut state = state();
+    match deleted {
+        Ok(()) => {
+            if state.calendar.as_deref() == Some(id) {
+                state.calendar = None;
+            }
+            state.sidebar_notice = None;
+        }
+        Err(error) => state.sidebar_notice = Some(calendar_problem(&error)),
+    }
+}
+
+/// What a failed change to a calendar says, in one sentence.
+fn calendar_problem(error: &plugin_sdk::Error) -> String {
+    match error {
+        plugin_sdk::Error::AlreadyExists(_) => "Another calendar has that name.".to_owned(),
+        plugin_sdk::Error::RevisionConflict(_) => {
+            "The calendar changed in another app. Try again.".to_owned()
+        }
+        _ => "Noura couldn't change the calendar. Try again.".to_owned(),
     }
 }
 
@@ -400,11 +805,11 @@ fn open(key: &str) {
 /// midnight in UTC.
 fn next_seven_days() -> Vec<Node> {
     let now = Now::read();
-    let entries = all_entries(&mut state())
-        .and_then(|all| within(all, &now, now.today, 7))
+    let entries = shown(&mut state())
+        .and_then(|all| within(all.entries, &now, now.today, 7))
         .map(|mut entries| {
             // A stable sort keeps the rules' order between equal starts.
-            entries.sort_by_key(|entry| now.instant(&entry.start));
+            entries.sort_by_key(|(entry, _)| now.instant(&entry.start));
             entries
         });
     let mut view = View::panel(SECTION, None);
@@ -422,13 +827,14 @@ fn next_seven_days() -> Vec<Node> {
         }
         Ok(entries) => {
             let list = view.list(card, "upcoming", "Next 7 days");
-            for entry in entries.iter().take(UPCOMING) {
-                view.item(
+            for (entry, color) in entries.iter().take(UPCOMING) {
+                let item = view.item(
                     list,
                     &entry.key,
                     &entry.title,
                     Some(&now.label(&entry.start)),
                 );
+                view.color(item, *color);
             }
         }
         Err(problem) => {

@@ -180,3 +180,41 @@ fn collect_texts(node: &ViewNode, texts: &mut Vec<String>) {
         collect_texts(child, texts);
     }
 }
+
+/// The page's sidebar section, which must draw.
+pub fn sidebar(app: &App) -> app_core::View {
+    app.plugin_sidebar(PAGE)
+        .expect("the Calendar page has a sidebar section")
+        .expect("the sidebar section draws")
+}
+
+/// A calendar in a sidebar list: its node ID, name, whether its box is
+/// checked, and its color.
+pub type Listed = (String, String, Option<bool>, Option<PluginColor>);
+
+/// The items of the sidebar's list `list`, top to bottom, or none when
+/// the sidebar has no such list.
+pub fn listed(app: &App, list: &str) -> Vec<Listed> {
+    let view = sidebar(app);
+    let Some(node) = find(view.root(), list) else {
+        return Vec::new();
+    };
+    node.children
+        .iter()
+        .filter_map(|item| match &item.kind {
+            ViewKind::Item {
+                label,
+                checked,
+                color,
+                ..
+            } => Some((item.id.clone(), label.clone(), *checked, *color)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Send `event` to the sidebar section and wait for the plugin to draw.
+pub fn send_sidebar(app: &mut App, event: PluginEvent) {
+    app.send_plugin_sidebar_event(PAGE, &event);
+    super::settle(app);
+}

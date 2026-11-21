@@ -12,6 +12,7 @@
 //! own tests check it against its range rules.
 
 use crate::support;
+use app_core::PluginColor;
 use serde_json::Value;
 use support::{
     FakeSystem, Fixture,
@@ -33,13 +34,21 @@ fn object_file(object_type: &str, suffix: &str, properties: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+/// An entry the grid shows, in the color of its type's built-in
+/// calendar.
 fn shown(id: &str, title: &str, start: &str, end: Option<&str>) -> Shown {
+    let color = match id.split('_').next() {
+        Some("task") => PluginColor::Orange,
+        Some("note") => PluginColor::Yellow,
+        Some("project") => PluginColor::Green,
+        _ => PluginColor::Gray,
+    };
     Shown {
         id: id.to_owned(),
         title: title.to_owned(),
         start: start.to_owned(),
         end: end.map(str::to_owned),
-        color: None,
+        color: Some(color),
     }
 }
 
