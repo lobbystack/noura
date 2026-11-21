@@ -260,11 +260,11 @@ fn a_scripted_search_gets_titles_addresses_and_snippets_and_the_chat_records_eac
     // sources it found.
     let lines = ai::lines(&chat.app);
     assert!(
-        lines.contains(&"Searched the web for \u{201c}tomato care\u{201d}.".to_owned()),
+        lines.contains(&"Searched the web for \u{201c}tomato care\u{201d}".to_owned()),
         "{lines:?}"
     );
     assert!(
-        lines.contains(&"Read https://garden.example.com/tomatoes.".to_owned()),
+        lines.contains(&"Read https://garden.example.com/tomatoes".to_owned()),
         "{lines:?}"
     );
     assert!(

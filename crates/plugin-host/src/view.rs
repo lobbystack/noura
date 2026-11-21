@@ -9,15 +9,16 @@
 //! form, a virtual list too long to draw, a board without columns, a
 //! calendar date or an entry's start or end of the wrong form, a list that
 //! selects an item it doesn't hold, a card with a checkbox or a warning,
-//! a form that requires anything but a text input inside it, or a view
-//! too large or deep to draw. [`check_rows`] does the same for
+//! a form that requires anything but a text input inside it, a composer
+//! that isn't a conversation's last node or holds anything but choices
+//! and buttons, or a view too large or deep to draw. [`check_rows`] does the same for
 //! the rows of a virtual list.
 
 use std::collections::HashSet;
 
 use crate::{
-    CalendarEntry, CalendarMode, Choice, Column, EditableStyle, HeadingLevel, Icon, Node, NodeKind,
-    PickerOption, Value, VirtualRow,
+    ActivityState, CalendarEntry, CalendarMode, Choice, Column, EditableStyle, HeadingLevel, Icon,
+    MessageAuthor, Node, NodeKind, PickerOption, Value, VirtualRow,
 };
 
 /// The most nodes a view may hold.
@@ -198,6 +199,35 @@ pub enum ViewKind {
         options: Vec<PickerOption>,
         chosen: Option<String>,
     },
+    /// A conversation, named for screen readers by `label`, whose children
+    /// it lays out like a panel's, the last of them maybe a composer.
+    Conversation {
+        label: String,
+    },
+    /// A message from `author`, named for screen readers by `label`, with
+    /// a quiet `detail` and a `warning` under it.
+    Message {
+        author: MessageAuthor,
+        label: String,
+        text: String,
+        detail: Option<String>,
+        warning: Option<String>,
+    },
+    /// A step along the way, in `state`, whose children show while it's
+    /// open.
+    Activity {
+        title: String,
+        state: ActivityState,
+    },
+    /// A box to write a message in, starting from `value`, with a send
+    /// button labeled `send`, or a stop button labeled `stop` while that's
+    /// set. Its children are its choice inputs and buttons.
+    Composer {
+        label: String,
+        value: String,
+        send: String,
+        stop: Option<String>,
+    },
 }
 
 /// The narrowest and widest a split's first pane may be, in points.
@@ -359,6 +389,10 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Editable(_) => "editable text",
         NodeKind::DatePicker(_) => "date picker",
         NodeKind::Picker(_) => "picker",
+        NodeKind::Conversation(_) => "conversation",
+        NodeKind::Message(_) => "message",
+        NodeKind::Activity(_) => "activity",
+        NodeKind::Composer(_) => "composer",
     }
 }
 
@@ -401,6 +435,20 @@ fn check_node(node: &Node) -> Result<(), ViewError> {
         },
         NodeKind::Picker(picker) if blank(&picker.label) => Err(unlabeled()),
         NodeKind::Picker(picker) => check_picker(id, &picker.options, picker.chosen.as_deref()),
+        NodeKind::Conversation(label) if blank(label) => Err(unlabeled()),
+        NodeKind::Message(message) if blank(&message.label) => Err(unlabeled()),
+        NodeKind::Activity(activity) if blank(&activity.title) => Err(unlabeled()),
+        NodeKind::Composer(composer) if blank(&composer.label) => Err(unlabeled()),
+        NodeKind::Composer(composer) if blank(&composer.send) => {
+            invalid(format!("The composer {id} has no send label."))
+        }
+        NodeKind::Composer(composer) if composer.stop.as_deref().is_some_and(blank) => invalid(
+            format!("The composer {id} has a stop button without a label."),
+        ),
+        NodeKind::Conversation(_)
+        | NodeKind::Message(_)
+        | NodeKind::Activity(_)
+        | NodeKind::Composer(_) => Ok(()),
         NodeKind::Button(label)
         | NodeKind::Menu(label)
         | NodeKind::Board(label)
@@ -634,9 +682,39 @@ fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
     let children = parent.children.iter().map(|&child| &nodes[child as usize]);
     let misplaced = |message: String| Err(ViewError::Misplaced(message));
     match &parent.kind {
-        NodeKind::Panel(_) | NodeKind::Form(_) => {
+        NodeKind::Panel(_) | NodeKind::Form(_) | NodeKind::Activity(_) => {
             for child in children {
                 check_place(child, Some(parent))?;
+            }
+            Ok(())
+        }
+        // A conversation's composer stays at the bottom, under the rest.
+        NodeKind::Conversation(_) => {
+            let last = parent.children.len().saturating_sub(1);
+            for (index, child) in children.enumerate() {
+                if matches!(child.kind, NodeKind::Composer(_)) && index != last {
+                    return misplaced(format!(
+                        "The conversation {id} holds the composer {} before its last node.",
+                        child.id
+                    ));
+                }
+                check_place(child, Some(parent))?;
+            }
+            Ok(())
+        }
+        // A composer holds the choices and buttons under its text.
+        NodeKind::Composer(_) => {
+            for child in children {
+                let choice = matches!(
+                    &child.kind,
+                    NodeKind::Input(input) if matches!(input.value, Value::Choice(_))
+                );
+                if !matches!(child.kind, NodeKind::Button(_)) && !choice {
+                    return misplaced(format!(
+                        "The {kind} {id} holds {}, which isn't a button or a choice.",
+                        child.id
+                    ));
+                }
             }
             Ok(())
         }
@@ -806,6 +884,7 @@ fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
         }
         NodeKind::Text(_)
         | NodeKind::Markdown(_)
+        | NodeKind::Message(_)
         | NodeKind::VirtualList(_)
         | NodeKind::Input(_)
         | NodeKind::NameField(_)
@@ -846,10 +925,14 @@ fn build(
     if depth > MAX_DEPTH {
         return Err(ViewError::TooDeep);
     }
-    let is_form = matches!(node.kind, NodeKind::Form(_));
+    let is_form = matches!(node.kind, NodeKind::Form(_) | NodeKind::Composer(_));
     if is_form && in_form {
+        let (kind, outer) = match node.kind {
+            NodeKind::Form(_) => ("form", "another form"),
+            _ => ("composer", "a form"),
+        };
         return Err(ViewError::Misplaced(format!(
-            "The form {} sits inside another form.",
+            "The {kind} {} sits inside {outer}.",
             node.id
         )));
     }
@@ -955,6 +1038,26 @@ fn build(
             label: picker.label.clone(),
             options: picker.options.clone(),
             chosen: picker.chosen.clone(),
+        },
+        NodeKind::Conversation(label) => ViewKind::Conversation {
+            label: label.clone(),
+        },
+        NodeKind::Message(message) => ViewKind::Message {
+            author: message.author,
+            label: message.label.clone(),
+            text: message.text.clone(),
+            detail: message.detail.clone().filter(|detail| !blank(detail)),
+            warning: message.warning.clone().filter(|warning| !blank(warning)),
+        },
+        NodeKind::Activity(activity) => ViewKind::Activity {
+            title: activity.title.clone(),
+            state: activity.state,
+        },
+        NodeKind::Composer(composer) => ViewKind::Composer {
+            label: composer.label.clone(),
+            value: composer.value.clone(),
+            send: composer.send.clone(),
+            stop: composer.stop.clone(),
         },
     };
     let children: Vec<ViewNode> = node

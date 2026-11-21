@@ -9,7 +9,8 @@ use std::{
 };
 
 use app_core::{
-    AiProviderInput, App, Field, InputValue, PluginEvent, Submission, Target, ViewKind, ViewNode,
+    ActivityState, AiProviderInput, App, Field, InputValue, PluginEvent, Submission, Target,
+    ViewKind, ViewNode,
 };
 use local_core::{
     AiContentPart, AiProviderEventStream, AiProviderStreamEvent, AiStopReason, AiStreamer,
@@ -297,6 +298,22 @@ fn collect(node: &ViewNode, lines: &mut Vec<String>) {
             lines.push(title.clone());
             lines.extend(detail.clone());
         }
+        // A message's name for screen readers, such as the model that
+        // wrote it, then its text and the lines under it.
+        ViewKind::Message {
+            label,
+            text,
+            detail,
+            warning,
+            ..
+        } => {
+            lines.push(label.clone());
+            lines.push(format!("md: {text}"));
+            lines.extend(detail.clone());
+            lines.extend(warning.clone());
+        }
+        // A step's title, then what it shows once open.
+        ViewKind::Activity { title, .. } => lines.push(title.clone()),
         _ => {}
     }
     for child in &node.children {
@@ -313,8 +330,13 @@ pub fn buttons(app: &App) -> Vec<String> {
 }
 
 fn buttons_under(node: &ViewNode, found: &mut Vec<String>) {
-    if let ViewKind::Button { label } = &node.kind {
-        found.push(label.clone());
+    match &node.kind {
+        ViewKind::Button { label } => found.push(label.clone()),
+        // The message box's stop button, while an answer comes in.
+        ViewKind::Composer {
+            stop: Some(label), ..
+        } => found.push(label.clone()),
+        _ => {}
     }
     for child in &node.children {
         buttons_under(child, found);
@@ -349,24 +371,39 @@ pub fn chat_ids(app: &App) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The steps the page shows, such as tool calls, as their titles and
+/// states, top to bottom.
+pub fn activities(app: &App) -> Vec<(String, ActivityState)> {
+    fn under(node: &ViewNode, found: &mut Vec<(String, ActivityState)>) {
+        if let ViewKind::Activity { title, state } = &node.kind {
+            found.push((title.clone(), *state));
+        }
+        for child in &node.children {
+            under(child, found);
+        }
+    }
+    let view = page(app);
+    let mut found = Vec::new();
+    under(view.root(), &mut found);
+    found
+}
+
+/// Press the message box's stop button.
+pub fn stop(app: &mut App) {
+    press(app, "composer");
+}
+
 /// Write `text` in the message box and send it to the provider `provider`.
 pub fn send(app: &mut App, text: &str, provider: &str) {
     let view = page(app);
-    let composer = find(view.root(), "composer").expect("the message box shows");
-    let input = composer
-        .children
-        .iter()
-        .find(|child| child.id.starts_with("message-"))
-        .expect("the message box has a message input")
-        .id
-        .clone();
+    find(view.root(), "composer").expect("the message box shows");
     app.send_plugin_event(
         PAGE,
         &PluginEvent::Submitted(Submission {
             node: "composer".to_owned(),
             fields: vec![
                 Field {
-                    node: input,
+                    node: "composer".to_owned(),
                     value: InputValue::Multiline(text.to_owned()),
                 },
                 Field {

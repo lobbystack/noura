@@ -612,6 +612,7 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
     let mut clicked = None;
     let mut double_clicked = None;
     let mut right_clicked = None;
+    let mut more_clicked = None;
     let mut gained = None;
     let mut chosen = None;
     let mut menu_closed = false;
@@ -678,6 +679,20 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
         }
         if let Some(field) = row.name_field {
             name_field_in(ui, rect, row, field, kit);
+        }
+        // A list item's menu also opens from a button at the row's end,
+        // which shows while you point at the row or its menu is open.
+        if let Some(menu_node) = row
+            .menu
+            .filter(|_| columns.is_none() && row.name_field.is_none())
+        {
+            let open = state.menu.as_ref().is_some_and(|open| open.row == row.id);
+            if open || ui.rect_contains_pointer(rect) {
+                let sidebar = matches!(kit.place, super::Place::Sidebar(_));
+                if let Some(at) = more_button(ui, rect, id, menu_node, sidebar, &palette) {
+                    more_clicked = Some((index, Some(at)));
+                }
+            }
         }
         if response.clicked() {
             clicked = Some(index);
@@ -788,7 +803,10 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
             }));
         }
     }
-    let menu_at = open_menu.map(|index| (index, None)).or(right_clicked);
+    let menu_at = open_menu
+        .map(|index| (index, None))
+        .or(right_clicked)
+        .or(more_clicked);
     if let Some((index, at)) = menu_at
         && let Some((_, row)) = rows_by_index.iter().find(|(i, _)| *i == index)
         && row.menu.is_some()
@@ -947,6 +965,56 @@ fn name_field_in(ui: &mut Ui, rect: Rect, row: &Row, field: &ViewNode, kit: &mut
         .max_rect(area);
     let mut field_ui = ui.new_child(builder);
     super::form::name_field(&mut field_ui, field, label, value, kit);
+}
+
+/// The button at the end of the row at `rect` that opens its menu `menu`,
+/// over the row's fill. Returns where the menu opens once it's pressed.
+fn more_button(
+    ui: &mut Ui,
+    rect: Rect,
+    row_id: Id,
+    menu: &ViewNode,
+    sidebar: bool,
+    palette: &Palette,
+) -> Option<Pos2> {
+    let ViewKind::Menu { label } = &menu.kind else {
+        return None;
+    };
+    let button =
+        Rect::from_center_size(pos2(rect.right() - 16.0, rect.center().y), vec2(24.0, 22.0));
+    // The pointer's way to the menu, which the keyboard reaches from the
+    // row, so it takes no stop in the Tab order. Its name says what it
+    // is; the menu it opens is its description.
+    let response = ui.interact(button, row_id.with("more"), Sense::CLICK);
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, "More actions"));
+    let menu_label = label.clone();
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_has_popup(HasPopup::Menu);
+        node.set_description(menu_label);
+    });
+    if ui.is_rect_visible(button) {
+        let painter = ui.painter();
+        let row_fill = if sidebar {
+            palette.sidebar_accent
+        } else {
+            palette.accent
+        };
+        let fill = if response.hovered() {
+            crate::common::mix(row_fill, palette.foreground, 0.08)
+        } else {
+            row_fill
+        };
+        painter.rect_filled(button, radius(0.6), fill);
+        let square = Rect::from_center_size(button.center(), vec2(16.0, 16.0));
+        crate::icons::paint(
+            painter,
+            crate::icons::MORE,
+            square,
+            palette.muted_foreground,
+            false,
+        );
+    }
+    response.clicked().then(|| button.left_bottom())
 }
 
 /// A row's background, focus ring and, for a list, its label and detail,

@@ -14,6 +14,7 @@
 
 mod board;
 mod calendar;
+mod conversation;
 mod drag;
 mod edit;
 mod form;
@@ -159,6 +160,9 @@ struct Kit<'a> {
     /// The page's heading has a detail line, such as the month a
     /// calendar shows, so a calendar grid adds no title of its own.
     page_detail: bool,
+    /// The node being drawn sits in a conversation, where text is a quiet
+    /// line and buttons are small.
+    quiet: bool,
 }
 
 impl Kit<'_> {
@@ -322,6 +326,7 @@ fn draw(
         depth: 0,
         inline: false,
         page_detail: false,
+        quiet: false,
     };
     ui.push_id(("plugin-view", window, place), |ui| {
         node(ui, view.root(), &mut kit);
@@ -460,6 +465,7 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
                 );
             });
         }
+        ViewKind::Text(text) if kit.quiet => conversation::quiet_line(ui, text),
         ViewKind::Text(text) => {
             ui.label(text);
         }
@@ -487,6 +493,23 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
         }
         ViewKind::Board { label } => board::board(ui, node, label, kit),
         ViewKind::Split { first_width } => split(ui, node, *first_width, kit),
+        ViewKind::Conversation { label } => conversation::conversation(ui, node, label, kit),
+        ViewKind::Message { .. } => conversation::message(ui, node, kit),
+        ViewKind::Activity { .. } => conversation::activity(ui, node, kit),
+        ViewKind::Composer {
+            label,
+            value,
+            send,
+            stop,
+        } => {
+            let parts = conversation::ComposerParts {
+                label,
+                value,
+                send,
+                stop: stop.as_deref(),
+            };
+            conversation::composer(ui, node, &parts, kit);
+        }
         ViewKind::Calendar { label, mode, date } => {
             calendar::calendar(ui, node, label, *mode, date, kit);
         }

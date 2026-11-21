@@ -62,10 +62,11 @@ pub use bindings::noura::plugin::speech::{
 };
 pub(crate) use bindings::noura::plugin::types::Error as CallError;
 pub use bindings::noura::plugin::ui::{
-    Calendar, CalendarEntry, CalendarMode, Check, Choice, Color, Column, ColumnPress, DatePicker,
-    Editable, EditableStyle, EmptyState, Event, Field, Form, Heading, HeadingLevel, Icon, Input,
-    Item, ItemList, MenuItem, Move, NameField, Naming, Node, NodeKind, Picker, PickerOption,
-    SortOrder, Submission, Table, Target, Value, VirtualList, VirtualRow,
+    Activity, ActivityState, Calendar, CalendarEntry, CalendarMode, Check, Choice, Color, Column,
+    ColumnPress, Composer, DatePicker, Editable, EditableStyle, EmptyState, Event, Field, Form,
+    Heading, HeadingLevel, Icon, Input, Item, ItemList, MenuItem, Message, MessageAuthor, Move,
+    NameField, Naming, Node, NodeKind, Picker, PickerOption, SortOrder, Submission, Table, Target,
+    Value, VirtualList, VirtualRow,
 };
 use bindings::noura::plugin::{
     ai, clock, command_calls, global_shortcuts, menu_bar, navigation, network, notifications,

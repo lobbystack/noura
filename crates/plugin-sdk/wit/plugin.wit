@@ -1235,6 +1235,70 @@ interface ui {
     chosen: option<string>,
   }
 
+  // Who wrote a message in a conversation.
+  enum message-author {
+    // You. Your messages show at the end of the line, in a bubble, as you
+    // wrote them.
+    you,
+    // Anyone or anything else, such as a model. Their messages show at
+    // the start of the line, as Markdown, with no bubble.
+    other,
+  }
+
+  // A message in a conversation.
+  record message {
+    author: message-author,
+    // Names the message for screen readers, such as `You` or the model
+    // that wrote it.
+    label: string,
+    // Yours as you wrote it, with its line breaks kept; any other as
+    // Markdown. A message from someone else with no text yet, as while an
+    // answer starts, shows that more is coming.
+    text: string,
+    // A quiet line under the message, such as `Stopped.`
+    detail: option<string>,
+    // A short problem under the message, such as why an answer failed,
+    // in the color Noura shows problems in.
+    warning: option<string>,
+  }
+
+  // How far a step in a conversation has come.
+  enum activity-state {
+    // It waits, for you or for its turn.
+    waiting,
+    running,
+    done,
+    failed,
+    // You said no to it, so it didn't run.
+    denied,
+    // It stopped before it finished.
+    stopped,
+  }
+
+  // A step taken along the way in a conversation, such as a tool call or a
+  // model's reasoning.
+  record activity {
+    // What the step is or did, such as `Searched the web for seeds`.
+    title: string,
+    state: activity-state,
+  }
+
+  // A box to write a message in.
+  record composer {
+    // Names the box for screen readers, and shows in it while it's empty.
+    label: string,
+    // What the box holds when it first draws. What you type stays until
+    // the plugin draws the box with a value other than the one it drew
+    // before, or until you send it.
+    value: string,
+    // The send button's label, which screen readers read.
+    send: string,
+    // While set, something is under way, such as an answer coming in: a
+    // stop button with this label takes the send button's place, and a
+    // press sends `pressed` naming the composer. Nothing sends meanwhile.
+    stop: option<string>,
+  }
+
   variant node-kind {
     // Lays out its children from top to bottom. The label names the panel
     // for screen readers.
@@ -1322,6 +1386,32 @@ interface ui {
     // options. Pickers, date pickers and buttons in a row line up on one
     // line.
     picker(picker),
+    // A conversation, named for screen readers by this label: a column at
+    // most 720 points wide in the middle of the page, which takes the rest
+    // of the page and scrolls on its own. It stays at its end as it grows,
+    // until you scroll up; a button then takes you back down. Its children
+    // go where a panel's go, and its last child may be a composer, which
+    // stays at the bottom of the page under the column. While it holds
+    // only empty states and a composer, they show together in the middle
+    // of the page. Text in it shows as a quiet line, and buttons as small
+    // ones, such as Resume or a suggested reply.
+    conversation(string),
+    // A message, as a conversation shows it.
+    message(message),
+    // A step taken along the way, such as a tool call: a quiet row with
+    // its title and its state. A row with children opens and closes on a
+    // click, and shows its children, which go where a panel's go, while
+    // open. It starts closed.
+    activity(activity),
+    // A box to write a message in: a text input of several lines with a
+    // send button at its end, and its children, choice inputs and
+    // buttons, in a row under the text. Each choice shows as a menu of its
+    // options. Enter or the send button sends `submitted` naming the
+    // composer, once the box holds more than spaces, with what it holds as
+    // a multiline value under the composer's own node ID, then the value
+    // of each choice input inside it. Shift-Enter starts a new line. The
+    // box empties once it sends. It can't sit in a form.
+    composer(composer),
   }
 
   record node {
@@ -1332,8 +1422,10 @@ interface ui {
     // they lay out, lists their items, tables their rows, boards their
     // columns, columns their cards, calendars their entries, menus their
     // items, headings their buttons and choices, empty states their
-    // buttons, and splits their two panels; a row, a card or a button may
-    // hold one menu, and an item one menu or one name field.
+    // buttons, splits their two panels, conversations and activities the
+    // nodes they lay out, and composers their choices and buttons; a row,
+    // a card or a button may hold one menu, and an item one menu or one
+    // name field.
     children: list<u32>,
   }
 
@@ -1378,9 +1470,10 @@ interface ui {
   }
 
   record submission {
-    // The form's node ID.
+    // The form's or the composer's node ID.
     node: string,
-    // Every input inside the form, in view order.
+    // Every input inside the form, in view order, or the composer's text
+    // and then its choices.
     fields: list<field>,
   }
 
@@ -1405,7 +1498,8 @@ interface ui {
 
   // Something you did in a view.
   variant event {
-    // The button with this node ID was pressed.
+    // The button with this node ID was pressed, or a composer's stop
+    // button, naming the composer.
     pressed(string),
     // An item, a row, a card or an entry was selected, by click or the
     // keyboard.
@@ -1417,7 +1511,7 @@ interface ui {
     sorted(column-press),
     // An input's value changed.
     changed(field),
-    // A form was submitted.
+    // A form or a composer was submitted.
     submitted(submission),
     // The menu item with this node ID was chosen.
     chosen(string),

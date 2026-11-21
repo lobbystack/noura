@@ -10,7 +10,7 @@
 use crate::support;
 use std::{sync::Arc, time::Duration};
 
-use app_core::App;
+use app_core::{ActivityState, App};
 use local_core::AiToolCall;
 use support::{
     FakeSystem, Fixture,
@@ -397,9 +397,11 @@ fn stop_while_noura_asks_denies_the_call_and_ends_the_run() {
     tooled.send("Add a task to water the tomatoes", 0);
     tooled.create(0, "call_1");
     ai::tool_prompt(&mut tooled.app);
-    assert!(ai::lines(&tooled.app).contains(&"Waiting for your answer on a tool call.".to_owned()));
+    ai::wait_until(&mut tooled.app, "the call waits for you", |app| {
+        ai::activities(app) == [("create from Tasks".to_owned(), ActivityState::Waiting)]
+    });
 
-    ai::press(&mut tooled.app, "stop");
+    ai::stop(&mut tooled.app);
 
     assert_eq!(
         tooled.result("call_1"),

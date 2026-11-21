@@ -84,7 +84,12 @@ pub(crate) fn show(ui: &mut Ui, markdown: &str) -> Option<String> {
         .ctx()
         .memory_mut(|memory| memory.caches.cache::<Parsed>().get(markdown).clone());
     let mut clicked = None;
-    draw_blocks(ui, &blocks, &mut clicked);
+    ui.scope(|ui| {
+        // Each line is as tall as its text, so a list's marker sits on its
+        // item's first line and the items stack as closely as paragraphs.
+        ui.spacing_mut().interact_size.y = 0.0;
+        draw_blocks(ui, &blocks, &mut clicked);
+    });
     clicked
 }
 
@@ -305,6 +310,14 @@ fn draw_runs(ui: &mut Ui, runs: &[Run], size: f32, heading: bool, clicked: &mut 
         ui.spacing_mut().item_spacing.x = 0.0;
         for run in runs {
             let mut text = RichText::new(&run.text).size(size);
+            if (run.strong || heading) && !run.code {
+                // Bold reads as the semibold weight, where the font has one.
+                text = text.font(crate::theme::font(
+                    ui.ctx(),
+                    size,
+                    crate::theme::Weight::Semibold,
+                ));
+            }
             if run.strong || heading {
                 text = text.strong();
             }
