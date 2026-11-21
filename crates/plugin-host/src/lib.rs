@@ -35,13 +35,13 @@ pub use error::{InstallError, InstallErrorCode};
 pub use host::{Candidate, CodeSource, LoadedPlugin, PluginHost};
 pub use instance::trap_foreign_imports;
 pub use instance::{
-    AiChat, AiFailure, AiMessage, AiMessageKind, AiMessageStatus, AiProvider, AiRequest,
-    AiRetention, AiRun, AiRunStatus, AiToolCall, AiToolDefinition, AiToolResult, AiWebPage,
-    AiWebResult, Calendar, CalendarEntry, CalendarMode, Check, Choice, Column, ColumnPress,
-    Command, EmptyState, Event, Field, Form, Heading, HeadingLevel, Icon, InboxSection, Input,
-    Item, ItemList, MenuItem, Move, NameField, Naming, Node, NodeKind, ObjectType, Page, Placement,
-    PluginError, Registration, Services, SettingsSection, SortOrder, Submission, Table, Target,
-    Tool, Value, VirtualList, VirtualRow,
+    AiChat, AiFailure, AiMessage, AiMessageKind, AiMessageStatus, AiOrb, AiOrbChanges, AiOrbRun,
+    AiOrbRunStatus, AiOrbStart, AiOrbState, AiProvider, AiRequest, AiRetention, AiRun, AiRunStatus,
+    AiToolCall, AiToolDefinition, AiToolResult, AiWebPage, AiWebResult, Calendar, CalendarEntry,
+    CalendarMode, Check, Choice, Column, ColumnPress, Command, EmptyState, Event, Field, Form,
+    Heading, HeadingLevel, Icon, InboxSection, Input, Item, ItemList, MenuItem, Move, NameField,
+    Naming, Node, NodeKind, ObjectType, Page, Placement, PluginError, Registration, Services,
+    SettingsSection, SortOrder, Submission, Table, Target, Tool, Value, VirtualList, VirtualRow,
 };
 pub use instance::{
     AiCompletion, AiCompletionRequest, KernelEvent, MenuBarEntry, MenuBarEntryKind, MicrophoneUse,
@@ -50,9 +50,9 @@ pub use instance::{
     SpeechPreferences, SpeechSegment, SpeechSource,
 };
 pub use manifest::{
-    Capability, Grant, INTERFACE_VERSIONS, MANIFEST_FILE, MODIFIERS, NAMED_KEYS, Platform,
-    PluginManifest, ShortcutDeclaration, keys_from_label, keys_label, keys_label_on, read_manifest,
-    valid_command_id, valid_keys, valid_plugin_id,
+    Capability, EventDeclaration, Grant, INTERFACE_VERSIONS, KERNEL_PLUGIN_ID, MANIFEST_FILE,
+    MODIFIERS, NAMED_KEYS, Platform, PluginManifest, ShortcutDeclaration, keys_from_label,
+    keys_label, keys_label_on, read_manifest, valid_command_id, valid_keys, valid_plugin_id,
 };
 pub use memory::{process_memory, release_free_memory};
 pub use object_types::{KERNEL_TYPES, ObjectTypes, PLUGIN_TYPES, SERVICE_WRITTEN_TYPES, TypeError};
@@ -64,7 +64,7 @@ pub use runtime::{Backend, Limits, StoreLimiter, wasmtime_config};
 pub use services::{
     AiChats, ClockReading, DeviceClock, Entry, EntryKind, FileRead, Listed, MenuBarService,
     Navigation, NewObject, NotificationService, ObjectChanges, ObjectRead, ObjectRecord,
-    PasteService, PropertyProblem, ServiceError, ShortcutService, SpeechService, WorkspaceObjects,
-    WorkspacePath, WorkspaceReads,
+    PasteService, PluginEvents, PropertyProblem, ServiceError, ShortcutService, SpeechService,
+    WorkspaceObjects, WorkspacePath, WorkspaceReads,
 };
 pub use view::{MAX_DEPTH, MAX_NODES, MAX_ROWS, View, ViewError, ViewKind, ViewNode, check_rows};

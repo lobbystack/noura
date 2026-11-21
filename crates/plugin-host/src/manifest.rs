@@ -99,7 +99,29 @@ pub enum Capability {
     MenuBarItems,
     /// Show notifications in the system's notification center.
     Notifications,
+    /// Tell Noura when these events happen, so the Orbs whose triggers
+    /// name them start.
+    Events {
+        #[serde(default)]
+        events: Vec<EventDeclaration>,
+    },
 }
+
+/// An event a plugin declares under `events`. An Orb's trigger names it
+/// as `<plugin>.<id>`, such as `transcription.finished`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventDeclaration {
+    /// Lowercase letters, digits and hyphens, unique within the plugin.
+    pub id: String,
+    /// What happened, as the trigger list shows it, such as
+    /// `Transcription ends`.
+    pub title: String,
+}
+
+/// The plugin ID that names Noura's own tools, such as `noura__remember`
+/// for Orbs. No plugin may take it.
+pub const KERNEL_PLUGIN_ID: &str = "noura";
 
 /// A keyboard shortcut a plugin declares under `global-shortcuts`. You can
 /// change its keys in Settings; the declaration gives the first ones.
@@ -181,6 +203,7 @@ impl Capability {
             Self::Paste => "paste",
             Self::MenuBarItems => "menu-bar-items",
             Self::Notifications => "notifications",
+            Self::Events { .. } => "events",
         }
     }
 
@@ -254,7 +277,25 @@ impl Capability {
             Self::Paste => whole("Paste text into the app you're typing in."),
             Self::MenuBarItems => whole("Add items to Noura's menu bar menu."),
             Self::Notifications => whole("Show notifications."),
+            Self::Events { events } => {
+                let titles: Vec<&str> = events.iter().map(|event| event.title.as_str()).collect();
+                whole(&format!(
+                    "Tell Noura when these happen, so your Orbs can act on them: {}.",
+                    titles.join(", ")
+                ))
+            }
         }
+    }
+
+    /// The events `capabilities` declares.
+    pub fn events(capabilities: &[Self]) -> Vec<EventDeclaration> {
+        capabilities
+            .iter()
+            .flat_map(|capability| match capability {
+                Self::Events { events } => events.clone(),
+                _ => Vec::new(),
+            })
+            .collect()
     }
 
     /// The shortcuts `capabilities` declares.
@@ -329,6 +370,11 @@ impl Capability {
                     ) => shortcuts
                         .iter()
                         .any(|shortcut| !known.contains(shortcut))
+                        .then(|| capability.clone()),
+                    // So does a new event.
+                    (Self::Events { events }, Self::Events { events: known }) => events
+                        .iter()
+                        .any(|event| !known.contains(event))
                         .then(|| capability.clone()),
                     _ => None,
                 }
@@ -513,6 +559,7 @@ struct RawCapability {
     hosts: Option<Spanned<Vec<Spanned<String>>>>,
     targets: Option<Spanned<Vec<Spanned<String>>>>,
     shortcuts: Option<Spanned<Vec<Spanned<ShortcutDeclaration>>>>,
+    events: Option<Spanned<Vec<Spanned<EventDeclaration>>>>,
 }
 
 impl RawManifest {
@@ -521,6 +568,12 @@ impl RawManifest {
             located(InstallErrorCode::InvalidManifest, text, Some(span), message)
         };
         let id = self.id.get_ref();
+        if id == KERNEL_PLUGIN_ID {
+            return Err(invalid(
+                self.id.span(),
+                format!("The plugin ID \u{201c}{id}\u{201d} names Noura's own tools."),
+            ));
+        }
         if !valid_plugin_id(id) {
             return Err(invalid(
                 self.id.span(),
@@ -695,6 +748,62 @@ impl RawCapability {
         Ok(shortcuts)
     }
 
+    /// The events an `events` capability declares: at least one, each with
+    /// a valid ID and a title, and no ID twice.
+    fn events(&self, text: &str) -> Result<Vec<EventDeclaration>, InstallError> {
+        let invalid = |span: Range<usize>, message: String| {
+            located(InstallErrorCode::InvalidManifest, text, Some(span), message)
+        };
+        let Some(listed) = &self.events else {
+            return Err(invalid(
+                self.name.span(),
+                "The events capability needs events.".to_owned(),
+            ));
+        };
+        if listed.get_ref().is_empty() {
+            return Err(invalid(
+                listed.span(),
+                "The events capability needs at least one event.".to_owned(),
+            ));
+        }
+        let mut events: Vec<EventDeclaration> = Vec::new();
+        for event in listed.get_ref() {
+            let span = event.span();
+            let event = event.get_ref();
+            if !valid_plugin_id(&event.id) {
+                return Err(invalid(
+                    span,
+                    format!(
+                        "The event ID \u{201c}{}\u{201d} must start with a lowercase letter and \
+                         hold only lowercase letters, digits and hyphens.",
+                        event.id
+                    ),
+                ));
+            }
+            let title = event.title.trim();
+            if title.is_empty()
+                || title.chars().count() > MAX_NAME_LENGTH
+                || title.chars().any(char::is_control)
+            {
+                return Err(invalid(
+                    span,
+                    format!("An event's title must be 1 to {MAX_NAME_LENGTH} characters of text."),
+                ));
+            }
+            if events.iter().any(|known| known.id == event.id) {
+                return Err(invalid(
+                    span,
+                    format!("{MANIFEST_FILE} lists the event {} twice.", event.id),
+                ));
+            }
+            events.push(EventDeclaration {
+                id: event.id.clone(),
+                title: title.to_owned(),
+            });
+        }
+        Ok(events)
+    }
+
     fn check(&self, text: &str) -> Result<Capability, InstallError> {
         let name = self.name.get_ref().as_str();
         let misplaced = |field: &str, span: Range<usize>| {
@@ -719,6 +828,11 @@ impl RawCapability {
             && let Some(shortcuts) = &self.shortcuts
         {
             return Err(misplaced("shortcuts", shortcuts.span()));
+        }
+        if name != "events"
+            && let Some(events) = &self.events
+        {
+            return Err(misplaced("events", events.span()));
         }
         match name {
             "workspace-read" => Ok(Capability::WorkspaceRead),
@@ -749,6 +863,9 @@ impl RawCapability {
             "notifications" => Ok(Capability::Notifications),
             "global-shortcuts" => Ok(Capability::GlobalShortcuts {
                 shortcuts: self.shortcuts(text)?,
+            }),
+            "events" => Ok(Capability::Events {
+                events: self.events(text)?,
             }),
             other => Err(located(
                 InstallErrorCode::UnknownCapability,

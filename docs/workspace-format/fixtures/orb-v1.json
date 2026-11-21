@@ -281,6 +281,7 @@
     { "answer": "HEARTBEAT_OK", "quiet": true },
     { "answer": "  HEARTBEAT_OK\n", "quiet": true },
     { "answer": "**HEARTBEAT_OK**", "quiet": true },
+    { "answer": "NO_REPLY", "quiet": true },
     { "answer": "HEARTBEAT_OK. I made one task.", "quiet": false },
     { "answer": "Nothing new.", "quiet": false }
   ],

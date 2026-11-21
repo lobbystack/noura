@@ -18,6 +18,7 @@
     - interface `noura:plugin/paste@0.1.0`
     - interface `noura:plugin/menu-bar@0.1.0`
     - interface `noura:plugin/notifications@0.1.0`
+    - interface `noura:plugin/events@0.1.0`
     - interface `noura:plugin/ui@0.1.0`
  - Exports:
     - interface `noura:plugin/view@0.1.0`
@@ -839,6 +840,10 @@ A chat, as its `chat.md` holds it.
   written yet.
 
 - <a id="chat.retention"></a>`retention`: [`retention`](#retention)
+- <a id="chat.orb"></a>`orb`: option<`string`>
+  <p>The Orb whose thread the chat is, or none for a plain chat, which
+  belongs to the default Orb.
+
 
 #### <a id="message_kind"></a>`enum message-kind`
 
@@ -1021,6 +1026,164 @@ A message you sent and its answer, as it streams in.
 
 - <a id="run.tool_calls"></a>`tool-calls`: list<[`tool-call`](#tool_call)>
 - <a id="run.failure"></a>`failure`: option<[`failure`](#failure)>
+
+#### <a id="orb_state"></a>`enum orb-state`
+
+Orbs. An Orb is a named agent that lives in the workspace as files:
+`Orbs/<name>/<name>.md`, whose body holds your instructions and whose
+properties hold its look, its provider, its tools and its triggers,
+beside `Memory.md`, `Heartbeat.md` and a `Runs` folder with one record
+per run. Each Orb keeps one ongoing thread, a chat that every run adds
+to. An Orb runs the tools its file lists without asking, whether you
+wrote to it or one of its triggers started it, and Noura records each
+call in its thread and in the run's record. Triggers fire only while
+Noura is open on this device. `read-run` and `stop` reach every Orb
+run, whichever plugin or trigger started it.
+How an Orb stands.
+
+##### Enum Cases
+
+- <a id="orb_state.idle"></a>`idle`
+  <p>Nothing runs now.
+
+- <a id="orb_state.working"></a>`working`
+  <p>A run is in progress.
+
+- <a id="orb_state.paused"></a>`paused`
+  <p>You paused it, so its triggers don't fire.
+
+- <a id="orb_state.held"></a>`held`
+  <p>You haven't used Noura in a while, so Noura holds every Orb's
+  triggers until you answer `keep-orbs-running`.
+
+- <a id="orb_state.problem"></a>`problem`
+  <p>Its file breaks the workspace format, so it doesn't run. `problem`
+  says why.
+
+
+#### <a id="orb"></a>`record orb`
+
+An Orb, as its file holds it.
+
+##### Record Fields
+
+- <a id="orb.id"></a>`id`: `string`
+- <a id="orb.title"></a>`title`: `string`
+  <p>Its name: the file's name without `.md`.
+
+- <a id="orb.revision"></a>`revision`: `string`
+  <p>The revision of its file, which `update-orb`, `set-orb-paused` and
+  `delete-orb` carry. Empty for the default Orb.
+
+- <a id="orb.avatar"></a>`avatar`: option<`string`>
+  <p>An emoji or a few letters.
+
+- <a id="orb.color"></a>`color`: option<`string`>
+  <p>A palette color: `red`, `orange`, `yellow`, `green`, `blue`,
+  `purple`, `brown` or `gray`.
+
+- <a id="orb.state"></a>`state`: [`orb-state`](#orb_state)
+- <a id="orb.thread"></a>`thread`: option<`string`>
+  <p>The ID of its thread, once its first message went out.
+
+- <a id="orb.tools"></a>`tools`: list<`string`>
+  <p>The tools it runs without asking, as its file names them, such as
+  `tasks__create` or `tasks__*`.
+
+- <a id="orb.triggers"></a>`triggers`: list<`string`>
+  <p>Its triggers, as its file names them, such as `event
+  transcription.finished` or `schedule 30 8 * * 1-5`.
+
+- <a id="orb.problem"></a>`problem`: option<`string`>
+  <p>Why it doesn't run, for an Orb in the `problem` state, as the
+  property that fails and its code, such as `triggers:
+  invalid_trigger`.
+
+
+#### <a id="orb_start"></a>`enum orb-start`
+
+What started a run of an Orb.
+
+##### Enum Cases
+
+- <a id="orb_start.you"></a>`you`
+  <p>You wrote to the Orb, or chose Run now.
+
+- <a id="orb_start.schedule"></a>`schedule`
+  <p>A schedule trigger's time came.
+
+- <a id="orb_start.event"></a>`event`
+  <p>A plugin's event that a trigger names happened.
+
+
+#### <a id="orb_run_status"></a>`enum orb-run-status`
+
+How a run of an Orb stands.
+
+##### Enum Cases
+
+- <a id="orb_run_status.running"></a>`running`
+- <a id="orb_run_status.succeeded"></a>`succeeded`
+- <a id="orb_run_status.failed"></a>`failed`
+- <a id="orb_run_status.interrupted"></a>`interrupted`
+  <p>Noura quit during one of its tool calls, or a plugin it relied on
+  went. Noura never runs a tool call again by itself.
+
+- <a id="orb_run_status.cancelled"></a>`cancelled`
+  <p>You stopped it.
+
+
+#### <a id="orb_run"></a>`record orb-run`
+
+A run of an Orb, as its record holds it.
+
+##### Record Fields
+
+- <a id="orb_run.id"></a>`id`: `string`
+- <a id="orb_run.orb"></a>`orb`: `string`
+- <a id="orb_run.thread"></a>`thread`: `string`
+  <p>The thread its messages are in. Each message's run is this ID.
+
+- <a id="orb_run.started_by"></a>`started-by`: [`orb-start`](#orb_start)
+- <a id="orb_run.trigger"></a>`trigger`: option<`string`>
+  <p>The trigger that started it, as the Orb's file names it.
+
+- <a id="orb_run.status"></a>`status`: [`orb-run-status`](#orb_run_status)
+- <a id="orb_run.started"></a>`started`: `string`
+  <p>When it started and when it ended, in RFC 3339.
+
+- <a id="orb_run.finished"></a>`finished`: option<`string`>
+- <a id="orb_run.tool_calls"></a>`tool-calls`: `u32`
+  <p>How many tool calls it made.
+
+- <a id="orb_run.error_code"></a>`error-code`: option<`string`>
+  <p>Why it failed or stopped, such as `orb_interrupted`.
+
+- <a id="orb_run.quiet"></a>`quiet`: `bool`
+  <p>It found nothing to report: its last answer was `HEARTBEAT_OK`.
+
+
+#### <a id="orb_changes"></a>`record orb-changes`
+
+What `update-orb` changes. A field left none stays as it is.
+
+##### Record Fields
+
+- <a id="orb_changes.title"></a>`title`: option<`string`>
+  <p>A new name, which renames the Orb's folder and file.
+
+- <a id="orb_changes.instructions"></a>`instructions`: option<`string`>
+  <p>New instructions, the file's body.
+
+- <a id="orb_changes.avatar"></a>`avatar`: option<`string`>
+  <p>An empty string clears the avatar, the color, the provider (your
+  first one then answers) or the model (the provider's own).
+
+- <a id="orb_changes.color"></a>`color`: option<`string`>
+- <a id="orb_changes.provider"></a>`provider`: option<`string`>
+- <a id="orb_changes.model"></a>`model`: option<`string`>
+- <a id="orb_changes.tools"></a>`tools`: option<list<`string`>>
+- <a id="orb_changes.triggers"></a>`triggers`: option<list<`string`>>
 
 #### <a id="web_result"></a>`record web-result`
 
@@ -1319,6 +1482,156 @@ a cancelled message.
 ##### Return values
 
 - <a id="stop.0"></a> result<_, [`error`](#error)>
+
+#### <a id="orbs"></a>`orbs: func`
+
+The default Orb first, then the workspace's Orbs by title. The default
+Orb has the ID `orb_00000000000000000000000000` and no file: plain
+chats are its, and its tool calls each wait for your answer.
+
+##### Return values
+
+- <a id="orbs.0"></a> result<list<[`orb`](#orb)>, [`error`](#error)>
+
+#### <a id="create_orb"></a>`create-orb: func`
+
+Create an Orb named `title` in `Orbs/<title>/`, with no instructions,
+tools or triggers, and an empty `Memory.md`. Fails with
+`already-exists` when that folder exists.
+
+##### Params
+
+- <a id="create_orb.title"></a>`title`: `string`
+
+##### Return values
+
+- <a id="create_orb.0"></a> result<[`orb`](#orb), [`error`](#error)>
+
+#### <a id="read_orb"></a>`read-orb: func`
+
+An Orb, its thread and the thread's messages, oldest first, as
+`read-chat` returns them. An Orb whose first message hasn't gone out
+has no thread.
+
+##### Params
+
+- <a id="read_orb.id"></a>`id`: `string`
+
+##### Return values
+
+- <a id="read_orb.0"></a> result<([`orb`](#orb), option<[`chat`](#chat)>, list<[`message`](#message)>), [`error`](#error)>
+
+#### <a id="orb_runs"></a>`orb-runs: func`
+
+The Orb's runs, the newest first, at most `limit` of them.
+
+##### Params
+
+- <a id="orb_runs.id"></a>`id`: `string`
+- <a id="orb_runs.limit"></a>`limit`: `u32`
+
+##### Return values
+
+- <a id="orb_runs.0"></a> result<list<[`orb-run`](#orb_run)>, [`error`](#error)>
+
+#### <a id="send_to_orb"></a>`send-to-orb: func`
+
+Send `message` to the Orb in its thread, with its instructions and its
+memory, from its provider. The model may call the Orb's tools, and
+Noura runs each call without asking and answers the model again, until
+the model answers without a call. `read-run` follows it. An Orb
+answers one message at a time.
+
+##### Params
+
+- <a id="send_to_orb.id"></a>`id`: `string`
+- <a id="send_to_orb.message"></a>`message`: `string`
+
+##### Return values
+
+- <a id="send_to_orb.0"></a> result<[`run`](#run), [`error`](#error)>
+
+#### <a id="run_orb"></a>`run-orb: func`
+
+Run the Orb now, as its schedule would: its message is the checklist
+in `Heartbeat.md`.
+
+##### Params
+
+- <a id="run_orb.id"></a>`id`: `string`
+
+##### Return values
+
+- <a id="run_orb.0"></a> result<[`run`](#run), [`error`](#error)>
+
+#### <a id="update_orb"></a>`update-orb: func`
+
+Change the Orb's file. Fails with `revision-conflict` when its file
+no longer holds `expected-revision`, and with `invalid-property` when
+a change breaks the format, and then writes nothing.
+
+##### Params
+
+- <a id="update_orb.id"></a>`id`: `string`
+- <a id="update_orb.changes"></a>`changes`: [`orb-changes`](#orb_changes)
+- <a id="update_orb.expected_revision"></a>`expected-revision`: `string`
+
+##### Return values
+
+- <a id="update_orb.0"></a> result<[`orb`](#orb), [`error`](#error)>
+
+#### <a id="set_orb_paused"></a>`set-orb-paused: func`
+
+Pause the Orb, so its triggers don't fire, or let them fire again.
+Fails with `revision-conflict` as `update-orb` does.
+
+##### Params
+
+- <a id="set_orb_paused.id"></a>`id`: `string`
+- <a id="set_orb_paused.paused"></a>`paused`: `bool`
+- <a id="set_orb_paused.expected_revision"></a>`expected-revision`: `string`
+
+##### Return values
+
+- <a id="set_orb_paused.0"></a> result<[`orb`](#orb), [`error`](#error)>
+
+#### <a id="delete_orb"></a>`delete-orb: func`
+
+Move the Orb's folder to the trash: its file, its memory, its
+checklist and its run records. Its thread stays a chat. Fails with
+`revision-conflict` as `update-orb` does.
+
+##### Params
+
+- <a id="delete_orb.id"></a>`id`: `string`
+- <a id="delete_orb.expected_revision"></a>`expected-revision`: `string`
+
+##### Return values
+
+- <a id="delete_orb.0"></a> result<_, [`error`](#error)>
+
+#### <a id="orbs_held"></a>`orbs-held: func`
+
+Whether Noura holds every Orb's triggers because you haven't used
+Noura in a while.
+
+##### Return values
+
+- <a id="orbs_held.0"></a> result<`bool`, [`error`](#error)>
+
+#### <a id="keep_orbs_running"></a>`keep-orbs-running: func`
+
+Answer whether to keep the Orbs' triggers running after a while
+away: yes lets them fire again, and the schedules catch up on what
+they missed; no pauses every Orb that has triggers.
+
+##### Params
+
+- <a id="keep_orbs_running.keep"></a>`keep`: `bool`
+
+##### Return values
+
+- <a id="keep_orbs_running.0"></a> result<_, [`error`](#error)>
 
 #### <a id="web_ready"></a>`web-ready: func`
 
@@ -2009,6 +2322,44 @@ Take away the notification with this ID, if it still shows.
 ##### Return values
 
 - <a id="withdraw.0"></a> result<_, [`error`](#error)>
+
+## <a id="noura_plugin_events_0_1_0"></a>Import interface noura:plugin/events@0.1.0
+
+Events the plugin tells Noura about, which start the triggers of Orbs
+that name them. Needs the `events` capability, whose manifest entry
+declares each event with an ID and a title. An Orb's trigger names an
+event as `<plugin>.<event>`, such as `transcription.finished`.
+
+----
+
+### Types
+
+#### <a id="error"></a>`type error`
+[`error`](#error)
+<p>
+
+----
+
+### Functions
+
+#### <a id="emit"></a>`emit: func`
+
+Tell Noura that the event `event`, one the manifest declares,
+happened, about the object with the stable ID `object` when there is
+one. Noura starts the Orbs whose triggers name the event after the
+call returns, and an Orb that may read the object gets its title and
+body. An event that happens during a tool call of an Orb's run starts
+no Orb, so Orbs can't start each other in a loop. Fails with `failed`
+for an event the manifest doesn't declare.
+
+##### Params
+
+- <a id="emit.event"></a>`event`: `string`
+- <a id="emit.object"></a>`object`: option<`string`>
+
+##### Return values
+
+- <a id="emit.0"></a> result<_, [`error`](#error)>
 
 ## <a id="noura_plugin_ui_0_1_0"></a>Import interface noura:plugin/ui@0.1.0
 

@@ -14,8 +14,9 @@ use wasmtime::{Engine, Store, UpdateDeadline};
 use crate::{
     AiChats, Capability, ClockReading, DeviceClock, EntryKind, Limits, Listed, MenuBarService,
     Navigation, NewObject, NotificationService, ObjectChanges, ObjectRead, ObjectRecord,
-    ObjectTypes, PasteService, PropertyProblem, Router, SERVICE_WRITTEN_TYPES, ServiceError,
-    ShortcutService, SpeechService, TypeError, WorkspaceObjects, WorkspacePath, WorkspaceReads,
+    ObjectTypes, PasteService, PluginEvents, PropertyProblem, Router, SERVICE_WRITTEN_TYPES,
+    ServiceError, ShortcutService, SpeechService, TypeError, WorkspaceObjects, WorkspacePath,
+    WorkspaceReads,
     object_types::type_of_id,
     runtime::{EpochTicker, Failure, StoreLimiter, deadline_ticks},
 };
@@ -45,10 +46,11 @@ use bindings::exports::noura::plugin::{
 pub use bindings::noura::plugin::ai::{
     Chat as AiChat, Completion as AiCompletion, CompletionRequest as AiCompletionRequest,
     Failure as AiFailure, Message as AiMessage, MessageKind as AiMessageKind,
-    MessageStatus as AiMessageStatus, Provider as AiProvider, Request as AiRequest,
-    Retention as AiRetention, Run as AiRun, RunStatus as AiRunStatus, ToolCall as AiToolCall,
-    ToolDefinition as AiToolDefinition, ToolResult as AiToolResult, WebPage as AiWebPage,
-    WebResult as AiWebResult,
+    MessageStatus as AiMessageStatus, Orb as AiOrb, OrbChanges as AiOrbChanges, OrbRun as AiOrbRun,
+    OrbRunStatus as AiOrbRunStatus, OrbStart as AiOrbStart, OrbState as AiOrbState,
+    Provider as AiProvider, Request as AiRequest, Retention as AiRetention, Run as AiRun,
+    RunStatus as AiRunStatus, ToolCall as AiToolCall, ToolDefinition as AiToolDefinition,
+    ToolResult as AiToolResult, WebPage as AiWebPage, WebResult as AiWebResult,
 };
 pub use bindings::noura::plugin::global_shortcuts::Shortcut as ShortcutState;
 pub use bindings::noura::plugin::menu_bar::{Entry as MenuBarEntry, EntryKind as MenuBarEntryKind};
@@ -67,8 +69,8 @@ pub use bindings::noura::plugin::ui::{
     Naming, Node, NodeKind, SortOrder, Submission, Table, Target, Value, VirtualList, VirtualRow,
 };
 use bindings::noura::plugin::{
-    ai, clock, command_calls, global_shortcuts, menu_bar, navigation, network, notifications,
-    objects, paste, speech, types, workspace,
+    ai, clock, command_calls, events, global_shortcuts, menu_bar, navigation, network,
+    notifications, objects, paste, speech, types, workspace,
 };
 
 /// The capability behind object types, their panels and object writes.
@@ -158,6 +160,8 @@ pub struct Services {
     pub menu_bar: Option<Arc<dyn MenuBarService>>,
     /// The plugin's notifications, for `notifications`.
     pub notifications: Option<Arc<dyn NotificationService>>,
+    /// The plugin's events, which start Orbs' triggers, for `events`.
+    pub events: Option<Arc<dyn PluginEvents>>,
 }
 
 /// How long the current call has run.
@@ -512,6 +516,29 @@ impl menu_bar::Host for HostState {
     }
 }
 
+impl events::Host for HostState {
+    fn emit(&mut self, event: String, object: Option<String>) -> Result<(), types::Error> {
+        let service = self.service("events", |services| services.events.clone())?;
+        let declared = Capability::events(&self.grants.read())
+            .iter()
+            .any(|known| known.id == event);
+        if !declared {
+            return Err(types::Error::Failed(format!(
+                "The manifest declares no event \u{201c}{event}\u{201d}."
+            )));
+        }
+        if object
+            .as_deref()
+            .is_some_and(|id| id.is_empty() || id.len() > 256 || id.chars().any(char::is_control))
+        {
+            return Err(types::Error::Failed(
+                "An event names an object by its stable ID.".to_owned(),
+            ));
+        }
+        service.emit(&event, object.as_deref()).map_err(wit_error)
+    }
+}
+
 impl notifications::Host for HostState {
     fn notify(&mut self, notification: Notification) -> Result<(), types::Error> {
         let service = self.service("notifications", |services| services.notifications.clone())?;
@@ -817,6 +844,63 @@ impl ai::Host for HostState {
 
     fn stop(&mut self, id: String) -> Result<(), types::Error> {
         self.with_ai(|ai| ai.stop(&id))
+    }
+
+    fn orbs(&mut self) -> Result<Vec<ai::Orb>, types::Error> {
+        self.with_ai(|ai| ai.orbs())
+    }
+
+    fn create_orb(&mut self, title: String) -> Result<ai::Orb, types::Error> {
+        self.with_ai(|ai| ai.create_orb(&title))
+    }
+
+    fn read_orb(
+        &mut self,
+        id: String,
+    ) -> Result<(ai::Orb, Option<ai::Chat>, Vec<ai::Message>), types::Error> {
+        self.with_ai(|ai| ai.read_orb(&id))
+    }
+
+    fn orb_runs(&mut self, id: String, limit: u32) -> Result<Vec<ai::OrbRun>, types::Error> {
+        self.with_ai(|ai| ai.orb_runs(&id, limit))
+    }
+
+    fn send_to_orb(&mut self, id: String, message: String) -> Result<ai::Run, types::Error> {
+        self.with_ai(|ai| ai.send_to_orb(&id, &message))
+    }
+
+    fn run_orb(&mut self, id: String) -> Result<ai::Run, types::Error> {
+        self.with_ai(|ai| ai.run_orb(&id))
+    }
+
+    fn update_orb(
+        &mut self,
+        id: String,
+        changes: ai::OrbChanges,
+        expected_revision: String,
+    ) -> Result<ai::Orb, types::Error> {
+        self.with_ai(|ai| ai.update_orb(&id, changes, &expected_revision))
+    }
+
+    fn set_orb_paused(
+        &mut self,
+        id: String,
+        paused: bool,
+        expected_revision: String,
+    ) -> Result<ai::Orb, types::Error> {
+        self.with_ai(|ai| ai.set_orb_paused(&id, paused, &expected_revision))
+    }
+
+    fn delete_orb(&mut self, id: String, expected_revision: String) -> Result<(), types::Error> {
+        self.with_ai(|ai| ai.delete_orb(&id, &expected_revision))
+    }
+
+    fn orbs_held(&mut self) -> Result<bool, types::Error> {
+        self.with_ai(|ai| ai.orbs_held())
+    }
+
+    fn keep_orbs_running(&mut self, keep: bool) -> Result<(), types::Error> {
+        self.with_ai(|ai| ai.keep_orbs_running(keep))
     }
 
     fn web_ready(&mut self) -> Result<bool, types::Error> {

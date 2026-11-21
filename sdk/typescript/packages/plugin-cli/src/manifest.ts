@@ -17,6 +17,15 @@ export interface Capability {
 	targets: string[];
 	/** The shortcuts of the `global-shortcuts` capability. */
 	shortcuts: Shortcut[];
+	/** The events of the `events` capability. */
+	events: EventDeclaration[];
+}
+
+/** An event the `events` capability declares, which Orbs' triggers name
+ * as `<plugin>.<id>`. */
+export interface EventDeclaration {
+	id: string;
+	title: string;
 }
 
 /** A shortcut the `global-shortcuts` capability declares. */
@@ -109,11 +118,21 @@ export async function readManifest(folder: string): Promise<Manifest> {
 				},
 			];
 		});
+		const events = (
+			Array.isArray(capability.events) ? capability.events : []
+		).flatMap((event: unknown): EventDeclaration[] => {
+			const declared = (event ?? {}) as Record<string, unknown>;
+			return typeof declared.id === 'string' &&
+				typeof declared.title === 'string'
+				? [{ id: declared.id, title: declared.title }]
+				: [];
+		});
 		return {
 			name: capability.name,
 			hosts: strings(capability.hosts),
 			targets: strings(capability.targets),
 			shortcuts,
+			events,
 		};
 	});
 	return {

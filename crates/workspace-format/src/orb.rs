@@ -46,9 +46,12 @@ pub const HEARTBEAT_FILE: &str = "Heartbeat.md";
 pub const RUNS_FOLDER: &str = "Runs";
 
 /// What an Orb answers when a scheduled run finds nothing to report, as
-/// OpenClaw's heartbeat does. A run whose last answer is only this is
-/// quiet.
+/// OpenClaw's heartbeat did. A run whose last answer is only this, or
+/// [`NO_REPLY`], is quiet.
 pub const HEARTBEAT_OK: &str = "HEARTBEAT_OK";
+
+/// The token OpenClaw uses for a quiet answer today.
+pub const NO_REPLY: &str = "NO_REPLY";
 
 /// The Orb that a chat without `orb_id` belongs to: plain chats from
 /// before Orbs, and every chat you start outside one. It has no file.
@@ -350,7 +353,7 @@ impl std::fmt::Display for ToolPattern {
 pub enum Trigger {
     /// The times a 5-field cron pattern names, in this device's time zone,
     /// written `schedule 30 8 * * 1-5`.
-    Schedule(Schedule),
+    Schedule(Box<Schedule>),
     /// A plugin told Noura about an event, written `event
     /// transcription.finished`.
     Event(EventName),
@@ -372,7 +375,7 @@ impl Trigger {
             .split_once(char::is_whitespace)
             .ok_or("invalid_trigger")?;
         match keyword {
-            "schedule" => Schedule::parse(rest).map(Self::Schedule),
+            "schedule" => Schedule::parse(rest).map(|schedule| Self::Schedule(Box::new(schedule))),
             "event" => EventName::parse(rest.trim())
                 .map(Self::Event)
                 .ok_or("invalid_trigger"),
@@ -685,7 +688,8 @@ pub fn read_orb_run(object: &WorkspaceObject) -> Result<OrbRun, OrbProblem> {
 /// Whether `answer`, a run's last answer, says only that there is
 /// nothing to report.
 pub fn is_quiet(answer: &str) -> bool {
-    answer.trim().trim_matches('*').trim() == HEARTBEAT_OK
+    let token = answer.trim().trim_matches('*').trim();
+    token == HEARTBEAT_OK || token == NO_REPLY
 }
 
 /// The folder a new Orb named `title` gets: `Orbs/<title>`, with the

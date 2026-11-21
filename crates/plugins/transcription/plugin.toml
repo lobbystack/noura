@@ -51,3 +51,9 @@ name = "ai"
 [[capabilities]]
 name = "commands"
 targets = ["tasks", "projects"]
+
+# Tells Noura when a Transcription ends, so Orbs whose triggers say
+# `event transcription.finished` can act on it.
+[[capabilities]]
+name = "events"
+events = [{ id = "finished", title = "Transcription ends" }]

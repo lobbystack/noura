@@ -129,6 +129,7 @@ interface Interfaces {
 	'noura:plugin/paste': typeof import('noura:plugin/paste@0.1.0');
 	'noura:plugin/menu-bar': typeof import('noura:plugin/menu-bar@0.1.0');
 	'noura:plugin/notifications': typeof import('noura:plugin/notifications@0.1.0');
+	'noura:plugin/events': typeof import('noura:plugin/events@0.1.0');
 }
 
 type MenuEntry = import('noura:plugin/menu-bar@0.1.0').Entry;
@@ -136,6 +137,7 @@ type Notification = import('noura:plugin/notifications@0.1.0').Notification;
 type KernelEvent = import('noura:plugin/kernel-events@0.1.0').KernelEvent;
 
 type Chat = import('noura:plugin/ai@0.1.0').Chat;
+type Orb = import('noura:plugin/ai@0.1.0').Orb;
 type Run = import('noura:plugin/ai@0.1.0').Run;
 type ToolDefinition = import('noura:plugin/ai@0.1.0').ToolDefinition;
 
@@ -169,6 +171,20 @@ export const PLUGIN_TYPES: Readonly<Record<string, string>> = {
  * and their runs change through the `ai` interface.
  */
 const SERVICE_WRITTEN_TYPES: readonly string[] = ['chat', 'chat-message', 'orb', 'orb-run'];
+
+/** The default Orb's ID: plain chats belong to it. */
+const DEFAULT_ORB = 'orb_00000000000000000000000000';
+
+function defaultOrb(): Orb {
+	return {
+		id: DEFAULT_ORB,
+		title: 'Noura',
+		revision: '',
+		state: 'idle',
+		tools: [],
+		triggers: [],
+	};
+}
 
 function refused(capability: string): never {
 	throw { tag: 'capability-not-declared', val: capability };
@@ -294,6 +310,10 @@ export class MockHost {
 	menuEntries: MenuEntry[] = [];
 	/** The plugin's notifications that show now, by ID. */
 	readonly notifications = new Map<string, Notification>();
+
+	/** The events the plugin emitted, oldest first. The mock host has no
+	 * Orbs, so none starts. */
+	readonly emitted: { event: string; object?: string }[] = [];
 	/** The dictation the plugin kept last. */
 	private lastDictation: string | undefined;
 
@@ -722,6 +742,39 @@ export class MockHost {
 					ai();
 					return false;
 				},
+				// The mock host keeps no Orbs: only the default Orb, which
+				// plain chats belong to.
+				orbs: () => {
+					ai();
+					return [defaultOrb()];
+				},
+				createOrb: () => {
+					ai();
+					throw { tag: 'failed', val: 'The mock host keeps no Orbs.' };
+				},
+				readOrb: (id: string) => {
+					ai();
+					if (id !== DEFAULT_ORB) {
+						notFound(id);
+					}
+					return [defaultOrb(), undefined, []];
+				},
+				orbRuns: (id: string) => {
+					ai();
+					if (id !== DEFAULT_ORB) {
+						notFound(id);
+					}
+					return [];
+				},
+				sendToOrb: (id: string) => (ai(), notFound(id)),
+				runOrb: (id: string) => (ai(), notFound(id)),
+				updateOrb: (id: string) => (ai(), notFound(id)),
+				setOrbPaused: (id: string) => (ai(), notFound(id)),
+				deleteOrb: (id: string) => (ai(), notFound(id)),
+				orbsHeld: () => (ai(), false),
+				keepOrbsRunning: () => {
+					ai();
+				},
 				webSearch: () => web(),
 				webFetch: () => web(),
 				// The mock host has no provider to complete with.
@@ -803,6 +856,21 @@ export class MockHost {
 						refused('menu-bar-items');
 					}
 					this.menuEntries = entries.map((entry) => ({ ...entry }));
+				},
+			},
+			'noura:plugin/events': {
+				emit: (event: string, object?: string) => {
+					if (!this.declares('events')) {
+						refused('events');
+					}
+					const declared = this.capability('events')?.events ?? [];
+					if (!declared.some((known) => known.id === event)) {
+						throw {
+							tag: 'failed',
+							val: `The manifest declares no event \u201c${event}\u201d.`,
+						};
+					}
+					this.emitted.push(object === undefined ? { event } : { event, object });
 				},
 			},
 			'noura:plugin/notifications': {

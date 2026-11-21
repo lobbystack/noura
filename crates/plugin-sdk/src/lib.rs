@@ -146,13 +146,30 @@ pub mod navigation {
 ///     ai::run_tools(&run.id).unwrap();
 /// }
 /// ```
+///
+/// Orbs are named agents in the workspace, each with one ongoing thread.
+/// An Orb runs the tools its file lists without asking:
+///
+/// ```no_run
+/// use plugin_sdk::ai;
+///
+/// let orbs = ai::orbs().unwrap();
+/// let meetings = orbs.iter().find(|orb| orb.title == "Meetings").unwrap();
+/// let run = ai::send_to_orb(&meetings.id, "What did we decide today?").unwrap();
+/// // Later: the run streams, runs its tool calls and answers again.
+/// let _ = ai::read_run(&run.id).unwrap();
+/// let (_orb, _thread, _messages) = ai::read_orb(&meetings.id).unwrap();
+/// let _history = ai::orb_runs(&meetings.id, 10).unwrap();
+/// ```
 pub mod ai {
     pub use crate::noura::plugin::ai::{
         Chat, Completion, CompletionError, CompletionRequest, Failure, Message, MessageKind,
-        MessageStatus, Provider, Request, Retention, Run, RunStatus, ToolCall, ToolDefinition,
-        ToolResult, WebError, WebPage, WebResult, answer_tools, chats, complete, create_chat,
-        providers, read_chat, read_run, rename_chat, resume, run_tools, send, set_retention, stop,
-        web_fetch, web_ready, web_search, workspace_tools,
+        MessageStatus, Orb, OrbChanges, OrbRun, OrbRunStatus, OrbStart, OrbState, Provider,
+        Request, Retention, Run, RunStatus, ToolCall, ToolDefinition, ToolResult, WebError,
+        WebPage, WebResult, answer_tools, chats, complete, create_chat, create_orb, delete_orb,
+        keep_orbs_running, orb_runs, orbs, orbs_held, providers, read_chat, read_orb, read_run,
+        rename_chat, resume, run_orb, run_tools, send, send_to_orb, set_orb_paused, set_retention,
+        stop, update_orb, web_fetch, web_ready, web_search, workspace_tools,
     };
 }
 
@@ -215,6 +232,21 @@ pub mod menu_bar {
 /// did. A chosen notification comes to [`Plugin::handle_kernel_event`].
 pub mod notifications {
     pub use crate::noura::plugin::notifications::{Action, Notification, notify, withdraw};
+}
+
+/// Events the plugin tells Noura about, which start the triggers of Orbs
+/// that name them, as `<plugin>.<event>`. Needs the `events` capability,
+/// whose manifest entry declares each event.
+///
+/// ```no_run
+/// use plugin_sdk::events;
+///
+/// // A recording ended: Orbs whose triggers say
+/// // `event transcription.finished` start.
+/// events::emit("finished", Some("transcription_01jd8x3k9q2m7v4c6b1n0p5r8a")).unwrap();
+/// ```
+pub mod events {
+    pub use crate::noura::plugin::events::emit;
 }
 
 /// What a plugin adds to Noura. Noura calls each method only when the

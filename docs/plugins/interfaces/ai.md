@@ -23,7 +23,24 @@ Noura keeps the providers and their keys on this device, and no call returns a k
 - `complete(request)`: send one prompt to a provider and get its answer, without a chat. Pass the provider's `id`, or `undefined` for your first provider, `instructions` for the model, the `prompt`, and `json: true` when the answer must be one JSON value, which Noura checks. The answer's `text` holds Markdown or the JSON text. Noura waits up to two minutes, and the wait doesn't count toward the call's deadline. A failure throws a `completion-error`: `refused` with an error, or `failed` with a `failure` whose `code` is, for example, `no_provider`, `provider_request_failed` or `invalid_json`.
 - `webFetch(url)`: read the page at an `https` address and get its `text`, the `url` that answered after redirects, its `contentType` and whether Noura cut the text at its size limit (`truncated`). The address must be one the model asked for in a `web_fetch` call.
 
-`readRun`, `answerTools`, `runTools` and `stop` reach only the plugin's own runs. Another plugin's run is `not-found`.
+`readRun`, `answerTools`, `runTools` and `stop` reach only the plugin's own runs and every Orb's run. Another plugin's chat run is `not-found`.
+
+## Reach the workspace's Orbs
+
+An Orb is a named agent that lives in the workspace: `Orbs/<name>/<name>.md`, whose body holds its instructions and whose properties list its tools and triggers, beside its `Memory.md`, its `Heartbeat.md` checklist and a record of each run. Each Orb keeps one thread, a chat whose `orb` names it. An Orb runs the tools its file lists without asking, whether you wrote to it or a trigger started it, and Noura records each call in its thread and in the run's record. The [workspace format](../../workspace-format/v1.md#orbs) describes the files.
+
+- `orbs()`: the default Orb, `orb_00000000000000000000000000`, which plain chats belong to, then the workspace's Orbs by title. Each has its `title`, the `revision` of its file, an `avatar` and a `color`, its `tools` and `triggers` as the file writes them, its `thread` once it has one, and a `state`: `idle`, `working`, `paused`, `held` while Noura holds the triggers after a while away, or `problem`, with `problem` naming the property that breaks the format.
+- `createOrb(title)`: create an Orb in `Orbs/<title>/` with no instructions, tools or triggers, and an empty `Memory.md`. A taken name throws `already-exists`.
+- `readOrb(id)`: the Orb, its thread and the thread's messages, as `readChat` returns them.
+- `orbRuns(id, limit)`: the Orb's runs, the newest first. Each has what started it (`you`, `schedule` or `event`), its `trigger`, its `status` (`running`, `succeeded`, `failed`, `interrupted` or `cancelled`), when it `started` and `finished`, how many `toolCalls` it made, its `errorCode` and whether it was `quiet`: its answer was `HEARTBEAT_OK`.
+- `sendToOrb(id, message)`: send your message to the Orb in its thread and get back a run, which `readRun` follows as it streams, runs its tool calls and answers again. An Orb answers one message at a time.
+- `runOrb(id)`: run the Orb now with the checklist in its `Heartbeat.md`, as its schedule would.
+- `updateOrb(id, changes, expectedRevision)`: change the Orb's name, instructions, avatar, color, provider, model, tools or triggers. An empty string clears a field. A change that breaks the format throws `invalid-property` and writes nothing.
+- `setOrbPaused(id, paused, expectedRevision)`: pause the Orb's triggers, or let them fire again.
+- `deleteOrb(id, expectedRevision)`: move the Orb's folder to the trash. Its thread stays a chat.
+- `orbsHeld()` and `keepOrbsRunning(keep)`: whether Noura holds every Orb's triggers because you haven't used Noura in a week, and your answer: keep them running, so the schedules catch up, or pause every Orb that has triggers.
+
+Each change takes the `revision` you read and throws `revision-conflict` when the file changed since. Plugins can't write Orbs or their run records through [`objects`](objects.md): Noura refuses, so no model tool can give an Orb more tools or triggers.
 
 ## Let the model use the workspace's tools
 

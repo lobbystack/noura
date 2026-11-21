@@ -169,6 +169,62 @@ impl Ai {
         })
     }
 
+    /// Search the web for `query` for an Orb's run, whose model asked for
+    /// it. Noura makes the call itself, so no plugin's run is involved.
+    pub(super) fn kernel_web_search(
+        &self,
+        query: &str,
+        max_results: Option<u32>,
+    ) -> Result<Vec<AiWebResult>, AiFailure> {
+        self.workspace().ok_or_else(no_workspace)?;
+        let store = self
+            .web
+            .store()
+            .map_err(|_| web_failure_code("web_settings_invalid"))?;
+        store.check_ready().map_err(|error| web_failure(&error))?;
+        let client = lock(&self.web.client).clone();
+        let input = WebSearchInput {
+            query: query.to_owned(),
+            max_results: max_results.map(|count| usize::try_from(count).unwrap_or(usize::MAX)),
+        };
+        let found = self
+            .block_on(store.search(client.as_ref(), input))
+            .map_err(|error| web_failure(&error))?;
+        Ok(found
+            .results
+            .into_iter()
+            .map(|result| AiWebResult {
+                title: result.title,
+                url: result.url,
+                snippet: result.snippet,
+            })
+            .collect())
+    }
+
+    /// Read the page at `url` for an Orb's run, whose model asked to read
+    /// it.
+    pub(super) fn kernel_web_fetch(&self, url: &str) -> Result<AiWebPage, AiFailure> {
+        self.workspace().ok_or_else(no_workspace)?;
+        let store = self
+            .web
+            .store()
+            .map_err(|_| web_failure_code("web_settings_invalid"))?;
+        store.check_ready().map_err(|error| web_failure(&error))?;
+        let client = lock(&self.web.client).clone();
+        let input = WebFetchInput {
+            url: url.to_owned(),
+        };
+        let page = self
+            .block_on(store.fetch(client.as_ref(), input))
+            .map_err(|error| web_failure(&error))?;
+        Ok(AiWebPage {
+            url: page.url,
+            content_type: page.content_type.unwrap_or_default(),
+            text: page.content,
+            truncated: page.truncated,
+        })
+    }
+
     /// The web settings, for a web call the plugin `plugin` makes in the
     /// open workspace to answer its model's call to `tool` with `argument`
     /// set to `value`. Without the key the call fails as it always does,

@@ -243,6 +243,7 @@ fn chat(title: &str, retention: AiRetention) -> AiChat {
         updated: "2026-10-24T10:00:00Z".to_owned(),
         revision: "rev1".to_owned(),
         retention,
+        orb: None,
     }
 }
 

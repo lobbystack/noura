@@ -328,6 +328,9 @@ interface ai {
     // written yet.
     revision: string,
     retention: retention,
+    // The Orb whose thread the chat is, or none for a plain chat, which
+    // belongs to the default Orb.
+    orb: option<string>,
   }
 
   enum message-kind {
@@ -531,6 +534,172 @@ interface ai {
   // Stop a run. The provider request ends, and the answer so far stays as
   // a cancelled message.
   stop: func(id: string) -> result<_, error>;
+
+  // Orbs. An Orb is a named agent that lives in the workspace as files:
+  // `Orbs/<name>/<name>.md`, whose body holds your instructions and whose
+  // properties hold its look, its provider, its tools and its triggers,
+  // beside `Memory.md`, `Heartbeat.md` and a `Runs` folder with one record
+  // per run. Each Orb keeps one ongoing thread, a chat that every run adds
+  // to. An Orb runs the tools its file lists without asking, whether you
+  // wrote to it or one of its triggers started it, and Noura records each
+  // call in its thread and in the run's record. Triggers fire only while
+  // Noura is open on this device. `read-run` and `stop` reach every Orb
+  // run, whichever plugin or trigger started it.
+
+  // How an Orb stands.
+  enum orb-state {
+    // Nothing runs now.
+    idle,
+    // A run is in progress.
+    working,
+    // You paused it, so its triggers don't fire.
+    paused,
+    // You haven't used Noura in a while, so Noura holds every Orb's
+    // triggers until you answer `keep-orbs-running`.
+    held,
+    // Its file breaks the workspace format, so it doesn't run. `problem`
+    // says why.
+    problem,
+  }
+
+  // An Orb, as its file holds it.
+  record orb {
+    id: string,
+    // Its name: the file's name without `.md`.
+    title: string,
+    // The revision of its file, which `update-orb`, `set-orb-paused` and
+    // `delete-orb` carry. Empty for the default Orb.
+    revision: string,
+    // An emoji or a few letters.
+    avatar: option<string>,
+    // A palette color: `red`, `orange`, `yellow`, `green`, `blue`,
+    // `purple`, `brown` or `gray`.
+    color: option<string>,
+    state: orb-state,
+    // The ID of its thread, once its first message went out.
+    thread: option<string>,
+    // The tools it runs without asking, as its file names them, such as
+    // `tasks__create` or `tasks__*`.
+    tools: list<string>,
+    // Its triggers, as its file names them, such as `event
+    // transcription.finished` or `schedule 30 8 * * 1-5`.
+    triggers: list<string>,
+    // Why it doesn't run, for an Orb in the `problem` state, as the
+    // property that fails and its code, such as `triggers:
+    // invalid_trigger`.
+    problem: option<string>,
+  }
+
+  // What started a run of an Orb.
+  enum orb-start {
+    // You wrote to the Orb, or chose Run now.
+    you,
+    // A schedule trigger's time came.
+    schedule,
+    // A plugin's event that a trigger names happened.
+    event,
+  }
+
+  // How a run of an Orb stands.
+  enum orb-run-status {
+    running,
+    succeeded,
+    failed,
+    // Noura quit during one of its tool calls, or a plugin it relied on
+    // went. Noura never runs a tool call again by itself.
+    interrupted,
+    // You stopped it.
+    cancelled,
+  }
+
+  // A run of an Orb, as its record holds it.
+  record orb-run {
+    id: string,
+    orb: string,
+    // The thread its messages are in. Each message's run is this ID.
+    thread: string,
+    started-by: orb-start,
+    // The trigger that started it, as the Orb's file names it.
+    trigger: option<string>,
+    status: orb-run-status,
+    // When it started and when it ended, in RFC 3339.
+    started: string,
+    finished: option<string>,
+    // How many tool calls it made.
+    tool-calls: u32,
+    // Why it failed or stopped, such as `orb_interrupted`.
+    error-code: option<string>,
+    // It found nothing to report: its last answer was `HEARTBEAT_OK`.
+    quiet: bool,
+  }
+
+  // What `update-orb` changes. A field left none stays as it is.
+  record orb-changes {
+    // A new name, which renames the Orb's folder and file.
+    title: option<string>,
+    // New instructions, the file's body.
+    instructions: option<string>,
+    // An empty string clears the avatar, the color, the provider (your
+    // first one then answers) or the model (the provider's own).
+    avatar: option<string>,
+    color: option<string>,
+    provider: option<string>,
+    model: option<string>,
+    tools: option<list<string>>,
+    triggers: option<list<string>>,
+  }
+
+  // The default Orb first, then the workspace's Orbs by title. The default
+  // Orb has the ID `orb_00000000000000000000000000` and no file: plain
+  // chats are its, and its tool calls each wait for your answer.
+  orbs: func() -> result<list<orb>, error>;
+
+  // Create an Orb named `title` in `Orbs/<title>/`, with no instructions,
+  // tools or triggers, and an empty `Memory.md`. Fails with
+  // `already-exists` when that folder exists.
+  create-orb: func(title: string) -> result<orb, error>;
+
+  // An Orb, its thread and the thread's messages, oldest first, as
+  // `read-chat` returns them. An Orb whose first message hasn't gone out
+  // has no thread.
+  read-orb: func(id: string) -> result<tuple<orb, option<chat>, list<message>>, error>;
+
+  // The Orb's runs, the newest first, at most `limit` of them.
+  orb-runs: func(id: string, limit: u32) -> result<list<orb-run>, error>;
+
+  // Send `message` to the Orb in its thread, with its instructions and its
+  // memory, from its provider. The model may call the Orb's tools, and
+  // Noura runs each call without asking and answers the model again, until
+  // the model answers without a call. `read-run` follows it. An Orb
+  // answers one message at a time.
+  send-to-orb: func(id: string, message: string) -> result<run, error>;
+
+  // Run the Orb now, as its schedule would: its message is the checklist
+  // in `Heartbeat.md`.
+  run-orb: func(id: string) -> result<run, error>;
+
+  // Change the Orb's file. Fails with `revision-conflict` when its file
+  // no longer holds `expected-revision`, and with `invalid-property` when
+  // a change breaks the format, and then writes nothing.
+  update-orb: func(id: string, changes: orb-changes, expected-revision: string) -> result<orb, error>;
+
+  // Pause the Orb, so its triggers don't fire, or let them fire again.
+  // Fails with `revision-conflict` as `update-orb` does.
+  set-orb-paused: func(id: string, paused: bool, expected-revision: string) -> result<orb, error>;
+
+  // Move the Orb's folder to the trash: its file, its memory, its
+  // checklist and its run records. Its thread stays a chat. Fails with
+  // `revision-conflict` as `update-orb` does.
+  delete-orb: func(id: string, expected-revision: string) -> result<_, error>;
+
+  // Whether Noura holds every Orb's triggers because you haven't used
+  // Noura in a while.
+  orbs-held: func() -> result<bool, error>;
+
+  // Answer whether to keep the Orbs' triggers running after a while
+  // away: yes lets them fire again, and the schedules catch up on what
+  // they missed; no pauses every Orb that has triggers.
+  keep-orbs-running: func(keep: bool) -> result<_, error>;
 
   // A page a web search found.
   record web-result {
@@ -1409,6 +1578,23 @@ interface commands {
   run: func(id: string, input: string) -> result<string, string>;
 }
 
+// Events the plugin tells Noura about, which start the triggers of Orbs
+// that name them. Needs the `events` capability, whose manifest entry
+// declares each event with an ID and a title. An Orb's trigger names an
+// event as `<plugin>.<event>`, such as `transcription.finished`.
+interface events {
+  use types.{error};
+
+  // Tell Noura that the event `event`, one the manifest declares,
+  // happened, about the object with the stable ID `object` when there is
+  // one. Noura starts the Orbs whose triggers name the event after the
+  // call returns, and an Orb that may read the object gets its title and
+  // body. An event that happens during a tool call of an Orb's run starts
+  // no Orb, so Orbs can't start each other in a loop. Fails with `failed`
+  // for an event the manifest doesn't declare.
+  emit: func(event: string, object: option<string>) -> result<_, error>;
+}
+
 // Sections in the Inbox, drawn from the plugin's nodes. Noura calls these
 // only when the manifest declares the `inbox-sections` capability.
 interface inbox {
@@ -1673,6 +1859,7 @@ world plugin {
   import paste;
   import menu-bar;
   import notifications;
+  import events;
   export view;
   export object-types;
   export commands;
