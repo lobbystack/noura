@@ -26,6 +26,7 @@ mod note_leaving;
 mod note_links;
 mod note_text_mode;
 mod note_typing;
+mod orbs;
 mod plugin_boards;
 mod plugin_calendars;
 mod plugin_capabilities;

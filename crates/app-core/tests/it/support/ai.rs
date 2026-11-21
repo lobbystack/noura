@@ -262,7 +262,26 @@ pub fn with_ai(app: &mut App, provider: &Arc<FakeProvider>) -> Option<PluginFold
     if let Some(Err(problem)) = app.plugin_view(PAGE) {
         panic!("the AI page doesn't draw: {problem}");
     }
+    open_panel(app);
     Some(folder)
+}
+
+/// Open the open Orb's side panel, where the default Orb lists its
+/// chats, when it isn't open.
+pub fn open_panel(app: &mut App) {
+    let open = app
+        .plugin_view(PAGE)
+        .and_then(Result::ok)
+        .is_some_and(|view| find(view.root(), "orb-panel").is_some());
+    if !open {
+        press(app, "orb-pill");
+    }
+}
+
+/// The open Orb's side panel, which must show.
+fn side_panel(app: &App) -> Option<ViewNode> {
+    let view = app.plugin_view(PAGE)?.ok()?;
+    find(view.root(), "orb-panel").cloned()
 }
 
 /// The node with `id` under `node`.
@@ -291,6 +310,17 @@ pub fn lines(app: &App) -> Vec<String> {
 
 fn collect(node: &ViewNode, lines: &mut Vec<String>) {
     match &node.kind {
+        // The thread's lines and what the panel reports, without the
+        // Orb's name and the panel's own headings and lists.
+        ViewKind::SidePanel { .. } => {
+            for child in &node.children {
+                if let ViewKind::Text(text) = &child.kind {
+                    lines.push(text.clone());
+                }
+            }
+            return;
+        }
+        ViewKind::Pill { .. } => return,
         ViewKind::Text(text) => lines.push(text.clone()),
         ViewKind::Markdown(text) => lines.push(format!("md: {text}")),
         ViewKind::Heading { text, detail, .. } => {
@@ -334,6 +364,8 @@ pub fn buttons(app: &App) -> Vec<String> {
 
 fn buttons_under(node: &ViewNode, found: &mut Vec<String>) {
     match &node.kind {
+        // The thread's buttons, without the side panel's.
+        ViewKind::SidePanel { .. } => return,
         ViewKind::Button { label } => found.push(label.clone()),
         // The message box's stop button, while an answer comes in.
         ViewKind::Composer {
@@ -346,12 +378,12 @@ fn buttons_under(node: &ViewNode, found: &mut Vec<String>) {
     }
 }
 
-/// The titles the sidebar lists, top to bottom.
+/// The titles the default Orb's panel lists, top to bottom.
 pub fn chat_titles(app: &App) -> Vec<String> {
-    let Some(Ok(view)) = app.plugin_sidebar(PAGE) else {
+    let Some(panel) = side_panel(app) else {
         return Vec::new();
     };
-    find(view.root(), "chats")
+    find(&panel, "chats")
         .map(|list| {
             list.children
                 .iter()
@@ -364,12 +396,12 @@ pub fn chat_titles(app: &App) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The chat IDs the sidebar lists, top to bottom.
+/// The chat IDs the default Orb's panel lists, top to bottom.
 pub fn chat_ids(app: &App) -> Vec<String> {
-    let Some(Ok(view)) = app.plugin_sidebar(PAGE) else {
+    let Some(panel) = side_panel(app) else {
         return Vec::new();
     };
-    find(view.root(), "chats")
+    find(&panel, "chats")
         .map(|list| list.children.iter().map(|item| item.id.clone()).collect())
         .unwrap_or_default()
 }
@@ -396,24 +428,58 @@ pub fn stop(app: &mut App) {
     press(app, "composer");
 }
 
-/// Write `text` in the message box and send it to the provider `provider`.
+/// Write `text` in the message box and send it to the provider `provider`,
+/// which the default Orb's panel picks first when it asks another.
 pub fn send(app: &mut App, text: &str, provider: &str) {
+    use_provider(app, provider);
     let view = page(app);
     find(view.root(), "composer").expect("the message box shows");
     app.send_plugin_event(
         PAGE,
         &PluginEvent::Submitted(Submission {
             node: "composer".to_owned(),
-            fields: vec![
-                Field {
-                    node: "composer".to_owned(),
-                    value: InputValue::Multiline(text.to_owned()),
-                },
-                Field {
-                    node: "provider".to_owned(),
-                    value: InputValue::Choice(Some(provider.to_owned())),
-                },
-            ],
+            fields: vec![Field {
+                node: "composer".to_owned(),
+                value: InputValue::Multiline(text.to_owned()),
+            }],
+        }),
+    );
+    super::settle(app);
+}
+
+/// Have the open Orb ask the provider `provider`, with its own model, as
+/// a pick from the Model menu of its panel does, unless it asks it now.
+pub fn use_provider(app: &mut App, provider: &str) {
+    open_panel(app);
+    let Some(panel) = side_panel(app) else {
+        return;
+    };
+    let Some(ViewKind::Input {
+        value: InputValue::Choice(Some(chosen)),
+        ..
+    }) = find(&panel, "orb-model").map(|node| node.kind.clone())
+    else {
+        return;
+    };
+    let asked: Option<(String, String)> = serde_json::from_str(&chosen).ok();
+    if asked.as_ref().is_some_and(|(id, _)| id == provider) {
+        return;
+    }
+    let Some(model) = app
+        .ai_models()
+        .unwrap()
+        .into_iter()
+        .find(|model| model.provider == provider)
+    else {
+        return;
+    };
+    app.send_plugin_event(
+        PAGE,
+        &PluginEvent::Changed(Field {
+            node: "orb-model".to_owned(),
+            value: InputValue::Choice(Some(
+                serde_json::json!([model.provider, model.id]).to_string(),
+            )),
         }),
     );
     super::settle(app);
@@ -425,9 +491,9 @@ pub fn press(app: &mut App, node: &str) {
     super::settle(app);
 }
 
-/// Open the chat `id` from the sidebar.
+/// Open the chat `id` from the default Orb's panel.
 pub fn open_chat(app: &mut App, id: &str) {
-    app.send_plugin_sidebar_event(
+    app.send_plugin_event(
         PAGE,
         &PluginEvent::Activated(Target {
             node: "chats".to_owned(),
@@ -437,9 +503,9 @@ pub fn open_chat(app: &mut App, id: &str) {
     super::settle(app);
 }
 
-/// Start a new chat from the sidebar.
+/// Start a new chat from the default Orb's panel.
 pub fn new_chat(app: &mut App) {
-    app.send_plugin_sidebar_event(PAGE, &PluginEvent::Pressed("new-chat".to_owned()));
+    app.send_plugin_event(PAGE, &PluginEvent::Pressed("new-chat".to_owned()));
     super::settle(app);
 }
 
@@ -482,9 +548,34 @@ fn walk(folder: &std::path::Path, root: &std::path::Path, found: &mut Vec<(Strin
     }
 }
 
-/// Poll until `done` holds, for up to 20 seconds.
+/// Poll until `done` holds, for up to 120 seconds, opening the side
+/// panel once the page draws, as after a relaunch: the default Orb lists
+/// its chats there.
 pub fn wait_until(app: &mut App, what: &str, done: impl Fn(&App) -> bool) {
-    plugins::wait_until(app, what, done);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        super::settle(app);
+        let closed = app
+            .plugin_view(PAGE)
+            .and_then(Result::ok)
+            .is_some_and(|view| {
+                find(view.root(), "orb-pill").is_some() && find(view.root(), "orb-panel").is_none()
+            });
+        if closed {
+            press(app, "orb-pill");
+        }
+        if done(app) {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            let shown = app
+                .plugin_view(PAGE)
+                .and_then(Result::ok)
+                .map(|_| (lines(app), buttons(app)));
+            panic!("timed out waiting until {what}; the page shows {shown:?}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }
 
 /// The tool call Noura asks about, once it asks.
@@ -546,13 +637,11 @@ pub fn tool_result(app: &mut App, root: &std::path::Path, call: &str) -> serde_j
     serde_json::from_str(body(&text).trim()).unwrap_or_else(|_| panic!("not JSON: {text}"))
 }
 
-/// The ID of the menu item in the sidebar whose ID starts with `prefix`,
-/// such as `rename:` and a chat's ID, and whether it's enabled.
+/// The ID of the menu item in the default Orb's panel whose ID starts
+/// with `prefix`, such as `rename:` and a chat's ID, and whether it's
+/// enabled.
 pub fn menu_item(app: &App, prefix: &str) -> Option<(String, bool)> {
-    let Some(Ok(view)) = app.plugin_sidebar(PAGE) else {
-        return None;
-    };
-    find_menu_item(view.root(), prefix)
+    find_menu_item(&side_panel(app)?, prefix)
 }
 
 fn find_menu_item(node: &ViewNode, prefix: &str) -> Option<(String, bool)> {
@@ -566,29 +655,27 @@ fn find_menu_item(node: &ViewNode, prefix: &str) -> Option<(String, bool)> {
         .find_map(|child| find_menu_item(child, prefix))
 }
 
-/// Choose the sidebar's menu item whose ID starts with `prefix`.
+/// Choose the panel's menu item whose ID starts with `prefix`.
 pub fn choose(app: &mut App, prefix: &str) {
     let (item, enabled) = menu_item(app, prefix).unwrap_or_else(|| panic!("no menu item {prefix}"));
     assert!(enabled, "{prefix} is enabled");
-    app.send_plugin_sidebar_event(PAGE, &PluginEvent::Chosen(item));
+    app.send_plugin_event(PAGE, &PluginEvent::Chosen(item));
     super::settle(app);
 }
 
-/// The name field the sidebar shows to rename a chat, with what it holds.
+/// The name field the panel shows to rename a chat, with what it holds.
 pub fn name_field(app: &App) -> Option<String> {
-    let Some(Ok(view)) = app.plugin_sidebar(PAGE) else {
-        return None;
-    };
-    match &find(view.root(), "chat-name")?.kind {
+    let panel = side_panel(app)?;
+    match &find(&panel, "chat-name")?.kind {
         ViewKind::NameField { value, .. } => Some(value.clone()),
         _ => None,
     }
 }
 
-/// Name the chat whose sidebar item shows the name field `name`, as Enter
-/// in the field does.
+/// Name the chat whose item in the panel shows the name field `name`, as
+/// Enter in the field does.
 pub fn name_chat(app: &mut App, name: &str) {
-    app.send_plugin_sidebar_event(
+    app.send_plugin_event(
         PAGE,
         &PluginEvent::Named(app_core::PluginNaming {
             node: "chat-name".to_owned(),
@@ -598,12 +685,12 @@ pub fn name_chat(app: &mut App, name: &str) {
     super::settle(app);
 }
 
-/// The detail the sidebar shows under each chat, top to bottom.
+/// The detail the panel shows beside each chat, top to bottom.
 pub fn chat_details(app: &App) -> Vec<Option<String>> {
-    let Some(Ok(view)) = app.plugin_sidebar(PAGE) else {
+    let Some(panel) = side_panel(app) else {
         return Vec::new();
     };
-    find(view.root(), "chats")
+    find(&panel, "chats")
         .map(|list| {
             list.children
                 .iter()
