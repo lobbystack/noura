@@ -1182,6 +1182,24 @@ interface ui {
     gray,
   }
 
+  // A small round picture of someone or something, such as an agent: a
+  // circle in a palette color, with a letter or an emoji in it. Screen
+  // readers skip it; the label beside it names what it shows.
+  record avatar {
+    // A letter, a few letters or an emoji, up to 16 characters, or none
+    // for a plain circle.
+    text: option<string>,
+    // The circle's color, or none for the theme's own.
+    color: option<color>,
+  }
+
+  // A dot that says how something stands, such as `Working`.
+  record status {
+    // What the dot means, which screen readers read after the label.
+    label: string,
+    color: color,
+  }
+
   // A line in a list: a label and an optional quieter detail after it, on
   // the same line. A board's card shows the detail under the label.
   record item {
@@ -1203,6 +1221,12 @@ interface ui {
     // through as a done task's does. Only list and virtual list items show
     // one.
     color: option<color>,
+    // An avatar before the label, in place of the color's dot. Only list
+    // and virtual list items show one.
+    avatar: option<avatar>,
+    // A status dot at the end of the line. Only list and virtual list
+    // items show one.
+    status: option<status>,
   }
 
   // A list you select items in.
@@ -1366,7 +1390,6 @@ interface ui {
     done,
     folder,
     note,
-    sparkle,
     tasks,
   }
 
@@ -1457,6 +1480,25 @@ interface ui {
     // The ID of the chosen option, or none, when the button shows the
     // label.
     chosen: option<string>,
+  }
+
+  // A rounded button with an avatar and a label, such as the name of
+  // whom a conversation is with, that opens and closes something, such as
+  // a side panel. A press sends `pressed`.
+  record pill {
+    label: string,
+    avatar: option<avatar>,
+    // Whether what it opens shows now. Screen readers read it as
+    // expanded.
+    open: bool,
+  }
+
+  // A pane at the right edge of the page.
+  record side-panel {
+    // Names the pane for screen readers.
+    label: string,
+    // How wide it is, from 240 to 480 points.
+    width: u32,
   }
 
   // Who wrote a message in a conversation.
@@ -1602,6 +1644,16 @@ interface ui {
     // second taking the rest of the width. Its children are the two panes,
     // each a panel.
     split(u32),
+    // A pane at the right edge of the page, with a line on its left. It
+    // runs the page's full height and scrolls on its own, and the rest of
+    // the page takes the width that's left. Its children go where a
+    // panel's go. Only the view's own panel holds one, as its last child.
+    side-panel(side-panel),
+    // A large avatar, centered, as at the top of a profile.
+    avatar(avatar),
+    // A pill button. A page's first child, when a pill, shows centered at
+    // the top of the page in place of the page's title.
+    pill(pill),
     // Text you edit in place, such as a task's title or notes.
     editable(editable),
     // A button that shows a date and opens a date picker.
@@ -1646,8 +1698,9 @@ interface ui {
     // they lay out, lists their items, tables their rows, boards their
     // columns, columns their cards, calendars their entries, menus their
     // items, headings their buttons and choices, empty states their
-    // buttons, splits their two panels, conversations and activities the
-    // nodes they lay out, and composers their choices and buttons; a row,
+    // buttons, splits their two panels, side panels, conversations and
+    // activities the nodes they lay out, and composers their choices and
+    // buttons; a row,
     // a card or a button may hold one menu, and an item one menu or one
     // name field.
     children: list<u32>,

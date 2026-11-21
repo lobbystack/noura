@@ -65,11 +65,11 @@ pub use exports::noura::plugin::tools::Tool;
 pub use exports::noura::plugin::view::Page;
 pub use noura::plugin::types::{Error, PropertyError};
 pub use noura::plugin::ui::{
-    Activity, ActivityState, Calendar, CalendarEntry, CalendarMode, Check, Choice, Color, Column,
-    ColumnPress, Composer, DatePicker, Editable, EditableStyle, EmptyState, Event, Field, Form,
-    Heading, HeadingLevel, Icon, Input, Item, ItemList, MenuItem, Message, MessageAuthor, Move,
-    NameField, Naming, Node, NodeKind, Picker, PickerOption, SortOrder, Submission, Table, Target,
-    Value, VirtualList, VirtualRow,
+    Activity, ActivityState, Avatar, Calendar, CalendarEntry, CalendarMode, Check, Choice, Color,
+    Column, ColumnPress, Composer, DatePicker, Editable, EditableStyle, EmptyState, Event, Field,
+    Form, Heading, HeadingLevel, Icon, Input, Item, ItemList, MenuItem, Message, MessageAuthor,
+    Move, NameField, Naming, Node, NodeKind, Picker, PickerOption, Pill, SidePanel, SortOrder,
+    Status, Submission, Table, Target, Value, VirtualList, VirtualRow,
 };
 
 /// Reading the open workspace. Needs the `workspace-read` capability.
@@ -165,13 +165,14 @@ pub mod navigation {
 /// ```
 pub mod ai {
     pub use crate::noura::plugin::ai::{
-        Chat, Completion, CompletionError, CompletionRequest, Failure, Message, MessageKind,
-        MessageStatus, Orb, OrbChanges, OrbRun, OrbRunStatus, OrbStart, OrbState, Provider,
-        Request, Retention, Run, RunStatus, ToolCall, ToolDefinition, ToolResult, WebError,
-        WebPage, WebResult, answer_tools, chats, complete, create_chat, create_orb, delete_orb,
-        keep_orbs_running, orb_runs, orbs, orbs_held, providers, read_chat, read_orb, read_run,
-        rename_chat, resume, run_orb, run_tools, send, send_to_orb, set_orb_paused, set_retention,
-        stop, update_orb, web_fetch, web_ready, web_search, workspace_tools,
+        Chat, Completion, CompletionError, CompletionRequest, Effort, Failure, Message,
+        MessageKind, MessageStatus, Model, Orb, OrbChanges, OrbRun, OrbRunStatus, OrbStart,
+        OrbState, Provider, Request, Retention, Run, RunStatus, ToolCall, ToolDefinition,
+        ToolResult, WebError, WebPage, WebResult, answer_tools, chats, complete, create_chat,
+        create_orb, delete_orb, keep_orbs_running, models, orb_runs, orbs, orbs_held, providers,
+        read_chat, read_orb, read_run, rename_chat, resume, run_orb, run_tools, send, send_to_orb,
+        set_orb_paused, set_retention, stop, update_orb, web_fetch, web_ready, web_search,
+        workspace_tools,
     };
 }
 
@@ -838,6 +839,8 @@ impl View {
             checked: None,
             warning: None,
             color: None,
+            avatar: None,
+            status: None,
         };
         self.add(column, id, NodeKind::Card(card))
     }
@@ -851,6 +854,8 @@ impl View {
             checked: None,
             warning: None,
             color: None,
+            avatar: None,
+            status: None,
         };
         self.add(list, id, NodeKind::Item(item))
     }
@@ -872,6 +877,8 @@ impl View {
             checked: Some(checked),
             warning: None,
             color: None,
+            avatar: None,
+            status: None,
         };
         self.add(list, id, NodeKind::Item(item))
     }
@@ -1143,6 +1150,73 @@ impl View {
             NodeKind::Entry(entry) => entry.color = Some(color),
             _ => panic!("only a list item or a calendar entry takes a color"),
         }
+    }
+
+    /// Show `avatar` before the label of the list item at `item`, in place
+    /// of a color's dot.
+    ///
+    /// # Panics
+    ///
+    /// When `item` isn't the index of a list item already added.
+    pub fn avatar(&mut self, item: u32, avatar: Avatar) {
+        match &mut self.nodes[item as usize].kind {
+            NodeKind::Item(item) => item.avatar = Some(avatar),
+            _ => panic!("only a list item shows an avatar"),
+        }
+    }
+
+    /// Show a status dot in `color` at the end of the list item at
+    /// `item`, which screen readers read as `label`, such as `Working`.
+    ///
+    /// # Panics
+    ///
+    /// When `item` isn't the index of a list item already added.
+    pub fn status(&mut self, item: u32, label: &str, color: Color) {
+        match &mut self.nodes[item as usize].kind {
+            NodeKind::Item(item) => {
+                item.status = Some(Status {
+                    label: label.to_owned(),
+                    color,
+                });
+            }
+            _ => panic!("only a list item shows a status"),
+        }
+    }
+
+    /// Add a large avatar, centered, as at the top of a profile.
+    pub fn large_avatar(&mut self, parent: u32, id: &str, avatar: Avatar) -> u32 {
+        self.add(parent, id, NodeKind::Avatar(avatar))
+    }
+
+    /// Add a pill button with `avatar` and `label`, which shows pressed
+    /// while what it opens is `open`. A press sends [`Event::Pressed`].
+    /// The page's first node, when a pill, shows centered at the top of
+    /// the page in place of its title.
+    pub fn pill(
+        &mut self,
+        parent: u32,
+        id: &str,
+        label: &str,
+        avatar: Option<Avatar>,
+        open: bool,
+    ) -> u32 {
+        let pill = Pill {
+            label: label.to_owned(),
+            avatar,
+            open,
+        };
+        self.add(parent, id, NodeKind::Pill(pill))
+    }
+
+    /// Add a side panel, `width` points wide (240 to 480), down the
+    /// page's right edge, named `label` for screen readers. Add it to the
+    /// view's own panel, last. Returns it, to add its nodes to.
+    pub fn side_panel(&mut self, id: &str, label: &str, width: u32) -> u32 {
+        let panel = SidePanel {
+            label: label.to_owned(),
+            width,
+        };
+        self.add(Self::ROOT, id, NodeKind::SidePanel(panel))
     }
 
     /// Add a menu to the item, row, card or button at `owner`.

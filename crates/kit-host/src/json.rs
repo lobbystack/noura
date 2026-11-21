@@ -5,8 +5,8 @@
 
 use app_core::{
     ActivityState, CalendarMode, Choice, Column, ColumnPress, EditableStyle, Field, HeadingLevel,
-    InputValue, MessageAuthor, PluginCheck, PluginColor, PluginEvent, PluginIcon, PluginMove,
-    PluginNaming, SortOrder, Submission, Target, ViewKind, ViewNode,
+    InputValue, MessageAuthor, PluginAvatar, PluginCheck, PluginColor, PluginEvent, PluginIcon,
+    PluginMove, PluginNaming, SortOrder, Submission, Target, ViewKind, ViewNode,
 };
 use serde_json::{Value, json};
 
@@ -49,6 +49,8 @@ fn kind(kind: &ViewKind) -> Value {
             checked,
             warning,
             color,
+            avatar: look,
+            status,
         } => tagged(
             "item",
             json!({
@@ -57,6 +59,11 @@ fn kind(kind: &ViewKind) -> Value {
                 "checked": checked,
                 "warning": warning,
                 "color": color.map(color_name),
+                "avatar": look.as_ref().map(avatar),
+                "status": status.as_ref().map(|status| json!({
+                    "label": status.label,
+                    "color": color_name(status.color),
+                })),
             }),
         ),
         ViewKind::VirtualList { label, rows } => {
@@ -139,6 +146,18 @@ fn kind(kind: &ViewKind) -> Value {
             json!({ "title": title, "detail": detail, "icon": icon.map(icon_name) }),
         ),
         ViewKind::Split { first_width } => tagged("split", json!(first_width)),
+        ViewKind::SidePanel { label, width } => {
+            tagged("side-panel", json!({ "label": label, "width": width }))
+        }
+        ViewKind::Avatar(look) => tagged("avatar", avatar(look)),
+        ViewKind::Pill {
+            label,
+            avatar: look,
+            open,
+        } => tagged(
+            "pill",
+            json!({ "label": label, "avatar": look.as_ref().map(avatar), "open": open }),
+        ),
         ViewKind::Editable {
             label,
             value,
@@ -216,6 +235,10 @@ fn kind(kind: &ViewKind) -> Value {
     }
 }
 
+fn avatar(look: &PluginAvatar) -> Value {
+    json!({ "text": look.text, "color": look.color.map(color_name) })
+}
+
 fn activity_state(state: ActivityState) -> &'static str {
     match state {
         ActivityState::Waiting => "waiting",
@@ -233,7 +256,6 @@ fn icon_name(icon: PluginIcon) -> &'static str {
         PluginIcon::Done => "done",
         PluginIcon::Folder => "folder",
         PluginIcon::Note => "note",
-        PluginIcon::Sparkle => "sparkle",
         PluginIcon::Tasks => "tasks",
     }
 }

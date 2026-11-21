@@ -21,8 +21,8 @@
 use std::ops::Range;
 
 use app_core::{
-    Column, ColumnPress, PluginCheck, PluginColor, PluginEvent, PluginMove, SortOrder, Target,
-    ViewKind, ViewNode,
+    Column, ColumnPress, ItemStatus, PluginAvatar, PluginCheck, PluginColor, PluginEvent,
+    PluginMove, SortOrder, Target, ViewKind, ViewNode,
 };
 use egui::{
     Align2, Color32, Event, EventFilter, FontId, Id, Key, Modifiers, Pos2, Rect, Response, Sense,
@@ -119,6 +119,10 @@ struct Row<'a> {
     checked: Option<bool>,
     /// The color of its checkbox, or of a dot before its label.
     color: Option<PluginColor>,
+    /// The avatar before its label, in the dot's place.
+    avatar: Option<PluginAvatar>,
+    /// The dot at its end that says how it stands.
+    status: Option<ItemStatus>,
     /// The warning after the label.
     warning: Option<String>,
     cells: Vec<String>,
@@ -135,6 +139,8 @@ impl<'a> Row<'a> {
             detail: None,
             checked: None,
             color: None,
+            avatar: None,
+            status: None,
             warning: None,
             cells: Vec::new(),
             menu: node
@@ -153,11 +159,15 @@ impl<'a> Row<'a> {
                 checked,
                 warning,
                 color,
+                avatar,
+                status,
             } => {
                 row.label.clone_from(label);
                 row.detail.clone_from(detail);
                 row.checked = *checked;
                 row.color = *color;
+                row.avatar.clone_from(avatar);
+                row.status.clone_from(status);
                 row.warning.clone_from(warning);
             }
             ViewKind::Row { cells } => {
@@ -169,12 +179,27 @@ impl<'a> Row<'a> {
         row
     }
 
-    /// The name screen readers give the row: its label, then its warning.
+    /// The name screen readers give the row: its label, then its status
+    /// and its warning.
     fn spoken(&self) -> String {
-        match &self.warning {
-            Some(warning) => format!("{}, {warning}", self.label),
-            None => self.label.clone(),
+        let mut spoken = self.label.clone();
+        for said in [
+            self.status.as_ref().map(|status| status.label.as_str()),
+            self.warning.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            spoken.push_str(", ");
+            spoken.push_str(said);
         }
+        spoken
+    }
+
+    /// Whether something comes before its label: a checkbox, a dot or an
+    /// avatar.
+    fn leads(&self) -> bool {
+        self.checked.is_some() || self.color.is_some() || self.avatar.is_some()
     }
 }
 
@@ -218,6 +243,8 @@ impl<'a> Source<'a> {
                             detail: row.item.detail.filter(|detail| !detail.trim().is_empty()),
                             checked: row.item.checked,
                             color: row.item.color,
+                            avatar: row.item.avatar,
+                            status: row.item.status,
                             warning: row
                                 .item
                                 .warning
@@ -683,8 +710,19 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
                 }));
             }
         }
-        if let (Some(color), None) = (row.color, row.checked) {
-            dot(ui, rect, color);
+        match (&row.avatar, row.color, row.checked) {
+            (Some(avatar), _, None) => {
+                if ui.is_rect_visible(rect) {
+                    super::avatar::paint(
+                        ui,
+                        pos2(rect.left() + 17.0, rect.center().y),
+                        super::avatar::SMALL,
+                        avatar,
+                    );
+                }
+            }
+            (None, Some(color), None) => dot(ui, rect, color),
+            _ => {}
         }
         if let Some(field) = row.name_field {
             name_field_in(ui, rect, row, field, kit);
@@ -966,6 +1004,15 @@ fn checkbox(
     response.clicked()
 }
 
+/// The dot at an item's end that says how it stands.
+fn status_dot(ui: &Ui, center: Pos2, status: &ItemStatus) {
+    ui.painter().circle_filled(
+        center,
+        4.0,
+        crate::theme::plugin_color(ui.ctx(), status.color),
+    );
+}
+
 /// The dot in `color` before the label of an item without a checkbox,
 /// where a checkbox would sit.
 fn dot(ui: &Ui, rect: Rect, color: PluginColor) {
@@ -981,11 +1028,7 @@ fn name_field_in(ui: &mut Ui, rect: Rect, row: &Row, field: &ViewNode, kit: &mut
     let ViewKind::NameField { label, value } = &field.kind else {
         return;
     };
-    let start = if row.checked.is_some() || row.color.is_some() {
-        32.0
-    } else {
-        4.0
-    };
+    let start = if row.leads() { 32.0 } else { 4.0 };
     let area = Rect::from_min_max(
         pos2(rect.left() + start, rect.top()),
         pos2(rect.right() - 4.0, rect.bottom()),
@@ -1097,12 +1140,9 @@ fn paint_row(
                 palette.foreground,
             )
         });
-        let count_width = count.as_ref().map_or(0.0, |galley| galley.size().x + 12.0);
-        let start = if row.checked.is_some() || row.color.is_some() {
-            32.0
-        } else {
-            12.0
-        };
+        let count_width = count.as_ref().map_or(0.0, |galley| galley.size().x + 12.0)
+            + if row.status.is_some() { 16.0 } else { 0.0 };
+        let start = if row.leads() { 32.0 } else { 12.0 };
         let label = egui::WidgetText::from(egui::RichText::new(&row.label).font(font)).into_galley(
             ui,
             Some(egui::TextWrapMode::Truncate),
@@ -1112,9 +1152,13 @@ fn paint_row(
         let at = Align2::LEFT_CENTER
             .anchor_size(pos2(inner.left() + start, rect.center().y), label.size());
         painter.galley(at.min, label, palette.foreground);
+        let mut end = inner.right() - 8.0;
+        if let Some(status) = &row.status {
+            status_dot(ui, pos2(end - 4.0, rect.center().y), status);
+            end -= 16.0;
+        }
         if let Some(count) = count {
-            let at = Align2::RIGHT_CENTER
-                .anchor_size(pos2(inner.right() - 8.0, rect.center().y), count.size());
+            let at = Align2::RIGHT_CENTER.anchor_size(pos2(end, rect.center().y), count.size());
             painter.galley(at.min, count, palette.foreground);
         }
         return;
@@ -1138,12 +1182,9 @@ fn paint_row(
         .warning
         .as_deref()
         .map(|warning| text(ui, warning, inner.width() * 0.3, SUPPORTING_SIZE));
-    let warning_width = warning.as_ref().map_or(0.0, |galley| galley.size().x + 8.0);
-    let start = if row.checked.is_some() || row.color.is_some() {
-        32.0
-    } else {
-        8.0
-    };
+    let warning_width = warning.as_ref().map_or(0.0, |galley| galley.size().x + 8.0)
+        + if row.status.is_some() { 16.0 } else { 0.0 };
+    let start = if row.leads() { 32.0 } else { 8.0 };
     let label = text(
         ui,
         &row.label,
@@ -1171,9 +1212,13 @@ fn paint_row(
             Stroke::new(1.0, palette.muted_foreground),
         );
     }
-    // The warning ends the row, as an overdue date does, and the detail
-    // comes before it.
+    // The status dot ends the row, the warning comes before it, as an
+    // overdue date does, and the detail before that.
     let mut end = inner.right() - 8.0;
+    if let Some(status) = &row.status {
+        status_dot(ui, pos2(end - 4.0, rect.center().y), status);
+        end -= 16.0;
+    }
     if let Some(warning) = warning {
         let at = Align2::RIGHT_CENTER.anchor_size(pos2(end, rect.center().y), warning.size());
         end = at.left() - 8.0;

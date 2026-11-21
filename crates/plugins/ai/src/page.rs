@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use plugin_sdk::{
-    ActivityState, Event, Icon, MessageAuthor, Node, Value, View,
+    ActivityState, Event, MessageAuthor, Node, Value, View,
     ai::{
         self, Chat, Message, MessageKind, MessageStatus, Provider, Request, Retention, Run,
         RunStatus, ToolDefinition,
@@ -45,7 +45,7 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
     let providers = match ai::providers() {
         Ok(providers) => providers,
         Err(error) => {
-            view.page_heading(View::ROOT, "title", "AI", None, Some(Icon::Sparkle));
+            view.page_heading(View::ROOT, "title", "AI", None, None);
             view.text(View::ROOT, "providers-problem", &reason(&error));
             return view.into_nodes();
         }
@@ -98,18 +98,12 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
         view.text(talk, "notice", notice);
     }
     if providers.is_empty() && !busy {
-        let empty = view.empty_state(
-            talk,
-            "no-providers",
-            "Connect an AI provider",
-            None,
-            Some(Icon::Sparkle),
-        );
+        let empty = view.empty_state(talk, "no-providers", "Connect an AI provider", None, None);
         view.button(empty, OPEN_AI_SETTINGS, "Open AI settings");
         return view.into_nodes();
     }
     if messages.is_empty() && problem.is_none() && state.notice.is_none() {
-        view.empty_state(talk, "start", "How can I help?", None, Some(Icon::Sparkle));
+        view.empty_state(talk, "start", "How can I help?", None, None);
     }
     if !busy && stopped_before_answering(&messages) {
         view.button(talk, RESUME, "Resume");
@@ -201,18 +195,12 @@ fn stopped_before_answering(messages: &[Message]) -> bool {
 /// you delete it, or New chat before the first message.
 fn draw_title(view: &mut View, chat: Option<&Chat>) {
     let Some(chat) = chat else {
-        view.page_heading(View::ROOT, "title", "New chat", None, Some(Icon::Sparkle));
+        view.page_heading(View::ROOT, "title", "New chat", None, None);
         return;
     };
     let detail = (chat.retention == Retention::Ephemeral)
         .then_some("This chat moves to the trash 30 days after it started.");
-    view.page_heading(
-        View::ROOT,
-        "title",
-        &chat.title,
-        detail,
-        Some(Icon::Sparkle),
-    );
+    view.page_heading(View::ROOT, "title", &chat.title, detail, None);
 }
 
 /// The menu of a chat in the sidebar: rename it, or choose how long Noura

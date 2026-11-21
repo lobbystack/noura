@@ -271,6 +271,8 @@ impl Plugin for Kit {
                         checked: None,
                         warning: None,
                         color: None,
+                        avatar: None,
+                        status: None,
                     },
                 })
                 .collect();
@@ -301,6 +303,8 @@ impl Plugin for Kit {
                             checked: None,
                             warning: None,
                             color: None,
+                            avatar: None,
+                            status: None,
                         },
                     }
                 })
@@ -475,6 +479,8 @@ fn broken_rows(state: &mut State, start: u32, count: u32) -> Vec<VirtualRow> {
                 checked: None,
                 warning: None,
                 color: None,
+                avatar: None,
+                status: None,
             },
         })
         .collect()

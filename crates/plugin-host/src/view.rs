@@ -17,8 +17,9 @@
 use std::collections::HashSet;
 
 use crate::{
-    ActivityState, CalendarEntry, CalendarMode, Choice, Color, Column, EditableStyle, HeadingLevel,
-    Icon, MessageAuthor, Node, NodeKind, PickerOption, Value, VirtualRow,
+    ActivityState, Avatar, CalendarEntry, CalendarMode, Choice, Color, Column, EditableStyle,
+    HeadingLevel, Icon, Item, ItemStatus, MessageAuthor, Node, NodeKind, PickerOption, Value,
+    VirtualRow,
 };
 
 /// The most nodes a view may hold.
@@ -78,14 +79,18 @@ pub enum ViewKind {
     },
     /// An item of a list, which may hold a menu, or a name field that
     /// shows in its place, with a checkbox when `checked` is set, a
-    /// warning after its label when `warning` is, and its checkbox, or a
-    /// dot before its label, in `color` when that is.
+    /// warning after its label when `warning` is, its checkbox, or a dot
+    /// before its label, in `color` when that is, an avatar before its
+    /// label when `avatar` is, and a status dot at its end when `status`
+    /// is.
     Item {
         label: String,
         detail: Option<String>,
         checked: Option<bool>,
         warning: Option<String>,
         color: Option<Color>,
+        avatar: Option<Avatar>,
+        status: Option<ItemStatus>,
     },
     /// A list of `rows` rows that come from the plugin as they scroll into
     /// view.
@@ -181,6 +186,21 @@ pub enum ViewKind {
     Split {
         first_width: u32,
     },
+    /// A pane at the right edge of the page, `width` points wide, whose
+    /// children it lays out like a panel's. Only the root holds one, as
+    /// its last child.
+    SidePanel {
+        label: String,
+        width: u32,
+    },
+    /// A large avatar, centered.
+    Avatar(Avatar),
+    /// A pill button with an avatar, shown pressed while `open`.
+    Pill {
+        label: String,
+        avatar: Option<Avatar>,
+        open: bool,
+    },
     /// Text edited in place, drawn the way `style` says, which takes the
     /// keyboard when drawn with `focus` after being drawn without.
     Editable {
@@ -235,6 +255,12 @@ pub enum ViewKind {
 
 /// The narrowest and widest a split's first pane may be, in points.
 pub const SPLIT_WIDTHS: std::ops::RangeInclusive<u32> = 160..=640;
+
+/// The narrowest and widest a side panel may be, in points.
+pub const SIDE_PANEL_WIDTHS: std::ops::RangeInclusive<u32> = 240..=480;
+
+/// The most characters an avatar's text holds: an emoji or a few letters.
+pub const MAX_AVATAR_CHARS: usize = 16;
 
 /// Why a node list or a virtual list's rows can't be drawn. The message
 /// names the rule and the node, for the error shown in place of the view.
@@ -322,6 +348,7 @@ impl View {
             check_children(node, &nodes)?;
         }
         check_place(&nodes[0], None)?;
+        check_side_panels(&nodes)?;
         let mut seen = vec![false; nodes.len()];
         let root = build(&nodes, 0, &mut seen, 0, false)?;
         Ok(Self { root })
@@ -389,6 +416,9 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Heading(_) => "heading",
         NodeKind::Empty(_) => "empty state",
         NodeKind::Split(_) => "split",
+        NodeKind::SidePanel(_) => "side panel",
+        NodeKind::Avatar(_) => "avatar",
+        NodeKind::Pill(_) => "pill",
         NodeKind::Editable(_) => "editable text",
         NodeKind::DatePicker(_) => "date picker",
         NodeKind::Picker(_) => "picker",
@@ -427,6 +457,22 @@ fn check_node(node: &Node) -> Result<(), ViewError> {
             SPLIT_WIDTHS.end()
         )),
         NodeKind::Split(_) => Ok(()),
+        NodeKind::SidePanel(panel) if blank(&panel.label) => Err(unlabeled()),
+        NodeKind::SidePanel(panel) if !SIDE_PANEL_WIDTHS.contains(&panel.width) => {
+            invalid(format!(
+                "The side panel {id} is {} points wide; it must be {} to {}.",
+                panel.width,
+                SIDE_PANEL_WIDTHS.start(),
+                SIDE_PANEL_WIDTHS.end()
+            ))
+        }
+        NodeKind::SidePanel(_) => Ok(()),
+        NodeKind::Avatar(avatar) => check_avatar(id, avatar),
+        NodeKind::Pill(pill) if blank(&pill.label) => Err(unlabeled()),
+        NodeKind::Pill(pill) => pill
+            .avatar
+            .as_ref()
+            .map_or(Ok(()), |avatar| check_avatar(id, avatar)),
         NodeKind::Editable(editable) if blank(&editable.label) => Err(unlabeled()),
         NodeKind::Editable(_) => Ok(()),
         NodeKind::DatePicker(picker) if blank(&picker.label) => Err(unlabeled()),
@@ -465,12 +511,29 @@ fn check_node(node: &Node) -> Result<(), ViewError> {
         NodeKind::List(list) if blank(&list.label) => Err(unlabeled()),
         NodeKind::Item(item) | NodeKind::Card(item) if blank(&item.label) => Err(unlabeled()),
         NodeKind::Card(card)
-            if card.checked.is_some() || card.warning.is_some() || card.color.is_some() =>
+            if card.checked.is_some()
+                || card.warning.is_some()
+                || card.color.is_some()
+                || card.avatar.is_some()
+                || card.status.is_some() =>
         {
             invalid(format!(
-                "The card {id} holds a checkbox, a warning or a color, which only list items show."
+                "The card {id} holds a checkbox, a warning, a color, an avatar or a status, \
+                 which only list items show."
             ))
         }
+        NodeKind::Item(item)
+            if item
+                .status
+                .as_ref()
+                .is_some_and(|status| blank(&status.label)) =>
+        {
+            invalid(format!("The item {id} has a status without a label."))
+        }
+        NodeKind::Item(Item {
+            avatar: Some(avatar),
+            ..
+        }) => check_avatar(id, avatar),
         NodeKind::NameField(field) if blank(&field.label) => Err(unlabeled()),
         NodeKind::NameField(_) => Ok(()),
         NodeKind::VirtualList(list) if blank(&list.label) => Err(unlabeled()),
@@ -531,6 +594,22 @@ fn check_node(node: &Node) -> Result<(), ViewError> {
         }
         NodeKind::Calendar(_) => Ok(()),
         NodeKind::Entry(entry) => check_entry(id, entry),
+    }
+}
+
+/// An avatar's text, when it has one, is an emoji or a few letters.
+fn check_avatar(id: &str, avatar: &Avatar) -> Result<(), ViewError> {
+    match &avatar.text {
+        Some(text)
+            if blank(text)
+                || text.chars().count() > MAX_AVATAR_CHARS
+                || text.chars().any(char::is_control) =>
+        {
+            Err(ViewError::Invalid(format!(
+                "The avatar of {id} holds more than an emoji or a few letters."
+            )))
+        }
+        _ => Ok(()),
     }
 }
 
@@ -678,6 +757,24 @@ fn check_place(node: &Node, parent: Option<&Node>) -> Result<(), ViewError> {
     }
 }
 
+/// A side panel is the root panel's last child, and only one.
+fn check_side_panels(nodes: &[Node]) -> Result<(), ViewError> {
+    let root = &nodes[0];
+    let last = root.children.last().map(|&child| child as usize);
+    for (index, node) in nodes.iter().enumerate() {
+        if !matches!(node.kind, NodeKind::SidePanel(_)) {
+            continue;
+        }
+        if !matches!(root.kind, NodeKind::Panel(_)) || last != Some(index) {
+            return Err(ViewError::Misplaced(format!(
+                "The side panel {} isn't the last node of the view's own panel.",
+                node.id
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The nodes `parent` may hold: blocks in a panel or a form, items in a
 /// list, rows in a table with one cell per column, columns in a board and
 /// cards in a column, items and separators in a menu, at most one menu on
@@ -689,7 +786,7 @@ fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
     let children = parent.children.iter().map(|&child| &nodes[child as usize]);
     let misplaced = |message: String| Err(ViewError::Misplaced(message));
     match &parent.kind {
-        NodeKind::Panel(_) | NodeKind::Form(_) | NodeKind::Activity(_) => {
+        NodeKind::Panel(_) | NodeKind::Form(_) | NodeKind::Activity(_) | NodeKind::SidePanel(_) => {
             for child in children {
                 check_place(child, Some(parent))?;
             }
@@ -900,7 +997,9 @@ fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
         | NodeKind::Entry(_)
         | NodeKind::Editable(_)
         | NodeKind::DatePicker(_)
-        | NodeKind::Picker(_) => {
+        | NodeKind::Picker(_)
+        | NodeKind::Avatar(_)
+        | NodeKind::Pill(_) => {
             if parent.children.is_empty() {
                 Ok(())
             } else {
@@ -964,6 +1063,8 @@ fn build(
             checked: item.checked,
             warning: item.warning.clone().filter(|warning| !blank(warning)),
             color: item.color,
+            avatar: item.avatar.clone(),
+            status: item.status.clone(),
         },
         NodeKind::VirtualList(list) => ViewKind::VirtualList {
             label: list.label.clone(),
@@ -1032,6 +1133,16 @@ fn build(
         },
         NodeKind::Split(width) => ViewKind::Split {
             first_width: *width,
+        },
+        NodeKind::SidePanel(panel) => ViewKind::SidePanel {
+            label: panel.label.clone(),
+            width: panel.width,
+        },
+        NodeKind::Avatar(avatar) => ViewKind::Avatar(avatar.clone()),
+        NodeKind::Pill(pill) => ViewKind::Pill {
+            label: pill.label.clone(),
+            avatar: pill.avatar.clone(),
+            open: pill.open,
         },
         NodeKind::Editable(editable) => ViewKind::Editable {
             label: editable.label.clone(),
