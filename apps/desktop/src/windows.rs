@@ -780,6 +780,7 @@ impl Window {
             if ui.input(|input| input.viewport().close_requested()) {
                 window.close_window();
             }
+            crate::window_buttons::place(ui.ctx());
             window.ui(ui);
             let ctx = ui.ctx();
             note_focus(ctx, id, &recent, window);
@@ -839,6 +840,7 @@ impl eframe::App for Windows {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        crate::window_buttons::place(ui.ctx());
         self.show(ui, frame);
         self.report_smoke(ui.ctx());
     }
