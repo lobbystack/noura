@@ -33,6 +33,25 @@ impl WorkspaceEngine {
         id: &str,
         input: CreateChatInput,
     ) -> Result<MutationResult<Chat>> {
+        self.create_orb_chat_with_id(id, None, input)
+    }
+
+    /// Create the chat `input` describes under the stable ID `id`, as
+    /// [`Self::create_chat_with_id`] does, as the thread of the Orb
+    /// `orb_id`, or as a plain chat without one.
+    pub fn create_orb_chat_with_id(
+        &self,
+        id: &str,
+        orb_id: Option<&str>,
+        input: CreateChatInput,
+    ) -> Result<MutationResult<Chat>> {
+        if orb_id.is_some_and(|orb_id| !valid_object_id(orb_id, "orb")) {
+            return Err(CoreError::validation(
+                "invalid_orb_id",
+                "The Orb stable ID is invalid",
+                "chat_create",
+            ));
+        }
         if !valid_object_id(id, "chat") {
             return Err(CoreError::validation(
                 "invalid_chat_id",
@@ -59,6 +78,7 @@ impl WorkspaceEngine {
         let mut chat = Chat {
             id,
             title: title.into(),
+            orb_id: orb_id.map(str::to_owned),
             relative_path: crate::path::match_existing_folder_case(
                 &self.root,
                 &format!("{CHATS_FOLDER}/{slug}--{short_id}/chat.md"),

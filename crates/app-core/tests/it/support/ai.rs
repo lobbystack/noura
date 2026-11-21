@@ -208,7 +208,7 @@ impl AiStreamer for FakeProvider {
     }
 }
 
-fn message_line(message: &AiTransportMessage) -> String {
+pub fn message_line(message: &AiTransportMessage) -> String {
     let parts: Vec<String> = message
         .content
         .iter()

@@ -47,6 +47,7 @@ mod inbox;
 mod links;
 mod mcp;
 mod notes;
+mod orbs;
 mod palette;
 mod plugins;
 mod preferences;
@@ -532,6 +533,8 @@ impl App {
     pub fn window_used(&mut self) {
         if !self.closed {
             self.session.plugins().window_used(self.key);
+            // You're here, so Orbs' triggers keep running.
+            self.session.ai.note_activity();
         }
     }
 

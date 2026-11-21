@@ -14,6 +14,7 @@
     "chat": {
       "properties": [
         { "name": "title", "kind": "string" },
+        { "name": "orb_id", "kind": { "id": "orb" }, "nullable": true },
         { "name": "retention", "kind": { "enum": ["ephemeral", "permanent"] } },
         { "name": "retention_days", "kind": "number", "nullable": true }
       ]

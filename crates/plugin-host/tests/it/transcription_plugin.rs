@@ -6,7 +6,9 @@
 use crate::support;
 use std::path::Path;
 
-use plugin_host::{Capability, ObjectTypes, Services, ShortcutDeclaration, read_manifest};
+use plugin_host::{
+    Capability, EventDeclaration, ObjectTypes, Services, ShortcutDeclaration, read_manifest,
+};
 use support::plugins;
 use workspace_format::PropertySchema;
 
@@ -44,6 +46,12 @@ fn the_manifest_declares_speech_ai_and_tasks_and_projects_as_targets() {
             Capability::Ai,
             Capability::Commands {
                 targets: vec!["projects".to_owned(), "tasks".to_owned()]
+            },
+            Capability::Events {
+                events: vec![EventDeclaration {
+                    id: "finished".to_owned(),
+                    title: "Transcription ends".to_owned(),
+                }]
             },
         ]
     );

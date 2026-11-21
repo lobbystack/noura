@@ -18,6 +18,7 @@ use ts_rs::TS;
 pub mod links;
 pub mod merge;
 mod object_type;
+pub mod orb;
 pub mod raw_text;
 pub mod text_note;
 

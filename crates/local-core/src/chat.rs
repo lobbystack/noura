@@ -42,6 +42,10 @@ pub enum ChatMessageStatus {
 pub struct Chat {
     pub id: String,
     pub title: String,
+    /// The Orb whose thread the chat is, or none for a plain chat, which
+    /// belongs to the default Orb. A chat file without `orb_id` reads as
+    /// none, so chats from before Orbs need no change.
+    pub orb_id: Option<String>,
     pub retention: ChatRetention,
     pub retention_days: Option<u32>,
     pub relative_path: String,
@@ -199,6 +203,9 @@ impl Chat {
     pub(crate) fn workspace_object(&self) -> WorkspaceObject {
         let mut properties = self.properties.clone();
         properties.insert("title".into(), self.title.clone().into());
+        if let Some(orb_id) = &self.orb_id {
+            properties.insert("orb_id".into(), orb_id.clone().into());
+        }
         properties.insert("retention".into(), enum_json(&self.retention));
         properties.insert(
             "retention_days".into(),
@@ -265,6 +272,13 @@ pub(crate) fn parse_chat(relative_path: &str, bytes: &[u8]) -> Result<Chat> {
         ));
     }
     let title = take_required_string(&mut properties, "title", "chat_parse")?;
+    let orb_id = take_optional_string(&mut properties, "orb_id", "chat_parse")?;
+    if orb_id
+        .as_deref()
+        .is_some_and(|orb_id| !valid_object_id(orb_id, "orb"))
+    {
+        return Err(invalid("orb_id must be an Orb's stable ID", "chat_parse"));
+    }
     let retention: ChatRetention = take_enum(&mut properties, "retention", "chat_parse")?;
     let retention_days = take_optional_u32(&mut properties, "retention_days", "chat_parse")?;
     validate_retention(retention, retention_days, "chat_parse")?;
@@ -273,6 +287,7 @@ pub(crate) fn parse_chat(relative_path: &str, bytes: &[u8]) -> Result<Chat> {
     Ok(Chat {
         id,
         title,
+        orb_id,
         retention,
         retention_days,
         relative_path: relative_path.into(),
@@ -333,6 +348,18 @@ pub(crate) fn serialize_chat(chat: &Chat) -> Result<Vec<u8>> {
     fields.insert("id".into(), chat.id.clone().into());
     fields.insert("type".into(), "chat".into());
     fields.insert("title".into(), chat.title.clone().into());
+    // A plain chat has no `orb_id` line, so its bytes stay as they were
+    // before Orbs.
+    let orb_id = match &chat.orb_id {
+        Some(orb_id) => {
+            fields.insert("orb_id".into(), orb_id.clone().into());
+            &["orb_id"][..]
+        }
+        None => {
+            fields.remove("orb_id");
+            &[][..]
+        }
+    };
     fields.insert("retention".into(), enum_json(&chat.retention));
     fields.insert(
         "retention_days".into(),
@@ -341,19 +368,12 @@ pub(crate) fn serialize_chat(chat: &Chat) -> Result<Vec<u8>> {
     );
     fields.insert("created".into(), chat.created.clone().into());
     fields.insert("updated".into(), chat.updated.clone().into());
-    serialize_frontmatter(
-        fields,
-        &[
-            "id",
-            "type",
-            "title",
-            "retention",
-            "retention_days",
-            "created",
-            "updated",
-        ],
-        String::new(),
-    )
+    let known: Vec<&str> = ["id", "type", "title"]
+        .into_iter()
+        .chain(orb_id.iter().copied())
+        .chain(["retention", "retention_days", "created", "updated"])
+        .collect();
+    serialize_frontmatter(fields, &known, String::new())
 }
 
 pub(crate) fn serialize_chat_message(message: &ChatMessage) -> Result<Vec<u8>> {
@@ -746,6 +766,7 @@ mod tests {
             let chat = Chat {
                 id: "chat_01j00000000000000000000000".into(),
                 title: format!("Plans{ending}"),
+                orb_id: None,
                 retention: ChatRetention::Permanent,
                 retention_days: None,
                 relative_path: "chats/plans--000000/chat.md".into(),

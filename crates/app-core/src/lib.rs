@@ -156,11 +156,11 @@ pub use pdf::{PdfDrawFailure, PdfRenderHold};
 #[cfg(feature = "test-hooks")]
 pub use plugin_host::fake_github;
 pub use plugin_host::{
-    ActivityState, CalendarMode, Check as PluginCheck, Choice, Color as PluginColor, Column,
-    ColumnPress, EditableStyle, Event as PluginEvent, Field, Grant, HeadingLevel,
-    Icon as PluginIcon, MessageAuthor, Move as PluginMove, Naming as PluginNaming, PickerOption,
-    SortOrder, Submission, Target, Value as InputValue, View, ViewKind, ViewNode, VirtualRow,
-    keys_from_label, keys_label,
+    ActivityState, AiOrb, AiOrbChanges, AiOrbRun, AiOrbRunStatus, AiOrbStart, AiOrbState,
+    CalendarMode, Check as PluginCheck, Choice, Color as PluginColor, Column, ColumnPress,
+    EditableStyle, Event as PluginEvent, Field, Grant, HeadingLevel, Icon as PluginIcon,
+    MessageAuthor, Move as PluginMove, Naming as PluginNaming, PickerOption, SortOrder, Submission,
+    Target, Value as InputValue, View, ViewKind, ViewNode, VirtualRow, keys_from_label, keys_label,
 };
 pub use plugin_inputs::{date_time_fields, date_time_value, date_value};
 pub use plugins::{

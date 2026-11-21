@@ -212,6 +212,48 @@
 				"created": "2026-09-02T12:00:00Z",
 				"updated": "2026-09-02T12:00:00Z"
 			}
+		},
+		{
+			"name": "chat in an Orb's thread",
+			"valid": true,
+			"value": {
+				"id": "chat_01j00000000000000000000000",
+				"type": "chat",
+				"title": "Meetings",
+				"orb_id": "orb_01j00000000000000000000000",
+				"retention": "permanent",
+				"retention_days": null,
+				"created": "2026-09-02T12:00:00Z",
+				"updated": "2026-09-02T12:00:00Z"
+			}
+		},
+		{
+			"name": "chat without an Orb may say so with null",
+			"valid": true,
+			"value": {
+				"id": "chat_01j00000000000000000000000",
+				"type": "chat",
+				"title": "Plain",
+				"orb_id": null,
+				"retention": "permanent",
+				"retention_days": null,
+				"created": "2026-09-02T12:00:00Z",
+				"updated": "2026-09-02T12:00:00Z"
+			}
+		},
+		{
+			"name": "orb_id must be an Orb's stable ID",
+			"valid": false,
+			"value": {
+				"id": "chat_01j00000000000000000000000",
+				"type": "chat",
+				"title": "Meetings",
+				"orb_id": "[[Meetings]]",
+				"retention": "permanent",
+				"retention_days": null,
+				"created": "2026-09-02T12:00:00Z",
+				"updated": "2026-09-02T12:00:00Z"
+			}
 		}
 	],
 	"chat_message": [

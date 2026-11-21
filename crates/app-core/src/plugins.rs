@@ -1075,6 +1075,10 @@ impl Plugins {
             notifications: speech
                 .as_ref()
                 .map(|services| services.notifications.clone()),
+            events: self
+                .ai
+                .as_ref()
+                .map(|ai| ai.orb_events(id, Capability::events(&loaded.manifest().capabilities))),
         };
         let plugin = host.start(&loaded, &record.approved, services);
         self.manifests

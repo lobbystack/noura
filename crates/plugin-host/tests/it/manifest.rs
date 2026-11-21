@@ -138,3 +138,74 @@ fn a_folder_without_a_manifest_is_refused() {
     assert_eq!(code, InstallErrorCode::ManifestMissing);
     assert!(message.contains("plugin.toml"), "{message}");
 }
+
+/// The manifest `capabilities` makes, with this ID, read from a folder of
+/// its own.
+fn read_with(
+    id: &str,
+    capabilities: &str,
+) -> Result<plugin_host::PluginManifest, (InstallErrorCode, String)> {
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(
+        folder.path().join("plugin.toml"),
+        format!(
+            "id = \"{id}\"\nname = \"Pinger\"\nversion = \"0.1.0\"\ninterface-version = \"0.1.0\"\n\
+             entry = \"plugin.wasm\"\nplatforms = [\"desktop\"]\n\n{capabilities}"
+        ),
+    )
+    .unwrap();
+    read_manifest(folder.path()).map_err(|error| (error.code, error.message))
+}
+
+#[test]
+fn events_declare_an_id_and_a_title_each() {
+    let manifest = read_with(
+        "pinger",
+        "[[capabilities]]\nname = \"events\"\nevents = [{ id = \"ping\", title = \"Ping arrives\" }]\n",
+    )
+    .unwrap();
+    assert_eq!(
+        manifest.capabilities,
+        [Capability::Events {
+            events: vec![plugin_host::EventDeclaration {
+                id: "ping".to_owned(),
+                title: "Ping arrives".to_owned(),
+            }]
+        }]
+    );
+    assert_eq!(
+        manifest.capabilities[0].description(),
+        "Tell Noura when these happen, so your Orbs can act on them: Ping arrives."
+    );
+    for (capabilities, message) in [
+        ("name = \"events\"\n", "The events capability needs events."),
+        (
+            "name = \"events\"\nevents = []\n",
+            "The events capability needs at least one event.",
+        ),
+        (
+            "name = \"events\"\nevents = [{ id = \"Ping\", title = \"Ping\" }]\n",
+            "must start with a lowercase letter",
+        ),
+        (
+            "name = \"events\"\nevents = [{ id = \"ping\", title = \"A\" }, { id = \"ping\", title = \"B\" }]\n",
+            "lists the event ping twice",
+        ),
+        (
+            "name = \"views\"\nevents = [{ id = \"ping\", title = \"Ping\" }]\n",
+            "The views capability doesn't take events.",
+        ),
+    ] {
+        let (code, refused) =
+            read_with("pinger", &format!("[[capabilities]]\n{capabilities}")).unwrap_err();
+        assert_eq!(code, InstallErrorCode::InvalidManifest, "{capabilities}");
+        assert!(refused.contains(message), "{refused}");
+    }
+}
+
+#[test]
+fn no_plugin_takes_the_id_of_nouras_own_tools() {
+    let (code, refused) = read_with("noura", "").unwrap_err();
+    assert_eq!(code, InstallErrorCode::InvalidManifest);
+    assert!(refused.contains("names Noura's own tools"), "{refused}");
+}

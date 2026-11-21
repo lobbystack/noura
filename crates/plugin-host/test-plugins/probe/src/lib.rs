@@ -27,6 +27,15 @@
 //!   line per provider, chat, message, run, search result or page. A press
 //!   on a node whose ID is `ai:<call>` makes the call too, and the `events`
 //!   page shows each line as `<page> ai <line>`.
+//! - `ai:orbs`, `ai:create-orb:<title>`, `ai:read-orb:<id>`,
+//!   `ai:orb-runs:<id>`, `ai:send-to-orb:<id>:<message>`,
+//!   `ai:set-orb-paused:<id>:<revision>:<true or false>` and
+//!   `ai:orbs-held`: call the interface's Orb calls, one line per Orb,
+//!   run or message.
+//! - `emit:<event>` or `emit:<event>:<object>`: tell Noura an event the
+//!   manifest declares happened. The `emit` tool does the same for the
+//!   event `ping`, from inside a tool call. Only a probe whose manifest
+//!   declares `events` offers it.
 //! - `ai:complete:<prompt>` and `ai:complete-json:<prompt>`: complete a
 //!   prompt with the first provider, as `completion <provider> <model>
 //!   <text>` or `completion-failed <code> <message>`.
@@ -90,7 +99,7 @@ use std::sync::Mutex;
 use plugin_sdk::{
     Calendar, CalendarEntry, CalendarMode, Choice, Color, Column, Command, Error, Event,
     InboxSection, Input, Item, ItemList, KernelEvent, MenuItem, NameField, Node, NodeKind, Page,
-    Plugin, Table, Tool, Value, View, VirtualList, VirtualRow, ai, clock, command_calls,
+    Plugin, Table, Tool, Value, View, VirtualList, VirtualRow, ai, clock, command_calls, events,
     global_shortcuts, menu_bar, navigation, network, notifications, objects, paste, speech,
     workspace,
 };
@@ -215,6 +224,8 @@ impl Plugin for Probe {
             vec![relay(call)]
         } else if let Some(call) = page.strip_prefix("ai:") {
             ai_call(call)
+        } else if let Some(event) = page.strip_prefix("emit:") {
+            vec![emit(event)]
         } else if let Some(call) = page.strip_prefix("speech:") {
             speech_call(call)
         } else if page == "random" {
@@ -284,6 +295,12 @@ impl Plugin for Probe {
             for line in ai_call(call) {
                 record(format!("{page} ai {line}"));
             }
+            return;
+        }
+        if let Event::Pressed(node) = &event
+            && let Some(event) = node.strip_prefix("emit:")
+        {
+            record(format!("{page} {}", emit(event)));
             return;
         }
         if let Event::Pressed(node) = &event
@@ -389,17 +406,32 @@ impl Plugin for Probe {
     }
 
     fn tools() -> Vec<Tool> {
-        vec![Tool {
+        let mut tools = vec![Tool {
             name: "echo".into(),
             description: "Repeats the text it gets.".into(),
             input_schema: ECHO_SCHEMA.into(),
-        }]
+        }];
+        // Only a probe whose manifest declares `events` offers `emit`. An
+        // event no manifest declares tells which: Noura refuses it without
+        // telling anyone.
+        if !matches!(
+            events::emit("probe-check", None),
+            Err(Error::CapabilityNotDeclared(_))
+        ) {
+            tools.push(Tool {
+                name: "emit".into(),
+                description: "Tells Noura the event ping happened.".into(),
+                input_schema: r#"{"type":"object"}"#.into(),
+            });
+        }
+        tools
     }
 
     fn call_tool(name: String, arguments: String) -> Result<String, String> {
         record(format!("tool {name} {arguments}"));
         match name.as_str() {
             "echo" => Ok(arguments),
+            "emit" => Ok(format!("{{\"answer\":\"{}\"}}", emit("ping"))),
             _ => Err(format!("The probe has no tool {name}.")),
         }
     }
@@ -471,6 +503,32 @@ fn ai_call(call: &str) -> Vec<String> {
             })
         }
         "read-run" => ai::read_run(rest).map(|run| vec![run_line(&run)]),
+        "orbs" => ai::orbs().map(|orbs| orbs.iter().map(orb_line).collect()),
+        "create-orb" => ai::create_orb(rest).map(|orb| vec![orb_line(&orb)]),
+        "read-orb" => ai::read_orb(rest).map(|(orb, thread, messages)| {
+            std::iter::once(orb_line(&orb))
+                .chain(thread.iter().map(chat_line))
+                .chain(messages.iter().map(|message| {
+                    format!(
+                        "message {:?} {:?} {}",
+                        message.kind, message.status, message.content
+                    )
+                }))
+                .collect()
+        }),
+        "orb-runs" => ai::orb_runs(rest, 50).map(|runs| runs.iter().map(orb_run_line).collect()),
+        "send-to-orb" => {
+            let (id, message) = rest.split_once(':').unwrap_or((rest, ""));
+            ai::send_to_orb(id, message).map(|run| vec![run_line(&run)])
+        }
+        "set-orb-paused" => {
+            let mut parts = rest.splitn(3, ':');
+            let id = parts.next().unwrap_or_default();
+            let revision = parts.next().unwrap_or_default();
+            let paused = parts.next() == Some("true");
+            ai::set_orb_paused(id, paused, revision).map(|orb| vec![orb_line(&orb)])
+        }
+        "orbs-held" => ai::orbs_held().map(|held| vec![format!("orbs-held {held}")]),
         "stop" => ai::stop(rest).map(|()| vec!["stopped".to_owned()]),
         "rename-chat" => {
             let mut parts = rest.splitn(3, ':');
@@ -551,6 +609,45 @@ fn web_lines(result: Result<Vec<String>, ai::WebError>) -> Vec<String> {
             vec![format!("web-failed {} {}", failure.code, failure.message)]
         }
     }
+}
+
+/// Emit the event `event`, or `event:object`, as one line.
+fn emit(event: &str) -> String {
+    let (event, object) = match event.split_once(':') {
+        Some((event, object)) => (event, Some(object)),
+        None => (event, None),
+    };
+    match events::emit(event, object) {
+        Ok(()) => format!("emitted {event}"),
+        Err(error) => describe(&error),
+    }
+}
+
+fn orb_line(orb: &ai::Orb) -> String {
+    format!(
+        "orb {} {:?} {} {} thread {} tools [{}] triggers [{}] problem {}",
+        orb.id,
+        orb.state,
+        orb.revision,
+        orb.title,
+        orb.thread.as_deref().unwrap_or("-"),
+        orb.tools.join(","),
+        orb.triggers.join(","),
+        orb.problem.as_deref().unwrap_or("-"),
+    )
+}
+
+fn orb_run_line(run: &ai::OrbRun) -> String {
+    format!(
+        "orb-run {} {:?} {:?} {} calls {} quiet {} error {}",
+        run.id,
+        run.started_by,
+        run.status,
+        run.trigger.as_deref().unwrap_or("-"),
+        run.tool_calls,
+        run.quiet,
+        run.error_code.as_deref().unwrap_or("-"),
+    )
 }
 
 fn chat_line(chat: &ai::Chat) -> String {
