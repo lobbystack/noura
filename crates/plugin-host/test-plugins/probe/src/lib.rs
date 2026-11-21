@@ -88,10 +88,11 @@
 use std::sync::Mutex;
 
 use plugin_sdk::{
-    Calendar, CalendarEntry, CalendarMode, Choice, Column, Command, Error, Event, InboxSection,
-    Input, Item, ItemList, KernelEvent, MenuItem, NameField, Node, NodeKind, Page, Plugin, Table,
-    Tool, Value, View, VirtualList, VirtualRow, ai, clock, command_calls, global_shortcuts,
-    menu_bar, navigation, network, notifications, objects, paste, speech, workspace,
+    Calendar, CalendarEntry, CalendarMode, Choice, Color, Column, Command, Error, Event,
+    InboxSection, Input, Item, ItemList, KernelEvent, MenuItem, NameField, Node, NodeKind, Page,
+    Plugin, Table, Tool, Value, View, VirtualList, VirtualRow, ai, clock, command_calls,
+    global_shortcuts, menu_bar, navigation, network, notifications, objects, paste, speech,
+    workspace,
 };
 
 static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -1023,7 +1024,14 @@ fn broken(case: &str) -> Vec<Node> {
                 check_item("Weed the beds", Some(false), Some("Overdue")),
                 &[],
             ),
-            node("mulch", check_item("Mulch", Some(true), None), &[]),
+            node(
+                "mulch",
+                NodeKind::Item(Item {
+                    color: Some(Color::Green),
+                    ..plain_item("Mulch", Some(true))
+                }),
+                &[],
+            ),
             node("plain", check_item("Look around", None, Some("  ")), &[]),
             node("new-chore", name_field("New chore name", ""), &[]),
         ],
@@ -1052,6 +1060,7 @@ fn broken(case: &str) -> Vec<Node> {
                     detail: None,
                     checked: Some(false),
                     warning: None,
+                    color: None,
                 }),
                 &[],
             ),
@@ -1088,6 +1097,7 @@ fn entry(title: &str, start: &str, end: Option<&str>) -> NodeKind {
         title: title.into(),
         start: start.into(),
         end: end.map(Into::into),
+        color: None,
     })
 }
 
@@ -1118,6 +1128,7 @@ fn card(label: &str) -> NodeKind {
         detail: None,
         checked: None,
         warning: None,
+        color: None,
     })
 }
 
@@ -1147,12 +1158,23 @@ fn input(label: &str, value: Value) -> NodeKind {
     })
 }
 
+fn plain_item(label: &str, checked: Option<bool>) -> Item {
+    Item {
+        label: label.into(),
+        detail: None,
+        checked,
+        warning: None,
+        color: None,
+    }
+}
+
 fn check_item(label: &str, checked: Option<bool>, warning: Option<&str>) -> NodeKind {
     NodeKind::Item(Item {
         label: label.into(),
         detail: None,
         checked,
         warning: warning.map(Into::into),
+        color: None,
     })
 }
 
@@ -1169,6 +1191,7 @@ fn item(label: &str) -> NodeKind {
         detail: None,
         checked: None,
         warning: None,
+        color: None,
     })
 }
 

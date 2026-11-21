@@ -2021,6 +2021,22 @@ Every label must hold more than spaces: Noura reads it to screen readers.
 
 ### Types
 
+#### <a id="color"></a>`enum color`
+
+A color from Noura's palette, which Noura draws to suit the light or
+dark theme.
+
+##### Enum Cases
+
+- <a id="color.red"></a>`red`
+- <a id="color.orange"></a>`orange`
+- <a id="color.yellow"></a>`yellow`
+- <a id="color.green"></a>`green`
+- <a id="color.blue"></a>`blue`
+- <a id="color.purple"></a>`purple`
+- <a id="color.brown"></a>`brown`
+- <a id="color.gray"></a>`gray`
+
 #### <a id="item"></a>`record item`
 
 A line in a list: a label and an optional quieter detail after it, on
@@ -2040,6 +2056,13 @@ the same line. A board's card shows the detail under the label.
   <p>A short warning after the label, such as `Overdue`, in the color
   Noura shows problems in. Screen readers read it with the label.
   Only list and virtual list items show one.
+
+- <a id="item.color"></a>`color`: option<[`color`](#color)>
+  <p>Colors the item's checkbox, or a dot before its label when it has
+  none, as for a calendar in a list of calendars. A colored checkbox
+  shows or hides something, so a checked one doesn't strike its label
+  through as a done task's does. Only list and virtual list items show
+  one.
 
 
 #### <a id="item_list"></a>`record item-list`
@@ -2274,6 +2297,10 @@ covers, in this device's time zone.
   entry's last day, or a timed entry's end. Without an end, or with
   one not after the start, an all-day entry takes its first day and a
   timed entry 30 minutes.
+
+- <a id="calendar_entry.color"></a>`color`: option<[`color`](#color)>
+  <p>The color Noura draws the entry in, such as its calendar's, or none
+  for the theme's own.
 
 
 #### <a id="icon"></a>`enum icon`

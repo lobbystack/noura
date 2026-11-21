@@ -2,7 +2,9 @@
 //! crate ships with the build that `crates/plugin-sdk/build-plugins.sh`
 //! makes, and helpers that read its page and its Inbox section.
 
-use app_core::{App, CalendarMode, Field, InputValue, PluginEvent, Target, ViewKind, ViewNode};
+use app_core::{
+    App, CalendarMode, Field, InputValue, PluginColor, PluginEvent, Target, ViewKind, ViewNode,
+};
 
 use super::plugins::{self, PluginFolder};
 
@@ -56,6 +58,8 @@ pub struct Shown {
     pub title: String,
     pub start: String,
     pub end: Option<String>,
+    /// The color the grid draws the entry in.
+    pub color: Option<PluginColor>,
 }
 
 impl Shown {
@@ -81,11 +85,17 @@ pub fn grid(app: &App) -> (CalendarMode, String, Vec<Shown>) {
         .children
         .iter()
         .filter_map(|entry| match &entry.kind {
-            ViewKind::Entry { title, start, end } => Some(Shown {
+            ViewKind::Entry {
+                title,
+                start,
+                end,
+                color,
+            } => Some(Shown {
                 id: entry.id.clone(),
                 title: title.clone(),
                 start: start.clone(),
                 end: end.clone(),
+                color: *color,
             }),
             _ => None,
         })

@@ -6,9 +6,9 @@
 
 use crate::support;
 use plugin_host::{
-    CalendarMode, Check, ColumnPress, EmptyState, Event, Field, Heading, HeadingLevel, Icon, Item,
-    Move, Naming, Node, NodeKind, PluginError, RunningPlugin, Services, Submission, Target, Value,
-    View, ViewKind, ViewNode, VirtualRow, check_rows,
+    CalendarMode, Check, Color, ColumnPress, EmptyState, Event, Field, Heading, HeadingLevel, Icon,
+    Item, Move, Naming, Node, NodeKind, PluginError, RunningPlugin, Services, Submission, Target,
+    Value, View, ViewKind, ViewNode, VirtualRow, check_rows,
 };
 use support::plugins;
 
@@ -241,6 +241,7 @@ fn lists_with_item_menus_and_menu_buttons_become_a_tree() {
         detail: detail.map(Into::into),
         checked: None,
         warning: None,
+        color: None,
     };
     assert_eq!(
         kinds(&beds.children),
@@ -373,13 +374,19 @@ fn a_calendar_grid_holds_its_mode_its_date_and_its_entries() {
         title: title.into(),
         start: start.into(),
         end: end.map(Into::into),
+        color: None,
     };
     assert_eq!(
         kinds(&calendar.children)[..2],
         [
             (
                 "retreat",
-                &entry("Retreat", "2026-10-19", Some("2026-10-22"))
+                &ViewKind::Entry {
+                    title: "Retreat".into(),
+                    start: "2026-10-19".into(),
+                    end: Some("2026-10-22".into()),
+                    color: Some(Color::Green),
+                }
             ),
             (
                 "standup",
@@ -513,12 +520,20 @@ fn a_list_shows_its_selected_item_and_items_carry_checkboxes_and_warnings() {
         detail: None,
         checked,
         warning: warning.map(Into::into),
+        color: None,
+    };
+    let green = ViewKind::Item {
+        label: "Mulch".into(),
+        detail: None,
+        checked: Some(true),
+        warning: None,
+        color: Some(Color::Green),
     };
     assert_eq!(
         kinds(&chores.children),
         [
             ("weed", &item("Weed the beds", Some(false), Some("Overdue"))),
-            ("mulch", &item("Mulch", Some(true), None)),
+            ("mulch", &green),
             // A warning of only spaces shows nothing.
             ("plain", &item("Look around", None, None)),
         ]
@@ -546,7 +561,7 @@ fn a_selection_outside_the_list_a_card_checkbox_and_an_unlabeled_name_field_are_
         ),
         (
             "card-with-checkbox",
-            "The card plan holds a checkbox or a warning, which only list items show.",
+            "The card plan holds a checkbox, a warning or a color, which only list items show.",
         ),
         (
             "unlabeled-name-field",
@@ -812,6 +827,7 @@ fn a_virtual_list_fetches_only_the_rows_asked_for() {
                 detail: Some("Batch 1".into()),
                 checked: None,
                 warning: None,
+                color: None,
             }
         }
     );
@@ -830,6 +846,7 @@ fn rows_that_break_the_rules_are_refused_with_a_reason() {
             detail: None,
             checked: None,
             warning: None,
+            color: None,
         },
     };
 
@@ -965,9 +982,11 @@ const UNKNOWN_KIND: &str = r#"
       (func (export "handle-event") (param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32))
       (func (export "realloc") (param i32 i32 i32 i32) (result i32) i32.const 1024))
     (core instance $i (instantiate $m))
+    (type $color' (enum "red" "orange" "yellow" "green" "blue" "purple" "brown" "gray"))
+    (export $color "color" (type $color'))
     (type $item' (record
       (field "label" string) (field "detail" (option string)) (field "checked" (option bool))
-      (field "warning" (option string))))
+      (field "warning" (option string)) (field "color" (option $color))))
     (export $item "item" (type $item'))
     (type $item-list' (record
       (field "label" string) (field "reorder" bool) (field "selected" (option string))
@@ -1007,7 +1026,8 @@ const UNKNOWN_KIND: &str = r#"
       (field "label" string) (field "mode" $calendar-mode) (field "date" string)))
     (export $calendar "calendar" (type $calendar'))
     (type $calendar-entry' (record
-      (field "title" string) (field "start" string) (field "end" (option string))))
+      (field "title" string) (field "start" string) (field "end" (option string))
+      (field "color" (option $color))))
     (export $calendar-entry "calendar-entry" (type $calendar-entry'))
     (type $icon' (enum "calendar" "done" "folder" "note" "sparkle" "tasks"))
     (export $icon "icon" (type $icon'))

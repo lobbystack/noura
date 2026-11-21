@@ -37,7 +37,7 @@ pub use instance::trap_foreign_imports;
 pub use instance::{
     AiChat, AiFailure, AiMessage, AiMessageKind, AiMessageStatus, AiProvider, AiRequest,
     AiRetention, AiRun, AiRunStatus, AiToolCall, AiToolDefinition, AiToolResult, AiWebPage,
-    AiWebResult, Calendar, CalendarEntry, CalendarMode, Check, Choice, Column, ColumnPress,
+    AiWebResult, Calendar, CalendarEntry, CalendarMode, Check, Choice, Color, Column, ColumnPress,
     Command, EmptyState, Event, Field, Form, Heading, HeadingLevel, Icon, InboxSection, Input,
     Item, ItemList, MenuItem, Move, NameField, Naming, Node, NodeKind, ObjectType, Page, Placement,
     PluginError, Registration, Services, SettingsSection, SortOrder, Submission, Table, Target,

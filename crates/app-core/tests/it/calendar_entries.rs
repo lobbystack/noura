@@ -39,6 +39,7 @@ fn shown(id: &str, title: &str, start: &str, end: Option<&str>) -> Shown {
         title: title.to_owned(),
         start: start.to_owned(),
         end: end.map(str::to_owned),
+        color: None,
     }
 }
 

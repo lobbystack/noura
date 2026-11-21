@@ -5,8 +5,8 @@
 
 use app_core::{
     CalendarMode, Choice, Column, ColumnPress, Field, HeadingLevel, InputValue, PluginCheck,
-    PluginEvent, PluginIcon, PluginMove, PluginNaming, SortOrder, Submission, Target, ViewKind,
-    ViewNode,
+    PluginColor, PluginEvent, PluginIcon, PluginMove, PluginNaming, SortOrder, Submission, Target,
+    ViewKind, ViewNode,
 };
 use serde_json::{Value, json};
 
@@ -48,9 +48,16 @@ fn kind(kind: &ViewKind) -> Value {
             detail,
             checked,
             warning,
+            color,
         } => tagged(
             "item",
-            json!({ "label": label, "detail": detail, "checked": checked, "warning": warning }),
+            json!({
+                "label": label,
+                "detail": detail,
+                "checked": checked,
+                "warning": warning,
+                "color": color.map(color_name),
+            }),
         ),
         ViewKind::VirtualList { label, rows } => {
             tagged("virtual-list", json!({ "label": label, "rows": rows }))
@@ -97,9 +104,14 @@ fn kind(kind: &ViewKind) -> Value {
             "calendar",
             json!({ "label": label, "mode": calendar_mode(*mode), "date": date }),
         ),
-        ViewKind::Entry { title, start, end } => tagged(
+        ViewKind::Entry {
+            title,
+            start,
+            end,
+            color,
+        } => tagged(
             "entry",
-            json!({ "title": title, "start": start, "end": end }),
+            json!({ "title": title, "start": start, "end": end, "color": color.map(color_name) }),
         ),
         ViewKind::Heading {
             text,
@@ -138,6 +150,19 @@ fn icon_name(icon: PluginIcon) -> &'static str {
         PluginIcon::Note => "note",
         PluginIcon::Sparkle => "sparkle",
         PluginIcon::Tasks => "tasks",
+    }
+}
+
+fn color_name(color: PluginColor) -> &'static str {
+    match color {
+        PluginColor::Red => "red",
+        PluginColor::Orange => "orange",
+        PluginColor::Yellow => "yellow",
+        PluginColor::Green => "green",
+        PluginColor::Blue => "blue",
+        PluginColor::Purple => "purple",
+        PluginColor::Brown => "brown",
+        PluginColor::Gray => "gray",
     }
 }
 
