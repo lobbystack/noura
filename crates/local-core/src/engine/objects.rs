@@ -98,8 +98,37 @@ impl WorkspaceEngine {
         input: CreateObjectInput,
         schemas: &ObjectTypeRegistry,
     ) -> Result<MutationResult<WorkspaceObject>> {
+        let id = new_object_id(&input.object_type);
+        self.create_object_checked_with_id(&id, input, schemas)
+    }
+
+    /// [`Self::create_object_checked`] under the stable ID `id`, which the
+    /// caller made with [`new_object_id`] for the object's type, as when
+    /// the ID also names the file. Fails with `identity_conflict` when an
+    /// object already holds the ID, and writes nothing.
+    pub fn create_object_checked_with_id(
+        &self,
+        id: &str,
+        input: CreateObjectInput,
+        schemas: &ObjectTypeRegistry,
+    ) -> Result<MutationResult<WorkspaceObject>> {
         const OPERATION: &str = "object_create";
         validate_object_type(&input.object_type)?;
+        if !workspace_format::valid_object_id(id, &input.object_type) {
+            return Err(CoreError::validation(
+                "invalid_object_id",
+                "The stable ID doesn't match the object's type",
+                OPERATION,
+            ));
+        }
+        if self.get_object(id)?.is_some() {
+            return Err(CoreError::new(
+                "identity_conflict",
+                ErrorCategory::Conflict,
+                "An object already holds this stable ID",
+                OPERATION,
+            ));
+        }
         if input.relative_path.is_none() && input.title.trim().is_empty() {
             return Err(CoreError::validation(
                 "title_required",
@@ -119,7 +148,7 @@ impl WorkspaceEngine {
             None => self.free_object_path(&input.object_type, &input.title),
         };
         let mut object = WorkspaceObject {
-            id: new_object_id(&input.object_type),
+            id: id.to_owned(),
             object_type: input.object_type,
             title: workspace_format::title_from_path(&relative_path),
             body: input.body,
