@@ -212,7 +212,7 @@ fn stop_keeps_the_partial_answer_as_cancelled_and_the_chat_answers_again() {
         ai::lines(app).contains(&"md: One, two,".to_owned())
     });
 
-    ai::press(&mut chat.app, "stop");
+    ai::stop(&mut chat.app);
     chat.wait("the answer stops", |app| {
         ai::lines(app).contains(&"Stopped.".to_owned())
     });
@@ -429,17 +429,10 @@ fn a_failed_answer_shows_a_public_reason_and_records_its_code() {
 #[cfg(unix)]
 fn draft(app: &App) -> Option<String> {
     let view = ai::page(app);
-    let composer = ai::find(view.root(), "composer")?;
-    composer
-        .children
-        .iter()
-        .find_map(|child| match &child.kind {
-            app_core::ViewKind::Input {
-                value: app_core::InputValue::Multiline(text),
-                ..
-            } => Some(text.clone()),
-            _ => None,
-        })
+    match &ai::find(view.root(), "composer")?.kind {
+        app_core::ViewKind::Composer { value, .. } => Some(value.clone()),
+        _ => None,
+    }
 }
 
 /// When Noura can't write your message to the chat, nothing goes to the

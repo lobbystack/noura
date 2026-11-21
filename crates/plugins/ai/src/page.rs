@@ -1,9 +1,13 @@
 //! The AI page and its sidebar section: the chats, each with a menu to
-//! rename it or have it removed after 30 days, the open chat's messages,
-//! the answer streaming in, Stop, Resume, and the message box.
+//! rename it or have it removed after 30 days, and the open chat as a
+//! conversation: your messages and the answers, the answer streaming in,
+//! the tool calls and web searches as quiet rows, Resume, and the box for
+//! the next message with its provider and Stop.
+
+use std::collections::BTreeMap;
 
 use plugin_sdk::{
-    Event, Icon, Node, Value, View,
+    ActivityState, Event, Icon, MessageAuthor, Node, Value, View,
     ai::{
         self, Chat, Message, MessageKind, MessageStatus, Provider, Request, Retention, Run,
         RunStatus, ToolDefinition,
@@ -18,9 +22,10 @@ const NEW_CHAT_BUTTON: &str = "new-chat";
 /// The empty state's button that opens Settings on AI.
 const OPEN_AI_SETTINGS: &str = "open-ai-settings";
 const CHATS: &str = "chats";
+const CONVERSATION: &str = "conversation";
+/// The message box. A press of its stop button names it too.
 const COMPOSER: &str = "composer";
 const PROVIDER: &str = "provider";
-const STOP: &str = "stop";
 const RESUME: &str = "resume";
 const CHAT_NAME: &str = "chat-name";
 
@@ -32,27 +37,24 @@ const RENAME: &str = "rename:";
 const KEEP: &str = "keep:";
 const EPHEMERAL: &str = "ephemeral:";
 
-/// The page: the open chat's messages, then Stop while an answer comes in
-/// or the message box.
+/// The page: the chat's title, then the chat as a conversation, with the
+/// message box at the bottom, or a way to connect a provider.
 pub(crate) fn render(state: &mut State) -> Vec<Node> {
     hand_over_tool_calls(state);
     let mut view = View::panel("ai", Some("AI"));
-    if let Some(notice) = &state.notice {
-        view.text(View::ROOT, "notice", notice);
-    }
     let providers = match ai::providers() {
         Ok(providers) => providers,
         Err(error) => {
+            view.page_heading(View::ROOT, "title", "AI", None, Some(Icon::Sparkle));
             view.text(View::ROOT, "providers-problem", &reason(&error));
             return view.into_nodes();
         }
     };
     let mut chat = None;
     let mut messages = Vec::new();
+    let mut problem = None;
     match state.chat.clone().map(|id| ai::read_chat(&id)) {
-        None => {
-            view.page_heading(View::ROOT, "title", "AI", None, Some(Icon::Sparkle));
-        }
+        None => {}
         Some(Ok((read, read_messages))) => {
             chat = Some(read);
             messages = read_messages;
@@ -63,8 +65,7 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
             if matches!(error, plugin_sdk::Error::NotFound(_)) {
                 state.chat = None;
             }
-            view.page_heading(View::ROOT, "title", "AI", None, Some(Icon::Sparkle));
-            view.text(View::ROOT, "chat-problem", &reason(&error));
+            problem = Some(reason(&error));
         }
     }
     let run = state
@@ -73,12 +74,16 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
         .and_then(|chat| state.runs.get(chat))
         .and_then(|id| ai::read_run(id).ok());
     let busy = run.as_ref().is_some_and(busy);
-    if let Some(chat) = &chat {
-        draw_title(&mut view, chat);
+    draw_title(&mut view, chat.as_ref());
+    let talk = view.conversation(
+        View::ROOT,
+        CONVERSATION,
+        chat.as_ref().map_or("New chat", |chat| chat.title.as_str()),
+    );
+    if let Some(problem) = &problem {
+        view.text(talk, "chat-problem", problem);
     }
-    for message in &messages {
-        draw_message(&mut view, message, run.as_ref(), &providers);
-    }
+    draw_messages(&mut view, talk, &messages, run.as_ref(), &providers);
     if let Some(run) = &run {
         // A message Noura didn't write to the chat, as when you said no or
         // the write failed, comes back to the message box.
@@ -86,27 +91,30 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
             state.unsent.remove(&run.id);
         } else if !busy && let Some(message) = state.unsent.remove(&run.id) {
             state.draft = message;
-            state.sent += 1;
         }
-        draw_run_status(&mut view, run, &providers, state);
+        draw_run_status(&mut view, talk, run);
     }
-    if busy {
-        view.button(View::ROOT, STOP, "Stop");
-    } else if providers.is_empty() {
+    if let Some(notice) = &state.notice {
+        view.text(talk, "notice", notice);
+    }
+    if providers.is_empty() && !busy {
         let empty = view.empty_state(
-            View::ROOT,
+            talk,
             "no-providers",
             "Connect an AI provider",
             None,
             Some(Icon::Sparkle),
         );
         view.button(empty, OPEN_AI_SETTINGS, "Open AI settings");
-    } else {
-        if stopped_before_answering(&messages) {
-            view.button(View::ROOT, RESUME, "Resume");
-        }
-        draw_composer(&mut view, state, &providers, &messages);
+        return view.into_nodes();
     }
+    if messages.is_empty() && problem.is_none() && state.notice.is_none() {
+        view.empty_state(talk, "start", "How can I help?", None, Some(Icon::Sparkle));
+    }
+    if !busy && stopped_before_answering(&messages) {
+        view.button(talk, RESUME, "Resume");
+    }
+    draw_composer(&mut view, talk, state, &providers, &messages, busy);
     view.into_nodes()
 }
 
@@ -190,8 +198,12 @@ fn stopped_before_answering(messages: &[Message]) -> bool {
 }
 
 /// The chat's title, and how long Noura keeps it when that isn't until
-/// you delete it.
-fn draw_title(view: &mut View, chat: &Chat) {
+/// you delete it, or New chat before the first message.
+fn draw_title(view: &mut View, chat: Option<&Chat>) {
+    let Some(chat) = chat else {
+        view.page_heading(View::ROOT, "title", "New chat", None, Some(Icon::Sparkle));
+        return;
+    };
     let detail = (chat.retention == Retention::Ephemeral)
         .then_some("This chat moves to the trash 30 days after it started.");
     view.page_heading(
@@ -224,100 +236,115 @@ fn draw_chat_menu(view: &mut View, item: u32, chat: &Chat) {
     );
 }
 
+/// The chat's messages in the conversation at `talk`. Each tool call
+/// shows with the result that answers it, which pairs with the latest
+/// call before it of the same tool that has none yet.
+fn draw_messages(
+    view: &mut View,
+    talk: u32,
+    messages: &[Message],
+    run: Option<&Run>,
+    providers: &[Provider],
+) {
+    let mut answers: BTreeMap<usize, usize> = BTreeMap::new();
+    for (index, message) in messages.iter().enumerate() {
+        if message.kind != MessageKind::ToolResult {
+            continue;
+        }
+        let call = (0..index).rev().find(|&call| {
+            messages[call].kind == MessageKind::ToolCall
+                && messages[call].tool_name == message.tool_name
+                && !answers.contains_key(&call)
+        });
+        if let Some(call) = call {
+            answers.insert(call, index);
+        }
+    }
+    let answered: Vec<usize> = answers.values().copied().collect();
+    for (index, message) in messages.iter().enumerate() {
+        match message.kind {
+            MessageKind::ToolCall => {
+                let result = answers.get(&index).map(|&result| &messages[result]);
+                draw_tool_call(view, talk, message, result, run);
+            }
+            MessageKind::ToolResult if answered.contains(&index) => {}
+            _ => draw_message(view, talk, message, run, providers),
+        }
+    }
+}
+
 /// One message of the chat. The answer that streams in shows the text
 /// that arrived so far.
-fn draw_message(view: &mut View, message: &Message, run: Option<&Run>, providers: &[Provider]) {
+fn draw_message(
+    view: &mut View,
+    talk: u32,
+    message: &Message,
+    run: Option<&Run>,
+    providers: &[Provider],
+) {
     match message.kind {
         MessageKind::User => {
-            let panel = view.add_panel(View::ROOT, &message.id, Some("You"));
-            view.text(panel, &format!("{}-author", message.id), "You");
-            view.markdown(panel, &format!("{}-text", message.id), &message.content);
+            view.message(
+                talk,
+                &message.id,
+                MessageAuthor::You,
+                "You",
+                &message.content,
+            );
         }
         MessageKind::Assistant => {
-            let panel = view.add_panel(View::ROOT, &message.id, Some("Answer"));
             let provider = message.provider.as_deref().unwrap_or_default();
             let name = providers
                 .iter()
                 .find(|known| known.id == provider)
                 .map_or(provider, |known| known.name.as_str());
             let model = message.model.as_deref().unwrap_or_default();
-            view.text(
-                panel,
-                &format!("{}-author", message.id),
-                &format!("{name}, {model}"),
-            );
             let streaming = run.filter(|run| run.message.as_deref() == Some(message.id.as_str()));
             let text = match (message.status, streaming) {
                 (MessageStatus::InProgress, Some(run)) => run.text.as_str(),
                 _ => message.content.as_str(),
             };
-            if !text.is_empty() {
-                view.markdown(panel, &format!("{}-text", message.id), text);
+            // A turn that only asked for tools has no text: its calls
+            // show it.
+            if text.trim().is_empty() && message.status == MessageStatus::Completed {
+                return;
             }
-            let note = match message.status {
-                MessageStatus::InProgress if streaming.is_none() => Some("Not finished."),
-                MessageStatus::InProgress => None,
-                MessageStatus::Completed => None,
-                MessageStatus::Cancelled => Some("Stopped."),
-                MessageStatus::Interrupted
-                    if message.error_code.as_deref() == Some("plugin-disabled") =>
-                {
-                    Some("You turned off a plugin this answer used.")
-                }
-                MessageStatus::Interrupted => Some("Noura stopped before this answer finished."),
-                MessageStatus::Failed => Some("This answer failed."),
-            };
-            if let Some(note) = note {
-                view.text(panel, &format!("{}-status", message.id), note);
-            }
-        }
-        MessageKind::ToolCall | MessageKind::ToolResult if is_web_call(message) => {
-            draw_web_call(view, message);
-        }
-        MessageKind::ToolCall => {
-            let tool = message.tool_name.as_deref().unwrap_or("a tool");
-            let panel = view.add_panel(View::ROOT, &message.id, Some("Tool call"));
-            view.text(
-                panel,
-                &format!("{}-tool", message.id),
-                &format!("Tool call: {tool}"),
+            let shown = view.message(
+                talk,
+                &message.id,
+                MessageAuthor::Other,
+                &format!("{name}, {model}"),
+                text,
             );
-            let note = match message.status {
-                MessageStatus::InProgress => Some("Waiting to run."),
-                MessageStatus::Completed | MessageStatus::Cancelled => None,
+            match message.status {
+                MessageStatus::InProgress if streaming.is_none() => {
+                    view.note(shown, "Not finished.");
+                }
+                MessageStatus::InProgress | MessageStatus::Completed => {}
+                MessageStatus::Cancelled => view.note(shown, "Stopped."),
                 MessageStatus::Interrupted
                     if message.error_code.as_deref() == Some("plugin-disabled") =>
                 {
-                    Some("You turned off this tool's plugin, so the call didn't run.")
+                    view.warn(shown, "You turned off a plugin this answer used.");
                 }
                 MessageStatus::Interrupted => {
-                    Some("Noura stopped before this call finished and won't rerun it.")
+                    view.note(shown, "Noura stopped before this answer finished.");
                 }
-                MessageStatus::Failed => Some("This call failed."),
-            };
-            if let Some(note) = note {
-                view.text(panel, &format!("{}-status", message.id), note);
+                MessageStatus::Failed => view.warn(shown, "This answer failed."),
             }
         }
-        MessageKind::ToolResult => {
-            let denied = serde_json::from_str::<serde_json::Value>(&message.content)
-                .is_ok_and(|result| result["denied"] == true);
-            let line = if denied {
-                "You denied this call, so it didn't run.".to_owned()
-            } else {
-                format!("Result: {}", message.content)
-            };
-            view.text(View::ROOT, &message.id, &line);
+        // A result whose call isn't in the chat shows on its own.
+        MessageKind::ToolCall | MessageKind::ToolResult => {
+            draw_tool_call(view, talk, message, None, run);
         }
         MessageKind::ContextSummary => {
-            let panel = view.add_panel(View::ROOT, &message.id, Some("Summary"));
-            view.text(
-                panel,
-                &format!("{}-about", message.id),
-                "Noura summarized the messages above to keep this chat within the model's \
-                 context.",
+            let summary = view.activity(
+                talk,
+                &message.id,
+                "Summarized the messages above",
+                ActivityState::Done,
             );
-            view.markdown(panel, &format!("{}-text", message.id), &message.content);
+            view.markdown(summary, &format!("{}-text", message.id), &message.content);
         }
     }
 }
@@ -328,49 +355,134 @@ fn is_web_call(message: &Message) -> bool {
     matches!(message.tool_name.as_deref(), Some(web::SEARCH | web::FETCH))
 }
 
-/// A web search or page read the model asked for, and what came back:
-/// the query or the address, then the sources a search found.
-fn draw_web_call(view: &mut View, message: &Message) {
-    let shown = match message.kind {
-        MessageKind::ToolCall => web::shown_call(&message.content),
-        _ => web::shown_result(&message.content),
+/// What a tool's name reads as: `create from Tasks` for the Tasks
+/// plugin's `create` command, or the name itself for another tool.
+fn tool_title(name: &str) -> String {
+    match name.split_once("__") {
+        Some((plugin, command)) if !plugin.is_empty() && !command.is_empty() => {
+            let mut letters = plugin.chars();
+            let plugin: String = letters
+                .next()
+                .map(|first| first.to_uppercase().chain(letters).collect())
+                .unwrap_or_default();
+            format!("{command} from {plugin}")
+        }
+        _ => name.to_owned(),
+    }
+}
+
+/// A tool call as a quiet row in `talk`, with the result that answers it
+/// once there is one: what it asked for and what came back show when you
+/// open it. `message` may be a result whose call isn't in the chat.
+fn draw_tool_call(
+    view: &mut View,
+    talk: u32,
+    message: &Message,
+    result: Option<&Message>,
+    run: Option<&Run>,
+) {
+    let (call, result) = match message.kind {
+        MessageKind::ToolResult => (None, Some(message)),
+        _ => (Some(message), result),
     };
-    let Some(shown) = shown else {
+    let web = is_web_call(message);
+    let denied = result.is_some_and(|result| {
+        serde_json::from_str::<serde_json::Value>(&result.content)
+            .is_ok_and(|result| result["denied"] == true)
+    });
+    let shown_result = result
+        .filter(|_| web)
+        .and_then(|result| web::shown_result(&result.content));
+    let failed_web = matches!(shown_result, Some(web::Shown::Failed(_)));
+    let tool = message.tool_name.as_deref().unwrap_or("a tool");
+    let title = match call
+        .filter(|_| web)
+        .and_then(|call| web::shown_call(&call.content))
+    {
+        Some(web::Shown::Searched(query)) => {
+            format!("Searched the web for \u{201c}{query}\u{201d}")
+        }
+        Some(web::Shown::Read(url)) => format!("Read {url}"),
+        _ => tool_title(tool),
+    };
+    let waiting = run.is_some_and(|run| run.status == RunStatus::WaitingForApproval);
+    let status = call.map_or(MessageStatus::Completed, |call| call.status);
+    let state = match status {
+        MessageStatus::InProgress if waiting => ActivityState::Waiting,
+        MessageStatus::InProgress => ActivityState::Running,
+        MessageStatus::Completed if denied => ActivityState::Denied,
+        MessageStatus::Completed if failed_web => ActivityState::Failed,
+        MessageStatus::Completed => ActivityState::Done,
+        MessageStatus::Cancelled | MessageStatus::Interrupted => ActivityState::Stopped,
+        MessageStatus::Failed => ActivityState::Failed,
+    };
+    let row = view.activity(talk, &message.id, &title, state);
+    let note = match status {
+        MessageStatus::Interrupted
+            if call.and_then(|call| call.error_code.as_deref()) == Some("plugin-disabled") =>
+        {
+            Some("You turned off this tool's plugin, so the call didn't run.")
+        }
+        MessageStatus::Interrupted => {
+            Some("Noura stopped before this call finished and won't rerun it.")
+        }
+        MessageStatus::Failed => Some("This call failed."),
+        _ if denied => Some("You denied this call, so it didn't run."),
+        _ => None,
+    };
+    if let Some(note) = note {
+        view.text(row, &format!("{}-status", message.id), note);
+    }
+    if web {
+        draw_web_result(view, row, &message.id, shown_result);
         return;
-    };
-    let id = format!("{}-web", message.id);
+    }
+    if let Some(call) = call {
+        view.markdown(row, &format!("{}-input", message.id), &code(&call.content));
+    }
+    if let Some(result) = result.filter(|_| !denied) {
+        view.markdown(
+            row,
+            &format!("{}-result", message.id),
+            &code(&result.content),
+        );
+    }
+}
+
+/// JSON text as a Markdown code block, laid out on several lines.
+fn code(json: &str) -> String {
+    let pretty = serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|value| serde_json::to_string_pretty(&value).ok())
+        .unwrap_or_else(|| json.to_owned());
+    format!("```\n{pretty}\n```")
+}
+
+/// What a web search or a page read brought back, in its row at `row`:
+/// the sources a search found, or why the call failed.
+fn draw_web_result(view: &mut View, row: u32, id: &str, shown: Option<web::Shown>) {
+    let id = format!("{id}-web");
     match shown {
-        web::Shown::Searched(query) => {
-            view.text(
-                View::ROOT,
-                &id,
-                &format!("Searched the web for \u{201c}{query}\u{201d}."),
-            );
+        Some(web::Shown::Sources(sources)) if sources.is_empty() => {
+            view.text(row, &id, "The search found nothing.");
         }
-        web::Shown::Read(url) => {
-            view.text(View::ROOT, &id, &format!("Read {url}."));
-        }
-        web::Shown::Sources(sources) if sources.is_empty() => {
-            view.text(View::ROOT, &id, "The search found nothing.");
-        }
-        web::Shown::Sources(sources) => {
-            let list = view.list(View::ROOT, &id, "Sources");
+        Some(web::Shown::Sources(sources)) => {
+            let list = view.list(row, &id, "Sources");
             for (index, (title, url)) in sources.iter().enumerate() {
                 view.item(list, &format!("{id}-{index}"), title, Some(url));
             }
         }
-        web::Shown::Page => {}
-        web::Shown::Failed(reason) => {
-            view.text(View::ROOT, &id, &format!("The web call failed: {reason}"));
+        Some(web::Shown::Failed(reason)) => {
+            view.text(row, &id, &format!("The web call failed: {reason}"));
         }
+        Some(web::Shown::Searched(_) | web::Shown::Read(_) | web::Shown::Page) | None => {}
     }
 }
 
 /// What the run of the last message you sent says, when the messages
-/// don't: it waits for you, or it ended early.
-fn draw_run_status(view: &mut View, run: &Run, _providers: &[Provider], state: &State) {
+/// don't: it ended early.
+fn draw_run_status(view: &mut View, talk: u32, run: &Run) {
     let line = match run.status {
-        RunStatus::WaitingForApproval => Some("Waiting for your answer on a tool call.".to_owned()),
         RunStatus::Failed => run
             .failure
             .as_ref()
@@ -378,30 +490,39 @@ fn draw_run_status(view: &mut View, run: &Run, _providers: &[Provider], state: &
         RunStatus::Interrupted => {
             Some("You turned off a plugin this answer relied on, so it stopped.".to_owned())
         }
-        RunStatus::Streaming | RunStatus::Completed | RunStatus::Cancelled => None,
+        RunStatus::Streaming
+        | RunStatus::WaitingForApproval
+        | RunStatus::Completed
+        | RunStatus::Cancelled => None,
     };
     if let Some(line) = line {
-        view.text(View::ROOT, &format!("run-{}", state.sent), &line);
+        view.text(talk, "run-status", &line);
     }
 }
 
-/// The box for the next message and the provider it goes to.
-fn draw_composer(view: &mut View, state: &State, providers: &[Provider], messages: &[Message]) {
-    let form = view.form(View::ROOT, COMPOSER, "Message", "Send");
-    let input = format!("message-{}", state.sent);
-    view.input(
-        form,
-        &input,
-        "Message",
-        Value::Multiline(state.draft.clone()),
-    );
-    view.require(form, &input);
+/// The box for the next message, with the provider it goes to, or Stop
+/// while an answer comes in.
+fn draw_composer(
+    view: &mut View,
+    talk: u32,
+    state: &State,
+    providers: &[Provider],
+    messages: &[Message],
+    busy: bool,
+) {
+    let composer = view.composer(talk, COMPOSER, "Message", &state.draft, "Send");
+    if busy {
+        view.stop(composer, "Stop");
+    }
+    if providers.is_empty() {
+        return;
+    }
     let choices: Vec<(&str, &str)> = providers
         .iter()
         .map(|provider| (provider.id.as_str(), provider.name.as_str()))
         .collect();
     let chosen = chosen_provider(state, providers, messages);
-    view.choice_input(form, PROVIDER, "Provider", &choices, chosen.as_deref());
+    view.choice_input(composer, PROVIDER, "Provider", &choices, chosen.as_deref());
 }
 
 /// The provider the next message goes to: the one you picked last, or the
@@ -431,9 +552,7 @@ pub(crate) fn sidebar(state: &State) -> Vec<Node> {
             let list = view.list(View::ROOT, CHATS, "Chats");
             view.open_on_click(list);
             for chat in &chats {
-                let detail =
-                    (chat.retention == Retention::Ephemeral).then_some("Removed after 30 days");
-                let item = view.item(list, &chat.id, &chat.title, detail);
+                let item = view.item(list, &chat.id, &chat.title, None);
                 if state
                     .renaming
                     .as_ref()
@@ -451,9 +570,7 @@ pub(crate) fn sidebar(state: &State) -> Vec<Node> {
                 view.select(list, chat);
             }
         }
-        Ok(_) => {
-            view.text(View::ROOT, "no-chats", "No chats yet.");
-        }
+        Ok(_) => {}
         Err(error) => {
             view.text(View::ROOT, "chats-problem", &reason(&error));
         }
@@ -474,7 +591,8 @@ pub(crate) fn handle(state: &mut State, event: Event) {
             state.notice = None;
             state.renaming = None;
         }
-        Event::Pressed(node) if node == STOP => {
+        // The message box's stop button.
+        Event::Pressed(node) if node == COMPOSER => {
             let run = state.chat.as_ref().and_then(|chat| state.runs.get(chat));
             if let Some(run) = run
                 && let Err(error) = ai::stop(run)
@@ -512,7 +630,7 @@ pub(crate) fn handle(state: &mut State, event: Event) {
             let mut message = String::new();
             for field in submission.fields {
                 match field.value {
-                    Value::Multiline(text) if field.node.starts_with("message-") => message = text,
+                    Value::Multiline(text) if field.node == COMPOSER => message = text,
                     Value::Choice(Some(provider)) if field.node == PROVIDER => {
                         state.provider = Some(provider);
                     }
@@ -569,7 +687,8 @@ fn resume(state: &mut State) {
 }
 
 /// Send `message` to the provider you picked, in the open chat or in a new
-/// one, offering the tools of the plugins on in the workspace.
+/// one, offering the tools of the plugins on in the workspace. A message
+/// that doesn't go out comes back to the message box.
 fn send(state: &mut State, message: String) {
     if message.trim().is_empty() {
         return;
@@ -583,6 +702,7 @@ fn send(state: &mut State, message: String) {
         .map(|(_, messages)| messages)
         .unwrap_or_default();
     let Some(provider) = chosen_provider(state, &providers, &messages) else {
+        state.draft = message;
         return;
     };
     let chat = match state.chat.clone() {
@@ -611,12 +731,10 @@ fn send(state: &mut State, message: String) {
             state.runs.insert(chat, run.id);
             state.provider = Some(provider);
             state.draft.clear();
-            state.sent += 1;
         }
         Err(error) => {
             state.notice = Some(reason(&error));
             state.draft = message;
-            state.sent += 1;
         }
     }
 }

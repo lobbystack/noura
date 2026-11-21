@@ -1,9 +1,10 @@
 //! The AI plugin. It registers the `chat` and `chat-message` object types
 //! with today's v1 fields and adds the AI page: the chats in the sidebar,
-//! the open chat's messages with each answer drawn as Markdown while it
-//! streams in, Stop, Resume after a crash or a quit, a menu to rename the
-//! chat or have it removed after 30 days, and a box to write the next
-//! message to the provider you pick. Each message offers the model the
+//! each with a menu to rename it or have it removed after 30 days, and the
+//! open chat as a conversation, with each answer drawn as Markdown while it
+//! streams in, tool calls as quiet rows, Resume after a crash or a quit,
+//! and a box at the bottom to write the next message to the provider you
+//! pick, with Stop while an answer comes in. Each message offers the model the
 //! tools of the plugins on in the workspace, and the plugin hands the
 //! calls the model asks for to Noura, which asks you about each one.
 //! Noura keeps the providers and their keys, and writes the chat files;
@@ -39,11 +40,8 @@ struct State {
     runs: BTreeMap<String, String>,
     /// The provider you picked last.
     provider: Option<String>,
-    /// How many messages the page sent, which names the message box, so
-    /// the box empties after each one.
-    sent: u32,
     /// What the message box holds when it next draws: a message that
-    /// didn't go out.
+    /// didn't go out. The box empties itself when you send.
     draft: String,
     /// The message of each run Noura hasn't written to the chat yet, by
     /// run ID. It comes back to the message box when the run ends without
@@ -67,7 +65,6 @@ static STATE: Mutex<State> = Mutex::new(State {
     chat: None,
     runs: BTreeMap::new(),
     provider: None,
-    sent: 0,
     draft: String::new(),
     unsent: BTreeMap::new(),
     notice: None,

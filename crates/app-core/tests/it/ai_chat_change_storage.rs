@@ -133,10 +133,13 @@ fn a_tool_result_a_crash_cut_between_its_two_files_completes_on_the_next_read() 
     });
     let listed = ai::chat_ids(&app)[0].clone();
     ai::open_chat(&mut app, &listed);
-    assert!(
+    // The call's input and its result, each in a code block of its row.
+    assert_eq!(
         ai::lines(&app)
             .iter()
-            .any(|line| line.starts_with("Result: {")),
+            .filter(|line| line.starts_with("md: ```\n{"))
+            .count(),
+        2,
         "{:?}",
         ai::lines(&app)
     );
@@ -623,7 +626,7 @@ fn a_summary_and_a_tool_result_reach_the_disk_while_the_index_refuses_writes() {
     let shown = |app: &App| {
         let lines = ai::lines(app);
         lines.contains(&format!("md: {SUMMARY}"))
-            && lines.contains(&"Result: {\"text\":\"hi\"}".to_owned())
+            && lines.contains(&"md: ```\n{\n  \"text\": \"hi\"\n}\n```".to_owned())
     };
     ai::wait_until(&mut app, "the chat shows the result", shown);
     let calls = of_kind(&root, "tool-call");
