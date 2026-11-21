@@ -27,6 +27,11 @@
 				"default": "medium"
 			},
 			{
+				"name": "assignee",
+				"kind": "string",
+				"nullable": true
+			},
+			{
 				"name": "project",
 				"kind": {
 					"reference": "project"
@@ -171,6 +176,28 @@
 			}
 		},
 		{
+			"name": "a task names who does it",
+			"properties": {
+				"assignee": "Alice"
+			},
+			"expected": {
+				"assignee": "Alice",
+				"status": "todo",
+				"priority": "medium"
+			}
+		},
+		{
+			"name": "a null assignee stays as it is",
+			"properties": {
+				"assignee": null
+			},
+			"expected": {
+				"assignee": null,
+				"status": "todo",
+				"priority": "medium"
+			}
+		},
+		{
 			"name": "a project holding a stable ID instead of a link",
 			"properties": {
 				"project": "project_01j00000000000000000000000"
@@ -241,13 +268,36 @@
 				"code": "wrong_type",
 				"property": "kanban_order"
 			}
+		},
+		{
+			"name": "an assignee that isn't a string",
+			"properties": {
+				"assignee": 5
+			},
+			"error": {
+				"code": "wrong_type",
+				"property": "assignee"
+			}
+		},
+		{
+			"name": "an assignee that is a list",
+			"properties": {
+				"assignee": [
+					"Alice",
+					"Bob"
+				]
+			},
+			"error": {
+				"code": "wrong_type",
+				"property": "assignee"
+			}
 		}
 	],
 	"serialization": [
 		{
 			"name": "task with every task field",
-			"markdown": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: in-progress\npriority: high\nproject: '[[Release 0.3]]'\ndue: 2026-09-04\nkanban_order: a0\nestimate: 3\ntags:\n- release\n- docs\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n",
-			"canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: in-progress\npriority: high\nproject: '[[Release 0.3]]'\ndue: 2026-09-04\nkanban_order: a0\nestimate: 3\ntags:\n- release\n- docs\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n"
+			"markdown": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: in-progress\npriority: high\nassignee: Alice\nproject: '[[Release 0.3]]'\ndue: 2026-09-04\nkanban_order: a0\nestimate: 3\ntags:\n- release\n- docs\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n",
+			"canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: in-progress\npriority: high\nassignee: Alice\nproject: '[[Release 0.3]]'\ndue: 2026-09-04\nkanban_order: a0\nestimate: 3\ntags:\n- release\n- docs\ncreated: 2026-08-27T18:00:00Z\nupdated: 2026-08-27T18:00:00Z\n---\n\n# Prepare release notes\n\nSummarize user-visible changes.\n"
 		},
 		{
 			"name": "task with a null project and no due date",
@@ -268,6 +318,11 @@
 			"name": "a dated key the schema doesn't declare sorts with the unknown keys",
 			"markdown": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: todo\npriority: low\ndate: 2026-09-04\ncustom: kept\n---\n\n# Plan the day\n",
 			"canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: todo\npriority: low\ncustom: kept\ndate: 2026-09-04\n---\n\n# Plan the day\n"
+		},
+		{
+			"name": "assignee comes after priority and before project",
+			"markdown": "---\nid: task_01j00000000000000000000000\ntype: task\nproject: '[[Launch]]'\nassignee: Bob\npriority: high\nstatus: todo\n---\n\n# Write the launch post\n",
+			"canonical": "---\nid: task_01j00000000000000000000000\ntype: task\nstatus: todo\npriority: high\nassignee: Bob\nproject: '[[Launch]]'\n---\n\n# Write the launch post\n"
 		}
 	]
 }

@@ -113,10 +113,12 @@ struct Asked {
 }
 
 /// A provider that answers the Summary's request with [`SUMMARY`] and the
-/// action items' request with [`ITEMS`], at once.
+/// action items' request with [`ITEMS`], or with `items` once a test sets
+/// it, at once.
 #[derive(Default)]
 struct Provider {
     asked: Mutex<Vec<Asked>>,
+    items: Mutex<Option<String>>,
 }
 
 fn text_of(parts: &[AiContentPart]) -> String {
@@ -149,13 +151,17 @@ impl AiStreamer for Provider {
             user: role("user"),
         };
         let answer = if asked.system.contains("Answer with one JSON value") {
-            ITEMS
+            self.items
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| ITEMS.to_owned())
         } else {
-            SUMMARY
+            SUMMARY.to_owned()
         };
         self.asked.lock().unwrap().push(asked);
         let events = vec![
-            Ok(AiProviderStreamEvent::TextDelta(answer.to_owned())),
+            Ok(AiProviderStreamEvent::TextDelta(answer)),
             Ok(AiProviderStreamEvent::Completed {
                 usage: None,
                 stop_reason: Some(AiStopReason::Completed { raw: "stop".into() }),
@@ -736,6 +742,120 @@ fn the_settings_pick_the_provider_the_prompt_and_the_folder_and_tasks_get_the_pr
     });
     assert!(kit.fixture.exists("Projects/Garden/Standup/Standup.wav"));
     assert!(!kit.fixture.exists("Meetings/Standup"));
+}
+
+/// The attendees you type in the panel reach the prompt, and each action
+/// item's owner becomes its task's assignee, spelled as the attendee is,
+/// with the name kept out of the title.
+#[test]
+fn the_attendees_you_name_become_the_assignees_of_the_tasks_the_ai_finds() {
+    let launch = "---\nid: transcription_01jbcdefghjkmnpqrstvwxyz0a\ntype: transcription\n\
+                  created: 2026-11-16T13:00:00Z\nupdated: 2026-11-16T13:00:00Z\n---\nAgenda.\n";
+    let transcript = "---\nid: transcript_01jbcdefghjkmnpqrstvwxyz0b\ntype: transcript\n\
+                      transcription: '[[Launch]]'\ncreated: 2026-11-16T13:00:00Z\n\
+                      updated: 2026-11-16T13:00:00Z\n---\n**Others** · 00:00:02\n\
+                      Alice will write the launch post, and Bob books the venue by Friday.\n";
+    let Some(mut kit) = kit(
+        &[
+            ("Meetings/Launch/Launch.md", launch.as_bytes()),
+            ("Meetings/Launch/Transcript.md", transcript.as_bytes()),
+        ],
+        true,
+        None,
+    ) else {
+        return;
+    };
+    *kit.provider.items.lock().unwrap() = Some(
+        r#"{"action_items":[
+            {"title":"Write the launch post","owner":"alice","due":null},
+            {"title":"Bob: book the venue","owner":"Bob","due":"2026-11-20"},
+            {"title":"Order the chairs","owner":null,"due":null}],"project":null}"#
+            .to_owned(),
+    );
+
+    let tab = support::open_from_tree(&mut kit.app, "Meetings/Launch/Launch.md");
+    panel(&mut kit.app, tab, "attendees");
+    kit.app.send_panel_event(
+        tab,
+        &PluginEvent::Submitted(app_core::Submission {
+            node: "attendees-form".into(),
+            fields: vec![Field {
+                node: "attendees".into(),
+                value: InputValue::Text("Alice, Bob".into()),
+            }],
+        }),
+    );
+    kit.wait_for("Meetings/Launch/Launch.md", "attendees:\n- Alice\n- Bob\n");
+    wait_until(&mut kit.app, "the panel shows the attendees", |app| {
+        app.plugin_panel(tab)
+            .and_then(Result::ok)
+            .and_then(|view| find(view.root(), "attendees").map(|node| node.kind.clone()))
+            .is_some_and(|kind| {
+                matches!(kind, ViewKind::Input { value: InputValue::Text(text), .. } if text == "Alice, Bob")
+            })
+    });
+
+    kit.app.press_panel_button(tab, "summarize");
+    wait_until(&mut kit.app, "the tasks exist", |_| {
+        tasks(&kit.fixture).len() == 3
+    });
+    let asked = kit.provider.asked.lock().unwrap().clone();
+    assert!(asked[1].system.contains("\"owner\""), "{}", asked[1].system);
+    assert!(
+        asked[1].user.contains("Participants:\n- Alice\n- Bob"),
+        "{}",
+        asked[1].user
+    );
+
+    let made = tasks(&kit.fixture);
+    let names: Vec<&str> = made.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Book the venue.md",
+            "Order the chairs.md",
+            "Write the launch post.md"
+        ]
+    );
+    let assignee = |text: &str| {
+        text.lines()
+            .find_map(|line| line.strip_prefix("assignee: "))
+            .map(str::to_owned)
+    };
+    assert_eq!(
+        assignee(&made[0].1).as_deref(),
+        Some("Bob"),
+        "{}",
+        made[0].1
+    );
+    assert_eq!(assignee(&made[1].1), None, "{}", made[1].1);
+    assert_eq!(
+        assignee(&made[2].1).as_deref(),
+        Some("Alice"),
+        "{}",
+        made[2].1
+    );
+    for (_, text) in &made {
+        assert!(text.contains("source: '[[Launch]]'"), "{text}");
+        assert!(
+            !text.contains("Alice write") && !text.contains("Bob:"),
+            "{text}"
+        );
+    }
+    assert!(made[0].1.contains("due: 2026-11-20"), "{}", made[0].1);
+
+    // The panel lists them by their clean titles.
+    let shown = panel(&mut kit.app, tab, "tasks");
+    for expected in [
+        "- Book the venue",
+        "- Order the chairs",
+        "- Write the launch post",
+    ] {
+        assert!(
+            shown.contains(&expected.to_owned()),
+            "{expected}: {shown:?}"
+        );
+    }
 }
 
 #[test]

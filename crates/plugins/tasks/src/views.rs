@@ -80,11 +80,22 @@ pub(crate) enum ProjectFilter {
     Is(String),
 }
 
+/// Whose tasks the assignee filter keeps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AssigneeFilter {
+    Any,
+    /// Tasks that name no one.
+    Without,
+    /// The tasks assigned to this name, ignoring case.
+    Is(String),
+}
+
 /// The filters that narrow the current view. They combine.
 #[derive(Debug, Clone)]
 pub(crate) struct Filters {
     pub(crate) status: Option<String>,
     pub(crate) project: ProjectFilter,
+    pub(crate) assignee: AssigneeFilter,
     /// Tasks in this folder, empty for the top level.
     pub(crate) folder: Option<String>,
     /// Tasks due on or before this day.
@@ -95,6 +106,7 @@ impl Filters {
     pub(crate) const NONE: Self = Self {
         status: None,
         project: ProjectFilter::Any,
+        assignee: AssigneeFilter::Any,
         folder: None,
         due_by: None,
     };
@@ -103,6 +115,7 @@ impl Filters {
     pub(crate) fn active(&self) -> bool {
         self.status.is_some()
             || !matches!(self.project, ProjectFilter::Any)
+            || !matches!(self.assignee, AssigneeFilter::Any)
             || self.folder.is_some()
             || self.due_by.is_some()
     }
@@ -118,6 +131,14 @@ impl Filters {
             ProjectFilter::Without => task.project.is_none(),
             ProjectFilter::Is(id) => task.project.as_deref() == Some(id.as_str()),
         };
+        let assignee = match &self.assignee {
+            AssigneeFilter::Any => true,
+            AssigneeFilter::Without => task.assignee.is_none(),
+            AssigneeFilter::Is(name) => task
+                .assignee
+                .as_deref()
+                .is_some_and(|assignee| assignee.to_lowercase() == name.to_lowercase()),
+        };
         let folder = self
             .folder
             .as_ref()
@@ -125,7 +146,7 @@ impl Filters {
         let due = self
             .due_by
             .is_none_or(|by| task.due.is_some_and(|due| due.day(&now.zone) <= by));
-        status && project && folder && due
+        status && project && assignee && folder && due
     }
 }
 
