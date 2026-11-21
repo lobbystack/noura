@@ -26,6 +26,7 @@ mod page;
 mod panel;
 mod schemas;
 mod sidebar;
+mod triggers;
 mod web;
 
 use std::{

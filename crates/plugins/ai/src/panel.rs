@@ -10,7 +10,7 @@ use plugin_sdk::{
     clock,
 };
 
-use crate::{State, look, page, reason};
+use crate::{State, look, page, reason, triggers};
 
 /// The node IDs events name.
 const PANEL: &str = "orb-panel";
@@ -158,8 +158,8 @@ fn label(model: &Model, models: &[Model]) -> String {
 }
 
 /// The Orb's recent runs, with what started each, how it ended and when,
-/// then its triggers, each with a menu to remove it, and a field to add
-/// one.
+/// then its triggers in plain words, each with a menu to remove it, and a
+/// field to add one.
 fn draw_activity(view: &mut View, panel: u32, orb: &Orb) {
     let runs = ai::orb_runs(&orb.id, RUNS_SHOWN).unwrap_or_default();
     if !runs.is_empty() {
@@ -184,7 +184,12 @@ fn draw_activity(view: &mut View, panel: u32, orb: &Orb) {
     if !orb.triggers.is_empty() {
         let list = view.list(panel, TRIGGERS, "Triggers");
         for (index, trigger) in orb.triggers.iter().enumerate() {
-            let item = view.item(list, &format!("trigger-{index}"), trigger, None);
+            let item = view.item(
+                list,
+                &format!("trigger-{index}"),
+                &triggers::words(trigger),
+                None,
+            );
             let menu = view.menu(item, &format!("trigger-menu-{index}"), "Trigger options");
             view.menu_item(menu, &format!("{REMOVE_TRIGGER}{index}"), "Remove", true);
         }

@@ -286,6 +286,41 @@ fn the_panels_model_and_effort_menus_write_the_orbs_file() {
     assert_eq!(meetings.model.as_deref(), Some("claude-opus-5-5"));
     assert_eq!(meetings.effort, Some(AiEffort::High));
 
+    // Its triggers read as plain words, while its file keeps them as
+    // they are.
+    let app = harness.state_mut().app_mut();
+    app.update_orb(
+        &meetings.id,
+        app_core::AiOrbChanges {
+            title: None,
+            instructions: None,
+            avatar: None,
+            color: None,
+            provider: None,
+            model: None,
+            effort: None,
+            tools: None,
+            triggers: Some(vec![
+                "event transcription.finished".to_owned(),
+                "schedule 30 8 * * 1-5".to_owned(),
+            ]),
+        },
+        &meetings.revision,
+    )
+    .unwrap();
+    wait_until(harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::ListBox, "Triggers")
+            .is_some_and(|list| {
+                list.query_all(By::new().role(Role::ListBoxOption))
+                    .filter_map(|node| node.accesskit_node().label())
+                    .collect::<Vec<_>>()
+                    == ["When a meeting ends", "Weekdays at 8:30"]
+            })
+    });
+    assert!(orb_file(&opened.root, "Meetings").contains("- schedule 30 8 * * 1-5"));
+    let harness = &mut opened.harness;
+
     // A model that takes no effort drops it, and its menu goes.
     pick(harness, "Model", "llama3");
     wait_until(harness, |_| {
