@@ -211,6 +211,15 @@ jobs:
             echo "::error::The release environment has no NOURA_UPDATER_PRIVATE_KEY."
             exit 1
           fi
+          # Sign a scratch file first, so a wrong or missing password fails
+          # in seconds instead of after the build.
+          probe="$RUNNER_TEMP/updater-key-check"
+          echo noura > "$probe"
+          if ! cargo packager signer sign "$probe"; then
+            echo "::error::NOURA_UPDATER_PRIVATE_KEY doesn't open with NOURA_UPDATER_PRIVATE_KEY_PASSWORD. docs/releasing.md shows how to set both."
+            exit 1
+          fi
+          rm -f "$probe" "$probe.sig"
           scripts/package-desktop.sh ${{ matrix.package-args }}
       # Apple recommends notarizing the outermost container, so Gatekeeper
       # accepts the downloaded disk image itself.
