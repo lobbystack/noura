@@ -2363,13 +2363,17 @@ How an editable text draws, and what Return does in it.
   the text, then empties the field and keeps the keyboard in it.
   Leaving it keeps what it holds and sends nothing.
 
+- <a id="editable_style.line"></a>`line`
+  <p>One line at the body's size, such as a name. Return or leaving it
+  sends the text without the spaces around it, which may be empty.
+
 
 #### <a id="editable"></a>`record editable`
 
-Text you edit in place. A title or a body reads as plain text until
-you click or tab into it. What you type stays until the plugin draws
-another value. Sending it sends `changed` with a `text` value, or a
-`multiline` one for a body, and only when the text differs from the
+Text you edit in place. A title, a body or a line reads as plain text
+until you click or tab into it. What you type stays until the plugin
+draws another value. Sending it sends `changed` with a `text` value, or
+a `multiline` one for a body, and only when the text differs from the
 value drawn; an `add` field sends only text with more than spaces.
 Escape puts back the value drawn and lets go of the keyboard.
 

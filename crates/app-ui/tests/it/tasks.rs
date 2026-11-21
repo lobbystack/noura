@@ -2,7 +2,8 @@
 //! top of the list, again and again, from New task and from the command
 //! palette, without leaving the page; the sidebar's views and counts; the
 //! list's sections with their counts; the task rows with their checkboxes
-//! and overdue dates; and the selected task's details, edited in place.
+//! and overdue dates; and the selected task's details, edited in place,
+//! with its assignee.
 
 use crate::support;
 use std::path::{Path, PathBuf};
@@ -1014,6 +1015,89 @@ fn the_selected_task_shows_beside_the_list_and_each_field_writes_its_file() {
         section(harness, "No date") == ["Read the guide"]
             && title_value(harness).as_deref() == Some("Read the guide")
     });
+}
+
+#[test]
+fn the_assignee_row_names_who_does_the_task_and_emptying_it_clears_it() {
+    let Some(Opened {
+        mut harness,
+        folder,
+        _folders,
+    }) = opened()
+    else {
+        return;
+    };
+    harness.set_size(egui::vec2(1200.0, 800.0));
+    harness
+        .get_by_role_and_label(Role::ListBox, "Views")
+        .get_by_role_and_label(Role::ListBoxOption, "All")
+        .click();
+    wait_until(&mut harness, |harness| {
+        task_list(harness).contains(&"Read the manual".to_owned())
+    });
+    harness
+        .get_by_role_and_label(Role::ListBox, "No date")
+        .get_by_role_and_label(Role::ListBoxOption, "Read the manual")
+        .click();
+    wait_until(&mut harness, |harness| {
+        title_value(harness).as_deref() == Some("Read the manual")
+    });
+    let path = "tasks/Read the manual.md";
+    let assignee = |harness: &Ui| {
+        harness
+            .query_by_role_and_label(Role::TextInput, "Assignee")
+            .and_then(|field| field.value())
+    };
+    assert_eq!(assignee(&harness).as_deref(), Some(""));
+    let detail = |harness: &Ui| {
+        harness
+            .get_by_role_and_label(Role::ListBox, "No date")
+            .get_by_role_and_label(Role::ListBoxOption, "Read the manual")
+            .accesskit_node()
+            .description()
+    };
+
+    // Typing writes nothing until Return.
+    harness
+        .get_by_role_and_label(Role::TextInput, "Assignee")
+        .click();
+    run(&mut harness);
+    type_text(&mut harness, " Alice ");
+    assert!(!file(&folder, path).contains("assignee:"));
+    press(&mut harness, Key::Enter);
+    wait_until(&mut harness, |_| {
+        file(&folder, path).contains("priority: high\nassignee: Alice\n")
+    });
+    wait_until(&mut harness, |harness| {
+        assignee(harness).as_deref() == Some("Alice")
+            && detail(harness).as_deref() == Some("Alice \u{b7} High")
+    });
+
+    // Escape puts the name back and writes nothing.
+    harness
+        .get_by_role_and_label(Role::TextInput, "Assignee")
+        .click();
+    run(&mut harness);
+    press_with(&mut harness, Modifiers::COMMAND, Key::A);
+    type_text(&mut harness, "Bob");
+    press(&mut harness, Key::Escape);
+    run(&mut harness);
+    assert_eq!(assignee(&harness).as_deref(), Some("Alice"));
+    assert!(file(&folder, path).contains("assignee: Alice\n"));
+
+    // An empty name clears it when you leave the field.
+    harness
+        .get_by_role_and_label(Role::TextInput, "Assignee")
+        .click();
+    run(&mut harness);
+    press_with(&mut harness, Modifiers::COMMAND, Key::A);
+    press(&mut harness, Key::Backspace);
+    press(&mut harness, Key::Tab);
+    wait_until(&mut harness, |_| !file(&folder, path).contains("assignee:"));
+    wait_until(&mut harness, |harness| {
+        assignee(harness).as_deref() == Some("") && detail(harness).as_deref() == Some("High")
+    });
+    assert!(file(&folder, path).ends_with("---\nNotes.\n"));
 }
 
 #[test]

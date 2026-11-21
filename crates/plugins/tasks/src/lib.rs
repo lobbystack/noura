@@ -5,7 +5,8 @@
 //! press Return; the list grouped into Overdue, Today, Upcoming, No date
 //! and Completed, each task with a menu to open, rename, check off or
 //! trash it; and the selected task beside the list, edited in place: its
-//! due date, status, priority, title, description, subtasks and project.
+//! due date, status, priority, title, description, subtasks, project and
+//! assignee.
 //! The Inbox's Due today section lists what is due by tonight and adds a
 //! task due today in one step. Other plugins list and change tasks through
 //! its `create`, `update`, `complete`, `reopen` and `list` commands, which

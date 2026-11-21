@@ -1,6 +1,6 @@
 //! The selected task in the Tasks page's right pane, edited in place: its
 //! due date, status and priority in a row, its title, its description,
-//! its subtasks and its project. Each change writes the task's file
+//! its subtasks, its project and its assignee. Each change writes the task's file
 //! against the revision the pane drew, so an edit made elsewhere since
 //! isn't overwritten.
 //!
@@ -168,7 +168,14 @@ pub(crate) fn render(
     );
 
     project_picker(view, pane, &task, projects);
-    // The Assignee row goes here, under the project, once tasks have one.
+    view.editable(
+        pane,
+        &node("assignee"),
+        "Assignee",
+        task.assignee.as_deref().unwrap_or_default(),
+        EditableStyle::Line,
+        false,
+    );
 
     if let Some(problem) = &object.problem {
         view.text(
@@ -282,6 +289,16 @@ fn change(id: &str, field: &str, value: Value) {
         ("description", Value::Multiline(text) | Value::Text(text)) => {
             edit_body(id, |body| body.with_description(&text));
         }
+        // An empty name clears the assignee.
+        ("assignee", Value::Text(name)) => {
+            let name = name.trim();
+            let change = if name.is_empty() {
+                (json!({}), vec!["assignee".to_owned()])
+            } else {
+                (json!({ "assignee": name }), Vec::new())
+            };
+            write_properties(id, change);
+        }
         ("add-subtask", Value::Text(text)) if !text.trim().is_empty() => {
             edit_subtasks(id, |subtasks| {
                 subtasks.push(Subtask {
@@ -361,6 +378,12 @@ fn set_property(id: &str, field: &str, value: Value) {
         },
         _ => return,
     };
+    write_properties(id, (set, remove));
+}
+
+/// Set and clear fields of the task `id`, against the revision the pane
+/// drew.
+fn write_properties(id: &str, (set, remove): (serde_json::Value, Vec<String>)) {
     let Some(revision) = state().panels.get(id).cloned() else {
         return;
     };

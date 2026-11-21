@@ -239,22 +239,8 @@ fn each_change_in_the_pane_writes_the_task_and_keeps_its_body() {
     assert!(text.ends_with("---\nNotes.\n"), "{text}");
 }
 
-/// Submit the pane's assignee form holding `name`, as Save or Enter does.
-fn assign(app: &mut App, name: &str) {
-    send(
-        app,
-        PluginEvent::Submitted(app_core::Submission {
-            node: format!("{}assignee-form", tasks::PANE),
-            fields: vec![app_core::Field {
-                node: format!("{}assignee", tasks::PANE),
-                value: InputValue::Text(name.to_owned()),
-            }],
-        }),
-    );
-}
-
 #[test]
-fn the_assignee_saves_on_submit_shows_in_the_list_and_an_empty_one_clears_it() {
+fn the_assignee_saves_trimmed_shows_in_the_list_and_an_empty_one_clears_it() {
     let fixture = workspace();
     let mut app = fixture.app();
     let Some(_folder) = with_tasks(&mut app) else {
@@ -265,11 +251,12 @@ fn the_assignee_saves_on_submit_shows_in_the_list_and_an_empty_one_clears_it() {
     wait_for(&mut app, tab, "status", choice("todo"));
     let read = || fixture.read("tasks/Paint the fence.md");
 
-    // Typing alone writes nothing: the name saves when you submit it.
-    change(&mut app, tab, "assignee", InputValue::Text("Al".into()));
-    assert_eq!(property(&read(), "assignee"), None);
-
-    assign(&mut app, "  Alice ");
+    change(
+        &mut app,
+        tab,
+        "assignee",
+        InputValue::Text("  Alice ".into()),
+    );
     assert_eq!(property(&read(), "assignee"), Some("Alice".into()));
     wait_for(&mut app, tab, "assignee", InputValue::Text("Alice".into()));
     let text = String::from_utf8(read()).unwrap();
@@ -289,7 +276,7 @@ fn the_assignee_saves_on_submit_shows_in_the_list_and_an_empty_one_clears_it() {
         row.detail
     );
 
-    assign(&mut app, " ");
+    change(&mut app, tab, "assignee", InputValue::Text(" ".into()));
     assert_eq!(property(&read(), "assignee"), None);
     wait_for(&mut app, tab, "assignee", InputValue::Text(String::new()));
     assert!(

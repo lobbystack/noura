@@ -3,9 +3,9 @@
 //! priority use.
 //!
 //! Editable text reads as plain text until you click or tab into it. A
-//! title or a body sends its text when you leave it, a title also on
-//! Return, and an add field sends on Return, then empties itself and keeps
-//! the keyboard. Escape puts back what the plugin drew. What you type
+//! title, a line or a body sends its text when you leave it, a title and a
+//! line also on Return, and an add field sends on Return, then empties
+//! itself and keeps the keyboard. Escape puts back what the plugin drew. What you type
 //! stays until the plugin draws another value, so a plugin that ignores a
 //! change doesn't wipe your typing.
 //!
@@ -73,6 +73,10 @@ pub(super) fn editable(
                 TITLE_SIZE + 2.0,
                 Weight::Semibold,
             )),
+            Margin::symmetric(6, 4),
+        ),
+        EditableStyle::Line => (
+            TextEdit::singleline(&mut draft.text).font(FontId::proportional(BODY_SIZE)),
             Margin::symmetric(6, 4),
         ),
         EditableStyle::Body => (
@@ -160,6 +164,11 @@ pub(super) fn editable(
                     draft.text.clone_from(&text);
                     (text != value).then_some(InputValue::Text(text))
                 }
+            }
+            EditableStyle::Line => {
+                let text = draft.text.trim().to_owned();
+                draft.text.clone_from(&text);
+                (text != value).then_some(InputValue::Text(text))
             }
             EditableStyle::Body => {
                 (draft.text != value).then(|| InputValue::Multiline(draft.text.clone()))

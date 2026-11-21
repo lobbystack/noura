@@ -924,13 +924,14 @@ impl View {
     }
 
     /// Add text you edit in place, holding `value`. A
-    /// [`title`](EditableStyle::Title) or a [`body`](EditableStyle::Body)
-    /// sends [`Event::Changed`] with its new text when you leave it, or
-    /// press Return in a title; an [`add`](EditableStyle::Add) field sends
-    /// it on Return, then empties itself and keeps the keyboard, so you
-    /// can add one thing after another. With `focus`, it takes the keyboard
-    /// when it appears, or when you draw it with `focus` after drawing it
-    /// without.
+    /// [`title`](EditableStyle::Title), a [`line`](EditableStyle::Line) or
+    /// a [`body`](EditableStyle::Body) sends [`Event::Changed`] with its
+    /// new text when you leave it, or press Return in a title or a line; a
+    /// line sends it trimmed, and may send it empty. An
+    /// [`add`](EditableStyle::Add) field sends it on Return, then empties
+    /// itself and keeps the keyboard, so you can add one thing after
+    /// another. With `focus`, it takes the keyboard when it appears, or
+    /// when you draw it with `focus` after drawing it without.
     pub fn editable(
         &mut self,
         parent: u32,

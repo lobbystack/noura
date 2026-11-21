@@ -141,6 +141,7 @@ fn kind(kind: &ViewKind) -> Value {
                     EditableStyle::Title => "title",
                     EditableStyle::Body => "body",
                     EditableStyle::Add => "add",
+                    EditableStyle::Line => "line",
                 },
                 "focus": focus,
             }),

@@ -11,7 +11,7 @@ A node's `kind` sets what Noura draws:
 - Layout and text: `panel`, `text`, `markdown`, and `split`, two panels side by side: the first as wide as the `split` says, from 160 to 640 points, with a line on its right, and the second taking the rest. Each pane scrolls on its own.
 - Headings and empty states: `heading`, a page's or a section's title with an optional `icon` and its buttons and choice inputs at its end, and `empty`, what an empty page or section shows, with its buttons under its text. A page heading's first child stands out when it is a button.
 - Controls: `button`, `input` (a single or multi-line text, a checkbox, a choice, a date or a date and time), `form` and `name-field`.
-- Compact controls for a details pane: `editable`, text you edit in place as a title, a body, or an add field that empties after Return so you can add the next item; `date-picker`, a button that shows a date and opens a month with Today, Tomorrow and Next week; and `picker`, a button that shows the chosen option and opens a menu of the options, each with an optional colored flag.
+- Compact controls for a details pane: `editable`, text you edit in place as a title, a line, a body, or an add field that empties after Return so you can add the next item; `date-picker`, a button that shows a date and opens a month with Today, Tomorrow and Next week; and `picker`, a button that shows the chosen option and opens a menu of the options, each with an optional colored flag.
 - Collections: `list` with `item` children, `virtual-list`, `table` with `row` children, `board` with `board-column` and `card` children, and `calendar` with `entry` children.
 - Menus: `menu`, `menu-item` and `separator`, the only child of an item, a row, a card or a button.
 
