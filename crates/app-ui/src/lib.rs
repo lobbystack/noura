@@ -53,6 +53,7 @@ use egui::{Event, Id, ThemePreference, ViewportId};
 /// Finds misspelled words for the notes, such as the system's spell
 /// checker.
 pub use editor_egui::SpellChecker;
+pub use rail::{WindowButtons, window_buttons};
 
 /// How often a window checks on a running note save while it draws no
 /// frame.
