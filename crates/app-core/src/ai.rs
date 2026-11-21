@@ -1250,6 +1250,7 @@ impl Ai {
             },
             messages,
             tools,
+            reasoning: None,
         };
         let client = lock(&self.client).clone();
         let store = self.store().map_err(|_| no_workspace_core())?;

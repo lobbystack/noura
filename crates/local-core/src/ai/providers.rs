@@ -19,6 +19,19 @@ pub const AI_PROVIDER_KINDS: [(&str, &str); 12] = [
     ("openai_resp", "OpenAI Responses"),
 ];
 
+/// A model a request names in place of its provider's own: as a
+/// provider's model must be.
+pub(super) fn validate_model(model: &str, operation: &str) -> Result<()> {
+    if model.trim().is_empty() || model.len() > 256 || model.chars().any(char::is_control) {
+        return Err(CoreError::validation(
+            "model_invalid",
+            "The model name is not valid",
+            operation,
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn validate_provider(provider: &AiProviderConfig, operation: &str) -> Result<()> {
     if provider.id.is_empty()
         || provider.id.len() > 128

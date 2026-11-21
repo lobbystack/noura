@@ -8,9 +8,9 @@ Last reviewed: 2026-09-07
 
 The desktop crate's `drag` dependency reaches `proc-macro-error` (`RUSTSEC-2024-0370`) through the GTK crates it uses on Linux. The desktop crate uses `drag` on macOS and Windows only, so no build compiles those crates, but `cargo deny` reads every target's dependencies.
 
-## AI provider dependency
+## Image decoder dependency
 
-`genai` currently depends on the archived `paste` macro crate (`RUSTSEC-2024-0436`). The notice reports maintenance status, not a known vulnerability. Noura contains no direct `paste` usage and will remove the exception when `genai` replaces it or a compatible provider layer is available.
+`rav1d`, which app-ui's AVIF decoder uses, depends on the archived `paste` macro crate (`RUSTSEC-2024-0436`). `genai` replaced it with `pastey` in 0.7. The notice reports maintenance status, not a known vulnerability. Noura contains no direct `paste` usage and will remove the exception when `rav1d` replaces it.
 
 ## Collaborative-text decoder dependency
 
@@ -22,4 +22,4 @@ Collaboration activation additionally requires an immutable owner-signed workspa
 
 Rust TLS uses `webpki-root-certs`, which distributes Mozilla's public root-certificate data under `CDLA-Permissive-2.0`. This permissive data license is explicitly allowed. It does not authorize copying unrelated source code.
 
-Review these exceptions whenever `genai`, `yrs` or `drag` changes, and before each release. An unmaintained-code exception does not cover a newly reported vulnerability.
+Review these exceptions whenever `rav1d`, `yrs` or `drag` changes, and before each release. An unmaintained-code exception does not cover a newly reported vulnerability.
