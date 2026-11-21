@@ -53,7 +53,8 @@ fn zone(name: &str) -> TimeZone {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Choice {
     Today,
-    Upcoming,
+    /// Due from today through the next six days, or overdue.
+    Week,
     All,
     Completed,
     /// The tasks of the project with this stable ID.
@@ -65,7 +66,7 @@ pub(crate) enum Choice {
 /// The views the sidebar lists first, by node ID and name.
 pub(crate) const VIEWS: [(Choice, &str, &str); 4] = [
     (Choice::Today, "view:today", "Today"),
-    (Choice::Upcoming, "view:upcoming", "Upcoming"),
+    (Choice::Week, "view:week", "Next 7 days"),
     (Choice::All, "view:all", "All"),
     (Choice::Completed, "view:completed", "Completed"),
 ];
@@ -133,7 +134,7 @@ impl Filters {
 pub(crate) fn holds(choice: &Choice, task: &Task, now: &Now) -> bool {
     match choice {
         Choice::Today => !task.done() && task.due.is_some_and(|due| due_by_today(due, now)),
-        Choice::Upcoming => !task.done() && task.due.is_some_and(|due| !due_by_today(due, now)),
+        Choice::Week => !task.done() && task.due.is_some_and(|due| within_week(due, now)),
         Choice::All => true,
         Choice::Completed => task.done(),
         Choice::Project(id) => task.project.as_deref() == Some(id.as_str()),
@@ -146,6 +147,67 @@ fn due_by_today(due: Due, now: &Now) -> bool {
     match due {
         Due::Day(day) => day <= now.today,
         Due::At(at) => at < now.tomorrow(),
+    }
+}
+
+/// Whether `due` falls by the end of the sixth day after today, overdue
+/// included.
+fn within_week(due: Due, now: &Now) -> bool {
+    now.today
+        .checked_add(jiff::ToSpan::days(6))
+        .is_ok_and(|last| due.day(&now.zone) <= last)
+}
+
+/// A group of a task list, in the order the list shows them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Section {
+    Overdue,
+    Today,
+    Upcoming,
+    NoDate,
+    Completed,
+}
+
+impl Section {
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Overdue,
+        Self::Today,
+        Self::Upcoming,
+        Self::NoDate,
+        Self::Completed,
+    ];
+
+    /// What node IDs of the section say after `tasks-`.
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Self::Overdue => "overdue",
+            Self::Today => "today",
+            Self::Upcoming => "upcoming",
+            Self::NoDate => "no-date",
+            Self::Completed => "completed",
+        }
+    }
+
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            Self::Overdue => "Overdue",
+            Self::Today => "Today",
+            Self::Upcoming => "Upcoming",
+            Self::NoDate => "No date",
+            Self::Completed => "Completed",
+        }
+    }
+}
+
+/// The section a list shows `task` in: done and cancelled tasks last, the
+/// rest by when they're due.
+pub(crate) fn section(task: &Task, now: &Now) -> Section {
+    match task.due {
+        _ if task.closed() => Section::Completed,
+        None => Section::NoDate,
+        Some(_) if overdue(task, now) => Section::Overdue,
+        Some(due) if due_by_today(due, now) => Section::Today,
+        Some(_) => Section::Upcoming,
     }
 }
 

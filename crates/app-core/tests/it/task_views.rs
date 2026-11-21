@@ -1,12 +1,13 @@
 //! Seam 1: the Tasks page's views with the clock stopped. Today holds the
 //! tasks not marked done that are due by the end of today, overdue
-//! included, Upcoming those due later, All every task and Completed those
-//! marked done. A project view holds the project's tasks and a folder view
+//! included, Next 7 days those due by the sixth day from today, overdue
+//! included, All every task and Completed those marked done. A project view holds the project's tasks and a folder view
 //! the tasks in that folder. Lists order tasks not done first, then by
 //! due date with dated tasks first, then by priority, then by last
 //! update. The sidebar lists the views, then the projects, then the
-//! folders that hold tasks; filters narrow the view and combine; and
-//! overdue tasks say so in the device's time zone.
+//! folders that hold tasks, each with how many open tasks it holds;
+//! filters narrow the view and combine; and an overdue task shows its due
+//! date as a warning, in the device's time zone.
 
 use crate::support;
 use app_core::{InputValue, PluginEvent};
@@ -105,7 +106,7 @@ fn view(app: &mut app_core::App, item: &str) -> Vec<String> {
 }
 
 #[test]
-fn today_upcoming_all_and_completed_hold_the_tasks_their_rules_say_in_list_order() {
+fn today_next_7_days_all_and_completed_hold_the_tasks_their_rules_say_in_list_order() {
     let (fixture, system) = garden();
     let mut app = fixture.app_with(system);
     let Some(_folder) = with_tasks(&mut app) else {
@@ -114,7 +115,10 @@ fn today_upcoming_all_and_completed_hold_the_tasks_their_rules_say_in_list_order
 
     assert_eq!(text(&app, "view").as_deref(), Some("Today"));
     assert_eq!(labels(&app), ["Water the beds", "Pay rent", "Call the vet"]);
-    assert_eq!(view(&mut app, "view:upcoming"), ["Order seeds"]);
+    assert_eq!(
+        view(&mut app, "view:week"),
+        ["Water the beds", "Pay rent", "Call the vet", "Order seeds"]
+    );
     assert_eq!(
         view(&mut app, "view:all"),
         [
@@ -285,16 +289,16 @@ fn the_sidebar_lists_the_views_then_a_view_per_project_then_a_view_per_folder_wi
             SidebarList {
                 id: "views".into(),
                 items: vec![
-                    item("view:today", "Today", None),
-                    item("view:upcoming", "Upcoming", None),
-                    item("view:all", "All", None),
+                    item("view:today", "Today", Some("3")),
+                    item("view:week", "Next 7 days", Some("4")),
+                    item("view:all", "All", Some("7")),
                     item("view:completed", "Completed", None),
                 ],
                 selected: Some("view:today".into()),
             },
             SidebarList {
                 id: "projects".into(),
-                items: vec![item(&format!("project:project_{H}"), "Garden", None)],
+                items: vec![item(&format!("project:project_{H}"), "Garden", Some("1"))],
                 selected: None,
             },
             SidebarList {
@@ -302,7 +306,8 @@ fn the_sidebar_lists_the_views_then_a_view_per_project_then_a_view_per_folder_wi
                 items: vec![
                     item("folder:", "Top level", Some("1")),
                     item("folder:Shed", "Shed", Some("1")),
-                    item("folder:tasks", "tasks", Some("6")),
+                    // Mulch is done, so it doesn't count.
+                    item("folder:tasks", "tasks", Some("5")),
                 ],
                 selected: None,
             },
@@ -368,14 +373,14 @@ fn filters_for_status_project_folder_and_due_date_narrow_the_view_and_combine() 
     assert_eq!(labels(&app), ["Water the beds", "Pay rent"]);
     send(&mut app, changed("filter-folder", choice("in:tasks")));
     assert_eq!(labels(&app), ["Water the beds", "Pay rent"]);
-    tasks::choose(&mut app, "views", "view:upcoming");
+    tasks::choose(&mut app, "views", "view:completed");
     assert_eq!(labels(&app), Vec::<String>::new());
     assert_eq!(text(&app, "empty").as_deref(), Some("No tasks here"));
 
     send(&mut app, changed("filter-due", InputValue::Date(None)));
     send(&mut app, changed("filter-status", choice("any")));
     send(&mut app, changed("filter-folder", choice("any")));
-    assert_eq!(labels(&app), ["Order seeds"]);
+    assert_eq!(labels(&app), ["Mulch"]);
 }
 
 #[test]
@@ -420,7 +425,8 @@ fn a_task_due_before_today_in_the_devices_time_zone_shows_as_overdue() {
         .map(|row| (row.label, row.warning))
         .collect();
 
-    let overdue = Some("Overdue".to_owned());
+    // The warning is the overdue task's due date, in the device's zone.
+    let overdue = Some("Yesterday".to_owned());
     assert_eq!(
         warnings,
         [
@@ -454,7 +460,8 @@ fn each_row_shows_its_due_date_project_and_priority_and_a_checkbox() {
     assert_eq!(
         shown,
         [
-            row("Water the beds", Some("Oct 19"), false),
+            // Overdue, its due date shows as a warning instead.
+            row("Water the beds", None, false),
             row("Pay rent", Some("Today · Urgent"), false),
             row("Call the vet", Some("23:30 · Low"), false),
             row("Order seeds", Some("Tomorrow"), false),
