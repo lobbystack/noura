@@ -144,7 +144,10 @@ pub(super) fn styled_button(ui: &mut Ui, node: &ViewNode, label: &str, look: Loo
         None
     };
     let creates = label.starts_with("New ") || label.starts_with("Add ");
+    // A button named More that opens a menu shows as an ellipsis.
+    let more = label == "More" && !node.children.is_empty();
     let draw = |ui: &mut Ui| match (look, step) {
+        _ if more => Btn::icon_only(icons::MORE, label).size(Size::Sm).show(ui),
         (Look::Ghost, Some(icon)) => Btn::icon_only(icon, label).size(Size::Sm).show(ui),
         (Look::Plain, _) => Btn::new(label).show(ui),
         (Look::Primary, _) => {

@@ -15,6 +15,7 @@
 mod board;
 mod calendar;
 mod drag;
+mod edit;
 mod form;
 mod heading;
 mod menu;
@@ -86,13 +87,12 @@ fn split(ui: &mut Ui, node: &ViewNode, first_width: u32, kit: &mut Kit) {
                         }
                         _ => builder,
                     };
-                    // A pane is narrow, so its nodes stack, one per row.
+                    // A pane is narrow, so its nodes stack, one per row,
+                    // apart from a run of buttons and pickers.
                     ui.push_id(&child.id, |ui| {
                         ui.scope_builder(builder, |ui| {
                             ui.spacing_mut().item_spacing.y = 12.0;
-                            for node in &child.children {
-                                self::node(ui, node, kit);
-                            }
+                            children(ui, &child.children, kit);
                         });
                     });
                 });
@@ -377,6 +377,7 @@ fn inline(node: &ViewNode) -> bool {
     match &node.kind {
         ViewKind::Button { .. } => true,
         ViewKind::Input { value, choices, .. } => form::segmented(value, choices),
+        ViewKind::DatePicker { .. } | ViewKind::Picker { .. } => true,
         _ => false,
     }
 }
@@ -500,6 +501,20 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
         } => form::form(ui, node, (label, submit, required), kit),
         ViewKind::Input { .. } => form::input(ui, node, kit),
         ViewKind::NameField { label, value } => form::name_field(ui, node, label, value, kit),
+        ViewKind::Editable {
+            label,
+            value,
+            style,
+            focus,
+        } => edit::editable(ui, node, (label, value, *style, *focus), kit),
+        ViewKind::DatePicker { label, value } => {
+            edit::date_picker(ui, node, label, value.as_deref(), kit);
+        }
+        ViewKind::Picker {
+            label,
+            options,
+            chosen,
+        } => edit::picker(ui, node, label, (options, chosen.as_deref()), kit),
         // Their list, table, board or menu draws them.
         ViewKind::Item { .. }
         | ViewKind::Row { .. }

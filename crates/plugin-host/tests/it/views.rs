@@ -6,9 +6,10 @@
 
 use crate::support;
 use plugin_host::{
-    CalendarMode, Check, ColumnPress, EmptyState, Event, Field, Heading, HeadingLevel, Icon, Item,
-    Move, Naming, Node, NodeKind, PluginError, RunningPlugin, Services, Submission, Target, Value,
-    View, ViewKind, ViewNode, VirtualRow, check_rows,
+    CalendarMode, Check, Color, ColumnPress, DatePicker, Editable, EditableStyle, EmptyState,
+    Event, Field, Heading, HeadingLevel, Icon, Item, Move, Naming, Node, NodeKind, PickerOption,
+    PluginError, RunningPlugin, Services, Submission, Target, Value, View, ViewKind, ViewNode,
+    VirtualRow, check_rows,
 };
 use support::plugins;
 
@@ -1020,6 +1021,23 @@ const UNKNOWN_KIND: &str = r#"
     (type $empty-state' (record
       (field "title" string) (field "detail" (option string)) (field "icon" (option $icon))))
     (export $empty-state "empty-state" (type $empty-state'))
+    (type $color' (enum "red" "orange" "yellow" "green" "blue" "purple" "brown" "gray"))
+    (export $color "color" (type $color'))
+    (type $editable-style' (enum "title" "body" "add"))
+    (export $editable-style "editable-style" (type $editable-style'))
+    (type $editable' (record
+      (field "label" string) (field "value" string) (field "style" $editable-style)
+      (field "focus" bool)))
+    (export $editable "editable" (type $editable'))
+    (type $date-picker' (record (field "label" string) (field "value" (option string))))
+    (export $date-picker "date-picker" (type $date-picker'))
+    (type $picker-option' (record
+      (field "id" string) (field "label" string) (field "color" (option $color))))
+    (export $picker-option "picker-option" (type $picker-option'))
+    (type $picker' (record
+      (field "label" string) (field "options" (list $picker-option))
+      (field "chosen" (option string))))
+    (export $picker "picker" (type $picker'))
     (type $node-kind' (variant
       (case "panel" (option string)) (case "text" string)
       (case "markdown" string) (case "button" string)
@@ -1028,7 +1046,8 @@ const UNKNOWN_KIND: &str = r#"
       (case "input" $input) (case "name-field" $name-field) (case "menu" string) (case "menu-item" $menu-item)
       (case "separator") (case "board" string) (case "board-column" string)
       (case "card" $item) (case "calendar" $calendar) (case "entry" $calendar-entry)
-      (case "heading" $heading) (case "empty" $empty-state) (case "split" u32)))
+      (case "heading" $heading) (case "empty" $empty-state) (case "split" u32)
+      (case "editable" $editable) (case "date-picker" $date-picker) (case "picker" $picker)))
     (export $node-kind "node-kind" (type $node-kind'))
     (type $node' (record
       (field "id" string) (field "kind" $node-kind) (field "children" (list u32))))
@@ -1195,4 +1214,147 @@ fn a_split_holds_two_panels_and_a_first_pane_of_a_drawable_width() {
     assert!(text.to_string().contains("two panels"), "{text}");
     let narrow = split(100, vec![panel("list"), panel("detail")]).expect_err("too narrow");
     assert!(narrow.to_string().contains("160 to 640"), "{narrow}");
+}
+
+/// A view of one panel holding `leaf`, the node under test.
+fn holding(leaf: NodeKind) -> Result<View, plugin_host::ViewError> {
+    View::from_nodes(vec![
+        node("root", NodeKind::Panel(None), vec![1]),
+        node("leaf", leaf, vec![]),
+    ])
+}
+
+fn option(id: &str, label: &str, color: Option<Color>) -> PickerOption {
+    PickerOption {
+        id: id.into(),
+        label: label.into(),
+        color,
+    }
+}
+
+fn picker(options: Vec<PickerOption>, chosen: Option<&str>) -> NodeKind {
+    NodeKind::Picker(plugin_host::Picker {
+        label: "Priority".into(),
+        options,
+        chosen: chosen.map(str::to_owned),
+    })
+}
+
+#[test]
+fn editable_text_date_pickers_and_pickers_become_their_view_kinds() {
+    let view = View::from_nodes(vec![
+        node("root", NodeKind::Panel(None), vec![1, 2, 3]),
+        node(
+            "title",
+            NodeKind::Editable(Editable {
+                label: "Title".into(),
+                value: "Buy seeds".into(),
+                style: EditableStyle::Title,
+                focus: true,
+            }),
+            vec![],
+        ),
+        node(
+            "due",
+            NodeKind::DatePicker(DatePicker {
+                label: "Due date".into(),
+                value: Some("2026-11-21".into()),
+            }),
+            vec![],
+        ),
+        node(
+            "priority",
+            picker(
+                vec![
+                    option("low", "Low", Some(Color::Blue)),
+                    option("high", "High", None),
+                ],
+                Some("high"),
+            ),
+            vec![],
+        ),
+    ])
+    .expect("the view is valid");
+
+    let kinds: Vec<&ViewKind> = view
+        .root()
+        .children
+        .iter()
+        .map(|child| &child.kind)
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            &ViewKind::Editable {
+                label: "Title".into(),
+                value: "Buy seeds".into(),
+                style: EditableStyle::Title,
+                focus: true,
+            },
+            &ViewKind::DatePicker {
+                label: "Due date".into(),
+                value: Some("2026-11-21".into()),
+            },
+            &ViewKind::Picker {
+                label: "Priority".into(),
+                options: vec![
+                    option("low", "Low", Some(Color::Blue)),
+                    option("high", "High", None),
+                ],
+                chosen: Some("high".into()),
+            },
+        ]
+    );
+}
+
+#[test]
+fn unlabeled_or_malformed_editable_text_date_pickers_and_pickers_are_refused() {
+    let refused = |leaf: NodeKind| holding(leaf).expect_err("refused").to_string();
+    assert_eq!(
+        refused(NodeKind::Editable(Editable {
+            label: " ".into(),
+            value: String::new(),
+            style: EditableStyle::Add,
+            focus: false,
+        })),
+        "The editable text leaf has no label."
+    );
+    assert_eq!(
+        refused(NodeKind::DatePicker(DatePicker {
+            label: "Due date".into(),
+            value: Some("21/11/2026".into()),
+        })),
+        "The date picker leaf holds 21/11/2026, which isn't a date in the form YYYY-MM-DD."
+    );
+    assert_eq!(
+        refused(picker(Vec::new(), None)),
+        "The picker leaf has no options."
+    );
+    assert_eq!(
+        refused(picker(vec![option("low", "Low", None)], Some("high"))),
+        "The picker leaf chooses high, which isn't one of its options."
+    );
+    assert_eq!(
+        refused(picker(
+            vec![option("low", "Low", None), option("low", "Lower", None)],
+            None
+        )),
+        "The picker leaf has two options with the ID low."
+    );
+    assert_eq!(
+        refused(picker(vec![option("low", " ", None)], None)),
+        "The option low of the picker leaf has no label."
+    );
+    // They hold no other nodes.
+    let parent = View::from_nodes(vec![
+        node("root", NodeKind::Panel(None), vec![1]),
+        node(
+            "leaf",
+            picker(vec![option("low", "Low", None)], None),
+            vec![2],
+        ),
+        node("line", NodeKind::Text("Hi".into()), vec![]),
+    ])
+    .expect_err("a picker with children");
+    assert_eq!(parent.to_string(), "The picker leaf holds no other nodes.");
 }

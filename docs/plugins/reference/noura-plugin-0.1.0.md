@@ -2021,6 +2021,22 @@ Every label must hold more than spaces: Noura reads it to screen readers.
 
 ### Types
 
+#### <a id="color"></a>`enum color`
+
+A color from Noura's palette, which Noura draws to suit the light or
+dark theme.
+
+##### Enum Cases
+
+- <a id="color.red"></a>`red`
+- <a id="color.orange"></a>`orange`
+- <a id="color.yellow"></a>`yellow`
+- <a id="color.green"></a>`green`
+- <a id="color.blue"></a>`blue`
+- <a id="color.purple"></a>`purple`
+- <a id="color.brown"></a>`brown`
+- <a id="color.gray"></a>`gray`
+
 #### <a id="item"></a>`record item`
 
 A line in a list: a label and an optional quieter detail after it, on
@@ -2037,8 +2053,9 @@ the same line. A board's card shows the detail under the label.
   list items show one: a card holding one breaks the rules.
 
 - <a id="item.warning"></a>`warning`: option<`string`>
-  <p>A short warning after the label, such as `Overdue`, in the color
-  Noura shows problems in. Screen readers read it with the label.
+  <p>A short warning at the end of the line, such as `Overdue` or an
+  overdue date, in the color Noura shows problems in. Screen readers
+  read it with the label.
   Only list and virtual list items show one.
 
 
@@ -2328,6 +2345,93 @@ What a page or a section shows while it holds nothing.
 
 - <a id="empty_state.icon"></a>`icon`: option<[`icon`](#icon)>
 
+#### <a id="editable_style"></a>`enum editable-style`
+
+How an editable text draws, and what Return does in it.
+
+##### Enum Cases
+
+- <a id="editable_style.title"></a>`title`
+  <p>One line at a title's size. Return or leaving it sends the text.
+
+- <a id="editable_style.body"></a>`body`
+  <p>Several lines. Return starts a new line, and leaving it sends the
+  text.
+
+- <a id="editable_style.add"></a>`add`
+  <p>One line in a box, for adding one thing after another: Return sends
+  the text, then empties the field and keeps the keyboard in it.
+  Leaving it keeps what it holds and sends nothing.
+
+
+#### <a id="editable"></a>`record editable`
+
+Text you edit in place. A title or a body reads as plain text until
+you click or tab into it. What you type stays until the plugin draws
+another value. Sending it sends `changed` with a `text` value, or a
+`multiline` one for a body, and only when the text differs from the
+value drawn; an `add` field sends only text with more than spaces.
+Escape puts back the value drawn and lets go of the keyboard.
+
+##### Record Fields
+
+- <a id="editable.label"></a>`label`: `string`
+  <p>Names the text for screen readers, and shows in it while it's
+  empty.
+
+- <a id="editable.value"></a>`value`: `string`
+- <a id="editable.style"></a>`style`: [`editable-style`](#editable_style)
+- <a id="editable.focus"></a>`focus`: `bool`
+  <p>Whether it takes the keyboard: when it appears holding true, or
+  when the plugin draws it with true after drawing it with false.
+
+
+#### <a id="date_picker"></a>`record date-picker`
+
+A compact button that shows a date and opens a date picker: Today,
+Tomorrow and Next week, a month to pick a day from, and Clear. A
+pick sends `changed` with a `date` value, none for Clear.
+
+##### Record Fields
+
+- <a id="date_picker.label"></a>`label`: `string`
+  <p>Names the picker for screen readers, and shows on the button while
+  no date is chosen.
+
+- <a id="date_picker.value"></a>`value`: option<`string`>
+  <p>The chosen date as `YYYY-MM-DD`, or none.
+
+
+#### <a id="picker_option"></a>`record picker-option`
+
+An option of a picker.
+
+##### Record Fields
+
+- <a id="picker_option.id"></a>`id`: `string`
+  <p>Unique within the picker.
+
+- <a id="picker_option.label"></a>`label`: `string`
+- <a id="picker_option.color"></a>`color`: option<[`color`](#color)>
+  <p>A mark in this color before the label, such as a priority's flag.
+
+
+#### <a id="picker"></a>`record picker`
+
+A compact button that shows the chosen option and opens a menu of
+the options. A pick sends `changed` with a `choice` value.
+
+##### Record Fields
+
+- <a id="picker.label"></a>`label`: `string`
+  <p>Names the picker for screen readers.
+
+- <a id="picker.options"></a>`options`: list<[`picker-option`](#picker_option)>
+- <a id="picker.chosen"></a>`chosen`: option<`string`>
+  <p>The ID of the chosen option, or none, when the button shows the
+  label.
+
+
 #### <a id="node_kind"></a>`variant node-kind`
 
 
@@ -2434,6 +2538,17 @@ What a page or a section shows while it holds nothing.
   many points wide, from 160 to 640, with a line on its right, and the
   second taking the rest of the width. Its children are the two panes,
   each a panel.
+
+- <a id="node_kind.editable"></a>`editable`: [`editable`](#editable)
+  <p>Text you edit in place, such as a task's title or notes.
+
+- <a id="node_kind.date_picker"></a>`date-picker`: [`date-picker`](#date_picker)
+  <p>A button that shows a date and opens a date picker.
+
+- <a id="node_kind.picker"></a>`picker`: [`picker`](#picker)
+  <p>A button that shows the chosen option and opens a menu of the
+  options. Pickers, date pickers and buttons in a row line up on one
+  line.
 
 
 #### <a id="node"></a>`record node`
