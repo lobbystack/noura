@@ -25,15 +25,17 @@ pub const KERNEL_TYPES: [&str; 2] = ["note", "workspace"];
 /// may register even while that one is off. Files of these types already
 /// fill workspaces, so a plugin that took one could rewrite every one of
 /// them. The Tasks plugin, which ships with Noura, holds tasks, the
-/// Projects plugin holds projects, the AI plugin chats and their
-/// messages, Transcription its recordings, transcripts and settings, and
+/// Projects plugin holds projects, the AI plugin chats, their messages,
+/// Orbs and their run records, Transcription its recordings, transcripts and settings, and
 /// Dictation its settings; other plugins change them through their
 /// commands.
-pub const PLUGIN_TYPES: [(&str, &str); 8] = [
+pub const PLUGIN_TYPES: [(&str, &str); 10] = [
     ("task", "tasks"),
     ("project", "projects"),
     ("chat", "ai"),
     ("chat-message", "ai"),
+    ("orb", "ai"),
+    ("orb-run", "ai"),
     ("transcription", "transcription"),
     ("transcript", "transcription"),
     ("transcription-settings", "transcription"),
@@ -44,8 +46,10 @@ pub const PLUGIN_TYPES: [(&str, &str); 8] = [
 /// one reads its objects through the objects interface, but a create,
 /// update, move or delete there is refused: chats and their messages
 /// change through the `ai` interface, which checks the chat rules that
-/// tie a message to its chat, its folder and its kind.
-pub const SERVICE_WRITTEN_TYPES: [&str; 2] = ["chat", "chat-message"];
+/// tie a message to its chat, its folder and its kind, and so do Orbs and
+/// their run records, so no model tool can give an Orb more tools or
+/// triggers.
+pub const SERVICE_WRITTEN_TYPES: [&str; 4] = ["chat", "chat-message", "orb", "orb-run"];
 
 /// The most types one plugin may register.
 const MAX_TYPES: usize = 64;

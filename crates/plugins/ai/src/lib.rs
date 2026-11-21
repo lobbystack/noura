@@ -1,5 +1,6 @@
 //! The AI plugin. It registers the `chat` and `chat-message` object types
-//! with today's v1 fields and adds the AI page: the chats in the sidebar,
+//! with today's v1 fields, and the `orb` and `orb-run` types of Orbs, and
+//! adds the AI page: the chats in the sidebar,
 //! the open chat's messages with each answer drawn as Markdown while it
 //! streams in, Stop, Resume after a crash or a quit, a menu to rename the
 //! chat or have it removed after 30 days, and a box to write the next
@@ -25,7 +26,9 @@ use std::{
 
 use plugin_sdk::{Error, Event, Node, ObjectType, Page, Plugin, View, navigation, objects};
 
-use schemas::{CHAT, CHAT_MESSAGE, CHAT_MESSAGE_SCHEMA, CHAT_SCHEMA};
+use schemas::{
+    CHAT, CHAT_MESSAGE, CHAT_MESSAGE_SCHEMA, CHAT_SCHEMA, ORB, ORB_RUN, ORB_RUN_SCHEMA, ORB_SCHEMA,
+};
 
 /// The AI page.
 const PAGE: &str = "ai";
@@ -91,6 +94,14 @@ impl Plugin for Ai {
             ObjectType {
                 name: CHAT_MESSAGE.into(),
                 schema: CHAT_MESSAGE_SCHEMA.into(),
+            },
+            ObjectType {
+                name: ORB.into(),
+                schema: ORB_SCHEMA.into(),
+            },
+            ObjectType {
+                name: ORB_RUN.into(),
+                schema: ORB_RUN_SCHEMA.into(),
             },
         ]
     }

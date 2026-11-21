@@ -25,6 +25,9 @@ const MANIFEST: &str = include_str!("../../../plugins/ai/plugin.toml");
 const SCHEMAS: &str =
     include_str!("../../../../docs/workspace-format/fixtures/object-envelope-v1.json");
 
+/// The shared fixture that holds the Orb and run record schemas.
+const ORBS: &str = include_str!("../../../../docs/workspace-format/fixtures/orb-v1.json");
+
 const CONFORMANCE: &str =
     include_str!("../../../../docs/workspace-format/fixtures/conformance-v1.json");
 
@@ -601,11 +604,19 @@ fn the_ai_plugin_declares_the_chat_types_its_page_and_the_ai_capability() {
         registered,
         [
             ("chat".to_owned(), Ok(())),
-            ("chat-message".to_owned(), Ok(()))
+            ("chat-message".to_owned(), Ok(())),
+            ("orb".to_owned(), Ok(())),
+            ("orb-run".to_owned(), Ok(())),
         ]
     );
     let fixtures: Value = serde_json::from_str(SCHEMAS).unwrap();
-    for object_type in ["chat", "chat-message"] {
+    let orbs: Value = serde_json::from_str(ORBS).unwrap();
+    for (object_type, fixtures) in [
+        ("chat", &fixtures),
+        ("chat-message", &fixtures),
+        ("orb", &orbs),
+        ("orb-run", &orbs),
+    ] {
         assert_eq!(types.owner(object_type).as_deref(), Some("ai"));
         let expected: PropertySchema =
             serde_json::from_value(fixtures["schemas"][object_type].clone()).unwrap();

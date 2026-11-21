@@ -331,7 +331,9 @@ impl HostState {
         let service = self.objects(object_type)?;
         if SERVICE_WRITTEN_TYPES.contains(&object_type) {
             return Err(types::Error::Failed(
-                "Noura writes chats and their messages only through the ai interface.".to_owned(),
+                "Noura writes chats, their messages, Orbs and their runs only through the ai \
+                 interface."
+                    .to_owned(),
             ));
         }
         Ok(service)

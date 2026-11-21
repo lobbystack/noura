@@ -1,0 +1,324 @@
+{
+  "schemas": {
+    "orb": {
+      "properties": [
+        { "name": "avatar", "kind": "string", "nullable": true },
+        {
+          "name": "color",
+          "kind": { "enum": ["red", "orange", "yellow", "green", "blue", "purple", "brown", "gray"] },
+          "nullable": true
+        },
+        { "name": "provider", "kind": "string", "nullable": true },
+        { "name": "model", "kind": "string", "nullable": true },
+        { "name": "tools", "kind": { "list": "string" }, "default": [] },
+        { "name": "reads", "kind": { "list": { "reference": "*" } }, "default": [] },
+        { "name": "memory", "kind": { "reference": "*" }, "nullable": true },
+        { "name": "triggers", "kind": { "list": "string" }, "default": [] },
+        { "name": "paused", "kind": "boolean", "default": false }
+      ]
+    },
+    "orb-run": {
+      "properties": [
+        { "name": "orb_id", "kind": { "id": "orb" } },
+        { "name": "chat_id", "kind": { "id": "chat" } },
+        { "name": "started_by", "kind": { "enum": ["you", "schedule", "event"] } },
+        { "name": "trigger", "kind": "string", "nullable": true },
+        { "name": "trigger_key", "kind": "string", "nullable": true },
+        { "name": "object_id", "kind": "string", "nullable": true },
+        { "name": "slot", "kind": "date", "nullable": true },
+        {
+          "name": "status",
+          "kind": { "enum": ["running", "succeeded", "failed", "interrupted", "cancelled"] }
+        },
+        { "name": "error_code", "kind": "string", "nullable": true },
+        { "name": "tool_calls", "kind": "number", "default": 0 },
+        { "name": "quiet", "kind": "boolean", "default": false },
+        { "name": "resumed", "kind": "number", "default": 0 },
+        { "name": "finished", "kind": "date", "nullable": true }
+      ]
+    }
+  },
+  "orbs": [
+    {
+      "name": "a full Orb",
+      "path": "Orbs/Meetings/Meetings.md",
+      "markdown": "---\nid: orb_01jd8x3k9q2m7v4c6b1n0p5r8t\ntype: orb\navatar: \"🗓\"\ncolor: blue\nprovider: null\nmodel: null\ntools:\n- tasks__create\n- tasks__list\n- noura__*\nreads:\n- '[[Acme launch]]'\nmemory: '[[Memory]]'\ntriggers:\n- event transcription.finished\n- schedule 30 8 * * 1-5\npaused: false\ncreated: 2026-11-21T12:00:00Z\nupdated: 2026-11-21T12:00:00Z\n---\nYou turn meetings into follow-ups.\n",
+      "valid": true,
+      "orb": {
+        "title": "Meetings",
+        "instructions": "You turn meetings into follow-ups.\n",
+        "avatar": "🗓",
+        "color": "blue",
+        "tools": ["tasks__create", "tasks__list", "noura__*"],
+        "reads": ["Acme launch"],
+        "memory": "Memory",
+        "triggers": ["event transcription.finished", "schedule 30 8 * * 1-5"],
+        "paused": false
+      }
+    },
+    {
+      "name": "an Orb with only its ID takes the defaults",
+      "path": "Orbs/Writing coach/Writing coach.md",
+      "markdown": "---\nid: orb_01jd8x3k9q2m7v4c6b1n0p5r8v\ntype: orb\n---\n",
+      "valid": true,
+      "orb": {
+        "title": "Writing coach",
+        "instructions": "",
+        "avatar": null,
+        "color": null,
+        "tools": [],
+        "reads": [],
+        "memory": null,
+        "triggers": [],
+        "paused": false
+      }
+    },
+    {
+      "name": "unknown properties stay",
+      "path": "Orbs/Mine/Mine.md",
+      "markdown": "---\nid: orb_01jd8x3k9q2m7v4c6b1n0p5r8w\ntype: orb\nmood: calm\npaused: true\n---\nBe brief.",
+      "valid": true,
+      "orb": {
+        "title": "Mine",
+        "instructions": "Be brief.",
+        "avatar": null,
+        "color": null,
+        "tools": [],
+        "reads": [],
+        "memory": null,
+        "triggers": [],
+        "paused": true
+      }
+    },
+    {
+      "name": "a tool needs its plugin",
+      "path": "Orbs/Bad/Bad.md",
+      "markdown": "---\nid: orb_01jd8x3k9q2m7v4c6b1n0p5r8x\ntype: orb\ntools:\n- create\n---\n",
+      "valid": false,
+      "problem": { "property": "tools", "code": "invalid_tool" }
+    },
+    {
+      "name": "a tool repeats",
+      "path": "Orbs/Bad/Bad.md",
+      "markdown": "---\nid: orb_01jd8x3k9q2m7v4c6b1n0p5r8x\ntype: orb\ntools:\n- tasks__create\n- tasks__create\n---\n",
+      "valid": false,
+      "problem": { "property": "tools", "code": "duplicate_tool" }
+    },
+    {
+      "name": "a schedule more often than every five minutes",
+      "path": "Orbs/Bad/Bad.md",
+      "markdown": "---\nid: orb_01jd8x3k9q2m7v4c6b1n0p5r8x\ntype: orb\ntriggers:\n- schedule */2 * * * *\n---\n",
+      "valid": false,
+      "problem": { "property": "triggers", "code": "schedule_too_frequent" }
+    },
+    {
+      "name": "a trigger in another grammar",
+      "path": "Orbs/Bad/Bad.md",
+      "markdown": "---\nid: orb_01jd8x3k9q2m7v4c6b1n0p5r8x\ntype: orb\ntriggers:\n- every weekday at 8:30\n---\n",
+      "valid": false,
+      "problem": { "property": "triggers", "code": "invalid_trigger" }
+    },
+    {
+      "name": "a trigger as a mapping",
+      "path": "Orbs/Bad/Bad.md",
+      "markdown": "---\nid: orb_01jd8x3k9q2m7v4c6b1n0p5r8x\ntype: orb\ntriggers:\n- event: transcription.finished\n---\n",
+      "valid": false,
+      "problem": { "property": "triggers", "code": "wrong_type" }
+    },
+    {
+      "name": "a color outside the palette",
+      "path": "Orbs/Bad/Bad.md",
+      "markdown": "---\nid: orb_01jd8x3k9q2m7v4c6b1n0p5r8x\ntype: orb\ncolor: teal\n---\n",
+      "valid": false,
+      "problem": { "property": "color", "code": "not_allowed" }
+    },
+    {
+      "name": "reads hold links",
+      "path": "Orbs/Bad/Bad.md",
+      "markdown": "---\nid: orb_01jd8x3k9q2m7v4c6b1n0p5r8x\ntype: orb\nreads:\n- Projects/Acme\n---\n",
+      "valid": false,
+      "problem": { "property": "reads", "code": "invalid_reference" }
+    },
+    {
+      "name": "an avatar is short",
+      "path": "Orbs/Bad/Bad.md",
+      "markdown": "---\nid: orb_01jd8x3k9q2m7v4c6b1n0p5r8x\ntype: orb\navatar: a very long avatar text\n---\n",
+      "valid": false,
+      "problem": { "property": "avatar", "code": "invalid_avatar" }
+    },
+    {
+      "name": "paused is a boolean",
+      "path": "Orbs/Bad/Bad.md",
+      "markdown": "---\nid: orb_01jd8x3k9q2m7v4c6b1n0p5r8x\ntype: orb\npaused: sometimes\n---\n",
+      "valid": false,
+      "problem": { "property": "paused", "code": "wrong_type" }
+    }
+  ],
+  "triggers": [
+    { "text": "event transcription.finished", "canonical": "event transcription.finished" },
+    { "text": "  event   transcription.finished ", "canonical": "event transcription.finished" },
+    { "text": "schedule 30  8 * * 1-5", "canonical": "schedule 30 8 * * 1-5" },
+    { "text": "schedule @daily", "canonical": "schedule @daily" },
+    { "text": "schedule 0 9 * * MON", "canonical": "schedule 0 9 * * MON" },
+    { "text": "schedule */5 * * * *", "canonical": "schedule */5 * * * *" },
+    { "text": "schedule * * * * *", "error": "schedule_too_frequent" },
+    { "text": "schedule 0 9 * * * *", "error": "invalid_trigger" },
+    { "text": "schedule 0 25 * * *", "error": "invalid_trigger" },
+    { "text": "event transcription", "error": "invalid_trigger" },
+    { "text": "event Tasks.created", "error": "invalid_trigger" },
+    { "text": "event tasks.created.again", "error": "invalid_trigger" },
+    { "text": "webhook https://example.com", "error": "invalid_trigger" },
+    { "text": "schedule", "error": "invalid_trigger" }
+  ],
+  "schedules": [
+    {
+      "name": "the next weekday morning after a Saturday",
+      "pattern": "30 8 * * 1-5",
+      "zone": "America/Toronto",
+      "after": "2026-11-21T18:00:00Z",
+      "next": "2026-11-23T13:30:00Z"
+    },
+    {
+      "name": "the morning after daylight saving time ends",
+      "pattern": "30 8 * * *",
+      "zone": "America/Toronto",
+      "after": "2026-10-31T13:00:00Z",
+      "next": "2026-11-01T13:30:00Z"
+    },
+    {
+      "name": "a time the clock skips runs at the next one",
+      "pattern": "30 2 * * *",
+      "zone": "America/Toronto",
+      "after": "2026-03-08T06:00:00Z",
+      "next": "2026-03-08T07:00:00Z"
+    },
+    {
+      "name": "several missed mornings make one run, at the last",
+      "pattern": "30 8 * * 1-5",
+      "zone": "America/Toronto",
+      "since": "2026-11-16T00:00:00Z",
+      "now": "2026-11-21T18:00:00Z",
+      "missed": "2026-11-20T13:30:00Z"
+    },
+    {
+      "name": "a time the last run covered isn't missed",
+      "pattern": "30 8 * * 1-5",
+      "zone": "America/Toronto",
+      "since": "2026-11-20T13:30:00Z",
+      "now": "2026-11-21T18:00:00Z",
+      "missed": null
+    },
+    {
+      "name": "a time that is now counts as missed",
+      "pattern": "0 12 * * *",
+      "zone": "UTC",
+      "since": "2026-11-20T12:00:00Z",
+      "now": "2026-11-21T12:00:00Z",
+      "missed": "2026-11-21T12:00:00Z"
+    }
+  ],
+  "trigger_keys": [
+    {
+      "orb": "orb_01jd8x3k9q2m7v4c6b1n0p5r8t",
+      "trigger": "schedule 30 8 * * 1-5",
+      "occurrence": "2026-11-20T13:30:00Z",
+      "key": "orb_01jd8x3k9q2m7v4c6b1n0p5r8t|schedule 30 8 * * 1-5|2026-11-20T13:30:00Z"
+    },
+    {
+      "orb": "orb_01jd8x3k9q2m7v4c6b1n0p5r8t",
+      "trigger": "event   transcription.finished",
+      "occurrence": "transcription_01jd8x3k9q2m7v4c6b1n0p5r8a@9f86d081884c7d65",
+      "key": "orb_01jd8x3k9q2m7v4c6b1n0p5r8t|event transcription.finished|transcription_01jd8x3k9q2m7v4c6b1n0p5r8a@9f86d081884c7d65"
+    }
+  ],
+  "runs": [
+    {
+      "name": "a run an event started",
+      "path": "Orbs/Meetings/Runs/2026-11-21/orb-run_01jd8x3k9q2m7v4c6b1n0p5r8b.md",
+      "markdown": "---\nid: orb-run_01jd8x3k9q2m7v4c6b1n0p5r8b\ntype: orb-run\norb_id: orb_01jd8x3k9q2m7v4c6b1n0p5r8t\nchat_id: chat_01jd8x3k9q2m7v4c6b1n0p5r8c\nstarted_by: event\ntrigger: event transcription.finished\ntrigger_key: orb_01jd8x3k9q2m7v4c6b1n0p5r8t|event transcription.finished|transcription_01jd8x3k9q2m7v4c6b1n0p5r8a@9f86d081884c7d65\nobject_id: transcription_01jd8x3k9q2m7v4c6b1n0p5r8a\nslot: null\nstatus: succeeded\nerror_code: null\ntool_calls: 2\nquiet: false\nresumed: 0\nfinished: 2026-11-21T12:01:00Z\ncreated: 2026-11-21T12:00:00Z\nupdated: 2026-11-21T12:01:00Z\n---\n- `tasks__create` · completed\n- `tasks__create` · completed\n",
+      "valid": true,
+      "run": {
+        "orb_id": "orb_01jd8x3k9q2m7v4c6b1n0p5r8t",
+        "chat_id": "chat_01jd8x3k9q2m7v4c6b1n0p5r8c",
+        "started_by": "event",
+        "status": "succeeded",
+        "tool_calls": 2,
+        "quiet": false,
+        "resumed": 0
+      }
+    },
+    {
+      "name": "a run you started takes the defaults",
+      "path": "Orbs/Meetings/Runs/2026-11-21/orb-run_01jd8x3k9q2m7v4c6b1n0p5r8d.md",
+      "markdown": "---\nid: orb-run_01jd8x3k9q2m7v4c6b1n0p5r8d\ntype: orb-run\norb_id: orb_01jd8x3k9q2m7v4c6b1n0p5r8t\nchat_id: chat_01jd8x3k9q2m7v4c6b1n0p5r8c\nstarted_by: you\nstatus: running\n---\n",
+      "valid": true,
+      "run": {
+        "orb_id": "orb_01jd8x3k9q2m7v4c6b1n0p5r8t",
+        "chat_id": "chat_01jd8x3k9q2m7v4c6b1n0p5r8c",
+        "started_by": "you",
+        "status": "running",
+        "tool_calls": 0,
+        "quiet": false,
+        "resumed": 0
+      }
+    },
+    {
+      "name": "a run names its Orb by ID",
+      "path": "Orbs/Meetings/Runs/2026-11-21/orb-run_01jd8x3k9q2m7v4c6b1n0p5r8e.md",
+      "markdown": "---\nid: orb-run_01jd8x3k9q2m7v4c6b1n0p5r8e\ntype: orb-run\norb_id: '[[Meetings]]'\nchat_id: chat_01jd8x3k9q2m7v4c6b1n0p5r8c\nstarted_by: you\nstatus: running\n---\n",
+      "valid": false,
+      "problem": { "property": "orb_id", "code": "invalid_reference" }
+    },
+    {
+      "name": "a status outside the list",
+      "path": "Orbs/Meetings/Runs/2026-11-21/orb-run_01jd8x3k9q2m7v4c6b1n0p5r8f.md",
+      "markdown": "---\nid: orb-run_01jd8x3k9q2m7v4c6b1n0p5r8f\ntype: orb-run\norb_id: orb_01jd8x3k9q2m7v4c6b1n0p5r8t\nchat_id: chat_01jd8x3k9q2m7v4c6b1n0p5r8c\nstarted_by: you\nstatus: waiting\n---\n",
+      "valid": false,
+      "problem": { "property": "status", "code": "not_allowed" }
+    }
+  ],
+  "quiet": [
+    { "answer": "HEARTBEAT_OK", "quiet": true },
+    { "answer": "  HEARTBEAT_OK\n", "quiet": true },
+    { "answer": "**HEARTBEAT_OK**", "quiet": true },
+    { "answer": "HEARTBEAT_OK. I made one task.", "quiet": false },
+    { "answer": "Nothing new.", "quiet": false }
+  ],
+  "paths": [
+    { "title": "Meetings", "folder": "Orbs/Meetings" },
+    { "title": "Plans: Q4/Q1", "folder": "Orbs/Plans Q4Q1" },
+    { "title": "...", "folder": "Orbs/Orb" },
+    {
+      "orb_path": "Orbs/Meetings/Meetings.md",
+      "date": "2026-11-21",
+      "id": "orb-run_01jd8x3k9q2m7v4c6b1n0p5r8b",
+      "run": "Orbs/Meetings/Runs/2026-11-21/orb-run_01jd8x3k9q2m7v4c6b1n0p5r8b.md",
+      "memory": "Orbs/Meetings/Memory.md",
+      "heartbeat": "Orbs/Meetings/Heartbeat.md"
+    }
+  ],
+  "serialization": [
+    {
+      "name": "a new Orb in canonical order",
+      "object": {
+        "id": "orb_01jd8x3k9q2m7v4c6b1n0p5r8t",
+        "type": "orb",
+        "body": "",
+        "created": "2026-11-21T12:00:00Z",
+        "updated": "2026-11-21T12:00:00Z",
+        "properties": {
+          "paused": false,
+          "triggers": [],
+          "memory": "[[Memory]]",
+          "reads": [],
+          "tools": [],
+          "model": null,
+          "provider": null,
+          "color": null,
+          "avatar": null
+        }
+      },
+      "markdown": "---\nid: orb_01jd8x3k9q2m7v4c6b1n0p5r8t\ntype: orb\navatar: null\ncolor: null\nprovider: null\nmodel: null\ntools: []\nreads: []\nmemory: '[[Memory]]'\ntriggers: []\npaused: false\ncreated: 2026-11-21T12:00:00Z\nupdated: 2026-11-21T12:00:00Z\n---\n"
+    }
+  ]
+}

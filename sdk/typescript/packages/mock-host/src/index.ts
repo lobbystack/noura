@@ -155,6 +155,8 @@ export const PLUGIN_TYPES: Readonly<Record<string, string>> = {
 	project: 'projects',
 	chat: 'ai',
 	'chat-message': 'ai',
+	orb: 'ai',
+	'orb-run': 'ai',
 	transcription: 'transcription',
 	transcript: 'transcription',
 	'transcription-settings': 'transcription',
@@ -163,10 +165,10 @@ export const PLUGIN_TYPES: Readonly<Record<string, string>> = {
 
 /**
  * Object types whose files only Noura writes: the plugin that holds one
- * reads its objects, but `objects` refuses a write to them. Chats change
- * through the `ai` interface.
+ * reads its objects, but `objects` refuses a write to them. Chats, Orbs
+ * and their runs change through the `ai` interface.
  */
-const SERVICE_WRITTEN_TYPES: readonly string[] = ['chat', 'chat-message'];
+const SERVICE_WRITTEN_TYPES: readonly string[] = ['chat', 'chat-message', 'orb', 'orb-run'];
 
 function refused(capability: string): never {
 	throw { tag: 'capability-not-declared', val: capability };
@@ -412,7 +414,7 @@ export class MockHost {
 			if (SERVICE_WRITTEN_TYPES.includes(objectType)) {
 				throw {
 					tag: 'failed',
-					val: 'Noura writes chats and their messages only through the ai interface.',
+					val: 'Noura writes chats, their messages, Orbs and their runs only through the ai interface.',
 				};
 			}
 			return store;
