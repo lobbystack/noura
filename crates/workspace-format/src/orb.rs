@@ -80,6 +80,7 @@ pub const ORB_SCHEMA: &str = r#"{"properties":[
   {"name":"color","kind":{"enum":["red","orange","yellow","green","blue","purple","brown","gray"]},"nullable":true},
   {"name":"provider","kind":"string","nullable":true},
   {"name":"model","kind":"string","nullable":true},
+  {"name":"effort","kind":{"enum":["off","low","medium","high"]},"nullable":true},
   {"name":"tools","kind":{"list":"string"},"default":[]},
   {"name":"reads","kind":{"list":{"reference":"*"}},"default":[]},
   {"name":"memory","kind":{"reference":"*"},"nullable":true},
@@ -143,6 +144,8 @@ pub struct Orb {
     pub provider: Option<String>,
     /// A model in place of the provider's own, or none.
     pub model: Option<String>,
+    /// How hard its model reasons, or none for the model's own default.
+    pub effort: Option<Effort>,
     /// The tools it runs without asking.
     pub tools: Vec<ToolPattern>,
     /// The links its read tool and its trigger messages may follow. Empty
@@ -225,6 +228,11 @@ pub fn read_orb(object: &WorkspaceObject) -> Result<Orb, OrbProblem> {
     if model.as_deref().is_some_and(|value| !single_line(value)) {
         return Err(OrbProblem::new("model", "invalid_model"));
     }
+    // The schema allows only the four words.
+    let effort = properties
+        .get("effort")
+        .and_then(Value::as_str)
+        .and_then(Effort::parse);
     let mut tools = Vec::new();
     for name in strings(properties.get("tools")) {
         let pattern =
@@ -266,12 +274,43 @@ pub fn read_orb(object: &WorkspaceObject) -> Result<Orb, OrbProblem> {
         color,
         provider,
         model,
+        effort,
         tools,
         reads,
         memory,
         triggers,
         paused,
     })
+}
+
+/// How hard an Orb's model reasons before it answers, as its file names
+/// it. Each provider takes it in its own words, and a model that can't
+/// reason takes none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Effort {
+    /// No reasoning, for a model that can answer without it.
+    Off,
+    Low,
+    Medium,
+    High,
+}
+
+impl Effort {
+    /// Every effort, from least to most.
+    pub const ALL: [Self; 4] = [Self::Off, Self::Low, Self::Medium, Self::High];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|effort| effort.as_str() == text)
+    }
 }
 
 fn optional_string(value: Option<&Value>) -> Option<String> {
@@ -898,6 +937,8 @@ mod conformance {
                     "instructions": orb.instructions,
                     "avatar": orb.avatar,
                     "color": orb.color,
+                    "model": orb.model,
+                    "effort": orb.effort.map(Effort::as_str),
                     "tools": tools,
                     "reads": orb.reads,
                     "memory": orb.memory,
