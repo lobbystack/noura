@@ -2896,6 +2896,24 @@ A box to write a message in.
   press sends `pressed` naming the composer. Nothing sends meanwhile.
 
 
+#### <a id="popover"></a>`record popover`
+
+A box that floats over the page beside the node it points at, on
+whichever side has room, with an arrow toward it, such as an entry's
+details. Its children go where a panel's go. Escape or a click
+outside it sends `cancelled` naming it, and it shows until the plugin
+draws the view without it.
+
+##### Record Fields
+
+- <a id="popover.label"></a>`label`: `string`
+  <p>Names the popover for screen readers.
+
+- <a id="popover.anchor"></a>`anchor`: `string`
+  <p>The node ID of the item, card, entry or button it points at. While
+  that node doesn't show, the popover floats at the top of the page.
+
+
 #### <a id="node_kind"></a>`variant node-kind`
 
 
@@ -3044,6 +3062,10 @@ A box to write a message in.
   of each choice input inside it. Shift-Enter starts a new line. The
   box empties once it sends. It can't sit in a form.
 
+- <a id="node_kind.popover"></a>`popover`: [`popover`](#popover)
+  <p>A box beside another node, floating over the page. It can't sit in
+  another popover.
+
 
 #### <a id="node"></a>`record node`
 
@@ -3060,8 +3082,9 @@ A box to write a message in.
   they lay out, lists their items, tables their rows, boards their
   columns, columns their cards, calendars their entries, menus their
   items, headings their buttons and choices, empty states their
-  buttons, splits their two panels, conversations and activities the
-  nodes they lay out, and composers their choices and buttons; a row,
+  buttons, splits their two panels, conversations, activities and
+  popovers the nodes they lay out, and composers their choices and
+  buttons; a row,
   a card or a button may hold one menu, and an item one menu or one
   name field.
 
@@ -3213,8 +3236,9 @@ Something you did in a view.
 
 - <a id="event.cancelled"></a>`cancelled`: `string`
   <p>A name field was left without a new name: you pressed Escape, or
-  left it empty or holding the name it started from. Holds the
-  field's node ID.
+  left it empty or holding the name it started from. Or a popover
+  closed by Escape or a click outside it. Holds the field's or the
+  popover's node ID.
 
 
 ## <a id="noura_plugin_view_0_1_0"></a>Export interface noura:plugin/view@0.1.0

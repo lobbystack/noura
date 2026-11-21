@@ -42,8 +42,8 @@ pub use instance::{
     Command, Composer, DatePicker, Editable, EditableStyle, EmptyState, Event, Field, Form,
     Heading, HeadingLevel, Icon, InboxSection, Input, Item, ItemList, MenuItem, Message,
     MessageAuthor, Move, NameField, Naming, Node, NodeKind, ObjectType, Page, Picker, PickerOption,
-    Placement, PluginError, Registration, Services, SettingsSection, SortOrder, Submission, Table,
-    Target, Tool, Value, VirtualList, VirtualRow,
+    Placement, PluginError, Popover, Registration, Services, SettingsSection, SortOrder,
+    Submission, Table, Target, Tool, Value, VirtualList, VirtualRow,
 };
 pub use instance::{
     AiCompletion, AiCompletionRequest, KernelEvent, MenuBarEntry, MenuBarEntryKind, MicrophoneUse,

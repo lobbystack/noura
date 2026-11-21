@@ -1482,6 +1482,19 @@ interface ui {
     stop: option<string>,
   }
 
+  // A box that floats over the page beside the node it points at, on
+  // whichever side has room, with an arrow toward it, such as an entry's
+  // details. Its children go where a panel's go. Escape or a click
+  // outside it sends `cancelled` naming it, and it shows until the plugin
+  // draws the view without it.
+  record popover {
+    // Names the popover for screen readers.
+    label: string,
+    // The node ID of the item, card, entry or button it points at. While
+    // that node doesn't show, the popover floats at the top of the page.
+    anchor: string,
+  }
+
   variant node-kind {
     // Lays out its children from top to bottom. The label names the panel
     // for screen readers.
@@ -1595,6 +1608,9 @@ interface ui {
     // of each choice input inside it. Shift-Enter starts a new line. The
     // box empties once it sends. It can't sit in a form.
     composer(composer),
+    // A box beside another node, floating over the page. It can't sit in
+    // another popover.
+    popover(popover),
   }
 
   record node {
@@ -1605,8 +1621,9 @@ interface ui {
     // they lay out, lists their items, tables their rows, boards their
     // columns, columns their cards, calendars their entries, menus their
     // items, headings their buttons and choices, empty states their
-    // buttons, splits their two panels, conversations and activities the
-    // nodes they lay out, and composers their choices and buttons; a row,
+    // buttons, splits their two panels, conversations, activities and
+    // popovers the nodes they lay out, and composers their choices and
+    // buttons; a row,
     // a card or a button may hold one menu, and an item one menu or one
     // name field.
     children: list<u32>,
@@ -1706,8 +1723,9 @@ interface ui {
     // or its window closed.
     named(naming),
     // A name field was left without a new name: you pressed Escape, or
-    // left it empty or holding the name it started from. Holds the
-    // field's node ID.
+    // left it empty or holding the name it started from. Or a popover
+    // closed by Escape or a click outside it. Holds the field's or the
+    // popover's node ID.
     cancelled(string),
   }
 }

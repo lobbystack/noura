@@ -639,6 +639,7 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
             sense |= Sense::DRAG;
         }
         let response = ui.interact(rect, id, sense);
+        kit.anchor(&row.id, rect, false);
         if reorder {
             drag::start(&response, list_id, &row.id, &row.label);
         }

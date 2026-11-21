@@ -15,6 +15,7 @@ A node's `kind` sets what Noura draws:
 - Compact controls for a details pane: `editable`, text you edit in place as a title, a line, a body, or an add field that empties after Return so you can add the next item; `date-picker`, a button that shows a date and opens a month with Today, Tomorrow and Next week; and `picker`, a button that shows the chosen option and opens a menu of the options, each with an optional colored flag.
 - Collections: `list` with `item` children, `virtual-list`, `table` with `row` children, `board` with `board-column` and `card` children, and `calendar` with `entry` children.
 - Menus: `menu`, `menu-item` and `separator`, the only child of an item, a row, a card or a button.
+- Popovers: `popover`, a box that floats over the page with an arrow pointing at its `anchor`. The anchor is an item, card, entry or button. Noura puts the popover on whichever side has room and lays out its children like a panel. Escape or a click outside it sends `cancelled` with the popover's ID. It stays open until the plugin draws the view without it.
 
 Noura lays out a run of buttons, pickers and date pickers, or of choice inputs with up to five short options, on one row, and draws those choices as a segmented control. It draws a form that holds one text input on one line, with the input's label as its placeholder. A view's root panel has no border; the panels inside it draw as cards.
 
@@ -22,7 +23,7 @@ Every label must hold more than spaces, since screen readers read it. Noura chec
 
 ## Events
 
-Noura sends an `event` when you act in a view: `pressed` names a button, or a composer when you press its stop button, `selected` and `activated` name an item, a row, a card or an entry, `changed` carries an input's new value, the text you leave in an `editable`, or a pick from a `picker` or `date-picker`, `submitted` carries every input in a form, or a composer's text and choices, `chosen` names a menu item, `moved`, `checked`, `named` and `cancelled` come from drags, checkboxes and name fields, and `sorted` names a table column. After the plugin handles an event, Noura draws its views again.
+Noura sends an `event` when you act in a view: `pressed` names a button, or a composer when you press its stop button, `selected` and `activated` name an item, a row, a card or an entry, `changed` carries an input's new value, the text you leave in an `editable`, or a pick from a `picker` or `date-picker`, `submitted` carries every input in a form, or a composer's text and choices, `chosen` names a menu item, `moved`, `checked` and `named` come from drags, checkboxes and name fields, `cancelled` names a name field you left unchanged or a popover you closed, and `sorted` names a table column. After the plugin handles an event, Noura draws its views again.
 
 ## Example
 

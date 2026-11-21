@@ -67,8 +67,8 @@ pub use bindings::noura::plugin::ui::{
     Activity, ActivityState, Calendar, CalendarEntry, CalendarMode, Check, Choice, Color, Column,
     ColumnPress, Composer, DatePicker, Editable, EditableStyle, EmptyState, Event, Field, Form,
     Heading, HeadingLevel, Icon, Input, Item, ItemList, MenuItem, Message, MessageAuthor, Move,
-    NameField, Naming, Node, NodeKind, Picker, PickerOption, SortOrder, Submission, Table, Target,
-    Value, VirtualList, VirtualRow,
+    NameField, Naming, Node, NodeKind, Picker, PickerOption, Popover, SortOrder, Submission, Table,
+    Target, Value, VirtualList, VirtualRow,
 };
 use bindings::noura::plugin::{
     ai, clock, command_calls, events, global_shortcuts, menu_bar, navigation, network,

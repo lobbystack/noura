@@ -20,6 +20,7 @@ mod edit;
 mod form;
 mod heading;
 mod menu;
+mod popover;
 mod rows;
 
 use std::ops::Range;
@@ -163,6 +164,18 @@ struct Kit<'a> {
     /// The node being drawn sits in a conversation, where text is a quiet
     /// line and buttons are small.
     quiet: bool,
+    /// The node IDs the view's popovers point at, and where each drew
+    /// this frame.
+    anchors: Vec<(String, Option<egui::Rect>)>,
+    /// A popup of a control drawn since this was last cleared was open
+    /// when the control started drawing, such as a date picker's month.
+    popup_open: bool,
+    /// Escape put back the text of an editable text drawn since this was
+    /// last cleared, so it closes nothing else.
+    escape_taken: bool,
+    /// The node being drawn sits in a popover, where a heading is its
+    /// title.
+    in_popover: bool,
 }
 
 impl Kit<'_> {
@@ -170,6 +183,17 @@ impl Kit<'_> {
     /// this window.
     fn id(&self, node: &str) -> Id {
         Id::unique(("plugin-node", self.window, self.place, node))
+    }
+
+    /// Note that the node `node` drew at `rect`, for a popover that
+    /// points at it. A node that draws more than once, such as an entry
+    /// on each of its days, keeps its first place unless `preferred`.
+    fn anchor(&mut self, node: &str, rect: egui::Rect, preferred: bool) {
+        if let Some((_, place)) = self.anchors.iter_mut().find(|(id, _)| id == node)
+            && (place.is_none() || preferred)
+        {
+            *place = Some(rect);
+        }
     }
 
     /// The rows in `range` of the virtual list `list`, each `None` until
@@ -327,9 +351,26 @@ fn draw(
         inline: false,
         page_detail: false,
         quiet: false,
+        anchors: Vec::new(),
+        popup_open: false,
+        escape_taken: false,
+        in_popover: false,
     };
+    let mut popovers = Vec::new();
+    popover::find(view.root(), &mut popovers);
+    kit.anchors = popovers
+        .iter()
+        .filter_map(|popover| match &popover.kind {
+            ViewKind::Popover { anchor, .. } => Some((anchor.clone(), None)),
+            _ => None,
+        })
+        .collect();
     ui.push_id(("plugin-view", window, place), |ui| {
         node(ui, view.root(), &mut kit);
+        // Popovers float over the rest, so they draw after it.
+        for popover in popovers {
+            popover::popover(ui, popover, &mut kit);
+        }
     });
     (kit.events, kit.link)
 }
@@ -538,8 +579,10 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             options,
             chosen,
         } => edit::picker(ui, node, label, (options, chosen.as_deref()), kit),
-        // Their list, table, board or menu draws them.
-        ViewKind::Item { .. }
+        // Their list, table, board or menu draws them, and the view draws
+        // its popovers over the rest.
+        ViewKind::Popover { .. }
+        | ViewKind::Item { .. }
         | ViewKind::Row { .. }
         | ViewKind::BoardColumn { .. }
         | ViewKind::Card { .. }

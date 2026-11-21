@@ -193,14 +193,18 @@ pub(super) fn styled_button(ui: &mut Ui, node: &ViewNode, label: &str, look: Loo
         .first()
         .filter(|child| matches!(child.kind, ViewKind::Menu { .. }));
     let Some(menu) = menu else {
-        if draw(ui).clicked() {
+        let response = draw(ui);
+        kit.anchor(&node.id, response.rect, false);
+        if response.clicked() {
             kit.events.push(PluginEvent::Pressed(node.id.clone()));
         }
         return;
     };
     let id = kit.id(&node.id);
     let mut opened: Option<Opened> = ui.data(|data| data.get_temp(id));
+    kit.popup_open |= opened.is_some();
     let response = draw(ui);
+    kit.anchor(&node.id, response.rect, false);
     let from_keys =
         ui.input(|input| input.key_pressed(Key::Enter) || input.key_pressed(Key::Space));
     if response.has_focus() && opened.is_none() && menu_key(ui, true) {

@@ -213,6 +213,9 @@ fn kind(kind: &ViewKind) -> Value {
             "composer",
             json!({ "label": label, "value": value, "send": send, "stop": stop }),
         ),
+        ViewKind::Popover { label, anchor } => {
+            tagged("popover", json!({ "label": label, "anchor": anchor }))
+        }
     }
 }
 
