@@ -159,6 +159,9 @@ export const PLUGIN_TYPES: Readonly<Record<string, string>> = {
 	transcript: 'transcription',
 	'transcription-settings': 'transcription',
 	'dictation-settings': 'dictation',
+	calendar: 'calendar',
+	event: 'calendar',
+	'calendar-settings': 'calendar',
 };
 
 /**

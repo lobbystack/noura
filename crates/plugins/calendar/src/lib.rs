@@ -14,12 +14,14 @@
 mod dates;
 mod entries;
 mod rules;
+mod types;
 
 use std::sync::Mutex;
 
 use jiff::{ToSpan, civil::Date};
 use plugin_sdk::{
-    CalendarMode, Column, Event, Icon, InboxSection, Node, Page, Plugin, Target, Value, View,
+    CalendarMode, Column, Event, Icon, InboxSection, Node, ObjectType, Page, Plugin, Target, Value,
+    View,
     navigation::{self, Placement},
 };
 use serde_json::Value as Json;
@@ -144,6 +146,16 @@ fn state() -> std::sync::MutexGuard<'static, State> {
 struct Calendar;
 
 impl Plugin for Calendar {
+    fn object_types() -> Vec<ObjectType> {
+        types::DECLARED
+            .iter()
+            .map(|(name, schema)| ObjectType {
+                name: (*name).into(),
+                schema: (*schema).into(),
+            })
+            .collect()
+    }
+
     fn pages() -> Vec<Page> {
         vec![Page {
             id: PAGE.into(),

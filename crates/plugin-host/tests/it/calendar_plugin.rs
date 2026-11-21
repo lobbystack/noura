@@ -1,7 +1,7 @@
 //! Seam 3: the Calendar plugin's manifest in the real host. Calendar reads
-//! the workspace, adds a page and an Inbox section, and declares nothing
-//! that writes, so code running under its capabilities can't write an
-//! object. A file that fails to read is read again on the next draw, and
+//! the workspace, registers its calendar, event and settings types, and
+//! adds a page and an Inbox section. Code running under its capabilities
+//! writes only objects of its own types. A file that fails to read is read again on the next draw, and
 //! a file read before the index saw an edit is read again once the
 //! listing's revision differs from the bytes read. The app-core suite
 //! runs the plugin against real files.
@@ -11,16 +11,20 @@ use std::sync::{Arc, Mutex};
 
 use plugin_host::{
     Capability, ClockReading, DeviceClock, Entry, EntryKind, FileRead, Listed, NodeKind,
-    ObjectRead, RunningPlugin, ServiceError, Services, WorkspacePath, WorkspaceReads,
+    ObjectRead, ObjectTypes, RunningPlugin, ServiceError, Services, WorkspacePath, WorkspaceReads,
     read_manifest,
 };
 use support::plugins;
+use workspace_format::PropertySchema;
 
 /// The Calendar plugin's manifest, as its crate ships it.
 const MANIFEST: &str = include_str!("../../../plugins/calendar/plugin.toml");
 
+/// The Calendar plugin's fixture of the types it registers.
+const FIXTURE: &str = include_str!("../../../plugins/calendar/fixtures/calendar-types-v1.json");
+
 #[test]
-fn calendar_declares_workspace_reads_a_view_and_an_inbox_section_and_nothing_that_writes() {
+fn calendar_declares_workspace_reads_its_types_a_view_and_an_inbox_section() {
     let Some(calendar) = plugins::built("calendar_plugin") else {
         return;
     };
@@ -31,11 +35,51 @@ fn calendar_declares_workspace_reads_a_view_and_an_inbox_section_and_nothing_tha
 
     assert_eq!(manifest.id, "calendar");
     let names: Vec<&str> = manifest.capabilities.iter().map(Capability::name).collect();
-    assert_eq!(names, ["workspace-read", "views", "inbox-sections"]);
+    assert_eq!(
+        names,
+        ["workspace-read", "object-types", "views", "inbox-sections"]
+    );
 }
 
 #[test]
-fn code_running_under_the_calendar_capabilities_is_denied_a_write() {
+fn the_plugin_registers_the_fixtures_schemas() {
+    let Some(component) = plugins::built("calendar_plugin") else {
+        return;
+    };
+    let folder = tempfile::tempdir().unwrap();
+    plugins::write_folder(folder.path(), MANIFEST, "calendar_plugin.wasm", &component);
+    let library = tempfile::tempdir().unwrap();
+    let host = plugins::host(library.path());
+    host.install(&host.inspect(folder.path()).unwrap()).unwrap();
+    let loaded = host.load("calendar").unwrap();
+    let types = ObjectTypes::new();
+    let running = host.start(
+        &loaded,
+        &loaded.manifest().capabilities,
+        Services {
+            types: types.clone(),
+            ..Services::default()
+        },
+    );
+
+    let registered = running.register_object_types().unwrap();
+
+    let names = ["calendar", "event", "calendar-settings"];
+    assert_eq!(
+        registered,
+        names.map(|name| (name.to_owned(), Ok(()))).to_vec()
+    );
+    let fixture: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
+    for name in names {
+        assert_eq!(types.owner(name).as_deref(), Some("calendar"));
+        let expected: PropertySchema =
+            serde_json::from_value(fixture["schemas"][name].clone()).unwrap();
+        assert_eq!(types.schemas().schema(name), Some(&expected), "{name}");
+    }
+}
+
+#[test]
+fn code_running_under_the_calendar_capabilities_is_denied_a_write_of_another_type() {
     let Some(probe) = plugins::built("probe_plugin") else {
         return;
     };

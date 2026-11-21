@@ -1,0 +1,305 @@
+{
+	"description": "The calendar, event and calendar-settings types the Calendar plugin declares. The plugin's tests run each case through workspace-format's generic validator and serializer with the plugin's schemas, and plugin-host's tests check that the running plugin registers these schemas.",
+	"schemas": {
+		"calendar": {
+			"properties": [
+				{
+					"name": "color",
+					"kind": {
+						"enum": [
+							"red",
+							"orange",
+							"yellow",
+							"green",
+							"blue",
+							"purple",
+							"brown",
+							"gray"
+						]
+					},
+					"default": "blue"
+				}
+			]
+		},
+		"event": {
+			"properties": [
+				{
+					"name": "calendar",
+					"kind": {
+						"id": "calendar"
+					}
+				},
+				{
+					"name": "start",
+					"kind": "date"
+				},
+				{
+					"name": "end",
+					"kind": "date",
+					"nullable": true
+				}
+			]
+		},
+		"calendar-settings": {
+			"properties": [
+				{
+					"name": "hidden_calendars",
+					"kind": {
+						"list": {
+							"id": "calendar"
+						}
+					},
+					"default": []
+				},
+				{
+					"name": "hidden_types",
+					"kind": {
+						"list": "string"
+					},
+					"default": []
+				}
+			]
+		}
+	},
+	"properties": [
+		{
+			"name": "a calendar with a color and unknown metadata",
+			"type": "calendar",
+			"properties": {
+				"color": "green",
+				"source": "kept"
+			},
+			"expected": {
+				"color": "green",
+				"source": "kept"
+			}
+		},
+		{
+			"name": "a calendar's color defaults to blue",
+			"type": "calendar",
+			"properties": {},
+			"expected": {
+				"color": "blue"
+			}
+		},
+		{
+			"name": "a color outside the palette",
+			"type": "calendar",
+			"properties": {
+				"color": "teal"
+			},
+			"error": {
+				"code": "not_allowed",
+				"property": "color"
+			}
+		},
+		{
+			"name": "a color must be a string",
+			"type": "calendar",
+			"properties": {
+				"color": 3
+			},
+			"error": {
+				"code": "wrong_type",
+				"property": "color"
+			}
+		},
+		{
+			"name": "a timed event",
+			"type": "event",
+			"properties": {
+				"calendar": "calendar_01j00000000000000000000001",
+				"start": "2026-11-21T09:00:00-05:00",
+				"end": "2026-11-21T09:30:00-05:00"
+			},
+			"expected": {
+				"calendar": "calendar_01j00000000000000000000001",
+				"start": "2026-11-21T09:00:00-05:00",
+				"end": "2026-11-21T09:30:00-05:00"
+			}
+		},
+		{
+			"name": "an all-day event over two days",
+			"type": "event",
+			"properties": {
+				"calendar": "calendar_01j00000000000000000000001",
+				"start": "2026-11-21",
+				"end": "2026-11-23"
+			},
+			"expected": {
+				"calendar": "calendar_01j00000000000000000000001",
+				"start": "2026-11-21",
+				"end": "2026-11-23"
+			}
+		},
+		{
+			"name": "an event without an end",
+			"type": "event",
+			"properties": {
+				"calendar": "calendar_01j00000000000000000000001",
+				"start": "2026-11-21",
+				"end": null
+			},
+			"expected": {
+				"calendar": "calendar_01j00000000000000000000001",
+				"start": "2026-11-21",
+				"end": null
+			}
+		},
+		{
+			"name": "an event without a calendar or a start stays as written",
+			"type": "event",
+			"properties": {
+				"location": "Montréal"
+			},
+			"expected": {
+				"location": "Montréal"
+			}
+		},
+		{
+			"name": "an event's calendar names a calendar by ID, not by link",
+			"type": "event",
+			"properties": {
+				"calendar": "[[Work]]",
+				"start": "2026-11-21"
+			},
+			"error": {
+				"code": "invalid_reference",
+				"property": "calendar"
+			}
+		},
+		{
+			"name": "an event's calendar must be a calendar's ID",
+			"type": "event",
+			"properties": {
+				"calendar": "task_01j00000000000000000000001",
+				"start": "2026-11-21"
+			},
+			"error": {
+				"code": "invalid_reference",
+				"property": "calendar"
+			}
+		},
+		{
+			"name": "an event's calendar can't be null",
+			"type": "event",
+			"properties": {
+				"calendar": null,
+				"start": "2026-11-21"
+			},
+			"error": {
+				"code": "wrong_type",
+				"property": "calendar"
+			}
+		},
+		{
+			"name": "an event's start must be a date or an instant with an offset",
+			"type": "event",
+			"properties": {
+				"calendar": "calendar_01j00000000000000000000001",
+				"start": "2026-11-21T09:00:00"
+			},
+			"error": {
+				"code": "invalid_date",
+				"property": "start"
+			}
+		},
+		{
+			"name": "an event's start can't be null",
+			"type": "event",
+			"properties": {
+				"calendar": "calendar_01j00000000000000000000001",
+				"start": null
+			},
+			"error": {
+				"code": "wrong_type",
+				"property": "start"
+			}
+		},
+		{
+			"name": "settings default to nothing hidden",
+			"type": "calendar-settings",
+			"properties": {},
+			"expected": {
+				"hidden_calendars": [],
+				"hidden_types": []
+			}
+		},
+		{
+			"name": "settings hide calendars by ID and built-in calendars by type",
+			"type": "calendar-settings",
+			"properties": {
+				"hidden_calendars": [
+					"calendar_01j00000000000000000000001"
+				],
+				"hidden_types": [
+					"task"
+				]
+			},
+			"expected": {
+				"hidden_calendars": [
+					"calendar_01j00000000000000000000001"
+				],
+				"hidden_types": [
+					"task"
+				]
+			}
+		},
+		{
+			"name": "settings hide calendars by ID only",
+			"type": "calendar-settings",
+			"properties": {
+				"hidden_calendars": [
+					"Work"
+				]
+			},
+			"error": {
+				"code": "invalid_reference",
+				"property": "hidden_calendars"
+			}
+		}
+	],
+	"serialization": [
+		{
+			"name": "a calendar in schema order",
+			"path": "Calendars/Work.md",
+			"markdown": "---\nupdated: 2026-11-16T14:00:00Z\ncolor: purple\ntype: calendar\nid: calendar_01j00000000000000000000001\ncreated: 2026-11-16T14:00:00Z\n---\n",
+			"canonical": "---\nid: calendar_01j00000000000000000000001\ntype: calendar\ncolor: purple\ncreated: 2026-11-16T14:00:00Z\nupdated: 2026-11-16T14:00:00Z\n---\n"
+		},
+		{
+			"name": "an event in schema order with its notes",
+			"path": "Events/Dentist.md",
+			"markdown": "---\nend: 2026-11-21T09:30:00-05:00\nlocation: Clinic\nid: event_01j00000000000000000000002\nstart: 2026-11-21T09:00:00-05:00\ncalendar: calendar_01j00000000000000000000001\ntype: event\ncreated: 2026-11-16T14:00:00Z\nupdated: 2026-11-16T14:00:00Z\n---\nBring the card.\n",
+			"canonical": "---\nid: event_01j00000000000000000000002\ntype: event\ncalendar: calendar_01j00000000000000000000001\nstart: 2026-11-21T09:00:00-05:00\nend: 2026-11-21T09:30:00-05:00\nlocation: Clinic\ncreated: 2026-11-16T14:00:00Z\nupdated: 2026-11-16T14:00:00Z\n---\nBring the card.\n"
+		},
+		{
+			"name": "an all-day event",
+			"path": "Events/Retreat.md",
+			"markdown": "---\nid: event_01j00000000000000000000003\ntype: event\nstart: 2026-11-21\ncalendar: calendar_01j00000000000000000000001\nend: 2026-11-23\n---\n",
+			"canonical": "---\nid: event_01j00000000000000000000003\ntype: event\ncalendar: calendar_01j00000000000000000000001\nstart: 2026-11-21\nend: 2026-11-23\n---\n"
+		},
+		{
+			"name": "the settings file",
+			"path": "Calendars/Calendar settings.md",
+			"markdown": "---\nhidden_types:\n- task\nid: calendar-settings_01j00000000000000000000004\ntype: calendar-settings\nhidden_calendars:\n- calendar_01j00000000000000000000001\n---\n",
+			"canonical": "---\nid: calendar-settings_01j00000000000000000000004\ntype: calendar-settings\nhidden_calendars:\n- calendar_01j00000000000000000000001\nhidden_types:\n- task\n---\n"
+		}
+	],
+	"malformed": [
+		{
+			"name": "an ID that doesn't match its type",
+			"path": "Calendars/Work.md",
+			"markdown": "---\nid: event_01j00000000000000000000001\ntype: calendar\ncolor: red\n---\n"
+		},
+		{
+			"name": "invalid YAML",
+			"path": "Events/Broken.md",
+			"markdown": "---\nid: event_01j00000000000000000000002\ntype: event\nstart: [2026-11-21\n---\n"
+		},
+		{
+			"name": "no closing line",
+			"path": "Events/Open.md",
+			"markdown": "---\nid: event_01j00000000000000000000003\ntype: event\nstart: 2026-11-21\n"
+		}
+	]
+}
