@@ -71,14 +71,17 @@ pub(super) fn conversation(ui: &mut Ui, node: &ViewNode, label: &str, kit: &mut 
         .max(available.top() + 240.0)
         - available.top();
     // It runs past the page's 24-point margins to its edges, so the
-    // scroll bar sits at the page's edge; only the page's own width counts
-    // toward its size.
+    // scroll bar sits at the page's edge; only the page's own room counts
+    // toward its size, so the page around it never scrolls.
     let rect = Rect::from_min_size(
         available.min - vec2(24.0, 0.0),
         vec2(available.width() + 48.0, height),
     );
     ui.allocate_rect(
-        Rect::from_min_size(available.min, vec2(available.width(), height)),
+        Rect::from_min_size(
+            available.min,
+            vec2(available.width(), (height - 24.0).max(0.0)),
+        ),
         Sense::hover(),
     );
     let (body, composer) = match node.children.split_last() {
