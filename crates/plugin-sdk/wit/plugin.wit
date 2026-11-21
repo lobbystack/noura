@@ -456,8 +456,38 @@ interface ai {
     failure: option<failure>,
   }
 
+  // How hard a model reasons before it answers.
+  enum effort {
+    // No reasoning, for a model that can answer without it.
+    off,
+    low,
+    medium,
+    high,
+  }
+
+  // A model one of your providers answers with.
+  record model {
+    // The provider's ID.
+    provider: string,
+    // The model's ID, as the provider names it.
+    id: string,
+    // Its name, such as `Claude Opus 5.5`, or its ID when Noura doesn't
+    // know it.
+    name: string,
+    // The efforts Noura can ask it for, from least to most. Empty for a
+    // model whose reasoning Noura can't set.
+    efforts: list<effort>,
+    // The effort it reasons with when none is chosen.
+    default-effort: option<effort>,
+  }
+
   // The providers you set up and turned on.
   providers: func() -> result<list<provider>, error>;
+
+  // The models of the providers you set up and turned on, provider by
+  // provider in the order `providers` lists them, each provider's own
+  // model first.
+  models: func() -> result<list<model>, error>;
 
   // The workspace's chats, the one changed last first.
   chats: func() -> result<list<chat>, error>;
@@ -580,6 +610,12 @@ interface ai {
     // A palette color: `red`, `orange`, `yellow`, `green`, `blue`,
     // `purple`, `brown` or `gray`.
     color: option<string>,
+    // The provider its runs ask, or none for your first.
+    provider: option<string>,
+    // The model they ask in place of the provider's own, or none.
+    model: option<string>,
+    // How hard that model reasons, or none for the model's own default.
+    effort: option<effort>,
     state: orb-state,
     // The ID of its thread, once its first message went out.
     thread: option<string>,
@@ -650,13 +686,16 @@ interface ai {
     color: option<string>,
     provider: option<string>,
     model: option<string>,
+    // A new effort, or none inside to clear it.
+    effort: option<option<effort>>,
     tools: option<list<string>>,
     triggers: option<list<string>>,
   }
 
   // The default Orb first, then the workspace's Orbs by title. The default
   // Orb has the ID `orb_00000000000000000000000000` and no file: plain
-  // chats are its, and its tool calls each wait for your answer.
+  // chats are its, and its tool calls each wait for your answer. A plain
+  // chat's request to its provider asks its model, with its effort.
   orbs: func() -> result<list<orb>, error>;
 
   // Create an Orb named `title` in `Orbs/<title>/`, with no instructions,
@@ -685,7 +724,9 @@ interface ai {
 
   // Change the Orb's file. Fails with `revision-conflict` when its file
   // no longer holds `expected-revision`, and with `invalid-property` when
-  // a change breaks the format, and then writes nothing.
+  // a change breaks the format, and then writes nothing. The default Orb
+  // has no file: it takes a provider, a model and an effort, which this
+  // device keeps, and refuses other changes.
   update-orb: func(id: string, changes: orb-changes, expected-revision: string) -> result<orb, error>;
 
   // Pause the Orb, so its triggers don't fire, or let them fire again.

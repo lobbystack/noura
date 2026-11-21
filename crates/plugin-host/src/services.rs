@@ -5,8 +5,8 @@
 use std::fmt;
 
 use crate::{
-    AiChat, AiCompletion, AiCompletionRequest, AiFailure, AiMessage, AiOrb, AiOrbChanges, AiOrbRun,
-    AiProvider, AiRequest, AiRetention, AiRun, AiToolDefinition, AiToolResult, AiWebPage,
+    AiChat, AiCompletion, AiCompletionRequest, AiFailure, AiMessage, AiModel, AiOrb, AiOrbChanges,
+    AiOrbRun, AiProvider, AiRequest, AiRetention, AiRun, AiToolDefinition, AiToolResult, AiWebPage,
     AiWebResult, MenuBarEntry, Notification, PasteMethod, Recording, RecordingOptions,
     ShortcutState, SpeechMicrophone, SpeechModel, SpeechPreferences,
 };
@@ -313,6 +313,22 @@ pub trait Navigation: Send + Sync {
 pub trait AiChats: Send + Sync {
     /// The providers you set up and turned on.
     fn providers(&self) -> Result<Vec<AiProvider>, ServiceError>;
+
+    /// The models of those providers, each provider's own first. A service
+    /// that knows no others lists each provider's own model.
+    fn models(&self) -> Result<Vec<AiModel>, ServiceError> {
+        Ok(self
+            .providers()?
+            .into_iter()
+            .map(|provider| AiModel {
+                id: provider.model.clone(),
+                name: provider.model,
+                provider: provider.id,
+                efforts: Vec::new(),
+                default_effort: None,
+            })
+            .collect())
+    }
 
     /// The workspace's chats, the one changed last first.
     fn chats(&self) -> Result<Vec<AiChat>, ServiceError>;

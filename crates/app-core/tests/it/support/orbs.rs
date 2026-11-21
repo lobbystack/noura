@@ -154,6 +154,7 @@ impl AiStreamer for Scripted {
                 .map(message_line)
                 .collect(),
             tools: request.tools.iter().map(|tool| tool.name.clone()).collect(),
+            reasoning: request.reasoning,
         };
         let reply = (self.answer)(&recorded);
         self.requests.lock().unwrap().push(recorded);

@@ -43,6 +43,8 @@ pub struct Request {
     /// Each other message as `role: text`, tool calls and results as JSON.
     pub messages: Vec<String>,
     pub tools: Vec<String>,
+    /// How hard the request asked the model to reason.
+    pub reasoning: Option<local_core::AiReasoning>,
 }
 
 /// What the fake provider sends next on one request's stream.
@@ -159,6 +161,7 @@ impl AiStreamer for FakeProvider {
                 .map(message_line)
                 .collect(),
             tools: request.tools.iter().map(|tool| tool.name.clone()).collect(),
+            reasoning: request.reasoning,
         };
         let (sender, receiver) = unbounded_channel();
         let dropped = Arc::new(Mutex::new(false));

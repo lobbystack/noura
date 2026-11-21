@@ -45,12 +45,13 @@ use bindings::exports::noura::plugin::{
 };
 pub use bindings::noura::plugin::ai::{
     Chat as AiChat, Completion as AiCompletion, CompletionRequest as AiCompletionRequest,
-    Failure as AiFailure, Message as AiMessage, MessageKind as AiMessageKind,
-    MessageStatus as AiMessageStatus, Orb as AiOrb, OrbChanges as AiOrbChanges, OrbRun as AiOrbRun,
-    OrbRunStatus as AiOrbRunStatus, OrbStart as AiOrbStart, OrbState as AiOrbState,
-    Provider as AiProvider, Request as AiRequest, Retention as AiRetention, Run as AiRun,
-    RunStatus as AiRunStatus, ToolCall as AiToolCall, ToolDefinition as AiToolDefinition,
-    ToolResult as AiToolResult, WebPage as AiWebPage, WebResult as AiWebResult,
+    Effort as AiEffort, Failure as AiFailure, Message as AiMessage, MessageKind as AiMessageKind,
+    MessageStatus as AiMessageStatus, Model as AiModel, Orb as AiOrb, OrbChanges as AiOrbChanges,
+    OrbRun as AiOrbRun, OrbRunStatus as AiOrbRunStatus, OrbStart as AiOrbStart,
+    OrbState as AiOrbState, Provider as AiProvider, Request as AiRequest, Retention as AiRetention,
+    Run as AiRun, RunStatus as AiRunStatus, ToolCall as AiToolCall,
+    ToolDefinition as AiToolDefinition, ToolResult as AiToolResult, WebPage as AiWebPage,
+    WebResult as AiWebResult,
 };
 pub use bindings::noura::plugin::global_shortcuts::Shortcut as ShortcutState;
 pub use bindings::noura::plugin::menu_bar::{Entry as MenuBarEntry, EntryKind as MenuBarEntryKind};
@@ -778,6 +779,10 @@ impl navigation::Host for HostState {
 impl ai::Host for HostState {
     fn providers(&mut self) -> Result<Vec<ai::Provider>, types::Error> {
         self.with_ai(|ai| ai.providers())
+    }
+
+    fn models(&mut self) -> Result<Vec<ai::Model>, types::Error> {
+        self.with_ai(|ai| ai.models())
     }
 
     fn chats(&mut self) -> Result<Vec<ai::Chat>, types::Error> {

@@ -38,6 +38,7 @@
 
 mod complete;
 mod history;
+pub(crate) mod models;
 pub(crate) mod orbs;
 mod tools;
 mod web;
@@ -353,6 +354,8 @@ pub(crate) struct Ai {
     orb_threads: Mutex<HashMap<String, (String, String)>>,
     /// Held while the triggers are checked, so two checks don't race.
     orb_checking: Mutex<()>,
+    /// What the default Orb asks with, as this device keeps it.
+    default_orb: Mutex<orbs::settings::Settings>,
 }
 
 impl Drop for Ai {
@@ -425,6 +428,7 @@ impl Ai {
             orb_runner: Mutex::new(Vec::new()),
             orb_threads: Mutex::new(HashMap::new()),
             orb_checking: Mutex::new(()),
+            default_orb: Mutex::new(orbs::settings::Settings::load(app_data)),
         })
     }
 
@@ -993,7 +997,7 @@ impl Ai {
             Some(run) => run.chat.clone(),
             None => return,
         };
-        let model = self.orb_model(id);
+        let (model, effort) = self.run_choice(id, provider_id);
         let begun = (|| {
             let mut provider = self.provider(provider_id).map_err(|_| provider_missing())?;
             if let Some(model) = model {
@@ -1032,6 +1036,7 @@ impl Ai {
             begun: revision,
             provider: provider.id.clone(),
             model: provider.model.clone(),
+            effort,
             text: String::new(),
             calls: Vec::new(),
         };
@@ -1097,7 +1102,21 @@ impl Ai {
             request = self.request(id, engine, &instructions, &answer.message)?;
         }
         let characters = history::characters(&request);
-        let Some(frames) = self.open_stream(id, provider, request, Some(history::tools(tools)))?
+        let answers_tools = request.last().is_some_and(|message| message.role == "tool");
+        let reasoning = answer.effort.and_then(|effort| {
+            models::reasoning(
+                &provider.kind,
+                &provider.model,
+                orbs::public_effort(effort),
+                answers_tools,
+            )
+        });
+        let Some(frames) = self.open_stream(
+            id,
+            provider,
+            (request, reasoning),
+            Some(history::tools(tools)),
+        )?
         else {
             return Ok(Ended::Cancelled);
         };
@@ -1186,7 +1205,7 @@ impl Ai {
         else {
             return Ok(None);
         };
-        let Some(frames) = self.open_stream(id, provider, request, None)? else {
+        let Some(frames) = self.open_stream(id, provider, (request, None), None)? else {
             return Ok(Some(Ended::Cancelled));
         };
         let mut summary = String::new();
@@ -1227,14 +1246,15 @@ impl Ai {
         Ok(None)
     }
 
-    /// Start a stream of `messages` to `provider` for the run `id`. None
-    /// when the run went, as after a switch to another workspace. A Stop
-    /// pressed before the stream started stops it at once.
+    /// Start a stream of `messages` to `provider` for the run `id`, asking
+    /// the model to reason as `reasoning` says. None when the run went, as
+    /// after a switch to another workspace. A Stop pressed before the
+    /// stream started stops it at once.
     fn open_stream(
         &self,
         id: &str,
         provider: &AiProviderConfig,
-        messages: Vec<AiTransportMessage>,
+        (messages, reasoning): (Vec<AiTransportMessage>, Option<local_core::AiReasoning>),
         tools: Option<Vec<local_core::AiToolDefinition>>,
     ) -> Result<Option<tokio::sync::mpsc::Receiver<AiStreamFrame>>, CoreError> {
         if !lock(&self.state).runs.contains_key(id) {
@@ -1250,7 +1270,7 @@ impl Ai {
             },
             messages,
             tools,
-            reasoning: None,
+            reasoning,
         };
         let client = lock(&self.client).clone();
         let store = self.store().map_err(|_| no_workspace_core())?;
@@ -1754,6 +1774,11 @@ impl Ai {
             .collect())
     }
 
+    /// The models of the providers you turned on, each one's own first.
+    pub(crate) fn models(&self) -> Result<Vec<plugin_host::AiModel>, ServiceError> {
+        Ok(models::models(&self.providers()?))
+    }
+
     fn chats(&self) -> Result<Vec<AiChat>, ServiceError> {
         let engine = self.engine()?;
         let mut seen = std::collections::HashSet::new();
@@ -2009,6 +2034,8 @@ struct Answer {
     /// The provider and model that write it.
     provider: String,
     model: String,
+    /// How hard the model reasons, or none for its own default.
+    effort: Option<workspace_format::orb::Effort>,
     text: String,
     calls: Vec<AiToolCall>,
 }
@@ -2031,6 +2058,10 @@ struct Access {
 impl AiChats for Access {
     fn providers(&self) -> Result<Vec<AiProvider>, ServiceError> {
         self.ai.providers()
+    }
+
+    fn models(&self) -> Result<Vec<plugin_host::AiModel>, ServiceError> {
+        self.ai.models()
     }
 
     fn chats(&self) -> Result<Vec<AiChat>, ServiceError> {

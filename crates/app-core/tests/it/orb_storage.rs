@@ -49,6 +49,7 @@ fn no_changes() -> AiOrbChanges {
         color: None,
         provider: None,
         model: None,
+        effort: None,
         tools: None,
         triggers: None,
     }
@@ -66,13 +67,14 @@ fn a_new_orb_is_a_folder_with_its_file_and_memory_on_disk_in_canonical_order() {
     let lines: Vec<&str> = file.lines().collect();
     assert_eq!(lines[1], format!("id: {}", orb.id));
     assert_eq!(
-        lines[2..12],
+        lines[2..13],
         [
             "type: orb",
             "avatar: null",
             "color: null",
             "provider: null",
             "model: null",
+            "effort: null",
             "tools: []",
             "reads: []",
             "memory: '[[Memory]]'",
@@ -80,7 +82,7 @@ fn a_new_orb_is_a_folder_with_its_file_and_memory_on_disk_in_canonical_order() {
             "paused: false",
         ]
     );
-    assert!(lines[12].starts_with("created: "));
+    assert!(lines[13].starts_with("created: "));
     assert!(file.ends_with("\n---\n"), "{file}");
     let memory = text(&fixture.root, "Orbs/Weekly review/Memory.md");
     assert!(memory.starts_with("---\nid: note_"), "{memory}");
