@@ -2058,6 +2058,13 @@ the same line. A board's card shows the detail under the label.
   read it with the label.
   Only list and virtual list items show one.
 
+- <a id="item.color"></a>`color`: option<[`color`](#color)>
+  <p>Colors the item's checkbox, or a dot before its label when it has
+  none, as for a calendar in a list of calendars. A colored checkbox
+  shows or hides something, so a checked one doesn't strike its label
+  through as a done task's does. Only list and virtual list items show
+  one.
+
 
 #### <a id="item_list"></a>`record item-list`
 
@@ -2291,6 +2298,10 @@ covers, in this device's time zone.
   entry's last day, or a timed entry's end. Without an end, or with
   one not after the start, an all-day entry takes its first day and a
   timed entry 30 minutes.
+
+- <a id="calendar_entry.color"></a>`color`: option<[`color`](#color)>
+  <p>The color Noura draws the entry in, such as its calendar's, or none
+  for the theme's own.
 
 
 #### <a id="icon"></a>`enum icon`

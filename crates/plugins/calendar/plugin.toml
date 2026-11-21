@@ -9,6 +9,10 @@ platforms = ["desktop"]
 [[capabilities]]
 name = "workspace-read"
 
+# Calendars, their events, and the calendars you hid.
+[[capabilities]]
+name = "object-types"
+
 # The Calendar page, and opening an entry's object in a tab.
 [[capabilities]]
 name = "views"

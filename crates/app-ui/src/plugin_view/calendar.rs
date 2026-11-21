@@ -17,11 +17,12 @@
 //! entry where the keyboard last left it.
 
 use app_core::{
-    CalendarMode, GridDay, GridEntry, PluginEvent, Span, Target, ViewKind, ViewNode, grid_days,
-    lay_out,
+    CalendarMode, GridDay, GridEntry, PluginColor, PluginEvent, Span, Target, ViewKind, ViewNode,
+    grid_days, lay_out,
 };
 use egui::{
-    Align2, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, WidgetInfo,
+    Align2, Color32, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder,
+    WidgetInfo,
     accesskit::{Action, AriaCurrent, Role},
     pos2, vec2,
 };
@@ -104,6 +105,8 @@ struct Grid<'a> {
     days: Vec<GridDay>,
     entries: Vec<GridEntry<'a>>,
     ids: Vec<&'a str>,
+    /// Each entry's color, when the plugin gave one.
+    colors: Vec<Option<PluginColor>>,
     shown: Vec<Shown>,
 }
 
@@ -128,12 +131,19 @@ pub(super) fn calendar(
     let names = DateNames::of(kit.app.locale().as_deref());
     let time_zone = kit.app.time_zone();
     let mut ids = Vec::new();
+    let mut colors = Vec::new();
     let mut entries = Vec::new();
     for child in &node.children {
-        if let ViewKind::Entry { title, start, end } = &child.kind
+        if let ViewKind::Entry {
+            title,
+            start,
+            end,
+            color,
+        } = &child.kind
             && let Some(span) = Span::parse(start, end.as_deref())
         {
             ids.push(child.id.as_str());
+            colors.push(*color);
             entries.push(GridEntry { title, span });
         }
     }
@@ -147,6 +157,7 @@ pub(super) fn calendar(
         days,
         entries,
         ids,
+        colors,
         shown: Vec::new(),
     };
     grid.shown = shown(&grid);
@@ -712,7 +723,9 @@ fn day_number(ui: &Ui, grid: &Grid, date: Date, center: egui::Pos2, in_month: bo
 }
 
 /// An entry's box with its title, and a timed entry's time under it when
-/// there is room. A selected entry fills with the primary color.
+/// there is room. A selected entry fills with the primary color, or its
+/// own color when it has one, which otherwise tints its box and marks its
+/// left edge.
 fn paint_entry(
     ui: &Ui,
     rect: Rect,
@@ -726,7 +739,19 @@ fn paint_entry(
         return;
     }
     let painter = ui.painter();
-    let (fill, foreground, quiet) = if selected {
+    let color = grid.colors[shown.entry].map(|color| crate::theme::plugin_color(ui.ctx(), color));
+    let (fill, foreground, quiet) = if let Some(color) = color {
+        if selected {
+            (color, Color32::WHITE, Color32::WHITE)
+        } else {
+            let tint = if response.hovered() { 0.35 } else { 0.22 };
+            (
+                color.gamma_multiply(tint),
+                palette.foreground,
+                palette.muted_foreground,
+            )
+        }
+    } else if selected {
         (
             palette.primary,
             palette.primary_foreground,
@@ -741,13 +766,25 @@ fn paint_entry(
             palette.muted_foreground,
         )
     };
-    painter.rect(
-        rect,
-        radius(0.4),
-        fill,
-        Stroke::new(1.0, palette.border),
-        StrokeKind::Inside,
-    );
+    let border = if color.is_some() {
+        Stroke::NONE
+    } else {
+        Stroke::new(1.0, palette.border)
+    };
+    painter.rect(rect, radius(0.4), fill, border, StrokeKind::Inside);
+    if let (Some(color), false) = (color, selected) {
+        let edge = Rect::from_min_max(rect.min, pos2(rect.left() + 3.0, rect.bottom()));
+        painter.rect_filled(
+            edge,
+            egui::CornerRadius {
+                nw: 4,
+                sw: 4,
+                ne: 0,
+                se: 0,
+            },
+            color,
+        );
+    }
     if response.has_focus() {
         painter.rect_stroke(
             rect.shrink(1.0),

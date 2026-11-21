@@ -21,12 +21,12 @@
 use std::ops::Range;
 
 use app_core::{
-    Column, ColumnPress, PluginCheck, PluginEvent, PluginMove, SortOrder, Target, ViewKind,
-    ViewNode,
+    Column, ColumnPress, PluginCheck, PluginColor, PluginEvent, PluginMove, SortOrder, Target,
+    ViewKind, ViewNode,
 };
 use egui::{
-    Align2, Event, EventFilter, FontId, Id, Key, Modifiers, Pos2, Rect, Response, Sense, Shape,
-    Stroke, StrokeKind, TextWrapMode, Ui, UiBuilder, WidgetInfo, WidgetText,
+    Align2, Color32, Event, EventFilter, FontId, Id, Key, Modifiers, Pos2, Rect, Response, Sense,
+    Shape, Stroke, StrokeKind, TextWrapMode, Ui, UiBuilder, WidgetInfo, WidgetText,
     accesskit::{Action, HasPopup, Role, SortDirection},
     pos2, vec2,
 };
@@ -117,6 +117,8 @@ struct Row<'a> {
     detail: Option<String>,
     /// The item's checkbox, checked or not, when it has one.
     checked: Option<bool>,
+    /// The color of its checkbox, or of a dot before its label.
+    color: Option<PluginColor>,
     /// The warning after the label.
     warning: Option<String>,
     cells: Vec<String>,
@@ -132,6 +134,7 @@ impl<'a> Row<'a> {
             label: String::new(),
             detail: None,
             checked: None,
+            color: None,
             warning: None,
             cells: Vec::new(),
             menu: node
@@ -149,10 +152,12 @@ impl<'a> Row<'a> {
                 detail,
                 checked,
                 warning,
+                color,
             } => {
                 row.label.clone_from(label);
                 row.detail.clone_from(detail);
                 row.checked = *checked;
+                row.color = *color;
                 row.warning.clone_from(warning);
             }
             ViewKind::Row { cells } => {
@@ -212,6 +217,7 @@ impl<'a> Source<'a> {
                             label: row.item.label,
                             detail: row.item.detail.filter(|detail| !detail.trim().is_empty()),
                             checked: row.item.checked,
+                            color: row.item.color,
                             warning: row
                                 .item
                                 .warning
@@ -677,6 +683,9 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
                 }));
             }
         }
+        if let (Some(color), None) = (row.color, row.checked) {
+            dot(ui, rect, color);
+        }
         if let Some(field) = row.name_field {
             name_field_in(ui, rect, row, field, kit);
         }
@@ -922,22 +931,29 @@ fn checkbox(
         .widget_info(|| WidgetInfo::selected(Role::CheckBox, true, checked, row.label.as_str()));
     if box_ui.is_rect_visible(box_rect) {
         let painter = box_ui.painter();
-        let stroke = if response.hovered() {
-            palette.ring
-        } else {
-            palette.border
+        // A colored box shows its color whether checked or not, as a
+        // calendar's does.
+        let color = row
+            .color
+            .map(|color| crate::theme::plugin_color(ui.ctx(), color));
+        let stroke = match color {
+            Some(color) => color,
+            None if response.hovered() => palette.ring,
+            None => palette.border,
         };
         if checked {
-            painter.rect_filled(box_rect, radius(0.3), palette.primary);
+            painter.rect_filled(box_rect, radius(0.3), color.unwrap_or(palette.primary));
             let points = vec![
                 box_rect.left_center() + vec2(3.0, 0.0),
                 box_rect.center_bottom() + vec2(-1.0, -3.5),
                 box_rect.right_top() + vec2(-3.0, 3.5),
             ];
-            painter.add(Shape::line(
-                points,
-                Stroke::new(1.6, palette.primary_foreground),
-            ));
+            let mark = if color.is_some() {
+                Color32::WHITE
+            } else {
+                palette.primary_foreground
+            };
+            painter.add(Shape::line(points, Stroke::new(1.6, mark)));
         } else {
             painter.rect_stroke(
                 box_rect,
@@ -950,12 +966,26 @@ fn checkbox(
     response.clicked()
 }
 
+/// The dot in `color` before the label of an item without a checkbox,
+/// where a checkbox would sit.
+fn dot(ui: &Ui, rect: Rect, color: PluginColor) {
+    let center = pos2(rect.left() + 17.0, rect.center().y);
+    if ui.is_rect_visible(rect) {
+        ui.painter()
+            .circle_filled(center, 4.5, crate::theme::plugin_color(ui.ctx(), color));
+    }
+}
+
 /// The name field an item shows in its place, after its checkbox.
 fn name_field_in(ui: &mut Ui, rect: Rect, row: &Row, field: &ViewNode, kit: &mut Kit) {
     let ViewKind::NameField { label, value } = &field.kind else {
         return;
     };
-    let start = if row.checked.is_some() { 32.0 } else { 4.0 };
+    let start = if row.checked.is_some() || row.color.is_some() {
+        32.0
+    } else {
+        4.0
+    };
     let area = Rect::from_min_max(
         pos2(rect.left() + start, rect.top()),
         pos2(rect.right() - 4.0, rect.bottom()),
@@ -1068,14 +1098,19 @@ fn paint_row(
             )
         });
         let count_width = count.as_ref().map_or(0.0, |galley| galley.size().x + 12.0);
+        let start = if row.checked.is_some() || row.color.is_some() {
+            32.0
+        } else {
+            12.0
+        };
         let label = egui::WidgetText::from(egui::RichText::new(&row.label).font(font)).into_galley(
             ui,
             Some(egui::TextWrapMode::Truncate),
-            inner.width() - 12.0 - 12.0 - count_width,
+            inner.width() - start - 12.0 - count_width,
             egui::TextStyle::Small,
         );
         let at = Align2::LEFT_CENTER
-            .anchor_size(pos2(inner.left() + 12.0, rect.center().y), label.size());
+            .anchor_size(pos2(inner.left() + start, rect.center().y), label.size());
         painter.galley(at.min, label, palette.foreground);
         if let Some(count) = count {
             let at = Align2::RIGHT_CENTER
@@ -1104,7 +1139,11 @@ fn paint_row(
         .as_deref()
         .map(|warning| text(ui, warning, inner.width() * 0.3, SUPPORTING_SIZE));
     let warning_width = warning.as_ref().map_or(0.0, |galley| galley.size().x + 8.0);
-    let start = if row.checked.is_some() { 32.0 } else { 8.0 };
+    let start = if row.checked.is_some() || row.color.is_some() {
+        32.0
+    } else {
+        8.0
+    };
     let label = text(
         ui,
         &row.label,
@@ -1113,7 +1152,9 @@ fn paint_row(
     );
     let at =
         Align2::LEFT_CENTER.anchor_size(pos2(inner.left() + start, rect.center().y), label.size());
-    let done = row.checked == Some(true);
+    // A colored checkbox shows or hides something, as a calendar's does,
+    // so only an uncolored one marks its item done.
+    let done = row.checked == Some(true) && row.color.is_none();
     let color = if done {
         palette.muted_foreground
     } else {

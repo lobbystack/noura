@@ -136,6 +136,7 @@ pub fn rows(app: &App) -> Vec<Row> {
                 detail,
                 checked,
                 warning,
+                ..
             } => Some(Row {
                 id: item.id.clone(),
                 label: label.clone(),
@@ -302,6 +303,7 @@ pub fn due_rows(app: &App) -> Vec<Row> {
                 detail,
                 checked,
                 warning,
+                ..
             } => Some(Row {
                 id: item.id.clone(),
                 label: label.clone(),

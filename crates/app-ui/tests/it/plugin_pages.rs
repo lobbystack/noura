@@ -207,9 +207,9 @@ fn a_page_without_a_sidebar_section_leaves_the_file_tree_where_it_was() {
     let mut harness = launch(folders.app_data.path());
     let top = files_heading_top(&harness);
 
-    open_page(&mut harness, "Calendar");
-    wait_until(&mut harness, "Calendar draws", |harness| {
-        page_drew(harness, "Calendar")
+    open_page(&mut harness, "Projects");
+    wait_until(&mut harness, "Projects draws", |harness| {
+        page_drew(harness, "Projects")
     });
 
     assert_eq!(files_heading_top(&harness), top);

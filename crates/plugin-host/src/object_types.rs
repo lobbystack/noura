@@ -26,10 +26,10 @@ pub const KERNEL_TYPES: [&str; 2] = ["note", "workspace"];
 /// fill workspaces, so a plugin that took one could rewrite every one of
 /// them. The Tasks plugin, which ships with Noura, holds tasks, the
 /// Projects plugin holds projects, the AI plugin chats and their
-/// messages, Transcription its recordings, transcripts and settings, and
-/// Dictation its settings; other plugins change them through their
-/// commands.
-pub const PLUGIN_TYPES: [(&str, &str); 8] = [
+/// messages, Transcription its recordings, transcripts and settings,
+/// Dictation its settings, and Calendar its calendars, events and
+/// settings; other plugins change them through their commands.
+pub const PLUGIN_TYPES: [(&str, &str); 11] = [
     ("task", "tasks"),
     ("project", "projects"),
     ("chat", "ai"),
@@ -38,6 +38,9 @@ pub const PLUGIN_TYPES: [(&str, &str); 8] = [
     ("transcript", "transcription"),
     ("transcription-settings", "transcription"),
     ("dictation-settings", "dictation"),
+    ("calendar", "calendar"),
+    ("event", "calendar"),
+    ("calendar-settings", "calendar"),
 ];
 
 /// Types whose files only a host service writes. The plugin that holds

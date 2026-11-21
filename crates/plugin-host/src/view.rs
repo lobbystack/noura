@@ -8,17 +8,17 @@
 //! columns or hold no text, an empty menu, an input value of the wrong
 //! form, a virtual list too long to draw, a board without columns, a
 //! calendar date or an entry's start or end of the wrong form, a list that
-//! selects an item it doesn't hold, a card with a checkbox or a warning,
-//! a form that requires anything but a text input inside it, a composer
-//! that isn't a conversation's last node or holds anything but choices
-//! and buttons, or a view too large or deep to draw. [`check_rows`] does the same for
-//! the rows of a virtual list.
+//! selects an item it doesn't hold, a card with a checkbox, a warning or a
+//! color, a form that requires anything but a text input inside it, a
+//! composer that isn't a conversation's last node or holds anything but
+//! choices and buttons, or a view too large or deep to draw.
+//! [`check_rows`] does the same for the rows of a virtual list.
 
 use std::collections::HashSet;
 
 use crate::{
-    ActivityState, CalendarEntry, CalendarMode, Choice, Column, EditableStyle, HeadingLevel, Icon,
-    MessageAuthor, Node, NodeKind, PickerOption, Value, VirtualRow,
+    ActivityState, CalendarEntry, CalendarMode, Choice, Color, Column, EditableStyle, HeadingLevel,
+    Icon, MessageAuthor, Node, NodeKind, PickerOption, Value, VirtualRow,
 };
 
 /// The most nodes a view may hold.
@@ -77,13 +77,15 @@ pub enum ViewKind {
         opens_on_click: bool,
     },
     /// An item of a list, which may hold a menu, or a name field that
-    /// shows in its place, with a checkbox when `checked` is set and a
-    /// warning after its label when `warning` is.
+    /// shows in its place, with a checkbox when `checked` is set, a
+    /// warning after its label when `warning` is, and its checkbox, or a
+    /// dot before its label, in `color` when that is.
     Item {
         label: String,
         detail: Option<String>,
         checked: Option<bool>,
         warning: Option<String>,
+        color: Option<Color>,
     },
     /// A list of `rows` rows that come from the plugin as they scroll into
     /// view.
@@ -152,11 +154,12 @@ pub enum ViewKind {
     },
     /// An entry of a calendar grid. Its start is a `YYYY-MM-DD` date or an
     /// RFC 3339 date and time with an offset, and its end has the same
-    /// form.
+    /// form. It draws in `color`, or the theme's own color without one.
     Entry {
         title: String,
         start: String,
         end: Option<String>,
+        color: Option<Color>,
     },
     /// A page's or a section's title, whose children are its buttons and
     /// choice inputs.
@@ -461,9 +464,13 @@ fn check_node(node: &Node) -> Result<(), ViewError> {
         }
         NodeKind::List(list) if blank(&list.label) => Err(unlabeled()),
         NodeKind::Item(item) | NodeKind::Card(item) if blank(&item.label) => Err(unlabeled()),
-        NodeKind::Card(card) if card.checked.is_some() || card.warning.is_some() => invalid(
-            format!("The card {id} holds a checkbox or a warning, which only list items show."),
-        ),
+        NodeKind::Card(card)
+            if card.checked.is_some() || card.warning.is_some() || card.color.is_some() =>
+        {
+            invalid(format!(
+                "The card {id} holds a checkbox, a warning or a color, which only list items show."
+            ))
+        }
         NodeKind::NameField(field) if blank(&field.label) => Err(unlabeled()),
         NodeKind::NameField(_) => Ok(()),
         NodeKind::VirtualList(list) if blank(&list.label) => Err(unlabeled()),
@@ -956,6 +963,7 @@ fn build(
             detail: item.detail.clone().filter(|detail| !blank(detail)),
             checked: item.checked,
             warning: item.warning.clone().filter(|warning| !blank(warning)),
+            color: item.color,
         },
         NodeKind::VirtualList(list) => ViewKind::VirtualList {
             label: list.label.clone(),
@@ -1009,6 +1017,7 @@ fn build(
             title: entry.title.clone(),
             start: entry.start.clone(),
             end: entry.end.clone(),
+            color: entry.color,
         },
         NodeKind::Heading(heading) => ViewKind::Heading {
             text: heading.text.clone(),

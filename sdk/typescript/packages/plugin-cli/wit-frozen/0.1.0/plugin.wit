@@ -982,6 +982,12 @@ interface ui {
     // read it with the label.
     // Only list and virtual list items show one.
     warning: option<string>,
+    // Colors the item's checkbox, or a dot before its label when it has
+    // none, as for a calendar in a list of calendars. A colored checkbox
+    // shows or hides something, so a checked one doesn't strike its label
+    // through as a done task's does. Only list and virtual list items show
+    // one.
+    color: option<color>,
   }
 
   // A list you select items in.
@@ -1134,6 +1140,9 @@ interface ui {
     // one not after the start, an all-day entry takes its first day and a
     // timed entry 30 minutes.
     end: option<string>,
+    // The color Noura draws the entry in, such as its calendar's, or none
+    // for the theme's own.
+    color: option<color>,
   }
 
   // An icon Noura draws beside a heading or in an empty state.

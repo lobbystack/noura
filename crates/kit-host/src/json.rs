@@ -48,9 +48,16 @@ fn kind(kind: &ViewKind) -> Value {
             detail,
             checked,
             warning,
+            color,
         } => tagged(
             "item",
-            json!({ "label": label, "detail": detail, "checked": checked, "warning": warning }),
+            json!({
+                "label": label,
+                "detail": detail,
+                "checked": checked,
+                "warning": warning,
+                "color": color.map(color_name),
+            }),
         ),
         ViewKind::VirtualList { label, rows } => {
             tagged("virtual-list", json!({ "label": label, "rows": rows }))
@@ -97,9 +104,14 @@ fn kind(kind: &ViewKind) -> Value {
             "calendar",
             json!({ "label": label, "mode": calendar_mode(*mode), "date": date }),
         ),
-        ViewKind::Entry { title, start, end } => tagged(
+        ViewKind::Entry {
+            title,
+            start,
+            end,
+            color,
+        } => tagged(
             "entry",
-            json!({ "title": title, "start": start, "end": end }),
+            json!({ "title": title, "start": start, "end": end, "color": color.map(color_name) }),
         ),
         ViewKind::Heading {
             text,

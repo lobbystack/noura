@@ -86,6 +86,8 @@ struct Object {
     id: String,
     object_type: String,
     title: String,
+    /// The title as the file name holds it, even when blank.
+    raw_title: String,
     properties: Arc<Map<String, Value>>,
 }
 
@@ -124,6 +126,26 @@ impl Entries {
         }
         self.reads = kept;
         Ok(dated(self.reads.values().map(|read| &read.object)))
+    }
+
+    /// The objects of `object_type` read by the last [`all`](Self::all),
+    /// in the order of their paths, as their stable ID, title and
+    /// properties. A file whose ID another file shares is among them.
+    pub(crate) fn of_type(
+        &self,
+        object_type: &str,
+    ) -> impl Iterator<Item = (&str, &str, &Map<String, Value>)> {
+        self.reads
+            .values()
+            .map(|read| &read.object)
+            .filter(move |object| object.object_type == object_type)
+            .map(|object| {
+                (
+                    object.id.as_str(),
+                    object.raw_title.as_str(),
+                    object.properties.as_ref(),
+                )
+            })
     }
 }
 
@@ -195,8 +217,9 @@ impl Object {
             title: if title.trim().is_empty() {
                 "Untitled".to_owned()
             } else {
-                title
+                title.clone()
             },
+            raw_title: title,
             properties: Arc::new(serde_json::from_str(properties).unwrap_or_default()),
         }
     }

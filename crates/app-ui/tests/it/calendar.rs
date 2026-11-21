@@ -1,9 +1,10 @@
 //! The Calendar plugin through AccessKit: the page's Previous, Today and
 //! Next buttons and View choice, today's cell marked as the current date,
 //! entries on the grid labeled with their title and their time on this
-//! device's clock, and the entry panel's
+//! device's clock, the entry panel's
 //! title, type, properties and Open, which opens the task in the note
-//! editor. The fake system keeps Toronto's time zone and US
+//! editor, and the sidebar's calendars, whose checkboxes hide their
+//! entries. The fake system keeps Toronto's time zone and US
 //! English, and its clock reads 11:00 on Wednesday 21 October 2026.
 
 use crate::support;
@@ -23,7 +24,8 @@ struct Opened {
     _folders: (tempfile::TempDir, tempfile::TempDir),
 }
 
-/// A workspace with a task at 9:00 and a three-day retreat, with the
+/// A workspace with a task at 9:00, a three-day retreat, and the calendar
+/// Work with a dentist's appointment at 10:00 on Thursday, with the
 /// Calendar and Tasks plugins installed and on and the Calendar page open.
 /// `None` when the plugins aren't built.
 fn opened() -> Option<Opened> {
@@ -49,6 +51,16 @@ fn opened() -> Option<Opened> {
         "---\nid: project_01jbcdefghjkmnpqrstvwxyz0b\ntype: project\nstatus: active\n\
          start: 2026-10-19\nend: 2026-10-22\n\
          created: 2026-10-01T10:00:00Z\nupdated: 2026-10-01T10:00:00Z\n---\nOverview.\n",
+    );
+    write(
+        "Calendars/Work.md",
+        "---\nid: calendar_01jbcdefghjkmnpqrstvwxyz0c\ntype: calendar\ncolor: green\n---\n",
+    );
+    write(
+        "Events/Dentist.md",
+        "---\nid: event_01jbcdefghjkmnpqrstvwxyz0d\ntype: event\n\
+         calendar: calendar_01jbcdefghjkmnpqrstvwxyz0c\nstart: 2026-10-22T14:00:00Z\n\
+         end: 2026-10-22T15:00:00Z\n---\n",
     );
     let plugin = |id: &str, manifest: &str, entry: &str, component: &[u8]| {
         let place = parent.path().join(format!("{id}-plugin"));
@@ -104,7 +116,7 @@ fn entries_in(harness: &Ui, cell: &str) -> Vec<String> {
         harness
             .get_by_role_and_label(Role::Grid, "Calendar")
             .get_by_role_and_label(Role::Cell, cell)
-            .get_all_by_role(Role::Button),
+            .query_all_by_role(Role::Button),
     )
 }
 
@@ -230,4 +242,73 @@ fn an_entry_shows_its_panel_and_open_opens_the_task_in_the_note_editor() {
             .as_deref(),
         Some("Standup")
     );
+}
+
+fn checked(harness: &Ui, label: &str) -> bool {
+    harness
+        .get_by_role_and_label(Role::CheckBox, label)
+        .accesskit_node()
+        .toggled()
+        == Some(egui::accesskit::Toggled::True)
+}
+
+#[test]
+fn the_sidebar_lists_calendars_whose_checkboxes_hide_their_entries() {
+    let Some(Opened {
+        mut harness,
+        _folders,
+    }) = opened()
+    else {
+        return;
+    };
+    let thursday = "Thursday, October 22, 2026";
+    let dentist = "Dentist, 10:00 AM–11:00 AM";
+
+    let calendars = harness.get_by_role_and_label(Role::ListBox, "Calendars");
+    assert_eq!(
+        labels(calendars.get_all_by_role(Role::ListBoxOption)),
+        ["Work"]
+    );
+    let other = harness.get_by_role_and_label(Role::ListBox, "Other");
+    assert_eq!(
+        labels(other.get_all_by_role(Role::ListBoxOption)),
+        ["Projects", "Tasks"]
+    );
+    for calendar in ["Work", "Projects", "Tasks"] {
+        assert!(checked(&harness, calendar), "{calendar}");
+    }
+    harness.get_by_role_and_label(Role::Button, "New calendar");
+    assert_eq!(entries_in(&harness, thursday), [dentist]);
+    assert!(harness.unnamed_widgets().is_empty());
+
+    harness
+        .get_by_role_and_label(Role::CheckBox, "Work")
+        .click();
+    wait_until(&mut harness, |harness| {
+        !checked(harness, "Work") && entries_in(harness, thursday).is_empty()
+    });
+    let settings = _folders
+        .1
+        .path()
+        .join("Garden/Calendars/Calendar settings.md");
+    let written = std::fs::read_to_string(settings).expect("the settings file holds it");
+    assert!(
+        written.contains("hidden_calendars:\n- calendar_01jbcdefghjkmnpqrstvwxyz0c\n"),
+        "{written}"
+    );
+    // Hiding the built-in Tasks takes the task off the grid too.
+    harness
+        .get_by_role_and_label(Role::CheckBox, "Tasks")
+        .click();
+    wait_until(&mut harness, |harness| {
+        !checked(harness, "Tasks")
+            && entries_in(harness, "Wednesday, October 21, 2026") == ["Retreat, all day"]
+    });
+
+    harness
+        .get_by_role_and_label(Role::CheckBox, "Work")
+        .click();
+    wait_until(&mut harness, |harness| {
+        checked(harness, "Work") && entries_in(harness, thursday) == [dentist]
+    });
 }

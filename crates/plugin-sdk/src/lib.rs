@@ -805,6 +805,7 @@ impl View {
             detail: detail.map(str::to_owned),
             checked: None,
             warning: None,
+            color: None,
         };
         self.add(column, id, NodeKind::Card(card))
     }
@@ -817,6 +818,7 @@ impl View {
             detail: detail.map(str::to_owned),
             checked: None,
             warning: None,
+            color: None,
         };
         self.add(list, id, NodeKind::Item(item))
     }
@@ -837,6 +839,7 @@ impl View {
             detail: detail.map(str::to_owned),
             checked: Some(checked),
             warning: None,
+            color: None,
         };
         self.add(list, id, NodeKind::Item(item))
     }
@@ -1023,6 +1026,7 @@ impl View {
             title: title.to_owned(),
             start: start.to_owned(),
             end: end.map(str::to_owned),
+            color: None,
         };
         self.add(calendar, id, NodeKind::Entry(entry))
     }
@@ -1091,6 +1095,22 @@ impl View {
             chosen: chosen.map(str::to_owned),
         };
         self.add(parent, id, NodeKind::Picker(picker))
+    }
+
+    /// Draw the list item or the calendar entry at `node` in `color`: an
+    /// item's checkbox, or a dot before its label when it has none, and
+    /// an entry's fill.
+    ///
+    /// # Panics
+    ///
+    /// When `node` isn't the index of a list item or a calendar entry
+    /// already added.
+    pub fn color(&mut self, node: u32, color: Color) {
+        match &mut self.nodes[node as usize].kind {
+            NodeKind::Item(item) => item.color = Some(color),
+            NodeKind::Entry(entry) => entry.color = Some(color),
+            _ => panic!("only a list item or a calendar entry takes a color"),
+        }
     }
 
     /// Add a menu to the item, row, card or button at `owner`.

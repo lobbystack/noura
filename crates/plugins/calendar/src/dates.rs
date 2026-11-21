@@ -25,7 +25,14 @@ impl Now {
     /// `2026-10-21T00:00:00-04:00`: the bound a range of days starts or
     /// ends at.
     pub(crate) fn midnight(&self, day: Date) -> String {
-        match day.to_zoned(self.zone.clone()) {
+        self.at(day, jiff::civil::Time::midnight())
+    }
+
+    /// The instant `time` on `day` in the device's time zone, in RFC 3339
+    /// with the offset the zone has then, such as
+    /// `2026-10-21T09:00:00-04:00`.
+    pub(crate) fn at(&self, day: Date, time: jiff::civil::Time) -> String {
+        match day.to_datetime(time).to_zoned(self.zone.clone()) {
             Ok(start) => {
                 let offset = start.offset().seconds();
                 let sign = if offset < 0 { '-' } else { '+' };
@@ -38,8 +45,18 @@ impl Now {
                     minutes % 60
                 )
             }
-            Err(_) => format!("{day}T00:00:00Z"),
+            Err(_) => format!("{day}T{}Z", time.strftime("%H:%M:%S")),
         }
+    }
+
+    /// The day `value`, a date or an instant, falls on in the device's
+    /// time zone. `None` for a malformed value.
+    pub(crate) fn day_of(&self, value: &str) -> Option<Date> {
+        if value.len() == 10 {
+            return value.parse().ok();
+        }
+        let at: Timestamp = value.parse().ok()?;
+        Some(at.to_zoned(self.zone.clone()).date())
     }
 
     /// The instant `start`, a date or an instant, begins at on this
