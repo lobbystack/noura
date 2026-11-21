@@ -14,6 +14,20 @@ Noura is a local-first workspace for humans and AI. Your work lives in ordinary 
 
 **Link**: A reference from one file to another by its title, written `[[Title]]` in a body or a property. Noura keeps it pointing at the same file when that file moves or gets a new title. _Avoid_: wikilink, reference ID
 
+### Orbs
+
+**Orb**: A named AI agent that lives in the workspace as a file, with your instructions, the tools it runs without asking, its memory and its triggers. _Avoid_: agent, bot, assistant
+
+**Thread**: An Orb's one ongoing conversation, a chat that every run of the Orb adds to. _Avoid_: session, conversation
+
+**Run**: One answer of an Orb, from the message that starts it to its last tool call, with a record in the Orb's folder. _Avoid_: job, task, execution
+
+**Trigger**: What starts an Orb's run without you: a schedule, or an event a plugin tells Noura about. _Avoid_: routine, automation, hook
+
+**Memory**: The note beside an Orb that holds what it keeps from one run to the next. _Avoid_: knowledge, context
+
+**Default Orb**: The Orb without a file that plain chats belong to. Its tool calls each wait for your answer. _Avoid_: main chat, Noura agent
+
 ### Speech
 
 **Speech**: The part of the kernel that records your microphone and system audio and turns speech into text with models stored on your device. _Avoid_: STT, voice engine
