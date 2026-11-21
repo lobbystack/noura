@@ -35,7 +35,7 @@ use plugin_sdk::{
 use serde_json::json;
 
 use task::{PRIORITIES, SCHEMA, STATUSES, TASK, Task, label};
-use views::{Choice, Filters, Now, ProjectFilter, VIEWS};
+use views::{AssigneeFilter, Choice, Filters, Now, ProjectFilter, VIEWS};
 
 /// The Tasks page.
 const PAGE: &str = "tasks";
@@ -245,6 +245,22 @@ fn folders(tasks: &[Task]) -> Vec<(String, usize)> {
     folders
 }
 
+/// The names tasks are assigned to, each once whatever its case, sorted
+/// without case. Of two spellings, the one that sorts first shows, so
+/// `Alice` wins over `alice` whichever file the list reads first.
+fn assignees(tasks: &[Task]) -> Vec<String> {
+    let mut names: BTreeMap<String, String> = BTreeMap::new();
+    for name in tasks.iter().filter_map(|task| task.assignee.as_deref()) {
+        let shown = names
+            .entry(name.to_lowercase())
+            .or_insert_with(|| name.to_owned());
+        if name < shown.as_str() {
+            name.clone_into(shown);
+        }
+    }
+    names.into_values().collect()
+}
+
 fn folder_name(folder: &str) -> &str {
     if folder.is_empty() {
         "Top level"
@@ -315,7 +331,14 @@ fn page() -> Vec<Node> {
         view.text(View::ROOT, "rename-problem", problem);
     }
     if shown {
-        filters(&mut view, &state.filters, &projects, &folders(&all));
+        let people = assignees(&all);
+        filters(
+            &mut view,
+            &state.filters,
+            &projects,
+            &people,
+            &folders(&all),
+        );
     }
     let mut shown: Vec<Task> = all
         .into_iter()
@@ -407,7 +430,7 @@ const SELECTED_PREFIX: &str = "selected-";
 const OPEN_SELECTED: &str = "open-selected";
 
 /// A task's quieter detail: its due date, its project unless the list is
-/// that project's, and its priority unless it is medium.
+/// that project's, its assignee, and its priority unless it is medium.
 fn detail(
     task: &Task,
     now: &Now,
@@ -426,17 +449,21 @@ fn detail(
     {
         parts.push(title.clone());
     }
+    if let Some(assignee) = &task.assignee {
+        parts.push(assignee.clone());
+    }
     if task.priority != "medium" {
         parts.push(label(&PRIORITIES, &task.priority));
     }
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
-/// The filters for status, project, folder and due date.
+/// The filters for status, project, assignee, folder and due date.
 fn filters(
     view: &mut View,
     filters: &Filters,
     projects: &[(String, String)],
+    assignees: &[String],
     folders: &[(String, usize)],
 ) {
     let panel = view.add_panel(View::ROOT, "filters", Some("Filters"));
@@ -470,6 +497,29 @@ fn filters(
         "Project",
         project_choices,
         &project,
+    );
+
+    let mut assignee_choices = vec![
+        ("any".to_owned(), "Anyone".to_owned()),
+        ("none".to_owned(), "No one".to_owned()),
+    ];
+    assignee_choices.extend(
+        assignees
+            .iter()
+            .map(|name| (format!("is:{name}"), name.clone())),
+    );
+    let assignee = match &filters.assignee {
+        AssigneeFilter::Any => "any".to_owned(),
+        AssigneeFilter::Without => "none".to_owned(),
+        AssigneeFilter::Is(name) => format!("is:{name}"),
+    };
+    choice(
+        view,
+        panel,
+        "filter-assignee",
+        "Assignee",
+        assignee_choices,
+        &assignee,
     );
 
     let mut folder_choices = vec![("any".to_owned(), "Any folder".to_owned())];
@@ -638,6 +688,13 @@ fn handle(event: Event) {
                 panel_event(&id, Event::Changed(field));
             }
         }
+        Event::Submitted(mut submission) if submission.node.starts_with(SELECTED_PREFIX) => {
+            let selected = state().selected.clone();
+            if let Some(id) = selected {
+                submission.node = submission.node[SELECTED_PREFIX.len()..].to_owned();
+                panel_event(&id, Event::Submitted(submission));
+            }
+        }
         Event::Changed(field) => filter(&field.node, field.value),
         _ => {}
     }
@@ -673,6 +730,17 @@ fn filter(node: &str, value: Value) {
                     .strip_prefix("is:")
                     .map_or(ProjectFilter::Any, |id| ProjectFilter::Is(id.to_owned())),
                 None => ProjectFilter::Any,
+            };
+        }
+        ("filter-assignee", Value::Choice(chosen)) => {
+            state.filters.assignee = match chosen.as_deref() {
+                Some("none") => AssigneeFilter::Without,
+                Some(chosen) => chosen
+                    .strip_prefix("is:")
+                    .map_or(AssigneeFilter::Any, |name| {
+                        AssigneeFilter::Is(name.to_owned())
+                    }),
+                None => AssigneeFilter::Any,
             };
         }
         ("filter-folder", Value::Choice(chosen)) => {
@@ -782,7 +850,8 @@ fn panel(_id: &str) -> Vec<Node> {
 }
 
 /// The fields of the task `id` under `parent`: its notice, status,
-/// priority, due date and project, each node ID starting with `prefix`.
+/// priority, assignee, due date and project, each node ID starting with
+/// `prefix`.
 /// The Tasks page's right pane draws them, and [`panel_event`] takes
 /// their changes. `state` is the plugin's
 /// state, which the caller holds.
@@ -826,6 +895,14 @@ fn task_fields(view: &mut View, parent: u32, id: &str, prefix: &str, state: &mut
         pairs(&PRIORITIES),
         &task.priority,
     );
+    // A name saves when you press Save or Enter, not on each key.
+    let form = view.form(parent, &node(ASSIGNEE_FORM), "Assignee", "Save");
+    view.input(
+        form,
+        &node("assignee"),
+        "Assignee",
+        Value::Text(task.assignee.clone().unwrap_or_default()),
+    );
     let due = match task.due {
         Some(task::Due::At(_)) => Value::DateTime(due_text(&object.properties)),
         Some(task::Due::Day(day)) => Value::Date(Some(day.to_string())),
@@ -863,13 +940,39 @@ fn due_text(properties: &str) -> Option<String> {
     properties.get("due")?.as_str().map(str::to_owned)
 }
 
+/// The form that names who does a task.
+const ASSIGNEE_FORM: &str = "assignee-form";
+
+/// The name an assignee form's submission holds, trimmed: empty clears it.
+fn submitted_name(submission: &plugin_sdk::Submission) -> String {
+    submission
+        .fields
+        .iter()
+        .find_map(|field| match &field.value {
+            Value::Text(text) => Some(text.trim().to_owned()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 /// A change in a task's panel, written against the revision the panel
 /// drew.
 fn panel_event(id: &str, event: Event) {
-    let Event::Changed(field) = event else {
-        return;
+    let field = match event {
+        Event::Changed(field) => field,
+        Event::Submitted(submission) if submission.node == ASSIGNEE_FORM => {
+            let name = submitted_name(&submission);
+            let change = if name.is_empty() {
+                (json!({}), vec!["assignee".to_owned()])
+            } else {
+                (json!({ "assignee": name }), Vec::new())
+            };
+            write_fields(id, change);
+            return;
+        }
+        _ => return,
     };
-    let (set, remove) = match (field.node.as_str(), field.value) {
+    let change = match (field.node.as_str(), field.value) {
         ("status", Value::Choice(Some(status))) => (json!({ "status": status }), Vec::new()),
         ("priority", Value::Choice(Some(priority))) => {
             (json!({ "priority": priority }), Vec::new())
@@ -894,6 +997,12 @@ fn panel_event(id: &str, event: Event) {
         },
         _ => return,
     };
+    write_fields(id, change);
+}
+
+/// Set and clear task fields of `id`, against the revision its panel
+/// drew, and keep what the panel should say.
+fn write_fields(id: &str, (set, remove): (serde_json::Value, Vec<String>)) {
     let Some(revision) = state().panels.get(id).cloned() else {
         return;
     };

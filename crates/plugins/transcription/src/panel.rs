@@ -1,10 +1,11 @@
 //! The properties panel beside a Transcription: Start and Stop, the
-//! timer, the project picker and the live Transcript while it records;
+//! timer, the project picker, the attendees and the live Transcript while
+//! it records;
 //! after you stop, the Summary's status with Summarize, the tasks it
 //! created and the project the AI suggests.
 
 use plugin_sdk::{
-    Event, Node, Value, View,
+    Event, Node, Submission, Value, View,
     navigation::{self, SettingsSection},
     objects::{self, Object},
     speech::{self, RecordingState},
@@ -32,6 +33,7 @@ pub(crate) fn render(id: &str) -> Vec<Node> {
         None => stopped(&mut view, &object),
     }
     project_picker(&mut view, &object);
+    attendees_field(&mut view, &object);
     if let Some(problem) = state().problems.get(id) {
         view.text(View::ROOT, "problem", problem);
     }
@@ -136,6 +138,55 @@ fn project_picker(view: &mut View, object: &Object) {
     );
 }
 
+/// The form that names who takes part.
+const ATTENDEES_FORM: &str = "attendees-form";
+
+/// Who takes part, as names separated by commas, saved when you press
+/// Save or Enter rather than on each key.
+fn attendees_field(view: &mut View, object: &Object) {
+    let names: Vec<String> = meeting::properties(object)
+        .get("attendees")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    let form = view.form(View::ROOT, ATTENDEES_FORM, "Attendees", "Save");
+    view.input(
+        form,
+        "attendees",
+        "Attendees",
+        Value::Text(names.join(", ")),
+    );
+}
+
+/// The names a submission of the attendees form holds: split at commas
+/// and new lines, each on one line, each once whatever its case.
+pub(crate) fn attendee_names(submission: &Submission) -> Vec<String> {
+    let text = submission
+        .fields
+        .iter()
+        .find_map(|field| match &field.value {
+            Value::Text(text) | Value::Multiline(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let mut names: Vec<String> = Vec::new();
+    for name in text.split([',', '\n']) {
+        let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !name.is_empty()
+            && !names
+                .iter()
+                .any(|known| known.to_lowercase() == name.to_lowercase())
+        {
+            names.push(name);
+        }
+    }
+    names
+}
+
 /// Answer an event in the panel of the Transcription `id`.
 pub(crate) fn handle(id: &str, event: Event) {
     let event_node = match &event {
@@ -177,6 +228,12 @@ pub(crate) fn handle(id: &str, event: Event) {
             meeting::set_project(id, project.as_deref())
                 .map_err(|error| format!("Noura couldn't set the project: {}", reason(&error)))
         }
+        Event::Submitted(submission) if submission.node == ATTENDEES_FORM => meeting::set(
+            id,
+            serde_json::json!({ "attendees": attendee_names(&submission) }),
+        )
+        .map(|_| ())
+        .map_err(|error| format!("Noura couldn't save the attendees: {}", reason(&error))),
         Event::Activated(target) if target.node == "tasks" => {
             navigation::open_object(&target.item, navigation::Placement::NewTab)
                 .map_err(|error| reason(&error))
@@ -194,5 +251,27 @@ pub(crate) fn handle(id: &str, event: Event) {
         Err(problem) => {
             state.problems.insert(id.to_owned(), problem);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use plugin_sdk::{Field, Submission, Value};
+
+    use super::attendee_names;
+
+    #[test]
+    fn attendees_split_at_commas_and_lines_and_show_once() {
+        let submission = Submission {
+            node: "attendees-form".into(),
+            fields: vec![Field {
+                node: "attendees".into(),
+                value: Value::Text(" Alice ,Bob\n  Grace   Hopper,, alice ".into()),
+            }],
+        };
+        assert_eq!(
+            attendee_names(&submission),
+            ["Alice", "Bob", "Grace Hopper"]
+        );
     }
 }

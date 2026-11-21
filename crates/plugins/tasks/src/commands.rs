@@ -9,12 +9,14 @@
 //!   task done, or back to todo.
 //!
 //! `list` takes an optional `project`, a link to a project such as
-//! `[[Garden]]` or its stable ID, and an optional `status`, and answers
-//! with `tasks`: every task, or the tasks of that project or with that
-//! status, each without its body. It writes nothing.
+//! `[[Garden]]` or its stable ID, an optional `status` and an optional
+//! `assignee`, and answers with `tasks`: every task, or the tasks of that
+//! project, with that status or assigned to that name, ignoring case,
+//! each without its body. It writes nothing.
 //!
-//! `properties` holds only task fields: `status`, `priority`, `project`,
-//! `source`, `due` and `kanban_order`. `project` links to a project and
+//! `properties` holds only task fields: `status`, `priority`, `assignee`,
+//! `project`, `source`, `due` and `kanban_order`. `assignee` names who
+//! does the task, as plain text. `project` links to a project and
 //! `source` to the object the task came from, of any type. Each takes a
 //! link, `[[Garden]]`, or a stable ID, which the task's file holds as the
 //! link Noura gives for it. Each task in an answer carries `project_id`,
@@ -76,6 +78,7 @@ fn list(input: &Map<String, Value>) -> Result<Vec<Value>, String> {
         None => None,
     };
     let status = text(input, "status")?;
+    let assignee = text(input, "assignee")?.map(|name| name.trim().to_lowercase());
     let tasks = objects::list(TASK).map_err(|error| failure(&error))?;
     let mut resolver = Resolver::default();
     Ok(tasks
@@ -89,6 +92,11 @@ fn list(input: &Map<String, Value>) -> Result<Vec<Value>, String> {
             }) && status
                 .as_deref()
                 .is_none_or(|status| task["properties"]["status"] == status)
+                && assignee.as_deref().is_none_or(|assignee| {
+                    task["properties"]["assignee"]
+                        .as_str()
+                        .is_some_and(|name| name.trim().to_lowercase() == assignee)
+                })
         })
         .map(|mut task| {
             if let Some(task) = task.as_object_mut() {

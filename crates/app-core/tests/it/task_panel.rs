@@ -1,6 +1,7 @@
 //! Seam 1: a task selected on the Tasks page shows its fields in the
-//! page's right pane: status, priority, a due date you set and clear, and
-//! a project picker with No project and every project. Each change in the
+//! page's right pane: status, priority, an assignee you save and clear, a
+//! due date you set and clear, and a project picker with No project and
+//! every project. Each change in the
 //! pane, and each check in a Tasks list, writes against the revision it
 //! showed: after an outside edit the write fails, the file keeps the
 //! outside bytes, and the latest version shows.
@@ -117,6 +118,10 @@ fn a_selected_task_shows_status_priority_due_date_and_a_project_picker() {
         ])
     );
     assert_eq!(
+        input(&app, tab, "assignee").unwrap().0,
+        InputValue::Text(String::new())
+    );
+    assert_eq!(
         input(&app, tab, "due").unwrap().0,
         InputValue::Date(Some("2026-10-24".into()))
     );
@@ -228,6 +233,66 @@ fn each_change_in_the_pane_writes_the_task_and_keeps_its_body() {
 
     let text = String::from_utf8(read()).unwrap();
     assert!(text.ends_with("---\nNotes.\n"), "{text}");
+}
+
+/// Submit the pane's assignee form holding `name`, as Save or Enter does.
+fn assign(app: &mut App, name: &str) {
+    send(
+        app,
+        PluginEvent::Submitted(app_core::Submission {
+            node: format!("{}assignee-form", tasks::PANE),
+            fields: vec![app_core::Field {
+                node: format!("{}assignee", tasks::PANE),
+                value: InputValue::Text(name.to_owned()),
+            }],
+        }),
+    );
+}
+
+#[test]
+fn the_assignee_saves_on_submit_shows_in_the_list_and_an_empty_one_clears_it() {
+    let fixture = workspace();
+    let mut app = fixture.app();
+    let Some(_folder) = with_tasks(&mut app) else {
+        return;
+    };
+    tasks::choose(&mut app, "views", "view:all");
+    let tab = open_in_pane(&mut app, "tasks/Paint the fence.md");
+    wait_for(&mut app, tab, "status", choice("todo"));
+    let read = || fixture.read("tasks/Paint the fence.md");
+
+    // Typing alone writes nothing: the name saves when you submit it.
+    change(&mut app, tab, "assignee", InputValue::Text("Al".into()));
+    assert_eq!(property(&read(), "assignee"), None);
+
+    assign(&mut app, "  Alice ");
+    assert_eq!(property(&read(), "assignee"), Some("Alice".into()));
+    wait_for(&mut app, tab, "assignee", InputValue::Text("Alice".into()));
+    let text = String::from_utf8(read()).unwrap();
+    assert!(
+        text.contains("priority: medium\nassignee: Alice\ndue: 2026-10-24\n"),
+        "{text}"
+    );
+    let row = rows(&app)
+        .into_iter()
+        .find(|row| row.label == "Paint the fence")
+        .unwrap();
+    assert!(
+        row.detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("Alice")),
+        "{:?}",
+        row.detail
+    );
+
+    assign(&mut app, " ");
+    assert_eq!(property(&read(), "assignee"), None);
+    wait_for(&mut app, tab, "assignee", InputValue::Text(String::new()));
+    assert!(
+        String::from_utf8(read())
+            .unwrap()
+            .ends_with("---\nNotes.\n")
+    );
 }
 
 /// A task holds its project's stable ID, so it stays with the project

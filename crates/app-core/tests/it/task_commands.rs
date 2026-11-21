@@ -78,6 +78,7 @@ fn a_write_with_a_value_outside_the_task_fields_fails_with_a_structured_error() 
         (r#"{"due":"next week"}"#, "due", "invalid_date"),
         (r#"{"project":"Nowhere"}"#, "project", "invalid_reference"),
         (r#"{"kanban_order":7}"#, "kanban_order", "wrong_type"),
+        (r#"{"assignee":["Alice"]}"#, "assignee", "wrong_type"),
     ] {
         let refused = call(
             &mut app,
@@ -165,7 +166,7 @@ fn update_accepts_every_task_field_the_board_order_key_included() {
         &mut app,
         "update",
         &format!(
-            r#"{{"id":"task_{A}","expected_revision":"{}","properties":{{"status":"in-progress","priority":"high","project":"project_{B}","due":"2026-10-30T09:00:00-04:00","kanban_order":"a0V"}},"body":"Three coats.\n"}}"#,
+            r#"{{"id":"task_{A}","expected_revision":"{}","properties":{{"status":"in-progress","priority":"high","assignee":"Alice","project":"project_{B}","due":"2026-10-30T09:00:00-04:00","kanban_order":"a0V"}},"body":"Three coats.\n"}}"#,
             revision(&paint())
         ),
     )
@@ -176,7 +177,7 @@ fn update_accepts_every_task_field_the_board_order_key_included() {
     let text = String::from_utf8(bytes).unwrap();
     let start = format!(
         "---\nid: task_{A}\ntype: task\nstatus: in-progress\npriority: high\n\
-         project: '[[Garden]]'\ndue: 2026-10-30T09:00:00-04:00\nkanban_order: a0V\nestimate: 3\n"
+         assignee: Alice\nproject: '[[Garden]]'\ndue: 2026-10-30T09:00:00-04:00\nkanban_order: a0V\nestimate: 3\n"
     );
     assert!(text.starts_with(&start), "{text}");
     assert!(text.ends_with("---\nThree coats.\n"), "{text}");
@@ -186,13 +187,49 @@ fn update_accepts_every_task_field_the_board_order_key_included() {
         &mut app,
         "update",
         &format!(
-            r#"{{"id":"task_{A}","expected_revision":"{}","properties":{{"due":null,"project":null}}}}"#,
+            r#"{{"id":"task_{A}","expected_revision":"{}","properties":{{"due":null,"project":null,"assignee":null}}}}"#,
             updated["revision"].as_str().unwrap()
         ),
     )
     .expect("clear");
     assert_eq!(cleared["properties"].get("due"), None);
     assert_eq!(property(&fixture.read(PAINT), "project"), None);
+    assert_eq!(property(&fixture.read(PAINT), "assignee"), None);
+}
+
+#[test]
+fn create_takes_an_assignee_and_list_finds_a_persons_tasks_whatever_the_case() {
+    let fixture = Fixture::new(&[(PAINT, &paint())]);
+    let mut app = fixture.app();
+    let (Some(_tasks), Some(_caller)) = (with_tasks(&mut app), caller(&mut app)) else {
+        return;
+    };
+
+    let created = call(
+        &mut app,
+        "create",
+        r#"{"title":"Write the launch post","properties":{"assignee":"Alice"}}"#,
+    )
+    .expect("create");
+    assert_eq!(created["properties"]["assignee"], "Alice");
+    let text = String::from_utf8(fixture.read("Tasks/Write the launch post.md")).unwrap();
+    assert!(
+        text.contains("status: todo\npriority: medium\nassignee: Alice\n"),
+        "{text}"
+    );
+
+    let titles = |answer: serde_json::Value| -> Vec<String> {
+        answer["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|task| task["title"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let alice = call(&mut app, "list", r#"{"assignee":"alice"}"#).expect("list");
+    assert_eq!(titles(alice), ["Write the launch post"]);
+    let bob = call(&mut app, "list", r#"{"assignee":"Bob"}"#).expect("list");
+    assert_eq!(titles(bob), Vec::<String>::new());
 }
 
 #[test]

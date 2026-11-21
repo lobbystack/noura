@@ -465,3 +465,76 @@ fn each_row_shows_its_due_date_project_and_priority_and_a_checkbox() {
         ]
     );
 }
+
+#[test]
+fn the_assignee_filter_lists_each_person_once_and_keeps_their_tasks() {
+    let fixture = Fixture::new(&[
+        (
+            "tasks/Write the launch post.md",
+            &task_file(
+                A,
+                "status: todo\npriority: medium\nassignee: Alice\n",
+                "2026-10-01T10:00:00Z",
+            ),
+        ),
+        (
+            "tasks/Book the venue.md",
+            &task_file(
+                B,
+                "status: todo\npriority: medium\nassignee: bob\n",
+                "2026-10-02T10:00:00Z",
+            ),
+        ),
+        (
+            "tasks/Review the post.md",
+            &task_file(
+                C,
+                "status: todo\npriority: medium\nassignee: alice\n",
+                "2026-10-03T10:00:00Z",
+            ),
+        ),
+        (
+            "tasks/Sweep.md",
+            &task_file(
+                D,
+                "status: todo\npriority: medium\n",
+                "2026-10-04T10:00:00Z",
+            ),
+        ),
+    ]);
+    let system = FakeSystem::new();
+    system.set_clock("2026-10-21T15:00:00Z", "America/Toronto");
+    let mut app = fixture.app_with(system);
+    let Some(_folder) = with_tasks(&mut app) else {
+        return;
+    };
+    tasks::choose(&mut app, "views", "view:all");
+    tasks::show_filters(&mut app);
+
+    let view = tasks::page(&app);
+    let Some(app_core::ViewKind::Input { choices, .. }) =
+        tasks::find(view.root(), "filter-assignee").map(|node| &node.kind)
+    else {
+        panic!("no assignee filter");
+    };
+    let shown: Vec<(&str, &str)> = choices
+        .iter()
+        .map(|choice| (choice.id.as_str(), choice.label.as_str()))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("any", "Anyone"),
+            ("none", "No one"),
+            ("is:Alice", "Alice"),
+            ("is:bob", "bob"),
+        ]
+    );
+
+    send(&mut app, changed("filter-assignee", choice("is:Alice")));
+    assert_eq!(labels(&app), ["Write the launch post", "Review the post"]);
+    send(&mut app, changed("filter-assignee", choice("none")));
+    assert_eq!(labels(&app), ["Sweep"]);
+    send(&mut app, changed("filter-assignee", choice("any")));
+    assert_eq!(labels(&app).len(), 4);
+}
