@@ -65,9 +65,10 @@ pub use exports::noura::plugin::tools::Tool;
 pub use exports::noura::plugin::view::Page;
 pub use noura::plugin::types::{Error, PropertyError};
 pub use noura::plugin::ui::{
-    Calendar, CalendarEntry, CalendarMode, Check, Choice, Column, ColumnPress, EmptyState, Event,
-    Field, Form, Heading, HeadingLevel, Icon, Input, Item, ItemList, MenuItem, Move, NameField,
-    Naming, Node, NodeKind, SortOrder, Submission, Table, Target, Value, VirtualList, VirtualRow,
+    Activity, ActivityState, Calendar, CalendarEntry, CalendarMode, Check, Choice, Column,
+    ColumnPress, Composer, EmptyState, Event, Field, Form, Heading, HeadingLevel, Icon, Input,
+    Item, ItemList, MenuItem, Message, MessageAuthor, Move, NameField, Naming, Node, NodeKind,
+    SortOrder, Submission, Table, Target, Value, VirtualList, VirtualRow,
 };
 
 /// Reading the open workspace. Needs the `workspace-read` capability.
@@ -522,6 +523,25 @@ macro_rules! export {
 /// view.name_field(View::ROOT, "new-chore", "New chore name", "");
 /// assert_eq!(view.into_nodes().len(), 9);
 /// ```
+///
+/// A conversation holds messages and the steps taken along the way, with
+/// a box to write the next message in at the bottom:
+///
+/// ```
+/// use plugin_sdk::{ActivityState, MessageAuthor, View};
+///
+/// let mut view = View::panel("root", Some("Garden helper"));
+/// let talk = view.conversation(View::ROOT, "talk", "Garden helper");
+/// view.message(talk, "asked", MessageAuthor::You, "You", "When do I sow beans?");
+/// let looked = view.activity(talk, "looked", "Read the sowing calendar", ActivityState::Done);
+/// view.markdown(looked, "looked-found", "Beans: after the last frost.");
+/// let answer = view.message(talk, "answer", MessageAuthor::Other, "Helper", "After the **last frost**.");
+/// view.note(answer, "Stopped.");
+/// let composer = view.composer(talk, "next", "Message", "", "Send");
+/// view.choice_input(composer, "helper", "Helper", &[("sun", "Sun"), ("rain", "Rain")], Some("sun"));
+/// view.stop(composer, "Stop");
+/// assert_eq!(view.into_nodes().len(), 8);
+/// ```
 #[derive(Debug, Clone)]
 pub struct View {
     nodes: Vec<Node>,
@@ -653,6 +673,88 @@ impl View {
         (first, second)
     }
 
+    /// Add a conversation: a column in the middle of the page that takes
+    /// the rest of it and scrolls on its own, staying at its end as it
+    /// grows. Add its messages and steps to it, then, last, a
+    /// [`composer`](Self::composer), which stays at the bottom of the page.
+    pub fn conversation(&mut self, parent: u32, id: &str, label: &str) -> u32 {
+        self.add(parent, id, NodeKind::Conversation(label.to_owned()))
+    }
+
+    /// Add a message from `author`, named `label` for screen readers.
+    /// Yours shows `text` as you wrote it, in a bubble; any other shows it
+    /// as Markdown. Give it a quiet line with [`note`](Self::note) and a
+    /// problem with [`warn`](Self::warn).
+    pub fn message(
+        &mut self,
+        parent: u32,
+        id: &str,
+        author: MessageAuthor,
+        label: &str,
+        text: &str,
+    ) -> u32 {
+        let message = Message {
+            author,
+            label: label.to_owned(),
+            text: text.to_owned(),
+            detail: None,
+            warning: None,
+        };
+        self.add(parent, id, NodeKind::Message(message))
+    }
+
+    /// Show `note`, such as `Stopped.`, as a quiet line under the message
+    /// at `message`.
+    ///
+    /// # Panics
+    ///
+    /// When `message` isn't the index of a message already added.
+    pub fn note(&mut self, message: u32, note: &str) {
+        match &mut self.nodes[message as usize].kind {
+            NodeKind::Message(message) => message.detail = Some(note.to_owned()),
+            _ => panic!("only a message shows a note"),
+        }
+    }
+
+    /// Add a step taken along the way, such as a tool call, in `state`.
+    /// The nodes you add to it show while you open it.
+    pub fn activity(&mut self, parent: u32, id: &str, title: &str, state: ActivityState) -> u32 {
+        let activity = Activity {
+            title: title.to_owned(),
+            state,
+        };
+        self.add(parent, id, NodeKind::Activity(activity))
+    }
+
+    /// Add a box to write a message in, holding `value`, with a send button
+    /// that screen readers read as `send`. Choice inputs and buttons you
+    /// add to it line up under the text. Sending sends
+    /// [`Event::Submitted`] naming the box, with its text under the box's
+    /// own ID, then its choices, and empties the box.
+    pub fn composer(&mut self, parent: u32, id: &str, label: &str, value: &str, send: &str) -> u32 {
+        let composer = Composer {
+            label: label.to_owned(),
+            value: value.to_owned(),
+            send: send.to_owned(),
+            stop: None,
+        };
+        self.add(parent, id, NodeKind::Composer(composer))
+    }
+
+    /// Put a stop button labeled `label` in the send button's place in the
+    /// composer at `composer`, while something is under way. A press sends
+    /// [`Event::Pressed`] naming the composer.
+    ///
+    /// # Panics
+    ///
+    /// When `composer` isn't the index of a composer already added.
+    pub fn stop(&mut self, composer: u32, label: &str) {
+        match &mut self.nodes[composer as usize].kind {
+            NodeKind::Composer(composer) => composer.stop = Some(label.to_owned()),
+            _ => panic!("only a composer shows a stop button"),
+        }
+    }
+
     /// Add a list you select items in. Add its items with
     /// [`item`](Self::item); selecting one sends [`Event::Selected`], and
     /// opening one sends [`Event::Activated`].
@@ -739,16 +841,18 @@ impl View {
     }
 
     /// Show `warning`, such as `Overdue`, after the label of the list item
-    /// at `item`, in the color Noura shows problems in. Screen readers
-    /// read it with the label.
+    /// at `item`, or under the message at `item`, in the color Noura shows
+    /// problems in. Screen readers read it with the label.
     ///
     /// # Panics
     ///
-    /// When `item` isn't the index of a list item already added.
+    /// When `item` isn't the index of a list item or a message already
+    /// added.
     pub fn warn(&mut self, item: u32, warning: &str) {
         match &mut self.nodes[item as usize].kind {
             NodeKind::Item(item) => item.warning = Some(warning.to_owned()),
-            _ => panic!("only a list item shows a warning"),
+            NodeKind::Message(message) => message.warning = Some(warning.to_owned()),
+            _ => panic!("only a list item or a message shows a warning"),
         }
     }
 

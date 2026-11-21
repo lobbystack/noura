@@ -35,13 +35,13 @@ pub use error::{InstallError, InstallErrorCode};
 pub use host::{Candidate, CodeSource, LoadedPlugin, PluginHost};
 pub use instance::trap_foreign_imports;
 pub use instance::{
-    AiChat, AiFailure, AiMessage, AiMessageKind, AiMessageStatus, AiProvider, AiRequest,
-    AiRetention, AiRun, AiRunStatus, AiToolCall, AiToolDefinition, AiToolResult, AiWebPage,
-    AiWebResult, Calendar, CalendarEntry, CalendarMode, Check, Choice, Column, ColumnPress,
-    Command, EmptyState, Event, Field, Form, Heading, HeadingLevel, Icon, InboxSection, Input,
-    Item, ItemList, MenuItem, Move, NameField, Naming, Node, NodeKind, ObjectType, Page, Placement,
-    PluginError, Registration, Services, SettingsSection, SortOrder, Submission, Table, Target,
-    Tool, Value, VirtualList, VirtualRow,
+    Activity, ActivityState, AiChat, AiFailure, AiMessage, AiMessageKind, AiMessageStatus,
+    AiProvider, AiRequest, AiRetention, AiRun, AiRunStatus, AiToolCall, AiToolDefinition,
+    AiToolResult, AiWebPage, AiWebResult, Calendar, CalendarEntry, CalendarMode, Check, Choice,
+    Column, ColumnPress, Command, Composer, EmptyState, Event, Field, Form, Heading, HeadingLevel,
+    Icon, InboxSection, Input, Item, ItemList, MenuItem, Message, MessageAuthor, Move, NameField,
+    Naming, Node, NodeKind, ObjectType, Page, Placement, PluginError, Registration, Services,
+    SettingsSection, SortOrder, Submission, Table, Target, Tool, Value, VirtualList, VirtualRow,
 };
 pub use instance::{
     AiCompletion, AiCompletionRequest, KernelEvent, MenuBarEntry, MenuBarEntryKind, MicrophoneUse,

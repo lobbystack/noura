@@ -6,9 +6,10 @@
 
 use crate::support;
 use plugin_host::{
-    CalendarMode, Check, ColumnPress, EmptyState, Event, Field, Heading, HeadingLevel, Icon, Item,
-    Move, Naming, Node, NodeKind, PluginError, RunningPlugin, Services, Submission, Target, Value,
-    View, ViewKind, ViewNode, VirtualRow, check_rows,
+    Activity, ActivityState, CalendarMode, Check, Choice, ColumnPress, Composer, EmptyState, Event,
+    Field, Form, Heading, HeadingLevel, Icon, Input, Item, Message, MessageAuthor, Move, Naming,
+    Node, NodeKind, PluginError, RunningPlugin, Services, Submission, Target, Value, View,
+    ViewKind, ViewNode, VirtualRow, check_rows,
 };
 use support::plugins;
 
@@ -1020,6 +1021,20 @@ const UNKNOWN_KIND: &str = r#"
     (type $empty-state' (record
       (field "title" string) (field "detail" (option string)) (field "icon" (option $icon))))
     (export $empty-state "empty-state" (type $empty-state'))
+    (type $message-author' (enum "you" "other"))
+    (export $message-author "message-author" (type $message-author'))
+    (type $message' (record
+      (field "author" $message-author) (field "label" string) (field "text" string)
+      (field "detail" (option string)) (field "warning" (option string))))
+    (export $message "message" (type $message'))
+    (type $activity-state' (enum "waiting" "running" "done" "failed" "denied" "stopped"))
+    (export $activity-state "activity-state" (type $activity-state'))
+    (type $activity' (record (field "title" string) (field "state" $activity-state)))
+    (export $activity "activity" (type $activity'))
+    (type $composer' (record
+      (field "label" string) (field "value" string) (field "send" string)
+      (field "stop" (option string))))
+    (export $composer "composer" (type $composer'))
     (type $node-kind' (variant
       (case "panel" (option string)) (case "text" string)
       (case "markdown" string) (case "button" string)
@@ -1028,7 +1043,9 @@ const UNKNOWN_KIND: &str = r#"
       (case "input" $input) (case "name-field" $name-field) (case "menu" string) (case "menu-item" $menu-item)
       (case "separator") (case "board" string) (case "board-column" string)
       (case "card" $item) (case "calendar" $calendar) (case "entry" $calendar-entry)
-      (case "heading" $heading) (case "empty" $empty-state) (case "split" u32)))
+      (case "heading" $heading) (case "empty" $empty-state) (case "split" u32)
+      (case "conversation" string) (case "message" $message) (case "activity" $activity)
+      (case "composer" $composer)))
     (export $node-kind "node-kind" (type $node-kind'))
     (type $node' (record
       (field "id" string) (field "kind" $node-kind) (field "children" (list u32))))
@@ -1195,4 +1212,163 @@ fn a_split_holds_two_panels_and_a_first_pane_of_a_drawable_width() {
     assert!(text.to_string().contains("two panels"), "{text}");
     let narrow = split(100, vec![panel("list"), panel("detail")]).expect_err("too narrow");
     assert!(narrow.to_string().contains("160 to 640"), "{narrow}");
+}
+
+fn message(author: MessageAuthor, label: &str, text: &str) -> NodeKind {
+    NodeKind::Message(Message {
+        author,
+        label: label.into(),
+        text: text.into(),
+        detail: Some(" ".into()),
+        warning: None,
+    })
+}
+
+fn composer(label: &str, stop: Option<&str>) -> NodeKind {
+    NodeKind::Composer(Composer {
+        label: label.into(),
+        value: String::new(),
+        send: "Send".into(),
+        stop: stop.map(str::to_owned),
+    })
+}
+
+fn choice(id: &str) -> Node {
+    node(
+        id,
+        NodeKind::Input(Input {
+            label: "Model".into(),
+            value: Value::Choice(Some("small".into())),
+            choices: vec![Choice {
+                id: "small".into(),
+                label: "Small".into(),
+            }],
+        }),
+        vec![],
+    )
+}
+
+#[test]
+fn a_conversation_holds_messages_steps_and_a_composer_last() {
+    let talk = NodeKind::Conversation("Garden helper".into());
+    let view = View::from_nodes(vec![
+        node("root", NodeKind::Panel(None), vec![1]),
+        node("talk", talk.clone(), vec![2, 3, 5, 6]),
+        node(
+            "asked",
+            message(MessageAuthor::You, "You", "Beans?"),
+            vec![],
+        ),
+        node(
+            "looked",
+            NodeKind::Activity(Activity {
+                title: "Read the calendar".into(),
+                state: ActivityState::Done,
+            }),
+            vec![4],
+        ),
+        node("found", NodeKind::Markdown("After frost.".into()), vec![]),
+        node(
+            "answer",
+            message(MessageAuthor::Other, "Helper", "Soon."),
+            vec![],
+        ),
+        node("next", composer("Message", Some("Stop")), vec![7, 8]),
+        choice("model"),
+        node("attach", NodeKind::Button("Attach".into()), vec![]),
+    ])
+    .expect("a conversation");
+    let talk_node = &view.root().children[0];
+    assert_eq!(
+        talk_node.kind,
+        ViewKind::Conversation {
+            label: "Garden helper".into()
+        }
+    );
+    // A blank detail reads as none.
+    assert_eq!(
+        talk_node.children[0].kind,
+        ViewKind::Message {
+            author: MessageAuthor::You,
+            label: "You".into(),
+            text: "Beans?".into(),
+            detail: None,
+            warning: None,
+        }
+    );
+    assert_eq!(talk_node.children[1].children.len(), 1);
+    assert_eq!(
+        talk_node.children[3].kind,
+        ViewKind::Composer {
+            label: "Message".into(),
+            value: String::new(),
+            send: "Send".into(),
+            stop: Some("Stop".into()),
+        }
+    );
+
+    let refused = |nodes: Vec<Node>| View::from_nodes(nodes).unwrap_err().to_string();
+    assert_eq!(
+        refused(vec![
+            node("root", NodeKind::Panel(None), vec![1]),
+            node("talk", talk.clone(), vec![2, 3]),
+            node("next", composer("Message", None), vec![]),
+            node("asked", message(MessageAuthor::You, "You", "Hi"), vec![]),
+        ]),
+        "The conversation talk holds the composer next before its last node."
+    );
+    assert_eq!(
+        refused(vec![
+            node("root", NodeKind::Panel(None), vec![1]),
+            node("next", composer("Message", None), vec![2]),
+            node("line", NodeKind::Text("Hi".into()), vec![]),
+        ]),
+        "The composer next holds line, which isn't a button or a choice."
+    );
+    assert_eq!(
+        refused(vec![
+            node(
+                "root",
+                NodeKind::Form(Form {
+                    label: "Outer".into(),
+                    submit: "Save".into(),
+                    required: vec![],
+                }),
+                vec![1],
+            ),
+            node("next", composer("Message", None), vec![]),
+        ]),
+        "The composer next sits inside a form."
+    );
+    assert_eq!(
+        refused(vec![
+            node("root", NodeKind::Panel(None), vec![1]),
+            node("asked", message(MessageAuthor::You, "You", "Hi"), vec![2]),
+            node("line", NodeKind::Text("Hi".into()), vec![]),
+        ]),
+        "The message asked holds no other nodes."
+    );
+    for (kind, reason) in [
+        (
+            NodeKind::Conversation(" ".into()),
+            "The conversation talk has no label.",
+        ),
+        (
+            message(MessageAuthor::Other, " ", "Hi"),
+            "The message talk has no label.",
+        ),
+        (composer(" ", None), "The composer talk has no label."),
+        (
+            composer("Message", Some(" ")),
+            "The composer talk has a stop button without a label.",
+        ),
+    ] {
+        assert_eq!(
+            refused(vec![
+                node("root", NodeKind::Panel(None), vec![1]),
+                node("talk", kind, vec![]),
+            ]),
+            reason
+        );
+    }
 }

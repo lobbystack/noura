@@ -2328,6 +2328,99 @@ What a page or a section shows while it holds nothing.
 
 - <a id="empty_state.icon"></a>`icon`: option<[`icon`](#icon)>
 
+#### <a id="message_author"></a>`enum message-author`
+
+Who wrote a message in a conversation.
+
+##### Enum Cases
+
+- <a id="message_author.you"></a>`you`
+  <p>You. Your messages show at the end of the line, in a bubble, as you
+  wrote them.
+
+- <a id="message_author.other"></a>`other`
+  <p>Anyone or anything else, such as a model. Their messages show at
+  the start of the line, as Markdown, with no bubble.
+
+
+#### <a id="message"></a>`record message`
+
+A message in a conversation.
+
+##### Record Fields
+
+- <a id="message.author"></a>`author`: [`message-author`](#message_author)
+- <a id="message.label"></a>`label`: `string`
+  <p>Names the message for screen readers, such as `You` or the model
+  that wrote it.
+
+- <a id="message.text"></a>`text`: `string`
+  <p>Yours as you wrote it, with its line breaks kept; any other as
+  Markdown. A message from someone else with no text yet, as while an
+  answer starts, shows that more is coming.
+
+- <a id="message.detail"></a>`detail`: option<`string`>
+  <p>A quiet line under the message, such as `Stopped.`
+
+- <a id="message.warning"></a>`warning`: option<`string`>
+  <p>A short problem under the message, such as why an answer failed,
+  in the color Noura shows problems in.
+
+
+#### <a id="activity_state"></a>`enum activity-state`
+
+How far a step in a conversation has come.
+
+##### Enum Cases
+
+- <a id="activity_state.waiting"></a>`waiting`
+  <p>It waits, for you or for its turn.
+
+- <a id="activity_state.running"></a>`running`
+- <a id="activity_state.done"></a>`done`
+- <a id="activity_state.failed"></a>`failed`
+- <a id="activity_state.denied"></a>`denied`
+  <p>You said no to it, so it didn't run.
+
+- <a id="activity_state.stopped"></a>`stopped`
+  <p>It stopped before it finished.
+
+
+#### <a id="activity"></a>`record activity`
+
+A step taken along the way in a conversation, such as a tool call or a
+model's reasoning.
+
+##### Record Fields
+
+- <a id="activity.title"></a>`title`: `string`
+  <p>What the step is or did, such as `Searched the web for seeds`.
+
+- <a id="activity.state"></a>`state`: [`activity-state`](#activity_state)
+
+#### <a id="composer"></a>`record composer`
+
+A box to write a message in.
+
+##### Record Fields
+
+- <a id="composer.label"></a>`label`: `string`
+  <p>Names the box for screen readers, and shows in it while it's empty.
+
+- <a id="composer.value"></a>`value`: `string`
+  <p>What the box holds when it first draws. What you type stays until
+  the plugin draws the box with a value other than the one it drew
+  before, or until you send it.
+
+- <a id="composer.send"></a>`send`: `string`
+  <p>The send button's label, which screen readers read.
+
+- <a id="composer.stop"></a>`stop`: option<`string`>
+  <p>While set, something is under way, such as an answer coming in: a
+  stop button with this label takes the send button's place, and a
+  press sends `pressed` naming the composer. Nothing sends meanwhile.
+
+
 #### <a id="node_kind"></a>`variant node-kind`
 
 
@@ -2435,6 +2528,36 @@ What a page or a section shows while it holds nothing.
   second taking the rest of the width. Its children are the two panes,
   each a panel.
 
+- <a id="node_kind.conversation"></a>`conversation`: `string`
+  <p>A conversation, named for screen readers by this label: a column at
+  most 720 points wide in the middle of the page, which takes the rest
+  of the page and scrolls on its own. It stays at its end as it grows,
+  until you scroll up; a button then takes you back down. Its children
+  go where a panel's go, and its last child may be a composer, which
+  stays at the bottom of the page under the column. While it holds
+  only empty states and a composer, they show together in the middle
+  of the page. Text in it shows as a quiet line, and buttons as small
+  ones, such as Resume or a suggested reply.
+
+- <a id="node_kind.message"></a>`message`: [`message`](#message)
+  <p>A message, as a conversation shows it.
+
+- <a id="node_kind.activity"></a>`activity`: [`activity`](#activity)
+  <p>A step taken along the way, such as a tool call: a quiet row with
+  its title and its state. A row with children opens and closes on a
+  click, and shows its children, which go where a panel's go, while
+  open. It starts closed.
+
+- <a id="node_kind.composer"></a>`composer`: [`composer`](#composer)
+  <p>A box to write a message in: a text input of several lines with a
+  send button at its end, and its children, choice inputs and
+  buttons, in a row under the text. Each choice shows as a menu of its
+  options. Enter or the send button sends `submitted` naming the
+  composer, once the box holds more than spaces, with what it holds as
+  a multiline value under the composer's own node ID, then the value
+  of each choice input inside it. Shift-Enter starts a new line. The
+  box empties once it sends. It can't sit in a form.
+
 
 #### <a id="node"></a>`record node`
 
@@ -2451,8 +2574,10 @@ What a page or a section shows while it holds nothing.
   they lay out, lists their items, tables their rows, boards their
   columns, columns their cards, calendars their entries, menus their
   items, headings their buttons and choices, empty states their
-  buttons, and splits their two panels; a row, a card or a button may
-  hold one menu, and an item one menu or one name field.
+  buttons, splits their two panels, conversations and activities the
+  nodes they lay out, and composers their choices and buttons; a row,
+  a card or a button may hold one menu, and an item one menu or one
+  name field.
 
 
 #### <a id="target"></a>`record target`
@@ -2523,10 +2648,11 @@ An input's value.
 ##### Record Fields
 
 - <a id="submission.node"></a>`node`: `string`
-  <p>The form's node ID.
+  <p>The form's or the composer's node ID.
 
 - <a id="submission.fields"></a>`fields`: list<[`field`](#field)>
-  <p>Every input inside the form, in view order.
+  <p>Every input inside the form, in view order, or the composer's text
+  and then its choices.
 
 
 #### <a id="check"></a>`record check`
@@ -2566,7 +2692,8 @@ Something you did in a view.
 ##### Variant Cases
 
 - <a id="event.pressed"></a>`pressed`: `string`
-  <p>The button with this node ID was pressed.
+  <p>The button with this node ID was pressed, or a composer's stop
+  button, naming the composer.
 
 - <a id="event.selected"></a>`selected`: [`target`](#target)
   <p>An item, a row, a card or an entry was selected, by click or the
@@ -2583,7 +2710,7 @@ Something you did in a view.
   <p>An input's value changed.
 
 - <a id="event.submitted"></a>`submitted`: [`submission`](#submission)
-  <p>A form was submitted.
+  <p>A form or a composer was submitted.
 
 - <a id="event.chosen"></a>`chosen`: `string`
   <p>The menu item with this node ID was chosen.

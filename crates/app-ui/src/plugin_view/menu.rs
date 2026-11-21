@@ -116,7 +116,14 @@ struct Opened {
 /// A button. One that holds a menu opens it on a press, the context-menu
 /// key or Shift-F10, and sends the chosen item; any other sends its press.
 pub(super) fn button(ui: &mut Ui, node: &ViewNode, label: &str, kit: &mut Kit) {
-    styled_button(ui, node, label, Look::Plain, kit);
+    let look = if matches!(kit.place, super::Place::Sidebar(_)) {
+        Look::Sidebar
+    } else if kit.quiet {
+        Look::Small
+    } else {
+        Look::Plain
+    };
+    styled_button(ui, node, label, look, kit);
 }
 
 /// How a plugin's button looks.
@@ -130,6 +137,11 @@ pub(super) enum Look {
     Ghost,
     /// Muted text, as a section heading's buttons.
     Quiet,
+    /// A small outline pill, as a conversation's Resume or a suggested
+    /// reply.
+    Small,
+    /// A row as wide as the sidebar, like the sidebar's own items.
+    Sidebar,
 }
 
 /// A plugin's button drawn the way `look` says.
@@ -160,6 +172,18 @@ pub(super) fn styled_button(ui: &mut Ui, node: &ViewNode, label: &str, look: Loo
             .size(Size::Sm)
             .show(ui),
         (Look::Quiet, _) => quiet_link(ui, label),
+        (Look::Small, _) => Btn::new(label).size(Size::Sm).show(ui),
+        (Look::Sidebar, _) => {
+            let button = Btn::new(label)
+                .variant(Variant::Ghost)
+                .size(Size::Sm)
+                .width(ui.available_width());
+            if creates {
+                button.icon(icons::PLUS).show(ui)
+            } else {
+                button.show(ui)
+            }
+        }
     };
     let menu = node
         .children

@@ -4,9 +4,9 @@
 //! holding its children.
 
 use app_core::{
-    CalendarMode, Choice, Column, ColumnPress, Field, HeadingLevel, InputValue, PluginCheck,
-    PluginEvent, PluginIcon, PluginMove, PluginNaming, SortOrder, Submission, Target, ViewKind,
-    ViewNode,
+    ActivityState, CalendarMode, Choice, Column, ColumnPress, Field, HeadingLevel, InputValue,
+    MessageAuthor, PluginCheck, PluginEvent, PluginIcon, PluginMove, PluginNaming, SortOrder,
+    Submission, Target, ViewKind, ViewNode,
 };
 use serde_json::{Value, json};
 
@@ -127,6 +127,50 @@ fn kind(kind: &ViewKind) -> Value {
             json!({ "title": title, "detail": detail, "icon": icon.map(icon_name) }),
         ),
         ViewKind::Split { first_width } => tagged("split", json!(first_width)),
+        ViewKind::Conversation { label } => tagged("conversation", json!(label)),
+        ViewKind::Message {
+            author,
+            label,
+            text,
+            detail,
+            warning,
+        } => tagged(
+            "message",
+            json!({
+                "author": match author {
+                    MessageAuthor::You => "you",
+                    MessageAuthor::Other => "other",
+                },
+                "label": label,
+                "text": text,
+                "detail": detail,
+                "warning": warning,
+            }),
+        ),
+        ViewKind::Activity { title, state } => tagged(
+            "activity",
+            json!({ "title": title, "state": activity_state(*state) }),
+        ),
+        ViewKind::Composer {
+            label,
+            value,
+            send,
+            stop,
+        } => tagged(
+            "composer",
+            json!({ "label": label, "value": value, "send": send, "stop": stop }),
+        ),
+    }
+}
+
+fn activity_state(state: ActivityState) -> &'static str {
+    match state {
+        ActivityState::Waiting => "waiting",
+        ActivityState::Running => "running",
+        ActivityState::Done => "done",
+        ActivityState::Failed => "failed",
+        ActivityState::Denied => "denied",
+        ActivityState::Stopped => "stopped",
     }
 }
 
