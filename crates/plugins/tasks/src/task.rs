@@ -146,6 +146,11 @@ impl Task {
         self.status == "done"
     }
 
+    /// Done or cancelled: nothing left to do.
+    pub(crate) fn closed(&self) -> bool {
+        self.done() || self.status == "cancelled"
+    }
+
     /// The folder that holds the task's file: empty for the top level.
     pub(crate) fn folder(&self) -> &str {
         self.path.rsplit_once('/').map_or("", |(folder, _)| folder)

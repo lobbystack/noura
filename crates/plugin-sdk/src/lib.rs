@@ -65,9 +65,10 @@ pub use exports::noura::plugin::tools::Tool;
 pub use exports::noura::plugin::view::Page;
 pub use noura::plugin::types::{Error, PropertyError};
 pub use noura::plugin::ui::{
-    Calendar, CalendarEntry, CalendarMode, Check, Choice, Column, ColumnPress, EmptyState, Event,
-    Field, Form, Heading, HeadingLevel, Icon, Input, Item, ItemList, MenuItem, Move, NameField,
-    Naming, Node, NodeKind, SortOrder, Submission, Table, Target, Value, VirtualList, VirtualRow,
+    Calendar, CalendarEntry, CalendarMode, Check, Choice, Color, Column, ColumnPress, DatePicker,
+    Editable, EditableStyle, EmptyState, Event, Field, Form, Heading, HeadingLevel, Icon, Input,
+    Item, ItemList, MenuItem, Move, NameField, Naming, Node, NodeKind, Picker, PickerOption,
+    SortOrder, Submission, Table, Target, Value, VirtualList, VirtualRow,
 };
 
 /// Reading the open workspace. Needs the `workspace-read` capability.
@@ -920,6 +921,71 @@ impl View {
             end: end.map(str::to_owned),
         };
         self.add(calendar, id, NodeKind::Entry(entry))
+    }
+
+    /// Add text you edit in place, holding `value`. A
+    /// [`title`](EditableStyle::Title) or a [`body`](EditableStyle::Body)
+    /// sends [`Event::Changed`] with its new text when you leave it, or
+    /// press Return in a title; an [`add`](EditableStyle::Add) field sends
+    /// it on Return, then empties itself and keeps the keyboard, so you
+    /// can add one thing after another. With `focus`, it takes the keyboard
+    /// when it appears, or when you draw it with `focus` after drawing it
+    /// without.
+    pub fn editable(
+        &mut self,
+        parent: u32,
+        id: &str,
+        label: &str,
+        value: &str,
+        style: EditableStyle,
+        focus: bool,
+    ) -> u32 {
+        let editable = Editable {
+            label: label.to_owned(),
+            value: value.to_owned(),
+            style,
+            focus,
+        };
+        self.add(parent, id, NodeKind::Editable(editable))
+    }
+
+    /// Add a button that shows `value`, a `YYYY-MM-DD` date, or `label`
+    /// while it holds none, and opens a date picker with Today, Tomorrow,
+    /// Next week, a month to pick a day from and Clear. A pick sends
+    /// [`Event::Changed`] with [`Value::Date`].
+    pub fn date_picker(&mut self, parent: u32, id: &str, label: &str, value: Option<&str>) -> u32 {
+        let picker = DatePicker {
+            label: label.to_owned(),
+            value: value.map(str::to_owned),
+        };
+        self.add(parent, id, NodeKind::DatePicker(picker))
+    }
+
+    /// Add a button that shows the chosen option and opens a menu of
+    /// `options`, each an ID, a label and an optional color for a mark
+    /// before the label. A pick sends [`Event::Changed`] with
+    /// [`Value::Choice`].
+    pub fn picker(
+        &mut self,
+        parent: u32,
+        id: &str,
+        label: &str,
+        options: &[(&str, &str, Option<Color>)],
+        chosen: Option<&str>,
+    ) -> u32 {
+        let picker = Picker {
+            label: label.to_owned(),
+            options: options
+                .iter()
+                .map(|(id, label, color)| PickerOption {
+                    id: (*id).to_owned(),
+                    label: (*label).to_owned(),
+                    color: *color,
+                })
+                .collect(),
+            chosen: chosen.map(str::to_owned),
+        };
+        self.add(parent, id, NodeKind::Picker(picker))
     }
 
     /// Add a menu to the item, row, card or button at `owner`.

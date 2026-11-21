@@ -163,7 +163,11 @@ fn two_project_files_with_one_id_show_as_one_project_in_the_pane_the_filters_and
     let lists = tasks::sidebar(&app);
     assert_eq!(
         lists[1].items,
-        [(format!("project:{garden}"), "Garden".to_owned(), None)]
+        [(
+            format!("project:{garden}"),
+            "Garden".to_owned(),
+            Some("1".to_owned())
+        )]
     );
     tasks::show_filters(&mut app);
     let page = tasks::page(&app);
@@ -384,7 +388,7 @@ fn after_an_outside_edit_a_pane_change_fails_and_the_pane_shows_the_latest_versi
 
 fn checked(id: &str, checked: bool) -> PluginEvent {
     PluginEvent::Checked(PluginCheck {
-        node: "tasks".to_owned(),
+        node: format!("{}no-date", tasks::LISTS),
         item: id.to_owned(),
         checked,
     })
@@ -451,4 +455,156 @@ fn a_check_against_a_stale_revision_leaves_the_file_and_shows_the_latest_version
     assert_eq!(shown[0].label, "Paint the fence");
     assert_eq!(shown[0].detail.as_deref(), Some("Urgent"));
     assert_eq!(shown[0].checked, Some(false));
+}
+
+/// The body of a task file's bytes, after its frontmatter.
+fn body(bytes: &[u8]) -> String {
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    let after = text.splitn(3, "---\n").nth(2).unwrap_or_default();
+    after.to_owned()
+}
+
+fn text_value(text: &str) -> InputValue {
+    InputValue::Text(text.to_owned())
+}
+
+#[test]
+fn the_description_and_subtasks_are_the_body_a_checklist_ending_it() {
+    let fixture = workspace();
+    let mut app = fixture.app();
+    let Some(_folder) = with_tasks(&mut app) else {
+        return;
+    };
+    let path = "tasks/Paint the fence.md";
+    let tab = open_in_pane(&mut app, path);
+    wait_for(&mut app, tab, "description", text_value("Notes."));
+    let frontmatter = |bytes: &[u8]| {
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        text[..text.len() - body(bytes).len()].to_owned()
+    };
+    let before = frontmatter(&fixture.read(path));
+
+    change(&mut app, tab, "add-subtask", text_value("Buy paint"));
+    change(
+        &mut app,
+        tab,
+        "add-subtask",
+        text_value("  Sand the boards "),
+    );
+    assert_eq!(
+        body(&fixture.read(path)),
+        "Notes.\n\n- [ ] Buy paint\n- [ ] Sand the boards\n"
+    );
+    // A subtask of only spaces adds nothing.
+    change(&mut app, tab, "add-subtask", text_value("   "));
+    assert_eq!(
+        body(&fixture.read(path)),
+        "Notes.\n\n- [ ] Buy paint\n- [ ] Sand the boards\n"
+    );
+
+    // Checking one off writes its box, and the description keeps its bytes.
+    send(
+        &mut app,
+        PluginEvent::Checked(PluginCheck {
+            node: "selected-subtasks".to_owned(),
+            item: "subtask-0".to_owned(),
+            checked: true,
+        }),
+    );
+    assert_eq!(
+        body(&fixture.read(path)),
+        "Notes.\n\n- [x] Buy paint\n- [ ] Sand the boards\n"
+    );
+
+    // A new description keeps the checklist.
+    change(
+        &mut app,
+        tab,
+        "description",
+        InputValue::Multiline("Two coats.\nLet it dry.".to_owned()),
+    );
+    assert_eq!(
+        body(&fixture.read(path)),
+        "Two coats.\nLet it dry.\n\n- [x] Buy paint\n- [ ] Sand the boards\n"
+    );
+
+    // Delete and rename go through the subtask's menu.
+    send(&mut app, PluginEvent::Chosen("subtask-rename:1".to_owned()));
+    send(
+        &mut app,
+        PluginEvent::Named(app_core::PluginNaming {
+            node: "subtask-name".to_owned(),
+            name: "Sand the gate".to_owned(),
+        }),
+    );
+    send(&mut app, PluginEvent::Chosen("subtask-delete:0".to_owned()));
+    assert_eq!(
+        body(&fixture.read(path)),
+        "Two coats.\nLet it dry.\n\n- [ ] Sand the gate\n"
+    );
+    // The fields stay as they were.
+    let after = frontmatter(&fixture.read(path));
+    let without_updated = |text: &str| {
+        text.lines()
+            .filter(|line| !line.starts_with("updated:"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(without_updated(&after), without_updated(&before));
+}
+
+#[test]
+fn after_an_outside_edit_a_description_change_fails_and_keeps_the_file() {
+    let fixture = workspace();
+    let mut app = fixture.app();
+    let Some(_folder) = with_tasks(&mut app) else {
+        return;
+    };
+    let path = "tasks/Paint the fence.md";
+    let tab = open_in_pane(&mut app, path);
+    wait_for(&mut app, tab, "description", text_value("Notes."));
+    let outside = task_file(
+        A,
+        "status: todo\npriority: medium\ndue: 2026-10-24\n",
+        "2026-10-21T10:00:00Z",
+    );
+    std::fs::write(fixture.root.join(path), &outside).unwrap();
+
+    change(
+        &mut app,
+        tab,
+        "description",
+        InputValue::Multiline("Mine.".to_owned()),
+    );
+
+    assert_eq!(fixture.read(path), outside);
+    support::plugins::wait_until(&mut app, "the pane says it changed", |app| {
+        panel_text(app, tab, "notice").as_deref() == Some(CHANGED_ELSEWHERE)
+    });
+}
+
+#[test]
+fn a_new_title_renames_the_file_and_the_task_keeps_its_id() {
+    let fixture = workspace();
+    let mut app = fixture.app();
+    let Some(_folder) = with_tasks(&mut app) else {
+        return;
+    };
+    let tab = open_in_pane(&mut app, "tasks/Paint the fence.md");
+    wait_for(&mut app, tab, "title", text_value("Paint the fence"));
+
+    change(&mut app, tab, "title", text_value("Paint the gate"));
+
+    assert!(!fixture.exists("tasks/Paint the fence.md"));
+    let bytes = fixture.read("tasks/Paint the gate.md");
+    assert_eq!(support::object_id(&bytes), format!("task_{A}"));
+    wait_for(&mut app, tab, "title", text_value("Paint the gate"));
+
+    // A name a file can't take keeps the old one and says why.
+    change(&mut app, tab, "title", text_value("Paint/the gate"));
+    assert!(fixture.exists("tasks/Paint the gate.md"));
+    assert_eq!(
+        panel_text(&app, tab, "notice").as_deref(),
+        Some("Names can't contain \\ / : * ? \" < > or |.")
+    );
 }

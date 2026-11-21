@@ -4,9 +4,9 @@
 //! holding its children.
 
 use app_core::{
-    CalendarMode, Choice, Column, ColumnPress, Field, HeadingLevel, InputValue, PluginCheck,
-    PluginEvent, PluginIcon, PluginMove, PluginNaming, SortOrder, Submission, Target, ViewKind,
-    ViewNode,
+    CalendarMode, Choice, Column, ColumnPress, EditableStyle, Field, HeadingLevel, InputValue,
+    PluginCheck, PluginColor, PluginEvent, PluginIcon, PluginMove, PluginNaming, SortOrder,
+    Submission, Target, ViewKind, ViewNode,
 };
 use serde_json::{Value, json};
 
@@ -127,6 +127,46 @@ fn kind(kind: &ViewKind) -> Value {
             json!({ "title": title, "detail": detail, "icon": icon.map(icon_name) }),
         ),
         ViewKind::Split { first_width } => tagged("split", json!(first_width)),
+        ViewKind::Editable {
+            label,
+            value,
+            style,
+            focus,
+        } => tagged(
+            "editable",
+            json!({
+                "label": label,
+                "value": value,
+                "style": match style {
+                    EditableStyle::Title => "title",
+                    EditableStyle::Body => "body",
+                    EditableStyle::Add => "add",
+                },
+                "focus": focus,
+            }),
+        ),
+        ViewKind::DatePicker { label, value } => {
+            tagged("date-picker", json!({ "label": label, "value": value }))
+        }
+        ViewKind::Picker {
+            label,
+            options,
+            chosen,
+        } => tagged(
+            "picker",
+            json!({
+                "label": label,
+                "options": options
+                    .iter()
+                    .map(|option| json!({
+                        "id": option.id,
+                        "label": option.label,
+                        "color": option.color.map(color_name),
+                    }))
+                    .collect::<Vec<_>>(),
+                "chosen": chosen,
+            }),
+        ),
     }
 }
 
@@ -138,6 +178,19 @@ fn icon_name(icon: PluginIcon) -> &'static str {
         PluginIcon::Note => "note",
         PluginIcon::Sparkle => "sparkle",
         PluginIcon::Tasks => "tasks",
+    }
+}
+
+fn color_name(color: PluginColor) -> &'static str {
+    match color {
+        PluginColor::Red => "red",
+        PluginColor::Orange => "orange",
+        PluginColor::Yellow => "yellow",
+        PluginColor::Green => "green",
+        PluginColor::Blue => "blue",
+        PluginColor::Purple => "purple",
+        PluginColor::Brown => "brown",
+        PluginColor::Gray => "gray",
     }
 }
 

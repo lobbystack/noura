@@ -13,7 +13,7 @@
 //! sends one move event, and the list shows the order the plugin draws.
 //!
 //! An item may carry a checkbox, which a click on it or the space bar on
-//! its row checks or unchecks, and a warning after its label, which
+//! its row checks or unchecks, and a warning at the row's end, which
 //! screen readers read with the label. An item may show a name field in
 //! its place, as for a rename. A list follows the item the plugin shows
 //! selected whenever the plugin draws another one.
@@ -1045,7 +1045,6 @@ fn paint_row(
     );
     let at =
         Align2::LEFT_CENTER.anchor_size(pos2(inner.left() + start, rect.center().y), label.size());
-    let label_end = at.right();
     let done = row.checked == Some(true);
     let color = if done {
         palette.muted_foreground
@@ -1063,14 +1062,16 @@ fn paint_row(
             Stroke::new(1.0, palette.muted_foreground),
         );
     }
+    // The warning ends the row, as an overdue date does, and the detail
+    // comes before it.
+    let mut end = inner.right() - 8.0;
     if let Some(warning) = warning {
-        let at =
-            Align2::LEFT_CENTER.anchor_size(pos2(label_end + 8.0, rect.center().y), warning.size());
+        let at = Align2::RIGHT_CENTER.anchor_size(pos2(end, rect.center().y), warning.size());
+        end = at.left() - 8.0;
         painter.galley(at.min, warning, palette.destructive);
     }
     if let Some(detail) = detail {
-        let at = Align2::RIGHT_CENTER
-            .anchor_size(pos2(inner.right() - 8.0, rect.center().y), detail.size());
+        let at = Align2::RIGHT_CENTER.anchor_size(pos2(end, rect.center().y), detail.size());
         painter.galley(at.min, detail, palette.muted_foreground);
     }
 }

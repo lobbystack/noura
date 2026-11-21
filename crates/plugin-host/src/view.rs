@@ -16,8 +16,8 @@
 use std::collections::HashSet;
 
 use crate::{
-    CalendarEntry, CalendarMode, Choice, Column, HeadingLevel, Icon, Node, NodeKind, Value,
-    VirtualRow,
+    CalendarEntry, CalendarMode, Choice, Column, EditableStyle, HeadingLevel, Icon, Node, NodeKind,
+    PickerOption, Value, VirtualRow,
 };
 
 /// The most nodes a view may hold.
@@ -177,6 +177,27 @@ pub enum ViewKind {
     Split {
         first_width: u32,
     },
+    /// Text edited in place, drawn the way `style` says, which takes the
+    /// keyboard when drawn with `focus` after being drawn without.
+    Editable {
+        label: String,
+        value: String,
+        style: EditableStyle,
+        focus: bool,
+    },
+    /// A button that shows `value`, a `YYYY-MM-DD` date, or `label`, and
+    /// opens a date picker.
+    DatePicker {
+        label: String,
+        value: Option<String>,
+    },
+    /// A button that shows the chosen option, one of `options`, and opens
+    /// a menu of them.
+    Picker {
+        label: String,
+        options: Vec<PickerOption>,
+        chosen: Option<String>,
+    },
 }
 
 /// The narrowest and widest a split's first pane may be, in points.
@@ -335,6 +356,9 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Heading(_) => "heading",
         NodeKind::Empty(_) => "empty state",
         NodeKind::Split(_) => "split",
+        NodeKind::Editable(_) => "editable text",
+        NodeKind::DatePicker(_) => "date picker",
+        NodeKind::Picker(_) => "picker",
     }
 }
 
@@ -366,6 +390,17 @@ fn check_node(node: &Node) -> Result<(), ViewError> {
             SPLIT_WIDTHS.end()
         )),
         NodeKind::Split(_) => Ok(()),
+        NodeKind::Editable(editable) if blank(&editable.label) => Err(unlabeled()),
+        NodeKind::Editable(_) => Ok(()),
+        NodeKind::DatePicker(picker) if blank(&picker.label) => Err(unlabeled()),
+        NodeKind::DatePicker(picker) => match &picker.value {
+            Some(date) if !workspace_format::is_civil_date(date) => invalid(format!(
+                "The date picker {id} holds {date}, which isn't a date in the form YYYY-MM-DD."
+            )),
+            _ => Ok(()),
+        },
+        NodeKind::Picker(picker) if blank(&picker.label) => Err(unlabeled()),
+        NodeKind::Picker(picker) => check_picker(id, &picker.options, picker.chosen.as_deref()),
         NodeKind::Button(label)
         | NodeKind::Menu(label)
         | NodeKind::Board(label)
@@ -441,6 +476,39 @@ fn check_node(node: &Node) -> Result<(), ViewError> {
         }
         NodeKind::Calendar(_) => Ok(()),
         NodeKind::Entry(entry) => check_entry(id, entry),
+    }
+}
+
+/// A picker has options, each with an ID of its own and a label, and
+/// chooses one of them or none.
+fn check_picker(id: &str, options: &[PickerOption], chosen: Option<&str>) -> Result<(), ViewError> {
+    let invalid = |message: String| Err(ViewError::Invalid(message));
+    if options.is_empty() {
+        return invalid(format!("The picker {id} has no options."));
+    }
+    let mut ids = HashSet::new();
+    for option in options {
+        if blank(&option.id) {
+            return invalid(format!("The picker {id} has an option without an ID."));
+        }
+        if blank(&option.label) {
+            return invalid(format!(
+                "The option {} of the picker {id} has no label.",
+                option.id
+            ));
+        }
+        if !ids.insert(option.id.as_str()) {
+            return invalid(format!(
+                "The picker {id} has two options with the ID {}.",
+                option.id
+            ));
+        }
+    }
+    match chosen {
+        Some(chosen) if !ids.contains(chosen) => invalid(format!(
+            "The picker {id} chooses {chosen}, which isn't one of its options."
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -743,7 +811,10 @@ fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
         | NodeKind::NameField(_)
         | NodeKind::MenuItem(_)
         | NodeKind::Separator
-        | NodeKind::Entry(_) => {
+        | NodeKind::Entry(_)
+        | NodeKind::Editable(_)
+        | NodeKind::DatePicker(_)
+        | NodeKind::Picker(_) => {
             if parent.children.is_empty() {
                 Ok(())
             } else {
@@ -869,6 +940,21 @@ fn build(
         },
         NodeKind::Split(width) => ViewKind::Split {
             first_width: *width,
+        },
+        NodeKind::Editable(editable) => ViewKind::Editable {
+            label: editable.label.clone(),
+            value: editable.value.clone(),
+            style: editable.style,
+            focus: editable.focus,
+        },
+        NodeKind::DatePicker(picker) => ViewKind::DatePicker {
+            label: picker.label.clone(),
+            value: picker.value.clone(),
+        },
+        NodeKind::Picker(picker) => ViewKind::Picker {
+            label: picker.label.clone(),
+            options: picker.options.clone(),
+            chosen: picker.chosen.clone(),
         },
     };
     let children: Vec<ViewNode> = node

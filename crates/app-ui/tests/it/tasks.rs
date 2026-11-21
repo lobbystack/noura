@@ -1,7 +1,8 @@
-//! The Tasks plugin through AccessKit: New task from the keyboard alone,
-//! again and again, from the button and from the command palette, the
-//! sidebar's views, the task rows with their checkboxes and overdue
-//! warning, and the labels of the selected task's fields.
+//! The Tasks plugin through AccessKit: adding tasks from the field at the
+//! top of the list, again and again, from New task and from the command
+//! palette, without leaving the page; the sidebar's views and counts; the
+//! list's sections with their counts; the task rows with their checkboxes
+//! and overdue dates; and the selected task's details, edited in place.
 
 use crate::support;
 use std::path::{Path, PathBuf};
@@ -93,11 +94,57 @@ fn wait_until(harness: &mut Ui, mut done: impl FnMut(&Ui) -> bool) {
     run(harness);
 }
 
+/// The sections a task list shows, in order.
+const SECTIONS: [&str; 5] = ["Overdue", "Today", "Upcoming", "No date", "Completed"];
+
+/// The tasks the page lists, top to bottom, across its sections.
 fn task_list(harness: &Ui) -> Vec<String> {
+    SECTIONS
+        .iter()
+        .filter_map(|section| harness.query_by_role_and_label(Role::ListBox, section))
+        .flat_map(|list| labels(list.get_all_by_role(Role::ListBoxOption)))
+        .collect()
+}
+
+/// The tasks one section lists.
+fn section(harness: &Ui, title: &str) -> Vec<String> {
     harness
-        .query_by_role_and_label(Role::ListBox, "Task list")
+        .query_by_role_and_label(Role::ListBox, title)
         .map(|list| labels(list.get_all_by_role(Role::ListBoxOption)))
         .unwrap_or_default()
+}
+
+/// The text a task's file holds.
+fn file(folder: &Path, path: &str) -> String {
+    std::fs::read_to_string(folder.join(path)).unwrap_or_default()
+}
+
+/// The add field at the top of the list.
+fn add_field(harness: &Ui) -> egui_kittest::Node<'_> {
+    harness.get_by_role_and_label(Role::TextInput, "Add task")
+}
+
+/// Whether the add field is empty and has the keyboard.
+fn add_ready(harness: &Ui) -> bool {
+    harness
+        .query_by_role_and_label(Role::TextInput, "Add task")
+        .is_some_and(|field| field.is_focused() && field.value().unwrap_or_default().is_empty())
+}
+
+/// The title of the active tab.
+fn active_tab(harness: &Ui) -> Option<String> {
+    harness
+        .state()
+        .app()
+        .active_tab()
+        .map(|tab| tab.title().to_owned())
+}
+
+/// The selected task's title field, once its details show.
+fn title_value(harness: &Ui) -> Option<String> {
+    harness
+        .query_by_role_and_label(Role::TextInput, "Title")
+        .and_then(|field| field.value())
 }
 
 fn type_text(harness: &mut Ui, text: &str) {
@@ -114,7 +161,7 @@ fn status(folder: &Path, path: &str) -> String {
 }
 
 #[test]
-fn a_task_is_created_from_the_keyboard_alone() {
+fn the_add_field_creates_a_task_named_by_its_title_and_keeps_you_on_the_page() {
     let Some(Opened {
         mut harness,
         folder,
@@ -123,91 +170,49 @@ fn a_task_is_created_from_the_keyboard_alone() {
     else {
         return;
     };
-    harness
-        .get_by_role_and_label(Role::Button, "New task")
-        .focus();
+    let today = harness.state().app().today().to_string();
+    add_field(&harness).click();
     run(&mut harness);
-
-    press(&mut harness, Key::Space);
-    wait_until(&mut harness, |harness| {
-        harness
-            .query_by_role_and_label(Role::TextInput, "New task name")
-            .is_some_and(|field| field.is_focused())
-    });
-    assert!(!folder.join("tasks/Buy seeds.md").exists());
     type_text(&mut harness, "Buy seeds");
+    // Nothing reaches the folder until Return.
+    assert!(!folder.join("tasks/Buy seeds.md").exists());
     press(&mut harness, Key::Enter);
 
+    // The file is named after the title, and the task is due today, as
+    // it was added in Today.
     wait_until(&mut harness, |_| folder.join("tasks/Buy seeds.md").exists());
-    assert_eq!(status(&folder, "tasks/Buy seeds.md"), "todo");
-    // The new task opens in its own tab, and the Tasks list shows All.
+    let text = file(&folder, "tasks/Buy seeds.md");
+    assert!(text.contains("status: todo"), "{text}");
+    assert!(text.contains(&format!("due: {today}")), "{text}");
+    // The task shows in the list and its details beside it, and the page
+    // stays: no tab opens for it.
     wait_until(&mut harness, |harness| {
-        harness
-            .state()
-            .app()
-            .active_tab()
-            .is_some_and(|tab| tab.title() == "Buy seeds")
+        section(harness, "Today") == ["Buy seeds"]
+            && title_value(harness).as_deref() == Some("Buy seeds")
     });
-    open_page(&mut harness, "Tasks");
+    assert_eq!(active_tab(&harness).as_deref(), Some("Tasks"));
+    assert_eq!(harness.state().app().tabs().len(), 1);
+    // The field empties and keeps the keyboard for the next one.
+    assert!(add_ready(&harness));
+    type_text(&mut harness, "Order seeds");
+    press(&mut harness, Key::Enter);
     wait_until(&mut harness, |harness| {
-        task_list(harness).contains(&"Buy seeds".to_owned())
+        section(harness, "Today") == ["Buy seeds", "Order seeds"]
+            && title_value(harness).as_deref() == Some("Order seeds")
     });
-    assert!(
-        harness
-            .query_by_role_and_label(Role::TextInput, "New task name")
-            .is_none()
-    );
-}
+    assert!(folder.join("tasks/Order seeds.md").exists());
+    assert!(add_ready(&harness));
 
-#[test]
-fn escape_closes_the_name_field_and_creates_nothing() {
-    let Some(Opened {
-        mut harness,
-        folder,
-        _folders,
-    }) = opened()
-    else {
-        return;
-    };
-    harness
-        .get_by_role_and_label(Role::Button, "New task")
-        .click();
-    wait_until(&mut harness, |harness| {
-        harness
-            .query_by_role_and_label(Role::TextInput, "New task name")
-            .is_some_and(|field| field.is_focused())
-    });
+    // Escape empties the field and creates nothing.
     type_text(&mut harness, "Rake the leaves");
-
     press(&mut harness, Key::Escape);
-
-    wait_until(&mut harness, |harness| {
-        harness
-            .query_by_role_and_label(Role::TextInput, "New task name")
-            .is_none()
-    });
+    run(&mut harness);
+    assert_eq!(add_field(&harness).value().unwrap_or_default(), "");
     assert!(!folder.join("tasks/Rake the leaves.md").exists());
 }
 
-/// The files in the workspace's `tasks` folder, by name.
-fn task_files(folder: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(folder.join("tasks"))
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    names
-}
-
-/// Whether the name field shows, empty and with the keyboard.
-fn empty_and_focused(harness: &Ui) -> bool {
-    harness
-        .query_by_role_and_label(Role::TextInput, "New task name")
-        .is_some_and(|field| field.is_focused() && field.value().unwrap_or_default().is_empty())
-}
-
 #[test]
-fn each_new_task_opens_an_empty_field_that_takes_the_keyboard() {
+fn new_task_gives_the_add_field_the_keyboard_without_leaving_the_page() {
     let Some(Opened {
         mut harness,
         folder,
@@ -216,62 +221,50 @@ fn each_new_task_opens_an_empty_field_that_takes_the_keyboard() {
     else {
         return;
     };
+    harness
+        .get_by_role_and_label(Role::ListBox, "Views")
+        .get_by_role_and_label(Role::ListBoxOption, "All")
+        .click();
+    wait_until(&mut harness, |harness| task_list(harness).len() == 2);
     let before = task_files(&folder);
 
-    // A name you cancelled never comes back, and leaving the field again
-    // sends nothing.
-    for name in ["Rake the leaves", "Prune the roses"] {
-        harness
-            .get_by_role_and_label(Role::Button, "New task")
-            .focus();
-        run(&mut harness);
-        press(&mut harness, Key::Space);
-        wait_until(&mut harness, empty_and_focused);
-        type_text(&mut harness, name);
-        press(&mut harness, Key::Escape);
-        wait_until(&mut harness, |harness| {
-            harness
-                .query_by_role_and_label(Role::TextInput, "New task name")
-                .is_none()
-        });
-    }
-    // After a task is created, the next field starts empty too.
+    // New task, from the keyboard alone.
     harness
         .get_by_role_and_label(Role::Button, "New task")
         .focus();
     run(&mut harness);
     press(&mut harness, Key::Space);
-    wait_until(&mut harness, empty_and_focused);
-    type_text(&mut harness, "Buy seeds");
+    wait_until(&mut harness, add_ready);
+    assert_eq!(task_files(&folder), before);
+    type_text(&mut harness, "Plan the trip");
     press(&mut harness, Key::Enter);
-    wait_until(&mut harness, |_| folder.join("tasks/Buy seeds.md").exists());
-    open_page(&mut harness, "Tasks");
-    wait_until(&mut harness, |harness| {
-        harness
-            .query_by_role_and_label(Role::Button, "New task")
-            .is_some()
-    });
-    harness
-        .get_by_role_and_label(Role::Button, "New task")
-        .focus();
-    run(&mut harness);
-    press(&mut harness, Key::Space);
-    wait_until(&mut harness, empty_and_focused);
-    press(&mut harness, Key::Enter);
-    wait_until(&mut harness, |harness| {
-        harness
-            .query_by_role_and_label(Role::TextInput, "New task name")
-            .is_none()
-    });
 
-    let mut expected = before;
-    expected.push("Buy seeds.md".to_owned());
-    expected.sort();
-    assert_eq!(task_files(&folder), expected);
+    wait_until(&mut harness, |harness| {
+        title_value(harness).as_deref() == Some("Plan the trip")
+    });
+    // In All, a task gets no due date, and lists under No date.
+    let text = file(&folder, "tasks/Plan the trip.md");
+    assert!(!text.contains("due:"), "{text}");
+    assert_eq!(
+        section(&harness, "No date"),
+        ["Read the manual", "Plan the trip"]
+    );
+    assert_eq!(active_tab(&harness).as_deref(), Some("Tasks"));
+
+    // Pressed again, it takes the keyboard back from the list.
+    harness
+        .get_by_role_and_label(Role::ListBox, "No date")
+        .get_by_role_and_label(Role::ListBoxOption, "Read the manual")
+        .click();
+    run(&mut harness);
+    harness
+        .get_by_role_and_label(Role::Button, "New task")
+        .click();
+    wait_until(&mut harness, add_ready);
 }
 
 #[test]
-fn new_task_in_the_command_palette_starts_the_same_name_first_flow() {
+fn new_task_in_the_command_palette_opens_tasks_with_the_add_field_ready() {
     let Some(Opened {
         mut harness,
         folder,
@@ -293,11 +286,8 @@ fn new_task_in_the_command_palette_starts_the_same_name_first_flow() {
     run(&mut harness);
     press(&mut harness, Key::Enter);
 
-    wait_until(&mut harness, |harness| {
-        harness
-            .query_by_role_and_label(Role::TextInput, "New task name")
-            .is_some_and(|field| field.is_focused())
-    });
+    wait_until(&mut harness, add_ready);
+    assert_eq!(active_tab(&harness).as_deref(), Some("Tasks"));
     type_text(&mut harness, "Order seeds");
     press(&mut harness, Key::Enter);
     wait_until(&mut harness, |_| {
@@ -305,8 +295,18 @@ fn new_task_in_the_command_palette_starts_the_same_name_first_flow() {
     });
 }
 
+/// The files in the workspace's `tasks` folder, by name.
+fn task_files(folder: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(folder.join("tasks"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
 #[test]
-fn the_sidebar_lists_the_views_projects_and_folders_and_one_selection_switches_the_list() {
+fn the_sidebar_lists_the_views_projects_and_folders_with_open_counts() {
     let Some(Opened {
         mut harness,
         _folders,
@@ -318,22 +318,28 @@ fn the_sidebar_lists_the_views_projects_and_folders_and_one_selection_switches_t
     let views = harness.get_by_role_and_label(Role::ListBox, "Views");
     assert_eq!(
         labels(views.get_all_by_role(Role::ListBoxOption)),
-        ["Today", "Upcoming", "All", "Completed"]
+        ["Today", "Next 7 days", "All", "Completed"]
     );
+    let count = |harness: &Ui, list: &str, item: &str| {
+        harness
+            .get_by_role_and_label(Role::ListBox, list)
+            .get_by_role_and_label(Role::ListBoxOption, item)
+            .accesskit_node()
+            .description()
+    };
+    assert_eq!(count(&harness, "Views", "Today"), Some("1".into()));
+    assert_eq!(count(&harness, "Views", "Next 7 days"), Some("1".into()));
+    assert_eq!(count(&harness, "Views", "All"), Some("2".into()));
+    assert_eq!(count(&harness, "Views", "Completed"), None);
     let projects = harness.get_by_role_and_label(Role::ListBox, "Projects");
     assert_eq!(
         labels(projects.get_all_by_role(Role::ListBoxOption)),
         ["Garden"]
     );
-    let folders = harness.get_by_role_and_label(Role::ListBox, "Folders");
-    let tasks_folder = folders.get_by_role_and_label(Role::ListBoxOption, "tasks");
-    assert_eq!(
-        tasks_folder.accesskit_node().description(),
-        Some("2".into())
-    );
+    assert_eq!(count(&harness, "Folders", "tasks"), Some("2".into()));
     // The file tree stays below the section.
     harness.get_by_role_and_label(Role::TreeItem, "tasks");
-    assert_eq!(task_list(&harness), ["Water the beds, Overdue"]);
+    assert_eq!(task_list(&harness), ["Water the beds, Jan 6, 2020"]);
 
     harness
         .get_by_role_and_label(Role::ListBox, "Views")
@@ -342,7 +348,7 @@ fn the_sidebar_lists_the_views_projects_and_folders_and_one_selection_switches_t
     wait_until(&mut harness, |harness| task_list(harness).len() == 2);
     assert_eq!(
         task_list(&harness),
-        ["Water the beds, Overdue", "Read the manual"]
+        ["Water the beds, Jan 6, 2020", "Read the manual"]
     );
 
     // One arrow key moves to the next view.
@@ -353,7 +359,7 @@ fn the_sidebar_lists_the_views_projects_and_folders_and_one_selection_switches_t
 }
 
 #[test]
-fn a_rows_checkbox_marks_its_task_done_and_overdue_tasks_say_so() {
+fn the_list_groups_tasks_by_when_they_are_due_with_a_count_for_each_section() {
     let Some(Opened {
         mut harness,
         folder,
@@ -362,11 +368,126 @@ fn a_rows_checkbox_marks_its_task_done_and_overdue_tasks_say_so() {
     else {
         return;
     };
-    let row = harness.get_by_role_and_label(Role::ListBoxOption, "Water the beds, Overdue");
-    assert_eq!(
-        row.accesskit_node().description(),
-        Some("Jan 6, 2020".into())
+    let today = harness.state().app().today();
+    let day = |days: i64| {
+        today
+            .checked_add(jiff::Span::new().days(days))
+            .unwrap()
+            .to_string()
+    };
+    let write = |path: &str, text: String| std::fs::write(folder.join(path), text).unwrap();
+    write(
+        "tasks/Sow the peas.md",
+        task("c", &format!("status: todo\ndue: {}\n", day(0))),
     );
+    write(
+        "tasks/Mulch.md",
+        task("d", &format!("status: todo\ndue: {}\n", day(3))),
+    );
+    write(
+        "tasks/Order tools.md",
+        task("e", &format!("status: todo\ndue: {}\n", day(30))),
+    );
+    write(
+        "tasks/Fix the gate.md",
+        task("f", "status: done\npriority: low\n"),
+    );
+    harness
+        .get_by_role_and_label(Role::ListBox, "Views")
+        .get_by_role_and_label(Role::ListBoxOption, "All")
+        .click();
+    wait_until(&mut harness, |harness| task_list(harness).len() == 6);
+
+    assert_eq!(
+        section(&harness, "Overdue"),
+        ["Water the beds, Jan 6, 2020"]
+    );
+    assert_eq!(section(&harness, "Today"), ["Sow the peas"]);
+    assert_eq!(section(&harness, "Upcoming"), ["Mulch", "Order tools"]);
+    assert_eq!(section(&harness, "No date"), ["Read the manual"]);
+    assert_eq!(section(&harness, "Completed"), ["Fix the gate"]);
+    // Each section's heading says how many tasks it holds.
+    for (title, count) in [
+        ("Overdue", "1"),
+        ("Today", "1"),
+        ("Upcoming", "2"),
+        ("No date", "1"),
+        ("Completed", "1"),
+    ] {
+        let heading = harness.get_by_role_and_label(Role::Heading, title);
+        heading.get_by_label(count);
+    }
+    // A row's detail says its project, its due date and a priority that
+    // isn't medium.
+    let detail = |harness: &Ui, list: &str, row: &str| {
+        harness
+            .get_by_role_and_label(Role::ListBox, list)
+            .get_by_role_and_label(Role::ListBoxOption, row)
+            .accesskit_node()
+            .description()
+    };
+    assert_eq!(
+        detail(&harness, "Today", "Sow the peas"),
+        Some("Today".into())
+    );
+    assert_eq!(
+        detail(&harness, "No date", "Read the manual"),
+        Some("High".into())
+    );
+
+    // Next 7 days holds what's overdue and due by the sixth day from now.
+    harness
+        .get_by_role_and_label(Role::ListBox, "Views")
+        .get_by_role_and_label(Role::ListBoxOption, "Next 7 days")
+        .click();
+    wait_until(&mut harness, |harness| task_list(harness).len() == 3);
+    assert_eq!(
+        task_list(&harness),
+        ["Water the beds, Jan 6, 2020", "Sow the peas", "Mulch"]
+    );
+    let views = harness.get_by_role_and_label(Role::ListBox, "Views");
+    assert_eq!(
+        views
+            .get_by_role_and_label(Role::ListBoxOption, "Next 7 days")
+            .accesskit_node()
+            .description(),
+        Some("3".into())
+    );
+    // In Today, each section has its title while there are two.
+    harness
+        .get_by_role_and_label(Role::ListBox, "Views")
+        .get_by_role_and_label(Role::ListBoxOption, "Today")
+        .click();
+    wait_until(&mut harness, |harness| task_list(harness).len() == 2);
+    let headings = |harness: &Ui, text: &str| {
+        harness
+            .get_all_by_role_and_label(Role::Heading, text)
+            .count()
+    };
+    assert_eq!(headings(&harness, "Overdue"), 1);
+    assert_eq!(headings(&harness, "Today"), 2);
+    // Alone, the Today section needs no title under the page's.
+    harness
+        .get_by_role_and_label(Role::CheckBox, "Water the beds")
+        .click();
+    wait_until(&mut harness, |harness| {
+        task_list(harness) == ["Sow the peas"]
+    });
+    assert_eq!(headings(&harness, "Today"), 1);
+}
+
+#[test]
+fn a_rows_checkbox_marks_its_task_done_and_an_overdue_date_shows_as_a_warning() {
+    let Some(Opened {
+        mut harness,
+        folder,
+        _folders,
+    }) = opened()
+    else {
+        return;
+    };
+    let row = harness.get_by_role_and_label(Role::ListBoxOption, "Water the beds, Jan 6, 2020");
+    assert_eq!(row.accesskit_node().description(), None);
     assert!(harness.unnamed_widgets().is_empty());
 
     harness
@@ -602,11 +723,11 @@ fn a_task_rows_menu_opens_by_right_click_or_from_the_keyboard() {
         return;
     };
     wait_until(&mut harness, |harness| {
-        task_list(harness) == ["Water the beds, Overdue"]
+        task_list(harness) == ["Water the beds, Jan 6, 2020"]
     });
     harness
-        .get_by_role_and_label(Role::ListBox, "Task list")
-        .get_by_role_and_label(Role::ListBoxOption, "Water the beds, Overdue")
+        .get_by_role_and_label(Role::ListBox, "Overdue")
+        .get_by_role_and_label(Role::ListBoxOption, "Water the beds, Jan 6, 2020")
         .click_secondary();
     run(&mut harness);
 
@@ -632,7 +753,7 @@ fn a_task_rows_menu_opens_by_right_click_or_from_the_keyboard() {
     // item ready.
     assert_eq!(
         focused(&harness).as_deref(),
-        Some("Water the beds, Overdue")
+        Some("Water the beds, Jan 6, 2020")
     );
     press_with(&mut harness, Modifiers::SHIFT, Key::F10);
     assert_eq!(
@@ -665,7 +786,7 @@ fn a_task_rows_menu_opens_by_right_click_or_from_the_keyboard() {
         .get_by_role_and_label(Role::CheckBox, "Read the manual")
         .click();
     wait_until(&mut harness, |harness| {
-        task_list(harness) == ["Water the beds, Overdue", "Read the manual"]
+        task_list(harness) == ["Water the beds, Jan 6, 2020", "Read the manual"]
             && harness
                 .get_by_role_and_label(Role::CheckBox, "Read the manual")
                 .accesskit_node()
@@ -673,7 +794,7 @@ fn a_task_rows_menu_opens_by_right_click_or_from_the_keyboard() {
                 == Some(egui::accesskit::Toggled::True)
     });
     harness
-        .get_by_role_and_label(Role::ListBox, "Task list")
+        .get_by_role_and_label(Role::ListBox, "Completed")
         .get_by_role_and_label(Role::ListBoxOption, "Read the manual")
         .click_secondary();
     run(&mut harness);
@@ -700,11 +821,11 @@ fn rename_shows_the_name_in_a_field_in_the_row_and_enter_saves_it() {
         return;
     };
     wait_until(&mut harness, |harness| {
-        task_list(harness) == ["Water the beds, Overdue"]
+        task_list(harness) == ["Water the beds, Jan 6, 2020"]
     });
     harness
-        .get_by_role_and_label(Role::ListBox, "Task list")
-        .get_by_role_and_label(Role::ListBoxOption, "Water the beds, Overdue")
+        .get_by_role_and_label(Role::ListBox, "Overdue")
+        .get_by_role_and_label(Role::ListBoxOption, "Water the beds, Jan 6, 2020")
         .click_secondary();
     run(&mut harness);
     harness
@@ -718,7 +839,7 @@ fn rename_shows_the_name_in_a_field_in_the_row_and_enter_saves_it() {
             .is_some_and(|field| field.is_focused())
     });
     let field = harness
-        .get_by_role_and_label(Role::ListBox, "Task list")
+        .get_by_role_and_label(Role::ListBox, "Overdue")
         .get_by_role_and_label(Role::TextInput, "Task name");
     assert_eq!(field.value().as_deref(), Some("Water the beds"));
     press_with(&mut harness, Modifiers::COMMAND, Key::A);
@@ -730,7 +851,7 @@ fn rename_shows_the_name_in_a_field_in_the_row_and_enter_saves_it() {
     });
     assert!(!folder.join("tasks/Water the beds.md").exists());
     wait_until(&mut harness, |harness| {
-        task_list(harness) == ["Water the roses, Overdue"]
+        task_list(harness) == ["Water the roses, Jan 6, 2020"]
     });
     assert!(
         harness
@@ -740,7 +861,7 @@ fn rename_shows_the_name_in_a_field_in_the_row_and_enter_saves_it() {
 }
 
 #[test]
-fn the_page_shows_the_list_beside_the_selected_task_which_edits_in_place() {
+fn the_selected_task_shows_beside_the_list_and_each_field_writes_its_file() {
     let Some(Opened {
         mut harness,
         folder,
@@ -749,6 +870,7 @@ fn the_page_shows_the_list_beside_the_selected_task_which_edits_in_place() {
     else {
         return;
     };
+    harness.set_size(egui::vec2(1200.0, 800.0));
     harness
         .get_by_role_and_label(Role::ListBox, "Views")
         .get_by_role_and_label(Role::ListBoxOption, "All")
@@ -756,73 +878,167 @@ fn the_page_shows_the_list_beside_the_selected_task_which_edits_in_place() {
     wait_until(&mut harness, |harness| {
         task_list(harness).contains(&"Read the manual".to_owned())
     });
-    harness.get_by_label("Select a task");
+    harness.get_by_label("No task selected");
 
     harness
-        .get_by_role_and_label(Role::ListBox, "Task list")
+        .get_by_role_and_label(Role::ListBox, "No date")
         .get_by_role_and_label(Role::ListBoxOption, "Read the manual")
         .click();
     wait_until(&mut harness, |harness| {
-        harness
-            .query_by_role_and_label(Role::RadioGroup, "Priority")
-            .is_some()
+        title_value(harness).as_deref() == Some("Read the manual")
     });
-    assert!(harness.query_by_label("Select a task").is_none());
-    harness.get_by_role_and_label(Role::Heading, "Read the manual");
-    let choices = |harness: &Ui, group: &str| {
-        labels(
-            harness
-                .get_by_role_and_label(Role::RadioGroup, group)
-                .get_all_by_role(Role::RadioButton),
-        )
-    };
-    assert_eq!(
-        choices(&harness, "Status"),
-        ["To do", "In progress", "Done", "Cancelled"]
-    );
-    assert_eq!(
-        choices(&harness, "Priority"),
-        ["Low", "Medium", "High", "Urgent"]
-    );
-    assert_eq!(choices(&harness, "Project"), ["No project", "Garden"]);
-    harness.get_by_role_and_label(Role::TextInput, "Due");
-    let selected = |harness: &Ui, group: &str| {
+    assert!(harness.query_by_label("No task selected").is_none());
+    assert!(harness.unnamed_widgets().is_empty());
+    let shown = |harness: &Ui, picker: &str| {
         harness
-            .get_by_role_and_label(Role::RadioGroup, group)
-            .get_all_by_role(Role::RadioButton)
-            .find(|option| {
-                option
-                    .accesskit_node()
-                    .toggled()
-                    .is_some_and(|state| state == egui::accesskit::Toggled::True)
-            })
-            .and_then(|option| option.accesskit_node().label())
+            .get_by_role_and_label(Role::Button, picker)
+            .accesskit_node()
+            .value()
     };
-    assert_eq!(selected(&harness, "Status").as_deref(), Some("To do"));
-    assert_eq!(selected(&harness, "Priority").as_deref(), Some("High"));
+    assert_eq!(shown(&harness, "Status").as_deref(), Some("To do"));
+    assert_eq!(shown(&harness, "Priority").as_deref(), Some("High"));
+    assert_eq!(shown(&harness, "Project").as_deref(), Some("No project"));
+    assert_eq!(shown(&harness, "Due date").as_deref(), Some(""));
+    let path = "tasks/Read the manual.md";
+    let id = "task_01jbcdefghjkmnpqrstvwxyz0b";
 
-    // The pane's fields write the task file, as its properties panel does.
-    harness
-        .get_by_role_and_label(Role::RadioGroup, "Priority")
-        .get_by_role_and_label(Role::RadioButton, "Urgent")
-        .click();
+    // Pick a menu's option.
+    let pick = |harness: &mut Ui, picker: &str, option: &str| {
+        harness.get_by_role_and_label(Role::Button, picker).click();
+        run(harness);
+        let options = labels(harness.get_all_by_role(Role::MenuItemRadio));
+        assert!(options.contains(&option.to_owned()), "{options:?}");
+        harness
+            .get_by_role_and_label(Role::MenuItemRadio, option)
+            .click();
+        run(harness);
+    };
+    pick(&mut harness, "Status", "In progress");
     wait_until(&mut harness, |_| {
-        std::fs::read_to_string(folder.join("tasks/Read the manual.md"))
-            .unwrap()
-            .contains("priority: urgent")
+        file(&folder, path).contains("status: in-progress")
     });
-
-    // The project picker writes a link to the project, by its title.
-    harness
-        .get_by_role_and_label(Role::RadioGroup, "Project")
-        .get_by_role_and_label(Role::RadioButton, "Garden")
-        .click();
+    pick(&mut harness, "Priority", "Urgent");
     wait_until(&mut harness, |_| {
-        std::fs::read_to_string(folder.join("tasks/Read the manual.md"))
-            .unwrap()
-            .contains("project: '[[Garden]]'")
+        file(&folder, path).contains("priority: urgent")
+    });
+    pick(&mut harness, "Project", "Garden");
+    wait_until(&mut harness, |_| {
+        file(&folder, path).contains("project: '[[Garden]]'")
     });
     wait_until(&mut harness, |harness| {
-        selected(harness, "Project").as_deref() == Some("Garden")
+        shown(harness, "Project").as_deref() == Some("Garden")
     });
+
+    // The date picker's shortcuts set the due date, and Clear takes it away.
+    let tomorrow = harness.state().app().today().tomorrow().unwrap();
+    harness
+        .get_by_role_and_label(Role::Button, "Due date")
+        .click();
+    run(&mut harness);
+    harness
+        .get_by_role_and_label(Role::Button, "Tomorrow")
+        .click();
+    wait_until(&mut harness, |_| {
+        file(&folder, path).contains(&format!("due: {tomorrow}"))
+    });
+    wait_until(&mut harness, |harness| {
+        shown(harness, "Due date").as_deref() == Some("Tomorrow")
+    });
+    harness
+        .get_by_role_and_label(Role::Button, "Due date")
+        .click();
+    run(&mut harness);
+    harness.get_by_role_and_label(Role::Button, "Clear").click();
+    wait_until(&mut harness, |_| !file(&folder, path).contains("due:"));
+
+    // The description is the body's text, and leaving it saves it.
+    harness
+        .get_by_role_and_label(Role::MultilineTextInput, "Description")
+        .click();
+    run(&mut harness);
+    press_with(&mut harness, Modifiers::COMMAND, Key::A);
+    type_text(&mut harness, "Chapter two first.");
+    press(&mut harness, Key::Tab);
+    wait_until(&mut harness, |_| {
+        file(&folder, path).ends_with("---\nChapter two first.\n")
+    });
+
+    // Subtasks go in with Return, as a checklist after the description.
+    harness
+        .get_by_role_and_label(Role::TextInput, "Add subtask")
+        .click();
+    run(&mut harness);
+    type_text(&mut harness, "Skim the index");
+    press(&mut harness, Key::Enter);
+    wait_until(&mut harness, |_| {
+        file(&folder, path).contains("- [ ] Skim the index\n")
+    });
+    type_text(&mut harness, "Take notes");
+    press(&mut harness, Key::Enter);
+    wait_until(&mut harness, |_| {
+        file(&folder, path)
+            .ends_with("Chapter two first.\n\n- [ ] Skim the index\n- [ ] Take notes\n")
+    });
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::ListBox, "Subtasks")
+            .is_some_and(|list| {
+                labels(list.get_all_by_role(Role::ListBoxOption))
+                    == ["Skim the index", "Take notes"]
+            })
+    });
+    harness
+        .get_by_role_and_label(Role::ListBox, "Subtasks")
+        .get_by_role_and_label(Role::CheckBox, "Skim the index")
+        .click();
+    wait_until(&mut harness, |_| {
+        file(&folder, path).contains("- [x] Skim the index\n- [ ] Take notes\n")
+    });
+
+    // A new title renames the file, and the task keeps its stable ID.
+    harness
+        .get_by_role_and_label(Role::TextInput, "Title")
+        .click();
+    run(&mut harness);
+    press_with(&mut harness, Modifiers::COMMAND, Key::A);
+    type_text(&mut harness, "Read the guide");
+    press(&mut harness, Key::Enter);
+    wait_until(&mut harness, |_| {
+        folder.join("tasks/Read the guide.md").exists()
+    });
+    assert!(!folder.join(path).exists());
+    let renamed = file(&folder, "tasks/Read the guide.md");
+    assert!(renamed.contains(&format!("id: {id}")), "{renamed}");
+    assert!(renamed.contains("- [x] Skim the index"), "{renamed}");
+    wait_until(&mut harness, |harness| {
+        section(harness, "No date") == ["Read the guide"]
+            && title_value(harness).as_deref() == Some("Read the guide")
+    });
+}
+
+#[test]
+fn return_on_a_task_edits_its_title_and_escape_puts_it_back() {
+    let Some(Opened {
+        mut harness,
+        folder,
+        _folders,
+    }) = opened()
+    else {
+        return;
+    };
+    let row = harness.get_by_role_and_label(Role::ListBoxOption, "Water the beds, Jan 6, 2020");
+    row.click();
+    run(&mut harness);
+    press(&mut harness, Key::Enter);
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::TextInput, "Title")
+            .is_some_and(|field| field.is_focused())
+    });
+    press_with(&mut harness, Modifiers::COMMAND, Key::A);
+    type_text(&mut harness, "Something else");
+    press(&mut harness, Key::Escape);
+    run(&mut harness);
+    assert_eq!(title_value(&harness).as_deref(), Some("Water the beds"));
+    assert!(folder.join("tasks/Water the beds.md").exists());
 }

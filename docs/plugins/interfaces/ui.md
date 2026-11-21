@@ -11,16 +11,17 @@ A node's `kind` sets what Noura draws:
 - Layout and text: `panel`, `text`, `markdown`, and `split`, two panels side by side: the first as wide as the `split` says, from 160 to 640 points, with a line on its right, and the second taking the rest. Each pane scrolls on its own.
 - Headings and empty states: `heading`, a page's or a section's title with an optional `icon` and its buttons and choice inputs at its end, and `empty`, what an empty page or section shows, with its buttons under its text. A page heading's first child stands out when it is a button.
 - Controls: `button`, `input` (a single or multi-line text, a checkbox, a choice, a date or a date and time), `form` and `name-field`.
+- Compact controls for a details pane: `editable`, text you edit in place as a title, a body, or an add field that empties after Return so you can add the next item; `date-picker`, a button that shows a date and opens a month with Today, Tomorrow and Next week; and `picker`, a button that shows the chosen option and opens a menu of the options, each with an optional colored flag.
 - Collections: `list` with `item` children, `virtual-list`, `table` with `row` children, `board` with `board-column` and `card` children, and `calendar` with `entry` children.
 - Menus: `menu`, `menu-item` and `separator`, the only child of an item, a row, a card or a button.
 
-Noura lays out a run of buttons, or of choice inputs with up to five short options, on one row, and draws those choices as a segmented control. It draws a form that holds one text input on one line, with the input's label as its placeholder. A view's root panel has no border; the panels inside it draw as cards.
+Noura lays out a run of buttons, pickers and date pickers, or of choice inputs with up to five short options, on one row, and draws those choices as a segmented control. It draws a form that holds one text input on one line, with the input's label as its placeholder. A view's root panel has no border; the panels inside it draw as cards.
 
 Every label must hold more than spaces, since screen readers read it. Noura checks a view against its rules before it draws it, and shows why in its place when the view breaks one.
 
 ## Events
 
-Noura sends an `event` when you act in a view: `pressed` names a button, `selected` and `activated` name an item, a row, a card or an entry, `changed` carries an input's new value, `submitted` carries every input in a form, `chosen` names a menu item, `moved`, `checked`, `named` and `cancelled` come from drags, checkboxes and name fields, and `sorted` names a table column. After the plugin handles an event, Noura draws its views again.
+Noura sends an `event` when you act in a view: `pressed` names a button, `selected` and `activated` name an item, a row, a card or an entry, `changed` carries an input's new value, the text you leave in an `editable`, or a pick from a `picker` or `date-picker`, `submitted` carries every input in a form, `chosen` names a menu item, `moved`, `checked`, `named` and `cancelled` come from drags, checkboxes and name fields, and `sorted` names a table column. After the plugin handles an event, Noura draws its views again.
 
 ## Example
 

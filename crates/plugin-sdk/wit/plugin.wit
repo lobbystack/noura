@@ -954,6 +954,19 @@ interface notifications {
 //
 // Every label must hold more than spaces: Noura reads it to screen readers.
 interface ui {
+  // A color from Noura's palette, which Noura draws to suit the light or
+  // dark theme.
+  enum color {
+    red,
+    orange,
+    yellow,
+    green,
+    blue,
+    purple,
+    brown,
+    gray,
+  }
+
   // A line in a list: a label and an optional quieter detail after it, on
   // the same line. A board's card shows the detail under the label.
   record item {
@@ -964,8 +977,9 @@ interface ui {
     // the box then shows what the plugin draws. Only list and virtual
     // list items show one: a card holding one breaks the rules.
     checked: option<bool>,
-    // A short warning after the label, such as `Overdue`, in the color
-    // Noura shows problems in. Screen readers read it with the label.
+    // A short warning at the end of the line, such as `Overdue` or an
+    // overdue date, in the color Noura shows problems in. Screen readers
+    // read it with the label.
     // Only list and virtual list items show one.
     warning: option<string>,
   }
@@ -1157,6 +1171,67 @@ interface ui {
     icon: option<icon>,
   }
 
+  // How an editable text draws, and what Return does in it.
+  enum editable-style {
+    // One line at a title's size. Return or leaving it sends the text.
+    title,
+    // Several lines. Return starts a new line, and leaving it sends the
+    // text.
+    body,
+    // One line in a box, for adding one thing after another: Return sends
+    // the text, then empties the field and keeps the keyboard in it.
+    // Leaving it keeps what it holds and sends nothing.
+    add,
+  }
+
+  // Text you edit in place. A title or a body reads as plain text until
+  // you click or tab into it. What you type stays until the plugin draws
+  // another value. Sending it sends `changed` with a `text` value, or a
+  // `multiline` one for a body, and only when the text differs from the
+  // value drawn; an `add` field sends only text with more than spaces.
+  // Escape puts back the value drawn and lets go of the keyboard.
+  record editable {
+    // Names the text for screen readers, and shows in it while it's
+    // empty.
+    label: string,
+    value: string,
+    style: editable-style,
+    // Whether it takes the keyboard: when it appears holding true, or
+    // when the plugin draws it with true after drawing it with false.
+    focus: bool,
+  }
+
+  // A compact button that shows a date and opens a date picker: Today,
+  // Tomorrow and Next week, a month to pick a day from, and Clear. A
+  // pick sends `changed` with a `date` value, none for Clear.
+  record date-picker {
+    // Names the picker for screen readers, and shows on the button while
+    // no date is chosen.
+    label: string,
+    // The chosen date as `YYYY-MM-DD`, or none.
+    value: option<string>,
+  }
+
+  // An option of a picker.
+  record picker-option {
+    // Unique within the picker.
+    id: string,
+    label: string,
+    // A mark in this color before the label, such as a priority's flag.
+    color: option<color>,
+  }
+
+  // A compact button that shows the chosen option and opens a menu of
+  // the options. A pick sends `changed` with a `choice` value.
+  record picker {
+    // Names the picker for screen readers.
+    label: string,
+    options: list<picker-option>,
+    // The ID of the chosen option, or none, when the button shows the
+    // label.
+    chosen: option<string>,
+  }
+
   variant node-kind {
     // Lays out its children from top to bottom. The label names the panel
     // for screen readers.
@@ -1236,6 +1311,14 @@ interface ui {
     // second taking the rest of the width. Its children are the two panes,
     // each a panel.
     split(u32),
+    // Text you edit in place, such as a task's title or notes.
+    editable(editable),
+    // A button that shows a date and opens a date picker.
+    date-picker(date-picker),
+    // A button that shows the chosen option and opens a menu of the
+    // options. Pickers, date pickers and buttons in a row line up on one
+    // line.
+    picker(picker),
   }
 
   record node {

@@ -1,8 +1,11 @@
 //! The Tasks plugin. It registers the `task` object type with today's v1
-//! fields, and adds the Tasks page: the views Today, Upcoming, All and
-//! Completed and one per project and per folder in the sidebar, filters,
-//! and a list of tasks you check off, each with a menu to open, rename,
-//! check off or trash it, beside the selected task's fields. New task names a task before its file exists.
+//! fields, and adds the Tasks page: the views Today, Next 7 days, All and
+//! Completed and one per project and per folder in the sidebar, with how
+//! many open tasks each holds; filters; a field that adds a task as you
+//! press Return; the list grouped into Overdue, Today, Upcoming, No date
+//! and Completed, each task with a menu to open, rename, check off or
+//! trash it; and the selected task beside the list, edited in place: its
+//! due date, status, priority, title, description, subtasks and project.
 //! The Inbox's Due today section lists what is due by tonight and adds a
 //! task due today in one step. Other plugins list and change tasks through
 //! its `create`, `update`, `complete`, `reopen` and `list` commands, which
@@ -12,7 +15,9 @@
 //! Build it with `crates/plugin-sdk/build-plugins.sh`, then install the
 //! folder holding `plugin.toml` and the built `tasks_plugin.wasm`.
 
+mod body;
 mod commands;
+mod details;
 mod inbox;
 mod links;
 mod menus;
@@ -27,15 +32,15 @@ use std::{
 
 use jiff::civil::Date;
 use plugin_sdk::{
-    Command, Error, Event, Icon, InboxSection, Node, ObjectType, Page, Plugin, Tool, Value, View,
-    navigation::{self, Placement},
+    Command, EditableStyle, Error, Event, Heading, HeadingLevel, Icon, InboxSection, Node,
+    NodeKind, ObjectType, Page, Plugin, Tool, Value, View, navigation,
     objects::{self, Changes, NewObject},
     workspace,
 };
 use serde_json::json;
 
 use task::{PRIORITIES, SCHEMA, STATUSES, TASK, Task, label};
-use views::{AssigneeFilter, Choice, Filters, Now, ProjectFilter, VIEWS};
+use views::{AssigneeFilter, Choice, Filters, Now, ProjectFilter, Section, VIEWS};
 
 /// The Tasks page.
 const PAGE: &str = "tasks";
@@ -47,24 +52,31 @@ const CHANGED_ELSEWHERE: &str = "It changed elsewhere. Showing the latest versio
 /// each task's row takes nine with its menu.
 const MOST_SHOWN: usize = 1_000;
 
+/// The field at the top of the list that adds a task on Return.
+const ADD_TASK: &str = "add-task";
+
 /// What the page and the panels show, between calls.
 struct State {
     choice: Choice,
     filters: Filters,
-    /// The name field for a new task is open.
-    naming: bool,
-    /// Why the last create failed, while the field stays open.
-    naming_problem: Option<String>,
+    /// The add field takes the keyboard the next time the page draws, as
+    /// after New task.
+    focus_add: bool,
+    /// Why the last task the add field named couldn't be created.
+    create_problem: Option<String>,
     /// What the page says about the last change from a list.
     notice: Option<String>,
-    /// The task the list shows selected.
+    /// The task the list shows selected, whose details show beside it.
     selected: Option<String>,
+    /// The selected task's title takes the keyboard the next time the
+    /// page draws, as after Return on a task in the list.
+    focus_title: Option<String>,
     /// The revision of each task as the list drew it, which a check
     /// writes against.
     listed: BTreeMap<String, String>,
-    /// The revision of each task as its panel drew it.
+    /// The revision of each task as its details drew it.
     panels: BTreeMap<String, String>,
-    /// What each task's panel says about its last change.
+    /// What each task's details say about its last change.
     panel_notices: BTreeMap<String, String>,
     /// The revision of each task as the Inbox's Due today drew it.
     due_listed: BTreeMap<String, String>,
@@ -74,6 +86,8 @@ struct State {
     renaming: Option<String>,
     /// Why the last rename didn't go in, while the field stays open.
     rename_problem: Option<String>,
+    /// The subtask of the selected task that shows the rename field.
+    renaming_subtask: Option<usize>,
     /// How many tasks Due today's field added, which names its next field.
     added: u32,
     /// Why the last task the field added couldn't be created.
@@ -85,10 +99,11 @@ struct State {
 static STATE: Mutex<State> = Mutex::new(State {
     choice: Choice::Today,
     filters: Filters::NONE,
-    naming: false,
-    naming_problem: None,
+    focus_add: false,
+    create_problem: None,
     notice: None,
     selected: None,
+    focus_title: None,
     listed: BTreeMap::new(),
     panels: BTreeMap::new(),
     panel_notices: BTreeMap::new(),
@@ -96,6 +111,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     due_notice: None,
     renaming: None,
     rename_problem: None,
+    renaming_subtask: None,
     added: 0,
     add_problem: None,
     filters_shown: false,
@@ -178,7 +194,7 @@ impl Plugin for Tasks {
 
     fn run_command(id: String, input: String) -> Result<String, String> {
         if id == "new-task" {
-            start_naming();
+            start_adding();
             navigation::open_page(PAGE).map_err(|error| reason(&error))?;
             return Ok(String::new());
         }
@@ -288,8 +304,12 @@ fn view_name(choice: &Choice, projects: &[(String, String)]) -> String {
 /// The button that shows and hides the filters.
 const FILTERS_TOGGLE: &str = "toggle-filters";
 
+/// How wide the list pane is. The details take the rest.
+const LIST_WIDTH: u32 = 440;
+
 /// The Tasks page: its heading with the view's name, New task and the
-/// filters' button, the filters while they show, and the list.
+/// filters' button, the filters while they show, then the list with its
+/// add field beside the selected task.
 fn page() -> Vec<Node> {
     let now = Now::read();
     let projects = projects();
@@ -306,24 +326,13 @@ fn page() -> Vec<Node> {
         }
     };
     let mut state = state();
-    let heading = view.page_heading(
-        View::ROOT,
-        "view",
-        "Tasks",
-        Some(&view_name(&state.choice, &projects)),
-        Some(Icon::Tasks),
-    );
+    let name = view_name(&state.choice, &projects);
+    let heading = view.page_heading(View::ROOT, "view", &name, None, Some(Icon::Tasks));
     view.button(heading, "new-task", "New task");
     // Filters that narrow the view stay in sight.
     let shown = state.filters_shown || state.filters.active();
     let toggle = if shown { "Hide filters" } else { "Filters" };
     view.button(heading, FILTERS_TOGGLE, toggle);
-    if state.naming {
-        view.name_field(View::ROOT, "new-task-name", "New task name", "");
-        if let Some(problem) = &state.naming_problem {
-            view.text(View::ROOT, "new-task-problem", problem);
-        }
-    }
     if let Some(notice) = &state.notice {
         view.text(View::ROOT, "notice", notice);
     }
@@ -359,47 +368,95 @@ fn page() -> Vec<Node> {
         state.renaming = None;
         state.rename_problem = None;
     }
-    // The list on the left and the selected task on the right, as the
-    // legacy Tasks page drew them.
     let (list_pane, detail_pane) = view.split(View::ROOT, "panes", LIST_WIDTH);
-    let selected = state.selected.clone().and_then(|selected| {
+    let focus = std::mem::take(&mut state.focus_add);
+    view.editable(
+        list_pane,
+        ADD_TASK,
+        "Add task",
+        "",
+        EditableStyle::Add,
+        focus,
+    );
+    if let Some(problem) = &state.create_problem {
+        view.text(list_pane, "add-problem", problem);
+    }
+    let selected = state.selected.clone().filter(|selected| {
         shown
             .iter()
             .take(MOST_SHOWN)
-            .find(|task| task.id == selected)
+            .any(|task| task.id == *selected)
     });
-    match selected {
-        Some(task) => selected_task(&mut view, detail_pane, task, &mut state),
+    if selected.is_none() {
+        state.renaming_subtask = None;
+    }
+    match &selected {
+        Some(id) => details::render(&mut view, detail_pane, id, &projects, &mut state),
         None => {
             view.empty_state(
                 detail_pane,
                 "no-selection",
-                "Select a task",
+                "No task selected",
                 None,
                 Some(Icon::Tasks),
             );
         }
     }
+    state.focus_title = None;
     if shown.is_empty() {
         view.empty_state(list_pane, "empty", "No tasks here", None, Some(Icon::Tasks));
         return view.into_nodes();
     }
-    let list = view.list(list_pane, "tasks", "Task list");
     let in_project = match &state.choice {
         Choice::Project(id) => Some(id.as_str()),
         _ => None,
     };
+    let mut sections: BTreeMap<Section, Vec<&Task>> = BTreeMap::new();
     for task in shown.iter().take(MOST_SHOWN) {
-        let detail = detail(task, &now, &projects, in_project);
-        let item = view.checkbox_item(list, &task.id, &task.title, detail.as_deref(), task.done());
-        if views::overdue(task, &now) {
-            view.warn(item, "Overdue");
-        }
-        let renaming = state.renaming.as_deref() == Some(task.id.as_str());
-        menus::add(&mut view, item, task, renaming);
+        sections
+            .entry(views::section(task, &now))
+            .or_default()
+            .push(task);
     }
-    if let Some(selected) = selected {
-        view.select(list, &selected.id);
+    for section in Section::ALL {
+        let Some(tasks) = sections.get(&section) else {
+            continue;
+        };
+        // A section alone and named like the view, as Today in Today with
+        // nothing overdue, needs no title.
+        if sections.len() > 1 || section.title() != name {
+            view.add(
+                list_pane,
+                &format!("section-{}", section.key()),
+                NodeKind::Heading(Heading {
+                    text: section.title().to_owned(),
+                    level: HeadingLevel::Section,
+                    detail: Some(tasks.len().to_string()),
+                    icon: None,
+                }),
+            );
+        }
+        let list = view.list(
+            list_pane,
+            &format!("{LIST_PREFIX}{}", section.key()),
+            section.title(),
+        );
+        for task in tasks {
+            let (detail, overdue) = detail(task, &now, &projects, in_project);
+            let item =
+                view.checkbox_item(list, &task.id, &task.title, detail.as_deref(), task.done());
+            if let Some(overdue) = overdue {
+                view.warn(item, &overdue);
+            }
+            let renaming = state.renaming.as_deref() == Some(task.id.as_str());
+            menus::add(&mut view, item, task, renaming);
+        }
+        if let Some(selected) = selected
+            .as_deref()
+            .filter(|selected| tasks.iter().any(|task| task.id == *selected))
+        {
+            view.select(list, selected);
+        }
     }
     if shown.len() > MOST_SHOWN {
         view.text(
@@ -411,36 +468,21 @@ fn page() -> Vec<Node> {
     view.into_nodes()
 }
 
-/// How wide the list pane is, as the legacy Tasks page's.
-const LIST_WIDTH: u32 = 384;
+/// What the node IDs of the page's task lists start with, before their
+/// section's key.
+const LIST_PREFIX: &str = "tasks-";
 
-/// The selected task in the right pane, edited in place as the legacy
-/// Tasks page did: its title with Open, which shows its text in the note
-/// editor, then the same fields its properties panel has.
-fn selected_task(view: &mut View, pane: u32, task: &Task, state: &mut State) {
-    let heading = view.section_heading(pane, "selected-title", &task.title, None);
-    view.button(heading, OPEN_SELECTED, "Open");
-    task_fields(view, pane, &task.id, SELECTED_PREFIX, state);
-}
-
-/// What the right pane's field IDs start with, apart from the page's own.
-const SELECTED_PREFIX: &str = "selected-";
-
-/// The button that opens the selected task in the note editor.
-const OPEN_SELECTED: &str = "open-selected";
-
-/// A task's quieter detail: its due date, its project unless the list is
-/// that project's, its assignee, and its priority unless it is medium.
+/// A task's quieter detail: its project unless the list is that
+/// project's, its due date unless it's overdue, its assignee, and its
+/// priority unless it is medium. An overdue task's due date comes second,
+/// to show as a warning.
 fn detail(
     task: &Task,
     now: &Now,
     projects: &[(String, String)],
     in_project: Option<&str>,
-) -> Option<String> {
+) -> (Option<String>, Option<String>) {
     let mut parts = Vec::new();
-    if let Some(due) = task.due {
-        parts.push(views::due_label(due, now));
-    }
     if let Some(project) = task
         .project
         .as_deref()
@@ -449,13 +491,24 @@ fn detail(
     {
         parts.push(title.clone());
     }
+    let overdue = !task.closed() && views::overdue(task, now);
+    if let Some(due) = task.due
+        && !overdue
+    {
+        parts.push(views::due_label(due, now));
+    }
     if let Some(assignee) = &task.assignee {
         parts.push(assignee.clone());
     }
     if task.priority != "medium" {
         parts.push(label(&PRIORITIES, &task.priority));
     }
-    (!parts.is_empty()).then(|| parts.join(" · "))
+    let detail = (!parts.is_empty()).then(|| parts.join(" \u{b7} "));
+    let warning = task
+        .due
+        .filter(|_| overdue)
+        .map(|due| views::due_label(due, now));
+    (detail, warning)
 }
 
 /// The filters for status, project, assignee, folder and due date.
@@ -570,16 +623,28 @@ fn choice(
 }
 
 /// The sidebar section: the views, then a view per project and per
-/// folder that holds tasks.
+/// folder that holds tasks, each with how many open tasks it holds.
 fn sidebar() -> Vec<Node> {
+    let now = Now::read();
     let projects = projects();
     let tasks = tasks().unwrap_or_default();
     let folders = folders(&tasks);
     let state = state();
+    let open = |choice: &Choice| {
+        tasks
+            .iter()
+            .filter(|task| !task.closed() && views::holds(choice, task, &now))
+            .count()
+    };
+    let count = |count: usize| (count > 0).then(|| count.to_string());
     let mut view = View::panel("task-views", Some("Task views"));
     let views = view.list(View::ROOT, "views", "Views");
     for (choice, id, name) in &VIEWS {
-        view.item(views, id, name, None);
+        let shown = match choice {
+            Choice::Completed => None,
+            choice => count(open(choice)),
+        };
+        view.item(views, id, name, shown.as_deref());
         if *choice == state.choice {
             view.select(views, id);
         }
@@ -589,7 +654,8 @@ fn sidebar() -> Vec<Node> {
         let list = view.list(View::ROOT, "projects", "Projects");
         for (id, title) in &projects {
             let node = format!("project:{id}");
-            view.item(list, &node, title, None);
+            let shown = count(open(&Choice::Project(id.clone())));
+            view.item(list, &node, title, shown.as_deref());
             if state.choice == Choice::Project(id.clone()) {
                 view.select(list, &node);
             }
@@ -608,9 +674,10 @@ fn sidebar() -> Vec<Node> {
         {
             listed.push((folder.clone(), 0));
         }
-        for (folder, count) in &listed {
+        for (folder, _) in &listed {
             let node = format!("folder:{folder}");
-            view.item(list, &node, folder_name(folder), Some(&count.to_string()));
+            let shown = count(open(&Choice::Folder(folder.clone())));
+            view.item(list, &node, folder_name(folder), shown.as_deref());
             if current_folder.as_deref() == Some(folder.as_str()) {
                 view.select(list, &node);
             }
@@ -619,24 +686,22 @@ fn sidebar() -> Vec<Node> {
     view.into_nodes()
 }
 
-/// Open the name field for a new task.
-fn start_naming() {
+/// Give the add field the keyboard.
+fn start_adding() {
     let mut state = state();
-    state.naming = true;
-    state.naming_problem = None;
+    state.focus_add = true;
+    state.create_problem = None;
 }
 
 fn handle(event: Event) {
+    let selected = state().selected.clone();
+    if let Some(id) = &selected
+        && details::handle(id, &event)
+    {
+        return;
+    }
     match event {
-        Event::Pressed(node) if node == "new-task" => start_naming(),
-        Event::Pressed(node) if node == OPEN_SELECTED => {
-            let selected = state().selected.clone();
-            if let Some(id) = selected
-                && let Err(error) = navigation::open_object(&id, Placement::Preview)
-            {
-                state().notice = Some(format!("Couldn't open the task: {}", reason(&error)));
-            }
-        }
+        Event::Pressed(node) if node == "new-task" => start_adding(),
         Event::Pressed(node) if node == FILTERS_TOGGLE => {
             let mut state = state();
             if state.filters_shown || state.filters.active() {
@@ -646,58 +711,43 @@ fn handle(event: Event) {
                 state.filters_shown = true;
             }
         }
-        // A name reaches the field's plugin once; another for a field
-        // that closed names nothing.
-        Event::Named(naming)
-            if naming.node == "new-task-name"
-                && !naming.name.trim().is_empty()
-                && state().naming =>
-        {
-            create(naming.name.trim());
-        }
-        Event::Named(naming) if naming.node == "new-task-name" => {
-            let mut state = state();
-            state.naming = false;
-            state.naming_problem = None;
-        }
-        Event::Cancelled(node) if node == "new-task-name" => {
-            let mut state = state();
-            state.naming = false;
-            state.naming_problem = None;
+        Event::Changed(field) if field.node == ADD_TASK => {
+            if let Value::Text(name) = field.value
+                && !name.trim().is_empty()
+            {
+                create(name.trim());
+            }
         }
         Event::Named(naming) if naming.node == menus::RENAME => menus::rename(&naming.name),
         Event::Cancelled(node) if node == menus::RENAME => menus::stop_renaming(),
         Event::Chosen(node) => menus::choose(&node),
-        Event::Selected(target) | Event::Activated(target) if target.node != "tasks" => {
+        Event::Selected(target) | Event::Activated(target)
+            if !target.node.starts_with(LIST_PREFIX) =>
+        {
             choose(&target.item);
         }
-        Event::Selected(target) => state().selected = Some(target.item),
+        Event::Selected(target) => select(target.item),
+        // Return on a task edits its title.
         Event::Activated(target) => {
-            state().selected = Some(target.item.clone());
-            if let Err(error) = navigation::open_object(&target.item, Placement::Preview) {
-                state().notice = Some(format!("Couldn't open the task: {}", reason(&error)));
-            }
+            let id = target.item;
+            select(id.clone());
+            state().focus_title = Some(id);
         }
-        Event::Checked(check) if check.node == "tasks" => complete(&check.item, check.checked),
-        // A change in the right pane's fields edits the selected task as
-        // its properties panel does.
-        Event::Changed(mut field) if field.node.starts_with(SELECTED_PREFIX) => {
-            let selected = state().selected.clone();
-            if let Some(id) = selected {
-                field.node = field.node[SELECTED_PREFIX.len()..].to_owned();
-                panel_event(&id, Event::Changed(field));
-            }
-        }
-        Event::Submitted(mut submission) if submission.node.starts_with(SELECTED_PREFIX) => {
-            let selected = state().selected.clone();
-            if let Some(id) = selected {
-                submission.node = submission.node[SELECTED_PREFIX.len()..].to_owned();
-                panel_event(&id, Event::Submitted(submission));
-            }
+        Event::Checked(check) if check.node.starts_with(LIST_PREFIX) => {
+            complete(&check.item, check.checked);
         }
         Event::Changed(field) => filter(&field.node, field.value),
         _ => {}
     }
+}
+
+/// Show the task `id` in the details.
+fn select(id: String) {
+    let mut state = state();
+    if state.selected.as_deref() != Some(id.as_str()) {
+        state.renaming_subtask = None;
+    }
+    state.selected = Some(id);
 }
 
 /// Switch the list to the view a sidebar item names.
@@ -756,37 +806,44 @@ fn filter(node: &str, value: Value) {
     }
 }
 
-/// Create a task named `name`, in the project of the project view it
-/// was named in. It opens selected, and the list shows All when the
-/// view or the filters would hide it. A failed create keeps the field
-/// open and says why.
+/// Create a task named `name` from the add field, in the list it was
+/// named in: in a project view it joins the project, and in Today or Next
+/// 7 days it's due today. It shows selected, with its details beside the
+/// list, and the list shows All when the view or the filters would hide
+/// it. The page stays where it is. A failed create says why under the
+/// field.
 fn create(name: &str) {
-    let project = match &state().choice {
-        Choice::Project(id) => Some(id.clone()),
-        _ => None,
-    };
-    let properties = match project.map(|id| links::link_for(&id)).transpose() {
-        Ok(Some(link)) => json!({ "project": link }),
-        Ok(None) => json!({}),
-        Err(error) => {
-            state().naming_problem = Some(format!(
-                "Couldn't create \u{201c}{name}\u{201d}. {}",
-                reason(&error)
-            ));
-            return;
+    let now = Now::read();
+    let choice = state().choice.clone();
+    let mut properties = serde_json::Map::new();
+    if let Choice::Project(id) = &choice {
+        match links::link_for(id) {
+            Ok(link) => {
+                properties.insert("project".to_owned(), json!(link));
+            }
+            Err(error) => {
+                state().create_problem = Some(format!(
+                    "Couldn't create \u{201c}{name}\u{201d}. {}",
+                    reason(&error)
+                ));
+                return;
+            }
         }
-    };
+    }
+    if matches!(choice, Choice::Today | Choice::Week) {
+        properties.insert("due".to_owned(), json!(now.today.to_string()));
+    }
     let created = objects::create(&NewObject {
         object_type: TASK.to_owned(),
         title: name.to_owned(),
         path: None,
         body: String::new(),
-        properties: properties.to_string(),
+        properties: serde_json::Value::Object(properties).to_string(),
     });
     let created = match created {
         Ok(created) => created,
         Err(error) => {
-            state().naming_problem = Some(format!(
+            state().create_problem = Some(format!(
                 "Couldn't create \u{201c}{name}\u{201d}. {}",
                 reason(&error)
             ));
@@ -794,23 +851,17 @@ fn create(name: &str) {
         }
     };
     let task = Task::of(&created);
-    let now = Now::read();
-    {
-        let mut state = state();
-        state.naming = false;
-        state.naming_problem = None;
-        state.notice = None;
-        if !views::holds(&state.choice, &task, &now) {
-            state.choice = Choice::All;
-        }
-        if !state.filters.keep(&task, &now) {
-            state.filters = Filters::NONE;
-        }
-        state.selected = Some(task.id.clone());
+    let mut state = state();
+    state.create_problem = None;
+    state.notice = None;
+    if !views::holds(&state.choice, &task, &now) {
+        state.choice = Choice::All;
     }
-    if let Err(error) = navigation::open_object(&task.id, Placement::NewTab) {
-        state().notice = Some(format!("Couldn't open the new task: {}", reason(&error)));
+    if !state.filters.keep(&task, &now) {
+        state.filters = Filters::NONE;
     }
+    state.renaming_subtask = None;
+    state.selected = Some(task.id);
 }
 
 /// Mark the task `id` done, or back to todo, against the revision the
@@ -842,198 +893,15 @@ fn set_done(id: &str, revision: &str, done: bool) -> Option<String> {
     }
 }
 
-/// A task's properties panel: status, priority, due date and project.
-/// A task opened in the note editor shows no panel beside its text, as in
-/// the legacy app: its fields are in the Tasks page's right pane.
+/// A task's properties panel. A task opened in the note editor shows no
+/// panel beside its text, as in the legacy app: its fields are in the
+/// Tasks page's details.
 fn panel(_id: &str) -> Vec<Node> {
     View::panel("task", Some("Task")).into_nodes()
 }
 
-/// The fields of the task `id` under `parent`: its notice, status,
-/// priority, assignee, due date and project, each node ID starting with
-/// `prefix`.
-/// The Tasks page's right pane draws them, and [`panel_event`] takes
-/// their changes. `state` is the plugin's
-/// state, which the caller holds.
-fn task_fields(view: &mut View, parent: u32, id: &str, prefix: &str, state: &mut State) {
-    let node = |name: &str| format!("{prefix}{name}");
-    let object = match objects::get(id) {
-        Ok(object) => object,
-        Err(error) => {
-            view.text(
-                parent,
-                &node("problem"),
-                &format!("Noura couldn't read the task: {}", reason(&error)),
-            );
-            return;
-        }
-    };
-    let task = Task::of(&object);
-    state.panels.insert(task.id.clone(), task.revision.clone());
-    if let Some(notice) = state.panel_notices.get(&task.id) {
-        view.text(parent, &node("notice"), notice);
-    }
-    let pairs = |choices: &[(&str, &str)]| -> Vec<(String, String)> {
-        choices
-            .iter()
-            .map(|(id, name)| ((*id).to_owned(), (*name).to_owned()))
-            .collect()
-    };
-    choice(
-        view,
-        parent,
-        &node("status"),
-        "Status",
-        pairs(&STATUSES),
-        &task.status,
-    );
-    choice(
-        view,
-        parent,
-        &node("priority"),
-        "Priority",
-        pairs(&PRIORITIES),
-        &task.priority,
-    );
-    // A name saves when you press Save or Enter, not on each key.
-    let form = view.form(parent, &node(ASSIGNEE_FORM), "Assignee", "Save");
-    view.input(
-        form,
-        &node("assignee"),
-        "Assignee",
-        Value::Text(task.assignee.clone().unwrap_or_default()),
-    );
-    let due = match task.due {
-        Some(task::Due::At(_)) => Value::DateTime(due_text(&object.properties)),
-        Some(task::Due::Day(day)) => Value::Date(Some(day.to_string())),
-        None => Value::Date(None),
-    };
-    view.input(parent, &node("due"), "Due", due);
-    let mut projects: Vec<(String, String)> = vec![("none".to_owned(), "No project".to_owned())];
-    projects.extend(self::projects());
-    // A link that leads to no project, as after you delete the project,
-    // shows as an unknown one until you choose another.
-    let chosen = match (&task.project, &task.project_link) {
-        (Some(id), _) => id.clone(),
-        (None, Some(_)) => "unknown".to_owned(),
-        (None, None) => "none".to_owned(),
-    };
-    if !projects.iter().any(|(id, _)| *id == chosen) {
-        projects.push((chosen.clone(), "Unknown project".to_owned()));
-    }
-    choice(view, parent, &node("project"), "Project", projects, &chosen);
-    if let Some(problem) = &object.problem {
-        view.text(
-            parent,
-            &node("schema-problem"),
-            &format!(
-                "{} doesn't fit the task fields: {}",
-                problem.property, problem.code
-            ),
-        );
-    }
-}
-
-/// The task's due value as its file writes it.
-fn due_text(properties: &str) -> Option<String> {
-    let properties: serde_json::Value = serde_json::from_str(properties).ok()?;
-    properties.get("due")?.as_str().map(str::to_owned)
-}
-
-/// The form that names who does a task.
-const ASSIGNEE_FORM: &str = "assignee-form";
-
-/// The name an assignee form's submission holds, trimmed: empty clears it.
-fn submitted_name(submission: &plugin_sdk::Submission) -> String {
-    submission
-        .fields
-        .iter()
-        .find_map(|field| match &field.value {
-            Value::Text(text) => Some(text.trim().to_owned()),
-            _ => None,
-        })
-        .unwrap_or_default()
-}
-
-/// A change in a task's panel, written against the revision the panel
-/// drew.
-fn panel_event(id: &str, event: Event) {
-    let field = match event {
-        Event::Changed(field) => field,
-        Event::Submitted(submission) if submission.node == ASSIGNEE_FORM => {
-            let name = submitted_name(&submission);
-            let change = if name.is_empty() {
-                (json!({}), vec!["assignee".to_owned()])
-            } else {
-                (json!({ "assignee": name }), Vec::new())
-            };
-            write_fields(id, change);
-            return;
-        }
-        _ => return,
-    };
-    let change = match (field.node.as_str(), field.value) {
-        ("status", Value::Choice(Some(status))) => (json!({ "status": status }), Vec::new()),
-        ("priority", Value::Choice(Some(priority))) => {
-            (json!({ "priority": priority }), Vec::new())
-        }
-        ("due", Value::Date(Some(day)) | Value::DateTime(Some(day))) => {
-            (json!({ "due": day }), Vec::new())
-        }
-        ("due", Value::Date(None) | Value::DateTime(None)) => (json!({}), vec!["due".to_owned()]),
-        ("project", Value::Choice(Some(project))) if project == "unknown" => return,
-        ("project", Value::Choice(Some(project))) if project == "none" => {
-            (json!({}), vec!["project".to_owned()])
-        }
-        ("project", Value::Choice(Some(project))) => match links::link_for(&project) {
-            Ok(link) => (json!({ "project": link }), Vec::new()),
-            Err(error) => {
-                state().panel_notices.insert(
-                    id.to_owned(),
-                    format!("Couldn't change the project. {}", reason(&error)),
-                );
-                return;
-            }
-        },
-        _ => return,
-    };
-    write_fields(id, change);
-}
-
-/// Set and clear task fields of `id`, against the revision its panel
-/// drew, and keep what the panel should say.
-fn write_fields(id: &str, (set, remove): (serde_json::Value, Vec<String>)) {
-    let Some(revision) = state().panels.get(id).cloned() else {
-        return;
-    };
-    let written = objects::update(
-        id,
-        &revision,
-        &Changes {
-            body: None,
-            properties: set.to_string(),
-            remove,
-        },
-    );
-    let mut state = state();
-    match written {
-        Ok(task) => {
-            state.panels.insert(task.id.clone(), task.revision.clone());
-            state.panel_notices.remove(id);
-        }
-        Err(Error::RevisionConflict(_)) => {
-            state
-                .panel_notices
-                .insert(id.to_owned(), CHANGED_ELSEWHERE.to_owned());
-        }
-        Err(error) => {
-            state.panel_notices.insert(
-                id.to_owned(),
-                format!("Couldn't change the task: {}", reason(&error)),
-            );
-        }
-    }
-}
+/// A task's properties panel takes no events.
+fn panel_event(_id: &str, _event: Event) {}
 
 /// Why a call failed, in words.
 fn reason(error: &Error) -> String {
