@@ -1390,7 +1390,8 @@ streams in: `read-run` shows it so far, and Noura draws the plugin's views
 again as text arrives. The answer and its status are on disk before
 the run shows as completed, cancelled or failed. The first message of
 a chat titled `New chat` gives the chat its title. A chat answers one
-message at a time.
+message at a time. A message to an Orb's thread goes to the Orb, as
+`send-to-orb` sends it, with the Orb's provider and tools.
 
 ##### Params
 
@@ -1420,6 +1421,10 @@ to call next.
 - <a id="answer_tools.0"></a> result<[`run`](#run), [`error`](#error)>
 
 #### <a id="run_tools"></a>`run-tools: func`
+
+`answer-tools` and `run-tools` refuse an Orb's run: Noura runs its
+calls itself. `resume` refuses an Orb's thread, whose runs Noura takes
+up by itself.
 
 Run the tool calls of a completed run that name workspace tools, one
 at a time, then stream the model's next answer into the same run.

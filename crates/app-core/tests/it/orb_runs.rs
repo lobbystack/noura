@@ -488,4 +488,27 @@ fn a_plugin_reaches_orbs_through_the_ai_interface() {
     assert!(stale[0].contains("revision-conflict"), "{stale:?}");
     let held = press(&mut app, "ai:orbs-held");
     assert_eq!(held, ["hello ai orbs-held false"]);
+
+    // A message the chat calls send to the Orb's thread goes to the Orb,
+    // and no plugin answers an Orb's tool calls for it.
+    let thread = orbs::orb(&app, MEETINGS).thread.unwrap();
+    let provider = app.ai_providers()[0].id.clone();
+    let sent = press(&mut app, &format!("ai:send:{thread}:{provider}:Echo again"));
+    let run = sent[0]
+        .strip_prefix("hello ai run ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap()
+        .to_owned();
+    assert!(run.starts_with("orb-run_"), "{sent:?}");
+    orbs::wait_for_runs(&mut app, MEETINGS, 2);
+    let refused = press(&mut app, &format!("ai:answer-tools:{run}:{{}}"));
+    assert!(
+        refused[0].contains("Noura runs an Orb's tool calls itself."),
+        "{refused:?}"
+    );
+    let resumed = press(&mut app, &format!("ai:resume:{thread}:{provider}"));
+    assert!(
+        resumed[0].contains("takes up an Orb's runs by itself"),
+        "{resumed:?}"
+    );
 }

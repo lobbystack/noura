@@ -40,6 +40,8 @@ An Orb is a named agent that lives in the workspace: `Orbs/<name>/<name>.md`, wh
 - `deleteOrb(id, expectedRevision)`: move the Orb's folder to the trash. Its thread stays a chat.
 - `orbsHeld()` and `keepOrbsRunning(keep)`: whether Noura holds every Orb's triggers because you haven't used Noura in a week, and your answer: keep them running, so the schedules catch up, or pause every Orb that has triggers.
 
+A `send` to an Orb's thread goes to the Orb, as `sendToOrb` sends it. `answerTools` and `runTools` refuse an Orb's run, since Noura runs its calls, and `resume` refuses an Orb's thread, whose runs Noura takes up by itself after a quit.
+
 Each change takes the `revision` you read and throws `revision-conflict` when the file changed since. Plugins can't write Orbs or their run records through [`objects`](objects.md): Noura refuses, so no model tool can give an Orb more tools or triggers.
 
 ## Let the model use the workspace's tools

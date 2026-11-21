@@ -799,10 +799,20 @@ impl Ai {
         if request.message.trim().is_empty() {
             return Err(ServiceError::Failed("The message is empty.".to_owned()));
         }
-        if !lock(&self.state).new_chats.contains(&request.chat) {
+        let unwritten = lock(&self.state).new_chats.contains(&request.chat);
+        let orb = if unwritten {
+            self.new_thread(&request.chat).map(|(orb, _)| orb)
+        } else {
             engine
                 .read_chat(&request.chat)
-                .map_err(|error| chat_error(error, &request.chat))?;
+                .map_err(|error| chat_error(error, &request.chat))?
+                .chat
+                .orb_id
+        };
+        // A message to an Orb's thread goes to the Orb, with its tools and
+        // its provider.
+        if let Some(orb) = orb.filter(|orb| orb != workspace_format::orb::DEFAULT_ORB_ID) {
+            return self.send_to_orb(plugin, &orb, &request.message);
         }
         self.begin_run(
             plugin,
@@ -830,6 +840,11 @@ impl Ai {
         let read = engine
             .read_chat(chat)
             .map_err(|error| chat_error(error, chat))?;
+        if read.chat.orb_id.is_some() {
+            return Err(ServiceError::Failed(
+                "Noura takes up an Orb's runs by itself.".to_owned(),
+            ));
+        }
         if !read.messages.iter().any(|message| {
             message.kind == ChatMessageKind::User && message.status == ChatMessageStatus::Completed
         }) {
@@ -1435,6 +1450,9 @@ impl Ai {
                 .runs
                 .get_mut(id)
                 .ok_or_else(|| ServiceError::NotFound(id.to_owned()))?;
+            if run.orb.is_some() {
+                return Err(orb_calls());
+            }
             if run.status != AiRunStatus::Completed
                 || run.tool_calls.is_empty()
                 || !run.calls.is_empty()
@@ -1508,6 +1526,9 @@ impl Ai {
                 .runs
                 .get_mut(id)
                 .ok_or_else(|| ServiceError::NotFound(id.to_owned()))?;
+            if run.orb.is_some() {
+                return Err(orb_calls());
+            }
             if !run.live() || run.status != AiRunStatus::Completed {
                 return Err(ServiceError::Failed(
                     "This run has no tool calls waiting to run.".to_owned(),
@@ -2448,6 +2469,11 @@ fn settings_error(error: CoreError) -> AppError {
         _ => error.message,
     };
     AppError::new(&error.code, message)
+}
+
+/// An Orb's run takes no tool results from a plugin: Noura runs its calls.
+fn orb_calls() -> ServiceError {
+    ServiceError::Failed("Noura runs an Orb's tool calls itself.".to_owned())
 }
 
 fn unwritten() -> ServiceError {
