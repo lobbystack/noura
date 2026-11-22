@@ -2,7 +2,7 @@
 //! and the note editor's own text renderer, to look at the interface
 //! without running the app: the folder chooser, a note open beside the
 //! sidebar, a row's menu, the command palette, Settings and the Tasks
-//! page.
+//! page, and the Calendar page's month, week and day at two window sizes.
 //!
 //! It needs a GPU or a software Vulkan driver, so it runs only when asked:
 //!
@@ -30,6 +30,7 @@ use support::{FakePicker, FakeSystem, create_workspace, plugins};
 type Ui = Harness<'static, NouraUi>;
 
 const TASKS_MANIFEST: &str = include_str!("../../../plugins/tasks/plugin.toml");
+const CALENDAR_MANIFEST: &str = include_str!("../../../plugins/calendar/plugin.toml");
 
 /// The window's size in points.
 const SIZE: [f32; 2] = [1200.0, 780.0];
@@ -318,6 +319,224 @@ fn the_main_screens_render_in_light_and_dark() {
                     .is_some()
             });
             save(&mut harness, "6-tasks", theme);
+        }
+    }
+}
+
+/// The calendars of the calendar fixture: (ID, name, color).
+const CALENDARS: [(&str, &str, &str); 4] = [
+    ("calendar_01jbcdefghjkmnpqrstvwxyz0a", "Personal", "purple"),
+    ("calendar_01jbcdefghjkmnpqrstvwxyz0b", "Family", "yellow"),
+    ("calendar_01jbcdefghjkmnpqrstvwxyz0c", "Work", "blue"),
+    ("calendar_01jbcdefghjkmnpqrstvwxyz0d", "Holidays", "red"),
+];
+
+/// The events of the calendar fixture, in Toronto's time in November:
+/// (calendar, title, start, end). A date start makes an all-day event.
+const EVENTS: [(usize, &str, &str, &str); 30] = [
+    (
+        2,
+        "Bring the laptop in",
+        "2026-11-04T09:00",
+        "2026-11-04T09:30",
+    ),
+    (2, "Studio meeting", "2026-11-04T14:00", "2026-11-04T15:00"),
+    (2, "Course sign-up", "2026-11-05T10:00", "2026-11-05T10:30"),
+    (
+        0,
+        "Pottery class sign-up",
+        "2026-11-05T18:00",
+        "2026-11-05T18:30",
+    ),
+    (
+        2,
+        "Finish the Figma mockups",
+        "2026-11-08T13:00",
+        "2026-11-08T16:00",
+    ),
+    (
+        2,
+        "Ideation workshop",
+        "2026-11-10T09:00",
+        "2026-11-10T12:00",
+    ),
+    (3, "Remembrance Day", "2026-11-11", "2026-11-12"),
+    (0, "Coffee with Sam", "2026-11-13T10:00", "2026-11-13T11:00"),
+    (
+        2,
+        "Prepare the interview",
+        "2026-11-16T15:00",
+        "2026-11-16T16:00",
+    ),
+    (
+        0,
+        "Remote management class",
+        "2026-11-19T18:00",
+        "2026-11-19T20:00",
+    ),
+    (2, "Solo work block", "2026-11-20T09:00", "2026-11-20T12:00"),
+    (1, "Brunch at Mom's", "2026-11-22T11:00", "2026-11-22T13:00"),
+    (2, "Interview", "2026-11-23T09:00", "2026-11-23T10:00"),
+    (2, "Design review", "2026-11-23T09:30", "2026-11-23T11:00"),
+    (0, "Dentist", "2026-11-23T12:30", "2026-11-23T13:30"),
+    (
+        0,
+        "Call the plumber",
+        "2026-11-23T15:00",
+        "2026-11-23T15:30",
+    ),
+    (0, "Gym", "2026-11-23T17:30", "2026-11-23T18:30"),
+    (1, "Dinner with Ana", "2026-11-23T19:00", "2026-11-23T21:00"),
+    (1, "Mom's birthday", "2026-11-25", "2026-11-26"),
+    (0, "Cabin trip", "2026-11-26", "2026-11-29"),
+    (
+        2,
+        "Quarterly planning",
+        "2026-11-27T10:00",
+        "2026-11-27T12:00",
+    ),
+    (1, "Dad's party", "2026-11-29", "2026-11-30"),
+    (
+        2,
+        "Final presentation",
+        "2026-12-01T10:00",
+        "2026-12-01T11:00",
+    ),
+    (
+        2,
+        "Project report due",
+        "2026-12-02T17:00",
+        "2026-12-02T17:30",
+    ),
+    (
+        2,
+        "Presentation rehearsal",
+        "2026-12-03T09:00",
+        "2026-12-03T10:00",
+    ),
+    (
+        0,
+        "Pay the hydro bill",
+        "2026-12-03T12:00",
+        "2026-12-03T12:30",
+    ),
+    (1, "Dinner with Dad", "2026-12-04T18:30", "2026-12-04T20:30"),
+    (2, "Team project", "2026-12-05T10:00", "2026-12-05T12:00"),
+    (2, "Typography exam", "2026-12-08T09:00", "2026-12-08T12:00"),
+    (
+        2,
+        "Interaction exam",
+        "2026-12-09T09:00",
+        "2026-12-09T12:00",
+    ),
+];
+
+/// The calendar fixture: four calendars and a month of events, with
+/// all-day and multi-day events and a day with more events than a month's
+/// cell shows, beside the studio's tasks.
+fn write_calendar_workspace(folder: &Path) {
+    write_workspace(folder);
+    let write = |path: &str, text: &str| {
+        let path = folder.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    for (id, name, color) in CALENDARS {
+        write(
+            &format!("Calendars/{name}.md"),
+            &format!("---\nid: {id}\ntype: calendar\ncolor: {color}\n---\n"),
+        );
+    }
+    for (index, (calendar, title, start, end)) in EVENTS.into_iter().enumerate() {
+        let time = |at: &str| {
+            if at.contains('T') {
+                format!("{at}:00-05:00")
+            } else {
+                at.to_owned()
+            }
+        };
+        write(
+            &format!("Events/{title}.md"),
+            &format!(
+                "---\nid: event_01jbcdefghjkmnpqrstvw{index:05}\ntype: event\n\
+                 calendar: {}\nstart: {}\nend: {}\n---\n",
+                CALENDARS[calendar].0,
+                time(start),
+                time(end)
+            ),
+        );
+    }
+}
+
+/// The Calendar page in month, week and day, in a 1200 by 780 window and
+/// a tall 1000 by 1000 one, in light and dark, named
+/// `calendar-<mode>-<width>x<height>`.
+#[test]
+#[ignore = "draws the screens to PNG files, which needs a GPU"]
+fn the_calendar_renders_each_mode_at_two_sizes() {
+    let (Some(calendar), Some(tasks)) = (
+        plugins::built("calendar_plugin"),
+        plugins::built("tasks_plugin"),
+    ) else {
+        return;
+    };
+    for theme in [Theme::Light, Theme::Dark] {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let folder = parent.path().join("Studio");
+        create_workspace(app_data.path(), &folder);
+        write_calendar_workspace(&folder);
+        for (id, manifest, entry, component) in [
+            ("tasks", TASKS_MANIFEST, "tasks_plugin.wasm", &tasks),
+            (
+                "calendar",
+                CALENDAR_MANIFEST,
+                "calendar_plugin.wasm",
+                &calendar,
+            ),
+        ] {
+            let place = parent.path().join(format!("{id}-plugin"));
+            let plugin = plugins::folder(&place, manifest, entry, component);
+            plugins::install_and_enable(app_data.path(), &plugin, id);
+        }
+        let system = FakeSystem::new(Platform::Linux);
+        system.set_now("2026-11-22T14:00:00Z");
+        let app = App::launch_with(app_data.path(), system);
+        let mut harness = window(app, theme);
+        harness
+            .get_by_role_and_label(Role::Navigation, "Pages")
+            .get_by_role_and_label(Role::Link, "Calendar")
+            .click();
+        wait_until(&mut harness, |harness| {
+            harness
+                .query_by_role_and_label(Role::Grid, "Calendar")
+                .is_some()
+        });
+        for mode in ["Month", "Week", "Day"] {
+            harness
+                .get_by_role_and_label(Role::RadioButton, mode)
+                .click();
+            settle(&mut harness);
+            if mode == "Day" {
+                // The day with the most events.
+                harness
+                    .get_by_role_and_label(Role::Button, "Next day")
+                    .click();
+                settle(&mut harness);
+            }
+            for size in [SIZE, [1000.0, 1000.0]] {
+                harness.set_size(egui::vec2(size[0], size[1]));
+                settle(&mut harness);
+                let name = format!(
+                    "calendar-{}-{}x{}",
+                    mode.to_lowercase(),
+                    size[0] as u32,
+                    size[1] as u32
+                );
+                save(&mut harness, &name, theme);
+            }
+            harness.set_size(egui::vec2(SIZE[0], SIZE[1]));
+            settle(&mut harness);
         }
     }
 }
