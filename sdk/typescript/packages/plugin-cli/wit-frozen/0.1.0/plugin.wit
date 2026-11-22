@@ -328,6 +328,9 @@ interface ai {
     // written yet.
     revision: string,
     retention: retention,
+    // The Orb whose thread the chat is, or none for a plain chat, which
+    // belongs to the default Orb.
+    orb: option<string>,
   }
 
   enum message-kind {
@@ -453,8 +456,38 @@ interface ai {
     failure: option<failure>,
   }
 
+  // How hard a model reasons before it answers.
+  enum effort {
+    // No reasoning, for a model that can answer without it.
+    off,
+    low,
+    medium,
+    high,
+  }
+
+  // A model one of your providers answers with.
+  record model {
+    // The provider's ID.
+    provider: string,
+    // The model's ID, as the provider names it.
+    id: string,
+    // Its name, such as `Claude Opus 5.5`, or its ID when Noura doesn't
+    // know it.
+    name: string,
+    // The efforts Noura can ask it for, from least to most. Empty for a
+    // model whose reasoning Noura can't set.
+    efforts: list<effort>,
+    // The effort it reasons with when none is chosen.
+    default-effort: option<effort>,
+  }
+
   // The providers you set up and turned on.
   providers: func() -> result<list<provider>, error>;
+
+  // The models of the providers you set up and turned on, provider by
+  // provider in the order `providers` lists them, each provider's own
+  // model first.
+  models: func() -> result<list<model>, error>;
 
   // The workspace's chats, the one changed last first.
   chats: func() -> result<list<chat>, error>;
@@ -495,7 +528,8 @@ interface ai {
   // again as text arrives. The answer and its status are on disk before
   // the run shows as completed, cancelled or failed. The first message of
   // a chat titled `New chat` gives the chat its title. A chat answers one
-  // message at a time.
+  // message at a time. A message to an Orb's thread goes to the Orb, as
+  // `send-to-orb` sends it, with the Orb's provider and tools.
   send: func(request: request) -> result<run, error>;
 
   // Answer the tool calls of a completed run with `results`, one per call,
@@ -506,6 +540,10 @@ interface ai {
   // to call next.
   answer-tools: func(run: string, results: list<tool-result>, tools: list<tool-definition>) -> result<run, error>;
 
+  // `answer-tools` and `run-tools` refuse an Orb's run: Noura runs its
+  // calls itself. `resume` refuses an Orb's thread, whose runs Noura takes
+  // up by itself.
+  //
   // Run the tool calls of a completed run that name workspace tools, one
   // at a time, then stream the model's next answer into the same run.
   // For each call Noura asks you, in a prompt of its own that names the
@@ -531,6 +569,183 @@ interface ai {
   // Stop a run. The provider request ends, and the answer so far stays as
   // a cancelled message.
   stop: func(id: string) -> result<_, error>;
+
+  // Orbs. An Orb is a named agent that lives in the workspace as files:
+  // `Orbs/<name>/<name>.md`, whose body holds your instructions and whose
+  // properties hold its look, its provider, its tools and its triggers,
+  // beside `Memory.md`, `Heartbeat.md` and a `Runs` folder with one record
+  // per run. Each Orb keeps one ongoing thread, a chat that every run adds
+  // to. An Orb runs the tools its file lists without asking, whether you
+  // wrote to it or one of its triggers started it, and Noura records each
+  // call in its thread and in the run's record. Triggers fire only while
+  // Noura is open on this device. `read-run` and `stop` reach every Orb
+  // run, whichever plugin or trigger started it.
+
+  // How an Orb stands.
+  enum orb-state {
+    // Nothing runs now.
+    idle,
+    // A run is in progress.
+    working,
+    // You paused it, so its triggers don't fire.
+    paused,
+    // You haven't used Noura in a while, so Noura holds every Orb's
+    // triggers until you answer `keep-orbs-running`.
+    held,
+    // Its file breaks the workspace format, so it doesn't run. `problem`
+    // says why.
+    problem,
+  }
+
+  // An Orb, as its file holds it.
+  record orb {
+    id: string,
+    // Its name: the file's name without `.md`.
+    title: string,
+    // The revision of its file, which `update-orb`, `set-orb-paused` and
+    // `delete-orb` carry. Empty for the default Orb.
+    revision: string,
+    // An emoji or a few letters.
+    avatar: option<string>,
+    // A palette color: `red`, `orange`, `yellow`, `green`, `blue`,
+    // `purple`, `brown` or `gray`.
+    color: option<string>,
+    // The provider its runs ask, or none for your first.
+    provider: option<string>,
+    // The model they ask in place of the provider's own, or none.
+    model: option<string>,
+    // How hard that model reasons, or none for the model's own default.
+    effort: option<effort>,
+    state: orb-state,
+    // The ID of its thread, once its first message went out.
+    thread: option<string>,
+    // The tools it runs without asking, as its file names them, such as
+    // `tasks__create` or `tasks__*`.
+    tools: list<string>,
+    // Its triggers, as its file names them, such as `event
+    // transcription.finished` or `schedule 30 8 * * 1-5`.
+    triggers: list<string>,
+    // Why it doesn't run, for an Orb in the `problem` state, as the
+    // property that fails and its code, such as `triggers:
+    // invalid_trigger`.
+    problem: option<string>,
+  }
+
+  // What started a run of an Orb.
+  enum orb-start {
+    // You wrote to the Orb, or chose Run now.
+    you,
+    // A schedule trigger's time came.
+    schedule,
+    // A plugin's event that a trigger names happened.
+    event,
+  }
+
+  // How a run of an Orb stands.
+  enum orb-run-status {
+    running,
+    succeeded,
+    failed,
+    // Noura quit during one of its tool calls, or a plugin it relied on
+    // went. Noura never runs a tool call again by itself.
+    interrupted,
+    // You stopped it.
+    cancelled,
+  }
+
+  // A run of an Orb, as its record holds it.
+  record orb-run {
+    id: string,
+    orb: string,
+    // The thread its messages are in. Each message's run is this ID.
+    thread: string,
+    started-by: orb-start,
+    // The trigger that started it, as the Orb's file names it.
+    trigger: option<string>,
+    status: orb-run-status,
+    // When it started and when it ended, in RFC 3339.
+    started: string,
+    finished: option<string>,
+    // How many tool calls it made.
+    tool-calls: u32,
+    // Why it failed or stopped, such as `orb_interrupted`.
+    error-code: option<string>,
+    // It found nothing to report: its last answer was `HEARTBEAT_OK`.
+    quiet: bool,
+  }
+
+  // What `update-orb` changes. A field left none stays as it is.
+  record orb-changes {
+    // A new name, which renames the Orb's folder and file.
+    title: option<string>,
+    // New instructions, the file's body.
+    instructions: option<string>,
+    // An empty string clears the avatar, the color, the provider (your
+    // first one then answers) or the model (the provider's own).
+    avatar: option<string>,
+    color: option<string>,
+    provider: option<string>,
+    model: option<string>,
+    // A new effort, or none inside to clear it.
+    effort: option<option<effort>>,
+    tools: option<list<string>>,
+    triggers: option<list<string>>,
+  }
+
+  // The default Orb first, then the workspace's Orbs by title. The default
+  // Orb has the ID `orb_00000000000000000000000000` and no file: plain
+  // chats are its, and its tool calls each wait for your answer. A plain
+  // chat's request to its provider asks its model, with its effort.
+  orbs: func() -> result<list<orb>, error>;
+
+  // Create an Orb named `title` in `Orbs/<title>/`, with no instructions,
+  // tools or triggers, and an empty `Memory.md`. Fails with
+  // `already-exists` when that folder exists.
+  create-orb: func(title: string) -> result<orb, error>;
+
+  // An Orb, its thread and the thread's messages, oldest first, as
+  // `read-chat` returns them. An Orb whose first message hasn't gone out
+  // has no thread.
+  read-orb: func(id: string) -> result<tuple<orb, option<chat>, list<message>>, error>;
+
+  // The Orb's runs, the newest first, at most `limit` of them.
+  orb-runs: func(id: string, limit: u32) -> result<list<orb-run>, error>;
+
+  // Send `message` to the Orb in its thread, with its instructions and its
+  // memory, from its provider. The model may call the Orb's tools, and
+  // Noura runs each call without asking and answers the model again, until
+  // the model answers without a call. `read-run` follows it. An Orb
+  // answers one message at a time.
+  send-to-orb: func(id: string, message: string) -> result<run, error>;
+
+  // Run the Orb now, as its schedule would: its message is the checklist
+  // in `Heartbeat.md`.
+  run-orb: func(id: string) -> result<run, error>;
+
+  // Change the Orb's file. Fails with `revision-conflict` when its file
+  // no longer holds `expected-revision`, and with `invalid-property` when
+  // a change breaks the format, and then writes nothing. The default Orb
+  // has no file: it takes a provider, a model and an effort, which this
+  // device keeps, and refuses other changes.
+  update-orb: func(id: string, changes: orb-changes, expected-revision: string) -> result<orb, error>;
+
+  // Pause the Orb, so its triggers don't fire, or let them fire again.
+  // Fails with `revision-conflict` as `update-orb` does.
+  set-orb-paused: func(id: string, paused: bool, expected-revision: string) -> result<orb, error>;
+
+  // Move the Orb's folder to the trash: its file, its memory, its
+  // checklist and its run records. Its thread stays a chat. Fails with
+  // `revision-conflict` as `update-orb` does.
+  delete-orb: func(id: string, expected-revision: string) -> result<_, error>;
+
+  // Whether Noura holds every Orb's triggers because you haven't used
+  // Noura in a while.
+  orbs-held: func() -> result<bool, error>;
+
+  // Answer whether to keep the Orbs' triggers running after a while
+  // away: yes lets them fire again, and the schedules catch up on what
+  // they missed; no pauses every Orb that has triggers.
+  keep-orbs-running: func(keep: bool) -> result<_, error>;
 
   // A page a web search found.
   record web-result {
@@ -954,6 +1169,37 @@ interface notifications {
 //
 // Every label must hold more than spaces: Noura reads it to screen readers.
 interface ui {
+  // A color from Noura's palette, which Noura draws to suit the light or
+  // dark theme.
+  enum color {
+    red,
+    orange,
+    yellow,
+    green,
+    blue,
+    purple,
+    brown,
+    gray,
+  }
+
+  // A small round picture of someone or something, such as an agent: a
+  // circle in a palette color, with a letter or an emoji in it. Screen
+  // readers skip it; the label beside it names what it shows.
+  record avatar {
+    // A letter, a few letters or an emoji, up to 16 characters, or none
+    // for a plain circle.
+    text: option<string>,
+    // The circle's color, or none for the theme's own.
+    color: option<color>,
+  }
+
+  // A dot that says how something stands, such as `Working`.
+  record status {
+    // What the dot means, which screen readers read after the label.
+    label: string,
+    color: color,
+  }
+
   // A line in a list: a label and an optional quieter detail after it, on
   // the same line. A board's card shows the detail under the label.
   record item {
@@ -964,10 +1210,23 @@ interface ui {
     // the box then shows what the plugin draws. Only list and virtual
     // list items show one: a card holding one breaks the rules.
     checked: option<bool>,
-    // A short warning after the label, such as `Overdue`, in the color
-    // Noura shows problems in. Screen readers read it with the label.
+    // A short warning at the end of the line, such as `Overdue` or an
+    // overdue date, in the color Noura shows problems in. Screen readers
+    // read it with the label.
     // Only list and virtual list items show one.
     warning: option<string>,
+    // Colors the item's checkbox, or a dot before its label when it has
+    // none, as for a calendar in a list of calendars. A colored checkbox
+    // shows or hides something, so a checked one doesn't strike its label
+    // through as a done task's does. Only list and virtual list items show
+    // one.
+    color: option<color>,
+    // An avatar before the label, in place of the color's dot. Only list
+    // and virtual list items show one.
+    avatar: option<avatar>,
+    // A status dot at the end of the line. Only list and virtual list
+    // items show one.
+    status: option<status>,
   }
 
   // A list you select items in.
@@ -1120,6 +1379,9 @@ interface ui {
     // one not after the start, an all-day entry takes its first day and a
     // timed entry 30 minutes.
     end: option<string>,
+    // The color Noura draws the entry in, such as its calendar's, or none
+    // for the theme's own.
+    color: option<color>,
   }
 
   // An icon Noura draws beside a heading or in an empty state.
@@ -1128,7 +1390,6 @@ interface ui {
     done,
     folder,
     note,
-    sparkle,
     tasks,
   }
 
@@ -1155,6 +1416,166 @@ interface ui {
     // A line under the title that says what to do.
     detail: option<string>,
     icon: option<icon>,
+  }
+
+  // How an editable text draws, and what Return does in it.
+  enum editable-style {
+    // One line at a title's size. Return or leaving it sends the text.
+    title,
+    // Several lines. Return starts a new line, and leaving it sends the
+    // text.
+    body,
+    // One line in a box, for adding one thing after another: Return sends
+    // the text, then empties the field and keeps the keyboard in it.
+    // Leaving it keeps what it holds and sends nothing.
+    add,
+    // One line at the body's size, such as a name. Return or leaving it
+    // sends the text without the spaces around it, which may be empty.
+    line,
+  }
+
+  // Text you edit in place. A title, a body or a line reads as plain text
+  // until you click or tab into it. What you type stays until the plugin
+  // draws another value. Sending it sends `changed` with a `text` value, or
+  // a `multiline` one for a body, and only when the text differs from the
+  // value drawn; an `add` field sends only text with more than spaces.
+  // Escape puts back the value drawn and lets go of the keyboard.
+  record editable {
+    // Names the text for screen readers, and shows in it while it's
+    // empty.
+    label: string,
+    value: string,
+    style: editable-style,
+    // Whether it takes the keyboard: when it appears holding true, or
+    // when the plugin draws it with true after drawing it with false.
+    focus: bool,
+  }
+
+  // A compact button that shows a date and opens a date picker: Today,
+  // Tomorrow and Next week, a month to pick a day from, and Clear. A
+  // pick sends `changed` with a `date` value, none for Clear.
+  record date-picker {
+    // Names the picker for screen readers, and shows on the button while
+    // no date is chosen.
+    label: string,
+    // The chosen date as `YYYY-MM-DD`, or none.
+    value: option<string>,
+  }
+
+  // An option of a picker.
+  record picker-option {
+    // Unique within the picker.
+    id: string,
+    label: string,
+    // A mark in this color before the label, such as a priority's flag.
+    color: option<color>,
+  }
+
+  // A compact button that shows the chosen option and opens a menu of
+  // the options. A pick sends `changed` with a `choice` value.
+  record picker {
+    // Names the picker for screen readers.
+    label: string,
+    options: list<picker-option>,
+    // The ID of the chosen option, or none, when the button shows the
+    // label.
+    chosen: option<string>,
+  }
+
+  // A rounded button with an avatar and a label, such as the name of
+  // whom a conversation is with, that opens and closes something, such as
+  // a side panel. A press sends `pressed`.
+  record pill {
+    label: string,
+    avatar: option<avatar>,
+    // Whether what it opens shows now. Screen readers read it as
+    // expanded.
+    open: bool,
+  }
+
+  // A pane at the right edge of the page.
+  record side-panel {
+    // Names the pane for screen readers.
+    label: string,
+    // How wide it is, from 240 to 480 points.
+    width: u32,
+  }
+
+  // Who wrote a message in a conversation.
+  enum message-author {
+    // You. Your messages show at the end of the line, in a bubble, as you
+    // wrote them.
+    you,
+    // Anyone or anything else, such as a model. Their messages show at
+    // the start of the line, as Markdown, with no bubble.
+    other,
+  }
+
+  // A message in a conversation.
+  record message {
+    author: message-author,
+    // Names the message for screen readers, such as `You` or the model
+    // that wrote it.
+    label: string,
+    // Yours as you wrote it, with its line breaks kept; any other as
+    // Markdown. A message from someone else with no text yet, as while an
+    // answer starts, shows that more is coming.
+    text: string,
+    // A quiet line under the message, such as `Stopped.`
+    detail: option<string>,
+    // A short problem under the message, such as why an answer failed,
+    // in the color Noura shows problems in.
+    warning: option<string>,
+  }
+
+  // How far a step in a conversation has come.
+  enum activity-state {
+    // It waits, for you or for its turn.
+    waiting,
+    running,
+    done,
+    failed,
+    // You said no to it, so it didn't run.
+    denied,
+    // It stopped before it finished.
+    stopped,
+  }
+
+  // A step taken along the way in a conversation, such as a tool call or a
+  // model's reasoning.
+  record activity {
+    // What the step is or did, such as `Searched the web for seeds`.
+    title: string,
+    state: activity-state,
+  }
+
+  // A box to write a message in.
+  record composer {
+    // Names the box for screen readers, and shows in it while it's empty.
+    label: string,
+    // What the box holds when it first draws. What you type stays until
+    // the plugin draws the box with a value other than the one it drew
+    // before, or until you send it.
+    value: string,
+    // The send button's label, which screen readers read.
+    send: string,
+    // While set, something is under way, such as an answer coming in: a
+    // stop button with this label takes the send button's place, and a
+    // press sends `pressed` naming the composer. Nothing sends meanwhile.
+    stop: option<string>,
+  }
+
+  // A box that floats over the page beside the node it points at, on
+  // whichever side has room, with an arrow toward it, such as an entry's
+  // details. Its children go where a panel's go. Escape or a click
+  // outside it sends `cancelled` naming it, and it shows until the plugin
+  // draws the view without it.
+  record popover {
+    // Names the popover for screen readers.
+    label: string,
+    // The node ID of the item, card, entry or button it points at. While
+    // that node doesn't show, the popover floats at the top of the page.
+    anchor: string,
   }
 
   variant node-kind {
@@ -1236,6 +1657,53 @@ interface ui {
     // second taking the rest of the width. Its children are the two panes,
     // each a panel.
     split(u32),
+    // A pane at the right edge of the page, with a line on its left. It
+    // runs the page's full height and scrolls on its own, and the rest of
+    // the page takes the width that's left. Its children go where a
+    // panel's go. Only the view's own panel holds one, as its last child.
+    side-panel(side-panel),
+    // A large avatar, centered, as at the top of a profile.
+    avatar(avatar),
+    // A pill button. A page's first child, when a pill, shows centered at
+    // the top of the page in place of the page's title.
+    pill(pill),
+    // Text you edit in place, such as a task's title or notes.
+    editable(editable),
+    // A button that shows a date and opens a date picker.
+    date-picker(date-picker),
+    // A button that shows the chosen option and opens a menu of the
+    // options. Pickers, date pickers and buttons in a row line up on one
+    // line.
+    picker(picker),
+    // A conversation, named for screen readers by this label: a column at
+    // most 720 points wide in the middle of the page, which takes the rest
+    // of the page and scrolls on its own. It stays at its end as it grows,
+    // until you scroll up; a button then takes you back down. Its children
+    // go where a panel's go, and its last child may be a composer, which
+    // stays at the bottom of the page under the column. While it holds
+    // only empty states and a composer, they show together in the middle
+    // of the page. Text in it shows as a quiet line, and buttons as small
+    // ones, such as Resume or a suggested reply.
+    conversation(string),
+    // A message, as a conversation shows it.
+    message(message),
+    // A step taken along the way, such as a tool call: a quiet row with
+    // its title and its state. A row with children opens and closes on a
+    // click, and shows its children, which go where a panel's go, while
+    // open. It starts closed.
+    activity(activity),
+    // A box to write a message in: a text input of several lines with a
+    // send button at its end, and its children, choice inputs and
+    // buttons, in a row under the text. Each choice shows as a menu of its
+    // options. Enter or the send button sends `submitted` naming the
+    // composer, once the box holds more than spaces, with what it holds as
+    // a multiline value under the composer's own node ID, then the value
+    // of each choice input inside it. Shift-Enter starts a new line. The
+    // box empties once it sends. It can't sit in a form.
+    composer(composer),
+    // A box beside another node, floating over the page. It can't sit in
+    // another popover.
+    popover(popover),
   }
 
   record node {
@@ -1246,8 +1714,12 @@ interface ui {
     // they lay out, lists their items, tables their rows, boards their
     // columns, columns their cards, calendars their entries, menus their
     // items, headings their buttons and choices, empty states their
-    // buttons, and splits their two panels; a row, a card or a button may
-    // hold one menu, and an item one menu or one name field.
+    // buttons, splits their two panels, side panels, conversations,
+    // activities and popovers the nodes they lay out, and composers their
+    // choices and
+    // buttons; a row,
+    // a card or a button may hold one menu, and an item one menu or one
+    // name field.
     children: list<u32>,
   }
 
@@ -1292,9 +1764,10 @@ interface ui {
   }
 
   record submission {
-    // The form's node ID.
+    // The form's or the composer's node ID.
     node: string,
-    // Every input inside the form, in view order.
+    // Every input inside the form, in view order, or the composer's text
+    // and then its choices.
     fields: list<field>,
   }
 
@@ -1319,7 +1792,8 @@ interface ui {
 
   // Something you did in a view.
   variant event {
-    // The button with this node ID was pressed.
+    // The button with this node ID was pressed, or a composer's stop
+    // button, naming the composer.
     pressed(string),
     // An item, a row, a card or an entry was selected, by click or the
     // keyboard.
@@ -1331,7 +1805,7 @@ interface ui {
     sorted(column-press),
     // An input's value changed.
     changed(field),
-    // A form was submitted.
+    // A form or a composer was submitted.
     submitted(submission),
     // The menu item with this node ID was chosen.
     chosen(string),
@@ -1343,8 +1817,9 @@ interface ui {
     // or its window closed.
     named(naming),
     // A name field was left without a new name: you pressed Escape, or
-    // left it empty or holding the name it started from. Holds the
-    // field's node ID.
+    // left it empty or holding the name it started from. Or a popover
+    // closed by Escape or a click outside it. Holds the field's or the
+    // popover's node ID.
     cancelled(string),
   }
 }
@@ -1407,6 +1882,23 @@ interface commands {
   // that says why the command failed, goes back to the plugin that called.
   // Noura draws the plugin's views again afterwards.
   run: func(id: string, input: string) -> result<string, string>;
+}
+
+// Events the plugin tells Noura about, which start the triggers of Orbs
+// that name them. Needs the `events` capability, whose manifest entry
+// declares each event with an ID and a title. An Orb's trigger names an
+// event as `<plugin>.<event>`, such as `transcription.finished`.
+interface events {
+  use types.{error};
+
+  // Tell Noura that the event `event`, one the manifest declares,
+  // happened, about the object with the stable ID `object` when there is
+  // one. Noura starts the Orbs whose triggers name the event after the
+  // call returns, and an Orb that may read the object gets its title and
+  // body. An event that happens during a tool call of an Orb's run starts
+  // no Orb, so Orbs can't start each other in a loop. Fails with `failed`
+  // for an event the manifest doesn't declare.
+  emit: func(event: string, object: option<string>) -> result<_, error>;
 }
 
 // Sections in the Inbox, drawn from the plugin's nodes. Noura calls these
@@ -1673,6 +2165,7 @@ world plugin {
   import paste;
   import menu-bar;
   import notifications;
+  import events;
   export view;
   export object-types;
   export commands;

@@ -64,6 +64,7 @@ impl Ai {
             },
             messages: vec![text("system", &instructions), text("user", &request.prompt)],
             tools: None,
+            reasoning: None,
         };
         let client = lock(&self.client).clone();
         let mut frames = {

@@ -2,7 +2,7 @@
 //! ships with the build that `crates/plugin-sdk/build-plugins.sh` makes,
 //! and helpers that read its page, its sidebar section and its panels.
 
-use app_core::{App, PluginEvent, PluginNaming, Target, ViewKind, ViewNode};
+use app_core::{App, PluginEvent, Target, ViewKind, ViewNode};
 
 use super::plugins::{self, PluginFolder};
 
@@ -87,20 +87,56 @@ pub fn page(app: &App) -> app_core::View {
         .expect("the Tasks page draws")
 }
 
-/// The tasks the page's list shows, top to bottom.
-pub fn rows(app: &App) -> Vec<Row> {
-    let view = page(app);
-    let Some(list) = find(view.root(), "tasks") else {
-        return Vec::new();
-    };
-    list.children
+/// The page's task lists, one per section, top to bottom.
+fn task_lists(view: &app_core::View) -> Vec<ViewNode> {
+    fn collect(node: &ViewNode, lists: &mut Vec<ViewNode>) {
+        if node.id.starts_with(LISTS) && matches!(node.kind, ViewKind::List { .. }) {
+            lists.push(node.clone());
+        }
+        for child in &node.children {
+            collect(child, lists);
+        }
+    }
+    let mut lists = Vec::new();
+    collect(view.root(), &mut lists);
+    lists
+}
+
+/// What the node IDs of the page's task lists start with, before their
+/// section, such as `tasks-overdue`.
+pub const LISTS: &str = "tasks-";
+
+/// The sections the page's list shows, top to bottom, each with its
+/// tasks' labels.
+pub fn sections(app: &App) -> Vec<(String, Vec<String>)> {
+    task_lists(&page(app))
         .iter()
+        .map(|list| {
+            let labels = list
+                .children
+                .iter()
+                .filter_map(|item| match &item.kind {
+                    ViewKind::Item { label, .. } => Some(label.clone()),
+                    _ => None,
+                })
+                .collect();
+            (list.id[LISTS.len()..].to_owned(), labels)
+        })
+        .collect()
+}
+
+/// The tasks the page's lists show, top to bottom, across sections.
+pub fn rows(app: &App) -> Vec<Row> {
+    task_lists(&page(app))
+        .iter()
+        .flat_map(|list| list.children.iter())
         .filter_map(|item| match &item.kind {
             ViewKind::Item {
                 label,
                 detail,
                 checked,
                 warning,
+                ..
             } => Some(Row {
                 id: item.id.clone(),
                 label: label.clone(),
@@ -118,38 +154,45 @@ pub fn labels(app: &App) -> Vec<String> {
     rows(app).into_iter().map(|row| row.label).collect()
 }
 
-/// The item the page's list shows selected.
+/// The task the page's lists show selected.
 pub fn selected(app: &App) -> Option<String> {
-    let view = page(app);
-    match &find(view.root(), "tasks")?.kind {
-        ViewKind::List { selected, .. } => selected.clone(),
-        _ => None,
-    }
+    task_lists(&page(app))
+        .iter()
+        .find_map(|list| match &list.kind {
+            ViewKind::List { selected, .. } => selected.clone(),
+            _ => None,
+        })
 }
 
-/// The text of the page's text node `id`, the detail line of its heading
-/// `id`, or the title of its empty state `id`.
+/// The text of the page's text node `id`, the title of its heading `id`
+/// or that heading's detail when it has one, or the title of its empty
+/// state `id`.
 pub fn text(app: &App, id: &str) -> Option<String> {
     let view = page(app);
     match &find(view.root(), id)?.kind {
         ViewKind::Text(text) => Some(text.clone()),
-        // The page heading names the view in its detail line.
+        // A section's heading says how many tasks it holds.
         ViewKind::Heading {
             detail: Some(detail),
             ..
         } => Some(detail.clone()),
+        // The page heading names the view.
+        ViewKind::Heading { text, .. } => Some(text.clone()),
         // An empty state reads as its title.
         ViewKind::Empty { title, .. } => Some(title.clone()),
         _ => None,
     }
 }
 
-/// Whether the page shows the name field for a new task.
-pub fn naming(app: &App) -> bool {
+/// Whether the page's add field takes the keyboard when it draws next.
+pub fn add_focused(app: &App) -> bool {
     let view = page(app);
-    find(view.root(), "new-task-name")
-        .is_some_and(|node| matches!(node.kind, ViewKind::NameField { .. }))
+    find(view.root(), ADD_TASK)
+        .is_some_and(|node| matches!(node.kind, ViewKind::Editable { focus: true, .. }))
 }
+
+/// The field at the top of the list that adds a task on Return.
+pub const ADD_TASK: &str = "add-task";
 
 /// The page's sidebar section: each list's node ID, with its items' IDs,
 /// labels and details, and the item it shows selected.
@@ -216,15 +259,13 @@ pub fn send(app: &mut App, event: PluginEvent) {
     super::settle(app);
 }
 
-/// Open the name field and name the new task `name`, as Enter does.
-pub fn name_new_task(app: &mut App, name: &str) {
-    app.press_plugin_button(PAGE, "new-task");
-    super::settle(app);
+/// Type `name` in the add field and press Return.
+pub fn add_task(app: &mut App, name: &str) {
     send(
         app,
-        PluginEvent::Named(PluginNaming {
-            node: "new-task-name".to_owned(),
-            name: name.to_owned(),
+        PluginEvent::Changed(app_core::Field {
+            node: ADD_TASK.to_owned(),
+            value: app_core::InputValue::Text(name.to_owned()),
         }),
     );
 }
@@ -262,6 +303,7 @@ pub fn due_rows(app: &App) -> Vec<Row> {
                 detail,
                 checked,
                 warning,
+                ..
             } => Some(Row {
                 id: item.id.clone(),
                 label: label.clone(),
@@ -320,18 +362,35 @@ pub fn select_in_pane(app: &mut App, id: &str) {
     send(
         app,
         PluginEvent::Selected(Target {
-            node: "tasks".to_owned(),
+            node: format!("{LISTS}all"),
             item: id.to_owned(),
         }),
     );
 }
 
-/// The right pane's input `field`: its value and its choices, once the
-/// pane shows it.
+/// The right pane's picker or date picker `field`: what it holds, and a
+/// picker's options, once the pane shows it.
 pub fn pane_input(app: &App, field: &str) -> Option<(app_core::InputValue, Vec<app_core::Choice>)> {
     let view = app.plugin_view(PAGE)?.ok()?;
     match &find(view.root(), &format!("{PANE}{field}"))?.kind {
-        ViewKind::Input { value, choices, .. } => Some((value.clone(), choices.clone())),
+        ViewKind::Picker {
+            options, chosen, ..
+        } => Some((
+            app_core::InputValue::Choice(chosen.clone()),
+            options
+                .iter()
+                .map(|option| app_core::Choice {
+                    id: option.id.clone(),
+                    label: option.label.clone(),
+                })
+                .collect(),
+        )),
+        ViewKind::DatePicker { value, .. } => {
+            Some((app_core::InputValue::Date(value.clone()), Vec::new()))
+        }
+        ViewKind::Editable { value, .. } => {
+            Some((app_core::InputValue::Text(value.clone()), Vec::new()))
+        }
         _ => None,
     }
 }

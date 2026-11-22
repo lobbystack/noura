@@ -153,6 +153,10 @@ fn search(query: &str) -> Value {
 /// The labels of the list items on the AI page, top to bottom.
 fn items(app: &App) -> Vec<(String, Option<String>)> {
     fn under(node: &ViewNode, found: &mut Vec<(String, Option<String>)>) {
+        // The thread's items, without the chats the side panel lists.
+        if matches!(node.kind, ViewKind::SidePanel { .. }) {
+            return;
+        }
         if let ViewKind::Item { label, detail, .. } = &node.kind {
             found.push((label.clone(), detail.clone()));
         }
@@ -260,11 +264,11 @@ fn a_scripted_search_gets_titles_addresses_and_snippets_and_the_chat_records_eac
     // sources it found.
     let lines = ai::lines(&chat.app);
     assert!(
-        lines.contains(&"Searched the web for \u{201c}tomato care\u{201d}.".to_owned()),
+        lines.contains(&"Searched the web for \u{201c}tomato care\u{201d}".to_owned()),
         "{lines:?}"
     );
     assert!(
-        lines.contains(&"Read https://garden.example.com/tomatoes.".to_owned()),
+        lines.contains(&"Read https://garden.example.com/tomatoes".to_owned()),
         "{lines:?}"
     );
     assert!(

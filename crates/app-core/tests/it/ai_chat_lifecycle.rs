@@ -133,13 +133,17 @@ fn a_new_chat_stays_until_you_delete_it_and_switches_to_30_days_and_back() {
         ai::frontmatter(&text, "retention_days").as_deref(),
         Some("30")
     );
-    chatting.wait("the sidebar says so", |app| {
-        ai::chat_details(app) == [Some("Removed after 30 days".to_owned())]
-    });
-    assert!(
-        ai::lines(&chatting.app)
+    let offered = |app: &App, action: &str| {
+        ai::menu_item(app, &format!("{action}{chat}:")).map(|(_, enabled)| enabled)
+    };
+    chatting.wait("the page says so", |app| {
+        ai::lines(app)
             .contains(&"This chat moves to the trash 30 days after it started.".to_owned())
-    );
+    });
+    assert_eq!(offered(&chatting.app, "ephemeral:"), Some(false));
+    assert_eq!(offered(&chatting.app, "keep:"), Some(true));
+    // The sidebar keeps to the chat's title.
+    assert_eq!(ai::chat_details(&chatting.app), [None]);
 
     ai::choose(&mut chatting.app, &format!("keep:{chat}:"));
     let (_, text) = chatting.chat_file_once("the chat stays again", |text| {
@@ -149,7 +153,13 @@ fn a_new_chat_stays_until_you_delete_it_and_switches_to_30_days_and_back() {
         ai::frontmatter(&text, "retention_days").as_deref(),
         Some("null")
     );
-    chatting.wait("the sidebar says so", |app| ai::chat_details(app) == [None]);
+    chatting.wait("the menu says so", |app| {
+        offered(app, "keep:") == Some(false) && offered(app, "ephemeral:") == Some(true)
+    });
+    assert!(
+        !ai::lines(&chatting.app)
+            .contains(&"This chat moves to the trash 30 days after it started.".to_owned())
+    );
 }
 
 /// An ephemeral chat's `chat.md`, started on 1 September and changed last

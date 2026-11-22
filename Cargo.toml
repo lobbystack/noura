@@ -148,6 +148,9 @@ eframe = { version = "0.37", default-features = false, features = ["accesskit", 
 egui = "0.37"
 egui-wgpu = { version = "0.37", default-features = false }
 egui_kittest = "0.37"
+# Reads an Orb's schedule triggers, 5-field cron patterns, and finds their
+# times in the device's time zone through jiff. MIT.
+croner = { version = "=4.0.3", default-features = false, features = ["jiff"] }
 # Decodes a web page in the character set its server names, for the AI's
 # page reads. (Apache-2.0 OR MIT) AND BSD-3-Clause.
 encoding_rs = "0.8.35"
@@ -158,7 +161,7 @@ egui_extras = { version = "0.37", default-features = false, features = ["datepic
 glyphon = "0.12"
 fs2 = "0.4"
 futures = "0.3"
-genai = "=0.6.5"
+genai = "=0.7.5"
 # Renders PDF pages, reads their text and unlocks password-protected PDFs, in
 # Rust on the CPU. Apache-2.0 OR MIT. It embeds PDFium's Foxit fonts for the
 # standard PDF fonts and Adobe's CMaps, both BSD-3-Clause; see

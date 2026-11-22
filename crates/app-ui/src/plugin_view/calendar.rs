@@ -11,17 +11,19 @@
 //! current-date state.
 //!
 //! You select an entry by click or the keyboard and open it with Enter or
-//! a double-click. The arrow keys walk the entries day by day, and Home
+//! a double-click. A click selects it even when it already is, so a
+//! plugin can show it again. The arrow keys walk the entries day by day, and Home
 //! and End go to the first and last. An entry shows once on each day it
 //! covers, and the grid is one stop in the Tab order, on the selected
 //! entry where the keyboard last left it.
 
 use app_core::{
-    CalendarMode, GridDay, GridEntry, PluginEvent, Span, Target, ViewKind, ViewNode, grid_days,
-    lay_out,
+    CalendarMode, GridDay, GridEntry, PluginColor, PluginEvent, Span, Target, ViewKind, ViewNode,
+    grid_days, lay_out,
 };
 use egui::{
-    Align2, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, WidgetInfo,
+    Align2, Color32, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder,
+    WidgetInfo,
     accesskit::{Action, AriaCurrent, Role},
     pos2, vec2,
 };
@@ -104,6 +106,8 @@ struct Grid<'a> {
     days: Vec<GridDay>,
     entries: Vec<GridEntry<'a>>,
     ids: Vec<&'a str>,
+    /// Each entry's color, when the plugin gave one.
+    colors: Vec<Option<PluginColor>>,
     shown: Vec<Shown>,
 }
 
@@ -128,12 +132,19 @@ pub(super) fn calendar(
     let names = DateNames::of(kit.app.locale().as_deref());
     let time_zone = kit.app.time_zone();
     let mut ids = Vec::new();
+    let mut colors = Vec::new();
     let mut entries = Vec::new();
     for child in &node.children {
-        if let ViewKind::Entry { title, start, end } = &child.kind
+        if let ViewKind::Entry {
+            title,
+            start,
+            end,
+            color,
+        } = &child.kind
             && let Some(span) = Span::parse(start, end.as_deref())
         {
             ids.push(child.id.as_str());
+            colors.push(*color);
             entries.push(GridEntry { title, span });
         }
     }
@@ -147,6 +158,7 @@ pub(super) fn calendar(
         days,
         entries,
         ids,
+        colors,
         shown: Vec::new(),
     };
     grid.shown = shown(&grid);
@@ -332,6 +344,13 @@ fn draw(ui: &mut Ui, node: &ViewNode, mode: CalendarMode, grid: &Grid, kit: &mut
                 let response = cell_ui.interact(rect, id, sense);
                 response.widget_info(|| WidgetInfo::labeled(Role::Button, true, &shown.label));
                 let is_selected = selected_entry == Some(grid.ids[shown.entry]);
+                // A popover points at the entry on the day you selected
+                // it, or on its first day.
+                let selected_day = state
+                    .selected
+                    .as_ref()
+                    .is_some_and(|(_, day)| *day == grid.days[shown.day].date);
+                kit.anchor(grid.ids[shown.entry], rect, is_selected && selected_day);
                 cell_ui.ctx().accesskit_node_builder(id, |node| {
                     node.add_action(Action::Focus);
                     node.set_selected(is_selected);
@@ -375,7 +394,9 @@ fn draw(ui: &mut Ui, node: &ViewNode, mode: CalendarMode, grid: &Grid, kit: &mut
     if let Some(index) = select {
         let shown = &grid.shown[index];
         let entry = grid.ids[shown.entry];
-        if selected_entry != Some(entry) {
+        // A click on the selected entry selects it again, so its popover
+        // opens again after you closed it.
+        if selected_entry != Some(entry) || clicked.is_some() {
             kit.events.push(PluginEvent::Selected(Target {
                 node: node.id.clone(),
                 item: entry.to_owned(),
@@ -712,7 +733,9 @@ fn day_number(ui: &Ui, grid: &Grid, date: Date, center: egui::Pos2, in_month: bo
 }
 
 /// An entry's box with its title, and a timed entry's time under it when
-/// there is room. A selected entry fills with the primary color.
+/// there is room. A selected entry fills with the primary color, or its
+/// own color when it has one, which otherwise tints its box and marks its
+/// left edge.
 fn paint_entry(
     ui: &Ui,
     rect: Rect,
@@ -726,7 +749,19 @@ fn paint_entry(
         return;
     }
     let painter = ui.painter();
-    let (fill, foreground, quiet) = if selected {
+    let color = grid.colors[shown.entry].map(|color| crate::theme::plugin_color(ui.ctx(), color));
+    let (fill, foreground, quiet) = if let Some(color) = color {
+        if selected {
+            (color, Color32::WHITE, Color32::WHITE)
+        } else {
+            let tint = if response.hovered() { 0.35 } else { 0.22 };
+            (
+                color.gamma_multiply(tint),
+                palette.foreground,
+                palette.muted_foreground,
+            )
+        }
+    } else if selected {
         (
             palette.primary,
             palette.primary_foreground,
@@ -741,13 +776,25 @@ fn paint_entry(
             palette.muted_foreground,
         )
     };
-    painter.rect(
-        rect,
-        radius(0.4),
-        fill,
-        Stroke::new(1.0, palette.border),
-        StrokeKind::Inside,
-    );
+    let border = if color.is_some() {
+        Stroke::NONE
+    } else {
+        Stroke::new(1.0, palette.border)
+    };
+    painter.rect(rect, radius(0.4), fill, border, StrokeKind::Inside);
+    if let (Some(color), false) = (color, selected) {
+        let edge = Rect::from_min_max(rect.min, pos2(rect.left() + 3.0, rect.bottom()));
+        painter.rect_filled(
+            edge,
+            egui::CornerRadius {
+                nw: 4,
+                sw: 4,
+                ne: 0,
+                se: 0,
+            },
+            color,
+        );
+    }
     if response.has_focus() {
         painter.rect_stroke(
             rect.shrink(1.0),

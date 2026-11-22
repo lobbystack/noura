@@ -24,7 +24,10 @@
 //! plugin only once you allow that one call.
 //!
 //! The service also holds web search: the Brave Search key and the
-//! searches and page reads plugins ask for, in [`web`].
+//! searches and page reads plugins ask for, in [`web`], and Orbs, the
+//! workspace's personal agents, in [`orbs`]: an Orb's run calls the tools
+//! its file lists without asking, and triggers start runs while you're
+//! away.
 //!
 //! [`App`]: crate::App
 
@@ -35,6 +38,8 @@
 
 mod complete;
 mod history;
+pub(crate) mod models;
+pub(crate) mod orbs;
 mod tools;
 mod web;
 
@@ -216,6 +221,8 @@ struct Run {
     interrupted: bool,
     /// It answers your last message again, which it doesn't write.
     resumed: bool,
+    /// The Orb it runs for, whose tool calls run without asking.
+    orb: Option<orbs::OrbJob>,
 }
 
 impl Run {
@@ -249,6 +256,7 @@ impl Run {
             calls: Vec::new(),
             asking: None,
             interrupted: false,
+            orb: None,
         }
     }
 
@@ -335,6 +343,19 @@ pub(crate) struct Ai {
     expiries: Mutex<Vec<JoinHandle<()>>>,
     /// The web search key.
     web: web::Web,
+    /// What Orbs' triggers keep between checks.
+    orb_triggers: Mutex<orbs::triggers::State>,
+    /// Wakes the Orbs' runner.
+    orb_signal: Arc<orbs::triggers::Signal>,
+    /// The runner threads that may still run.
+    orb_runner: Mutex<Vec<JoinHandle<()>>>,
+    /// By Orb: the thread it was handed whose files aren't written yet,
+    /// and the Orb's title.
+    orb_threads: Mutex<HashMap<String, (String, String)>>,
+    /// Held while the triggers are checked, so two checks don't race.
+    orb_checking: Mutex<()>,
+    /// What the default Orb asks with, as this device keeps it.
+    default_orb: Mutex<orbs::settings::Settings>,
 }
 
 impl Drop for Ai {
@@ -343,11 +364,17 @@ impl Drop for Ai {
     /// outlived the session, leave that thread to finish.
     fn drop(&mut self) {
         let current = std::thread::current().id();
-        let expiries = std::mem::take(
+        self.orb_signal.stop();
+        let mut expiries = std::mem::take(
             self.expiries
                 .get_mut()
                 .unwrap_or_else(PoisonError::into_inner),
         );
+        expiries.extend(std::mem::take(
+            self.orb_runner
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner),
+        ));
         for thread in expiries {
             if thread.thread().id() != current {
                 let _ = thread.join();
@@ -396,6 +423,12 @@ impl Ai {
             expired: Mutex::new(None),
             expiries: Mutex::new(Vec::new()),
             web,
+            orb_triggers: Mutex::new(orbs::triggers::State::load(app_data)),
+            orb_signal: Arc::new(orbs::triggers::Signal::default()),
+            orb_runner: Mutex::new(Vec::new()),
+            orb_threads: Mutex::new(HashMap::new()),
+            orb_checking: Mutex::new(()),
+            default_orb: Mutex::new(orbs::settings::Settings::load(app_data)),
         })
     }
 
@@ -500,6 +533,10 @@ impl Ai {
         }
         *lock(&self.expired) = None;
         self.expire_chats_if_due();
+        lock(&self.orb_threads).clear();
+        if self.workspace().is_some() {
+            self.start_orb_runner();
+        }
         self.changed();
     }
 
@@ -766,10 +803,20 @@ impl Ai {
         if request.message.trim().is_empty() {
             return Err(ServiceError::Failed("The message is empty.".to_owned()));
         }
-        if !lock(&self.state).new_chats.contains(&request.chat) {
+        let unwritten = lock(&self.state).new_chats.contains(&request.chat);
+        let orb = if unwritten {
+            self.new_thread(&request.chat).map(|(orb, _)| orb)
+        } else {
             engine
                 .read_chat(&request.chat)
-                .map_err(|error| chat_error(error, &request.chat))?;
+                .map_err(|error| chat_error(error, &request.chat))?
+                .chat
+                .orb_id
+        };
+        // A message to an Orb's thread goes to the Orb, with its tools and
+        // its provider.
+        if let Some(orb) = orb.filter(|orb| orb != workspace_format::orb::DEFAULT_ORB_ID) {
+            return self.send_to_orb(plugin, &orb, &request.message);
         }
         self.begin_run(
             plugin,
@@ -797,6 +844,11 @@ impl Ai {
         let read = engine
             .read_chat(chat)
             .map_err(|error| chat_error(error, chat))?;
+        if read.chat.orb_id.is_some() {
+            return Err(ServiceError::Failed(
+                "Noura takes up an Orb's runs by itself.".to_owned(),
+            ));
+        }
         if !read.messages.iter().any(|message| {
             message.kind == ChatMessageKind::User && message.status == ChatMessageStatus::Completed
         }) {
@@ -881,15 +933,23 @@ impl Ai {
     ) -> Result<(), CoreError> {
         let new = lock(&self.state).new_chats.contains(chat);
         let (revision, names) = if new {
-            let created = engine.create_chat_with_id(
+            // An Orb's thread takes the Orb's name.
+            let orb = self.new_thread(chat);
+            let created = engine.create_orb_chat_with_id(
                 chat,
+                orb.as_ref().map(|(orb, _)| orb.as_str()),
                 CreateChatInput {
-                    title: chat_title(message),
+                    title: orb
+                        .as_ref()
+                        .map_or_else(|| chat_title(message), |(_, title)| title.clone()),
                     retention: None,
                     retention_days: None,
                 },
             )?;
             lock(&self.state).new_chats.remove(chat);
+            if let Some((orb, _)) = &orb {
+                self.thread_written(orb);
+            }
             (created.revision, false)
         } else {
             let read = engine.read_chat(chat)?;
@@ -937,8 +997,12 @@ impl Ai {
             Some(run) => run.chat.clone(),
             None => return,
         };
+        let (model, effort) = self.run_choice(id, provider_id);
         let begun = (|| {
-            let provider = self.provider(provider_id).map_err(|_| provider_missing())?;
+            let mut provider = self.provider(provider_id).map_err(|_| provider_missing())?;
+            if let Some(model) = model {
+                provider.model = model;
+            }
             let read = engine.read_chat(&chat)?;
             let begun = engine.begin_chat_assistant(BeginChatAssistantInput {
                 chat_id: chat.clone(),
@@ -972,6 +1036,7 @@ impl Ai {
             begun: revision,
             provider: provider.id.clone(),
             model: provider.model.clone(),
+            effort,
             text: String::new(),
             calls: Vec::new(),
         };
@@ -1019,7 +1084,14 @@ impl Ai {
         answer: &mut Answer,
         tools: &[AiToolDefinition],
     ) -> Result<Ended, CoreError> {
-        let instructions = history::instructions(engine);
+        let job = lock(&self.state)
+            .runs
+            .get(id)
+            .and_then(|run| run.orb.clone());
+        let instructions = match &job {
+            Some(job) => self.orb_instructions(engine, job),
+            None => history::instructions(engine),
+        };
         let mut request = self.request(id, engine, &instructions, &answer.message)?;
         if self.too_long(&answer.chat, provider, &request) {
             if let Some(ended) =
@@ -1030,7 +1102,21 @@ impl Ai {
             request = self.request(id, engine, &instructions, &answer.message)?;
         }
         let characters = history::characters(&request);
-        let Some(frames) = self.open_stream(id, provider, request, Some(history::tools(tools)))?
+        let answers_tools = request.last().is_some_and(|message| message.role == "tool");
+        let reasoning = answer.effort.and_then(|effort| {
+            models::reasoning(
+                &provider.kind,
+                &provider.model,
+                orbs::public_effort(effort),
+                answers_tools,
+            )
+        });
+        let Some(frames) = self.open_stream(
+            id,
+            provider,
+            (request, reasoning),
+            Some(history::tools(tools)),
+        )?
         else {
             return Ok(Ended::Cancelled);
         };
@@ -1119,7 +1205,7 @@ impl Ai {
         else {
             return Ok(None);
         };
-        let Some(frames) = self.open_stream(id, provider, request, None)? else {
+        let Some(frames) = self.open_stream(id, provider, (request, None), None)? else {
             return Ok(Some(Ended::Cancelled));
         };
         let mut summary = String::new();
@@ -1160,14 +1246,15 @@ impl Ai {
         Ok(None)
     }
 
-    /// Start a stream of `messages` to `provider` for the run `id`. None
-    /// when the run went, as after a switch to another workspace. A Stop
-    /// pressed before the stream started stops it at once.
+    /// Start a stream of `messages` to `provider` for the run `id`, asking
+    /// the model to reason as `reasoning` says. None when the run went, as
+    /// after a switch to another workspace. A Stop pressed before the
+    /// stream started stops it at once.
     fn open_stream(
         &self,
         id: &str,
         provider: &AiProviderConfig,
-        messages: Vec<AiTransportMessage>,
+        (messages, reasoning): (Vec<AiTransportMessage>, Option<local_core::AiReasoning>),
         tools: Option<Vec<local_core::AiToolDefinition>>,
     ) -> Result<Option<tokio::sync::mpsc::Receiver<AiStreamFrame>>, CoreError> {
         if !lock(&self.state).runs.contains_key(id) {
@@ -1183,6 +1270,7 @@ impl Ai {
             },
             messages,
             tools,
+            reasoning,
         };
         let client = lock(&self.client).clone();
         let store = self.store().map_err(|_| no_workspace_core())?;
@@ -1332,6 +1420,16 @@ impl Ai {
                 run.stop_requested = false;
             }
         }
+        // An Orb runs the calls its model asked for without asking you.
+        let continues = lock(&self.state).runs.get(id).is_some_and(|run| {
+            run.orb.is_some()
+                && run.status == AiRunStatus::Completed
+                && !run.tool_calls.is_empty()
+                && run.calls.is_empty()
+        });
+        if continues {
+            self.orb_continue(id, engine.clone());
+        }
         self.redraw_run(id);
     }
 
@@ -1347,7 +1445,13 @@ impl Ai {
     }
 
     fn redraw_run(&self, id: &str) {
-        let plugin = lock(&self.state).runs.get(id).map(|run| run.plugin.clone());
+        let (plugin, orb) = match lock(&self.state).runs.get(id) {
+            Some(run) => (Some(run.plugin.clone()), run.orb.is_some()),
+            None => (None, false),
+        };
+        if orb {
+            self.settle_orb(id);
+        }
         if let Some(plugin) = plugin {
             self.redraw(&plugin);
         }
@@ -1367,6 +1471,9 @@ impl Ai {
                 .runs
                 .get_mut(id)
                 .ok_or_else(|| ServiceError::NotFound(id.to_owned()))?;
+            if run.orb.is_some() {
+                return Err(orb_calls());
+            }
             if run.status != AiRunStatus::Completed
                 || run.tool_calls.is_empty()
                 || !run.calls.is_empty()
@@ -1440,6 +1547,9 @@ impl Ai {
                 .runs
                 .get_mut(id)
                 .ok_or_else(|| ServiceError::NotFound(id.to_owned()))?;
+            if run.orb.is_some() {
+                return Err(orb_calls());
+            }
             if !run.live() || run.status != AiRunStatus::Completed {
                 return Err(ServiceError::Failed(
                     "This run has no tool calls waiting to run.".to_owned(),
@@ -1484,7 +1594,7 @@ impl Ai {
         };
         for (index, pending) in calls.iter().enumerate() {
             let settled = match self.decide(id, index, pending) {
-                Decision::Run(target) => self.run_call(&target, &pending.call),
+                Decision::Run(target) => self.run_call(id, &target, &pending.call),
                 Decision::Deny => Settled::Denied,
                 Decision::Unknown => Settled::Failed {
                     code: TOOL_NOT_FOUND,
@@ -1493,6 +1603,7 @@ impl Ai {
                 Decision::Disabled => Settled::Disabled,
             };
             let (status, error_code) = settled.status();
+            self.orb_called(id, &pending.call, &status);
             let written = write_result(
                 engine,
                 id,
@@ -1578,9 +1689,13 @@ impl Ai {
         }
     }
 
-    /// Run `call` in the plugin `target` names, which you allowed. A
-    /// plugin that stopped offering the tool meanwhile runs nothing.
-    fn run_call(&self, target: &Target, call: &AiToolCall) -> Settled {
+    /// Run `call` of the run `run` in the plugin `target` names, which you
+    /// allowed, or which an Orb lists. A plugin that stopped offering the
+    /// tool meanwhile runs nothing. Noura's own tools run in the service.
+    fn run_call(&self, run: &str, target: &Target, call: &AiToolCall) -> Settled {
+        if target.plugin == plugin_host::KERNEL_PLUGIN_ID {
+            return self.kernel_call(run, &target.tool, call);
+        }
         let Some(toolbox) = self.toolbox() else {
             return Settled::Disabled;
         };
@@ -1588,7 +1703,18 @@ impl Ai {
         if tools::find(&call.name, &offered).is_none() {
             return Settled::Disabled;
         }
-        Settled::of(toolbox.call(&target.plugin, &target.tool, &call.arguments))
+        let orb = lock(&self.state)
+            .runs
+            .get(run)
+            .is_some_and(|known| known.orb.is_some());
+        let answer = if orb {
+            self.orb_plugin_call(run, || {
+                toolbox.call(&target.plugin, &target.tool, &call.arguments)
+            })
+        } else {
+            toolbox.call(&target.plugin, &target.tool, &call.arguments)
+        };
+        Settled::of(answer)
     }
 
     fn read_run(&self, id: &str) -> Result<AiRun, ServiceError> {
@@ -1646,6 +1772,11 @@ impl Ai {
                 model: provider.model,
             })
             .collect())
+    }
+
+    /// The models of the providers you turned on, each one's own first.
+    pub(crate) fn models(&self) -> Result<Vec<plugin_host::AiModel>, ServiceError> {
+        Ok(models::models(&self.providers()?))
     }
 
     fn chats(&self) -> Result<Vec<AiChat>, ServiceError> {
@@ -1774,25 +1905,37 @@ fn pending_calls(
 ) -> Vec<PendingCall> {
     run.tool_calls
         .iter()
-        .map(|call| PendingCall {
-            call: call.clone(),
-            message: run.tool_messages.get(&call.id).cloned(),
-            target: run
-                .tools
-                .iter()
-                .any(|tool| tool.name == call.name)
-                .then(|| tools::find(&call.name, offered))
-                .flatten()
-                .map(|tool| Target {
-                    plugin: tool.plugin_id.clone(),
-                    plugin_name: names
-                        .get(&tool.plugin_id)
-                        .cloned()
-                        .unwrap_or_else(|| tool.plugin_id.clone()),
-                    tool: tool.name.clone(),
+        .map(|call| {
+            let offered_tool = run.tools.iter().find(|tool| tool.name == call.name);
+            // Noura's own tools, which only an Orb's run offers.
+            let kernel = offered_tool.filter(|_| run.orb.is_some()).and_then(|tool| {
+                let (plugin, name) = tools::split(&tool.name)?;
+                (plugin == plugin_host::KERNEL_PLUGIN_ID).then(|| Target {
+                    plugin: plugin.to_owned(),
+                    plugin_name: "Noura".to_owned(),
+                    tool: name.to_owned(),
                     description: tool.description.clone(),
-                }),
-            answer: None,
+                })
+            });
+            let target = kernel.or_else(|| {
+                offered_tool
+                    .and_then(|_| tools::find(&call.name, offered))
+                    .map(|tool| Target {
+                        plugin: tool.plugin_id.clone(),
+                        plugin_name: names
+                            .get(&tool.plugin_id)
+                            .cloned()
+                            .unwrap_or_else(|| tool.plugin_id.clone()),
+                        tool: tool.name.clone(),
+                        description: tool.description.clone(),
+                    })
+            });
+            PendingCall {
+                call: call.clone(),
+                message: run.tool_messages.get(&call.id).cloned(),
+                target,
+                answer: None,
+            }
         })
         .collect()
 }
@@ -1864,6 +2007,7 @@ fn new_chat(id: &str) -> AiChat {
         updated: local_core::now_rfc3339(),
         revision: String::new(),
         retention: AiRetention::Permanent,
+        orb: None,
     }
 }
 
@@ -1877,6 +2021,7 @@ fn public_chat(chat: Chat) -> AiChat {
             ChatRetention::Permanent => AiRetention::Permanent,
             ChatRetention::Ephemeral => AiRetention::Ephemeral,
         },
+        orb: chat.orb_id,
     }
 }
 
@@ -1889,6 +2034,8 @@ struct Answer {
     /// The provider and model that write it.
     provider: String,
     model: String,
+    /// How hard the model reasons, or none for its own default.
+    effort: Option<workspace_format::orb::Effort>,
     text: String,
     calls: Vec<AiToolCall>,
 }
@@ -1911,6 +2058,10 @@ struct Access {
 impl AiChats for Access {
     fn providers(&self) -> Result<Vec<AiProvider>, ServiceError> {
         self.ai.providers()
+    }
+
+    fn models(&self) -> Result<Vec<plugin_host::AiModel>, ServiceError> {
+        self.ai.models()
     }
 
     fn chats(&self) -> Result<Vec<AiChat>, ServiceError> {
@@ -2007,15 +2158,74 @@ impl AiChats for Access {
     ) -> Result<plugin_host::AiCompletion, AiFailure> {
         self.ai.complete(request)
     }
+
+    fn orbs(&self) -> Result<Vec<plugin_host::AiOrb>, ServiceError> {
+        self.ai.orbs()
+    }
+
+    fn create_orb(&self, title: &str) -> Result<plugin_host::AiOrb, ServiceError> {
+        self.ai.create_orb(title)
+    }
+
+    fn read_orb(
+        &self,
+        id: &str,
+    ) -> Result<(plugin_host::AiOrb, Option<AiChat>, Vec<AiMessage>), ServiceError> {
+        self.ai.read_orb(id)
+    }
+
+    fn orb_runs(&self, id: &str, limit: u32) -> Result<Vec<plugin_host::AiOrbRun>, ServiceError> {
+        self.ai.orb_runs(id, limit)
+    }
+
+    fn send_to_orb(&self, id: &str, message: &str) -> Result<AiRun, ServiceError> {
+        self.ai.send_to_orb(&self.plugin, id, message)
+    }
+
+    fn run_orb(&self, id: &str) -> Result<AiRun, ServiceError> {
+        self.ai.run_orb(&self.plugin, id)
+    }
+
+    fn update_orb(
+        &self,
+        id: &str,
+        changes: plugin_host::AiOrbChanges,
+        expected_revision: &str,
+    ) -> Result<plugin_host::AiOrb, ServiceError> {
+        self.ai.update_orb(id, changes, expected_revision)
+    }
+
+    fn set_orb_paused(
+        &self,
+        id: &str,
+        paused: bool,
+        expected_revision: &str,
+    ) -> Result<plugin_host::AiOrb, ServiceError> {
+        self.ai.set_orb_paused(id, paused, expected_revision)
+    }
+
+    fn delete_orb(&self, id: &str, expected_revision: &str) -> Result<(), ServiceError> {
+        self.ai.delete_orb(id, expected_revision)
+    }
+
+    fn orbs_held(&self) -> Result<bool, ServiceError> {
+        Ok(self.ai.orbs_held())
+    }
+
+    fn keep_orbs_running(&self, keep: bool) -> Result<(), ServiceError> {
+        self.ai.keep_orbs_running(keep)
+    }
 }
 
 impl Access {
     /// Refuse the run `id` unless this plugin sent it: another plugin's
-    /// run is not found, though its ID is in the chat's files.
+    /// run is not found, though its ID is in the chat's files. Every
+    /// plugin that holds `ai` reaches Orbs' runs, which their triggers
+    /// start as often as you do.
     fn own(&self, id: &str) -> Result<(), ServiceError> {
         let state = lock(&self.ai.state);
         match state.runs.get(id) {
-            Some(run) if run.plugin == self.plugin => Ok(()),
+            Some(run) if run.plugin == self.plugin || run.orb.is_some() => Ok(()),
             _ => Err(ServiceError::NotFound(id.to_owned())),
         }
     }
@@ -2291,6 +2501,11 @@ fn settings_error(error: CoreError) -> AppError {
         _ => error.message,
     };
     AppError::new(&error.code, message)
+}
+
+/// An Orb's run takes no tool results from a plugin: Noura runs its calls.
+fn orb_calls() -> ServiceError {
+    ServiceError::Failed("Noura runs an Orb's tool calls itself.".to_owned())
 }
 
 fn unwritten() -> ServiceError {

@@ -5,10 +5,10 @@
 use std::fmt;
 
 use crate::{
-    AiChat, AiCompletion, AiCompletionRequest, AiFailure, AiMessage, AiProvider, AiRequest,
-    AiRetention, AiRun, AiToolDefinition, AiToolResult, AiWebPage, AiWebResult, MenuBarEntry,
-    Notification, PasteMethod, Recording, RecordingOptions, ShortcutState, SpeechMicrophone,
-    SpeechModel, SpeechPreferences,
+    AiChat, AiCompletion, AiCompletionRequest, AiFailure, AiMessage, AiModel, AiOrb, AiOrbChanges,
+    AiOrbRun, AiProvider, AiRequest, AiRetention, AiRun, AiToolDefinition, AiToolResult, AiWebPage,
+    AiWebResult, MenuBarEntry, Notification, PasteMethod, Recording, RecordingOptions,
+    ShortcutState, SpeechMicrophone, SpeechModel, SpeechPreferences,
 };
 
 /// A workspace-relative path that crossed the plugin boundary: not empty,
@@ -314,6 +314,22 @@ pub trait AiChats: Send + Sync {
     /// The providers you set up and turned on.
     fn providers(&self) -> Result<Vec<AiProvider>, ServiceError>;
 
+    /// The models of those providers, each provider's own first. A service
+    /// that knows no others lists each provider's own model.
+    fn models(&self) -> Result<Vec<AiModel>, ServiceError> {
+        Ok(self
+            .providers()?
+            .into_iter()
+            .map(|provider| AiModel {
+                id: provider.model.clone(),
+                name: provider.model,
+                provider: provider.id,
+                efforts: Vec::new(),
+                default_effort: None,
+            })
+            .collect())
+    }
+
     /// The workspace's chats, the one changed last first.
     fn chats(&self) -> Result<Vec<AiChat>, ServiceError>;
 
@@ -405,6 +421,88 @@ pub trait AiChats: Send + Sync {
             message: "Add an AI provider in Settings first.".to_owned(),
         })
     }
+
+    /// The default Orb, then the workspace's Orbs by title. A service
+    /// without Orbs lists none.
+    fn orbs(&self) -> Result<Vec<AiOrb>, ServiceError> {
+        Ok(Vec::new())
+    }
+
+    /// Create an Orb named `title`.
+    fn create_orb(&self, _title: &str) -> Result<AiOrb, ServiceError> {
+        Err(no_orbs())
+    }
+
+    /// The Orb `id`, its thread and the thread's messages, oldest first.
+    fn read_orb(&self, id: &str) -> Result<(AiOrb, Option<AiChat>, Vec<AiMessage>), ServiceError> {
+        Err(ServiceError::NotFound(id.to_owned()))
+    }
+
+    /// The runs of the Orb `id`, the newest first, at most `limit`.
+    fn orb_runs(&self, id: &str, _limit: u32) -> Result<Vec<AiOrbRun>, ServiceError> {
+        Err(ServiceError::NotFound(id.to_owned()))
+    }
+
+    /// Send `message` to the Orb `id` in its thread. Its tool calls run
+    /// without asking.
+    fn send_to_orb(&self, id: &str, _message: &str) -> Result<AiRun, ServiceError> {
+        Err(ServiceError::NotFound(id.to_owned()))
+    }
+
+    /// Run the Orb `id` now, as its schedule would.
+    fn run_orb(&self, id: &str) -> Result<AiRun, ServiceError> {
+        Err(ServiceError::NotFound(id.to_owned()))
+    }
+
+    /// Change the Orb `id`'s file, when it still holds
+    /// `expected_revision`.
+    fn update_orb(
+        &self,
+        id: &str,
+        _changes: AiOrbChanges,
+        _expected_revision: &str,
+    ) -> Result<AiOrb, ServiceError> {
+        Err(ServiceError::NotFound(id.to_owned()))
+    }
+
+    /// Pause the Orb `id`'s triggers, or let them fire again.
+    fn set_orb_paused(
+        &self,
+        id: &str,
+        _paused: bool,
+        _expected_revision: &str,
+    ) -> Result<AiOrb, ServiceError> {
+        Err(ServiceError::NotFound(id.to_owned()))
+    }
+
+    /// Move the Orb `id`'s folder to the trash.
+    fn delete_orb(&self, id: &str, _expected_revision: &str) -> Result<(), ServiceError> {
+        Err(ServiceError::NotFound(id.to_owned()))
+    }
+
+    /// Whether Noura holds every Orb's triggers after a while away.
+    fn orbs_held(&self) -> Result<bool, ServiceError> {
+        Ok(false)
+    }
+
+    /// Keep the Orbs' triggers running after a while away, or pause every
+    /// Orb that has triggers.
+    fn keep_orbs_running(&self, _keep: bool) -> Result<(), ServiceError> {
+        Err(no_orbs())
+    }
+}
+
+fn no_orbs() -> ServiceError {
+    ServiceError::Failed("Noura can't run Orbs here.".to_owned())
+}
+
+/// The events of one plugin that holds `events`. The host checks that the
+/// manifest declares each event before the service sees it.
+pub trait PluginEvents: Send + Sync {
+    /// The event `event` happened, about the object `object` when there is
+    /// one. The service starts the Orbs whose triggers name it after the
+    /// call returns.
+    fn emit(&self, event: &str, object: Option<&str>) -> Result<(), ServiceError>;
 }
 
 /// Speech for one plugin that holds the `speech` capability: recording,

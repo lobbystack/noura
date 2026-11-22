@@ -14,7 +14,7 @@ yanked = "deny"
 # as soon as an advisory lands, so an unpatched one must fail the build.
 ignore = [
   # Transitive unmaintained notices with no safe upgrade in the locked stack.
-  "RUSTSEC-2024-0436", # paste, through genai
+  "RUSTSEC-2024-0436", # paste, through rav1d
   "RUSTSEC-2024-0449", # unsafe-libyaml, through serde_yaml_ng
   "RUSTSEC-2026-0370", # zvariant, through zbus
   "RUSTSEC-2026-0371", # zbus_names, through zbus

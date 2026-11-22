@@ -116,7 +116,14 @@ struct Opened {
 /// A button. One that holds a menu opens it on a press, the context-menu
 /// key or Shift-F10, and sends the chosen item; any other sends its press.
 pub(super) fn button(ui: &mut Ui, node: &ViewNode, label: &str, kit: &mut Kit) {
-    styled_button(ui, node, label, Look::Plain, kit);
+    let look = if matches!(kit.place, super::Place::Sidebar(_)) {
+        Look::Sidebar
+    } else if kit.quiet {
+        Look::Small
+    } else {
+        Look::Plain
+    };
+    styled_button(ui, node, label, look, kit);
 }
 
 /// How a plugin's button looks.
@@ -130,6 +137,11 @@ pub(super) enum Look {
     Ghost,
     /// Muted text, as a section heading's buttons.
     Quiet,
+    /// A small outline pill, as a conversation's Resume or a suggested
+    /// reply.
+    Small,
+    /// A row as wide as the sidebar, like the sidebar's own items.
+    Sidebar,
 }
 
 /// A plugin's button drawn the way `look` says.
@@ -144,7 +156,10 @@ pub(super) fn styled_button(ui: &mut Ui, node: &ViewNode, label: &str, look: Loo
         None
     };
     let creates = label.starts_with("New ") || label.starts_with("Add ");
+    // A button named More that opens a menu shows as an ellipsis.
+    let more = label == "More" && !node.children.is_empty();
     let draw = |ui: &mut Ui| match (look, step) {
+        _ if more => Btn::icon_only(icons::MORE, label).size(Size::Sm).show(ui),
         (Look::Ghost, Some(icon)) => Btn::icon_only(icon, label).size(Size::Sm).show(ui),
         (Look::Plain, _) => Btn::new(label).show(ui),
         (Look::Primary, _) => {
@@ -160,20 +175,36 @@ pub(super) fn styled_button(ui: &mut Ui, node: &ViewNode, label: &str, look: Loo
             .size(Size::Sm)
             .show(ui),
         (Look::Quiet, _) => quiet_link(ui, label),
+        (Look::Small, _) => Btn::new(label).size(Size::Sm).show(ui),
+        (Look::Sidebar, _) => {
+            let button = Btn::new(label)
+                .variant(Variant::Ghost)
+                .size(Size::Sm)
+                .width(ui.available_width());
+            if creates {
+                button.icon(icons::PLUS).show(ui)
+            } else {
+                button.show(ui)
+            }
+        }
     };
     let menu = node
         .children
         .first()
         .filter(|child| matches!(child.kind, ViewKind::Menu { .. }));
     let Some(menu) = menu else {
-        if draw(ui).clicked() {
+        let response = draw(ui);
+        kit.anchor(&node.id, response.rect, false);
+        if response.clicked() {
             kit.events.push(PluginEvent::Pressed(node.id.clone()));
         }
         return;
     };
     let id = kit.id(&node.id);
     let mut opened: Option<Opened> = ui.data(|data| data.get_temp(id));
+    kit.popup_open |= opened.is_some();
     let response = draw(ui);
+    kit.anchor(&node.id, response.rect, false);
     let from_keys =
         ui.input(|input| input.key_pressed(Key::Enter) || input.key_pressed(Key::Space));
     if response.has_focus() && opened.is_none() && menu_key(ui, true) {

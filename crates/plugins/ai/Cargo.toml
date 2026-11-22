@@ -1,6 +1,6 @@
 [package]
 name = "ai-plugin"
-description = "The AI plugin: the chat and chat-message object types, and the AI page, where you chat with the providers you set up in Settings."
+description = "The AI plugin: the chat, chat-message, orb and orb-run object types, and the Orbs page, where you talk to your Orbs through the providers you set up in Settings."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

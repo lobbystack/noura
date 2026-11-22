@@ -31,6 +31,7 @@ mod speech_shell;
 mod spelling;
 mod system;
 mod updates;
+mod window_buttons;
 mod windows;
 
 use std::{

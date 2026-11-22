@@ -169,7 +169,13 @@ fn holds_text(ui: &Ui, node: &ViewNode, id: &str, kit: &Kit) -> bool {
 
 /// The value of each input under `node`, in view order. `whole` turns
 /// false when one holds text that isn't a whole value.
-fn inputs(ui: &Ui, node: &ViewNode, kit: &Kit, fields: &mut Vec<Field>, whole: &mut bool) {
+pub(super) fn inputs(
+    ui: &Ui,
+    node: &ViewNode,
+    kit: &Kit,
+    fields: &mut Vec<Field>,
+    whole: &mut bool,
+) {
     for child in &node.children {
         if let ViewKind::Input { value, .. } = &child.kind {
             let draft = Draft::load(ui, kit.id(&child.id), value);
@@ -201,6 +207,106 @@ fn segments(ui: &mut Ui, choices: &[Choice], chosen: Option<&str>) -> Option<Str
         .collect();
     let mut picked = chosen;
     common::segmented(ui, &options, &mut picked).then(|| picked.unwrap_or_default().to_owned())
+}
+
+/// A choice input as a small button that shows the chosen option and
+/// opens a menu of the options, as a composer's model picker does. Each
+/// pick sends the input's new value.
+pub(super) fn picker(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
+    picker_at(ui, node, kit, egui::RectAlign::TOP_START);
+}
+
+/// A choice input in a side panel, as a setting: its label at the start
+/// of the line and, at its end, the button that opens a menu of its
+/// options below it.
+pub(super) fn setting(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
+    let ViewKind::Input { label, .. } = &node.kind else {
+        return;
+    };
+    let palette = crate::theme::Palette::of(ui.ctx());
+    ui.horizontal(|ui| {
+        ui.set_min_height(28.0);
+        ui.label(
+            RichText::new(label)
+                .size(crate::theme::BODY_SIZE)
+                .color(palette.muted_foreground),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            picker_at(ui, node, kit, egui::RectAlign::BOTTOM_END);
+        });
+    });
+}
+
+fn picker_at(ui: &mut Ui, node: &ViewNode, kit: &mut Kit, align: egui::RectAlign) {
+    let ViewKind::Input {
+        label,
+        value,
+        choices,
+    } = &node.kind
+    else {
+        return;
+    };
+    let id = kit.id(&node.id);
+    let mut draft = Draft::load(ui, id, value);
+    let chosen = match &draft.shown {
+        InputValue::Choice(Some(chosen)) => choices.iter().find(|choice| choice.id == *chosen),
+        _ => None,
+    };
+    let shown = chosen.map_or(label.as_str(), |choice| choice.label.as_str());
+    // The option's name, then a caret that says the button opens a menu.
+    let button = common::Btn::new(shown)
+        .variant(common::Variant::Ghost)
+        .size(common::Size::Sm);
+    let width = button.measure(ui) + 16.0;
+    let trigger = button.width(width).show(ui);
+    let palette = crate::theme::Palette::of(ui.ctx());
+    let caret = egui::Rect::from_center_size(
+        egui::pos2(trigger.rect.right() - 16.0, trigger.rect.center().y),
+        vec2(12.0, 12.0),
+    );
+    crate::icons::paint(
+        ui.painter(),
+        crate::icons::CARET_DOWN,
+        caret,
+        palette.muted_foreground,
+        false,
+    );
+    let spoken = label.clone();
+    let value_label = chosen.map(|choice| choice.label.clone());
+    ui.ctx().accesskit_node_builder(trigger.id, |node| {
+        node.set_role(Role::ComboBox);
+        node.set_label(spoken);
+        if let Some(value) = value_label {
+            node.set_value(value);
+        }
+        node.set_has_popup(egui::accesskit::HasPopup::Listbox);
+    });
+    let mut picked = None;
+    egui::Popup::menu(&trigger)
+        .frame(common::menu_frame(ui.ctx()))
+        .align(align)
+        .gap(4.0)
+        .show(|ui| {
+            ui.set_min_width(200.0);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for choice in choices {
+                let checked = chosen.is_some_and(|chosen| chosen.id == choice.id);
+                if common::menu_item(ui, None, &choice.label, None, checked, true).clicked() {
+                    picked = Some(choice.id.clone());
+                    ui.close();
+                }
+            }
+        });
+    if let Some(picked) = picked
+        && draft.shown != InputValue::Choice(Some(picked.clone()))
+    {
+        draft.shown = InputValue::Choice(Some(picked));
+        kit.events.push(PluginEvent::Changed(Field {
+            node: node.id.clone(),
+            value: draft.shown.clone(),
+        }));
+    }
+    ui.data_mut(|data| data.insert_temp(id, draft));
 }
 
 /// A labeled input.

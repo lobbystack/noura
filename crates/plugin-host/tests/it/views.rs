@@ -6,9 +6,11 @@
 
 use crate::support;
 use plugin_host::{
-    CalendarMode, Check, ColumnPress, EmptyState, Event, Field, Heading, HeadingLevel, Icon, Item,
-    Move, Naming, Node, NodeKind, PluginError, RunningPlugin, Services, Submission, Target, Value,
-    View, ViewKind, ViewNode, VirtualRow, check_rows,
+    Activity, ActivityState, Avatar, CalendarMode, Check, Choice, Color, ColumnPress, Composer,
+    DatePicker, Editable, EditableStyle, EmptyState, Event, Field, Form, Heading, HeadingLevel,
+    Icon, Input, Item, ItemStatus, Message, MessageAuthor, Move, Naming, Node, NodeKind,
+    PickerOption, Pill, PluginError, Popover, RunningPlugin, Services, SidePanel, Submission,
+    Target, Value, View, ViewKind, ViewNode, VirtualRow, check_rows,
 };
 use support::plugins;
 
@@ -241,6 +243,9 @@ fn lists_with_item_menus_and_menu_buttons_become_a_tree() {
         detail: detail.map(Into::into),
         checked: None,
         warning: None,
+        color: None,
+        avatar: None,
+        status: None,
     };
     assert_eq!(
         kinds(&beds.children),
@@ -373,13 +378,19 @@ fn a_calendar_grid_holds_its_mode_its_date_and_its_entries() {
         title: title.into(),
         start: start.into(),
         end: end.map(Into::into),
+        color: None,
     };
     assert_eq!(
         kinds(&calendar.children)[..2],
         [
             (
                 "retreat",
-                &entry("Retreat", "2026-10-19", Some("2026-10-22"))
+                &ViewKind::Entry {
+                    title: "Retreat".into(),
+                    start: "2026-10-19".into(),
+                    end: Some("2026-10-22".into()),
+                    color: Some(Color::Green),
+                }
             ),
             (
                 "standup",
@@ -513,12 +524,24 @@ fn a_list_shows_its_selected_item_and_items_carry_checkboxes_and_warnings() {
         detail: None,
         checked,
         warning: warning.map(Into::into),
+        color: None,
+        avatar: None,
+        status: None,
+    };
+    let green = ViewKind::Item {
+        label: "Mulch".into(),
+        detail: None,
+        checked: Some(true),
+        warning: None,
+        color: Some(Color::Green),
+        avatar: None,
+        status: None,
     };
     assert_eq!(
         kinds(&chores.children),
         [
             ("weed", &item("Weed the beds", Some(false), Some("Overdue"))),
-            ("mulch", &item("Mulch", Some(true), None)),
+            ("mulch", &green),
             // A warning of only spaces shows nothing.
             ("plain", &item("Look around", None, None)),
         ]
@@ -546,7 +569,7 @@ fn a_selection_outside_the_list_a_card_checkbox_and_an_unlabeled_name_field_are_
         ),
         (
             "card-with-checkbox",
-            "The card plan holds a checkbox or a warning, which only list items show.",
+            "The card plan holds a checkbox, a warning, a color, an avatar or a status, which only list items show.",
         ),
         (
             "unlabeled-name-field",
@@ -812,6 +835,9 @@ fn a_virtual_list_fetches_only_the_rows_asked_for() {
                 detail: Some("Batch 1".into()),
                 checked: None,
                 warning: None,
+                color: None,
+                avatar: None,
+                status: None,
             }
         }
     );
@@ -830,6 +856,9 @@ fn rows_that_break_the_rules_are_refused_with_a_reason() {
             detail: None,
             checked: None,
             warning: None,
+            color: None,
+            avatar: None,
+            status: None,
         },
     };
 
@@ -965,9 +994,16 @@ const UNKNOWN_KIND: &str = r#"
       (func (export "handle-event") (param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32))
       (func (export "realloc") (param i32 i32 i32 i32) (result i32) i32.const 1024))
     (core instance $i (instantiate $m))
+    (type $color' (enum "red" "orange" "yellow" "green" "blue" "purple" "brown" "gray"))
+    (export $color "color" (type $color'))
+    (type $avatar' (record (field "text" (option string)) (field "color" (option $color))))
+    (export $avatar "avatar" (type $avatar'))
+    (type $status' (record (field "label" string) (field "color" $color)))
+    (export $status "status" (type $status'))
     (type $item' (record
       (field "label" string) (field "detail" (option string)) (field "checked" (option bool))
-      (field "warning" (option string))))
+      (field "warning" (option string)) (field "color" (option $color))
+      (field "avatar" (option $avatar)) (field "status" (option $status))))
     (export $item "item" (type $item'))
     (type $item-list' (record
       (field "label" string) (field "reorder" bool) (field "selected" (option string))
@@ -1007,9 +1043,10 @@ const UNKNOWN_KIND: &str = r#"
       (field "label" string) (field "mode" $calendar-mode) (field "date" string)))
     (export $calendar "calendar" (type $calendar'))
     (type $calendar-entry' (record
-      (field "title" string) (field "start" string) (field "end" (option string))))
+      (field "title" string) (field "start" string) (field "end" (option string))
+      (field "color" (option $color))))
     (export $calendar-entry "calendar-entry" (type $calendar-entry'))
-    (type $icon' (enum "calendar" "done" "folder" "note" "sparkle" "tasks"))
+    (type $icon' (enum "calendar" "done" "folder" "note" "tasks"))
     (export $icon "icon" (type $icon'))
     (type $heading-level' (enum "page" "section"))
     (export $heading-level "heading-level" (type $heading-level'))
@@ -1020,6 +1057,42 @@ const UNKNOWN_KIND: &str = r#"
     (type $empty-state' (record
       (field "title" string) (field "detail" (option string)) (field "icon" (option $icon))))
     (export $empty-state "empty-state" (type $empty-state'))
+    (type $editable-style' (enum "title" "body" "add" "line"))
+    (export $editable-style "editable-style" (type $editable-style'))
+    (type $editable' (record
+      (field "label" string) (field "value" string) (field "style" $editable-style)
+      (field "focus" bool)))
+    (export $editable "editable" (type $editable'))
+    (type $date-picker' (record (field "label" string) (field "value" (option string))))
+    (export $date-picker "date-picker" (type $date-picker'))
+    (type $picker-option' (record
+      (field "id" string) (field "label" string) (field "color" (option $color))))
+    (export $picker-option "picker-option" (type $picker-option'))
+    (type $picker' (record
+      (field "label" string) (field "options" (list $picker-option))
+      (field "chosen" (option string))))
+    (export $picker "picker" (type $picker'))
+    (type $message-author' (enum "you" "other"))
+    (export $message-author "message-author" (type $message-author'))
+    (type $message' (record
+      (field "author" $message-author) (field "label" string) (field "text" string)
+      (field "detail" (option string)) (field "warning" (option string))))
+    (export $message "message" (type $message'))
+    (type $activity-state' (enum "waiting" "running" "done" "failed" "denied" "stopped"))
+    (export $activity-state "activity-state" (type $activity-state'))
+    (type $activity' (record (field "title" string) (field "state" $activity-state)))
+    (export $activity "activity" (type $activity'))
+    (type $composer' (record
+      (field "label" string) (field "value" string) (field "send" string)
+      (field "stop" (option string))))
+    (export $composer "composer" (type $composer'))
+    (type $side-panel' (record (field "label" string) (field "width" u32)))
+    (export $side-panel "side-panel" (type $side-panel'))
+    (type $pill' (record
+      (field "label" string) (field "avatar" (option $avatar)) (field "open" bool)))
+    (export $pill "pill" (type $pill'))
+    (type $popover' (record (field "label" string) (field "anchor" string)))
+    (export $popover "popover" (type $popover'))
     (type $node-kind' (variant
       (case "panel" (option string)) (case "text" string)
       (case "markdown" string) (case "button" string)
@@ -1028,7 +1101,11 @@ const UNKNOWN_KIND: &str = r#"
       (case "input" $input) (case "name-field" $name-field) (case "menu" string) (case "menu-item" $menu-item)
       (case "separator") (case "board" string) (case "board-column" string)
       (case "card" $item) (case "calendar" $calendar) (case "entry" $calendar-entry)
-      (case "heading" $heading) (case "empty" $empty-state) (case "split" u32)))
+      (case "heading" $heading) (case "empty" $empty-state) (case "split" u32)
+      (case "side-panel" $side-panel) (case "avatar" $avatar) (case "pill" $pill)
+      (case "editable" $editable) (case "date-picker" $date-picker) (case "picker" $picker)
+      (case "conversation" string) (case "message" $message) (case "activity" $activity)
+      (case "composer" $composer) (case "popover" $popover)))
     (export $node-kind "node-kind" (type $node-kind'))
     (type $node' (record
       (field "id" string) (field "kind" $node-kind) (field "children" (list u32))))
@@ -1104,6 +1181,147 @@ fn empty(title: &str) -> NodeKind {
         detail: Some("  ".into()),
         icon: Some(Icon::Done),
     })
+}
+
+fn side_panel(width: u32) -> NodeKind {
+    NodeKind::SidePanel(SidePanel {
+        label: "Meetings".into(),
+        width,
+    })
+}
+
+fn orb_avatar(text: Option<&str>) -> Avatar {
+    Avatar {
+        text: text.map(Into::into),
+        color: Some(Color::Blue),
+    }
+}
+
+fn pill(label: &str) -> NodeKind {
+    NodeKind::Pill(Pill {
+        label: label.into(),
+        avatar: Some(orb_avatar(Some("M"))),
+        open: true,
+    })
+}
+
+#[test]
+fn a_pill_heads_the_page_and_a_side_panel_ends_it() {
+    let view = View::from_nodes(vec![
+        node("root", NodeKind::Panel(None), vec![1, 2, 3]),
+        node("pill", pill("Meetings"), vec![]),
+        node("talk", NodeKind::Conversation("Meetings".into()), vec![]),
+        node("side", side_panel(320), vec![4]),
+        node("look", NodeKind::Avatar(orb_avatar(Some("🗓"))), vec![]),
+    ])
+    .expect("the view is valid");
+
+    let root = view.root();
+    assert_eq!(
+        root.children[0].kind,
+        ViewKind::Pill {
+            label: "Meetings".into(),
+            avatar: Some(orb_avatar(Some("M"))),
+            open: true,
+        }
+    );
+    assert_eq!(
+        root.children[2].kind,
+        ViewKind::SidePanel {
+            label: "Meetings".into(),
+            width: 320,
+        }
+    );
+    assert_eq!(
+        root.children[2].children[0].kind,
+        ViewKind::Avatar(orb_avatar(Some("🗓")))
+    );
+}
+
+#[test]
+fn a_side_panel_goes_last_in_the_page_and_an_avatar_holds_a_few_letters() {
+    let refused = |nodes: Vec<Node>| View::from_nodes(nodes).unwrap_err().to_string();
+    assert_eq!(
+        refused(vec![
+            node("root", NodeKind::Panel(None), vec![1, 2]),
+            node("side", side_panel(320), vec![]),
+            node("talk", NodeKind::Conversation("Meetings".into()), vec![]),
+        ]),
+        "The side panel side isn't the last node of the view's own panel."
+    );
+    assert_eq!(
+        refused(vec![
+            node("root", NodeKind::Panel(None), vec![1]),
+            node("box", NodeKind::Panel(None), vec![2]),
+            node("side", side_panel(320), vec![]),
+        ]),
+        "The side panel side isn't the last node of the view's own panel."
+    );
+    assert_eq!(
+        refused(vec![
+            node("root", NodeKind::Panel(None), vec![1]),
+            node("side", side_panel(600), vec![]),
+        ]),
+        "The side panel side is 600 points wide; it must be 240 to 480."
+    );
+    assert_eq!(
+        refused(vec![
+            node("root", NodeKind::Panel(None), vec![1]),
+            node("pill", pill("  "), vec![]),
+        ]),
+        "The pill pill has no label."
+    );
+    assert_eq!(
+        refused(vec![
+            node("root", NodeKind::Panel(None), vec![1]),
+            node(
+                "look",
+                NodeKind::Avatar(orb_avatar(Some("A name far too long for a circle"))),
+                vec![]
+            ),
+        ]),
+        "The avatar of look holds more than an emoji or a few letters."
+    );
+    let mut item = Item {
+        label: "Meetings".into(),
+        detail: None,
+        checked: None,
+        warning: None,
+        color: None,
+        avatar: Some(orb_avatar(None)),
+        status: Some(ItemStatus {
+            label: " ".into(),
+            color: Color::Blue,
+        }),
+    };
+    assert_eq!(
+        refused(vec![
+            node("root", NodeKind::Panel(None), vec![1]),
+            node(
+                "orbs",
+                NodeKind::List(plugin_host::ItemList {
+                    label: "Orbs".into(),
+                    reorder: false,
+                    selected: None,
+                    opens_on_click: true,
+                }),
+                vec![2]
+            ),
+            node("meetings", NodeKind::Item(item.clone()), vec![]),
+        ]),
+        "The item meetings has a status without a label."
+    );
+    item.status = None;
+    assert_eq!(
+        refused(vec![
+            node("root", NodeKind::Panel(None), vec![1]),
+            node("plans", NodeKind::Board("Plans".into()), vec![2]),
+            node("now", NodeKind::BoardColumn("Now".into()), vec![3]),
+            node("meetings", NodeKind::Card(item), vec![]),
+        ]),
+        "The card meetings holds a checkbox, a warning, a color, an avatar or a status, \
+         which only list items show."
+    );
 }
 
 #[test]
@@ -1195,4 +1413,369 @@ fn a_split_holds_two_panels_and_a_first_pane_of_a_drawable_width() {
     assert!(text.to_string().contains("two panels"), "{text}");
     let narrow = split(100, vec![panel("list"), panel("detail")]).expect_err("too narrow");
     assert!(narrow.to_string().contains("160 to 640"), "{narrow}");
+}
+
+/// A view of one panel holding `leaf`, the node under test.
+fn holding(leaf: NodeKind) -> Result<View, plugin_host::ViewError> {
+    View::from_nodes(vec![
+        node("root", NodeKind::Panel(None), vec![1]),
+        node("leaf", leaf, vec![]),
+    ])
+}
+
+fn option(id: &str, label: &str, color: Option<Color>) -> PickerOption {
+    PickerOption {
+        id: id.into(),
+        label: label.into(),
+        color,
+    }
+}
+
+fn picker(options: Vec<PickerOption>, chosen: Option<&str>) -> NodeKind {
+    NodeKind::Picker(plugin_host::Picker {
+        label: "Priority".into(),
+        options,
+        chosen: chosen.map(str::to_owned),
+    })
+}
+
+#[test]
+fn editable_text_date_pickers_and_pickers_become_their_view_kinds() {
+    let view = View::from_nodes(vec![
+        node("root", NodeKind::Panel(None), vec![1, 2, 3]),
+        node(
+            "title",
+            NodeKind::Editable(Editable {
+                label: "Title".into(),
+                value: "Buy seeds".into(),
+                style: EditableStyle::Title,
+                focus: true,
+            }),
+            vec![],
+        ),
+        node(
+            "due",
+            NodeKind::DatePicker(DatePicker {
+                label: "Due date".into(),
+                value: Some("2026-11-21".into()),
+            }),
+            vec![],
+        ),
+        node(
+            "priority",
+            picker(
+                vec![
+                    option("low", "Low", Some(Color::Blue)),
+                    option("high", "High", None),
+                ],
+                Some("high"),
+            ),
+            vec![],
+        ),
+    ])
+    .expect("the view is valid");
+
+    let kinds: Vec<&ViewKind> = view
+        .root()
+        .children
+        .iter()
+        .map(|child| &child.kind)
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            &ViewKind::Editable {
+                label: "Title".into(),
+                value: "Buy seeds".into(),
+                style: EditableStyle::Title,
+                focus: true,
+            },
+            &ViewKind::DatePicker {
+                label: "Due date".into(),
+                value: Some("2026-11-21".into()),
+            },
+            &ViewKind::Picker {
+                label: "Priority".into(),
+                options: vec![
+                    option("low", "Low", Some(Color::Blue)),
+                    option("high", "High", None),
+                ],
+                chosen: Some("high".into()),
+            },
+        ]
+    );
+}
+
+#[test]
+fn unlabeled_or_malformed_editable_text_date_pickers_and_pickers_are_refused() {
+    let refused = |leaf: NodeKind| holding(leaf).expect_err("refused").to_string();
+    assert_eq!(
+        refused(NodeKind::Editable(Editable {
+            label: " ".into(),
+            value: String::new(),
+            style: EditableStyle::Add,
+            focus: false,
+        })),
+        "The editable text leaf has no label."
+    );
+    assert_eq!(
+        refused(NodeKind::DatePicker(DatePicker {
+            label: "Due date".into(),
+            value: Some("21/11/2026".into()),
+        })),
+        "The date picker leaf holds 21/11/2026, which isn't a date in the form YYYY-MM-DD."
+    );
+    assert_eq!(
+        refused(picker(Vec::new(), None)),
+        "The picker leaf has no options."
+    );
+    assert_eq!(
+        refused(picker(vec![option("low", "Low", None)], Some("high"))),
+        "The picker leaf chooses high, which isn't one of its options."
+    );
+    assert_eq!(
+        refused(picker(
+            vec![option("low", "Low", None), option("low", "Lower", None)],
+            None
+        )),
+        "The picker leaf has two options with the ID low."
+    );
+    assert_eq!(
+        refused(picker(vec![option("low", " ", None)], None)),
+        "The option low of the picker leaf has no label."
+    );
+    // They hold no other nodes.
+    let parent = View::from_nodes(vec![
+        node("root", NodeKind::Panel(None), vec![1]),
+        node(
+            "leaf",
+            picker(vec![option("low", "Low", None)], None),
+            vec![2],
+        ),
+        node("line", NodeKind::Text("Hi".into()), vec![]),
+    ])
+    .expect_err("a picker with children");
+    assert_eq!(parent.to_string(), "The picker leaf holds no other nodes.");
+}
+
+fn message(author: MessageAuthor, label: &str, text: &str) -> NodeKind {
+    NodeKind::Message(Message {
+        author,
+        label: label.into(),
+        text: text.into(),
+        detail: Some(" ".into()),
+        warning: None,
+    })
+}
+
+fn composer(label: &str, stop: Option<&str>) -> NodeKind {
+    NodeKind::Composer(Composer {
+        label: label.into(),
+        value: String::new(),
+        send: "Send".into(),
+        stop: stop.map(str::to_owned),
+    })
+}
+
+fn choice(id: &str) -> Node {
+    node(
+        id,
+        NodeKind::Input(Input {
+            label: "Model".into(),
+            value: Value::Choice(Some("small".into())),
+            choices: vec![Choice {
+                id: "small".into(),
+                label: "Small".into(),
+            }],
+        }),
+        vec![],
+    )
+}
+
+#[test]
+fn a_conversation_holds_messages_steps_and_a_composer_last() {
+    let talk = NodeKind::Conversation("Garden helper".into());
+    let view = View::from_nodes(vec![
+        node("root", NodeKind::Panel(None), vec![1]),
+        node("talk", talk.clone(), vec![2, 3, 5, 6]),
+        node(
+            "asked",
+            message(MessageAuthor::You, "You", "Beans?"),
+            vec![],
+        ),
+        node(
+            "looked",
+            NodeKind::Activity(Activity {
+                title: "Read the calendar".into(),
+                state: ActivityState::Done,
+            }),
+            vec![4],
+        ),
+        node("found", NodeKind::Markdown("After frost.".into()), vec![]),
+        node(
+            "answer",
+            message(MessageAuthor::Other, "Helper", "Soon."),
+            vec![],
+        ),
+        node("next", composer("Message", Some("Stop")), vec![7, 8]),
+        choice("model"),
+        node("attach", NodeKind::Button("Attach".into()), vec![]),
+    ])
+    .expect("a conversation");
+    let talk_node = &view.root().children[0];
+    assert_eq!(
+        talk_node.kind,
+        ViewKind::Conversation {
+            label: "Garden helper".into()
+        }
+    );
+    // A blank detail reads as none.
+    assert_eq!(
+        talk_node.children[0].kind,
+        ViewKind::Message {
+            author: MessageAuthor::You,
+            label: "You".into(),
+            text: "Beans?".into(),
+            detail: None,
+            warning: None,
+        }
+    );
+    assert_eq!(talk_node.children[1].children.len(), 1);
+    assert_eq!(
+        talk_node.children[3].kind,
+        ViewKind::Composer {
+            label: "Message".into(),
+            value: String::new(),
+            send: "Send".into(),
+            stop: Some("Stop".into()),
+        }
+    );
+
+    let refused = |nodes: Vec<Node>| View::from_nodes(nodes).unwrap_err().to_string();
+    assert_eq!(
+        refused(vec![
+            node("root", NodeKind::Panel(None), vec![1]),
+            node("talk", talk.clone(), vec![2, 3]),
+            node("next", composer("Message", None), vec![]),
+            node("asked", message(MessageAuthor::You, "You", "Hi"), vec![]),
+        ]),
+        "The conversation talk holds the composer next before its last node."
+    );
+    assert_eq!(
+        refused(vec![
+            node("root", NodeKind::Panel(None), vec![1]),
+            node("next", composer("Message", None), vec![2]),
+            node("line", NodeKind::Text("Hi".into()), vec![]),
+        ]),
+        "The composer next holds line, which isn't a button or a choice."
+    );
+    assert_eq!(
+        refused(vec![
+            node(
+                "root",
+                NodeKind::Form(Form {
+                    label: "Outer".into(),
+                    submit: "Save".into(),
+                    required: vec![],
+                }),
+                vec![1],
+            ),
+            node("next", composer("Message", None), vec![]),
+        ]),
+        "The composer next sits inside a form."
+    );
+    assert_eq!(
+        refused(vec![
+            node("root", NodeKind::Panel(None), vec![1]),
+            node("asked", message(MessageAuthor::You, "You", "Hi"), vec![2]),
+            node("line", NodeKind::Text("Hi".into()), vec![]),
+        ]),
+        "The message asked holds no other nodes."
+    );
+    for (kind, reason) in [
+        (
+            NodeKind::Conversation(" ".into()),
+            "The conversation talk has no label.",
+        ),
+        (
+            message(MessageAuthor::Other, " ", "Hi"),
+            "The message talk has no label.",
+        ),
+        (composer(" ", None), "The composer talk has no label."),
+        (
+            composer("Message", Some(" ")),
+            "The composer talk has a stop button without a label.",
+        ),
+    ] {
+        assert_eq!(
+            refused(vec![
+                node("root", NodeKind::Panel(None), vec![1]),
+                node("talk", kind, vec![]),
+            ]),
+            reason
+        );
+    }
+}
+
+#[test]
+fn a_popover_lays_out_its_children_beside_an_item_a_card_an_entry_or_a_button() {
+    let popover = |anchor: &str, label: &str, children: Vec<Node>| {
+        let mut nodes = vec![
+            node("root", NodeKind::Panel(None), vec![1, 2]),
+            node("add", NodeKind::Button("Add".into()), Vec::new()),
+            node(
+                "details",
+                NodeKind::Popover(Popover {
+                    label: label.into(),
+                    anchor: anchor.into(),
+                }),
+                Vec::new(),
+            ),
+        ];
+        for (index, child) in children.into_iter().enumerate() {
+            nodes[2].children.push(u32::try_from(index + 3).unwrap());
+            nodes.push(child);
+        }
+        View::from_nodes(nodes)
+    };
+    let line = || node("line", NodeKind::Text("Tomorrow".into()), Vec::new());
+
+    let view = popover("add", "Dentist", vec![line()]).expect("a popover beside a button");
+    let details = &view.root().children[1];
+    assert_eq!(
+        details.kind,
+        ViewKind::Popover {
+            label: "Dentist".into(),
+            anchor: "add".into(),
+        }
+    );
+    assert_eq!(details.children[0].kind, ViewKind::Text("Tomorrow".into()));
+
+    let unlabeled = popover("add", " ", vec![]).expect_err("no label");
+    assert_eq!(unlabeled.to_string(), "The popover details has no label.");
+    let missing = popover("gone", "Dentist", vec![]).expect_err("no such node");
+    assert_eq!(
+        missing.to_string(),
+        "The popover details points at gone, which isn't an item, a card, an entry or a \
+         button of the view."
+    );
+    let text = popover("line", "Dentist", vec![line()]).expect_err("text isn't an anchor");
+    assert!(text.to_string().contains("points at line"), "{text}");
+    let nested = popover(
+        "add",
+        "Dentist",
+        vec![node(
+            "inner",
+            NodeKind::Popover(Popover {
+                label: "Inner".into(),
+                anchor: "add".into(),
+            }),
+            Vec::new(),
+        )],
+    )
+    .expect_err("a popover in a popover");
+    assert_eq!(
+        nested.to_string(),
+        "The popover inner sits in another popover."
+    );
 }

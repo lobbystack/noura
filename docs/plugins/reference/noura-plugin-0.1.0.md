@@ -18,6 +18,7 @@
     - interface `noura:plugin/paste@0.1.0`
     - interface `noura:plugin/menu-bar@0.1.0`
     - interface `noura:plugin/notifications@0.1.0`
+    - interface `noura:plugin/events@0.1.0`
     - interface `noura:plugin/ui@0.1.0`
  - Exports:
     - interface `noura:plugin/view@0.1.0`
@@ -839,6 +840,10 @@ A chat, as its `chat.md` holds it.
   written yet.
 
 - <a id="chat.retention"></a>`retention`: [`retention`](#retention)
+- <a id="chat.orb"></a>`orb`: option<`string`>
+  <p>The Orb whose thread the chat is, or none for a plain chat, which
+  belongs to the default Orb.
+
 
 #### <a id="message_kind"></a>`enum message-kind`
 
@@ -1022,6 +1027,213 @@ A message you sent and its answer, as it streams in.
 - <a id="run.tool_calls"></a>`tool-calls`: list<[`tool-call`](#tool_call)>
 - <a id="run.failure"></a>`failure`: option<[`failure`](#failure)>
 
+#### <a id="effort"></a>`enum effort`
+
+How hard a model reasons before it answers.
+
+##### Enum Cases
+
+- <a id="effort.off"></a>`off`
+  <p>No reasoning, for a model that can answer without it.
+
+- <a id="effort.low"></a>`low`
+- <a id="effort.medium"></a>`medium`
+- <a id="effort.high"></a>`high`
+
+#### <a id="model"></a>`record model`
+
+A model one of your providers answers with.
+
+##### Record Fields
+
+- <a id="model.provider"></a>`provider`: `string`
+  <p>The provider's ID.
+
+- <a id="model.id"></a>`id`: `string`
+  <p>The model's ID, as the provider names it.
+
+- <a id="model.name"></a>`name`: `string`
+  <p>Its name, such as `Claude Opus 5.5`, or its ID when Noura doesn't
+  know it.
+
+- <a id="model.efforts"></a>`efforts`: list<[`effort`](#effort)>
+  <p>The efforts Noura can ask it for, from least to most. Empty for a
+  model whose reasoning Noura can't set.
+
+- <a id="model.default_effort"></a>`default-effort`: option<[`effort`](#effort)>
+  <p>The effort it reasons with when none is chosen.
+
+
+#### <a id="orb_state"></a>`enum orb-state`
+
+Orbs. An Orb is a named agent that lives in the workspace as files:
+`Orbs/<name>/<name>.md`, whose body holds your instructions and whose
+properties hold its look, its provider, its tools and its triggers,
+beside `Memory.md`, `Heartbeat.md` and a `Runs` folder with one record
+per run. Each Orb keeps one ongoing thread, a chat that every run adds
+to. An Orb runs the tools its file lists without asking, whether you
+wrote to it or one of its triggers started it, and Noura records each
+call in its thread and in the run's record. Triggers fire only while
+Noura is open on this device. `read-run` and `stop` reach every Orb
+run, whichever plugin or trigger started it.
+How an Orb stands.
+
+##### Enum Cases
+
+- <a id="orb_state.idle"></a>`idle`
+  <p>Nothing runs now.
+
+- <a id="orb_state.working"></a>`working`
+  <p>A run is in progress.
+
+- <a id="orb_state.paused"></a>`paused`
+  <p>You paused it, so its triggers don't fire.
+
+- <a id="orb_state.held"></a>`held`
+  <p>You haven't used Noura in a while, so Noura holds every Orb's
+  triggers until you answer `keep-orbs-running`.
+
+- <a id="orb_state.problem"></a>`problem`
+  <p>Its file breaks the workspace format, so it doesn't run. `problem`
+  says why.
+
+
+#### <a id="orb"></a>`record orb`
+
+An Orb, as its file holds it.
+
+##### Record Fields
+
+- <a id="orb.id"></a>`id`: `string`
+- <a id="orb.title"></a>`title`: `string`
+  <p>Its name: the file's name without `.md`.
+
+- <a id="orb.revision"></a>`revision`: `string`
+  <p>The revision of its file, which `update-orb`, `set-orb-paused` and
+  `delete-orb` carry. Empty for the default Orb.
+
+- <a id="orb.avatar"></a>`avatar`: option<`string`>
+  <p>An emoji or a few letters.
+
+- <a id="orb.color"></a>`color`: option<`string`>
+  <p>A palette color: `red`, `orange`, `yellow`, `green`, `blue`,
+  `purple`, `brown` or `gray`.
+
+- <a id="orb.provider"></a>`provider`: option<`string`>
+  <p>The provider its runs ask, or none for your first.
+
+- <a id="orb.model"></a>`model`: option<`string`>
+  <p>The model they ask in place of the provider's own, or none.
+
+- <a id="orb.effort"></a>`effort`: option<[`effort`](#effort)>
+  <p>How hard that model reasons, or none for the model's own default.
+
+- <a id="orb.state"></a>`state`: [`orb-state`](#orb_state)
+- <a id="orb.thread"></a>`thread`: option<`string`>
+  <p>The ID of its thread, once its first message went out.
+
+- <a id="orb.tools"></a>`tools`: list<`string`>
+  <p>The tools it runs without asking, as its file names them, such as
+  `tasks__create` or `tasks__*`.
+
+- <a id="orb.triggers"></a>`triggers`: list<`string`>
+  <p>Its triggers, as its file names them, such as `event
+  transcription.finished` or `schedule 30 8 * * 1-5`.
+
+- <a id="orb.problem"></a>`problem`: option<`string`>
+  <p>Why it doesn't run, for an Orb in the `problem` state, as the
+  property that fails and its code, such as `triggers:
+  invalid_trigger`.
+
+
+#### <a id="orb_start"></a>`enum orb-start`
+
+What started a run of an Orb.
+
+##### Enum Cases
+
+- <a id="orb_start.you"></a>`you`
+  <p>You wrote to the Orb, or chose Run now.
+
+- <a id="orb_start.schedule"></a>`schedule`
+  <p>A schedule trigger's time came.
+
+- <a id="orb_start.event"></a>`event`
+  <p>A plugin's event that a trigger names happened.
+
+
+#### <a id="orb_run_status"></a>`enum orb-run-status`
+
+How a run of an Orb stands.
+
+##### Enum Cases
+
+- <a id="orb_run_status.running"></a>`running`
+- <a id="orb_run_status.succeeded"></a>`succeeded`
+- <a id="orb_run_status.failed"></a>`failed`
+- <a id="orb_run_status.interrupted"></a>`interrupted`
+  <p>Noura quit during one of its tool calls, or a plugin it relied on
+  went. Noura never runs a tool call again by itself.
+
+- <a id="orb_run_status.cancelled"></a>`cancelled`
+  <p>You stopped it.
+
+
+#### <a id="orb_run"></a>`record orb-run`
+
+A run of an Orb, as its record holds it.
+
+##### Record Fields
+
+- <a id="orb_run.id"></a>`id`: `string`
+- <a id="orb_run.orb"></a>`orb`: `string`
+- <a id="orb_run.thread"></a>`thread`: `string`
+  <p>The thread its messages are in. Each message's run is this ID.
+
+- <a id="orb_run.started_by"></a>`started-by`: [`orb-start`](#orb_start)
+- <a id="orb_run.trigger"></a>`trigger`: option<`string`>
+  <p>The trigger that started it, as the Orb's file names it.
+
+- <a id="orb_run.status"></a>`status`: [`orb-run-status`](#orb_run_status)
+- <a id="orb_run.started"></a>`started`: `string`
+  <p>When it started and when it ended, in RFC 3339.
+
+- <a id="orb_run.finished"></a>`finished`: option<`string`>
+- <a id="orb_run.tool_calls"></a>`tool-calls`: `u32`
+  <p>How many tool calls it made.
+
+- <a id="orb_run.error_code"></a>`error-code`: option<`string`>
+  <p>Why it failed or stopped, such as `orb_interrupted`.
+
+- <a id="orb_run.quiet"></a>`quiet`: `bool`
+  <p>It found nothing to report: its last answer was `HEARTBEAT_OK`.
+
+
+#### <a id="orb_changes"></a>`record orb-changes`
+
+What `update-orb` changes. A field left none stays as it is.
+
+##### Record Fields
+
+- <a id="orb_changes.title"></a>`title`: option<`string`>
+  <p>A new name, which renames the Orb's folder and file.
+
+- <a id="orb_changes.instructions"></a>`instructions`: option<`string`>
+  <p>New instructions, the file's body.
+
+- <a id="orb_changes.avatar"></a>`avatar`: option<`string`>
+  <p>An empty string clears the avatar, the color, the provider (your
+  first one then answers) or the model (the provider's own).
+
+- <a id="orb_changes.color"></a>`color`: option<`string`>
+- <a id="orb_changes.provider"></a>`provider`: option<`string`>
+- <a id="orb_changes.model"></a>`model`: option<`string`>
+- <a id="orb_changes.effort"></a>`effort`: option<option<[`effort`](#effort)>>
+  <p>A new effort, or none inside to clear it.
+
+- <a id="orb_changes.tools"></a>`tools`: option<list<`string`>>
+- <a id="orb_changes.triggers"></a>`triggers`: option<list<`string`>>
+
 #### <a id="web_result"></a>`record web-result`
 
 A page a web search found.
@@ -1140,6 +1352,16 @@ The providers you set up and turned on.
 
 - <a id="providers.0"></a> result<list<[`provider`](#provider)>, [`error`](#error)>
 
+#### <a id="models"></a>`models: func`
+
+The models of the providers you set up and turned on, provider by
+provider in the order `providers` lists them, each provider's own
+model first.
+
+##### Return values
+
+- <a id="models.0"></a> result<list<[`model`](#model)>, [`error`](#error)>
+
 #### <a id="chats"></a>`chats: func`
 
 The workspace's chats, the one changed last first.
@@ -1227,7 +1449,8 @@ streams in: `read-run` shows it so far, and Noura draws the plugin's views
 again as text arrives. The answer and its status are on disk before
 the run shows as completed, cancelled or failed. The first message of
 a chat titled `New chat` gives the chat its title. A chat answers one
-message at a time.
+message at a time. A message to an Orb's thread goes to the Orb, as
+`send-to-orb` sends it, with the Orb's provider and tools.
 
 ##### Params
 
@@ -1257,6 +1480,10 @@ to call next.
 - <a id="answer_tools.0"></a> result<[`run`](#run), [`error`](#error)>
 
 #### <a id="run_tools"></a>`run-tools: func`
+
+`answer-tools` and `run-tools` refuse an Orb's run: Noura runs its
+calls itself. `resume` refuses an Orb's thread, whose runs Noura takes
+up by itself.
 
 Run the tool calls of a completed run that name workspace tools, one
 at a time, then stream the model's next answer into the same run.
@@ -1319,6 +1546,159 @@ a cancelled message.
 ##### Return values
 
 - <a id="stop.0"></a> result<_, [`error`](#error)>
+
+#### <a id="orbs"></a>`orbs: func`
+
+The default Orb first, then the workspace's Orbs by title. The default
+Orb has the ID `orb_00000000000000000000000000` and no file: plain
+chats are its, and its tool calls each wait for your answer. A plain
+chat's request to its provider asks its model, with its effort.
+
+##### Return values
+
+- <a id="orbs.0"></a> result<list<[`orb`](#orb)>, [`error`](#error)>
+
+#### <a id="create_orb"></a>`create-orb: func`
+
+Create an Orb named `title` in `Orbs/<title>/`, with no instructions,
+tools or triggers, and an empty `Memory.md`. Fails with
+`already-exists` when that folder exists.
+
+##### Params
+
+- <a id="create_orb.title"></a>`title`: `string`
+
+##### Return values
+
+- <a id="create_orb.0"></a> result<[`orb`](#orb), [`error`](#error)>
+
+#### <a id="read_orb"></a>`read-orb: func`
+
+An Orb, its thread and the thread's messages, oldest first, as
+`read-chat` returns them. An Orb whose first message hasn't gone out
+has no thread.
+
+##### Params
+
+- <a id="read_orb.id"></a>`id`: `string`
+
+##### Return values
+
+- <a id="read_orb.0"></a> result<([`orb`](#orb), option<[`chat`](#chat)>, list<[`message`](#message)>), [`error`](#error)>
+
+#### <a id="orb_runs"></a>`orb-runs: func`
+
+The Orb's runs, the newest first, at most `limit` of them.
+
+##### Params
+
+- <a id="orb_runs.id"></a>`id`: `string`
+- <a id="orb_runs.limit"></a>`limit`: `u32`
+
+##### Return values
+
+- <a id="orb_runs.0"></a> result<list<[`orb-run`](#orb_run)>, [`error`](#error)>
+
+#### <a id="send_to_orb"></a>`send-to-orb: func`
+
+Send `message` to the Orb in its thread, with its instructions and its
+memory, from its provider. The model may call the Orb's tools, and
+Noura runs each call without asking and answers the model again, until
+the model answers without a call. `read-run` follows it. An Orb
+answers one message at a time.
+
+##### Params
+
+- <a id="send_to_orb.id"></a>`id`: `string`
+- <a id="send_to_orb.message"></a>`message`: `string`
+
+##### Return values
+
+- <a id="send_to_orb.0"></a> result<[`run`](#run), [`error`](#error)>
+
+#### <a id="run_orb"></a>`run-orb: func`
+
+Run the Orb now, as its schedule would: its message is the checklist
+in `Heartbeat.md`.
+
+##### Params
+
+- <a id="run_orb.id"></a>`id`: `string`
+
+##### Return values
+
+- <a id="run_orb.0"></a> result<[`run`](#run), [`error`](#error)>
+
+#### <a id="update_orb"></a>`update-orb: func`
+
+Change the Orb's file. Fails with `revision-conflict` when its file
+no longer holds `expected-revision`, and with `invalid-property` when
+a change breaks the format, and then writes nothing. The default Orb
+has no file: it takes a provider, a model and an effort, which this
+device keeps, and refuses other changes.
+
+##### Params
+
+- <a id="update_orb.id"></a>`id`: `string`
+- <a id="update_orb.changes"></a>`changes`: [`orb-changes`](#orb_changes)
+- <a id="update_orb.expected_revision"></a>`expected-revision`: `string`
+
+##### Return values
+
+- <a id="update_orb.0"></a> result<[`orb`](#orb), [`error`](#error)>
+
+#### <a id="set_orb_paused"></a>`set-orb-paused: func`
+
+Pause the Orb, so its triggers don't fire, or let them fire again.
+Fails with `revision-conflict` as `update-orb` does.
+
+##### Params
+
+- <a id="set_orb_paused.id"></a>`id`: `string`
+- <a id="set_orb_paused.paused"></a>`paused`: `bool`
+- <a id="set_orb_paused.expected_revision"></a>`expected-revision`: `string`
+
+##### Return values
+
+- <a id="set_orb_paused.0"></a> result<[`orb`](#orb), [`error`](#error)>
+
+#### <a id="delete_orb"></a>`delete-orb: func`
+
+Move the Orb's folder to the trash: its file, its memory, its
+checklist and its run records. Its thread stays a chat. Fails with
+`revision-conflict` as `update-orb` does.
+
+##### Params
+
+- <a id="delete_orb.id"></a>`id`: `string`
+- <a id="delete_orb.expected_revision"></a>`expected-revision`: `string`
+
+##### Return values
+
+- <a id="delete_orb.0"></a> result<_, [`error`](#error)>
+
+#### <a id="orbs_held"></a>`orbs-held: func`
+
+Whether Noura holds every Orb's triggers because you haven't used
+Noura in a while.
+
+##### Return values
+
+- <a id="orbs_held.0"></a> result<`bool`, [`error`](#error)>
+
+#### <a id="keep_orbs_running"></a>`keep-orbs-running: func`
+
+Answer whether to keep the Orbs' triggers running after a while
+away: yes lets them fire again, and the schedules catch up on what
+they missed; no pauses every Orb that has triggers.
+
+##### Params
+
+- <a id="keep_orbs_running.keep"></a>`keep`: `bool`
+
+##### Return values
+
+- <a id="keep_orbs_running.0"></a> result<_, [`error`](#error)>
 
 #### <a id="web_ready"></a>`web-ready: func`
 
@@ -2010,6 +2390,44 @@ Take away the notification with this ID, if it still shows.
 
 - <a id="withdraw.0"></a> result<_, [`error`](#error)>
 
+## <a id="noura_plugin_events_0_1_0"></a>Import interface noura:plugin/events@0.1.0
+
+Events the plugin tells Noura about, which start the triggers of Orbs
+that name them. Needs the `events` capability, whose manifest entry
+declares each event with an ID and a title. An Orb's trigger names an
+event as `<plugin>.<event>`, such as `transcription.finished`.
+
+----
+
+### Types
+
+#### <a id="error"></a>`type error`
+[`error`](#error)
+<p>
+
+----
+
+### Functions
+
+#### <a id="emit"></a>`emit: func`
+
+Tell Noura that the event `event`, one the manifest declares,
+happened, about the object with the stable ID `object` when there is
+one. Noura starts the Orbs whose triggers name the event after the
+call returns, and an Orb that may read the object gets its title and
+body. An event that happens during a tool call of an Orb's run starts
+no Orb, so Orbs can't start each other in a loop. Fails with `failed`
+for an event the manifest doesn't declare.
+
+##### Params
+
+- <a id="emit.event"></a>`event`: `string`
+- <a id="emit.object"></a>`object`: option<`string`>
+
+##### Return values
+
+- <a id="emit.0"></a> result<_, [`error`](#error)>
+
 ## <a id="noura_plugin_ui_0_1_0"></a>Import interface noura:plugin/ui@0.1.0
 
 UI as data. WIT has no recursive types, so a view is a flat list of nodes
@@ -2020,6 +2438,49 @@ Every label must hold more than spaces: Noura reads it to screen readers.
 ----
 
 ### Types
+
+#### <a id="color"></a>`enum color`
+
+A color from Noura's palette, which Noura draws to suit the light or
+dark theme.
+
+##### Enum Cases
+
+- <a id="color.red"></a>`red`
+- <a id="color.orange"></a>`orange`
+- <a id="color.yellow"></a>`yellow`
+- <a id="color.green"></a>`green`
+- <a id="color.blue"></a>`blue`
+- <a id="color.purple"></a>`purple`
+- <a id="color.brown"></a>`brown`
+- <a id="color.gray"></a>`gray`
+
+#### <a id="avatar"></a>`record avatar`
+
+A small round picture of someone or something, such as an agent: a
+circle in a palette color, with a letter or an emoji in it. Screen
+readers skip it; the label beside it names what it shows.
+
+##### Record Fields
+
+- <a id="avatar.text"></a>`text`: option<`string`>
+  <p>A letter, a few letters or an emoji, up to 16 characters, or none
+  for a plain circle.
+
+- <a id="avatar.color"></a>`color`: option<[`color`](#color)>
+  <p>The circle's color, or none for the theme's own.
+
+
+#### <a id="status"></a>`record status`
+
+A dot that says how something stands, such as `Working`.
+
+##### Record Fields
+
+- <a id="status.label"></a>`label`: `string`
+  <p>What the dot means, which screen readers read after the label.
+
+- <a id="status.color"></a>`color`: [`color`](#color)
 
 #### <a id="item"></a>`record item`
 
@@ -2037,9 +2498,25 @@ the same line. A board's card shows the detail under the label.
   list items show one: a card holding one breaks the rules.
 
 - <a id="item.warning"></a>`warning`: option<`string`>
-  <p>A short warning after the label, such as `Overdue`, in the color
-  Noura shows problems in. Screen readers read it with the label.
+  <p>A short warning at the end of the line, such as `Overdue` or an
+  overdue date, in the color Noura shows problems in. Screen readers
+  read it with the label.
   Only list and virtual list items show one.
+
+- <a id="item.color"></a>`color`: option<[`color`](#color)>
+  <p>Colors the item's checkbox, or a dot before its label when it has
+  none, as for a calendar in a list of calendars. A colored checkbox
+  shows or hides something, so a checked one doesn't strike its label
+  through as a done task's does. Only list and virtual list items show
+  one.
+
+- <a id="item.avatar"></a>`avatar`: option<[`avatar`](#avatar)>
+  <p>An avatar before the label, in place of the color's dot. Only list
+  and virtual list items show one.
+
+- <a id="item.status"></a>`status`: option<[`status`](#status)>
+  <p>A status dot at the end of the line. Only list and virtual list
+  items show one.
 
 
 #### <a id="item_list"></a>`record item-list`
@@ -2275,6 +2752,10 @@ covers, in this device's time zone.
   one not after the start, an all-day entry takes its first day and a
   timed entry 30 minutes.
 
+- <a id="calendar_entry.color"></a>`color`: option<[`color`](#color)>
+  <p>The color Noura draws the entry in, such as its calendar's, or none
+  for the theme's own.
+
 
 #### <a id="icon"></a>`enum icon`
 
@@ -2286,7 +2767,6 @@ An icon Noura draws beside a heading or in an empty state.
 - <a id="icon.done"></a>`done`
 - <a id="icon.folder"></a>`folder`
 - <a id="icon.note"></a>`note`
-- <a id="icon.sparkle"></a>`sparkle`
 - <a id="icon.tasks"></a>`tasks`
 
 #### <a id="heading_level"></a>`enum heading-level`
@@ -2327,6 +2807,236 @@ What a page or a section shows while it holds nothing.
   <p>A line under the title that says what to do.
 
 - <a id="empty_state.icon"></a>`icon`: option<[`icon`](#icon)>
+
+#### <a id="editable_style"></a>`enum editable-style`
+
+How an editable text draws, and what Return does in it.
+
+##### Enum Cases
+
+- <a id="editable_style.title"></a>`title`
+  <p>One line at a title's size. Return or leaving it sends the text.
+
+- <a id="editable_style.body"></a>`body`
+  <p>Several lines. Return starts a new line, and leaving it sends the
+  text.
+
+- <a id="editable_style.add"></a>`add`
+  <p>One line in a box, for adding one thing after another: Return sends
+  the text, then empties the field and keeps the keyboard in it.
+  Leaving it keeps what it holds and sends nothing.
+
+- <a id="editable_style.line"></a>`line`
+  <p>One line at the body's size, such as a name. Return or leaving it
+  sends the text without the spaces around it, which may be empty.
+
+
+#### <a id="editable"></a>`record editable`
+
+Text you edit in place. A title, a body or a line reads as plain text
+until you click or tab into it. What you type stays until the plugin
+draws another value. Sending it sends `changed` with a `text` value, or
+a `multiline` one for a body, and only when the text differs from the
+value drawn; an `add` field sends only text with more than spaces.
+Escape puts back the value drawn and lets go of the keyboard.
+
+##### Record Fields
+
+- <a id="editable.label"></a>`label`: `string`
+  <p>Names the text for screen readers, and shows in it while it's
+  empty.
+
+- <a id="editable.value"></a>`value`: `string`
+- <a id="editable.style"></a>`style`: [`editable-style`](#editable_style)
+- <a id="editable.focus"></a>`focus`: `bool`
+  <p>Whether it takes the keyboard: when it appears holding true, or
+  when the plugin draws it with true after drawing it with false.
+
+
+#### <a id="date_picker"></a>`record date-picker`
+
+A compact button that shows a date and opens a date picker: Today,
+Tomorrow and Next week, a month to pick a day from, and Clear. A
+pick sends `changed` with a `date` value, none for Clear.
+
+##### Record Fields
+
+- <a id="date_picker.label"></a>`label`: `string`
+  <p>Names the picker for screen readers, and shows on the button while
+  no date is chosen.
+
+- <a id="date_picker.value"></a>`value`: option<`string`>
+  <p>The chosen date as `YYYY-MM-DD`, or none.
+
+
+#### <a id="picker_option"></a>`record picker-option`
+
+An option of a picker.
+
+##### Record Fields
+
+- <a id="picker_option.id"></a>`id`: `string`
+  <p>Unique within the picker.
+
+- <a id="picker_option.label"></a>`label`: `string`
+- <a id="picker_option.color"></a>`color`: option<[`color`](#color)>
+  <p>A mark in this color before the label, such as a priority's flag.
+
+
+#### <a id="picker"></a>`record picker`
+
+A compact button that shows the chosen option and opens a menu of
+the options. A pick sends `changed` with a `choice` value.
+
+##### Record Fields
+
+- <a id="picker.label"></a>`label`: `string`
+  <p>Names the picker for screen readers.
+
+- <a id="picker.options"></a>`options`: list<[`picker-option`](#picker_option)>
+- <a id="picker.chosen"></a>`chosen`: option<`string`>
+  <p>The ID of the chosen option, or none, when the button shows the
+  label.
+
+
+#### <a id="pill"></a>`record pill`
+
+A rounded button with an avatar and a label, such as the name of
+whom a conversation is with, that opens and closes something, such as
+a side panel. A press sends `pressed`.
+
+##### Record Fields
+
+- <a id="pill.label"></a>`label`: `string`
+- <a id="pill.avatar"></a>`avatar`: option<[`avatar`](#avatar)>
+- <a id="pill.open"></a>`open`: `bool`
+  <p>Whether what it opens shows now. Screen readers read it as
+  expanded.
+
+
+#### <a id="side_panel"></a>`record side-panel`
+
+A pane at the right edge of the page.
+
+##### Record Fields
+
+- <a id="side_panel.label"></a>`label`: `string`
+  <p>Names the pane for screen readers.
+
+- <a id="side_panel.width"></a>`width`: `u32`
+  <p>How wide it is, from 240 to 480 points.
+
+
+#### <a id="message_author"></a>`enum message-author`
+
+Who wrote a message in a conversation.
+
+##### Enum Cases
+
+- <a id="message_author.you"></a>`you`
+  <p>You. Your messages show at the end of the line, in a bubble, as you
+  wrote them.
+
+- <a id="message_author.other"></a>`other`
+  <p>Anyone or anything else, such as a model. Their messages show at
+  the start of the line, as Markdown, with no bubble.
+
+
+#### <a id="message"></a>`record message`
+
+A message in a conversation.
+
+##### Record Fields
+
+- <a id="message.author"></a>`author`: [`message-author`](#message_author)
+- <a id="message.label"></a>`label`: `string`
+  <p>Names the message for screen readers, such as `You` or the model
+  that wrote it.
+
+- <a id="message.text"></a>`text`: `string`
+  <p>Yours as you wrote it, with its line breaks kept; any other as
+  Markdown. A message from someone else with no text yet, as while an
+  answer starts, shows that more is coming.
+
+- <a id="message.detail"></a>`detail`: option<`string`>
+  <p>A quiet line under the message, such as `Stopped.`
+
+- <a id="message.warning"></a>`warning`: option<`string`>
+  <p>A short problem under the message, such as why an answer failed,
+  in the color Noura shows problems in.
+
+
+#### <a id="activity_state"></a>`enum activity-state`
+
+How far a step in a conversation has come.
+
+##### Enum Cases
+
+- <a id="activity_state.waiting"></a>`waiting`
+  <p>It waits, for you or for its turn.
+
+- <a id="activity_state.running"></a>`running`
+- <a id="activity_state.done"></a>`done`
+- <a id="activity_state.failed"></a>`failed`
+- <a id="activity_state.denied"></a>`denied`
+  <p>You said no to it, so it didn't run.
+
+- <a id="activity_state.stopped"></a>`stopped`
+  <p>It stopped before it finished.
+
+
+#### <a id="activity"></a>`record activity`
+
+A step taken along the way in a conversation, such as a tool call or a
+model's reasoning.
+
+##### Record Fields
+
+- <a id="activity.title"></a>`title`: `string`
+  <p>What the step is or did, such as `Searched the web for seeds`.
+
+- <a id="activity.state"></a>`state`: [`activity-state`](#activity_state)
+
+#### <a id="composer"></a>`record composer`
+
+A box to write a message in.
+
+##### Record Fields
+
+- <a id="composer.label"></a>`label`: `string`
+  <p>Names the box for screen readers, and shows in it while it's empty.
+
+- <a id="composer.value"></a>`value`: `string`
+  <p>What the box holds when it first draws. What you type stays until
+  the plugin draws the box with a value other than the one it drew
+  before, or until you send it.
+
+- <a id="composer.send"></a>`send`: `string`
+  <p>The send button's label, which screen readers read.
+
+- <a id="composer.stop"></a>`stop`: option<`string`>
+  <p>While set, something is under way, such as an answer coming in: a
+  stop button with this label takes the send button's place, and a
+  press sends `pressed` naming the composer. Nothing sends meanwhile.
+
+
+#### <a id="popover"></a>`record popover`
+
+A box that floats over the page beside the node it points at, on
+whichever side has room, with an arrow toward it, such as an entry's
+details. Its children go where a panel's go. Escape or a click
+outside it sends `cancelled` naming it, and it shows until the plugin
+draws the view without it.
+
+##### Record Fields
+
+- <a id="popover.label"></a>`label`: `string`
+  <p>Names the popover for screen readers.
+
+- <a id="popover.anchor"></a>`anchor`: `string`
+  <p>The node ID of the item, card, entry or button it points at. While
+  that node doesn't show, the popover floats at the top of the page.
+
 
 #### <a id="node_kind"></a>`variant node-kind`
 
@@ -2435,6 +3145,64 @@ What a page or a section shows while it holds nothing.
   second taking the rest of the width. Its children are the two panes,
   each a panel.
 
+- <a id="node_kind.side_panel"></a>`side-panel`: [`side-panel`](#side_panel)
+  <p>A pane at the right edge of the page, with a line on its left. It
+  runs the page's full height and scrolls on its own, and the rest of
+  the page takes the width that's left. Its children go where a
+  panel's go. Only the view's own panel holds one, as its last child.
+
+- <a id="node_kind.avatar"></a>`avatar`: [`avatar`](#avatar)
+  <p>A large avatar, centered, as at the top of a profile.
+
+- <a id="node_kind.pill"></a>`pill`: [`pill`](#pill)
+  <p>A pill button. A page's first child, when a pill, shows centered at
+  the top of the page in place of the page's title.
+
+- <a id="node_kind.editable"></a>`editable`: [`editable`](#editable)
+  <p>Text you edit in place, such as a task's title or notes.
+
+- <a id="node_kind.date_picker"></a>`date-picker`: [`date-picker`](#date_picker)
+  <p>A button that shows a date and opens a date picker.
+
+- <a id="node_kind.picker"></a>`picker`: [`picker`](#picker)
+  <p>A button that shows the chosen option and opens a menu of the
+  options. Pickers, date pickers and buttons in a row line up on one
+  line.
+
+- <a id="node_kind.conversation"></a>`conversation`: `string`
+  <p>A conversation, named for screen readers by this label: a column at
+  most 720 points wide in the middle of the page, which takes the rest
+  of the page and scrolls on its own. It stays at its end as it grows,
+  until you scroll up; a button then takes you back down. Its children
+  go where a panel's go, and its last child may be a composer, which
+  stays at the bottom of the page under the column. While it holds
+  only empty states and a composer, they show together in the middle
+  of the page. Text in it shows as a quiet line, and buttons as small
+  ones, such as Resume or a suggested reply.
+
+- <a id="node_kind.message"></a>`message`: [`message`](#message)
+  <p>A message, as a conversation shows it.
+
+- <a id="node_kind.activity"></a>`activity`: [`activity`](#activity)
+  <p>A step taken along the way, such as a tool call: a quiet row with
+  its title and its state. A row with children opens and closes on a
+  click, and shows its children, which go where a panel's go, while
+  open. It starts closed.
+
+- <a id="node_kind.composer"></a>`composer`: [`composer`](#composer)
+  <p>A box to write a message in: a text input of several lines with a
+  send button at its end, and its children, choice inputs and
+  buttons, in a row under the text. Each choice shows as a menu of its
+  options. Enter or the send button sends `submitted` naming the
+  composer, once the box holds more than spaces, with what it holds as
+  a multiline value under the composer's own node ID, then the value
+  of each choice input inside it. Shift-Enter starts a new line. The
+  box empties once it sends. It can't sit in a form.
+
+- <a id="node_kind.popover"></a>`popover`: [`popover`](#popover)
+  <p>A box beside another node, floating over the page. It can't sit in
+  another popover.
+
 
 #### <a id="node"></a>`record node`
 
@@ -2451,8 +3219,12 @@ What a page or a section shows while it holds nothing.
   they lay out, lists their items, tables their rows, boards their
   columns, columns their cards, calendars their entries, menus their
   items, headings their buttons and choices, empty states their
-  buttons, and splits their two panels; a row, a card or a button may
-  hold one menu, and an item one menu or one name field.
+  buttons, splits their two panels, side panels, conversations,
+  activities and popovers the nodes they lay out, and composers their
+  choices and
+  buttons; a row,
+  a card or a button may hold one menu, and an item one menu or one
+  name field.
 
 
 #### <a id="target"></a>`record target`
@@ -2523,10 +3295,11 @@ An input's value.
 ##### Record Fields
 
 - <a id="submission.node"></a>`node`: `string`
-  <p>The form's node ID.
+  <p>The form's or the composer's node ID.
 
 - <a id="submission.fields"></a>`fields`: list<[`field`](#field)>
-  <p>Every input inside the form, in view order.
+  <p>Every input inside the form, in view order, or the composer's text
+  and then its choices.
 
 
 #### <a id="check"></a>`record check`
@@ -2566,7 +3339,8 @@ Something you did in a view.
 ##### Variant Cases
 
 - <a id="event.pressed"></a>`pressed`: `string`
-  <p>The button with this node ID was pressed.
+  <p>The button with this node ID was pressed, or a composer's stop
+  button, naming the composer.
 
 - <a id="event.selected"></a>`selected`: [`target`](#target)
   <p>An item, a row, a card or an entry was selected, by click or the
@@ -2583,7 +3357,7 @@ Something you did in a view.
   <p>An input's value changed.
 
 - <a id="event.submitted"></a>`submitted`: [`submission`](#submission)
-  <p>A form was submitted.
+  <p>A form or a composer was submitted.
 
 - <a id="event.chosen"></a>`chosen`: `string`
   <p>The menu item with this node ID was chosen.
@@ -2600,8 +3374,9 @@ Something you did in a view.
 
 - <a id="event.cancelled"></a>`cancelled`: `string`
   <p>A name field was left without a new name: you pressed Escape, or
-  left it empty or holding the name it started from. Holds the
-  field's node ID.
+  left it empty or holding the name it started from. Or a popover
+  closed by Escape or a click outside it. Holds the field's or the
+  popover's node ID.
 
 
 ## <a id="noura_plugin_view_0_1_0"></a>Export interface noura:plugin/view@0.1.0

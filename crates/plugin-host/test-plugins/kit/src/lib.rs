@@ -35,8 +35,8 @@ use std::sync::Mutex;
 
 use jiff::{ToSpan, civil::Date};
 use plugin_sdk::{
-    CalendarMode, Column, Event, Field, Item, Move, Node, Page, Plugin, SortOrder, Value, View,
-    VirtualRow,
+    CalendarMode, Color, Column, Event, Field, Item, Move, Node, Page, Plugin, SortOrder, Value,
+    View, VirtualRow,
 };
 
 /// The rows the Seeds list holds.
@@ -270,6 +270,9 @@ impl Plugin for Kit {
                         detail: None,
                         checked: None,
                         warning: None,
+                        color: None,
+                        avatar: None,
+                        status: None,
                     },
                 })
                 .collect();
@@ -299,6 +302,9 @@ impl Plugin for Kit {
                             detail: Some(format!("Batch {batch}")),
                             checked: None,
                             warning: None,
+                            color: None,
+                            avatar: None,
+                            status: None,
                         },
                     }
                 })
@@ -432,7 +438,10 @@ fn calendar(view: &mut View, state: &State) {
     let day = state.day.to_string();
     let calendar = view.calendar(View::ROOT, "schedule", "Schedule", state.mode, &day);
     for (id, title, start, end) in ENTRIES {
-        view.entry(calendar, id, title, start, end);
+        let entry = view.entry(calendar, id, title, start, end);
+        if id == "retreat" {
+            view.color(entry, Color::Green);
+        }
     }
 }
 
@@ -469,6 +478,9 @@ fn broken_rows(state: &mut State, start: u32, count: u32) -> Vec<VirtualRow> {
                 detail: None,
                 checked: None,
                 warning: None,
+                color: None,
+                avatar: None,
+                status: None,
             },
         })
         .collect()

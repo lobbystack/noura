@@ -5,6 +5,7 @@
 pub mod ai;
 pub mod calendar;
 pub mod logs;
+pub mod orbs;
 pub mod plugins;
 pub mod projects;
 pub mod recipes;

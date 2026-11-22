@@ -8,15 +8,19 @@
 //! columns or hold no text, an empty menu, an input value of the wrong
 //! form, a virtual list too long to draw, a board without columns, a
 //! calendar date or an entry's start or end of the wrong form, a list that
-//! selects an item it doesn't hold, a card with a checkbox or a warning,
-//! a form that requires anything but a text input inside it, or a view
-//! too large or deep to draw. [`check_rows`] does the same for
-//! the rows of a virtual list.
+//! selects an item it doesn't hold, a card with a checkbox, a warning or a
+//! color, a form that requires anything but a text input inside it, a
+//! composer that isn't a conversation's last node or holds anything but
+//! choices and buttons, a popover in another popover or pointing at
+//! anything but an item, a card, an entry or a button of the view, or a
+//! view too large or deep to draw.
+//! [`check_rows`] does the same for the rows of a virtual list.
 
 use std::collections::HashSet;
 
 use crate::{
-    CalendarEntry, CalendarMode, Choice, Column, HeadingLevel, Icon, Node, NodeKind, Value,
+    ActivityState, Avatar, CalendarEntry, CalendarMode, Choice, Color, Column, EditableStyle,
+    HeadingLevel, Icon, Item, ItemStatus, MessageAuthor, Node, NodeKind, PickerOption, Value,
     VirtualRow,
 };
 
@@ -76,13 +80,19 @@ pub enum ViewKind {
         opens_on_click: bool,
     },
     /// An item of a list, which may hold a menu, or a name field that
-    /// shows in its place, with a checkbox when `checked` is set and a
-    /// warning after its label when `warning` is.
+    /// shows in its place, with a checkbox when `checked` is set, a
+    /// warning after its label when `warning` is, its checkbox, or a dot
+    /// before its label, in `color` when that is, an avatar before its
+    /// label when `avatar` is, and a status dot at its end when `status`
+    /// is.
     Item {
         label: String,
         detail: Option<String>,
         checked: Option<bool>,
         warning: Option<String>,
+        color: Option<Color>,
+        avatar: Option<Avatar>,
+        status: Option<ItemStatus>,
     },
     /// A list of `rows` rows that come from the plugin as they scroll into
     /// view.
@@ -151,11 +161,12 @@ pub enum ViewKind {
     },
     /// An entry of a calendar grid. Its start is a `YYYY-MM-DD` date or an
     /// RFC 3339 date and time with an offset, and its end has the same
-    /// form.
+    /// form. It draws in `color`, or the theme's own color without one.
     Entry {
         title: String,
         start: String,
         end: Option<String>,
+        color: Option<Color>,
     },
     /// A page's or a section's title, whose children are its buttons and
     /// choice inputs.
@@ -177,10 +188,88 @@ pub enum ViewKind {
     Split {
         first_width: u32,
     },
+    /// A pane at the right edge of the page, `width` points wide, whose
+    /// children it lays out like a panel's. Only the root holds one, as
+    /// its last child.
+    SidePanel {
+        label: String,
+        width: u32,
+    },
+    /// A large avatar, centered.
+    Avatar(Avatar),
+    /// A pill button with an avatar, shown pressed while `open`.
+    Pill {
+        label: String,
+        avatar: Option<Avatar>,
+        open: bool,
+    },
+    /// Text edited in place, drawn the way `style` says, which takes the
+    /// keyboard when drawn with `focus` after being drawn without.
+    Editable {
+        label: String,
+        value: String,
+        style: EditableStyle,
+        focus: bool,
+    },
+    /// A button that shows `value`, a `YYYY-MM-DD` date, or `label`, and
+    /// opens a date picker.
+    DatePicker {
+        label: String,
+        value: Option<String>,
+    },
+    /// A button that shows the chosen option, one of `options`, and opens
+    /// a menu of them.
+    Picker {
+        label: String,
+        options: Vec<PickerOption>,
+        chosen: Option<String>,
+    },
+    /// A conversation, named for screen readers by `label`, whose children
+    /// it lays out like a panel's, the last of them maybe a composer.
+    Conversation {
+        label: String,
+    },
+    /// A message from `author`, named for screen readers by `label`, with
+    /// a quiet `detail` and a `warning` under it.
+    Message {
+        author: MessageAuthor,
+        label: String,
+        text: String,
+        detail: Option<String>,
+        warning: Option<String>,
+    },
+    /// A step along the way, in `state`, whose children show while it's
+    /// open.
+    Activity {
+        title: String,
+        state: ActivityState,
+    },
+    /// A box to write a message in, starting from `value`, with a send
+    /// button labeled `send`, or a stop button labeled `stop` while that's
+    /// set. Its children are its choice inputs and buttons.
+    Composer {
+        label: String,
+        value: String,
+        send: String,
+        stop: Option<String>,
+    },
+    /// A box floating beside the node with the ID `anchor`, named for
+    /// screen readers by `label`, whose children it lays out like a
+    /// panel's.
+    Popover {
+        label: String,
+        anchor: String,
+    },
 }
 
 /// The narrowest and widest a split's first pane may be, in points.
 pub const SPLIT_WIDTHS: std::ops::RangeInclusive<u32> = 160..=640;
+
+/// The narrowest and widest a side panel may be, in points.
+pub const SIDE_PANEL_WIDTHS: std::ops::RangeInclusive<u32> = 240..=480;
+
+/// The most characters an avatar's text holds: an emoji or a few letters.
+pub const MAX_AVATAR_CHARS: usize = 16;
 
 /// Why a node list or a virtual list's rows can't be drawn. The message
 /// names the rule and the node, for the error shown in place of the view.
@@ -266,8 +355,10 @@ impl View {
         for node in &nodes {
             check_node(node)?;
             check_children(node, &nodes)?;
+            check_anchor(node, &nodes)?;
         }
         check_place(&nodes[0], None)?;
+        check_side_panels(&nodes)?;
         let mut seen = vec![false; nodes.len()];
         let root = build(&nodes, 0, &mut seen, 0, false)?;
         Ok(Self { root })
@@ -335,6 +426,17 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Heading(_) => "heading",
         NodeKind::Empty(_) => "empty state",
         NodeKind::Split(_) => "split",
+        NodeKind::SidePanel(_) => "side panel",
+        NodeKind::Avatar(_) => "avatar",
+        NodeKind::Pill(_) => "pill",
+        NodeKind::Editable(_) => "editable text",
+        NodeKind::DatePicker(_) => "date picker",
+        NodeKind::Picker(_) => "picker",
+        NodeKind::Conversation(_) => "conversation",
+        NodeKind::Message(_) => "message",
+        NodeKind::Activity(_) => "activity",
+        NodeKind::Composer(_) => "composer",
+        NodeKind::Popover(_) => "popover",
     }
 }
 
@@ -366,6 +468,49 @@ fn check_node(node: &Node) -> Result<(), ViewError> {
             SPLIT_WIDTHS.end()
         )),
         NodeKind::Split(_) => Ok(()),
+        NodeKind::SidePanel(panel) if blank(&panel.label) => Err(unlabeled()),
+        NodeKind::SidePanel(panel) if !SIDE_PANEL_WIDTHS.contains(&panel.width) => {
+            invalid(format!(
+                "The side panel {id} is {} points wide; it must be {} to {}.",
+                panel.width,
+                SIDE_PANEL_WIDTHS.start(),
+                SIDE_PANEL_WIDTHS.end()
+            ))
+        }
+        NodeKind::SidePanel(_) => Ok(()),
+        NodeKind::Avatar(avatar) => check_avatar(id, avatar),
+        NodeKind::Pill(pill) if blank(&pill.label) => Err(unlabeled()),
+        NodeKind::Pill(pill) => pill
+            .avatar
+            .as_ref()
+            .map_or(Ok(()), |avatar| check_avatar(id, avatar)),
+        NodeKind::Editable(editable) if blank(&editable.label) => Err(unlabeled()),
+        NodeKind::Editable(_) => Ok(()),
+        NodeKind::DatePicker(picker) if blank(&picker.label) => Err(unlabeled()),
+        NodeKind::DatePicker(picker) => match &picker.value {
+            Some(date) if !workspace_format::is_civil_date(date) => invalid(format!(
+                "The date picker {id} holds {date}, which isn't a date in the form YYYY-MM-DD."
+            )),
+            _ => Ok(()),
+        },
+        NodeKind::Picker(picker) if blank(&picker.label) => Err(unlabeled()),
+        NodeKind::Picker(picker) => check_picker(id, &picker.options, picker.chosen.as_deref()),
+        NodeKind::Conversation(label) if blank(label) => Err(unlabeled()),
+        NodeKind::Popover(popover) if blank(&popover.label) => Err(unlabeled()),
+        NodeKind::Message(message) if blank(&message.label) => Err(unlabeled()),
+        NodeKind::Activity(activity) if blank(&activity.title) => Err(unlabeled()),
+        NodeKind::Composer(composer) if blank(&composer.label) => Err(unlabeled()),
+        NodeKind::Composer(composer) if blank(&composer.send) => {
+            invalid(format!("The composer {id} has no send label."))
+        }
+        NodeKind::Composer(composer) if composer.stop.as_deref().is_some_and(blank) => invalid(
+            format!("The composer {id} has a stop button without a label."),
+        ),
+        NodeKind::Conversation(_)
+        | NodeKind::Message(_)
+        | NodeKind::Activity(_)
+        | NodeKind::Composer(_)
+        | NodeKind::Popover(_) => Ok(()),
         NodeKind::Button(label)
         | NodeKind::Menu(label)
         | NodeKind::Board(label)
@@ -378,9 +523,30 @@ fn check_node(node: &Node) -> Result<(), ViewError> {
         }
         NodeKind::List(list) if blank(&list.label) => Err(unlabeled()),
         NodeKind::Item(item) | NodeKind::Card(item) if blank(&item.label) => Err(unlabeled()),
-        NodeKind::Card(card) if card.checked.is_some() || card.warning.is_some() => invalid(
-            format!("The card {id} holds a checkbox or a warning, which only list items show."),
-        ),
+        NodeKind::Card(card)
+            if card.checked.is_some()
+                || card.warning.is_some()
+                || card.color.is_some()
+                || card.avatar.is_some()
+                || card.status.is_some() =>
+        {
+            invalid(format!(
+                "The card {id} holds a checkbox, a warning, a color, an avatar or a status, \
+                 which only list items show."
+            ))
+        }
+        NodeKind::Item(item)
+            if item
+                .status
+                .as_ref()
+                .is_some_and(|status| blank(&status.label)) =>
+        {
+            invalid(format!("The item {id} has a status without a label."))
+        }
+        NodeKind::Item(Item {
+            avatar: Some(avatar),
+            ..
+        }) => check_avatar(id, avatar),
         NodeKind::NameField(field) if blank(&field.label) => Err(unlabeled()),
         NodeKind::NameField(_) => Ok(()),
         NodeKind::VirtualList(list) if blank(&list.label) => Err(unlabeled()),
@@ -441,6 +607,55 @@ fn check_node(node: &Node) -> Result<(), ViewError> {
         }
         NodeKind::Calendar(_) => Ok(()),
         NodeKind::Entry(entry) => check_entry(id, entry),
+    }
+}
+
+/// An avatar's text, when it has one, is an emoji or a few letters.
+fn check_avatar(id: &str, avatar: &Avatar) -> Result<(), ViewError> {
+    match &avatar.text {
+        Some(text)
+            if blank(text)
+                || text.chars().count() > MAX_AVATAR_CHARS
+                || text.chars().any(char::is_control) =>
+        {
+            Err(ViewError::Invalid(format!(
+                "The avatar of {id} holds more than an emoji or a few letters."
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// A picker has options, each with an ID of its own and a label, and
+/// chooses one of them or none.
+fn check_picker(id: &str, options: &[PickerOption], chosen: Option<&str>) -> Result<(), ViewError> {
+    let invalid = |message: String| Err(ViewError::Invalid(message));
+    if options.is_empty() {
+        return invalid(format!("The picker {id} has no options."));
+    }
+    let mut ids = HashSet::new();
+    for option in options {
+        if blank(&option.id) {
+            return invalid(format!("The picker {id} has an option without an ID."));
+        }
+        if blank(&option.label) {
+            return invalid(format!(
+                "The option {} of the picker {id} has no label.",
+                option.id
+            ));
+        }
+        if !ids.insert(option.id.as_str()) {
+            return invalid(format!(
+                "The picker {id} has two options with the ID {}.",
+                option.id
+            ));
+        }
+    }
+    match chosen {
+        Some(chosen) if !ids.contains(chosen) => invalid(format!(
+            "The picker {id} chooses {chosen}, which isn't one of its options."
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -521,6 +736,23 @@ fn check_value(id: &str, value: &Value, choices: &[Choice]) -> Result<(), ViewEr
     }
 }
 
+/// A popover points at an item, a card, an entry or a button of the view.
+fn check_anchor(node: &Node, nodes: &[Node]) -> Result<(), ViewError> {
+    let NodeKind::Popover(popover) = &node.kind else {
+        return Ok(());
+    };
+    let anchor = nodes.iter().find(|other| other.id == popover.anchor);
+    match anchor.map(|anchor| &anchor.kind) {
+        Some(NodeKind::Item(_) | NodeKind::Card(_) | NodeKind::Entry(_) | NodeKind::Button(_)) => {
+            Ok(())
+        }
+        _ => Err(ViewError::Invalid(format!(
+            "The popover {} points at {}, which isn't an item, a card, an entry or a button of the view.",
+            node.id, popover.anchor
+        ))),
+    }
+}
+
 /// Where a node of each kind may sit. `parent` is `None` for the root.
 fn check_place(node: &Node, parent: Option<&Node>) -> Result<(), ViewError> {
     let misplaced = |message: String| Err(ViewError::Misplaced(message));
@@ -551,8 +783,29 @@ fn check_place(node: &Node, parent: Option<&Node>) -> Result<(), ViewError> {
             "The {} {id} isn't in a menu.",
             kind_name(&node.kind)
         )),
+        (NodeKind::Popover(_), Some(NodeKind::Popover(_))) => {
+            misplaced(format!("The popover {id} sits in another popover."))
+        }
         _ => Ok(()),
     }
+}
+
+/// A side panel is the root panel's last child, and only one.
+fn check_side_panels(nodes: &[Node]) -> Result<(), ViewError> {
+    let root = &nodes[0];
+    let last = root.children.last().map(|&child| child as usize);
+    for (index, node) in nodes.iter().enumerate() {
+        if !matches!(node.kind, NodeKind::SidePanel(_)) {
+            continue;
+        }
+        if !matches!(root.kind, NodeKind::Panel(_)) || last != Some(index) {
+            return Err(ViewError::Misplaced(format!(
+                "The side panel {} isn't the last node of the view's own panel.",
+                node.id
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// The nodes `parent` may hold: blocks in a panel or a form, items in a
@@ -566,9 +819,43 @@ fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
     let children = parent.children.iter().map(|&child| &nodes[child as usize]);
     let misplaced = |message: String| Err(ViewError::Misplaced(message));
     match &parent.kind {
-        NodeKind::Panel(_) | NodeKind::Form(_) => {
+        NodeKind::Panel(_)
+        | NodeKind::Form(_)
+        | NodeKind::Activity(_)
+        | NodeKind::SidePanel(_)
+        | NodeKind::Popover(_) => {
             for child in children {
                 check_place(child, Some(parent))?;
+            }
+            Ok(())
+        }
+        // A conversation's composer stays at the bottom, under the rest.
+        NodeKind::Conversation(_) => {
+            let last = parent.children.len().saturating_sub(1);
+            for (index, child) in children.enumerate() {
+                if matches!(child.kind, NodeKind::Composer(_)) && index != last {
+                    return misplaced(format!(
+                        "The conversation {id} holds the composer {} before its last node.",
+                        child.id
+                    ));
+                }
+                check_place(child, Some(parent))?;
+            }
+            Ok(())
+        }
+        // A composer holds the choices and buttons under its text.
+        NodeKind::Composer(_) => {
+            for child in children {
+                let choice = matches!(
+                    &child.kind,
+                    NodeKind::Input(input) if matches!(input.value, Value::Choice(_))
+                );
+                if !matches!(child.kind, NodeKind::Button(_)) && !choice {
+                    return misplaced(format!(
+                        "The {kind} {id} holds {}, which isn't a button or a choice.",
+                        child.id
+                    ));
+                }
             }
             Ok(())
         }
@@ -738,12 +1025,18 @@ fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
         }
         NodeKind::Text(_)
         | NodeKind::Markdown(_)
+        | NodeKind::Message(_)
         | NodeKind::VirtualList(_)
         | NodeKind::Input(_)
         | NodeKind::NameField(_)
         | NodeKind::MenuItem(_)
         | NodeKind::Separator
-        | NodeKind::Entry(_) => {
+        | NodeKind::Entry(_)
+        | NodeKind::Editable(_)
+        | NodeKind::DatePicker(_)
+        | NodeKind::Picker(_)
+        | NodeKind::Avatar(_)
+        | NodeKind::Pill(_) => {
             if parent.children.is_empty() {
                 Ok(())
             } else {
@@ -775,10 +1068,14 @@ fn build(
     if depth > MAX_DEPTH {
         return Err(ViewError::TooDeep);
     }
-    let is_form = matches!(node.kind, NodeKind::Form(_));
+    let is_form = matches!(node.kind, NodeKind::Form(_) | NodeKind::Composer(_));
     if is_form && in_form {
+        let (kind, outer) = match node.kind {
+            NodeKind::Form(_) => ("form", "another form"),
+            _ => ("composer", "a form"),
+        };
         return Err(ViewError::Misplaced(format!(
-            "The form {} sits inside another form.",
+            "The {kind} {} sits inside {outer}.",
             node.id
         )));
     }
@@ -802,6 +1099,9 @@ fn build(
             detail: item.detail.clone().filter(|detail| !blank(detail)),
             checked: item.checked,
             warning: item.warning.clone().filter(|warning| !blank(warning)),
+            color: item.color,
+            avatar: item.avatar.clone(),
+            status: item.status.clone(),
         },
         NodeKind::VirtualList(list) => ViewKind::VirtualList {
             label: list.label.clone(),
@@ -855,6 +1155,7 @@ fn build(
             title: entry.title.clone(),
             start: entry.start.clone(),
             end: entry.end.clone(),
+            color: entry.color,
         },
         NodeKind::Heading(heading) => ViewKind::Heading {
             text: heading.text.clone(),
@@ -869,6 +1170,55 @@ fn build(
         },
         NodeKind::Split(width) => ViewKind::Split {
             first_width: *width,
+        },
+        NodeKind::SidePanel(panel) => ViewKind::SidePanel {
+            label: panel.label.clone(),
+            width: panel.width,
+        },
+        NodeKind::Avatar(avatar) => ViewKind::Avatar(avatar.clone()),
+        NodeKind::Pill(pill) => ViewKind::Pill {
+            label: pill.label.clone(),
+            avatar: pill.avatar.clone(),
+            open: pill.open,
+        },
+        NodeKind::Editable(editable) => ViewKind::Editable {
+            label: editable.label.clone(),
+            value: editable.value.clone(),
+            style: editable.style,
+            focus: editable.focus,
+        },
+        NodeKind::DatePicker(picker) => ViewKind::DatePicker {
+            label: picker.label.clone(),
+            value: picker.value.clone(),
+        },
+        NodeKind::Picker(picker) => ViewKind::Picker {
+            label: picker.label.clone(),
+            options: picker.options.clone(),
+            chosen: picker.chosen.clone(),
+        },
+        NodeKind::Conversation(label) => ViewKind::Conversation {
+            label: label.clone(),
+        },
+        NodeKind::Message(message) => ViewKind::Message {
+            author: message.author,
+            label: message.label.clone(),
+            text: message.text.clone(),
+            detail: message.detail.clone().filter(|detail| !blank(detail)),
+            warning: message.warning.clone().filter(|warning| !blank(warning)),
+        },
+        NodeKind::Activity(activity) => ViewKind::Activity {
+            title: activity.title.clone(),
+            state: activity.state,
+        },
+        NodeKind::Composer(composer) => ViewKind::Composer {
+            label: composer.label.clone(),
+            value: composer.value.clone(),
+            send: composer.send.clone(),
+            stop: composer.stop.clone(),
+        },
+        NodeKind::Popover(popover) => ViewKind::Popover {
+            label: popover.label.clone(),
+            anchor: popover.anchor.clone(),
         },
     };
     let children: Vec<ViewNode> = node

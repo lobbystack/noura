@@ -1,7 +1,8 @@
 //! The Summary and the tasks: anarlog's `enhance` prompt through the
 //! chatless `ai` completion, written as the `## Summary` section below
 //! your notes, then a JSON list of action items, each created through
-//! Tasks' `create` with `source` linking back to the Transcription.
+//! Tasks' `create` with `source` linking back to the Transcription and
+//! `assignee` naming its owner.
 
 use plugin_sdk::{
     ai::{self, CompletionError, CompletionRequest},
@@ -17,9 +18,10 @@ use crate::{
 /// What the second request asks the provider for.
 const ACTION_ITEMS: &str = "Find the action items of this meeting: what someone agreed to do. \
 Answer with one JSON object and nothing else:
-{\"action_items\": [{\"title\": \"...\", \"due\": \"YYYY-MM-DD\"}], \"project\": \"...\"}
+{\"action_items\": [{\"title\": \"...\", \"owner\": \"...\", \"due\": \"YYYY-MM-DD\"}], \"project\": \"...\"}
 
-- title: a short task in the imperative, in {language}, starting with the owner's name when the transcript gives one.
+- title: a short task in the imperative, in {language}, without the owner's name.
+- owner: the person who agreed to do it. When the meeting lists Participants, use one of those names exactly as written. Otherwise use the name said in the meeting. Use null when no name fits. The speaker labels Me and Others aren't names.
 - due: the date it is due when someone stated one, otherwise null.
 - Include only explicit or unambiguous commitments. Don't turn a proposal into a task.
 - project: the exact title of the project in the Projects list that this meeting is about, or null when none fits.
@@ -75,7 +77,50 @@ fn failed(error: &CompletionError) -> (bool, String) {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ActionItem {
     pub(crate) title: String,
+    /// Who agreed to do it, by name.
+    pub(crate) owner: Option<String>,
     pub(crate) due: Option<String>,
+}
+
+/// `text` on one line, with single spaces.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Whether two names are the same but for case.
+fn same_name(left: &str, right: &str) -> bool {
+    left.to_lowercase() == right.to_lowercase()
+}
+
+/// The owner an item names: its name on one line, or none for an empty
+/// name or a `null` written as text.
+fn owner_of(item: &Value) -> Option<String> {
+    let owner = one_line(item.get("owner")?.as_str()?);
+    (!owner.is_empty() && !owner.eq_ignore_ascii_case("null"))
+        .then(|| owner.chars().take(100).collect())
+}
+
+/// `title` without a leading `Owner:`, which a provider may still write.
+fn without_owner(title: String, owner: Option<&str>) -> String {
+    let Some(owner) = owner else {
+        return title;
+    };
+    let rest = title
+        .get(..owner.len())
+        .filter(|start| same_name(start, owner))
+        .and_then(|_| title[owner.len()..].strip_prefix(':'))
+        .map(str::trim_start)
+        .filter(|rest| !rest.is_empty());
+    match rest {
+        Some(rest) => {
+            let mut chars = rest.chars();
+            chars
+                .next()
+                .map(|first| first.to_uppercase().chain(chars).collect())
+                .unwrap_or_default()
+        }
+        None => title,
+    }
 }
 
 /// The action items and the suggested project's title in the provider's
@@ -96,9 +141,11 @@ pub(crate) fn parse_answer(text: &str) -> (Vec<ActionItem>, Option<String>) {
                 Value::String(title) => title.as_str(),
                 item => item.get("title")?.as_str()?,
             };
-            let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+            let owner = owner_of(item);
+            let title = without_owner(one_line(title), owner.as_deref());
             (!title.is_empty()).then(|| ActionItem {
                 title: title.chars().take(200).collect(),
+                owner,
                 due: item
                     .get("due")
                     .and_then(Value::as_str)
@@ -193,18 +240,29 @@ pub(crate) fn run(id: &str) -> SummaryStatus {
         ));
     }
     SummaryStatus::Done {
-        tasks: create_tasks(&object, provider, &language, &meeting_prompt, &today).err(),
+        tasks: create_tasks(
+            &object,
+            provider,
+            &language,
+            &meeting_prompt,
+            &today,
+            &attendees,
+        )
+        .err(),
     }
 }
 
 /// Ask for the action items as JSON and create each one through Tasks
-/// that the Transcription doesn't have yet.
+/// that the Transcription doesn't have yet, assigned to its owner. An
+/// owner who matches an attendee but for case takes the attendee's
+/// spelling.
 fn create_tasks(
     object: &objects::Object,
     provider: Option<String>,
     language: &Option<String>,
     meeting_prompt: &str,
     today: &str,
+    attendees: &[String],
 ) -> Result<(), String> {
     let projects = meeting::projects();
     let mut listed = format!("Current date: {today}\n\n# Projects\n\n");
@@ -247,6 +305,13 @@ fn create_tasks(
         if let Some(due) = &item.due {
             properties["due"] = json!(due);
         }
+        if let Some(owner) = &item.owner {
+            let owner = attendees
+                .iter()
+                .find(|attendee| same_name(attendee, owner))
+                .unwrap_or(owner);
+            properties["assignee"] = json!(owner);
+        }
         command_calls::call(
             "tasks",
             "create",
@@ -273,14 +338,17 @@ mod tests {
             [
                 ActionItem {
                     title: "Ada: send the notes".into(),
+                    owner: None,
                     due: Some("2026-11-20".into())
                 },
                 ActionItem {
                     title: "Book a room".into(),
+                    owner: None,
                     due: None
                 },
                 ActionItem {
                     title: "Call Grace".into(),
+                    owner: None,
                     due: None
                 },
             ]
@@ -288,6 +356,29 @@ mod tests {
         assert_eq!(project.as_deref(), Some("Garden"));
         assert_eq!(parse_answer(r#"[{"title":"One"}]"#).0.len(), 1);
         assert_eq!(parse_answer("not json"), (Vec::new(), None));
+
+        // An owner goes with the item, and out of the title when a
+        // provider still writes it there.
+        let (items, _) = parse_answer(
+            r#"{"action_items":[{"title":"Write the launch post","owner":" Alice "},
+               {"title":"élodie: book the venue","owner":"Élodie"},
+               {"title":"Bob:","owner":"Bob"},
+               {"title":"Tidy up","owner":"null"},{"title":"Order chairs","owner":null}]}"#,
+        );
+        let pairs: Vec<(&str, Option<&str>)> = items
+            .iter()
+            .map(|item| (item.title.as_str(), item.owner.as_deref()))
+            .collect();
+        assert_eq!(
+            pairs,
+            [
+                ("Write the launch post", Some("Alice")),
+                ("Book the venue", Some("Élodie")),
+                ("Bob:", Some("Bob")),
+                ("Tidy up", None),
+                ("Order chairs", None),
+            ]
+        );
         assert_eq!(
             parse_answer(r#"{"action_items":[],"project":null}"#),
             (Vec::new(), None)

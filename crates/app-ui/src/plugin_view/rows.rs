@@ -13,7 +13,7 @@
 //! sends one move event, and the list shows the order the plugin draws.
 //!
 //! An item may carry a checkbox, which a click on it or the space bar on
-//! its row checks or unchecks, and a warning after its label, which
+//! its row checks or unchecks, and a warning at the row's end, which
 //! screen readers read with the label. An item may show a name field in
 //! its place, as for a rename. A list follows the item the plugin shows
 //! selected whenever the plugin draws another one.
@@ -21,12 +21,12 @@
 use std::ops::Range;
 
 use app_core::{
-    Column, ColumnPress, PluginCheck, PluginEvent, PluginMove, SortOrder, Target, ViewKind,
-    ViewNode,
+    Column, ColumnPress, ItemStatus, PluginAvatar, PluginCheck, PluginColor, PluginEvent,
+    PluginMove, SortOrder, Target, ViewKind, ViewNode,
 };
 use egui::{
-    Align2, Event, EventFilter, FontId, Id, Key, Modifiers, Pos2, Rect, Response, Sense, Shape,
-    Stroke, StrokeKind, TextWrapMode, Ui, UiBuilder, WidgetInfo, WidgetText,
+    Align2, Color32, Event, EventFilter, FontId, Id, Key, Modifiers, Pos2, Rect, Response, Sense,
+    Shape, Stroke, StrokeKind, TextWrapMode, Ui, UiBuilder, WidgetInfo, WidgetText,
     accesskit::{Action, HasPopup, Role, SortDirection},
     pos2, vec2,
 };
@@ -117,6 +117,12 @@ struct Row<'a> {
     detail: Option<String>,
     /// The item's checkbox, checked or not, when it has one.
     checked: Option<bool>,
+    /// The color of its checkbox, or of a dot before its label.
+    color: Option<PluginColor>,
+    /// The avatar before its label, in the dot's place.
+    avatar: Option<PluginAvatar>,
+    /// The dot at its end that says how it stands.
+    status: Option<ItemStatus>,
     /// The warning after the label.
     warning: Option<String>,
     cells: Vec<String>,
@@ -132,6 +138,9 @@ impl<'a> Row<'a> {
             label: String::new(),
             detail: None,
             checked: None,
+            color: None,
+            avatar: None,
+            status: None,
             warning: None,
             cells: Vec::new(),
             menu: node
@@ -149,10 +158,16 @@ impl<'a> Row<'a> {
                 detail,
                 checked,
                 warning,
+                color,
+                avatar,
+                status,
             } => {
                 row.label.clone_from(label);
                 row.detail.clone_from(detail);
                 row.checked = *checked;
+                row.color = *color;
+                row.avatar.clone_from(avatar);
+                row.status.clone_from(status);
                 row.warning.clone_from(warning);
             }
             ViewKind::Row { cells } => {
@@ -164,12 +179,27 @@ impl<'a> Row<'a> {
         row
     }
 
-    /// The name screen readers give the row: its label, then its warning.
+    /// The name screen readers give the row: its label, then its status
+    /// and its warning.
     fn spoken(&self) -> String {
-        match &self.warning {
-            Some(warning) => format!("{}, {warning}", self.label),
-            None => self.label.clone(),
+        let mut spoken = self.label.clone();
+        for said in [
+            self.status.as_ref().map(|status| status.label.as_str()),
+            self.warning.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            spoken.push_str(", ");
+            spoken.push_str(said);
         }
+        spoken
+    }
+
+    /// Whether something comes before its label: a checkbox, a dot or an
+    /// avatar.
+    fn leads(&self) -> bool {
+        self.checked.is_some() || self.color.is_some() || self.avatar.is_some()
     }
 }
 
@@ -212,6 +242,9 @@ impl<'a> Source<'a> {
                             label: row.item.label,
                             detail: row.item.detail.filter(|detail| !detail.trim().is_empty()),
                             checked: row.item.checked,
+                            color: row.item.color,
+                            avatar: row.item.avatar,
+                            status: row.item.status,
                             warning: row
                                 .item
                                 .warning
@@ -612,6 +645,7 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
     let mut clicked = None;
     let mut double_clicked = None;
     let mut right_clicked = None;
+    let mut more_clicked = None;
     let mut gained = None;
     let mut chosen = None;
     let mut menu_closed = false;
@@ -632,6 +666,7 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
             sense |= Sense::DRAG;
         }
         let response = ui.interact(rect, id, sense);
+        kit.anchor(&row.id, rect, false);
         if reorder {
             drag::start(&response, list_id, &row.id, &row.label);
         }
@@ -676,8 +711,36 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
                 }));
             }
         }
+        match (&row.avatar, row.color, row.checked) {
+            (Some(avatar), _, None) => {
+                if ui.is_rect_visible(rect) {
+                    super::avatar::paint(
+                        ui,
+                        pos2(rect.left() + 17.0, rect.center().y),
+                        super::avatar::SMALL,
+                        avatar,
+                    );
+                }
+            }
+            (None, Some(color), None) => dot(ui, rect, color),
+            _ => {}
+        }
         if let Some(field) = row.name_field {
             name_field_in(ui, rect, row, field, kit);
+        }
+        // A list item's menu also opens from a button at the row's end,
+        // which shows while you point at the row or its menu is open.
+        if let Some(menu_node) = row
+            .menu
+            .filter(|_| columns.is_none() && row.name_field.is_none())
+        {
+            let open = state.menu.as_ref().is_some_and(|open| open.row == row.id);
+            if open || ui.rect_contains_pointer(rect) {
+                let sidebar = matches!(kit.place, super::Place::Sidebar(_));
+                if let Some(at) = more_button(ui, rect, id, menu_node, sidebar, &palette) {
+                    more_clicked = Some((index, Some(at)));
+                }
+            }
         }
         if response.clicked() {
             clicked = Some(index);
@@ -788,7 +851,10 @@ fn rows(ui: &mut Ui, kit: &mut Kit, list: &ViewNode, source: &Source, kind: Kind
             }));
         }
     }
-    let menu_at = open_menu.map(|index| (index, None)).or(right_clicked);
+    let menu_at = open_menu
+        .map(|index| (index, None))
+        .or(right_clicked)
+        .or(more_clicked);
     if let Some((index, at)) = menu_at
         && let Some((_, row)) = rows_by_index.iter().find(|(i, _)| *i == index)
         && row.menu.is_some()
@@ -904,22 +970,29 @@ fn checkbox(
         .widget_info(|| WidgetInfo::selected(Role::CheckBox, true, checked, row.label.as_str()));
     if box_ui.is_rect_visible(box_rect) {
         let painter = box_ui.painter();
-        let stroke = if response.hovered() {
-            palette.ring
-        } else {
-            palette.border
+        // A colored box shows its color whether checked or not, as a
+        // calendar's does.
+        let color = row
+            .color
+            .map(|color| crate::theme::plugin_color(ui.ctx(), color));
+        let stroke = match color {
+            Some(color) => color,
+            None if response.hovered() => palette.ring,
+            None => palette.border,
         };
         if checked {
-            painter.rect_filled(box_rect, radius(0.3), palette.primary);
+            painter.rect_filled(box_rect, radius(0.3), color.unwrap_or(palette.primary));
             let points = vec![
                 box_rect.left_center() + vec2(3.0, 0.0),
                 box_rect.center_bottom() + vec2(-1.0, -3.5),
                 box_rect.right_top() + vec2(-3.0, 3.5),
             ];
-            painter.add(Shape::line(
-                points,
-                Stroke::new(1.6, palette.primary_foreground),
-            ));
+            let mark = if color.is_some() {
+                Color32::WHITE
+            } else {
+                palette.primary_foreground
+            };
+            painter.add(Shape::line(points, Stroke::new(1.6, mark)));
         } else {
             painter.rect_stroke(
                 box_rect,
@@ -932,12 +1005,31 @@ fn checkbox(
     response.clicked()
 }
 
+/// The dot at an item's end that says how it stands.
+fn status_dot(ui: &Ui, center: Pos2, status: &ItemStatus) {
+    ui.painter().circle_filled(
+        center,
+        4.0,
+        crate::theme::plugin_color(ui.ctx(), status.color),
+    );
+}
+
+/// The dot in `color` before the label of an item without a checkbox,
+/// where a checkbox would sit.
+fn dot(ui: &Ui, rect: Rect, color: PluginColor) {
+    let center = pos2(rect.left() + 17.0, rect.center().y);
+    if ui.is_rect_visible(rect) {
+        ui.painter()
+            .circle_filled(center, 4.5, crate::theme::plugin_color(ui.ctx(), color));
+    }
+}
+
 /// The name field an item shows in its place, after its checkbox.
 fn name_field_in(ui: &mut Ui, rect: Rect, row: &Row, field: &ViewNode, kit: &mut Kit) {
     let ViewKind::NameField { label, value } = &field.kind else {
         return;
     };
-    let start = if row.checked.is_some() { 32.0 } else { 4.0 };
+    let start = if row.leads() { 32.0 } else { 4.0 };
     let area = Rect::from_min_max(
         pos2(rect.left() + start, rect.top()),
         pos2(rect.right() - 4.0, rect.bottom()),
@@ -947,6 +1039,56 @@ fn name_field_in(ui: &mut Ui, rect: Rect, row: &Row, field: &ViewNode, kit: &mut
         .max_rect(area);
     let mut field_ui = ui.new_child(builder);
     super::form::name_field(&mut field_ui, field, label, value, kit);
+}
+
+/// The button at the end of the row at `rect` that opens its menu `menu`,
+/// over the row's fill. Returns where the menu opens once it's pressed.
+fn more_button(
+    ui: &mut Ui,
+    rect: Rect,
+    row_id: Id,
+    menu: &ViewNode,
+    sidebar: bool,
+    palette: &Palette,
+) -> Option<Pos2> {
+    let ViewKind::Menu { label } = &menu.kind else {
+        return None;
+    };
+    let button =
+        Rect::from_center_size(pos2(rect.right() - 16.0, rect.center().y), vec2(24.0, 22.0));
+    // The pointer's way to the menu, which the keyboard reaches from the
+    // row, so it takes no stop in the Tab order. Its name says what it
+    // is; the menu it opens is its description.
+    let response = ui.interact(button, row_id.with("more"), Sense::CLICK);
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, "More actions"));
+    let menu_label = label.clone();
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_has_popup(HasPopup::Menu);
+        node.set_description(menu_label);
+    });
+    if ui.is_rect_visible(button) {
+        let painter = ui.painter();
+        let row_fill = if sidebar {
+            palette.sidebar_accent
+        } else {
+            palette.accent
+        };
+        let fill = if response.hovered() {
+            crate::common::mix(row_fill, palette.foreground, 0.08)
+        } else {
+            row_fill
+        };
+        painter.rect_filled(button, radius(0.6), fill);
+        let square = Rect::from_center_size(button.center(), vec2(16.0, 16.0));
+        crate::icons::paint(
+            painter,
+            crate::icons::MORE,
+            square,
+            palette.muted_foreground,
+            false,
+        );
+    }
+    response.clicked().then(|| button.left_bottom())
 }
 
 /// A row's background, focus ring and, for a list, its label and detail,
@@ -999,19 +1141,25 @@ fn paint_row(
                 palette.foreground,
             )
         });
-        let count_width = count.as_ref().map_or(0.0, |galley| galley.size().x + 12.0);
+        let count_width = count.as_ref().map_or(0.0, |galley| galley.size().x + 12.0)
+            + if row.status.is_some() { 16.0 } else { 0.0 };
+        let start = if row.leads() { 32.0 } else { 12.0 };
         let label = egui::WidgetText::from(egui::RichText::new(&row.label).font(font)).into_galley(
             ui,
             Some(egui::TextWrapMode::Truncate),
-            inner.width() - 12.0 - 12.0 - count_width,
+            inner.width() - start - 12.0 - count_width,
             egui::TextStyle::Small,
         );
         let at = Align2::LEFT_CENTER
-            .anchor_size(pos2(inner.left() + 12.0, rect.center().y), label.size());
+            .anchor_size(pos2(inner.left() + start, rect.center().y), label.size());
         painter.galley(at.min, label, palette.foreground);
+        let mut end = inner.right() - 8.0;
+        if let Some(status) = &row.status {
+            status_dot(ui, pos2(end - 4.0, rect.center().y), status);
+            end -= 16.0;
+        }
         if let Some(count) = count {
-            let at = Align2::RIGHT_CENTER
-                .anchor_size(pos2(inner.right() - 8.0, rect.center().y), count.size());
+            let at = Align2::RIGHT_CENTER.anchor_size(pos2(end, rect.center().y), count.size());
             painter.galley(at.min, count, palette.foreground);
         }
         return;
@@ -1035,8 +1183,9 @@ fn paint_row(
         .warning
         .as_deref()
         .map(|warning| text(ui, warning, inner.width() * 0.3, SUPPORTING_SIZE));
-    let warning_width = warning.as_ref().map_or(0.0, |galley| galley.size().x + 8.0);
-    let start = if row.checked.is_some() { 32.0 } else { 8.0 };
+    let warning_width = warning.as_ref().map_or(0.0, |galley| galley.size().x + 8.0)
+        + if row.status.is_some() { 16.0 } else { 0.0 };
+    let start = if row.leads() { 32.0 } else { 8.0 };
     let label = text(
         ui,
         &row.label,
@@ -1045,8 +1194,9 @@ fn paint_row(
     );
     let at =
         Align2::LEFT_CENTER.anchor_size(pos2(inner.left() + start, rect.center().y), label.size());
-    let label_end = at.right();
-    let done = row.checked == Some(true);
+    // A colored checkbox shows or hides something, as a calendar's does,
+    // so only an uncolored one marks its item done.
+    let done = row.checked == Some(true) && row.color.is_none();
     let color = if done {
         palette.muted_foreground
     } else {
@@ -1063,14 +1213,20 @@ fn paint_row(
             Stroke::new(1.0, palette.muted_foreground),
         );
     }
+    // The status dot ends the row, the warning comes before it, as an
+    // overdue date does, and the detail before that.
+    let mut end = inner.right() - 8.0;
+    if let Some(status) = &row.status {
+        status_dot(ui, pos2(end - 4.0, rect.center().y), status);
+        end -= 16.0;
+    }
     if let Some(warning) = warning {
-        let at =
-            Align2::LEFT_CENTER.anchor_size(pos2(label_end + 8.0, rect.center().y), warning.size());
+        let at = Align2::RIGHT_CENTER.anchor_size(pos2(end, rect.center().y), warning.size());
+        end = at.left() - 8.0;
         painter.galley(at.min, warning, palette.destructive);
     }
     if let Some(detail) = detail {
-        let at = Align2::RIGHT_CENTER
-            .anchor_size(pos2(inner.right() - 8.0, rect.center().y), detail.size());
+        let at = Align2::RIGHT_CENTER.anchor_size(pos2(end, rect.center().y), detail.size());
         painter.galley(at.min, detail, palette.muted_foreground);
     }
 }

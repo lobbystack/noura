@@ -9,10 +9,10 @@ platforms = ["desktop"]
 [[capabilities]]
 name = "object-types"
 
-# The AI page and its list of chats.
+# The Orbs page and its list of Orbs.
 [[capabilities]]
 name = "views"
 
-# Chats with the providers you set up.
+# Orbs, and chats with the providers you set up.
 [[capabilities]]
 name = "ai"

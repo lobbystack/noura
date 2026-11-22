@@ -12,12 +12,16 @@
 //! its own: every window draws with one egui context and shares its
 //! memory.
 
+mod avatar;
 mod board;
 mod calendar;
+mod conversation;
 mod drag;
+mod edit;
 mod form;
 mod heading;
 mod menu;
+mod popover;
 mod rows;
 
 use std::ops::Range;
@@ -86,13 +90,12 @@ fn split(ui: &mut Ui, node: &ViewNode, first_width: u32, kit: &mut Kit) {
                         }
                         _ => builder,
                     };
-                    // A pane is narrow, so its nodes stack, one per row.
+                    // A pane is narrow, so its nodes stack, one per row,
+                    // apart from a run of buttons and pickers.
                     ui.push_id(&child.id, |ui| {
                         ui.scope_builder(builder, |ui| {
                             ui.spacing_mut().item_spacing.y = 12.0;
-                            for node in &child.children {
-                                self::node(ui, node, kit);
-                            }
+                            children(ui, &child.children, kit);
                         });
                     });
                 });
@@ -159,6 +162,24 @@ struct Kit<'a> {
     /// The page's heading has a detail line, such as the month a
     /// calendar shows, so a calendar grid adds no title of its own.
     page_detail: bool,
+    /// The node being drawn sits in a conversation, where text is a quiet
+    /// line and buttons are small.
+    quiet: bool,
+    /// The node being drawn sits in a side panel, where a choice input is
+    /// a setting with a menu.
+    side: bool,
+    /// The node IDs the view's popovers point at, and where each drew
+    /// this frame.
+    anchors: Vec<(String, Option<egui::Rect>)>,
+    /// A popup of a control drawn since this was last cleared was open
+    /// when the control started drawing, such as a date picker's month.
+    popup_open: bool,
+    /// Escape put back the text of an editable text drawn since this was
+    /// last cleared, so it closes nothing else.
+    escape_taken: bool,
+    /// The node being drawn sits in a popover, where a heading is its
+    /// title.
+    in_popover: bool,
 }
 
 impl Kit<'_> {
@@ -166,6 +187,17 @@ impl Kit<'_> {
     /// this window.
     fn id(&self, node: &str) -> Id {
         Id::unique(("plugin-node", self.window, self.place, node))
+    }
+
+    /// Note that the node `node` drew at `rect`, for a popover that
+    /// points at it. A node that draws more than once, such as an entry
+    /// on each of its days, keeps its first place unless `preferred`.
+    fn anchor(&mut self, node: &str, rect: egui::Rect, preferred: bool) {
+        if let Some((_, place)) = self.anchors.iter_mut().find(|(id, _)| id == node)
+            && (place.is_none() || preferred)
+        {
+            *place = Some(rect);
+        }
     }
 
     /// The rows in `range` of the virtual list `list`, each `None` until
@@ -217,7 +249,7 @@ pub(crate) fn show_sidebar(ui: &mut Ui, app: &mut App, window: Id, page_id: &str
 }
 
 /// Whether the plugin page `page_id` starts with a page heading of its
-/// own.
+/// own, or a pill that stands in for one.
 pub(crate) fn has_page_heading(app: &App, page_id: &str) -> bool {
     app.plugin_view(page_id)
         .and_then(|view| view.ok())
@@ -228,7 +260,7 @@ pub(crate) fn has_page_heading(app: &App, page_id: &str) -> bool {
                     ViewKind::Heading {
                         level: app_core::HeadingLevel::Page,
                         ..
-                    }
+                    } | ViewKind::Pill { .. }
                 )
             })
         })
@@ -322,9 +354,28 @@ fn draw(
         depth: 0,
         inline: false,
         page_detail: false,
+        quiet: false,
+        side: false,
+        anchors: Vec::new(),
+        popup_open: false,
+        escape_taken: false,
+        in_popover: false,
     };
+    let mut popovers = Vec::new();
+    popover::find(view.root(), &mut popovers);
+    kit.anchors = popovers
+        .iter()
+        .filter_map(|popover| match &popover.kind {
+            ViewKind::Popover { anchor, .. } => Some((anchor.clone(), None)),
+            _ => None,
+        })
+        .collect();
     ui.push_id(("plugin-view", window, place), |ui| {
         node(ui, view.root(), &mut kit);
+        // Popovers float over the rest, so they draw after it.
+        for popover in popovers {
+            popover::popover(ui, popover, &mut kit);
+        }
     });
     (kit.events, kit.link)
 }
@@ -377,6 +428,7 @@ fn inline(node: &ViewNode) -> bool {
     match &node.kind {
         ViewKind::Button { .. } => true,
         ViewKind::Input { value, choices, .. } => form::segmented(value, choices),
+        ViewKind::DatePicker { .. } | ViewKind::Picker { .. } => true,
         _ => false,
     }
 }
@@ -425,6 +477,19 @@ fn children(ui: &mut Ui, nodes: &[ViewNode], kit: &mut Kit) {
     }
 }
 
+/// The children of the view's own panel, but a side panel: a pill first
+/// stands centered at the top in place of the page's title.
+fn page_children(ui: &mut Ui, nodes: &[ViewNode], kit: &mut Kit) {
+    match nodes.split_first() {
+        Some((first, rest)) if matches!(first.kind, ViewKind::Pill { .. }) => {
+            ui.vertical_centered(|ui| node(ui, first, kit));
+            ui.add_space(8.0);
+            children(ui, rest, kit);
+        }
+        _ => children(ui, nodes, kit),
+    }
+}
+
 fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
     ui.push_id(&node.id, |ui| match &node.kind {
         ViewKind::Panel { label } => {
@@ -437,7 +502,23 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
                 }
                 ui.scope_builder(builder, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.vertical(|ui| children(ui, &node.children, kit));
+                    let side =
+                        node.children
+                            .split_last()
+                            .and_then(|(side, rest)| match &side.kind {
+                                ViewKind::SidePanel { label, width } => {
+                                    Some((side, rest, label.as_str(), *width))
+                                }
+                                _ => None,
+                            });
+                    match side {
+                        Some((side, rest, label, width)) => {
+                            avatar::page_with_side_panel(ui, rest, side, (label, width), kit);
+                        }
+                        None => {
+                            ui.vertical(|ui| page_children(ui, &node.children, kit));
+                        }
+                    }
                 });
             } else {
                 boxed(ui, Role::Group, label.as_deref(), |ui| {
@@ -459,6 +540,7 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
                 );
             });
         }
+        ViewKind::Text(text) if kit.quiet => conversation::quiet_line(ui, text),
         ViewKind::Text(text) => {
             ui.label(text);
         }
@@ -486,6 +568,27 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
         }
         ViewKind::Board { label } => board::board(ui, node, label, kit),
         ViewKind::Split { first_width } => split(ui, node, *first_width, kit),
+        // Only the view's own panel holds one, which lays it out.
+        ViewKind::SidePanel { .. } => {}
+        ViewKind::Avatar(look) => avatar::large(ui, look),
+        ViewKind::Pill { .. } => avatar::pill(ui, node, kit),
+        ViewKind::Conversation { label } => conversation::conversation(ui, node, label, kit),
+        ViewKind::Message { .. } => conversation::message(ui, node, kit),
+        ViewKind::Activity { .. } => conversation::activity(ui, node, kit),
+        ViewKind::Composer {
+            label,
+            value,
+            send,
+            stop,
+        } => {
+            let parts = conversation::ComposerParts {
+                label,
+                value,
+                send,
+                stop: stop.as_deref(),
+            };
+            conversation::composer(ui, node, &parts, kit);
+        }
         ViewKind::Calendar { label, mode, date } => {
             calendar::calendar(ui, node, label, *mode, date, kit);
         }
@@ -498,10 +601,30 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             submit,
             required,
         } => form::form(ui, node, (label, submit, required), kit),
+        ViewKind::Input {
+            value: app_core::InputValue::Choice(_),
+            ..
+        } if kit.side => form::setting(ui, node, kit),
         ViewKind::Input { .. } => form::input(ui, node, kit),
         ViewKind::NameField { label, value } => form::name_field(ui, node, label, value, kit),
-        // Their list, table, board or menu draws them.
-        ViewKind::Item { .. }
+        ViewKind::Editable {
+            label,
+            value,
+            style,
+            focus,
+        } => edit::editable(ui, node, (label, value, *style, *focus), kit),
+        ViewKind::DatePicker { label, value } => {
+            edit::date_picker(ui, node, label, value.as_deref(), kit);
+        }
+        ViewKind::Picker {
+            label,
+            options,
+            chosen,
+        } => edit::picker(ui, node, label, (options, chosen.as_deref()), kit),
+        // Their list, table, board or menu draws them, and the view draws
+        // its popovers over the rest.
+        ViewKind::Popover { .. }
+        | ViewKind::Item { .. }
         | ViewKind::Row { .. }
         | ViewKind::BoardColumn { .. }
         | ViewKind::Card { .. }

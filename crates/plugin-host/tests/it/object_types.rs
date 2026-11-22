@@ -356,8 +356,7 @@ fn the_plugin_holding_the_chat_types_reads_chats_but_writes_none_through_objects
     assert_eq!(types.owner("chat").as_deref(), Some("ai"));
     assert_eq!(types.owner("chat-message").as_deref(), Some("ai"));
 
-    let refused =
-        "error\tfailed\tNoura writes chats and their messages only through the ai interface.";
+    let refused = "error\tfailed\tNoura writes chats, their messages, Orbs and their runs only through the ai interface.";
     let assistant = r#"{"chat_id":"chat_01jbcdefghjkmnpqrstvwxyz0a","run_id":"run_1","kind":"assistant","status":"completed","content_type":"text/markdown","provider_id":null,"model_id":null}"#;
     for attempt in [
         format!("create|chat-message||Elsewhere/answer.md|{assistant}|Hi"),

@@ -65,9 +65,11 @@ pub use exports::noura::plugin::tools::Tool;
 pub use exports::noura::plugin::view::Page;
 pub use noura::plugin::types::{Error, PropertyError};
 pub use noura::plugin::ui::{
-    Calendar, CalendarEntry, CalendarMode, Check, Choice, Column, ColumnPress, EmptyState, Event,
-    Field, Form, Heading, HeadingLevel, Icon, Input, Item, ItemList, MenuItem, Move, NameField,
-    Naming, Node, NodeKind, SortOrder, Submission, Table, Target, Value, VirtualList, VirtualRow,
+    Activity, ActivityState, Avatar, Calendar, CalendarEntry, CalendarMode, Check, Choice, Color,
+    Column, ColumnPress, Composer, DatePicker, Editable, EditableStyle, EmptyState, Event, Field,
+    Form, Heading, HeadingLevel, Icon, Input, Item, ItemList, MenuItem, Message, MessageAuthor,
+    Move, NameField, Naming, Node, NodeKind, Picker, PickerOption, Pill, Popover, SidePanel,
+    SortOrder, Status, Submission, Table, Target, Value, VirtualList, VirtualRow,
 };
 
 /// Reading the open workspace. Needs the `workspace-read` capability.
@@ -146,13 +148,31 @@ pub mod navigation {
 ///     ai::run_tools(&run.id).unwrap();
 /// }
 /// ```
+///
+/// Orbs are named agents in the workspace, each with one ongoing thread.
+/// An Orb runs the tools its file lists without asking:
+///
+/// ```no_run
+/// use plugin_sdk::ai;
+///
+/// let orbs = ai::orbs().unwrap();
+/// let meetings = orbs.iter().find(|orb| orb.title == "Meetings").unwrap();
+/// let run = ai::send_to_orb(&meetings.id, "What did we decide today?").unwrap();
+/// // Later: the run streams, runs its tool calls and answers again.
+/// let _ = ai::read_run(&run.id).unwrap();
+/// let (_orb, _thread, _messages) = ai::read_orb(&meetings.id).unwrap();
+/// let _history = ai::orb_runs(&meetings.id, 10).unwrap();
+/// ```
 pub mod ai {
     pub use crate::noura::plugin::ai::{
-        Chat, Completion, CompletionError, CompletionRequest, Failure, Message, MessageKind,
-        MessageStatus, Provider, Request, Retention, Run, RunStatus, ToolCall, ToolDefinition,
+        Chat, Completion, CompletionError, CompletionRequest, Effort, Failure, Message,
+        MessageKind, MessageStatus, Model, Orb, OrbChanges, OrbRun, OrbRunStatus, OrbStart,
+        OrbState, Provider, Request, Retention, Run, RunStatus, ToolCall, ToolDefinition,
         ToolResult, WebError, WebPage, WebResult, answer_tools, chats, complete, create_chat,
-        providers, read_chat, read_run, rename_chat, resume, run_tools, send, set_retention, stop,
-        web_fetch, web_ready, web_search, workspace_tools,
+        create_orb, delete_orb, keep_orbs_running, models, orb_runs, orbs, orbs_held, providers,
+        read_chat, read_orb, read_run, rename_chat, resume, run_orb, run_tools, send, send_to_orb,
+        set_orb_paused, set_retention, stop, update_orb, web_fetch, web_ready, web_search,
+        workspace_tools,
     };
 }
 
@@ -215,6 +235,21 @@ pub mod menu_bar {
 /// did. A chosen notification comes to [`Plugin::handle_kernel_event`].
 pub mod notifications {
     pub use crate::noura::plugin::notifications::{Action, Notification, notify, withdraw};
+}
+
+/// Events the plugin tells Noura about, which start the triggers of Orbs
+/// that name them, as `<plugin>.<event>`. Needs the `events` capability,
+/// whose manifest entry declares each event.
+///
+/// ```no_run
+/// use plugin_sdk::events;
+///
+/// // A recording ended: Orbs whose triggers say
+/// // `event transcription.finished` start.
+/// events::emit("finished", Some("transcription_01jd8x3k9q2m7v4c6b1n0p5r8a")).unwrap();
+/// ```
+pub mod events {
+    pub use crate::noura::plugin::events::emit;
 }
 
 /// What a plugin adds to Noura. Noura calls each method only when the
@@ -522,6 +557,25 @@ macro_rules! export {
 /// view.name_field(View::ROOT, "new-chore", "New chore name", "");
 /// assert_eq!(view.into_nodes().len(), 9);
 /// ```
+///
+/// A conversation holds messages and the steps taken along the way, with
+/// a box to write the next message in at the bottom:
+///
+/// ```
+/// use plugin_sdk::{ActivityState, MessageAuthor, View};
+///
+/// let mut view = View::panel("root", Some("Garden helper"));
+/// let talk = view.conversation(View::ROOT, "talk", "Garden helper");
+/// view.message(talk, "asked", MessageAuthor::You, "You", "When do I sow beans?");
+/// let looked = view.activity(talk, "looked", "Read the sowing calendar", ActivityState::Done);
+/// view.markdown(looked, "looked-found", "Beans: after the last frost.");
+/// let answer = view.message(talk, "answer", MessageAuthor::Other, "Helper", "After the **last frost**.");
+/// view.note(answer, "Stopped.");
+/// let composer = view.composer(talk, "next", "Message", "", "Send");
+/// view.choice_input(composer, "helper", "Helper", &[("sun", "Sun"), ("rain", "Rain")], Some("sun"));
+/// view.stop(composer, "Stop");
+/// assert_eq!(view.into_nodes().len(), 8);
+/// ```
 #[derive(Debug, Clone)]
 pub struct View {
     nodes: Vec<Node>,
@@ -653,6 +707,88 @@ impl View {
         (first, second)
     }
 
+    /// Add a conversation: a column in the middle of the page that takes
+    /// the rest of it and scrolls on its own, staying at its end as it
+    /// grows. Add its messages and steps to it, then, last, a
+    /// [`composer`](Self::composer), which stays at the bottom of the page.
+    pub fn conversation(&mut self, parent: u32, id: &str, label: &str) -> u32 {
+        self.add(parent, id, NodeKind::Conversation(label.to_owned()))
+    }
+
+    /// Add a message from `author`, named `label` for screen readers.
+    /// Yours shows `text` as you wrote it, in a bubble; any other shows it
+    /// as Markdown. Give it a quiet line with [`note`](Self::note) and a
+    /// problem with [`warn`](Self::warn).
+    pub fn message(
+        &mut self,
+        parent: u32,
+        id: &str,
+        author: MessageAuthor,
+        label: &str,
+        text: &str,
+    ) -> u32 {
+        let message = Message {
+            author,
+            label: label.to_owned(),
+            text: text.to_owned(),
+            detail: None,
+            warning: None,
+        };
+        self.add(parent, id, NodeKind::Message(message))
+    }
+
+    /// Show `note`, such as `Stopped.`, as a quiet line under the message
+    /// at `message`.
+    ///
+    /// # Panics
+    ///
+    /// When `message` isn't the index of a message already added.
+    pub fn note(&mut self, message: u32, note: &str) {
+        match &mut self.nodes[message as usize].kind {
+            NodeKind::Message(message) => message.detail = Some(note.to_owned()),
+            _ => panic!("only a message shows a note"),
+        }
+    }
+
+    /// Add a step taken along the way, such as a tool call, in `state`.
+    /// The nodes you add to it show while you open it.
+    pub fn activity(&mut self, parent: u32, id: &str, title: &str, state: ActivityState) -> u32 {
+        let activity = Activity {
+            title: title.to_owned(),
+            state,
+        };
+        self.add(parent, id, NodeKind::Activity(activity))
+    }
+
+    /// Add a box to write a message in, holding `value`, with a send button
+    /// that screen readers read as `send`. Choice inputs and buttons you
+    /// add to it line up under the text. Sending sends
+    /// [`Event::Submitted`] naming the box, with its text under the box's
+    /// own ID, then its choices, and empties the box.
+    pub fn composer(&mut self, parent: u32, id: &str, label: &str, value: &str, send: &str) -> u32 {
+        let composer = Composer {
+            label: label.to_owned(),
+            value: value.to_owned(),
+            send: send.to_owned(),
+            stop: None,
+        };
+        self.add(parent, id, NodeKind::Composer(composer))
+    }
+
+    /// Put a stop button labeled `label` in the send button's place in the
+    /// composer at `composer`, while something is under way. A press sends
+    /// [`Event::Pressed`] naming the composer.
+    ///
+    /// # Panics
+    ///
+    /// When `composer` isn't the index of a composer already added.
+    pub fn stop(&mut self, composer: u32, label: &str) {
+        match &mut self.nodes[composer as usize].kind {
+            NodeKind::Composer(composer) => composer.stop = Some(label.to_owned()),
+            _ => panic!("only a composer shows a stop button"),
+        }
+    }
+
     /// Add a list you select items in. Add its items with
     /// [`item`](Self::item); selecting one sends [`Event::Selected`], and
     /// opening one sends [`Event::Activated`].
@@ -702,6 +838,9 @@ impl View {
             detail: detail.map(str::to_owned),
             checked: None,
             warning: None,
+            color: None,
+            avatar: None,
+            status: None,
         };
         self.add(column, id, NodeKind::Card(card))
     }
@@ -714,6 +853,9 @@ impl View {
             detail: detail.map(str::to_owned),
             checked: None,
             warning: None,
+            color: None,
+            avatar: None,
+            status: None,
         };
         self.add(list, id, NodeKind::Item(item))
     }
@@ -734,21 +876,26 @@ impl View {
             detail: detail.map(str::to_owned),
             checked: Some(checked),
             warning: None,
+            color: None,
+            avatar: None,
+            status: None,
         };
         self.add(list, id, NodeKind::Item(item))
     }
 
     /// Show `warning`, such as `Overdue`, after the label of the list item
-    /// at `item`, in the color Noura shows problems in. Screen readers
-    /// read it with the label.
+    /// at `item`, or under the message at `item`, in the color Noura shows
+    /// problems in. Screen readers read it with the label.
     ///
     /// # Panics
     ///
-    /// When `item` isn't the index of a list item already added.
+    /// When `item` isn't the index of a list item or a message already
+    /// added.
     pub fn warn(&mut self, item: u32, warning: &str) {
         match &mut self.nodes[item as usize].kind {
             NodeKind::Item(item) => item.warning = Some(warning.to_owned()),
-            _ => panic!("only a list item shows a warning"),
+            NodeKind::Message(message) => message.warning = Some(warning.to_owned()),
+            _ => panic!("only a list item or a message shows a warning"),
         }
     }
 
@@ -918,8 +1065,170 @@ impl View {
             title: title.to_owned(),
             start: start.to_owned(),
             end: end.map(str::to_owned),
+            color: None,
         };
         self.add(calendar, id, NodeKind::Entry(entry))
+    }
+
+    /// Add text you edit in place, holding `value`. A
+    /// [`title`](EditableStyle::Title), a [`line`](EditableStyle::Line) or
+    /// a [`body`](EditableStyle::Body) sends [`Event::Changed`] with its
+    /// new text when you leave it, or press Return in a title or a line; a
+    /// line sends it trimmed, and may send it empty. An
+    /// [`add`](EditableStyle::Add) field sends it on Return, then empties
+    /// itself and keeps the keyboard, so you can add one thing after
+    /// another. With `focus`, it takes the keyboard when it appears, or
+    /// when you draw it with `focus` after drawing it without.
+    pub fn editable(
+        &mut self,
+        parent: u32,
+        id: &str,
+        label: &str,
+        value: &str,
+        style: EditableStyle,
+        focus: bool,
+    ) -> u32 {
+        let editable = Editable {
+            label: label.to_owned(),
+            value: value.to_owned(),
+            style,
+            focus,
+        };
+        self.add(parent, id, NodeKind::Editable(editable))
+    }
+
+    /// Add a button that shows `value`, a `YYYY-MM-DD` date, or `label`
+    /// while it holds none, and opens a date picker with Today, Tomorrow,
+    /// Next week, a month to pick a day from and Clear. A pick sends
+    /// [`Event::Changed`] with [`Value::Date`].
+    pub fn date_picker(&mut self, parent: u32, id: &str, label: &str, value: Option<&str>) -> u32 {
+        let picker = DatePicker {
+            label: label.to_owned(),
+            value: value.map(str::to_owned),
+        };
+        self.add(parent, id, NodeKind::DatePicker(picker))
+    }
+
+    /// Add a button that shows the chosen option and opens a menu of
+    /// `options`, each an ID, a label and an optional color for a mark
+    /// before the label. A pick sends [`Event::Changed`] with
+    /// [`Value::Choice`].
+    pub fn picker(
+        &mut self,
+        parent: u32,
+        id: &str,
+        label: &str,
+        options: &[(&str, &str, Option<Color>)],
+        chosen: Option<&str>,
+    ) -> u32 {
+        let picker = Picker {
+            label: label.to_owned(),
+            options: options
+                .iter()
+                .map(|(id, label, color)| PickerOption {
+                    id: (*id).to_owned(),
+                    label: (*label).to_owned(),
+                    color: *color,
+                })
+                .collect(),
+            chosen: chosen.map(str::to_owned),
+        };
+        self.add(parent, id, NodeKind::Picker(picker))
+    }
+
+    /// Add a popover that floats beside the item, card, entry or button
+    /// with the node ID `anchor`, with an arrow toward it. Its children go
+    /// where a panel's go. Escape or a click outside it sends
+    /// [`Event::Cancelled`] with the popover's ID.
+    pub fn popover(&mut self, parent: u32, id: &str, label: &str, anchor: &str) -> u32 {
+        let popover = Popover {
+            label: label.to_owned(),
+            anchor: anchor.to_owned(),
+        };
+        self.add(parent, id, NodeKind::Popover(popover))
+    }
+
+    /// Draw the list item or the calendar entry at `node` in `color`: an
+    /// item's checkbox, or a dot before its label when it has none, and
+    /// an entry's fill.
+    ///
+    /// # Panics
+    ///
+    /// When `node` isn't the index of a list item or a calendar entry
+    /// already added.
+    pub fn color(&mut self, node: u32, color: Color) {
+        match &mut self.nodes[node as usize].kind {
+            NodeKind::Item(item) => item.color = Some(color),
+            NodeKind::Entry(entry) => entry.color = Some(color),
+            _ => panic!("only a list item or a calendar entry takes a color"),
+        }
+    }
+
+    /// Show `avatar` before the label of the list item at `item`, in place
+    /// of a color's dot.
+    ///
+    /// # Panics
+    ///
+    /// When `item` isn't the index of a list item already added.
+    pub fn avatar(&mut self, item: u32, avatar: Avatar) {
+        match &mut self.nodes[item as usize].kind {
+            NodeKind::Item(item) => item.avatar = Some(avatar),
+            _ => panic!("only a list item shows an avatar"),
+        }
+    }
+
+    /// Show a status dot in `color` at the end of the list item at
+    /// `item`, which screen readers read as `label`, such as `Working`.
+    ///
+    /// # Panics
+    ///
+    /// When `item` isn't the index of a list item already added.
+    pub fn status(&mut self, item: u32, label: &str, color: Color) {
+        match &mut self.nodes[item as usize].kind {
+            NodeKind::Item(item) => {
+                item.status = Some(Status {
+                    label: label.to_owned(),
+                    color,
+                });
+            }
+            _ => panic!("only a list item shows a status"),
+        }
+    }
+
+    /// Add a large avatar, centered, as at the top of a profile.
+    pub fn large_avatar(&mut self, parent: u32, id: &str, avatar: Avatar) -> u32 {
+        self.add(parent, id, NodeKind::Avatar(avatar))
+    }
+
+    /// Add a pill button with `avatar` and `label`, which shows pressed
+    /// while what it opens is `open`. A press sends [`Event::Pressed`].
+    /// The page's first node, when a pill, shows centered at the top of
+    /// the page in place of its title.
+    pub fn pill(
+        &mut self,
+        parent: u32,
+        id: &str,
+        label: &str,
+        avatar: Option<Avatar>,
+        open: bool,
+    ) -> u32 {
+        let pill = Pill {
+            label: label.to_owned(),
+            avatar,
+            open,
+        };
+        self.add(parent, id, NodeKind::Pill(pill))
+    }
+
+    /// Add a side panel, `width` points wide (240 to 480), down the
+    /// page's right edge, named `label` for screen readers. Add it to the
+    /// view's own panel, last. Returns it, to add its nodes to.
+    pub fn side_panel(&mut self, id: &str, label: &str, width: u32) -> u32 {
+        let panel = SidePanel {
+            label: label.to_owned(),
+            width,
+        };
+        self.add(Self::ROOT, id, NodeKind::SidePanel(panel))
     }
 
     /// Add a menu to the item, row, card or button at `owner`.

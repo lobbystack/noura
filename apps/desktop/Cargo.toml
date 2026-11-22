@@ -57,11 +57,13 @@ drag.workspace = true
 # than the first starts its drag from AppKit's key window.
 #
 # Notifications go through the User Notifications framework.
+#
+# The window's close, minimize and zoom buttons move into the rail.
 [target.'cfg(target_os = "macos")'.dependencies]
 block2.workspace = true
 objc2.workspace = true
-objc2-app-kit = { workspace = true, features = ["std", "NSApplication", "NSEvent", "NSResponder", "NSScreen", "NSView", "NSWindow"] }
-objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSBundle", "NSError", "NSGeometry", "NSSet", "NSString"] }
+objc2-app-kit = { workspace = true, features = ["std", "NSApplication", "NSButton", "NSControl", "NSEvent", "NSPanel", "NSResponder", "NSScreen", "NSView", "NSWindow"] }
+objc2-foundation = { workspace = true, features = ["std", "block2", "NSArray", "NSBundle", "NSError", "NSGeometry", "NSNotification", "NSOperation", "NSSet", "NSString"] }
 objc2-user-notifications = { workspace = true, features = ["std", "block2", "UNNotification", "UNNotificationAction", "UNNotificationCategory", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 
 # While Explorer drags files over a window, the window asks Windows where

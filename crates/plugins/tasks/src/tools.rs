@@ -18,6 +18,7 @@ const PROPERTIES: &str = r#"{
   "properties": {
     "status": {"enum": ["todo", "in-progress", "done", "cancelled", null]},
     "priority": {"enum": ["low", "medium", "high", "urgent", null]},
+    "assignee": {"type": ["string", "null"], "description": "The name of the person who does the task."},
     "project": {"type": ["string", "null"], "description": "A link to a project, such as [[Garden]], or the project's stable ID."},
     "source": {"type": ["string", "null"], "description": "A link to the object the task came from, such as [[Team sync]], or its stable ID."},
     "due": {"type": ["string", "null"], "description": "A day as YYYY-MM-DD, or an RFC 3339 time with its offset."},
@@ -32,13 +33,14 @@ pub(crate) fn tools() -> Vec<Tool> {
         Tool {
             name: "list".into(),
             description: "List tasks, each with its stable ID, title, path, revision and \
-                          properties, but not its body. Filter by status, by project, or both."
+                          properties, but not its body. Filter by status, project or assignee."
                 .into(),
             input_schema: r#"{
   "type": "object",
   "properties": {
     "status": {"enum": ["todo", "in-progress", "done", "cancelled"]},
-    "project": {"type": "string", "description": "A link to a project, such as [[Garden]], or the project's stable ID."}
+    "project": {"type": "string", "description": "A link to a project, such as [[Garden]], or the project's stable ID."},
+    "assignee": {"type": "string", "description": "A person's name. Case doesn't matter."}
   },
   "additionalProperties": false
 }"#

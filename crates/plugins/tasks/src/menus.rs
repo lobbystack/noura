@@ -88,47 +88,46 @@ pub(crate) fn stop_renaming() {
     state.rename_problem = None;
 }
 
-/// Rename the task being renamed to `name`, in the folder it is in,
-/// against its latest revision. An empty or unchanged name keeps the old
-/// one. A rename that fails keeps the field open and says why.
+/// Rename the task being renamed to `name`. An empty or unchanged name
+/// keeps the old one. A rename that fails keeps the field open and says
+/// why.
 pub(crate) fn rename(name: &str) {
     let Some(id) = state().renaming.clone() else {
         return;
     };
+    match rename_task(&id, name) {
+        Ok(()) => stop_renaming(),
+        Err(problem) => state().rename_problem = Some(problem),
+    }
+}
+
+/// Rename the task `id` to `name`, in the folder it is in, against its
+/// latest revision: its file takes the name, and its stable ID stays. An
+/// empty or unchanged name keeps the old one. Says why when it fails.
+pub(crate) fn rename_task(id: &str, name: &str) -> Result<(), String> {
     let name = name.trim();
-    let latest = match objects::get(&id) {
-        Ok(latest) => latest,
-        Err(error) => {
-            state().rename_problem = Some(format!("Couldn't rename the task: {}", reason(&error)));
-            return;
-        }
-    };
+    let latest = objects::get(id)
+        .map_err(|error| format!("Couldn't rename the task: {}", reason(&error)))?;
     if name.is_empty() || name == latest.title {
-        stop_renaming();
-        return;
+        return Ok(());
     }
     if let Some(problem) = refused(name) {
-        state().rename_problem = Some(problem.to_owned());
-        return;
+        return Err(problem.to_owned());
     }
     let path = match latest.path.rsplit_once('/') {
         Some((folder, _)) => format!("{folder}/{name}.md"),
         None => format!("{name}.md"),
     };
-    match objects::move_to(&id, &latest.revision, &path) {
-        Ok(_) => stop_renaming(),
-        Err(Error::AlreadyExists(_)) => {
-            state().rename_problem = Some(format!(
-                "Something named \u{201c}{name}\u{201d} is already in this folder."
-            ));
-        }
-        Err(error) => {
-            state().rename_problem = Some(format!(
-                "Couldn't rename \u{201c}{}\u{201d}: {}",
-                latest.title,
-                reason(&error)
-            ));
-        }
+    match objects::move_to(id, &latest.revision, &path) {
+        Ok(_) => Ok(()),
+        Err(Error::AlreadyExists(_)) => Err(format!(
+            "Something named \u{201c}{name}\u{201d} is already in this folder."
+        )),
+        Err(error) => Err(format!(
+            "Couldn't rename \u{201c}{}\u{201d}: {}",
+            latest.title,
+            reason(&error)
+        )),
     }
 }
 

@@ -25,21 +25,28 @@ impl Now {
     /// `2026-10-21T00:00:00-04:00`: the bound a range of days starts or
     /// ends at.
     pub(crate) fn midnight(&self, day: Date) -> String {
-        match day.to_zoned(self.zone.clone()) {
-            Ok(start) => {
-                let offset = start.offset().seconds();
-                let sign = if offset < 0 { '-' } else { '+' };
-                let minutes = offset.unsigned_abs() / 60;
-                format!(
-                    "{}T{}{sign}{:02}:{:02}",
-                    start.date(),
-                    start.time().strftime("%H:%M:%S"),
-                    minutes / 60,
-                    minutes % 60
-                )
-            }
-            Err(_) => format!("{day}T00:00:00Z"),
+        self.at(day, jiff::civil::Time::midnight())
+    }
+
+    /// The instant `time` on `day` in the device's time zone, in RFC 3339
+    /// with the offset the zone has then, such as
+    /// `2026-10-21T09:00:00-04:00`.
+    pub(crate) fn at(&self, day: Date, time: jiff::civil::Time) -> String {
+        match day.to_datetime(time).to_zoned(self.zone.clone()) {
+            Ok(start) => written(&start),
+            Err(_) => format!("{day}T{}Z", time.strftime("%H:%M:%S")),
         }
+    }
+
+    /// The instant `at` in RFC 3339 with the offset the device's time zone
+    /// has then, as a file holds it.
+    pub(crate) fn stamp(&self, at: Timestamp) -> String {
+        written(&at.to_zoned(self.zone.clone()))
+    }
+
+    /// `at` in the device's time zone.
+    pub(crate) fn local(&self, at: Timestamp) -> jiff::Zoned {
+        at.to_zoned(self.zone.clone())
     }
 
     /// The instant `start`, a date or an instant, begins at on this
@@ -79,6 +86,20 @@ impl Now {
     }
 }
 
+/// `at` in RFC 3339 with its offset, to the second.
+fn written(at: &jiff::Zoned) -> String {
+    let offset = at.offset().seconds();
+    let sign = if offset < 0 { '-' } else { '+' };
+    let minutes = offset.unsigned_abs() / 60;
+    format!(
+        "{}T{}{sign}{:02}:{:02}",
+        at.date(),
+        at.time().strftime("%H:%M:%S"),
+        minutes / 60,
+        minutes % 60
+    )
+}
+
 /// The time zone the host names: an IANA name, or an offset such as
 /// `-04:00` for a zone without one. Anything else reads as UTC.
 fn zone(name: &str) -> TimeZone {
@@ -93,7 +114,7 @@ fn zone(name: &str) -> TimeZone {
 }
 
 /// `day` as a list reads it, from `today`.
-fn day_name(day: Date, today: Date) -> String {
+pub(crate) fn day_name(day: Date, today: Date) -> String {
     // Subtracting dates gives a span of whole days.
     let offset = (day - today).get_days();
     match offset {

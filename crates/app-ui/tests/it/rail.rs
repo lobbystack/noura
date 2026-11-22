@@ -6,7 +6,7 @@ use egui_kittest::{
     Harness,
     kittest::{NodeT, Queryable},
 };
-use support::{FakePicker, create_workspace, harness_registering, settle};
+use support::{FakePicker, create_workspace, harness_for, harness_registering, settle};
 
 type Ui = Harness<'static, app_ui::NouraUi>;
 
@@ -93,6 +93,80 @@ fn the_rail_labels_its_pages_and_marks_the_current_one() {
     assert_eq!(current(&harness).as_deref(), Some("Alpha"));
     assert_eq!(tabs(&harness), ["Alpha (preview)"]);
     assert!(harness.unnamed_widgets().is_empty());
+}
+
+/// A workspace in `folder`, opened at launch on `platform`.
+fn opened_on(
+    app_data: &std::path::Path,
+    folder: &std::path::Path,
+    platform: app_core::Platform,
+) -> Ui {
+    create_workspace(app_data, folder);
+    let mut harness = harness_for(app_data, platform, |_| {});
+    settle(&mut harness);
+    harness
+}
+
+/// kittest draws the window 8 points in from its edges.
+const HARNESS_MARGIN: f32 = 8.0;
+
+/// Where the rail page `title` draws, from the window's top-left corner.
+fn page_rect(harness: &Ui, title: &str) -> egui::Rect {
+    page(harness, title)
+        .rect()
+        .translate(-egui::Vec2::splat(HARNESS_MARGIN))
+}
+
+/// AppKit's close, minimize and zoom buttons are 14 points wide.
+const WINDOW_BUTTON: f32 = 14.0;
+
+#[test]
+fn on_macos_the_window_buttons_fit_in_the_rail_s_top_row() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let harness = opened_on(
+        app_data.path(),
+        &parent.path().join("Garden"),
+        app_core::Platform::MacOs,
+    );
+
+    let inbox = page_rect(&harness, "Inbox");
+    let buttons = app_ui::window_buttons(1.0);
+    // Centered over the rail's pages, all three fit with room to spare,
+    // and the pages start below them. A page snaps to half a point.
+    assert!((buttons.center.x - inbox.center().x).abs() <= 0.5);
+    let row = 3.0 * WINDOW_BUTTON + 2.0 * buttons.gap;
+    assert!(buttons.center.x - row / 2.0 >= 6.0);
+    assert!(inbox.top() > buttons.center.y + WINDOW_BUTTON / 2.0);
+    // The workspace switcher lines up with the sidebar's rows.
+    let switcher = harness
+        .get_by_role_and_label(Role::Button, "Workspace: Garden")
+        .rect();
+    let files = harness.get_by_role_and_label(Role::Button, "Files").rect();
+    assert_eq!(switcher.left(), files.left());
+}
+
+#[test]
+fn zoomed_out_the_rail_stays_wide_enough_for_the_window_buttons() {
+    for zoom in [0.5, 0.75, 1.0, 1.5, 2.0] {
+        let buttons = app_ui::window_buttons(zoom);
+        let row = 3.0 * WINDOW_BUTTON + 2.0 * buttons.gap;
+        assert!(buttons.center.x - row / 2.0 >= 6.0, "{zoom}");
+        // The row is the title bar row's height at that zoom.
+        assert_eq!(buttons.center.y, 18.0 * zoom, "{zoom}");
+    }
+}
+
+#[test]
+fn windows_and_linux_keep_the_narrow_rail() {
+    for platform in [app_core::Platform::Windows, app_core::Platform::Linux] {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let harness = opened_on(app_data.path(), &parent.path().join("Garden"), platform);
+
+        let inbox = page_rect(&harness, "Inbox");
+        assert!((inbox.center().x - 28.0).abs() <= 0.5);
+    }
 }
 
 #[test]

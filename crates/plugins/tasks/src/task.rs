@@ -17,6 +17,7 @@ pub(crate) const TASK: &str = "task";
 pub(crate) const SCHEMA: &str = r#"{"properties":[
   {"name":"status","kind":{"enum":["todo","in-progress","done","cancelled"]},"default":"todo"},
   {"name":"priority","kind":{"enum":["low","medium","high","urgent"]},"default":"medium"},
+  {"name":"assignee","kind":"string","nullable":true},
   {"name":"project","kind":{"reference":"project"},"nullable":true},
   {"name":"source","kind":{"reference":"*"},"nullable":true},
   {"name":"due","kind":"date","nullable":true},
@@ -24,9 +25,10 @@ pub(crate) const SCHEMA: &str = r#"{"properties":[
 ]}"#;
 
 /// The properties a task has, which the update command accepts.
-pub(crate) const FIELDS: [&str; 6] = [
+pub(crate) const FIELDS: [&str; 7] = [
     "status",
     "priority",
+    "assignee",
     "project",
     "source",
     "due",
@@ -96,6 +98,8 @@ pub(crate) struct Task {
     pub(crate) revision: String,
     pub(crate) status: String,
     pub(crate) priority: String,
+    /// Who does it, by name, when the file names someone.
+    pub(crate) assignee: Option<String>,
     pub(crate) due: Option<Due>,
     /// The stable ID of the project the task's `project` link leads to,
     /// when it leads to one.
@@ -125,6 +129,10 @@ impl Task {
             revision: object.revision.clone(),
             status: text("status").unwrap_or("todo").to_owned(),
             priority: text("priority").unwrap_or("medium").to_owned(),
+            assignee: text("assignee")
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned),
             due: text("due").and_then(Due::parse),
             project: project_link
                 .as_deref()
@@ -136,6 +144,11 @@ impl Task {
 
     pub(crate) fn done(&self) -> bool {
         self.status == "done"
+    }
+
+    /// Done or cancelled: nothing left to do.
+    pub(crate) fn closed(&self) -> bool {
+        self.done() || self.status == "cancelled"
     }
 
     /// The folder that holds the task's file: empty for the top level.

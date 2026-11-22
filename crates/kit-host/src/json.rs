@@ -4,9 +4,9 @@
 //! holding its children.
 
 use app_core::{
-    CalendarMode, Choice, Column, ColumnPress, Field, HeadingLevel, InputValue, PluginCheck,
-    PluginEvent, PluginIcon, PluginMove, PluginNaming, SortOrder, Submission, Target, ViewKind,
-    ViewNode,
+    ActivityState, CalendarMode, Choice, Column, ColumnPress, EditableStyle, Field, HeadingLevel,
+    InputValue, MessageAuthor, PluginAvatar, PluginCheck, PluginColor, PluginEvent, PluginIcon,
+    PluginMove, PluginNaming, SortOrder, Submission, Target, ViewKind, ViewNode,
 };
 use serde_json::{Value, json};
 
@@ -48,9 +48,23 @@ fn kind(kind: &ViewKind) -> Value {
             detail,
             checked,
             warning,
+            color,
+            avatar: look,
+            status,
         } => tagged(
             "item",
-            json!({ "label": label, "detail": detail, "checked": checked, "warning": warning }),
+            json!({
+                "label": label,
+                "detail": detail,
+                "checked": checked,
+                "warning": warning,
+                "color": color.map(color_name),
+                "avatar": look.as_ref().map(avatar),
+                "status": status.as_ref().map(|status| json!({
+                    "label": status.label,
+                    "color": color_name(status.color),
+                })),
+            }),
         ),
         ViewKind::VirtualList { label, rows } => {
             tagged("virtual-list", json!({ "label": label, "rows": rows }))
@@ -97,9 +111,14 @@ fn kind(kind: &ViewKind) -> Value {
             "calendar",
             json!({ "label": label, "mode": calendar_mode(*mode), "date": date }),
         ),
-        ViewKind::Entry { title, start, end } => tagged(
+        ViewKind::Entry {
+            title,
+            start,
+            end,
+            color,
+        } => tagged(
             "entry",
-            json!({ "title": title, "start": start, "end": end }),
+            json!({ "title": title, "start": start, "end": end, "color": color.map(color_name) }),
         ),
         ViewKind::Heading {
             text,
@@ -127,6 +146,110 @@ fn kind(kind: &ViewKind) -> Value {
             json!({ "title": title, "detail": detail, "icon": icon.map(icon_name) }),
         ),
         ViewKind::Split { first_width } => tagged("split", json!(first_width)),
+        ViewKind::SidePanel { label, width } => {
+            tagged("side-panel", json!({ "label": label, "width": width }))
+        }
+        ViewKind::Avatar(look) => tagged("avatar", avatar(look)),
+        ViewKind::Pill {
+            label,
+            avatar: look,
+            open,
+        } => tagged(
+            "pill",
+            json!({ "label": label, "avatar": look.as_ref().map(avatar), "open": open }),
+        ),
+        ViewKind::Editable {
+            label,
+            value,
+            style,
+            focus,
+        } => tagged(
+            "editable",
+            json!({
+                "label": label,
+                "value": value,
+                "style": match style {
+                    EditableStyle::Title => "title",
+                    EditableStyle::Body => "body",
+                    EditableStyle::Add => "add",
+                    EditableStyle::Line => "line",
+                },
+                "focus": focus,
+            }),
+        ),
+        ViewKind::DatePicker { label, value } => {
+            tagged("date-picker", json!({ "label": label, "value": value }))
+        }
+        ViewKind::Picker {
+            label,
+            options,
+            chosen,
+        } => tagged(
+            "picker",
+            json!({
+                "label": label,
+                "options": options
+                    .iter()
+                    .map(|option| json!({
+                        "id": option.id,
+                        "label": option.label,
+                        "color": option.color.map(color_name),
+                    }))
+                    .collect::<Vec<_>>(),
+                "chosen": chosen,
+            }),
+        ),
+        ViewKind::Conversation { label } => tagged("conversation", json!(label)),
+        ViewKind::Message {
+            author,
+            label,
+            text,
+            detail,
+            warning,
+        } => tagged(
+            "message",
+            json!({
+                "author": match author {
+                    MessageAuthor::You => "you",
+                    MessageAuthor::Other => "other",
+                },
+                "label": label,
+                "text": text,
+                "detail": detail,
+                "warning": warning,
+            }),
+        ),
+        ViewKind::Activity { title, state } => tagged(
+            "activity",
+            json!({ "title": title, "state": activity_state(*state) }),
+        ),
+        ViewKind::Composer {
+            label,
+            value,
+            send,
+            stop,
+        } => tagged(
+            "composer",
+            json!({ "label": label, "value": value, "send": send, "stop": stop }),
+        ),
+        ViewKind::Popover { label, anchor } => {
+            tagged("popover", json!({ "label": label, "anchor": anchor }))
+        }
+    }
+}
+
+fn avatar(look: &PluginAvatar) -> Value {
+    json!({ "text": look.text, "color": look.color.map(color_name) })
+}
+
+fn activity_state(state: ActivityState) -> &'static str {
+    match state {
+        ActivityState::Waiting => "waiting",
+        ActivityState::Running => "running",
+        ActivityState::Done => "done",
+        ActivityState::Failed => "failed",
+        ActivityState::Denied => "denied",
+        ActivityState::Stopped => "stopped",
     }
 }
 
@@ -136,8 +259,20 @@ fn icon_name(icon: PluginIcon) -> &'static str {
         PluginIcon::Done => "done",
         PluginIcon::Folder => "folder",
         PluginIcon::Note => "note",
-        PluginIcon::Sparkle => "sparkle",
         PluginIcon::Tasks => "tasks",
+    }
+}
+
+fn color_name(color: PluginColor) -> &'static str {
+    match color {
+        PluginColor::Red => "red",
+        PluginColor::Orange => "orange",
+        PluginColor::Yellow => "yellow",
+        PluginColor::Green => "green",
+        PluginColor::Blue => "blue",
+        PluginColor::Purple => "purple",
+        PluginColor::Brown => "brown",
+        PluginColor::Gray => "gray",
     }
 }
 

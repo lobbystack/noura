@@ -89,12 +89,13 @@ Each `[[capabilities]]` table asks for one capability:
 | `inbox-sections` | Add sections to the Inbox | [`inbox`](interfaces/inbox.md) |
 | `settings` | Add a page to Settings | [`settings`](interfaces/settings.md) |
 | `tools` | Offer tools to AI assistants | [`tools`](interfaces/tools.md) |
-| `ai` | Chat with the AI providers you set up, keep the chats in the workspace, and complete one-off prompts | [`ai`](interfaces/ai.md) |
+| `ai` | Chat with the AI providers you set up, keep the chats in the workspace, complete one-off prompts, and reach the workspace's Orbs | [`ai`](interfaces/ai.md) |
 | `speech` | Record the microphone and the system audio, and turn speech into text on this device | [`speech`](interfaces/speech.md), [`kernel-events`](interfaces/kernel-events.md) |
 | `global-shortcuts` with `shortcuts` | Answer the keyboard shortcuts it lists in any app | [`global-shortcuts`](interfaces/global-shortcuts.md), [`kernel-events`](interfaces/kernel-events.md) |
 | `paste` | Paste text into the app you're typing in, and copy text | [`paste`](interfaces/paste.md) |
 | `menu-bar-items` | Add items to Noura's menu bar or tray menu | [`menu-bar`](interfaces/menu-bar.md), [`kernel-events`](interfaces/kernel-events.md) |
 | `notifications` | Show notifications with actions in the system's notification center | [`notifications`](interfaces/notifications.md), [`kernel-events`](interfaces/kernel-events.md) |
+| `events` with `events` | Tell Noura when the events it lists happen, so Orbs can act on them | [`events`](interfaces/events.md) |
 
 A call the manifest doesn't cover fails with `capability-not-declared`, naming the capability, and Noura runs nothing for it. The [`clock`](interfaces/clock.md) needs no capability. You approve each capability, network host and command target on each device, and you can revoke any of them in Settings > Plugins. An update that asks for more waits for your approval.
 

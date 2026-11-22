@@ -195,8 +195,8 @@ fn an_entry_opens_from_the_section_in_a_tab() {
     assert_eq!(app.active_tab().map(|tab| tab.title()), Some("Market"));
 }
 
-/// One task, from New task to the Inbox: its due date goes in from its
-/// panel, it shows on the calendar and under Next 7 days, and the Inbox
+/// One task, from the add field to the Inbox: its due date goes in from
+/// its details, it shows on the calendar and under Next 7 days, and the Inbox
 /// opens it with its text.
 #[test]
 fn a_task_due_today_shows_on_the_calendar_and_in_the_inbox_and_opens() {
@@ -210,13 +210,8 @@ fn a_task_due_today_shows_on_the_calendar_and_in_the_inbox_and_opens() {
     };
     app.open_page(tasks::PAGE, OpenAs::Preview);
     support::settle(&mut app);
-    tasks::name_new_task(&mut app, "Dentist");
-    wait_until(&mut app, "the task opens", |app| {
-        app.active_tab().is_some_and(|tab| tab.title() == "Dentist")
-    });
+    tasks::add_task(&mut app, "Dentist");
     // Its due date goes in from the Tasks page's right pane.
-    app.open_page(tasks::PAGE, OpenAs::Preview);
-    support::settle(&mut app);
     let created = fixture.read("Tasks/Dentist.md");
     tasks::select_in_pane(&mut app, &local_object_id(&created));
     wait_until(&mut app, "the task's fields show", |app| {

@@ -83,6 +83,26 @@ impl Palette {
     }
 }
 
+/// A plugin's palette color in the appearance `ctx` draws with: the
+/// system colors of Apple's platforms, a shade lighter in the dark.
+pub fn plugin_color(ctx: &egui::Context, color: app_core::PluginColor) -> Color32 {
+    use app_core::PluginColor as C;
+    let dark = ctx.theme() == Theme::Dark;
+    let [light, night] = match color {
+        C::Red => [0xFF3B30, 0xFF453A],
+        C::Orange => [0xFF9500, 0xFF9F0A],
+        C::Yellow => [0xFFCC00, 0xFFD60A],
+        C::Green => [0x34C759, 0x30D158],
+        C::Blue => [0x007AFF, 0x0A84FF],
+        C::Purple => [0xAF52DE, 0xBF5AF2],
+        C::Brown => [0xA2845E, 0xAC8E68],
+        C::Gray => [0x8E8E93, 0x98989D],
+    };
+    let hex: u32 = if dark { night } else { light };
+    let [_, red, green, blue] = hex.to_be_bytes();
+    Color32::from_rgb(red, green, blue)
+}
+
 /// `--radius` is 0.625rem: 10 px.
 const RADIUS: f32 = 10.0;
 

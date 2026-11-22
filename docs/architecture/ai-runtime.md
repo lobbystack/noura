@@ -1,12 +1,12 @@
 # AI runtime architecture
 
-AI chat runs in the desktop app's own process. The `Ai` service in `crates/app-core/src/ai.rs` runs each answer, and `crates/local-core` sends the provider requests and holds the credentials. The AI plugin in `crates/plugins/ai` draws the chat through the `ai` interface, while Noura's own code draws the settings and the tool prompt.
+AI chat and Orbs run in the desktop app's own process. The `Ai` service in `crates/app-core/src/ai.rs` runs each answer, `crates/app-core/src/ai/orbs.rs` runs Orbs and their triggers, and `crates/local-core` sends the provider requests and holds the credentials. The AI plugin in `crates/plugins/ai` draws the chat through the `ai` interface, while Noura's own code draws the settings and the tool prompt.
 
 ```text
 AI plugin (crates/plugins/ai)       chat page, through the noura:plugin `ai` interface
    │
-app-core Ai service                 runs, completions, tool approval, chat records
-   │
+app-core Ai service                 runs, completions, tool approval, chat records,
+   │                                Orbs, their triggers and run records
 local-core                          provider stream (genai), keyring, web access
 ```
 
@@ -31,13 +31,29 @@ Setting up a provider is your say-so (ADR 0006). A run writes your message and s
 
 ## Instructions and context
 
-Each request starts with Noura's base instructions. Then come the body of the workspace's root `AGENTS.md`, unless the file is missing, empty or unreadable, and the newest context summary, if any. The conversation follows. When a chat grows past the provider's context window, Noura writes a summary message and sends that in place of the older messages.
+Each request of a plain chat starts with Noura's base instructions. Then come the body of the workspace's root `AGENTS.md`, unless the file is missing, empty or unreadable, and the newest context summary, if any. The conversation follows. When a chat grows past the provider's context window, Noura writes a summary message and sends that in place of the older messages.
+
+A request of an Orb's run starts with Noura's Orb instructions, which name the Orb, then the root `AGENTS.md`, the Orb's own instructions from its file's body, and its memory file, up to 20,000 characters. Noura reads them again for each request, so a line the Orb remembered shows in its next one.
 
 Plugins add tools, not instructions. A plugin with the `tools` capability offers tools with JSON Schema inputs, and the model sees each one as `<plugin>__<tool>`. Turning a plugin off interrupts the runs it started or that offer its tools, with the code `plugin-disabled`, and later requests offer only the tools of plugins still on.
 
 ## Tool approval
 
-You approve each tool call once, as it comes. The prompt shows the tool, its plugin, its description and its input, and it starts on Deny. Closing it, stopping the run or opening another workspace denies the calls still waiting, and a denied call returns `{"denied":true}` to the model. Noura never runs a tool by default.
+A plain chat belongs to the default Orb, and you approve each of its tool calls once, as it comes. The prompt shows the tool, its plugin, its description and its input, and it starts on Deny. Closing it, stopping the run or opening another workspace denies the calls still waiting, and a denied call returns `{"denied":true}` to the model.
+
+An Orb runs its tools without asking (ADR 0007). Its file lists the tools it may run, and the model sees no others. When the model asks for calls, the service runs each one, writes its result to the Orb's thread and asks the model again, up to 16 rounds, whether you wrote to the Orb or a trigger started the run. Creating the Orb and writing its tools and triggers is your authorization. Plugins can't write Orb files, so no model tool can widen it.
+
+## Orbs
+
+An Orb is a named agent in the workspace: `Orbs/<name>/<name>.md`, its `Memory.md`, its `Heartbeat.md` checklist and a `Runs` folder of records, as [the workspace format](../workspace-format/v1.md#orbs) describes. Each Orb keeps one thread, a chat whose `orb_id` names it.
+
+- **Noura's tools**: `noura__read` reads a note or object that the Orb's `reads` allow, `noura__remember` adds a line to its memory file, and `noura__web_search` and `noura__web_fetch` reach the web through the limits below. An Orb gets each one only when its file lists it.
+- **Model and effort**: an Orb's file may name a model of its provider and how hard it reasons, `off` to `high`. `crates/app-core/src/ai/models.rs` lists the models the Model menu offers and maps each effort to the provider's parameter, such as Anthropic's `output_config.effort` with adaptive thinking or OpenAI's `reasoning_effort`, and sends none to a model that takes none. A model that reasons only when asked, such as Claude Opus 4.8, answers its tool calls without reasoning, because Noura keeps no reasoning blocks to send back. The default Orb's provider, model and effort live in `ai/default-orb.json` in the app data, and its plain chats ask with them.
+- **Run records**: Noura writes a run's record before its first message and again when it ends, with its status, how many tool calls it made and a line for each. One run at a time works per Orb.
+- **Triggers**: a thread checks them every 30 seconds while a workspace is open, and at once when a plugin emits an event. A schedule catches up once on the last time it missed. An event starts each Orb once per object revision. A trigger key in each record keeps a firing from running twice, and triggers start at most 20 runs per Orb an hour.
+- **Loops**: an event that a plugin emits during an Orb's tool call starts no Orb.
+- **A while away**: after 7 days without you on this device, Noura holds every Orb's triggers until you answer whether to keep them running. The time you were last active and the hold live in `ai/orbs.json` in the app data.
+- **Quits**: a run that Noura's quit left running answers again once at the next check, 10 seconds after the workspace opens. A run that quit during a tool call ends `interrupted` with `orb_interrupted`, and Noura never runs the call again.
 
 ## Streaming
 
@@ -59,7 +75,7 @@ Every write carries the expected revision of the chat, and of the message when N
 
 ## Web access
 
-The AI plugin can search the web and read pages through Brave Search. Web access needs a Brave Search key in the credential store, and it fails closed until the key exists. Noura also sends a call only when a finished run asked for that exact query or URL.
+The AI plugin and Orbs can search the web and read pages through Brave Search. Web access needs a Brave Search key in the credential store, and it fails closed until the key exists. Noura also sends a call only when a finished run asked for that exact query or URL. An Orb's web calls go out without a prompt, as its other tools do.
 
 `local-core` applies these limits:
 

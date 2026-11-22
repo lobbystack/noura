@@ -227,6 +227,10 @@ fn changed(id: &str) {
     }
 }
 
+/// The event the manifest declares for a Transcription whose recording
+/// ended and whose Transcript, Summary and tasks are written.
+const FINISHED: &str = "finished";
+
 /// Write the Transcript, the end time and the audio of a recording that
 /// ended, forget it, then write the Summary when you have a provider.
 fn finish(active: &Active, recording: &speech::Recording) {
@@ -260,7 +264,12 @@ fn finish(active: &Active, recording: &speech::Recording) {
     refresh_menu();
     if written.is_ok_and(|turns| turns > 0) {
         let status = summarize::run(&object);
-        state().summaries.insert(object, status);
+        state().summaries.insert(object.clone(), status);
+        // Once the Summary and the action items are written, Orbs whose
+        // triggers name the event read them. They act on their own, so a
+        // refused event, as before you approve `events`, changes nothing
+        // for the Transcription.
+        let _ = plugin_sdk::events::emit(FINISHED, Some(&object));
     }
 }
 

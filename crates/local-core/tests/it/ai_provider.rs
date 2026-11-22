@@ -221,6 +221,7 @@ fn stream(ai: &AiFoundation, messages: Vec<AiTransportMessage>) -> AiStreamOpera
         },
         messages,
         tools: Some(vec![add_task()]),
+        reasoning: None,
     })
     .unwrap()
 }

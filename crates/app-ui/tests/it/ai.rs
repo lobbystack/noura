@@ -16,7 +16,7 @@ use std::{
 };
 
 use app_core::{
-    App, Platform,
+    App, Platform, ViewKind, ViewNode,
     ai_client::{
         AiProviderEventStream, AiProviderStreamEvent, AiStreamer, AiToolCall,
         ResolvedAiStreamRequest, Result,
@@ -32,6 +32,9 @@ use support::{
 };
 
 const MANIFEST: &str = include_str!("../../../plugins/ai/plugin.toml");
+
+/// The default Orb's message box.
+const MESSAGE: &str = "Message Noura";
 
 /// A provider that streams one piece of text, then waits until Noura
 /// cancels the request.
@@ -99,7 +102,7 @@ fn opened() -> Option<Opened> {
     open_page(&mut harness, "AI");
     wait_until(&mut harness, |harness| {
         harness
-            .query_by_role_and_label(Role::Form, "Message")
+            .query_by_role_and_label(Role::Form, MESSAGE)
             .is_some()
     });
     Some(Opened {
@@ -149,17 +152,17 @@ fn wait_until(harness: &mut Ui, mut done: impl FnMut(&Ui) -> bool) {
 /// Write `text` in the message box and press Send.
 fn send(harness: &mut Ui, text: &str) {
     harness
-        .get_by_role_and_label(Role::Form, "Message")
-        .get_by_role_and_label(Role::MultilineTextInput, "Message")
+        .get_by_role_and_label(Role::Form, MESSAGE)
+        .get_by_role_and_label(Role::MultilineTextInput, MESSAGE)
         .focus();
     run(harness);
     harness
-        .get_by_role_and_label(Role::Form, "Message")
-        .get_by_role_and_label(Role::MultilineTextInput, "Message")
+        .get_by_role_and_label(Role::Form, MESSAGE)
+        .get_by_role_and_label(Role::MultilineTextInput, MESSAGE)
         .type_text(text);
     run(harness);
     harness
-        .get_by_role_and_label(Role::Form, "Message")
+        .get_by_role_and_label(Role::Form, MESSAGE)
         .get_by_role_and_label(Role::Button, "Send")
         .click();
     run(harness);
@@ -195,34 +198,202 @@ fn the_answer_streams_in_as_markdown_and_stop_ends_it() {
         !shown.iter().any(|label| label.contains("**")),
         "the Markdown draws: {shown:?}"
     );
-    assert!(shown.contains(&"You".to_owned()));
-    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
-    assert!(shown.contains(&"Local, llama3".to_owned()));
-    assert!(
-        harness
-            .query_by_role_and_label(Role::Form, "Message")
-            .is_none()
+    // Your message and the answer, each named for screen readers by who
+    // wrote it.
+    let yours = harness.get_by_role_and_label(Role::Article, "You");
+    assert_eq!(
+        texts(yours.query_all(By::new().role(Role::Label))),
+        ["When do seeds sprout?"]
     );
+    harness.get_by_role_and_label(Role::Article, "Noura");
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
+    // Stop takes Send's place in the message box while the answer streams.
+    let form = harness.get_by_role_and_label(Role::Form, MESSAGE);
+    assert!(form.query_by_role_and_label(Role::Button, "Send").is_none());
 
-    harness.get_by_role_and_label(Role::Button, "Stop").click();
+    form.get_by_role_and_label(Role::Button, "Stop").click();
     run(harness);
     wait_until(harness, |harness| {
         all_labels(harness).contains(&"Stopped.".to_owned())
     });
     assert!(opened.provider.dropped.load(Ordering::SeqCst));
     let harness = &mut opened.harness;
-    assert!(
-        harness
-            .query_by_role_and_label(Role::Button, "Stop")
-            .is_none()
-    );
-    assert!(
-        harness
-            .query_by_role_and_label(Role::Form, "Message")
-            .is_some()
-    );
+    let form = harness.get_by_role_and_label(Role::Form, MESSAGE);
+    assert!(form.query_by_role_and_label(Role::Button, "Stop").is_none());
+    form.get_by_role_and_label(Role::Button, "Send");
     // The partial answer stays.
     assert!(all_labels(harness).contains(&"sprout".to_owned()));
+}
+
+#[test]
+fn an_empty_thread_shows_one_line_and_the_message_box_with_no_icon_or_provider() {
+    let Some(mut opened) = opened() else {
+        return;
+    };
+    let harness = &mut opened.harness;
+    assert!(harness.query_by_label("How can I help?").is_some());
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
+    // The empty state is its line and nothing else: no icon.
+    let view = harness
+        .state()
+        .app()
+        .plugin_view("plugin:ai:ai")
+        .expect("the page shows")
+        .expect("the page draws");
+    let empty = find_kind(view.root(), &|kind| matches!(kind, ViewKind::Empty { .. }))
+        .expect("the empty thread shows its line");
+    assert!(
+        matches!(
+            empty,
+            ViewKind::Empty {
+                icon: None,
+                detail: None,
+                ..
+            }
+        ),
+        "{empty:?}"
+    );
+    // The model lives in the Orb's panel, not in the message box.
+    let form = harness.get_by_role_and_label(Role::Form, MESSAGE);
+    assert!(form.query_by_role(Role::ComboBox).is_none());
+    // Send waits until the box holds more than spaces.
+    assert!(
+        form.get_by_role_and_label(Role::Button, "Send")
+            .accesskit_node()
+            .is_disabled()
+    );
+    // The box has the keyboard once you click it, and Enter sends.
+    harness
+        .get_by_role_and_label(Role::Form, MESSAGE)
+        .get_by_role_and_label(Role::MultilineTextInput, MESSAGE)
+        .focus();
+    run(harness);
+    harness
+        .get_by_role_and_label(Role::Form, MESSAGE)
+        .get_by_role_and_label(Role::MultilineTextInput, MESSAGE)
+        .type_text("Hello");
+    run(harness);
+    press(harness, Key::Enter);
+    wait_until(harness, |harness| {
+        all_labels(harness).contains(&"sprout".to_owned())
+    });
+    assert_eq!(opened.provider.requests.load(Ordering::SeqCst), 1);
+    let harness = &mut opened.harness;
+    assert!(harness.query_by_label("How can I help?").is_none());
+    // The box empties once it sends.
+    assert_eq!(
+        harness
+            .get_by_role_and_label(Role::Form, MESSAGE)
+            .get_by_role_and_label(Role::MultilineTextInput, MESSAGE)
+            .value()
+            .as_deref(),
+        Some("")
+    );
+}
+
+/// The first view node under `node` whose kind `wanted` matches.
+fn find_kind(node: &ViewNode, wanted: &dyn Fn(&ViewKind) -> bool) -> Option<ViewKind> {
+    if wanted(&node.kind) {
+        return Some(node.kind.clone());
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_kind(child, wanted))
+}
+
+/// Open the open Orb's side panel from the pill with its name.
+fn open_panel(harness: &mut Ui, name: &str) {
+    let pill = harness.get_by_role_and_label(Role::Button, name);
+    if pill.accesskit_node().data().is_expanded() != Some(true) {
+        pill.click();
+        run(harness);
+    }
+    wait_until(harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::Complementary, name)
+            .is_some()
+    });
+}
+
+#[test]
+fn a_chat_renames_and_expires_from_its_menu_in_the_default_orbs_panel() {
+    let Some(mut opened) = opened() else {
+        return;
+    };
+    let harness = &mut opened.harness;
+    send(harness, "When do seeds sprout?");
+    wait_until(harness, |harness| {
+        all_labels(harness).contains(&"sprout".to_owned())
+    });
+    harness
+        .get_by_role_and_label(Role::Form, MESSAGE)
+        .get_by_role_and_label(Role::Button, "Stop")
+        .click();
+    run(harness);
+    open_panel(harness, "Noura");
+    let chats = || (Role::ListBox, "Chats");
+    // Once the stopped answer is written, the chat stays as the menu saw it.
+    wait_until(harness, |harness| {
+        all_labels(harness).contains(&"Stopped.".to_owned())
+            && harness
+                .query_by_role_and_label(chats().0, chats().1)
+                .is_some()
+    });
+    let title = labels_of(harness, chats());
+    assert_eq!(title.len(), 1, "{title:?}");
+
+    // Pointing at the chat shows the button that opens its menu.
+    harness
+        .get_by_role_and_label(chats().0, chats().1)
+        .get_by_role_and_label(Role::ListBoxOption, &title[0])
+        .hover();
+    run(harness);
+    harness
+        .get_by_role_and_label(Role::Button, "More actions")
+        .click();
+    run(harness);
+    harness
+        .get_by_label("Chat options")
+        .get_by_role_and_label(Role::Button, "Rename")
+        .click();
+    run(harness);
+    let field = harness.get_by_role_and_label(Role::TextInput, "Chat name");
+    assert!(field.is_focused());
+    harness
+        .get_by_role_and_label(Role::TextInput, "Chat name")
+        .type_text(" in spring");
+    run(harness);
+    press(harness, Key::Enter);
+    let renamed = format!("{} in spring", title[0]);
+    wait_until(harness, |harness| {
+        labels_of(harness, chats()) == [renamed.clone()]
+    });
+
+    // Remove after 30 days, from a right-click, says so over the thread.
+    harness
+        .get_by_role_and_label(chats().0, chats().1)
+        .get_by_role_and_label(Role::ListBoxOption, &renamed)
+        .click_secondary();
+    run(harness);
+    harness
+        .get_by_label("Chat options")
+        .get_by_role_and_label(Role::Button, "Remove after 30 days")
+        .click();
+    run(harness);
+    wait_until(harness, |harness| {
+        harness
+            .query_by_label("This chat moves to the trash 30 days after it started.")
+            .is_some()
+    });
+}
+
+/// The labels of the options of the list `list`.
+fn labels_of(harness: &Ui, list: (Role, &str)) -> Vec<String> {
+    harness
+        .get_by_role_and_label(list.0, list.1)
+        .query_all(By::new().role(Role::ListBoxOption))
+        .filter_map(|node| node.accesskit_node().label())
+        .collect()
 }
 
 #[test]
@@ -479,7 +650,7 @@ fn asking_with(arguments: serde_json::Value) -> Option<Tooled> {
     open_page(&mut harness, "AI");
     wait_until(&mut harness, |harness| {
         harness
-            .query_by_role_and_label(Role::Form, "Message")
+            .query_by_role_and_label(Role::Form, MESSAGE)
             .is_some()
     });
     send(&mut harness, "Add a task to water the tomatoes");
@@ -523,7 +694,27 @@ fn noura_s_tool_prompt_names_the_tool_its_plugin_and_input_and_escape_denies() {
             .is_none()
             && all_labels(harness).contains(&"Done.".to_owned())
     });
+    // The call shows as a quiet row that says you denied it, and opens to
+    // say what that did and what the model asked for.
+    let row = harness.get_by_role_and_label(Role::Button, "create from Tasks");
+    assert_eq!(
+        row.accesskit_node().description().as_deref(),
+        Some("Denied")
+    );
+    assert_eq!(row.accesskit_node().data().is_expanded(), Some(false));
+    assert!(!all_labels(harness).contains(&"You denied this call, so it didn't run.".to_owned()));
+    row.click();
+    run(harness);
     assert!(all_labels(harness).contains(&"You denied this call, so it didn't run.".to_owned()));
+    assert_eq!(
+        harness
+            .get_by_role_and_label(Role::Button, "create from Tasks")
+            .accesskit_node()
+            .data()
+            .is_expanded(),
+        Some(true)
+    );
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
     assert!(
         !tooled
             .workspace
