@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-use app_core::{App, CommandSource, FILES_PAGE, INBOX_PAGE, OpenAs, command_id};
+use app_core::{App, CommandSource, FILES_PAGE, INBOX_PAGE, OpenAs, Platform, command_id};
 use egui::{
     Align, Align2, Color32, DragAndDrop, FontId, Id, Key, Layout, Modifiers, Rect, Sense, Stroke,
     Ui, UiBuilder, WidgetInfo,
@@ -18,12 +18,48 @@ use crate::{
     theme::{Palette, radius},
 };
 
-/// The rail's width.
-pub(crate) const RAIL_WIDTH: f32 = 56.0;
+/// The rail's width on Windows and Linux.
+const RAIL_WIDTH: f32 = 56.0;
+/// The rail's width on macOS, where the window's close, minimize and zoom
+/// buttons sit in its top row. It stays this many points of the screen
+/// wide as you zoom out, since the buttons don't zoom.
+const MAC_RAIL_WIDTH: f32 = 62.0;
+/// The space between two of the window's buttons in the rail, in points
+/// of the screen: less than AppKit's 9, so all three fit.
+const WINDOW_BUTTON_GAP: f32 = 4.0;
 const ITEM_SIZE: f32 = 36.0;
 const ITEM_GAP: f32 = 4.0;
 /// The side of a rail icon.
 const ICON_SIZE: f32 = 20.0;
+
+/// The rail's width on `platform` at the zoom factor `zoom`.
+pub(crate) fn width(platform: Platform, zoom: f32) -> f32 {
+    match platform {
+        Platform::MacOs => MAC_RAIL_WIDTH.max(MAC_RAIL_WIDTH / zoom),
+        Platform::Windows | Platform::Linux => RAIL_WIDTH,
+    }
+}
+
+/// Where the window's close, minimize and zoom buttons go on macOS, in
+/// points of the screen from the window's top-left corner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowButtons {
+    /// The middle of the three buttons, which is the middle of the rail's
+    /// top row.
+    pub center: egui::Pos2,
+    /// The space between two buttons.
+    pub gap: f32,
+}
+
+/// Where the window's buttons go on macOS at the zoom factor `zoom`:
+/// centered in the rail's top row, closer together than AppKit sets them.
+pub fn window_buttons(zoom: f32) -> WindowButtons {
+    let width = width(Platform::MacOs, zoom) * zoom;
+    WindowButtons {
+        center: pos2(width / 2.0, crate::common::TITLE_BAR_HEIGHT * zoom / 2.0),
+        gap: WINDOW_BUTTON_GAP,
+    }
+}
 
 /// The Settings button's ID, so focus can return to it when Settings
 /// closes.
@@ -106,8 +142,8 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App) {
     let builder = UiBuilder::new()
         .accessibility_role(Role::Navigation)
         .accessibility_label("Pages");
-    // The title bar row runs across the rail's top, under the window's
-    // buttons.
+    // The title bar row runs across the rail's top. On macOS the window's
+    // buttons sit in it.
     let title = Rect::from_min_size(
         ui.max_rect().min,
         vec2(ui.max_rect().width(), crate::common::TITLE_BAR_HEIGHT),

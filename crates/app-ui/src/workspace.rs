@@ -1,7 +1,7 @@
 //! The workspace screen: the rail, the sidebar with the workspace switcher
 //! and the file tree, the tab bar, and the document area.
 
-use app_core::{INBOX_PAGE, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, TabContent, TabPlace};
+use app_core::{INBOX_PAGE, Platform, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, TabContent, TabPlace};
 use egui::{
     Button, CentralPanel, Frame, Id, Margin, Modal, Panel, RichText, ScrollArea, Ui, UiBuilder,
     accesskit::Role, vec2,
@@ -10,42 +10,54 @@ use egui::{
 use crate::{
     NouraUi,
     common::{self, Btn, Size, Variant, muted},
-    inbox,
-    rail::{self, RAIL_WIDTH},
+    inbox, rail,
     tab_bar::{self, BAR_HEIGHT},
     theme::{Palette, TITLE_SIZE},
     tree,
 };
 
+/// The tab bar's space at each end.
+const TAB_BAR_MARGIN: i8 = 8;
+
+/// How far the workspace switcher sits from the start of the title bar
+/// row. On macOS the window's buttons sit in the rail, and the switcher
+/// lines up with the sidebar's rows.
+fn switcher_inset(platform: Platform) -> f32 {
+    match platform {
+        Platform::MacOs => 8.0,
+        Platform::Windows | Platform::Linux => 24.0,
+    }
+}
+
 pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
     let palette = Palette::of(ui.ctx());
     Panel::left("rail")
         .resizable(false)
-        .exact_size(RAIL_WIDTH)
+        .exact_size(rail::width(state.app.platform(), ui.ctx().zoom_factor()))
         .frame(Frame::new().fill(palette.sidebar))
         .show(ui, |ui| rail::show(ui, &mut state.app));
     if state.app.layout().sidebar_shown {
         sidebar(state, ui);
     }
     let sidebar_shown = state.app.layout().sidebar_shown;
+    let platform = state.app.platform();
     Panel::top("tab-bar")
         .resizable(false)
         .exact_size(BAR_HEIGHT)
         .frame(
             Frame::new()
                 .fill(palette.sidebar)
-                .inner_margin(Margin::symmetric(8, 0)),
+                .inner_margin(Margin::symmetric(TAB_BAR_MARGIN, 0)),
         )
         .show(ui, |ui| {
             // The bar is the title bar row: its empty part moves the
             // window.
-            let rect = ui.max_rect().expand2(vec2(8.0, 0.0));
+            let rect = ui.max_rect().expand2(vec2(f32::from(TAB_BAR_MARGIN), 0.0));
             common::title_bar_area(ui, rect, "tab-bar");
             ui.horizontal_centered(|ui| {
-                // With the sidebar hidden, its switcher moves here, 24 px
-                // in, clear of the window's buttons.
+                // With the sidebar hidden, its switcher moves here.
                 if !sidebar_shown {
-                    ui.add_space(16.0);
+                    ui.add_space(switcher_inset(platform) - f32::from(TAB_BAR_MARGIN));
                     ui.scope(|ui| {
                         ui.set_max_width(200.0);
                         switcher(state, ui);
@@ -132,8 +144,11 @@ fn sidebar(state: &mut NouraUi, ui: &mut Ui) {
                 header.bottom() - 0.5,
                 egui::Stroke::new(1.0, palette.sidebar_border),
             );
-            let switcher_rect =
-                egui::Rect::from_min_max(header.min + vec2(24.0, 4.0), header.max - vec2(8.0, 4.0));
+            let inset = switcher_inset(state.app.platform());
+            let switcher_rect = egui::Rect::from_min_max(
+                header.min + vec2(inset, 4.0),
+                header.max - vec2(8.0, 4.0),
+            );
             let mut header_ui = ui.new_child(
                 UiBuilder::new()
                     .max_rect(switcher_rect)
