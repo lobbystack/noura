@@ -212,7 +212,9 @@ fn create_takes_an_assignee_and_list_finds_a_persons_tasks_whatever_the_case() {
     )
     .expect("create");
     assert_eq!(created["properties"]["assignee"], "Alice");
-    let text = String::from_utf8(fixture.read("Tasks/Write the launch post.md")).unwrap();
+    // Tasks files the task beside the fixture's task, in `tasks`.
+    assert_eq!(created["path"], "tasks/Write the launch post.md");
+    let text = String::from_utf8(fixture.read("tasks/Write the launch post.md")).unwrap();
     assert!(
         text.contains("status: todo\npriority: medium\nassignee: Alice\n"),
         "{text}"
