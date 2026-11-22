@@ -45,7 +45,9 @@ rfd.workspace = true
 spell-check = { version = "0.3.0", path = "../../crates/spell-check" }
 tracing.workspace = true
 tracing-subscriber.workspace = true
-winit.workspace = true
+# GNOME leaves the title bar to the app under Wayland; the Adwaita frame
+# draws it instead of winit's plain fallback.
+winit = { workspace = true, features = ["wayland-csd-adwaita"] }
 
 # A tree row dragged out of a window becomes a native drag through `drag`.
 # On Linux the crate drags out through GTK, which winit windows don't use.
@@ -129,6 +131,13 @@ resources = [
 # The layered macOS icon in icons/Assets.car, which the plist names.
 [package.metadata.packager.macos]
 info-plist-path = "packaging/Info.plist"
+
+# The AppImage takes Wayland and xkbcommon from the system. The host's Mesa
+# drivers load into the app and need the host's libwayland-client: with the
+# copy from the Ubuntu 22.04 build machine, no Vulkan or EGL driver loads
+# on a newer system and the window can't open.
+[package.metadata.packager.appimage]
+excluded-libraries = ["libwayland-*", "libxkbcommon*"]
 
 # winit and wgpu load these libraries when the app starts.
 [package.metadata.packager.deb]

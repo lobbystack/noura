@@ -141,6 +141,15 @@ case "$(uname -s)" in
     check "$(basename "$deb")" off /usr/bin/noura
     appimage="$(find_one '*.AppImage')"
     chmod +x "$appimage"
+    # The host's graphics drivers need the host's Wayland and xkbcommon, so
+    # a copy in the AppImage stops the window opening on newer systems.
+    appimage_path="$PWD/$appimage"
+    bundled="$(cd "$work" && "$appimage_path" --appimage-extract > /dev/null &&
+      find squashfs-root -name 'libwayland-*' -o -name 'libxkbcommon*')"
+    if [ -n "$bundled" ]; then
+      echo "::error::$(basename "$appimage") bundles libraries it must take from the system: $bundled"
+      exit 1
+    fi
     check "$(basename "$appimage")" on "./$appimage"
     ;;
   *)
