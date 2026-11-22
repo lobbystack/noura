@@ -215,6 +215,38 @@ fn the_page_labels_its_buttons_its_view_choice_and_its_entries() {
     });
 }
 
+#[test]
+fn the_period_title_gives_way_to_the_buttons_in_a_narrow_window() {
+    let Some(Opened {
+        mut harness,
+        _folders,
+    }) = opened()
+    else {
+        return;
+    };
+    let title = |harness: &Ui| {
+        harness
+            .get_by_role_and_label(Role::Heading, "October 2026")
+            .get_by_role(Role::Label)
+            .rect()
+    };
+    let new_event = |harness: &Ui| {
+        harness
+            .get_by_role_and_label(Role::Button, "New event")
+            .rect()
+    };
+    assert!(title(&harness).right() < new_event(&harness).left());
+
+    harness.set_size(egui::vec2(820.0, 700.0));
+    run(&mut harness);
+    assert!(
+        title(&harness).right() < new_event(&harness).left(),
+        "{:?} before {:?}",
+        title(&harness),
+        new_event(&harness)
+    );
+}
+
 /// The popover named `label`, if it shows.
 fn popover<'a>(harness: &'a Ui, label: &'a str) -> Option<egui_kittest::Node<'a>> {
     harness.query_by_role_and_label(Role::Dialog, label)

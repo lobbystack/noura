@@ -103,7 +103,25 @@ pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
                             egui::FontSelection::Default,
                             Align::Center,
                         );
-                    ui.label(job);
+                    // The buttons take their room first, from the end, and
+                    // the title shortens to fit what's left in a narrow
+                    // window.
+                    let row = egui::Rect::from_min_size(
+                        ui.cursor().min,
+                        vec2(ui.available_width(), height),
+                    );
+                    let mut end = ui.new_child(
+                        UiBuilder::new()
+                            .max_rect(row)
+                            .layout(Layout::right_to_left(Align::Center)),
+                    );
+                    controls(&mut end, node, page, kit);
+                    let room = row.width() - end.min_rect().width() - 16.0;
+                    ui.scope(|ui| {
+                        ui.set_max_width(room.max(0.0));
+                        ui.add(egui::Label::new(job).truncate());
+                    });
+                    return;
                 }
                 // A page heading's detail goes under its title.
                 Some(detail) if page => {
@@ -130,26 +148,7 @@ pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                // Right to left, so the first child goes last.
-                for (index, child) in node.children.iter().enumerate().rev() {
-                    match &child.kind {
-                        ViewKind::Button { label } => {
-                            let look = match (page, index) {
-                                (true, 0) => Look::Primary,
-                                (true, _) => Look::Ghost,
-                                (false, _) => Look::Quiet,
-                            };
-                            ui.push_id(&child.id, |ui| {
-                                styled_button(ui, child, label, look, kit);
-                            });
-                        }
-                        ViewKind::Input { .. } => {
-                            ui.push_id(&child.id, |ui| super::form::input(ui, child, kit));
-                        }
-                        _ => {}
-                    }
-                }
+                controls(ui, node, page, kit);
             });
         });
         if page {
@@ -164,6 +163,31 @@ pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             ui.add_space(gap.max(0.0));
         }
     });
+}
+
+/// A heading's buttons and choice inputs, laid out from the end of a
+/// right-to-left `ui`.
+fn controls(ui: &mut Ui, node: &ViewNode, page: bool, kit: &mut Kit) {
+    ui.spacing_mut().item_spacing.x = 4.0;
+    // Right to left, so the first child goes last.
+    for (index, child) in node.children.iter().enumerate().rev() {
+        match &child.kind {
+            ViewKind::Button { label } => {
+                let look = match (page, index) {
+                    (true, 0) => Look::Primary,
+                    (true, _) => Look::Ghost,
+                    (false, _) => Look::Quiet,
+                };
+                ui.push_id(&child.id, |ui| {
+                    styled_button(ui, child, label, look, kit);
+                });
+            }
+            ViewKind::Input { .. } => {
+                ui.push_id(&child.id, |ui| super::form::input(ui, child, kit));
+            }
+            _ => {}
+        }
+    }
 }
 
 /// How much farther a section's title sits from the rows above it than
