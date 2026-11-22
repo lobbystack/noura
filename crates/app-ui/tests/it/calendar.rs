@@ -1,18 +1,22 @@
 //! The Calendar plugin through AccessKit: the page's Previous, Today and
 //! Next buttons and View choice, today's cell marked as the current date,
 //! entries on the grid labeled with their title and their time on this
-//! device's clock, the entry panel's
-//! title, type, properties and Open, which opens the task in the note
-//! editor, and the sidebar's calendars, whose checkboxes hide their
-//! entries. The fake system keeps Toronto's time zone and US
-//! English, and its clock reads 11:00 on Wednesday 21 October 2026.
+//! device's clock, the popover a click on an entry opens beside it, which
+//! Escape and a click outside close, where an event's title, date, time
+//! and calendar change in place and a meeting's Open opens it, and the
+//! sidebar's calendars, whose checkboxes hide their entries. The fake
+//! system keeps Toronto's time zone and US English, and its clock reads
+//! 11:00 on Wednesday 21 October 2026.
 
 use crate::support;
-use egui::accesskit::{AriaCurrent, Role};
+use egui::{
+    Event, Key, Modifiers,
+    accesskit::{AriaCurrent, Role},
+};
 use egui_kittest::kittest::{NodeT, Queryable};
 use support::{
     FakePicker, FakeSystem, create_workspace, harness_with,
-    kit::{Ui, labels, open_page, run},
+    kit::{Ui, labels, open_page, press, press_with, run},
     plugins, settle,
 };
 
@@ -24,8 +28,11 @@ struct Opened {
     _folders: (tempfile::TempDir, tempfile::TempDir),
 }
 
-/// A workspace with a task at 9:00, a three-day retreat, and the calendar
-/// Work with a dentist's appointment at 10:00 on Thursday, with the
+const HOME: &str = "calendar_01jbcdefghjkmnpqrstvwxyz0e";
+
+/// A workspace with a task at 9:00, a three-day retreat, the calendars
+/// Home and Work with a dentist's appointment in Work at 10:00 on
+/// Thursday, and a meeting with Ada and Grace at 10:00 on Friday, with the
 /// Calendar and Tasks plugins installed and on and the Calendar page open.
 /// `None` when the plugins aren't built.
 fn opened() -> Option<Opened> {
@@ -55,6 +62,15 @@ fn opened() -> Option<Opened> {
     write(
         "Calendars/Work.md",
         "---\nid: calendar_01jbcdefghjkmnpqrstvwxyz0c\ntype: calendar\ncolor: green\n---\n",
+    );
+    write(
+        "Calendars/Home.md",
+        &format!("---\nid: {HOME}\ntype: calendar\ncolor: blue\n---\n"),
+    );
+    write(
+        "Meetings/Sync.md",
+        "---\nid: transcription_01jbcdefghjkmnpqrstvwxyz0f\ntype: transcription\n\
+         start: 2026-10-23T14:00:00Z\nend: 2026-10-23T14:30:00Z\nattendees:\n- Ada\n- Grace\n---\n",
     );
     write(
         "Events/Dentist.md",
@@ -199,8 +215,51 @@ fn the_page_labels_its_buttons_its_view_choice_and_its_entries() {
     });
 }
 
+/// The popover named `label`, if it shows.
+fn popover<'a>(harness: &'a Ui, label: &'a str) -> Option<egui_kittest::Node<'a>> {
+    harness.query_by_role_and_label(Role::Dialog, label)
+}
+
+/// Click the entry labeled `label` on the grid, on its first day.
+fn click_entry(harness: &mut Ui, label: &str) {
+    harness
+        .query_all_by_label(label)
+        .next()
+        .expect("the entry shows")
+        .scroll_to_me();
+    run(harness);
+    harness
+        .query_all_by_label(label)
+        .next()
+        .expect("the entry shows")
+        .click();
+    run(harness);
+}
+
+/// Click the empty header before New event, outside the popovers.
+fn click_outside(harness: &mut Ui) {
+    let button = harness
+        .get_by_role_and_label(Role::Button, "New event")
+        .rect();
+    let at = button.left_center() - egui::vec2(80.0, 0.0);
+    for pressed in [true, false] {
+        harness.event(Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    run(harness);
+}
+
+fn type_text(harness: &mut Ui, text: &str) {
+    harness.event(Event::Text(text.to_owned()));
+    run(harness);
+}
+
 #[test]
-fn an_entry_shows_its_panel_and_open_opens_the_task_in_the_note_editor() {
+fn a_click_opens_an_entrys_popover_which_escape_and_a_click_outside_close() {
     let Some(Opened {
         mut harness,
         _folders,
@@ -209,39 +268,181 @@ fn an_entry_shows_its_panel_and_open_opens_the_task_in_the_note_editor() {
         return;
     };
     let standup = "Standup, 9:00 AM–9:30 AM";
-    harness.get_by_label(standup).scroll_to_me();
+    assert!(popover(&harness, "Standup").is_none());
+
+    click_entry(&mut harness, standup);
+    wait_until(&mut harness, |harness| {
+        popover(harness, "Standup").is_some()
+    });
+    // It says what the entry is in words, with no table of properties.
+    let details = popover(&harness, "Standup").unwrap();
+    details.get_by_label("Task");
+    details.get_by_label("Today, 09:00 to 09:30");
+    details.get_by_label("To do");
+    details.get_by_role_and_label(Role::Button, "Open");
+    assert!(details.query_by_role(Role::Table).is_none());
+    // It floats beside the entry, which stays in sight: under it in this
+    // narrow window.
+    let entry = harness.get_by_label(standup).rect();
+    let shown = popover(&harness, "Standup")
+        .unwrap()
+        .get_by_label("Task")
+        .rect();
+    assert!(shown.top() > entry.bottom(), "{shown:?} beside {entry:?}");
+    assert!(harness.unnamed_widgets().is_empty());
+
+    press(&mut harness, Key::Escape);
+    wait_until(&mut harness, |harness| {
+        popover(harness, "Standup").is_none()
+    });
+
+    click_entry(&mut harness, standup);
+    wait_until(&mut harness, |harness| {
+        popover(harness, "Standup").is_some()
+    });
+    click_outside(&mut harness);
+    wait_until(&mut harness, |harness| {
+        popover(harness, "Standup").is_none()
+    });
+
+    // A click on another entry closes this popover and opens that one.
+    click_entry(&mut harness, standup);
+    wait_until(&mut harness, |harness| {
+        popover(harness, "Standup").is_some()
+    });
+    click_entry(&mut harness, "Retreat, all day");
+    wait_until(&mut harness, |harness| {
+        popover(harness, "Standup").is_none() && popover(harness, "Retreat").is_some()
+    });
+}
+
+#[test]
+fn an_events_popover_changes_its_title_date_time_and_calendar_in_place() {
+    let Some(Opened {
+        mut harness,
+        _folders,
+    }) = opened()
+    else {
+        return;
+    };
+    let file =
+        |path: &str| std::fs::read_to_string(_folders.1.path().join("Garden").join(path)).ok();
+    let shown = |harness: &Ui, picker: &str| {
+        harness
+            .get_by_role_and_label(Role::Button, picker)
+            .accesskit_node()
+            .value()
+    };
+    click_entry(&mut harness, "Dentist, 10:00 AM–11:00 AM");
+    wait_until(&mut harness, |harness| {
+        popover(harness, "Dentist").is_some()
+    });
+    assert_eq!(shown(&harness, "Calendar").as_deref(), Some("Work"));
+    assert_eq!(shown(&harness, "Starts").as_deref(), Some("10:00"));
+    assert_eq!(shown(&harness, "Ends").as_deref(), Some("11:00"));
+
+    // Return sends the title, which renames the file.
+    harness
+        .get_by_role_and_label(Role::TextInput, "Title")
+        .click();
     run(&mut harness);
+    press_with(&mut harness, Modifiers::COMMAND, Key::A);
+    type_text(&mut harness, "Dentist visit");
+    press(&mut harness, Key::Enter);
+    wait_until(&mut harness, |_| file("Events/Dentist visit.md").is_some());
 
-    harness.get_by_label(standup).click();
-    wait_until(&mut harness, |harness| {
-        harness
-            .query_by_role_and_label(Role::Group, "Selected entry")
-            .is_some()
+    // The date picker moves it to Friday at the same time.
+    harness.get_by_role_and_label(Role::Button, "Date").click();
+    run(&mut harness);
+    harness
+        .get_by_role_and_label(Role::Button, "Friday, October 23, 2026")
+        .click();
+    wait_until(&mut harness, |_| {
+        file("Events/Dentist visit.md")
+            .is_some_and(|text| text.contains("start: 2026-10-23T10:00:00-04:00\n"))
     });
 
-    let panel = harness.get_by_role_and_label(Role::Group, "Selected entry");
-    panel.get_by_label("Standup");
-    panel.get_by_label("Type: task");
-    let table = panel.get_by_role_and_label(Role::Table, "Properties");
-    let rows = labels(table.get_all_by_role(Role::Row));
-    assert_eq!(rows, ["end", "priority", "start", "status"]);
-    panel.get_by_role_and_label(Role::Button, "Close");
+    // The start time keeps its hour long.
+    wait_until(&mut harness, |harness| {
+        popover(harness, "Dentist visit").is_some()
+    });
+    harness
+        .get_by_role_and_label(Role::Button, "Starts")
+        .click();
+    run(&mut harness);
+    // The menu of times scrolls to the chosen one, so a later time needs
+    // scrolling to.
+    harness
+        .get_by_role_and_label(Role::MenuItemRadio, "13:30")
+        .scroll_to_me();
+    run(&mut harness);
+    harness
+        .get_by_role_and_label(Role::MenuItemRadio, "13:30")
+        .click();
+    wait_until(&mut harness, |_| {
+        file("Events/Dentist visit.md").is_some_and(|text| {
+            text.contains("start: 2026-10-23T13:30:00-04:00\nend: 2026-10-23T14:30:00-04:00\n")
+        })
+    });
 
-    press_button(&mut harness, "Open");
+    // The calendar's menu moves it to Home.
+    harness
+        .get_by_role_and_label(Role::Button, "Calendar")
+        .click();
+    run(&mut harness);
+    harness
+        .get_by_role_and_label(Role::MenuItemRadio, "Home")
+        .click();
+    wait_until(&mut harness, |_| {
+        file("Events/Dentist visit.md")
+            .is_some_and(|text| text.contains(&format!("calendar: {HOME}\n")))
+    });
     wait_until(&mut harness, |harness| {
         harness
-            .query_by_role_and_label(Role::Document, "Note text")
-            .is_some()
+            .query_by_role_and_label(Role::Button, "Calendar")
+            .and_then(|picker| picker.accesskit_node().value())
+            .as_deref()
+            == Some("Home")
     });
-    assert_eq!(
+
+    // A click outside sends the title you typed before it closes the
+    // popover.
+    harness
+        .get_by_role_and_label(Role::TextInput, "Title")
+        .click();
+    run(&mut harness);
+    press_with(&mut harness, Modifiers::COMMAND, Key::A);
+    type_text(&mut harness, "Checkup");
+    click_outside(&mut harness);
+    wait_until(&mut harness, |harness| {
+        file("Events/Checkup.md").is_some() && popover(harness, "Checkup").is_none()
+    });
+}
+
+#[test]
+fn a_meetings_popover_says_who_comes_and_open_opens_it() {
+    let Some(Opened {
+        mut harness,
+        _folders,
+    }) = opened()
+    else {
+        return;
+    };
+    click_entry(&mut harness, "Sync, 10:00 AM–10:30 AM");
+    wait_until(&mut harness, |harness| popover(harness, "Sync").is_some());
+    let details = popover(&harness, "Sync").unwrap();
+    details.get_by_label("Meeting");
+    details.get_by_label("Friday, 10:00 to 10:30");
+    details.get_by_label("With Ada and Grace");
+
+    details.get_by_role_and_label(Role::Button, "Open").click();
+    wait_until(&mut harness, |harness| {
         harness
             .state()
             .app()
             .active_tab()
-            .map(|tab| tab.title().to_owned())
-            .as_deref(),
-        Some("Standup")
-    );
+            .is_some_and(|tab| tab.title() == "Sync")
+    });
 }
 
 fn checked(harness: &Ui, label: &str) -> bool {
@@ -267,14 +468,14 @@ fn the_sidebar_lists_calendars_whose_checkboxes_hide_their_entries() {
     let calendars = harness.get_by_role_and_label(Role::ListBox, "Calendars");
     assert_eq!(
         labels(calendars.get_all_by_role(Role::ListBoxOption)),
-        ["Work"]
+        ["Home", "Work"]
     );
     let other = harness.get_by_role_and_label(Role::ListBox, "Other");
     assert_eq!(
         labels(other.get_all_by_role(Role::ListBoxOption)),
-        ["Projects", "Tasks"]
+        ["Meetings", "Projects", "Tasks"]
     );
-    for calendar in ["Work", "Projects", "Tasks"] {
+    for calendar in ["Home", "Work", "Meetings", "Projects", "Tasks"] {
         assert!(checked(&harness, calendar), "{calendar}");
     }
     harness.get_by_role_and_label(Role::Button, "New calendar");

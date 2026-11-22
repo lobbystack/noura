@@ -9,8 +9,8 @@ use plugin_host::{
     Activity, ActivityState, Avatar, CalendarMode, Check, Choice, Color, ColumnPress, Composer,
     DatePicker, Editable, EditableStyle, EmptyState, Event, Field, Form, Heading, HeadingLevel,
     Icon, Input, Item, ItemStatus, Message, MessageAuthor, Move, Naming, Node, NodeKind,
-    PickerOption, Pill, PluginError, RunningPlugin, Services, SidePanel, Submission, Target, Value,
-    View, ViewKind, ViewNode, VirtualRow, check_rows,
+    PickerOption, Pill, PluginError, Popover, RunningPlugin, Services, SidePanel, Submission,
+    Target, Value, View, ViewKind, ViewNode, VirtualRow, check_rows,
 };
 use support::plugins;
 
@@ -1091,6 +1091,8 @@ const UNKNOWN_KIND: &str = r#"
     (type $pill' (record
       (field "label" string) (field "avatar" (option $avatar)) (field "open" bool)))
     (export $pill "pill" (type $pill'))
+    (type $popover' (record (field "label" string) (field "anchor" string)))
+    (export $popover "popover" (type $popover'))
     (type $node-kind' (variant
       (case "panel" (option string)) (case "text" string)
       (case "markdown" string) (case "button" string)
@@ -1103,7 +1105,7 @@ const UNKNOWN_KIND: &str = r#"
       (case "side-panel" $side-panel) (case "avatar" $avatar) (case "pill" $pill)
       (case "editable" $editable) (case "date-picker" $date-picker) (case "picker" $picker)
       (case "conversation" string) (case "message" $message) (case "activity" $activity)
-      (case "composer" $composer)))
+      (case "composer" $composer) (case "popover" $popover)))
     (export $node-kind "node-kind" (type $node-kind'))
     (type $node' (record
       (field "id" string) (field "kind" $node-kind) (field "children" (list u32))))
@@ -1713,4 +1715,67 @@ fn a_conversation_holds_messages_steps_and_a_composer_last() {
             reason
         );
     }
+}
+
+#[test]
+fn a_popover_lays_out_its_children_beside_an_item_a_card_an_entry_or_a_button() {
+    let popover = |anchor: &str, label: &str, children: Vec<Node>| {
+        let mut nodes = vec![
+            node("root", NodeKind::Panel(None), vec![1, 2]),
+            node("add", NodeKind::Button("Add".into()), Vec::new()),
+            node(
+                "details",
+                NodeKind::Popover(Popover {
+                    label: label.into(),
+                    anchor: anchor.into(),
+                }),
+                Vec::new(),
+            ),
+        ];
+        for (index, child) in children.into_iter().enumerate() {
+            nodes[2].children.push(u32::try_from(index + 3).unwrap());
+            nodes.push(child);
+        }
+        View::from_nodes(nodes)
+    };
+    let line = || node("line", NodeKind::Text("Tomorrow".into()), Vec::new());
+
+    let view = popover("add", "Dentist", vec![line()]).expect("a popover beside a button");
+    let details = &view.root().children[1];
+    assert_eq!(
+        details.kind,
+        ViewKind::Popover {
+            label: "Dentist".into(),
+            anchor: "add".into(),
+        }
+    );
+    assert_eq!(details.children[0].kind, ViewKind::Text("Tomorrow".into()));
+
+    let unlabeled = popover("add", " ", vec![]).expect_err("no label");
+    assert_eq!(unlabeled.to_string(), "The popover details has no label.");
+    let missing = popover("gone", "Dentist", vec![]).expect_err("no such node");
+    assert_eq!(
+        missing.to_string(),
+        "The popover details points at gone, which isn't an item, a card, an entry or a \
+         button of the view."
+    );
+    let text = popover("line", "Dentist", vec![line()]).expect_err("text isn't an anchor");
+    assert!(text.to_string().contains("points at line"), "{text}");
+    let nested = popover(
+        "add",
+        "Dentist",
+        vec![node(
+            "inner",
+            NodeKind::Popover(Popover {
+                label: "Inner".into(),
+                anchor: "add".into(),
+            }),
+            Vec::new(),
+        )],
+    )
+    .expect_err("a popover in a popover");
+    assert_eq!(
+        nested.to_string(),
+        "The popover inner sits in another popover."
+    );
 }

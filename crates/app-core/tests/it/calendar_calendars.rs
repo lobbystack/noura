@@ -4,14 +4,13 @@
 //! calendar under Other. Each entry draws in its calendar's color, and
 //! hiding a calendar hides its entries in every view and the Inbox, which
 //! the settings file keeps. You create, rename, recolor and delete
-//! calendars, create events in one and move them to another, and outside
-//! edits, copies, broken files and a rebuilt index leave the same
-//! calendars.
+//! calendars, create events in one, edit them in place and move them to
+//! another, and outside edits, copies, broken files and a rebuilt index
+//! leave the same calendars.
 
 use crate::support;
 use app_core::{
-    App, Field, InputValue, PluginCheck, PluginColor, PluginEvent, PluginNaming, Submission,
-    Target, ViewKind,
+    App, Field, InputValue, PluginCheck, PluginColor, PluginEvent, PluginNaming, Target, ViewKind,
 };
 use support::{
     FakeSystem, Fixture,
@@ -133,33 +132,27 @@ fn field(node: &str, value: InputValue) -> Field {
     }
 }
 
-/// Submit the event form with these values, as its Save or Add does.
-fn submit(app: &mut App, title: &str, start: InputValue, end: InputValue, calendar: &str) {
-    let all_day = matches!(start, InputValue::Date(_));
-    send(
-        app,
-        PluginEvent::Submitted(Submission {
-            node: "event".to_owned(),
-            fields: vec![
-                field("event-title", InputValue::Text(title.to_owned())),
-                field("event-all-day", InputValue::Checkbox(all_day)),
-                field("event-start", start),
-                field("event-end", end),
-                field(
-                    "event-calendar",
-                    InputValue::Choice(Some(calendar.to_owned())),
-                ),
-            ],
-        }),
-    );
+/// Change the popover's control `node` to `value`, as a pick or leaving
+/// a text does.
+fn change(app: &mut App, node: &str, value: InputValue) {
+    send(app, PluginEvent::Changed(field(node, value)));
 }
 
-fn at(value: &str) -> InputValue {
-    InputValue::DateTime(Some(value.to_owned()))
+fn choice(value: &str) -> InputValue {
+    InputValue::Choice(Some(value.to_owned()))
 }
 
 fn day(value: &str) -> InputValue {
     InputValue::Date(Some(value.to_owned()))
+}
+
+/// The option the picker `id` of the page shows chosen.
+fn chosen(app: &App, id: &str) -> Option<String> {
+    let view = page(app);
+    match &find(view.root(), id)?.kind {
+        ViewKind::Picker { chosen, .. } => chosen.clone(),
+        _ => None,
+    }
 }
 
 #[test]
@@ -357,7 +350,7 @@ fn you_create_rename_recolor_and_delete_a_calendar() {
 }
 
 #[test]
-fn a_new_event_goes_to_the_selected_calendar_and_moves_to_another() {
+fn a_new_event_goes_to_the_selected_calendar_and_its_popover_edits_it_in_place() {
     let fixture = workspace();
     let mut app = app_on(&fixture);
     let Some(_folder) = with_calendar(&mut app) else {
@@ -372,43 +365,61 @@ fn a_new_event_goes_to_the_selected_calendar_and_moves_to_another() {
         }),
     );
     press(&mut app, "new-event");
-    let view = page(&app);
-    let chosen = find(view.root(), "event-calendar").expect("the form picks a calendar");
+    // New event makes the event at once, from 9:00 to 10:00 today, and
+    // opens its popover beside it.
+    let made = text(&app, "Events/New event.md", &fixture).expect("the event is a file");
     assert!(
-        matches!(&chosen.kind, ViewKind::Input { value: InputValue::Choice(Some(id)), .. } if id == WORK),
+        made.contains(&format!(
+            "type: event\ncalendar: {WORK}\nstart: 2026-10-21T09:00:00-04:00\n\
+             end: 2026-10-21T10:00:00-04:00\n"
+        )),
+        "{made}"
+    );
+    let view = page(&app);
+    let popover = find(view.root(), "details").expect("the popover shows");
+    assert!(
+        matches!(&popover.kind, ViewKind::Popover { label, anchor }
+            if label == "New event" && anchor.ends_with(":start")),
         "{:?}",
-        chosen.kind
+        popover.kind
     );
+    assert_eq!(chosen(&app, "event-calendar").as_deref(), Some(WORK));
+    assert_eq!(chosen(&app, "event-start").as_deref(), Some("09:00"));
+    assert_eq!(chosen(&app, "event-end").as_deref(), Some("60"));
 
-    submit(
+    // Each change writes the file at once.
+    change(
         &mut app,
-        "Dentist",
-        at("2026-10-22T09:00:00-04:00"),
-        at("2026-10-22T10:00:00-04:00"),
-        WORK,
+        "event-title",
+        InputValue::Text("Dentist".to_owned()),
     );
-    let dentist = text(&app, "Events/Dentist.md", &fixture).expect("the event is a file");
+    assert!(!fixture.exists("Events/New event.md"));
+    change(&mut app, "event-day", day("2026-10-22"));
+    change(&mut app, "event-start", choice("14:15"));
+    change(&mut app, "event-end", choice("90"));
+    change(
+        &mut app,
+        "event-notes",
+        InputValue::Multiline("Bring the card.".to_owned()),
+    );
+    let dentist = text(&app, "Events/Dentist.md", &fixture).expect("the file is renamed");
     assert!(
         dentist.contains(&format!(
-            "type: event\ncalendar: {WORK}\nstart: 2026-10-22T09:00:00-04:00\n\
-             end: 2026-10-22T10:00:00-04:00\n"
+            "calendar: {WORK}\nstart: 2026-10-22T14:15:00-04:00\n\
+             end: 2026-10-22T15:45:00-04:00\n"
         )),
         "{dentist}"
     );
-    wait_until(&mut app, "the event shows", |app| {
+    assert!(
+        dentist.ends_with("---\nBring the card.\n") || dentist.ends_with("---\nBring the card."),
+        "{dentist}"
+    );
+    wait_until(&mut app, "the event shows as Dentist", |app| {
         colored(app).contains(&("Dentist".to_owned(), Some(PluginColor::Green)))
     });
 
-    // Its form shows once it's selected, and moves it to Home.
-    let view = page(&app);
-    assert!(find(view.root(), "event-panel").is_some());
-    submit(
-        &mut app,
-        "Dentist",
-        at("2026-10-22T09:00:00-04:00"),
-        at("2026-10-22T10:00:00-04:00"),
-        HOME,
-    );
+    // The calendar moves it to Home, in Home's color.
+    change(&mut app, "event-calendar", choice(HOME));
     let dentist = text(&app, "Events/Dentist.md", &fixture).unwrap();
     assert!(
         dentist.contains(&format!("calendar: {HOME}\n")),
@@ -418,32 +429,32 @@ fn a_new_event_goes_to_the_selected_calendar_and_moves_to_another() {
         colored(app).contains(&("Dentist".to_owned(), Some(PluginColor::Blue)))
     });
 
-    // An all-day event's form takes its last day; the file holds the day
-    // after.
+    // All day keeps its day; the popover shows the last day, and the file
+    // holds the day after.
+    change(&mut app, "event-all-day", InputValue::Checkbox(true));
+    let dentist = text(&app, "Events/Dentist.md", &fixture).unwrap();
+    assert!(dentist.contains("start: 2026-10-22\n"), "{dentist}");
+    assert!(!dentist.contains("end:"), "{dentist}");
+    change(&mut app, "event-last", day("2026-10-24"));
+    let dentist = text(&app, "Events/Dentist.md", &fixture).unwrap();
+    assert!(
+        dentist.contains("start: 2026-10-22\nend: 2026-10-25\n"),
+        "{dentist}"
+    );
+
+    // Escape or a click outside closes the popover, and a second new
+    // event takes the next free name.
+    send(&mut app, PluginEvent::Cancelled("details".to_owned()));
+    assert!(find(page(&app).root(), "details").is_none());
     press(&mut app, "new-event");
-    send(
-        &mut app,
-        PluginEvent::Changed(field("event-all-day", InputValue::Checkbox(true))),
-    );
-    let view = page(&app);
-    let start = find(view.root(), "event-start").unwrap();
-    assert!(
-        matches!(
-            &start.kind,
-            ViewKind::Input {
-                value: InputValue::Date(_),
-                ..
-            }
-        ),
-        "{:?}",
-        start.kind
-    );
-    submit(&mut app, "Fair", day("2026-10-24"), day("2026-10-25"), HOME);
-    let fair = text(&app, "Events/Fair.md", &fixture).unwrap();
-    assert!(
-        fair.contains("start: 2026-10-24\nend: 2026-10-26\n"),
-        "{fair}"
-    );
+    press(&mut app, "new-event");
+    assert!(fixture.exists("Events/New event.md"));
+    assert!(fixture.exists("Events/New event 1.md"));
+
+    // Delete moves the event to the trash and closes its popover.
+    press(&mut app, "delete-event");
+    assert!(!fixture.exists("Events/New event 1.md"));
+    assert!(find(page(&app).root(), "details").is_none());
 }
 
 #[test]

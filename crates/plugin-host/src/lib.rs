@@ -43,8 +43,8 @@ pub use instance::{
     Editable, EditableStyle, EmptyState, Event, Field, Form, Heading, HeadingLevel, Icon,
     InboxSection, Input, Item, ItemList, ItemStatus, MenuItem, Message, MessageAuthor, Move,
     NameField, Naming, Node, NodeKind, ObjectType, Page, Picker, PickerOption, Pill, Placement,
-    PluginError, Registration, Services, SettingsSection, SidePanel, SortOrder, Submission, Table,
-    Target, Tool, Value, VirtualList, VirtualRow,
+    PluginError, Popover, Registration, Services, SettingsSection, SidePanel, SortOrder,
+    Submission, Table, Target, Tool, Value, VirtualList, VirtualRow,
 };
 pub use instance::{
     AiCompletion, AiCompletionRequest, KernelEvent, MenuBarEntry, MenuBarEntryKind, MicrophoneUse,

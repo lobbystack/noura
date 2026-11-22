@@ -293,6 +293,7 @@ fn draw(ui: &mut Ui, board: &ViewNode, kit: &mut Kit) {
                 Sense::CLICK | Sense::DRAG
             };
             let response = column_ui.interact(rect, id, sense);
+            kit.anchor(card.id, rect, false);
             drag::start(&response, board_id, card.id, card.label);
             let is_selected = Some(place) == selected_place;
             response.widget_info(|| WidgetInfo::labeled(Role::ListItem, true, card.label));

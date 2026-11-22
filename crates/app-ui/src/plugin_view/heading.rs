@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     icons,
-    theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, Weight, font},
+    theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, TITLE_SIZE, Weight, font},
 };
 
 fn icon(icon: PluginIcon) -> icons::Icon {
@@ -59,13 +59,17 @@ pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
                     false,
                 );
             }
-            let weight = if page {
-                Weight::Semibold
+            // A heading in a popover is its title, as large as an
+            // editable title.
+            let (size, weight) = if kit.in_popover {
+                (TITLE_SIZE + 2.0, Weight::Semibold)
+            } else if page {
+                (BODY_SIZE, Weight::Semibold)
             } else {
-                Weight::Medium
+                (BODY_SIZE, Weight::Medium)
             };
             let title = RichText::new(text)
-                .font(font(ui.ctx(), BODY_SIZE, weight))
+                .font(font(ui.ctx(), size, weight))
                 .color(palette.foreground);
             match detail {
                 // A page heading's detail goes under its title.

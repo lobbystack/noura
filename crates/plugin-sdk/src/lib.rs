@@ -68,8 +68,8 @@ pub use noura::plugin::ui::{
     Activity, ActivityState, Avatar, Calendar, CalendarEntry, CalendarMode, Check, Choice, Color,
     Column, ColumnPress, Composer, DatePicker, Editable, EditableStyle, EmptyState, Event, Field,
     Form, Heading, HeadingLevel, Icon, Input, Item, ItemList, MenuItem, Message, MessageAuthor,
-    Move, NameField, Naming, Node, NodeKind, Picker, PickerOption, Pill, SidePanel, SortOrder,
-    Status, Submission, Table, Target, Value, VirtualList, VirtualRow,
+    Move, NameField, Naming, Node, NodeKind, Picker, PickerOption, Pill, Popover, SidePanel,
+    SortOrder, Status, Submission, Table, Target, Value, VirtualList, VirtualRow,
 };
 
 /// Reading the open workspace. Needs the `workspace-read` capability.
@@ -1134,6 +1134,18 @@ impl View {
             chosen: chosen.map(str::to_owned),
         };
         self.add(parent, id, NodeKind::Picker(picker))
+    }
+
+    /// Add a popover that floats beside the item, card, entry or button
+    /// with the node ID `anchor`, with an arrow toward it. Its children go
+    /// where a panel's go. Escape or a click outside it sends
+    /// [`Event::Cancelled`] with the popover's ID.
+    pub fn popover(&mut self, parent: u32, id: &str, label: &str, anchor: &str) -> u32 {
+        let popover = Popover {
+            label: label.to_owned(),
+            anchor: anchor.to_owned(),
+        };
+        self.add(parent, id, NodeKind::Popover(popover))
     }
 
     /// Draw the list item or the calendar entry at `node` in `color`: an

@@ -8,9 +8,10 @@
 //! the `event` type that name their calendar by ID. Every other type with
 //! dates gets a built-in calendar of its own, such as Tasks. The sidebar
 //! lists them all with a checkbox that hides a calendar's entries in every
-//! view, and the settings file keeps what you hid. Selecting an event
-//! shows its form; selecting another entry shows its properties beside an
-//! Open button. Calendar writes only files of its own types.
+//! view, and the settings file keeps what you hid. Selecting an entry
+//! opens a popover beside it: an event of yours edits in place there, and
+//! any other entry shows what it is and when, with Open. Calendar writes
+//! only files of its own types.
 //!
 //! The rules that pick and order a range's entries are the kernel's,
 //! moved here from `workspace-format` in [`rules`].
@@ -20,7 +21,7 @@
 
 mod calendars;
 mod dates;
-mod editor;
+mod details;
 mod entries;
 mod names;
 mod rules;
@@ -31,15 +32,14 @@ use std::sync::Mutex;
 
 use jiff::{ToSpan, civil::Date};
 use plugin_sdk::{
-    CalendarMode, Color, Column, Event, Icon, InboxSection, Node, ObjectType, Page, Plugin, Target,
-    Value, View,
+    CalendarMode, Color, Event, Icon, InboxSection, Node, ObjectType, Page, Plugin, Target, Value,
+    View,
     navigation::{self, Placement},
 };
-use serde_json::Value as Json;
 
 use calendars::{Key, Own, Settings, built_in, key_of};
 use dates::{Now, add_days};
-use editor::Draft;
+use details::Edit;
 use entries::{Entries, Entry};
 use rules::select_calendar_entries;
 use types::{CALENDAR, EVENT};
@@ -138,11 +138,11 @@ pub(crate) struct State {
     mode: Mode,
     /// The day the grid shows the period of, or none for today.
     focus: Option<Date>,
-    /// The key of the entry whose panel shows.
+    /// The key of the entry whose popover shows.
     selected: Option<String>,
-    /// The event form: a new event, or the selected event's.
-    draft: Option<Draft>,
-    /// Why the last Open failed.
+    /// Why the last change in the popover failed.
+    problem: Option<String>,
+    /// Why the last Open or New event failed.
     notice: Option<String>,
     /// The calendar you selected in the sidebar, which new events go to.
     pub(crate) calendar: Option<String>,
@@ -161,7 +161,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     mode: Mode::Month,
     focus: None,
     selected: None,
-    draft: None,
+    problem: None,
     notice: None,
     calendar: None,
     naming_calendar: false,
@@ -332,8 +332,8 @@ impl rules::CalendarItem for (Entry, Color) {
     }
 }
 
-/// The Calendar page: Previous, Today and Next, the mode, the selected
-/// entry's panel, and the grid.
+/// The Calendar page: Previous, Today and Next, the mode, the grid, and
+/// the selected entry's popover.
 fn page() -> Vec<Node> {
     let now = Now::read();
     let mut state = state();
@@ -359,34 +359,6 @@ fn page() -> Vec<Node> {
         }
         _ => None,
     };
-    // A selected event shows its form, from its file unless you're
-    // editing it.
-    match &selected {
-        Some(entry) if entry.source_type == EVENT => {
-            let current = state.draft.as_ref().and_then(|draft| draft.event.as_ref());
-            if current != Some(&entry.source_id) {
-                let calendar = match key_of(&entry.source_type, &entry.properties, &own) {
-                    Key::Own(id) => Some(id),
-                    Key::Type(_) => None,
-                };
-                state.draft = Some(Draft::of(
-                    &entry.source_id,
-                    &entry.title,
-                    &entry.properties,
-                    calendar,
-                ));
-            }
-        }
-        // An event's form closes with its event.
-        _ if state
-            .draft
-            .as_ref()
-            .is_some_and(|draft| draft.event.is_some()) =>
-        {
-            state.draft = None;
-        }
-        _ => {}
-    }
     let shown = all.and_then(|all| within(all.entries, &now, first, count));
 
     let mut view = View::panel("root", None);
@@ -415,24 +387,6 @@ fn page() -> Vec<Node> {
     if let Some(id) = &state.deleting {
         delete_panel(&mut view, &own, id);
     }
-    if let Some(draft) = &state.draft {
-        let title = if draft.event.is_some() {
-            "Event"
-        } else {
-            "New event"
-        };
-        let panel = view.add_panel(View::ROOT, "event-panel", Some(title));
-        editor::render(&mut view, panel, draft, &own);
-        if draft.event.is_some() {
-            view.button(panel, "open", "Open");
-            view.button(panel, "delete-event", "Delete");
-            view.button(panel, "close-entry", "Close");
-        } else {
-            view.button(panel, "close-entry", "Cancel");
-        }
-    } else if let Some(entry) = &selected {
-        entry_panel(&mut view, entry);
-    }
     let entries = match shown {
         Ok(entries) => entries,
         Err(problem) => {
@@ -454,10 +408,34 @@ fn page() -> Vec<Node> {
         mode.grid(),
         &focus.to_string(),
     );
+    let mut drawn = false;
     for (entry, color) in entries.iter().take(MOST_SHOWN) {
         if let Some((start, end)) = entry.span() {
             let node = view.entry(grid, &entry.key, &entry.title, &start, end.as_deref());
             view.color(node, *color);
+            drawn |= selected
+                .as_ref()
+                .is_some_and(|selected| selected.key == entry.key);
+        }
+    }
+    // The popover points at its entry, so it shows only while the grid
+    // draws the entry.
+    if let Some(entry) = selected.as_ref().filter(|_| drawn) {
+        if entry.source_type == EVENT {
+            let calendar = match key_of(&entry.source_type, &entry.properties, &own) {
+                Key::Own(id) => Some(id),
+                Key::Type(_) => None,
+            };
+            let notes = details::notes(&entry.source_id);
+            details::render(
+                &mut view,
+                &now,
+                entry,
+                Some((&notes, &own, calendar.as_deref())),
+                state.problem.as_deref(),
+            );
+        } else {
+            details::render(&mut view, &now, entry, None, state.problem.as_deref());
         }
     }
     view.into_nodes()
@@ -505,78 +483,21 @@ fn sidebar_nodes() -> Vec<Node> {
     sidebar::render(&state, &own, &types, &settings)
 }
 
-/// The selected entry's title, type and properties, and Open.
-fn entry_panel(view: &mut View, entry: &Entry) {
-    let panel = view.add_panel(View::ROOT, "entry", Some("Selected entry"));
-    view.text(panel, "entry-title", &entry.title);
-    view.text(panel, "entry-type", &format!("Type: {}", entry.source_type));
-    if entry.shared_id {
-        // Open goes by stable ID, which names either file.
-        view.text(
-            panel,
-            "entry-shared-id",
-            "Another file has the same ID, so Open might show that file.",
-        );
-    }
-    let columns = vec![
-        Column {
-            id: "property".into(),
-            title: "Property".into(),
-            sorted: None,
-        },
-        Column {
-            id: "value".into(),
-            title: "Value".into(),
-            sorted: None,
-        },
-    ];
-    let table = view.table(panel, "entry-properties", "Properties", columns);
-    for (name, value) in entry.properties.iter() {
-        let value = shown_value(value);
-        view.row(table, &format!("property:{name}"), &[name, &value]);
-    }
-    view.button(panel, "open", "Open");
-    view.button(panel, "close-entry", "Close");
-}
-
-/// A property's value as the entry panel shows it.
-fn shown_value(value: &Json) -> String {
-    match value {
-        Json::String(text) => text.clone(),
-        Json::Null => String::new(),
-        Json::Array(items) => items.iter().map(shown_value).collect::<Vec<_>>().join(", "),
-        other => other.to_string(),
-    }
-}
-
 fn handle(event: Event) {
     match event {
         Event::Pressed(node) => match node.as_str() {
-            "new-event" => {
-                let now = Now::read();
-                let mut state = state();
-                let own = own_calendars(&mut state);
-                let day = state.focus.unwrap_or(now.today);
-                let calendar = default_calendar(&state, &own);
-                state.draft = Some(Draft::new(&now, day, calendar));
-                state.selected = None;
-                state.notice = None;
-            }
-            "delete-event" => {
-                let id = state().draft.as_ref().and_then(|draft| draft.event.clone());
-                if let Some(id) = id {
-                    let result = editor::delete(&id);
+            "new-event" => new_event(),
+            details::DELETE => {
+                let source = selected_entry().map(|entry| entry.source_id);
+                if let Some(id) = source {
+                    let deleted = details::delete(&id);
                     let mut state = state();
-                    match result {
+                    match deleted {
                         Ok(()) => {
-                            state.draft = None;
                             state.selected = None;
+                            state.problem = None;
                         }
-                        Err(problem) => {
-                            if let Some(draft) = &mut state.draft {
-                                draft.problem = Some(problem);
-                            }
-                        }
+                        Err(problem) => state.problem = Some(problem),
                     }
                 }
             }
@@ -605,53 +526,28 @@ fn handle(event: Event) {
                 state.focus = None;
                 state.selected = None;
             }
-            "open" => {
+            details::OPEN => {
                 let selected = state().selected.clone();
                 if let Some(key) = selected {
                     open(&key);
                 }
             }
-            "close-entry" => {
-                let mut state = state();
-                state.selected = None;
-                state.draft = None;
-            }
             _ => {}
         },
-        Event::Changed(field) if field.node.starts_with("event-") => {
-            let now = Now::read();
-            if let Some(draft) = &mut state().draft {
-                draft.change(&now, &field.node, field.value);
-            }
-        }
-        Event::Submitted(submission) if submission.node == editor::FORM => {
-            let now = Now::read();
-            let own = own_calendars(&mut state());
-            let draft = {
-                let mut state = state();
-                let Some(draft) = &mut state.draft else {
-                    return;
-                };
-                for field in submission.fields {
-                    draft.change(&now, &field.node, field.value);
-                }
-                draft.clone()
-            };
-            let saved = editor::save(&draft, &own);
+        Event::Cancelled(node) if node == details::POPOVER => {
             let mut state = state();
-            match saved {
-                Ok(id) => {
-                    // The event shows selected, with its form read from
-                    // its file again.
-                    state.selected = Some(format!("{id}:start"));
-                    state.draft = None;
-                }
-                Err(problem) => {
-                    if let Some(draft) = &mut state.draft {
-                        draft.problem = Some(problem);
-                    }
-                }
-            }
+            state.selected = None;
+            state.problem = None;
+        }
+        Event::Changed(field) if field.node.starts_with("event-") => {
+            let Some(edit) = Edit::of(&field.node, field.value) else {
+                return;
+            };
+            let Some(entry) = selected_entry().filter(|entry| entry.source_type == EVENT) else {
+                return;
+            };
+            let written = details::apply(&Now::read(), &entry.source_id, &entry.properties, edit);
+            state().problem = written.err();
         }
         Event::Checked(check) if check.node == sidebar::MINE || check.node == sidebar::OTHER => {
             if let Some(key) = Key::of_node(&check.item) {
@@ -719,7 +615,7 @@ fn handle(event: Event) {
         Event::Selected(Target { item, .. }) => {
             let mut state = state();
             state.selected = Some(item);
-            state.draft = None;
+            state.problem = None;
             state.notice = None;
         }
         Event::Activated(Target { item, .. }) => {
@@ -727,6 +623,38 @@ fn handle(event: Event) {
             open(&item);
         }
         _ => {}
+    }
+}
+
+/// The entry whose popover shows, as the workspace holds it now.
+fn selected_entry() -> Option<Entry> {
+    let mut state = state();
+    let key = state.selected.clone()?;
+    all_entries(&mut state)
+        .ok()?
+        .into_iter()
+        .find(|entry| entry.key == key)
+}
+
+/// Make an event on the day the grid shows, in the calendar you selected
+/// or your first, and open its popover.
+fn new_event() {
+    let now = Now::read();
+    let (day, calendar, own) = {
+        let mut state = state();
+        let own = own_calendars(&mut state);
+        let day = state.focus.unwrap_or(now.today);
+        (day, default_calendar(&state, &own), own)
+    };
+    let created = details::create(&now, day, calendar, &own);
+    let mut state = state();
+    match created {
+        Ok(id) => {
+            state.selected = Some(format!("{id}:start"));
+            state.problem = None;
+            state.notice = None;
+        }
+        Err(problem) => state.notice = Some(problem),
     }
 }
 

@@ -11,7 +11,9 @@
 //! selects an item it doesn't hold, a card with a checkbox, a warning or a
 //! color, a form that requires anything but a text input inside it, a
 //! composer that isn't a conversation's last node or holds anything but
-//! choices and buttons, or a view too large or deep to draw.
+//! choices and buttons, a popover in another popover or pointing at
+//! anything but an item, a card, an entry or a button of the view, or a
+//! view too large or deep to draw.
 //! [`check_rows`] does the same for the rows of a virtual list.
 
 use std::collections::HashSet;
@@ -251,6 +253,13 @@ pub enum ViewKind {
         send: String,
         stop: Option<String>,
     },
+    /// A box floating beside the node with the ID `anchor`, named for
+    /// screen readers by `label`, whose children it lays out like a
+    /// panel's.
+    Popover {
+        label: String,
+        anchor: String,
+    },
 }
 
 /// The narrowest and widest a split's first pane may be, in points.
@@ -346,6 +355,7 @@ impl View {
         for node in &nodes {
             check_node(node)?;
             check_children(node, &nodes)?;
+            check_anchor(node, &nodes)?;
         }
         check_place(&nodes[0], None)?;
         check_side_panels(&nodes)?;
@@ -426,6 +436,7 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Message(_) => "message",
         NodeKind::Activity(_) => "activity",
         NodeKind::Composer(_) => "composer",
+        NodeKind::Popover(_) => "popover",
     }
 }
 
@@ -485,6 +496,7 @@ fn check_node(node: &Node) -> Result<(), ViewError> {
         NodeKind::Picker(picker) if blank(&picker.label) => Err(unlabeled()),
         NodeKind::Picker(picker) => check_picker(id, &picker.options, picker.chosen.as_deref()),
         NodeKind::Conversation(label) if blank(label) => Err(unlabeled()),
+        NodeKind::Popover(popover) if blank(&popover.label) => Err(unlabeled()),
         NodeKind::Message(message) if blank(&message.label) => Err(unlabeled()),
         NodeKind::Activity(activity) if blank(&activity.title) => Err(unlabeled()),
         NodeKind::Composer(composer) if blank(&composer.label) => Err(unlabeled()),
@@ -497,7 +509,8 @@ fn check_node(node: &Node) -> Result<(), ViewError> {
         NodeKind::Conversation(_)
         | NodeKind::Message(_)
         | NodeKind::Activity(_)
-        | NodeKind::Composer(_) => Ok(()),
+        | NodeKind::Composer(_)
+        | NodeKind::Popover(_) => Ok(()),
         NodeKind::Button(label)
         | NodeKind::Menu(label)
         | NodeKind::Board(label)
@@ -723,6 +736,23 @@ fn check_value(id: &str, value: &Value, choices: &[Choice]) -> Result<(), ViewEr
     }
 }
 
+/// A popover points at an item, a card, an entry or a button of the view.
+fn check_anchor(node: &Node, nodes: &[Node]) -> Result<(), ViewError> {
+    let NodeKind::Popover(popover) = &node.kind else {
+        return Ok(());
+    };
+    let anchor = nodes.iter().find(|other| other.id == popover.anchor);
+    match anchor.map(|anchor| &anchor.kind) {
+        Some(NodeKind::Item(_) | NodeKind::Card(_) | NodeKind::Entry(_) | NodeKind::Button(_)) => {
+            Ok(())
+        }
+        _ => Err(ViewError::Invalid(format!(
+            "The popover {} points at {}, which isn't an item, a card, an entry or a button of the view.",
+            node.id, popover.anchor
+        ))),
+    }
+}
+
 /// Where a node of each kind may sit. `parent` is `None` for the root.
 fn check_place(node: &Node, parent: Option<&Node>) -> Result<(), ViewError> {
     let misplaced = |message: String| Err(ViewError::Misplaced(message));
@@ -753,6 +783,9 @@ fn check_place(node: &Node, parent: Option<&Node>) -> Result<(), ViewError> {
             "The {} {id} isn't in a menu.",
             kind_name(&node.kind)
         )),
+        (NodeKind::Popover(_), Some(NodeKind::Popover(_))) => {
+            misplaced(format!("The popover {id} sits in another popover."))
+        }
         _ => Ok(()),
     }
 }
@@ -786,7 +819,11 @@ fn check_children(parent: &Node, nodes: &[Node]) -> Result<(), ViewError> {
     let children = parent.children.iter().map(|&child| &nodes[child as usize]);
     let misplaced = |message: String| Err(ViewError::Misplaced(message));
     match &parent.kind {
-        NodeKind::Panel(_) | NodeKind::Form(_) | NodeKind::Activity(_) | NodeKind::SidePanel(_) => {
+        NodeKind::Panel(_)
+        | NodeKind::Form(_)
+        | NodeKind::Activity(_)
+        | NodeKind::SidePanel(_)
+        | NodeKind::Popover(_) => {
             for child in children {
                 check_place(child, Some(parent))?;
             }
@@ -1178,6 +1215,10 @@ fn build(
             value: composer.value.clone(),
             send: composer.send.clone(),
             stop: composer.stop.clone(),
+        },
+        NodeKind::Popover(popover) => ViewKind::Popover {
+            label: popover.label.clone(),
+            anchor: popover.anchor.clone(),
         },
     };
     let children: Vec<ViewNode> = node

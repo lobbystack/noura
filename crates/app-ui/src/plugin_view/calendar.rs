@@ -11,7 +11,8 @@
 //! current-date state.
 //!
 //! You select an entry by click or the keyboard and open it with Enter or
-//! a double-click. The arrow keys walk the entries day by day, and Home
+//! a double-click. A click selects it even when it already is, so a
+//! plugin can show it again. The arrow keys walk the entries day by day, and Home
 //! and End go to the first and last. An entry shows once on each day it
 //! covers, and the grid is one stop in the Tab order, on the selected
 //! entry where the keyboard last left it.
@@ -343,6 +344,13 @@ fn draw(ui: &mut Ui, node: &ViewNode, mode: CalendarMode, grid: &Grid, kit: &mut
                 let response = cell_ui.interact(rect, id, sense);
                 response.widget_info(|| WidgetInfo::labeled(Role::Button, true, &shown.label));
                 let is_selected = selected_entry == Some(grid.ids[shown.entry]);
+                // A popover points at the entry on the day you selected
+                // it, or on its first day.
+                let selected_day = state
+                    .selected
+                    .as_ref()
+                    .is_some_and(|(_, day)| *day == grid.days[shown.day].date);
+                kit.anchor(grid.ids[shown.entry], rect, is_selected && selected_day);
                 cell_ui.ctx().accesskit_node_builder(id, |node| {
                     node.add_action(Action::Focus);
                     node.set_selected(is_selected);
@@ -386,7 +394,9 @@ fn draw(ui: &mut Ui, node: &ViewNode, mode: CalendarMode, grid: &Grid, kit: &mut
     if let Some(index) = select {
         let shown = &grid.shown[index];
         let entry = grid.ids[shown.entry];
-        if selected_entry != Some(entry) {
+        // A click on the selected entry selects it again, so its popover
+        // opens again after you closed it.
+        if selected_entry != Some(entry) || clicked.is_some() {
             kit.events.push(PluginEvent::Selected(Target {
                 node: node.id.clone(),
                 item: entry.to_owned(),

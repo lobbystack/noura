@@ -134,6 +134,9 @@ pub(super) fn editable(
     }
     let escaped = ui.input(|input| input.key_pressed(Key::Escape));
     if response.lost_focus() {
+        // Escape puts the text back, so it doesn't also close the popover
+        // around it.
+        kit.escape_taken |= escaped;
         let sent = match style {
             _ if escaped && style != EditableStyle::Add => {
                 draft.text = value.to_owned();
@@ -153,26 +156,7 @@ pub(super) fn editable(
                 }
                 (entered && !text.is_empty()).then_some(InputValue::Text(text))
             }
-            EditableStyle::Title => {
-                let text = draft.text.trim().to_owned();
-                if text.is_empty() {
-                    // A title of only spaces names nothing, so the old one
-                    // comes back.
-                    draft.text = value.to_owned();
-                    None
-                } else {
-                    draft.text.clone_from(&text);
-                    (text != value).then_some(InputValue::Text(text))
-                }
-            }
-            EditableStyle::Line => {
-                let text = draft.text.trim().to_owned();
-                draft.text.clone_from(&text);
-                (text != value).then_some(InputValue::Text(text))
-            }
-            EditableStyle::Body => {
-                (draft.text != value).then(|| InputValue::Multiline(draft.text.clone()))
-            }
+            _ => left(style, &mut draft.text, value),
         };
         if let Some(value) = sent {
             kit.events.push(PluginEvent::Changed(Field {
@@ -182,6 +166,55 @@ pub(super) fn editable(
         }
     }
     ui.data_mut(|data| data.insert_temp(id, draft));
+}
+
+/// What a title, a line or a body sends when you leave it holding `text`,
+/// tidied as it keeps it, after the plugin drew `value`.
+fn left(style: EditableStyle, text: &mut String, value: &str) -> Option<InputValue> {
+    match style {
+        EditableStyle::Title => {
+            let trimmed = text.trim().to_owned();
+            if trimmed.is_empty() {
+                // A title of only spaces names nothing, so the old one
+                // comes back.
+                value.clone_into(text);
+                None
+            } else {
+                text.clone_from(&trimmed);
+                (trimmed != value).then_some(InputValue::Text(trimmed))
+            }
+        }
+        EditableStyle::Line => {
+            let trimmed = text.trim().to_owned();
+            text.clone_from(&trimmed);
+            (trimmed != value).then_some(InputValue::Text(trimmed))
+        }
+        EditableStyle::Body => (*text != value).then(|| InputValue::Multiline(text.clone())),
+        EditableStyle::Add => None,
+    }
+}
+
+/// The change the editable text `node` would send if you left it now,
+/// while it has the keyboard, as when a click outside closes the popover
+/// it sits in before it can.
+pub(super) fn pending(ui: &Ui, node: &ViewNode, kit: &Kit) -> Option<PluginEvent> {
+    let app_core::ViewKind::Editable { value, style, .. } = &node.kind else {
+        return None;
+    };
+    let id = kit.id(&node.id);
+    if !ui.memory(|memory| memory.has_focus(id.with("text"))) {
+        return None;
+    }
+    let mut draft: Draft = ui.data(|data| data.get_temp(id))?;
+    if draft.drawn != *value {
+        return None;
+    }
+    let value = left(*style, &mut draft.text, value)?;
+    ui.data_mut(|data| data.insert_temp(id, draft));
+    Some(PluginEvent::Changed(Field {
+        node: node.id.clone(),
+        value,
+    }))
 }
 
 /// What a small button that opens a popup shows before its text.
@@ -335,6 +368,7 @@ pub(super) fn date_picker(
     let words = chosen.map(|day| date_words(day, today));
     // The month the open picker shows, or none while it's closed.
     let mut shown: Option<Date> = ui.data(|data| data.get_temp(id));
+    kit.popup_open |= shown.is_some();
     let response = chip(
         ui,
         Some(&Mark::Icon(icons::CALENDAR_BLANK)),
@@ -530,7 +564,9 @@ pub(super) fn picker(
         .map(|color| Mark::Flag(named(color, dark)));
     let text = current.map_or(label, |option| option.label.as_str());
     let mut open: bool = ui.data(|data| data.get_temp(id)).unwrap_or(false);
+    kit.popup_open |= open;
     let response = chip(ui, mark.as_ref(), text, current.is_none(), true);
+    let opening = response.clicked() && !open;
     if response.clicked() {
         open = !open;
     }
@@ -555,12 +591,22 @@ pub(super) fn picker(
         .width(180.0)
         .show(|ui| {
             ui.set_width(180.0);
-            for option in options {
-                let on = Some(option.id.as_str()) == chosen;
-                if option_row(ui, option, on, dark).clicked() {
-                    picked = Some(option.id.clone());
-                }
-            }
+            // A long menu, such as the times of a day, scrolls, and opens
+            // on the chosen option.
+            egui::ScrollArea::vertical()
+                .max_height(MENU_HEIGHT)
+                .show(ui, |ui| {
+                    for option in options {
+                        let on = Some(option.id.as_str()) == chosen;
+                        let row = option_row(ui, option, on, dark);
+                        if on && opening {
+                            row.scroll_to_me(Some(egui::Align::Center));
+                        }
+                        if row.clicked() {
+                            picked = Some(option.id.clone());
+                        }
+                    }
+                });
         });
     if let Some(option) = picked {
         open = false;
@@ -578,6 +624,9 @@ pub(super) fn picker(
         response.request_focus();
     }
 }
+
+/// The tallest a picker's menu grows before it scrolls.
+const MENU_HEIGHT: f32 = 320.0;
 
 /// An option in a picker's menu: its mark, its label, and a check when
 /// it's the chosen one.
