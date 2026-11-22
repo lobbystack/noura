@@ -137,7 +137,7 @@ info-plist-path = "packaging/Info.plist"
 # copy from the Ubuntu 22.04 build machine, no Vulkan or EGL driver loads
 # on a newer system and the window can't open.
 [package.metadata.packager.appimage]
-excluded-libs = ["libwayland-*", "libxkbcommon*"]
+excluded-libraries = ["libwayland-*", "libxkbcommon*"]
 
 # winit and wgpu load these libraries when the app starts.
 [package.metadata.packager.deb]
