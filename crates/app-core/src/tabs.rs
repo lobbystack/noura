@@ -159,8 +159,6 @@ struct WaitingPage {
 pub(crate) struct Tabs {
     tabs: Vec<Tab>,
     active: Option<TabId>,
-    /// The document tab that was active before a page tab took over.
-    last_document: Option<TabId>,
     /// Saved page tabs waiting for their page, in saved order.
     waiting: Vec<WaitingPage>,
     /// The waiting page whose tab was active when the tabs were saved. It
@@ -241,34 +239,8 @@ impl Tabs {
         true
     }
 
-    /// Show the Files page: the active document tab, or the document tab
-    /// that was active before a page tab took over, or the last document
-    /// tab. With no document tab, nothing is active. Returns whether it
-    /// changed the active tab.
-    pub(crate) fn show_files(&mut self) -> bool {
-        if self.active().is_some_and(|tab| tab.file().is_some()) {
-            return false;
-        }
-        let documents = || self.tabs.iter().filter(|tab| tab.file().is_some());
-        let target = documents()
-            .find(|tab| Some(tab.id) == self.last_document)
-            .or_else(|| documents().next_back())
-            .map(|tab| tab.id);
-        if target == self.active {
-            return false;
-        }
-        self.set_active(target);
-        true
-    }
-
-    /// Make `id` active, remembering the document tab a page tab takes
-    /// over from.
+    /// Make `id` active.
     fn set_active(&mut self, id: Option<TabId>) {
-        if let Some(current) = self.active()
-            && current.file().is_some()
-        {
-            self.last_document = Some(current.id);
-        }
         self.active = id;
         self.active_waiting = None;
     }
@@ -303,7 +275,6 @@ impl Tabs {
         self.tabs.clear();
         self.waiting.clear();
         self.active_waiting = None;
-        self.last_document = None;
         // Which saved tabs open now.
         let mut opened = Vec::with_capacity(restored.len());
         // Only one tab may be the preview.
@@ -504,9 +475,6 @@ impl Tabs {
         if self.active == Some(merged.id) {
             self.active = Some(survivor);
             self.active_waiting = None;
-        }
-        if self.last_document == Some(merged.id) {
-            self.last_document = Some(survivor);
         }
     }
 

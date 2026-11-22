@@ -91,8 +91,8 @@ pub use commands::{
 pub use diagnostics::{LOG_FILE, log_folder};
 pub use error::AppError;
 pub use files::{
-    DropSpot, EntryKind, FileTree, OpenedFile, SPRING_OPEN_DELAY, TYPE_AHEAD_TIMEOUT, TreeAction,
-    TreeKey, TreeRow,
+    DropSpot, EntryKind, FileTree, FilesEntry, FilesListing, FolderStep, OpenedFile,
+    SPRING_OPEN_DELAY, TYPE_AHEAD_TIMEOUT, TreeAction, TreeKey, TreeRow,
 };
 pub use inbox::{
     Attention, FileLink, Inbox, InboxSection, InboxSectionProvider, LinkAction, RECENT_NOTES,

@@ -41,6 +41,7 @@ mod ai;
 mod commands;
 mod drops;
 mod file_actions;
+mod files_page;
 mod finder;
 mod ignored_files;
 mod inbox;
@@ -267,6 +268,11 @@ pub struct App {
     /// searches share.
     workspace: Option<Arc<Workspace>>,
     tree: Option<FileTree>,
+    /// The folder the Files page lists when the tree has no current
+    /// folder: `""` is the top of the workspace.
+    files_folder: String,
+    /// The Files page's listing, until the tree or the folder changes.
+    files_listing: Option<crate::FilesListing>,
     tabs: Tabs,
     rail: Rail,
     layout: Layout,
@@ -406,6 +412,8 @@ impl App {
             recents: Vec::new(),
             workspace: None,
             tree: None,
+            files_folder: String::new(),
+            files_listing: None,
             tabs: Tabs::default(),
             rail: Rail::default(),
             layout: Layout::default(),
@@ -557,6 +565,7 @@ impl App {
         self.pending = None;
         self.workspace = None;
         self.tree = None;
+        self.forget_files_folder();
         self.renaming = None;
         self.ignored_files = None;
         self.pending_trash = None;
@@ -986,6 +995,7 @@ impl App {
         self.close_palette();
         self.workspace = Some(workspace.clone());
         self.tree = Some(opened.tree);
+        self.forget_files_folder();
         self.problems = opened.snapshot.problems;
         self.recent = opened.snapshot.recent;
         self.rail.set_saved_order(adopted.view.rail_order);

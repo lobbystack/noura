@@ -314,6 +314,52 @@ fn painted_inside(harness: &Ui, area: egui::Rect) -> Vec<egui::Rect> {
     found
 }
 
+/// Tabs share the row evenly between 160 and 240 points: one tab is at
+/// its widest, and a few shrink together while they still fit.
+#[test]
+fn tabs_share_the_row_between_their_narrowest_and_widest() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    create_workspace(app_data.path(), &folder);
+    let names: Vec<String> = (1..=4).map(|n| format!("Note {n}")).collect();
+    for name in &names {
+        std::fs::write(folder.join(format!("{name}.md")), b"x").unwrap();
+    }
+    let mut harness = harness_registering(app_data.path(), FakePicker::default(), |_| {});
+    settle(&mut harness);
+    harness.set_size(egui::vec2(1100.0, 750.0));
+    harness.run();
+    let open = |harness: &mut Ui, name: &str| {
+        harness
+            .state_mut()
+            .app_mut()
+            .open_file(&format!("{name}.md"), app_core::OpenAs::Kept);
+        harness.run();
+    };
+    let width = |harness: &Ui, name: &str| {
+        harness
+            .get_by_role_and_label(Role::Tab, name)
+            .rect()
+            .width()
+    };
+
+    open(&mut harness, &names[0]);
+    assert_eq!(width(&harness, &names[0]), 240.0);
+    for name in &names[1..] {
+        open(&mut harness, name);
+    }
+    let widths: Vec<f32> = names.iter().map(|name| width(&harness, name)).collect();
+    assert!(
+        widths.iter().all(|width| (160.0..240.0).contains(width)),
+        "{widths:?}"
+    );
+    assert!(
+        widths.windows(2).all(|pair| pair[0] == pair[1]),
+        "{widths:?}"
+    );
+}
+
 /// At a normal window width, tabs past the window's edge scroll sideways
 /// with the mouse wheel, inside the title bar row, with no scrollbar.
 #[test]
@@ -346,18 +392,21 @@ fn tabs_fit_the_title_bar_row_with_no_scrollbar_and_still_scroll() {
     let first = tab_rect(&harness, &names[0]);
     let last = tab_rect(&harness, "Inbox");
     // The row starts where the window's content does, here the harness's
-    // margin, and the tabs sit in its 36 points, as the legacy title bar
-    // row's.
+    // margin. Tabs stand on the bottom of its 36 points, where the page
+    // starts, 6 points below its top, and are no narrower than 160.
     let row_top = harness
         .get_by_role_and_label(Role::Splitter, "Resize panel")
         .rect()
         .top();
-    assert!(first.top() > row_top, "{first:?} under {row_top}");
-    assert!(first.bottom() < row_top + 36.0, "{first:?} under {row_top}");
     assert!(
-        (first.center().y - (row_top + 18.0)).abs() <= 1.0,
+        (first.top() - (row_top + 6.0)).abs() <= 0.5,
         "{first:?} under {row_top}"
     );
+    assert!(
+        (first.bottom() - (row_top + 36.0)).abs() <= 0.5,
+        "{first:?} under {row_top}"
+    );
+    assert!(first.width() >= 160.0, "{first:?}");
     assert!(
         first.left() < 0.0 || last.right() > 1100.0,
         "the tabs should run past the window: {first:?} {last:?}"

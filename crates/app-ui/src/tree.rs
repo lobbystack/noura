@@ -747,6 +747,41 @@ enum MenuOutcome {
     Chose(Command),
 }
 
+/// The tree's row menu for an item shown outside the tree, such as a row
+/// on the Files page, opened at `at` or below the row. It runs what you
+/// choose, opening files as the Files page does. Returns whether the menu
+/// stays open.
+pub(crate) fn item_menu(
+    response: &Response,
+    row: &TreeRow,
+    at: Option<Pos2>,
+    app: &mut App,
+) -> bool {
+    let menu = RowMenu {
+        relative_path: row.relative_path.clone(),
+        at,
+        focus_first: false,
+    };
+    let can_open_terminal = app.can_open_terminal();
+    let reveal_label = app.platform().reveal_label();
+    match row_menu(response, row, &menu, can_open_terminal, reveal_label) {
+        MenuOutcome::Open => true,
+        MenuOutcome::Closed => false,
+        MenuOutcome::Chose(Command::Open(path)) => {
+            app.open_from_files(&path, OpenAs::Preview);
+            false
+        }
+        MenuOutcome::Chose(Command::OpenInNewTab(path)) => {
+            app.open_from_files(&path, OpenAs::Kept);
+            false
+        }
+        MenuOutcome::Chose(command) => {
+            run(app, command);
+            false
+        }
+    }
+}
+
 /// The row's menu, below the row or where a right-click opened it.
 fn row_menu(
     response: &Response,

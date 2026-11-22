@@ -472,6 +472,11 @@ fn general(ui: &mut Ui, app: &mut App, settings: &Settings) {
         app.set_appearance(appearance);
     }
 
+    let mut files = preferences.files_in_every_sidebar;
+    if switch_field(ui, "Files in every sidebar", &mut files, true, None) {
+        app.set_files_in_every_sidebar(files);
+    }
+
     let login = &settings.open_at_login;
     let mut enabled = login.enabled.unwrap_or(false);
     if switch_field(

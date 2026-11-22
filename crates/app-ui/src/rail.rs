@@ -174,30 +174,26 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App) {
             let response = response.on_hover_text(title);
 
             // A page opens in a new tab with Cmd-click (Ctrl-click on
-            // Windows and Linux), a middle-click or its menu. Files shows
-            // a document tab and has no tab of its own.
-            let new_tab = *page_id != FILES_PAGE;
+            // Windows and Linux), a middle-click or its menu.
             if response.clicked() {
                 let command = ui.input(|input| input.modifiers.command);
-                let how = if command && new_tab {
+                let how = if command {
                     OpenAs::Kept
                 } else {
                     OpenAs::Preview
                 };
                 open = Some((page_id.clone(), how));
-            } else if response.middle_clicked() && new_tab {
+            } else if response.middle_clicked() {
                 open = Some((page_id.clone(), OpenAs::Kept));
             }
-            if new_tab {
-                egui::Popup::context_menu(&response)
-                    .style(crate::theme::menu_style)
-                    .show(|ui| {
-                        if ui.button("Open in new tab").clicked() {
-                            open = Some((page_id.clone(), OpenAs::Kept));
-                            ui.close();
-                        }
-                    });
-            }
+            egui::Popup::context_menu(&response)
+                .style(crate::theme::menu_style)
+                .show(|ui| {
+                    if ui.button("Open in new tab").clicked() {
+                        open = Some((page_id.clone(), OpenAs::Kept));
+                        ui.close();
+                    }
+                });
             if response.has_focus() {
                 let step = ui.input_mut(|input| {
                     if input.consume_key(Modifiers::ALT, Key::ArrowUp) {

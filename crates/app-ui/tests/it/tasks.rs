@@ -338,7 +338,18 @@ fn the_sidebar_lists_the_views_projects_and_folders_with_open_counts() {
         ["Garden"]
     );
     assert_eq!(count(&harness, "Folders", "tasks"), Some("2".into()));
-    // The file tree stays below the section.
+    // The file tree shows under the section only with Files in every
+    // sidebar on; it's off at first.
+    assert!(
+        harness
+            .query_by_role_and_label(Role::TreeItem, "tasks")
+            .is_none()
+    );
+    harness
+        .state_mut()
+        .app_mut()
+        .set_files_in_every_sidebar(true);
+    run(&mut harness);
     harness.get_by_role_and_label(Role::TreeItem, "tasks");
     assert_eq!(task_list(&harness), ["Water the beds, Jan 6, 2020"]);
 
@@ -517,6 +528,8 @@ fn a_task_opens_from_the_tree_at_full_width_with_no_panel_beside_it() {
     };
     harness.set_size(egui::vec2(1100.0, 750.0));
     run(&mut harness);
+    // The tree shows on the Files page.
+    open_page(&mut harness, "Files");
     harness
         .get_by_role_and_label(Role::TreeItem, "tasks")
         .click();
