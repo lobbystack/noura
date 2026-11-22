@@ -179,6 +179,61 @@ fn f2_moves_from_the_text_to_the_name_and_enter_renames_the_file() {
     );
 }
 
+/// A note whose text opens with a heading that says its name shows the
+/// name once, in that heading: the name field above the text stays away
+/// until F2 asks for it, and a rename that makes the two differ keeps it.
+#[test]
+fn a_heading_that_says_the_name_replaces_the_name_field_until_f2() {
+    const BRIEF: &str = "---\nid: note_01jbcdefghjkmnpqrstvwxyz0b\ntype: note\n\
+                         created: 2026-10-20T10:00:00Z\nupdated: 2026-10-20T10:00:00Z\n\
+                         ---\n# Brief\n\nThe short version.\n";
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let mut harness = opened_with(app_data.path(), &folder, &[("Brief.md", BRIEF)]);
+    harness
+        .get_by_role_and_label(Role::TreeItem, "Docs")
+        .click();
+    harness.run_steps(4);
+    harness
+        .get_by_role_and_label(Role::TreeItem, "Brief")
+        .click();
+    harness.run_steps(4);
+    let name_field_shows = |harness: &Ui| {
+        harness
+            .query_by_role_and_label(Role::TextInput, "File name")
+            .is_some()
+    };
+    assert!(!name_field_shows(&harness));
+
+    // Escape puts it away again.
+    harness.key_press(Key::F2);
+    harness.run_steps(4);
+    assert!(name_field(&harness).accesskit_node().is_focused());
+    harness.key_press(Key::Escape);
+    harness.run_steps(4);
+    assert!(!name_field_shows(&harness));
+
+    harness
+        .get_by_role_and_label(Role::MultilineTextInput, "Note text")
+        .click();
+    harness.run_steps(4);
+    harness.key_press(Key::F2);
+    harness.run_steps(4);
+    harness.event(Event::Text("Summary".into()));
+    harness.run_steps(4);
+    harness.key_press(Key::Enter);
+    harness.run_steps(4);
+    assert_eq!(
+        std::fs::read_to_string(folder.join("Docs/Summary.md")).unwrap(),
+        BRIEF
+    );
+    assert_eq!(
+        name_field(&harness).accesskit_node().value().as_deref(),
+        Some("Summary")
+    );
+}
+
 #[test]
 fn escape_in_the_name_field_keeps_the_old_name() {
     let app_data = tempfile::tempdir().unwrap();

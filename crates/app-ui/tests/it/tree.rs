@@ -257,10 +257,22 @@ fn opening_a_note_shows_it_in_the_editor_under_its_name() {
     row(&harness, "Guide").click();
     harness.run_steps(4);
 
+    // Its heading says its name, so no name field over it says it again.
     let document = harness.get_by_role_and_label(Role::Region, "Document");
-    let name = document.get_by_role_and_label(Role::TextInput, "File name");
-    assert_eq!(name.accesskit_node().value().as_deref(), Some("Guide"));
-    document.get_by_role_and_label(Role::Document, "Note text");
+    assert!(
+        document
+            .query_by_role_and_label(Role::TextInput, "File name")
+            .is_none()
+    );
+    let text = document
+        .get_by_role_and_label(Role::MultilineTextInput, "Note text")
+        .accesskit_node()
+        .value();
+    assert!(
+        text.as_deref()
+            .is_some_and(|text| text.starts_with("# Guide")),
+        "{text:?}"
+    );
     assert_eq!(
         row(&harness, "Guide").accesskit_node().is_selected(),
         Some(true)

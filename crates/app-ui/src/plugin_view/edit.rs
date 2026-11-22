@@ -585,6 +585,7 @@ pub(super) fn picker(
     Popup::from_response(&response)
         .id(id.with("menu"))
         .kind(PopupKind::Menu)
+        .style(crate::theme::menu_style)
         .frame(common::menu_frame(ui.ctx()))
         .open_bool(&mut open)
         .accessible_name(label.to_owned())

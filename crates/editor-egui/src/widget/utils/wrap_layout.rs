@@ -1206,10 +1206,29 @@ fn shape_chunk(
             b.set_wrap(glyphon::Wrap::None);
             b.set_tab_width(4);
             let attrs = format_to_attrs(&format, metric);
+            let plain = attrs.as_attrs();
             // Emoji shape with the format's font like any other text; font
             // fallback finds a color emoji font when the embedding app
             // supplies one.
-            b.set_text(text, &attrs.as_attrs(), glyphon::Shaping::Advanced, None);
+            let tracking = crate::style::tracking(row_height);
+            if tracking == 0.0 {
+                b.set_text(text, &plain, glyphon::Shaping::Advanced, None);
+            } else {
+                // Large text is tracked, but characters that draw nothing
+                // aren't: spacing would give them a negative width.
+                let tracked = plain.clone().letter_spacing(tracking);
+                let spans = tracked_spans(text).into_iter().map(|(span, track)| {
+                    (
+                        span,
+                        if track {
+                            tracked.clone()
+                        } else {
+                            plain.clone()
+                        },
+                    )
+                });
+                b.set_rich_text(spans, &plain, glyphon::Shaping::Advanced, None);
+            }
             b.shape_until_scroll(&mut guard, false);
             b
         })
@@ -1515,6 +1534,56 @@ fn is_one_to_one_range(layout: &Layout, visible_lo: usize, visible_hi: usize) ->
         }
     }
     true
+}
+
+/// `text` cut into runs that take tracking and runs that don't: a grapheme
+/// that draws nothing, such as a control or format character or a lone
+/// combining mark, keeps its own zero width.
+fn tracked_spans(text: &str) -> Vec<(&str, bool)> {
+    use unicode_segmentation::UnicodeSegmentation as _;
+    let mut spans: Vec<(&str, bool)> = Vec::new();
+    let mut start = 0;
+    let mut current = None;
+    for (at, grapheme) in text.grapheme_indices(true) {
+        let track = !grapheme.chars().next().is_some_and(draws_nothing);
+        if current.is_some_and(|current| current != track) {
+            spans.push((&text[start..at], !track));
+            start = at;
+        }
+        current = Some(track);
+    }
+    if let Some(track) = current {
+        spans.push((&text[start..], track));
+    }
+    spans
+}
+
+/// Whether a grapheme that starts with `c` draws nothing of its own.
+fn draws_nothing(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{00AD}'
+                | '\u{034F}'
+                | '\u{061C}'
+                | '\u{115F}'..='\u{1160}'
+                | '\u{17B4}'..='\u{17B5}'
+                | '\u{180B}'..='\u{180F}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{206F}'
+                | '\u{3164}'
+                | '\u{FE00}'..='\u{FE0F}'
+                | '\u{FEFF}'
+                | '\u{FFA0}'
+                | '\u{E0000}'..='\u{E0FFF}'
+                // Combining marks, which only draw on a base.
+                | '\u{0300}'..='\u{036F}'
+                | '\u{1AB0}'..='\u{1AFF}'
+                | '\u{1DC0}'..='\u{1DFF}'
+                | '\u{20D0}'..='\u{20FF}'
+                | '\u{FE20}'..='\u{FE2F}'
+        )
 }
 
 fn format_to_attrs(format: &Format, base_row_height: f32) -> glyphon::AttrsOwned {
@@ -2765,5 +2834,21 @@ mod tests {
         );
         assert_eq!(super::active_interaction(&[link_tip]), Some(link_tip));
         assert_eq!(super::active_interaction(&[]), None);
+    }
+
+    #[test]
+    fn tracking_skips_what_draws_nothing() {
+        assert_eq!(super::tracked_spans("Plan"), vec![("Plan", true)]);
+        assert_eq!(
+            super::tracked_spans("foo \0bar"),
+            vec![("foo ", true), ("\0", false), ("bar", true)]
+        );
+        assert_eq!(
+            super::tracked_spans("a\u{200B}\u{200D}b"),
+            vec![("a", true), ("\u{200B}\u{200D}", false), ("b", true)]
+        );
+        // A mark on a base goes with its base.
+        assert_eq!(super::tracked_spans("e\u{301}"), vec![("e\u{301}", true)]);
+        assert_eq!(super::tracked_spans(""), vec![]);
     }
 }

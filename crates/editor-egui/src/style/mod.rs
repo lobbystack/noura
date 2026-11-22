@@ -112,6 +112,19 @@ impl TypeRole {
     }
 }
 
+/// Tracking, in em, for text `points` high. Body sizes keep the font's own
+/// spacing; display sizes tighten as they grow, since letters drawn large
+/// read too far apart. The curve is Inter's dynamic metrics
+/// (<https://rsms.me/inter/dynmetrics/>), which suits a grotesk like
+/// Public Sans.
+pub fn tracking(points: f32) -> f32 {
+    if points < 18.0 {
+        0.0
+    } else {
+        -0.0223 + 0.185 * (-0.1745 * points).exp()
+    }
+}
+
 /// Control height: vertical pad + line box + vertical pad.
 pub fn control_height() -> f32 {
     Space::Xs.pts() * 2.0 + TypeRole::Body.line_height()

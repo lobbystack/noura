@@ -10,30 +10,27 @@ use crate::widget::inline::Response;
 use crate::widget::utils::wrap_layout::Layout;
 
 impl<'ast> MdRender {
+    /// A heading's size, from the body's: 28, 22 and 18 points over
+    /// 16-point text, then body-sized and smaller. Headings are bold, so
+    /// weight carries the hierarchy and size needn't shout.
     pub fn heading_row_height(&self, level: u8) -> f32 {
         self.layout.row_height
             * match level {
-                6 => 1.2,
-                5 => 1.4,
-                4 => 1.6,
-                3 => 1.8,
-                2 => 2.0,
-                _ => 2.4,
+                6 => 0.85,
+                5 => 0.875,
+                4 => 1.0,
+                3 => 1.125,
+                2 => 1.375,
+                _ => 1.75,
             }
     }
 
-    pub fn height_heading(&self, node: &'ast AstNode<'ast>, level: u8, setext: bool) -> f32 {
-        let text_height = if setext {
+    pub fn height_heading(&self, node: &'ast AstNode<'ast>, setext: bool) -> f32 {
+        if setext {
             self.height_setext_heading(node)
         } else {
             self.height_atx_heading(node)
-        };
-        text_height
-            + if level == 1 {
-                self.layout.block_spacing
-            } else {
-                0.
-            }
+        }
     }
 
     /// Build `Layout` for a setext heading's content line (non-underline
@@ -188,13 +185,12 @@ impl<'ast> MdRender {
         ui: &mut Ui,
         node: &'ast AstNode<'ast>,
         top_left: Pos2,
-        level: u8,
         setext: bool,
     ) {
         if setext {
-            self.show_setext_heading(ui, node, top_left, level);
+            self.show_setext_heading(ui, node, top_left);
         } else {
-            self.show_atx_heading(ui, node, top_left, level);
+            self.show_atx_heading(ui, node, top_left);
         }
 
         let pointer = ui.input(|i| i.pointer.latest_pos().unwrap_or_default());
@@ -237,7 +233,6 @@ impl<'ast> MdRender {
         ui: &mut Ui,
         node: &'ast AstNode<'ast>,
         mut top_left: Pos2,
-        level: u8,
     ) -> Response {
         let resp = Default::default();
         let width = self.width(node);
@@ -272,10 +267,6 @@ impl<'ast> MdRender {
             }
         }
 
-        top_left.y -= self.layout.row_spacing;
-        if level == 1 {
-            self.show_heading_rule(ui, top_left, width);
-        }
         resp
     }
 
@@ -284,8 +275,7 @@ impl<'ast> MdRender {
         &mut self,
         ui: &mut Ui,
         node: &'ast AstNode<'ast>,
-        mut top_left: Pos2,
-        level: u8,
+        top_left: Pos2,
     ) -> Response {
         let resp = Default::default();
         let width = self.width(node);
@@ -296,29 +286,9 @@ impl<'ast> MdRender {
 
         let layout = self.layout_atx_heading_line(node, node_line, reveal);
         let result = self.compute_layout_from(layout, width, row_height);
-        let height = result.height;
         self.show_wrap_layout(ui, top_left, &result);
         self.show_block_line_prefixes(ui, node, line, top_left, row_height);
-
-        top_left.y += height;
-        if level == 1 {
-            self.show_heading_rule(ui, top_left, width);
-        }
         resp
-    }
-
-    fn show_heading_rule(&mut self, ui: &mut Ui, top_left: Pos2, width: f32) {
-        let line_break_rect =
-            Rect::from_min_size(top_left, Vec2::new(width, self.layout.block_spacing));
-
-        ui.painter().hline(
-            line_break_rect.x_range(),
-            line_break_rect.center().y,
-            Stroke {
-                width: 1.0,
-                color: self.ctx.get_lb_theme().neutral(),
-            },
-        );
     }
 
     /// Whether the heading and the blocks of its section reach `depth`

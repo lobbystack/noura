@@ -164,7 +164,8 @@ fn renaming_a_note_asks_for_its_document_at_the_new_path() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    let (mut harness, bridge) = opened(app_data.path(), &folder, "# Plan\n");
+    // Text with no heading, so the name field shows over it.
+    let (mut harness, bridge) = opened(app_data.path(), &folder, "Plan\n");
     wait_for_a_document(&mut harness, &bridge);
 
     let name = harness.get_by_role_and_label(Role::TextInput, "File name");

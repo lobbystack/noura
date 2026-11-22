@@ -20,13 +20,33 @@ use crate::{
 const TAB_BAR_MARGIN: i8 = 8;
 
 /// How far the workspace switcher sits from the start of the title bar
-/// row. On macOS the window's buttons sit in the rail, and the switcher
-/// lines up with the sidebar's rows.
+/// row, so its folder icon lines up with the sidebar's rows under it. On
+/// macOS and Linux the window's buttons sit in the title bar row; on
+/// Windows they sit in the system's own title bar.
 fn switcher_inset(platform: Platform) -> f32 {
     match platform {
-        Platform::MacOs => 8.0,
-        Platform::Windows | Platform::Linux => 24.0,
+        Platform::MacOs | Platform::Linux => 8.0,
+        Platform::Windows => 24.0,
     }
+}
+
+/// How far in from the window's start and end edges the window's own
+/// buttons reach, with the space after them, when the window draws them.
+fn controls_reach(state: &NouraUi) -> (f32, f32) {
+    let reach = |controls: &[crate::WindowControl]| {
+        let reach = crate::window_controls::reach(controls);
+        if reach > 0.0 {
+            reach + crate::window_controls::GAP
+        } else {
+            0.0
+        }
+    };
+    state
+        .window_controls
+        .as_ref()
+        .map_or((0.0, 0.0), |controls| {
+            (reach(&controls.start), reach(&controls.end))
+        })
 }
 
 pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
@@ -41,6 +61,8 @@ pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
     }
     let sidebar_shown = state.app.layout().sidebar_shown;
     let platform = state.app.platform();
+    let window = ui.ctx().viewport_rect();
+    let (start_reach, end_reach) = controls_reach(state);
     Panel::top("tab-bar")
         .resizable(false)
         .exact_size(BAR_HEIGHT)
@@ -54,14 +76,24 @@ pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
             // window.
             let rect = ui.max_rect().expand2(vec2(f32::from(TAB_BAR_MARGIN), 0.0));
             common::title_bar_area(ui, rect, "tab-bar");
+            // The window's own buttons take the row's end.
+            if end_reach > 0.0 {
+                let end = window.right() - end_reach;
+                ui.set_max_width((end - ui.max_rect().left()).max(0.0));
+            }
             ui.horizontal_centered(|ui| {
+                // The window's own buttons may take the row's start.
+                let start = window.left() + start_reach - ui.cursor().left();
                 // With the sidebar hidden, its switcher moves here.
                 if !sidebar_shown {
-                    ui.add_space(switcher_inset(platform) - f32::from(TAB_BAR_MARGIN));
+                    let inset = switcher_inset(platform) - f32::from(TAB_BAR_MARGIN);
+                    ui.add_space(inset.max(start));
                     ui.scope(|ui| {
                         ui.set_max_width(200.0);
                         switcher(state, ui);
                     });
+                } else if start > 0.0 {
+                    ui.add_space(start);
                 }
                 tab_bar::show(ui, &mut state.app, &mut state.tab_bar);
             });
@@ -144,7 +176,11 @@ fn sidebar(state: &mut NouraUi, ui: &mut Ui) {
                 header.bottom() - 0.5,
                 egui::Stroke::new(1.0, palette.sidebar_border),
             );
-            let inset = switcher_inset(state.app.platform());
+            // The window's own buttons may take the row's start.
+            let (start_reach, _) = controls_reach(state);
+            let window = ui.ctx().viewport_rect();
+            let inset = switcher_inset(state.app.platform())
+                .max(window.left() + start_reach - header.left());
             let switcher_rect = egui::Rect::from_min_max(
                 header.min + vec2(inset, 4.0),
                 header.max - vec2(8.0, 4.0),

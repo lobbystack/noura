@@ -43,7 +43,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 license = "MIT"
 rust-version = "1.99"
@@ -113,7 +113,7 @@ cidre = { version = "0.30.1", default-features = false, features = ["core_audio"
 wasapi = "0.27.0"
 global-hotkey = "0.10.0"
 tray-icon = "0.26.1"
-ashpd = { version = "0.14.0", default-features = false, features = ["tokio", "global_shortcuts"] }
+ashpd = { version = "0.14.0", default-features = false, features = ["tokio", "global_shortcuts", "settings"] }
 ed25519-dalek = { version = "=2.2.0", features = ["rand_core"] }
 zeroize = { version = "1", features = ["derive"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }

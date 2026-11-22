@@ -209,18 +209,23 @@ struct DrawnTab {
     close: Response,
 }
 
-/// One tab: its name, italic while it's the preview, and a close button
-/// that shows on the active tab and under the pointer.
+/// One tab: its name, in Public Sans Italic while it's the preview, and a
+/// close button that shows on the active tab and under the pointer.
 fn draw_tab(ui: &mut Ui, tab: &Shown, active: bool, tab_stop: bool, palette: &Palette) -> DrawnTab {
     let mut name = egui::RichText::new(&tab.title);
+    let mut font = FontId::proportional(BODY_SIZE);
     if tab.preview {
-        name = name.italics();
+        let (italic, drawn) = crate::theme::italic_font(ui.ctx(), BODY_SIZE);
+        font = italic;
+        if !drawn {
+            name = name.italics();
+        }
     }
-    let galley = WidgetText::from(name).into_galley(
+    let galley = WidgetText::from(name.font(font.clone())).into_galley(
         ui,
         Some(TextWrapMode::Truncate),
         NAME_WIDTH,
-        FontId::proportional(BODY_SIZE),
+        font,
     );
     let size = vec2(10.0 + galley.size().x + 4.0 + CLOSE_SIZE + 4.0, TAB_HEIGHT);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());

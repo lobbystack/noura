@@ -465,6 +465,13 @@ impl NoteSession {
         &self.text
     }
 
+    /// Whether the note's text opens with a level-1 heading that says its
+    /// name, so a name shown above the text would say it twice. A
+    /// plain-text or code file shows no headings.
+    pub fn heading_repeats_name(&self) -> bool {
+        !self.source_only && leading_title(&self.text) == Some(self.name().as_str())
+    }
+
     /// Whether the editor shows the file's whole text, frontmatter
     /// included, rather than a managed note's text after its frontmatter.
     /// An editor drawn for one layout starts again when the other shows.
@@ -1501,9 +1508,58 @@ pub(crate) fn is_markdown(relative_path: &str) -> bool {
         && relative_path[relative_path.len() - 3..].eq_ignore_ascii_case(".md")
 }
 
+/// The text of the level-1 heading `text` opens with, after any blank
+/// lines: an ATX heading (`# Title`, its closing `#`s dropped) or a setext
+/// heading (`Title` over a line of `=`).
+fn leading_title(text: &str) -> Option<&str> {
+    let mut lines = text.lines().skip_while(|line| line.trim().is_empty());
+    let first = lines.next()?;
+    let indent = first.len() - first.trim_start_matches(' ').len();
+    if indent > 3 {
+        return None;
+    }
+    let line = first.trim();
+    if let Some(rest) = line.strip_prefix('#') {
+        if !(rest.is_empty() || rest.starts_with([' ', '\t'])) {
+            return None;
+        }
+        let rest = rest.trim();
+        // A closing sequence counts only after a space, or alone.
+        let without_close = rest.trim_end_matches('#');
+        let title = if without_close.is_empty() || without_close.ends_with([' ', '\t']) {
+            without_close.trim_end()
+        } else {
+            rest
+        };
+        return (!title.is_empty()).then_some(title);
+    }
+    let underline = lines.next()?.trim();
+    let setext = !underline.is_empty() && underline.chars().all(|c| c == '=');
+    (setext && !line.is_empty()).then_some(line)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_leading_title_is_the_first_level_one_heading() {
+        for (text, title) in [
+            ("# Plan\n\nText.", Some("Plan")),
+            ("\n\n# Plan  \n", Some("Plan")),
+            ("# Plan ##\n", Some("Plan")),
+            ("# C#\n", Some("C#")),
+            ("Plan\n===\n\nText.", Some("Plan")),
+            ("## Plan\n", None),
+            ("#Plan\n", None),
+            ("#\n", None),
+            ("    # Plan\n", None),
+            ("Text.\n\n# Plan\n", None),
+            ("", None),
+        ] {
+            assert_eq!(leading_title(text), title, "{text:?}");
+        }
+    }
 
     fn error(code: &str, category: ErrorCategory) -> CoreError {
         CoreError::new(code, category, "detail", "raw_markdown_save")

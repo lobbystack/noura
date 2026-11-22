@@ -12,7 +12,6 @@ use egui::{
     PopupKind, Pos2, Rect, Response, ScrollArea, Sense, Stroke, StrokeKind, TextEdit, TextWrapMode,
     Ui, UiBuilder, WidgetInfo, WidgetText,
     accesskit::{Action, Role},
-    containers::menu::menu_style,
     pos2,
     text::{CCursor, CCursorRange},
     text_edit::TextEditState,
@@ -21,7 +20,7 @@ use egui::{
 
 use crate::{
     icons,
-    theme::{Palette, SUPPORTING_SIZE, radius},
+    theme::{Palette, SIDEBAR_SIZE, SUPPORTING_SIZE, radius},
 };
 
 /// The height of one row.
@@ -209,7 +208,7 @@ fn section_heading(ui: &mut Ui, app: &mut App, width: f32) -> bool {
     let title = "Files";
     let collapsed = app.is_section_collapsed(FILES_SECTION);
     let palette = Palette::of(ui.ctx());
-    let (rect, response) = ui.allocate_exact_size(vec2(width, 32.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(vec2(width, ROW_HEIGHT), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(Role::Button, true, title));
     ui.ctx()
         .accesskit_node_builder(response.id, |node| node.set_expanded(!collapsed));
@@ -282,6 +281,8 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
     if header(ui, app) {
         return;
     }
+    // The heading sits on its rows like one of them.
+    ui.add_space(-ui.spacing().item_spacing.y);
     follow_rename(app, view);
 
     // The tree has the keyboard when one of last frame's rows has focus, or
@@ -764,7 +765,7 @@ fn row_menu(
         .id(response.id.with("menu"))
         .kind(PopupKind::Menu)
         .layout(Layout::top_down_justified(Align::Min))
-        .style(menu_style)
+        .style(crate::theme::menu_style)
         .at_position(at)
         .open_bool(&mut open)
         .accessible_name(format!("Actions for {}", row.name))
@@ -796,7 +797,7 @@ fn row_menu(
                 if item(ui, "Open in new tab", None) {
                     chosen = Some(Command::OpenInNewTab(path.clone()));
                 }
-                ui.separator();
+                crate::common::menu_separator(ui);
             }
             if row.kind == EntryKind::Folder {
                 if item(ui, "New note", None) {
@@ -805,7 +806,7 @@ fn row_menu(
                 if item(ui, "New folder", None) {
                     chosen = Some(Command::NewFolder(path.clone()));
                 }
-                ui.separator();
+                crate::common::menu_separator(ui);
             }
             if item(ui, "Rename\u{2026}", Some("F2")) {
                 chosen = Some(Command::Rename(path.clone()));
@@ -814,7 +815,7 @@ fn row_menu(
             if row.kind == EntryKind::File && !row.not_downloaded && item(ui, "Duplicate", None) {
                 chosen = Some(Command::Duplicate(path.clone()));
             }
-            ui.separator();
+            crate::common::menu_separator(ui);
             if item(ui, reveal_label, None) {
                 chosen = Some(Command::Reveal(path.clone()));
             }
@@ -824,7 +825,7 @@ fn row_menu(
             if can_open_terminal && item(ui, "Open in Terminal", None) {
                 chosen = Some(Command::Terminal(path.clone()));
             }
-            ui.separator();
+            crate::common::menu_separator(ui);
             let trash_key = if cfg!(target_os = "macos") {
                 "Cmd+Backspace"
             } else {
@@ -884,7 +885,7 @@ fn rename_field(
             text_rect,
             TextEdit::singleline(&mut field.text)
                 .id(id)
-                .font(FontId::proportional(SUPPORTING_SIZE))
+                .font(FontId::proportional(SIDEBAR_SIZE))
                 .margin(vec2(6.0, 4.0))
                 .min_size(vec2(0.0, 24.0))
                 .desired_width(text_rect.width()),
@@ -974,8 +975,8 @@ fn draw_row(
         return response;
     }
     let painter = ui.painter();
-    // The legacy tree's rows: small pills, 12 px names, a folder's caret
-    // at the end.
+    // The rows: pills, names in the sidebar's size, a folder's caret at
+    // the end.
     let inner = rect.shrink2(vec2(0.0, 1.0));
     let corner = crate::theme::pill();
     if state.selected || response.hovered() || state.drop_target {
@@ -1022,7 +1023,7 @@ fn draw_row(
         ui,
         Some(TextWrapMode::Truncate),
         width,
-        FontId::proportional(SUPPORTING_SIZE),
+        FontId::proportional(SIDEBAR_SIZE),
     );
     let text_rect = Align2::LEFT_CENTER.anchor_size(pos2(text_left, center_y), galley.size());
     let color = if row.not_downloaded || state.dragged {

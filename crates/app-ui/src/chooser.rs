@@ -10,7 +10,7 @@ use crate::{
     NouraUi,
     common::{self, Btn, Size, Variant},
     icons,
-    theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, TITLE_SIZE, Weight, font, radius},
+    theme::{BODY_SIZE, LARGE_TITLE_SIZE, Palette, SUPPORTING_SIZE, Weight, font, radius},
 };
 
 const WIDTH: f32 = 512.0 - 96.0;
@@ -48,7 +48,12 @@ fn contents(state: &mut NouraUi, ui: &mut Ui, problem: Option<&str>) {
         let glyph = egui::Rect::from_center_size(rect.center(), vec2(20.0, 20.0));
         icons::paint(ui.painter(), icon, glyph, palette.foreground, false);
         ui.add_space(8.0);
-        ui.label(RichText::new(title).font(font(ui.ctx(), TITLE_SIZE, Weight::Medium)));
+        ui.label(crate::theme::text(
+            ui.ctx(),
+            title,
+            LARGE_TITLE_SIZE,
+            Weight::Semibold,
+        ));
         ui.add(
             egui::Label::new(
                 RichText::new(description)

@@ -700,7 +700,7 @@ pub(crate) fn empty_state_with(
         ui.label(RichText::new(title).font(font(
             ui.ctx(),
             crate::theme::TITLE_SIZE,
-            Weight::Medium,
+            Weight::Semibold,
         )));
         if let Some(text) = text {
             ui.scope(|ui| {
@@ -888,7 +888,7 @@ pub(crate) fn menu_item(
     });
     let height = match &detail {
         Some(detail) => 12.0 + title.size().y + 2.0 + detail.size().y,
-        None => 32.0,
+        None => crate::theme::MENU_ROW,
     };
     let sense = if enabled {
         Sense::click()
@@ -981,7 +981,8 @@ pub(crate) fn menu_separator(ui: &mut Ui) {
 pub(crate) const TITLE_BAR_HEIGHT: f32 = 36.0;
 
 /// Let `rect`, an empty part of the title bar row, move the window when
-/// dragged and zoom it when double-clicked, as a title bar does.
+/// dragged, zoom it when double-clicked and ask for the window menu when
+/// right-clicked, as a title bar does.
 pub(crate) fn title_bar_area(ui: &mut Ui, rect: egui::Rect, id: &str) {
     let response = ui.interact(rect, Id::unique(("title-bar", id)), Sense::click_and_drag());
     if response.drag_started() {
@@ -992,6 +993,33 @@ pub(crate) fn title_bar_area(ui: &mut Ui, rect: egui::Rect, id: &str) {
         ui.ctx()
             .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
     }
+    if response.secondary_clicked()
+        && let Some(at) = response.interact_pointer_pos()
+    {
+        let key = window_menu_key(ui.ctx().viewport_id());
+        ui.ctx().data_mut(|data| data.insert_temp(key, at));
+        ui.ctx().request_repaint();
+    }
+}
+
+fn window_menu_key(viewport: egui::ViewportId) -> Id {
+    Id::unique(("window-menu", viewport))
+}
+
+/// Where a right click on the title bar row of the window `viewport` asked
+/// for the window menu since the last call, in points from the window's
+/// top-left corner. egui has no command for the menu, so the desktop shell
+/// shows it.
+pub fn take_window_menu_request(
+    ctx: &egui::Context,
+    viewport: egui::ViewportId,
+) -> Option<egui::Pos2> {
+    let key = window_menu_key(viewport);
+    ctx.data_mut(|data| {
+        let at = data.get_temp::<egui::Pos2>(key);
+        data.remove::<egui::Pos2>(key);
+        at
+    })
 }
 
 /// The legacy dialog's frame: a 24 px rounded popover with a hairline
@@ -1020,9 +1048,9 @@ pub(crate) fn dialog_frame(ctx: &egui::Context) -> Frame {
 /// The dim behind a legacy dialog.
 pub(crate) const BACKDROP: Color32 = Color32::from_black_alpha(77);
 
-/// A legacy dialog's title: 16 px medium.
+/// A dialog's title: 16 px semibold, so it leads what the dialog says.
 pub(crate) fn dialog_title(ui: &mut Ui, text: &str) -> Response {
-    ui.label(RichText::new(text).font(font(ui.ctx(), crate::theme::TITLE_SIZE, Weight::Medium)))
+    ui.label(RichText::new(text).font(font(ui.ctx(), crate::theme::TITLE_SIZE, Weight::Semibold)))
 }
 
 /// The legacy dialog footer: 24 points under what the dialog says, its

@@ -189,12 +189,14 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App) {
                 open = Some((page_id.clone(), OpenAs::Kept));
             }
             if new_tab {
-                response.context_menu(|ui| {
-                    if ui.button("Open in new tab").clicked() {
-                        open = Some((page_id.clone(), OpenAs::Kept));
-                        ui.close();
-                    }
-                });
+                egui::Popup::context_menu(&response)
+                    .style(crate::theme::menu_style)
+                    .show(|ui| {
+                        if ui.button("Open in new tab").clicked() {
+                            open = Some((page_id.clone(), OpenAs::Kept));
+                            ui.close();
+                        }
+                    });
             }
             if response.has_focus() {
                 let step = ui.input_mut(|input| {

@@ -15,7 +15,7 @@ use crate::{
     FolderPicker, common,
     common::{Btn, Size, Variant, description, field_label, muted},
     icons::{self, Icon},
-    theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, TITLE_SIZE, Weight, font, radius},
+    theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, Weight, font, radius},
 };
 
 /// The sheet's largest size; it keeps 24 px from each window edge.
@@ -172,11 +172,13 @@ pub(crate) fn show(
                     .show(&mut content_ui, |ui| {
                         let width = (ui.available_width() - 80.0).min(CONTENT_WIDTH);
                         let side = ((ui.available_width() - width) / 2.0).max(40.0);
+                        // The section's title shares the baseline of the
+                        // sheet's own title across the sidebar.
                         Frame::new()
                             .inner_margin(Margin {
                                 left: side as i8,
                                 right: side as i8,
-                                top: 40,
+                                top: 24,
                                 bottom: 40,
                             })
                             .show(ui, |ui| {
@@ -320,7 +322,12 @@ fn content(
         .map(|section| section.title.clone())
         .unwrap_or_default();
     ui.spacing_mut().item_spacing.y = 8.0;
-    ui.label(RichText::new(title).font(font(ui.ctx(), TITLE_SIZE, Weight::Semibold)));
+    ui.label(crate::theme::text(
+        ui.ctx(),
+        title,
+        crate::theme::LARGE_TITLE_SIZE,
+        Weight::Semibold,
+    ));
     if let Some(text) = section_description(&settings.section) {
         description(ui, text);
     }

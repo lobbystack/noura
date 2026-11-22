@@ -234,6 +234,9 @@ impl SpeechShell {
     }
 
     fn update_tray(&mut self, app: &App) {
+        if !tray_supported() {
+            return;
+        }
         let menus = app.tray_menu();
         let wanted = !menus.is_empty() || !self.shortcuts.is_empty();
         if !wanted {
@@ -266,6 +269,14 @@ impl SpeechShell {
             }
         }
     }
+}
+
+/// Whether Noura shows a tray. Not on Linux: tray-icon needs GTK running on
+/// the thread that builds the tray and panics without it, and GNOME shows no
+/// tray without an extension, so closing the last window would leave Noura
+/// running with no way back to it.
+fn tray_supported() -> bool {
+    !cfg!(target_os = "linux")
 }
 
 /// The tray menu: each plugin's entries, then Open Noura and Quit Noura.

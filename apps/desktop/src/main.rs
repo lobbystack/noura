@@ -32,6 +32,9 @@ mod spelling;
 mod system;
 mod updates;
 mod window_buttons;
+// Only Linux windows draw their own buttons from the desktop's layout.
+#[cfg(target_os = "linux")]
+mod window_controls;
 mod windows;
 
 use std::{
@@ -355,9 +358,16 @@ fn run_app(smoke: Option<String>, shortcut: Option<String>) -> eframe::Result {
                     let ctx = creation.egui_ctx.clone();
                     instance.on_activate(move || ctx.request_repaint_of(egui::ViewportId::ROOT));
                 }
+                // On Linux the windows have no frame and draw their own
+                // buttons, laid out as the desktop says.
+                #[cfg(target_os = "linux")]
+                let controls = Some(window_controls::watch(creation.egui_ctx.clone()));
+                #[cfg(not(target_os = "linux"))]
+                let controls = None;
                 let mut windows = Windows::new(app, instance, || Box::new(SystemFolderPicker))
                     .quitting_on(quit)
-                    .checking_spelling_with(spelling::system_spell_checker());
+                    .checking_spelling_with(spelling::system_spell_checker())
+                    .with_window_controls(controls);
                 if let Some(plugins) = &smoke {
                     windows = windows.smoke_test(smoke_report(plugins, &updates));
                 }

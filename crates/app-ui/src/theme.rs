@@ -122,6 +122,68 @@ pub const SUPPORTING_SIZE: f32 = 12.0;
 pub const BODY_SIZE: f32 = 14.0;
 pub const TITLE_SIZE: f32 = 16.0;
 
+/// The rows of the sidebar's lists, the file tree's included: a step
+/// under body text, as the system's own sidebars set theirs, so the
+/// sidebar reads as navigation beside the content rather than competing
+/// with it, while staying larger than its 12 px section labels.
+pub const SIDEBAR_SIZE: f32 = 13.0;
+
+/// The title a screen opens with, such as a Settings section's or the
+/// folder chooser's: a step above every other title, so each screen has
+/// one clear place to start reading.
+pub const LARGE_TITLE_SIZE: f32 = 20.0;
+
+/// The height of a menu's row. Rows sit edge to edge, so the menu's
+/// rhythm is its rows' and nothing between them.
+pub const MENU_ROW: f32 = 28.0;
+
+/// Tracking for interface text `size` points high, in points. Body sizes
+/// keep the font's own spacing; titles from 18 points tighten as they
+/// grow, since letters drawn large read too far apart. The curve is
+/// Inter's dynamic metrics (<https://rsms.me/inter/dynmetrics/>), which
+/// suits a grotesk like Public Sans.
+pub fn tracking(size: f32) -> f32 {
+    if size < 18.0 {
+        0.0
+    } else {
+        (-0.0223 + 0.185 * (-0.1745 * size).exp()) * size
+    }
+}
+
+/// Text in the interface font at `size` and `weight`, tracked for its
+/// size.
+pub fn text(
+    ctx: &egui::Context,
+    text: impl Into<String>,
+    size: f32,
+    weight: Weight,
+) -> egui::RichText {
+    egui::RichText::new(text)
+        .font(font(ctx, size, weight))
+        .extra_letter_spacing(tracking(size))
+}
+
+/// The style of every menu: egui's, with rows [`MENU_ROW`] tall and edge
+/// to edge, labels 12 points in from the menu's edge as its own items
+/// draw them, and a hover fill whose corners sit concentric with the
+/// menu's, 4 points inside them.
+pub fn menu_style(style: &mut Style) {
+    egui::containers::menu::menu_style(style);
+    style.spacing.button_padding = vec2(8.0, 0.0);
+    style.spacing.interact_size.y = MENU_ROW;
+    style.spacing.item_spacing.y = 0.0;
+    let corner = CornerRadius::same((pill().nw - 4).min((MENU_ROW / 2.0) as u8));
+    let widgets = &mut style.visuals.widgets;
+    for state in [
+        &mut widgets.inactive,
+        &mut widgets.hovered,
+        &mut widgets.active,
+        &mut widgets.open,
+    ] {
+        state.corner_radius = corner;
+    }
+}
+
 /// The weights the legacy app sets its labels and titles in, besides
 /// regular: `font-medium` and `font-semibold`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,6 +256,18 @@ pub fn font(ctx: &egui::Context, size: f32, weight: Weight) -> FontId {
         .filter(|family| ctx.fonts(|fonts| fonts.definitions().families.contains_key(family)))
         .unwrap_or(FontFamily::Proportional);
     FontId::new(size, family)
+}
+
+/// The interface font's drawn italic at `size`, or the upright font when
+/// the interface font has no italic, for text to slant with
+/// [`egui::RichText::italics`].
+pub fn italic_font(ctx: &egui::Context, size: f32) -> (FontId, bool) {
+    let family = FontFamily::Name(crate::fonts::ITALIC_FAMILY.into());
+    if ctx.fonts(|fonts| fonts.definitions().families.contains_key(&family)) {
+        (FontId::new(size, family), true)
+    } else {
+        (FontId::proportional(size), false)
+    }
 }
 
 /// Install the interface font, the light and dark styles, and follow the
