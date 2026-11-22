@@ -648,6 +648,15 @@ impl View {
         self.heading(parent, id, text, HeadingLevel::Page, detail, icon)
     }
 
+    /// Add the title of a page that shows a period, in the page title's
+    /// place: large, `text` in bold and `rest` after it in regular weight,
+    /// such as `November` then `2026`. Buttons you add to it line up at
+    /// its end, as on a page's title. A calendar grid under it adds no
+    /// title of its own.
+    pub fn period_heading(&mut self, parent: u32, id: &str, text: &str, rest: Option<&str>) -> u32 {
+        self.heading(parent, id, text, HeadingLevel::Period, rest, None)
+    }
+
     /// Add a section's title, with `detail` beside it. Buttons you add to
     /// it line up at its end.
     pub fn section_heading(

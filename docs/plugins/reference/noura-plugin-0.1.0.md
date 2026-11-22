@@ -2781,6 +2781,12 @@ How prominent a heading is.
 - <a id="heading_level.section"></a>`section`
   <p>A section's title.
 
+- <a id="heading_level.period"></a>`period`
+  <p>The title of a page that shows a period, such as a calendar's
+  month, at the top of the page in its place: large, with its text in
+  bold and its detail after it in regular weight, such as `November`
+  then `2026`. A calendar grid under it adds no title of its own.
+
 
 #### <a id="heading"></a>`record heading`
 
@@ -2791,8 +2797,8 @@ How prominent a heading is.
 - <a id="heading.text"></a>`text`: `string`
 - <a id="heading.level"></a>`level`: [`heading-level`](#heading_level)
 - <a id="heading.detail"></a>`detail`: option<`string`>
-  <p>A line under a page heading or beside a section heading, such as
-  the period a page shows.
+  <p>A line under a page heading or beside a section heading, or the
+  rest of a period heading's title, such as the year.
 
 - <a id="heading.icon"></a>`icon`: option<[`icon`](#icon)>
 
@@ -3124,7 +3130,11 @@ draws the view without it.
   <p>A calendar grid of the period the record sets. Its children are its
   entries; it draws those in the period. Its mode and period change
   only when the plugin draws new ones, such as after a press of one
-  of its own buttons.
+  of its own buttons. It takes the rest of the page, edge to edge: a
+  month's six weeks share the page's height, and a day's or a week's
+  hours scroll on their own under its days and all-day entries. A
+  month's day that holds more entries than fit shows how many more,
+  and a press there makes its week tall enough for all of them.
 
 - <a id="node_kind.entry"></a>`entry`: [`calendar-entry`](#calendar_entry)
   <p>An entry of a calendar grid. You select an entry by click or the
