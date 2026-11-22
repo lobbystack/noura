@@ -650,7 +650,9 @@ impl NoteSession {
     /// edit, or at once for property edits, Mod-S and leaving the note.
     /// Never while a save runs, or while a failed save waits for the next
     /// edit. A failed property write holds back only the property edits.
-    pub(crate) fn is_due(&self, now: Instant) -> bool {
+    /// While the window waits for the note's document, `awaiting`, a pause
+    /// doesn't save: see [`Self::next_due`].
+    pub(crate) fn is_due(&self, now: Instant, awaiting: bool) -> bool {
         if self.writing.is_some() || self.waiting_for_edit {
             return false;
         }
@@ -665,11 +667,15 @@ impl NoteSession {
         if self.text == self.body() {
             return !self.property_edits.is_empty() && !self.properties_held;
         }
-        self.forced || self.next_due().is_some_and(|due| due <= now)
+        self.forced || self.next_due(awaiting).is_some_and(|due| due <= now)
     }
 
     /// When typing makes the next save due, for a client to wake up then.
-    pub(crate) fn next_due(&self) -> Option<Instant> {
+    /// While the window waits for the note's document, `awaiting`, only
+    /// [`SAVE_AT_LEAST_EVERY`] counts: a save that lands first would send
+    /// your edit as a `file` operation, which conflicts with a document
+    /// another device starts at the same time (sync-v2.md §22).
+    pub(crate) fn next_due(&self, awaiting: bool) -> Option<Instant> {
         if self.writing.is_some()
             || self.waiting_for_edit
             || self.conflict.is_some()
@@ -681,6 +687,9 @@ impl NoteSession {
         }
         let pause = self.last_edit? + SAVE_PAUSE;
         let interval = self.first_unsaved? + SAVE_AT_LEAST_EVERY;
+        if awaiting {
+            return Some(interval);
+        }
         Some(pause.min(interval))
     }
 

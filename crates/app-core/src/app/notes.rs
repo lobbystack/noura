@@ -208,11 +208,12 @@ impl App {
     /// Start the saves due at `now`. Clients call this every frame, and
     /// again at [`App::next_note_save`].
     pub fn save_due_notes(&mut self, now: Instant) {
+        let bridge = self.text_bridge();
         let due: Vec<TabId> = self
             .notes
             .sessions
             .iter()
-            .filter(|(_, session)| session.is_due(now))
+            .filter(|(_, session)| session.is_due(now, awaits_document(bridge.as_deref(), session)))
             .map(|(tab, _)| *tab)
             .collect();
         for tab in due {
@@ -222,10 +223,11 @@ impl App {
 
     /// When typing makes the next save due.
     pub fn next_note_save(&self) -> Option<Instant> {
+        let bridge = self.text_bridge();
         self.notes
             .sessions
             .values()
-            .filter_map(NoteSession::next_due)
+            .filter_map(|session| session.next_due(awaits_document(bridge.as_deref(), session)))
             .min()
     }
 
@@ -1182,4 +1184,10 @@ fn widen(pending: &Leave, action: Leave) -> Option<Leave> {
         }
         (_, action) => Some(action),
     }
+}
+
+/// Whether the window asked for the document of `session`'s note and the
+/// sync thread hasn't answered yet.
+fn awaits_document(bridge: Option<&crate::text_bridge::TextBridge>, session: &NoteSession) -> bool {
+    bridge.is_some_and(|bridge| bridge.answering(session.relative_path()))
 }

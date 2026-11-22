@@ -564,9 +564,11 @@ impl Folder {
         text: &crate::text_bridge::TextBridge,
     ) {
         let Some(service) = service else {
+            text.set_served(false);
             return;
         };
         if self.reset_held {
+            text.set_served(false);
             return;
         }
         self.open(Some(service), store, app_data);
@@ -581,13 +583,16 @@ impl Folder {
                 }
                 Err(error) => {
                     self.last_error = Some(folder_message(&error));
+                    text.set_served(false);
                     return;
                 }
             }
         }
         let Some(sync) = self.sync.as_mut() else {
+            text.set_served(false);
             return;
         };
+        text.set_served(true);
         sync.follow_changes();
         text.serve(sync);
         let result = if sync.paused() {
