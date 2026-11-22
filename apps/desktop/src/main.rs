@@ -32,6 +32,8 @@ mod spelling;
 mod system;
 mod updates;
 mod window_buttons;
+// Only Linux windows draw their own buttons from the desktop's layout.
+#[cfg(target_os = "linux")]
 mod window_controls;
 mod windows;
 
