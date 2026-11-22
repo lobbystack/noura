@@ -1616,6 +1616,11 @@ impl Plugins {
     /// other waits for your approval while the old build keeps running.
     pub(crate) fn poll(&mut self) {
         while let Ok(reload) = self.reloads.try_recv() {
+            // The plugin was watched in another folder since, or not at
+            // all: what this watcher read is no longer news.
+            if reload.is_stale() {
+                continue;
+            }
             let Some(shipped) = self
                 .records
                 .plugins
