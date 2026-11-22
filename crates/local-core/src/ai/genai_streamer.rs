@@ -26,9 +26,12 @@ impl AiStreamer for GenAiStreamer {
                 .into_iter()
                 .map(tool_from_definition)
                 .collect();
-            let options = ChatOptions::default()
+            let mut options = ChatOptions::default()
                 .with_capture_usage(true)
                 .with_capture_tool_calls(true);
+            if let Some(reasoning) = request.reasoning {
+                options = options.with_reasoning_effort(reasoning_effort(reasoning));
+            }
             let response = client
                 .exec_chat_stream(
                     request.provider.model,
@@ -97,9 +100,10 @@ fn provider_client(
             model,
         })
     });
-    Ok(Client::builder()
+    Client::builder()
         .with_service_target_resolver(resolver)
-        .build())
+        .build()
+        .map_err(|_| provider_error(operation))
 }
 
 fn message_from_parts(message: AiTransportMessage, operation: &str) -> Result<ChatMessage> {
@@ -144,12 +148,20 @@ fn message_from_parts(message: AiTransportMessage, operation: &str) -> Result<Ch
 }
 
 fn tool_from_definition(tool: AiToolDefinition) -> Tool {
-    Tool {
-        name: tool.name.into(),
-        description: tool.description,
-        schema: Some(tool.input_schema),
-        strict: None,
-        config: None,
+    let mut defined = Tool::new(tool.name).with_schema(tool.input_schema);
+    defined.description = tool.description;
+    defined
+}
+
+/// The `genai` effort for `reasoning`, which each adapter writes as its
+/// provider's parameter.
+pub(super) fn reasoning_effort(reasoning: AiReasoning) -> ReasoningEffort {
+    match reasoning {
+        AiReasoning::Zero => ReasoningEffort::Zero,
+        AiReasoning::Minimal => ReasoningEffort::Minimal,
+        AiReasoning::Low => ReasoningEffort::Low,
+        AiReasoning::Medium => ReasoningEffort::Medium,
+        AiReasoning::High => ReasoningEffort::High,
     }
 }
 

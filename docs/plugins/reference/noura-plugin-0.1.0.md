@@ -1027,6 +1027,43 @@ A message you sent and its answer, as it streams in.
 - <a id="run.tool_calls"></a>`tool-calls`: list<[`tool-call`](#tool_call)>
 - <a id="run.failure"></a>`failure`: option<[`failure`](#failure)>
 
+#### <a id="effort"></a>`enum effort`
+
+How hard a model reasons before it answers.
+
+##### Enum Cases
+
+- <a id="effort.off"></a>`off`
+  <p>No reasoning, for a model that can answer without it.
+
+- <a id="effort.low"></a>`low`
+- <a id="effort.medium"></a>`medium`
+- <a id="effort.high"></a>`high`
+
+#### <a id="model"></a>`record model`
+
+A model one of your providers answers with.
+
+##### Record Fields
+
+- <a id="model.provider"></a>`provider`: `string`
+  <p>The provider's ID.
+
+- <a id="model.id"></a>`id`: `string`
+  <p>The model's ID, as the provider names it.
+
+- <a id="model.name"></a>`name`: `string`
+  <p>Its name, such as `Claude Opus 5.5`, or its ID when Noura doesn't
+  know it.
+
+- <a id="model.efforts"></a>`efforts`: list<[`effort`](#effort)>
+  <p>The efforts Noura can ask it for, from least to most. Empty for a
+  model whose reasoning Noura can't set.
+
+- <a id="model.default_effort"></a>`default-effort`: option<[`effort`](#effort)>
+  <p>The effort it reasons with when none is chosen.
+
+
 #### <a id="orb_state"></a>`enum orb-state`
 
 Orbs. An Orb is a named agent that lives in the workspace as files:
@@ -1081,6 +1118,15 @@ An Orb, as its file holds it.
 - <a id="orb.color"></a>`color`: option<`string`>
   <p>A palette color: `red`, `orange`, `yellow`, `green`, `blue`,
   `purple`, `brown` or `gray`.
+
+- <a id="orb.provider"></a>`provider`: option<`string`>
+  <p>The provider its runs ask, or none for your first.
+
+- <a id="orb.model"></a>`model`: option<`string`>
+  <p>The model they ask in place of the provider's own, or none.
+
+- <a id="orb.effort"></a>`effort`: option<[`effort`](#effort)>
+  <p>How hard that model reasons, or none for the model's own default.
 
 - <a id="orb.state"></a>`state`: [`orb-state`](#orb_state)
 - <a id="orb.thread"></a>`thread`: option<`string`>
@@ -1182,6 +1228,9 @@ What `update-orb` changes. A field left none stays as it is.
 - <a id="orb_changes.color"></a>`color`: option<`string`>
 - <a id="orb_changes.provider"></a>`provider`: option<`string`>
 - <a id="orb_changes.model"></a>`model`: option<`string`>
+- <a id="orb_changes.effort"></a>`effort`: option<option<[`effort`](#effort)>>
+  <p>A new effort, or none inside to clear it.
+
 - <a id="orb_changes.tools"></a>`tools`: option<list<`string`>>
 - <a id="orb_changes.triggers"></a>`triggers`: option<list<`string`>>
 
@@ -1302,6 +1351,16 @@ The providers you set up and turned on.
 ##### Return values
 
 - <a id="providers.0"></a> result<list<[`provider`](#provider)>, [`error`](#error)>
+
+#### <a id="models"></a>`models: func`
+
+The models of the providers you set up and turned on, provider by
+provider in the order `providers` lists them, each provider's own
+model first.
+
+##### Return values
+
+- <a id="models.0"></a> result<list<[`model`](#model)>, [`error`](#error)>
 
 #### <a id="chats"></a>`chats: func`
 
@@ -1492,7 +1551,8 @@ a cancelled message.
 
 The default Orb first, then the workspace's Orbs by title. The default
 Orb has the ID `orb_00000000000000000000000000` and no file: plain
-chats are its, and its tool calls each wait for your answer.
+chats are its, and its tool calls each wait for your answer. A plain
+chat's request to its provider asks its model, with its effort.
 
 ##### Return values
 
@@ -1573,7 +1633,9 @@ in `Heartbeat.md`.
 
 Change the Orb's file. Fails with `revision-conflict` when its file
 no longer holds `expected-revision`, and with `invalid-property` when
-a change breaks the format, and then writes nothing.
+a change breaks the format, and then writes nothing. The default Orb
+has no file: it takes a provider, a model and an effort, which this
+device keeps, and refuses other changes.
 
 ##### Params
 
@@ -2393,6 +2455,33 @@ dark theme.
 - <a id="color.brown"></a>`brown`
 - <a id="color.gray"></a>`gray`
 
+#### <a id="avatar"></a>`record avatar`
+
+A small round picture of someone or something, such as an agent: a
+circle in a palette color, with a letter or an emoji in it. Screen
+readers skip it; the label beside it names what it shows.
+
+##### Record Fields
+
+- <a id="avatar.text"></a>`text`: option<`string`>
+  <p>A letter, a few letters or an emoji, up to 16 characters, or none
+  for a plain circle.
+
+- <a id="avatar.color"></a>`color`: option<[`color`](#color)>
+  <p>The circle's color, or none for the theme's own.
+
+
+#### <a id="status"></a>`record status`
+
+A dot that says how something stands, such as `Working`.
+
+##### Record Fields
+
+- <a id="status.label"></a>`label`: `string`
+  <p>What the dot means, which screen readers read after the label.
+
+- <a id="status.color"></a>`color`: [`color`](#color)
+
 #### <a id="item"></a>`record item`
 
 A line in a list: a label and an optional quieter detail after it, on
@@ -2420,6 +2509,14 @@ the same line. A board's card shows the detail under the label.
   shows or hides something, so a checked one doesn't strike its label
   through as a done task's does. Only list and virtual list items show
   one.
+
+- <a id="item.avatar"></a>`avatar`: option<[`avatar`](#avatar)>
+  <p>An avatar before the label, in place of the color's dot. Only list
+  and virtual list items show one.
+
+- <a id="item.status"></a>`status`: option<[`status`](#status)>
+  <p>A status dot at the end of the line. Only list and virtual list
+  items show one.
 
 
 #### <a id="item_list"></a>`record item-list`
@@ -2670,7 +2767,6 @@ An icon Noura draws beside a heading or in an empty state.
 - <a id="icon.done"></a>`done`
 - <a id="icon.folder"></a>`folder`
 - <a id="icon.note"></a>`note`
-- <a id="icon.sparkle"></a>`sparkle`
 - <a id="icon.tasks"></a>`tasks`
 
 #### <a id="heading_level"></a>`enum heading-level`
@@ -2801,6 +2897,34 @@ the options. A pick sends `changed` with a `choice` value.
 - <a id="picker.chosen"></a>`chosen`: option<`string`>
   <p>The ID of the chosen option, or none, when the button shows the
   label.
+
+
+#### <a id="pill"></a>`record pill`
+
+A rounded button with an avatar and a label, such as the name of
+whom a conversation is with, that opens and closes something, such as
+a side panel. A press sends `pressed`.
+
+##### Record Fields
+
+- <a id="pill.label"></a>`label`: `string`
+- <a id="pill.avatar"></a>`avatar`: option<[`avatar`](#avatar)>
+- <a id="pill.open"></a>`open`: `bool`
+  <p>Whether what it opens shows now. Screen readers read it as
+  expanded.
+
+
+#### <a id="side_panel"></a>`record side-panel`
+
+A pane at the right edge of the page.
+
+##### Record Fields
+
+- <a id="side_panel.label"></a>`label`: `string`
+  <p>Names the pane for screen readers.
+
+- <a id="side_panel.width"></a>`width`: `u32`
+  <p>How wide it is, from 240 to 480 points.
 
 
 #### <a id="message_author"></a>`enum message-author`
@@ -3003,6 +3127,19 @@ A box to write a message in.
   second taking the rest of the width. Its children are the two panes,
   each a panel.
 
+- <a id="node_kind.side_panel"></a>`side-panel`: [`side-panel`](#side_panel)
+  <p>A pane at the right edge of the page, with a line on its left. It
+  runs the page's full height and scrolls on its own, and the rest of
+  the page takes the width that's left. Its children go where a
+  panel's go. Only the view's own panel holds one, as its last child.
+
+- <a id="node_kind.avatar"></a>`avatar`: [`avatar`](#avatar)
+  <p>A large avatar, centered, as at the top of a profile.
+
+- <a id="node_kind.pill"></a>`pill`: [`pill`](#pill)
+  <p>A pill button. A page's first child, when a pill, shows centered at
+  the top of the page in place of the page's title.
+
 - <a id="node_kind.editable"></a>`editable`: [`editable`](#editable)
   <p>Text you edit in place, such as a task's title or notes.
 
@@ -3060,8 +3197,9 @@ A box to write a message in.
   they lay out, lists their items, tables their rows, boards their
   columns, columns their cards, calendars their entries, menus their
   items, headings their buttons and choices, empty states their
-  buttons, splits their two panels, conversations and activities the
-  nodes they lay out, and composers their choices and buttons; a row,
+  buttons, splits their two panels, side panels, conversations and
+  activities the nodes they lay out, and composers their choices and
+  buttons; a row,
   a card or a button may hold one menu, and an item one menu or one
   name field.
 

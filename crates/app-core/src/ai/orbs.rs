@@ -16,6 +16,7 @@
 //! Noura never runs a call again by itself, and any other answers again
 //! once. [`triggers`] starts runs from schedules and plugin events.
 
+pub(super) mod settings;
 pub(super) mod triggers;
 
 use std::{
@@ -29,14 +30,14 @@ use local_core::{
     RawSaveResult, WorkspaceEngine,
 };
 use plugin_host::{
-    AiChat, AiMessage, AiOrb, AiOrbChanges, AiOrbRun, AiOrbRunStatus, AiOrbStart, AiOrbState,
-    AiRun, AiRunStatus, AiToolCall, AiToolDefinition, KERNEL_PLUGIN_ID, PropertyProblem,
-    ServiceError,
+    AiChat, AiEffort, AiMessage, AiOrb, AiOrbChanges, AiOrbRun, AiOrbRunStatus, AiOrbStart,
+    AiOrbState, AiRun, AiRunStatus, AiToolCall, AiToolDefinition, KERNEL_PLUGIN_ID,
+    PropertyProblem, ServiceError,
 };
 use serde_json::{Value, json};
 use workspace_format::{
     ParsedMarkdown, WorkspaceObject,
-    orb::{self, Orb, OrbProblem, OrbRun, RunStatus, StartedBy, ToolPattern},
+    orb::{self, Effort, Orb, OrbProblem, OrbRun, RunStatus, StartedBy, ToolPattern},
 };
 
 use super::{Ai, Ask, Run, lock, service_error, tools};
@@ -104,6 +105,8 @@ pub(super) struct OrbJob {
     pub(super) title: String,
     /// A model in place of the provider's own.
     pub(super) model: Option<String>,
+    /// How hard the model reasons, or none for its own default.
+    pub(super) effort: Option<Effort>,
     /// How many times the model asked for tools.
     pub(super) rounds: u32,
     pub(super) tool_calls: u32,
@@ -400,12 +403,16 @@ impl Ai {
             .runs
             .values()
             .any(|run| run.orb.is_none() && run.live());
+        let default = lock(&self.default_orb).current().clone();
         let mut orbs = vec![AiOrb {
             id: orb::DEFAULT_ORB_ID.to_owned(),
             title: DEFAULT_ORB_TITLE.to_owned(),
             revision: String::new(),
             avatar: None,
             color: None,
+            provider: default.provider.clone(),
+            model: default.model.clone(),
+            effort: default.effort().map(public_effort),
             state: if plain_working {
                 AiOrbState::Working
             } else {
@@ -428,6 +435,9 @@ impl Ai {
                     revision: object.revision.clone(),
                     avatar: None,
                     color: None,
+                    provider: None,
+                    model: None,
+                    effort: None,
                     state: AiOrbState::Problem,
                     thread: threads.get(&object.id).cloned(),
                     tools: Vec::new(),
@@ -455,6 +465,9 @@ impl Ai {
             revision: orb.revision.clone(),
             avatar: orb.avatar.clone(),
             color: orb.color.clone(),
+            provider: orb.provider.clone(),
+            model: orb.model.clone(),
+            effort: orb.effort.map(public_effort),
             state,
             thread,
             tools: orb.tools.iter().map(ToString::to_string).collect(),
@@ -546,6 +559,7 @@ impl Ai {
                         ("color", Value::Null),
                         ("provider", Value::Null),
                         ("model", Value::Null),
+                        ("effort", Value::Null),
                         ("memory", Value::String("[[Memory]]".to_owned())),
                     ]),
                 },
@@ -716,6 +730,7 @@ impl Ai {
             orb_id: start.orb.id.clone(),
             title: start.orb.title.clone(),
             model: start.orb.model.clone(),
+            effort: start.orb.effort,
             rounds: 0,
             tool_calls: 0,
             log: Vec::new(),
@@ -802,13 +817,17 @@ impl Ai {
         text
     }
 
-    /// The model of the Orb run `id` asks with, when its Orb names one.
-    pub(super) fn orb_model(&self, id: &str) -> Option<String> {
-        lock(&self.state)
-            .runs
-            .get(id)
-            .and_then(|run| run.orb.as_ref())
-            .and_then(|job| job.model.clone())
+    /// The model and the effort the run `id` asks `provider` with: its
+    /// Orb's, or for a plain chat the default Orb's.
+    pub(super) fn run_choice(&self, id: &str, provider: &str) -> (Option<String>, Option<Effort>) {
+        let job = match lock(&self.state).runs.get(id) {
+            Some(run) => run.orb.clone(),
+            None => return (None, None),
+        };
+        match job {
+            Some(job) => (job.model, job.effort),
+            None => self.default_choice(provider),
+        }
     }
 
     /// The model of the Orb run `id` asked for tool calls: run each one
@@ -1081,6 +1100,9 @@ impl Ai {
         changes: AiOrbChanges,
         expected_revision: &str,
     ) -> Result<AiOrb, ServiceError> {
+        if id == orb::DEFAULT_ORB_ID {
+            return self.update_default_orb(changes);
+        }
         let engine = self.orb_engine()?;
         let object = engine
             .read_object(id)
@@ -1107,6 +1129,14 @@ impl Ai {
             ("color", optional(changes.color)),
             ("provider", optional(changes.provider)),
             ("model", optional(changes.model)),
+            (
+                "effort",
+                changes.effort.map(|effort| {
+                    effort.map_or(Value::Null, |effort| {
+                        Value::String(file_effort(effort).as_str().to_owned())
+                    })
+                }),
+            ),
             ("tools", changes.tools.map(|tools| json!(tools))),
             ("triggers", changes.triggers.map(|triggers| json!(triggers))),
         ] {
@@ -1149,6 +1179,88 @@ impl Ai {
         self.changed();
         let thread = self.thread_of(&engine, id)?;
         Ok(self.public_orb(&orb, thread, self.orbs_held()))
+    }
+
+    /// Change what the default Orb asks with: its provider, its model and
+    /// its effort, which this device keeps. It has no file, so it takes no
+    /// other change.
+    fn update_default_orb(&self, changes: AiOrbChanges) -> Result<AiOrb, ServiceError> {
+        let AiOrbChanges {
+            title,
+            instructions,
+            avatar,
+            color,
+            provider,
+            model,
+            effort,
+            tools,
+            triggers,
+        } = changes;
+        if title.is_some()
+            || instructions.is_some()
+            || avatar.is_some()
+            || color.is_some()
+            || tools.is_some()
+            || triggers.is_some()
+        {
+            return Err(ServiceError::Failed(format!(
+                "{DEFAULT_ORB_TITLE} has no file, so it takes only a provider, a model and an \
+                 effort."
+            )));
+        }
+        let cleared = |value: String| {
+            let value = value.trim().to_owned();
+            (!value.is_empty()).then_some(value)
+        };
+        {
+            let mut settings = lock(&self.default_orb);
+            let mut next = settings.current().clone();
+            if let Some(provider) = provider {
+                next.provider = cleared(provider);
+            }
+            if let Some(model) = model {
+                let model = cleared(model);
+                if model
+                    .as_deref()
+                    .is_some_and(|model| model.chars().any(char::is_control))
+                {
+                    return Err(ServiceError::InvalidProperty(PropertyProblem {
+                        property: "model".to_owned(),
+                        code: "invalid_model".to_owned(),
+                    }));
+                }
+                next.model = model;
+            }
+            if let Some(effort) = effort {
+                next.set_effort(effort.map(file_effort));
+            }
+            settings.save(next).map_err(|error| {
+                tracing::warn!(%error, "the default Orb's settings weren't saved");
+                ServiceError::Failed("Noura couldn't save that on this computer.".to_owned())
+            })?;
+        }
+        self.changed();
+        Ok(self.orbs()?.remove(0))
+    }
+
+    /// The model and effort a plain chat's run asks `provider` with: the
+    /// default Orb's, when that is the provider it names or, naming none,
+    /// your first.
+    pub(super) fn default_choice(&self, provider: &str) -> (Option<String>, Option<Effort>) {
+        let default = lock(&self.default_orb).current().clone();
+        let chosen = match &default.provider {
+            Some(chosen) => chosen == provider,
+            None => self
+                .providers()
+                .ok()
+                .and_then(|providers| providers.first().map(|first| first.id == provider))
+                .unwrap_or(false),
+        };
+        if chosen {
+            (default.model.clone(), default.effort())
+        } else {
+            (None, None)
+        }
     }
 
     /// Pause the Orb `id`, or let its triggers fire again.
@@ -1212,6 +1324,26 @@ impl Ai {
         engine.trash_path(path).map_err(service_error)?;
         self.changed();
         Ok(())
+    }
+}
+
+/// An effort as the `ai` interface names it.
+pub(super) fn public_effort(effort: Effort) -> AiEffort {
+    match effort {
+        Effort::Off => AiEffort::Off,
+        Effort::Low => AiEffort::Low,
+        Effort::Medium => AiEffort::Medium,
+        Effort::High => AiEffort::High,
+    }
+}
+
+/// An effort as an Orb's file names it.
+pub(super) fn file_effort(effort: AiEffort) -> Effort {
+    match effort {
+        AiEffort::Off => Effort::Off,
+        AiEffort::Low => Effort::Low,
+        AiEffort::Medium => Effort::Medium,
+        AiEffort::High => Effort::High,
     }
 }
 

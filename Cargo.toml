@@ -161,7 +161,7 @@ egui_extras = { version = "0.37", default-features = false, features = ["datepic
 glyphon = "0.12"
 fs2 = "0.4"
 futures = "0.3"
-genai = "=0.6.5"
+genai = "=0.7.5"
 # Renders PDF pages, reads their text and unlocks password-protected PDFs, in
 # Rust on the CPU. Apache-2.0 OR MIT. It embeds PDFium's Foxit fonts for the
 # standard PDF fonts and Adobe's CMaps, both BSD-3-Clause; see

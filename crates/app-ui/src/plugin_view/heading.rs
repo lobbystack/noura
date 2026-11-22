@@ -18,7 +18,6 @@ fn icon(icon: PluginIcon) -> icons::Icon {
         PluginIcon::Done => icons::DONE,
         PluginIcon::Folder => icons::FOLDER,
         PluginIcon::Note => icons::NOTE,
-        PluginIcon::Sparkle => icons::AI,
         PluginIcon::Tasks => icons::TASKS,
     }
 }

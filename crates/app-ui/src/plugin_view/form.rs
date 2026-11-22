@@ -213,6 +213,31 @@ fn segments(ui: &mut Ui, choices: &[Choice], chosen: Option<&str>) -> Option<Str
 /// opens a menu of the options, as a composer's model picker does. Each
 /// pick sends the input's new value.
 pub(super) fn picker(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
+    picker_at(ui, node, kit, egui::RectAlign::TOP_START);
+}
+
+/// A choice input in a side panel, as a setting: its label at the start
+/// of the line and, at its end, the button that opens a menu of its
+/// options below it.
+pub(super) fn setting(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
+    let ViewKind::Input { label, .. } = &node.kind else {
+        return;
+    };
+    let palette = crate::theme::Palette::of(ui.ctx());
+    ui.horizontal(|ui| {
+        ui.set_min_height(28.0);
+        ui.label(
+            RichText::new(label)
+                .size(crate::theme::BODY_SIZE)
+                .color(palette.muted_foreground),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            picker_at(ui, node, kit, egui::RectAlign::BOTTOM_END);
+        });
+    });
+}
+
+fn picker_at(ui: &mut Ui, node: &ViewNode, kit: &mut Kit, align: egui::RectAlign) {
     let ViewKind::Input {
         label,
         value,
@@ -259,7 +284,7 @@ pub(super) fn picker(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
     let mut picked = None;
     egui::Popup::menu(&trigger)
         .frame(common::menu_frame(ui.ctx()))
-        .align(egui::RectAlign::TOP_START)
+        .align(align)
         .gap(4.0)
         .show(|ui| {
             ui.set_min_width(200.0);

@@ -46,6 +46,7 @@ pub(crate) const ORB_SCHEMA: &str = r#"{"properties":[
   {"name":"color","kind":{"enum":["red","orange","yellow","green","blue","purple","brown","gray"]},"nullable":true},
   {"name":"provider","kind":"string","nullable":true},
   {"name":"model","kind":"string","nullable":true},
+  {"name":"effort","kind":{"enum":["off","low","medium","high"]},"nullable":true},
   {"name":"tools","kind":{"list":"string"},"default":[]},
   {"name":"reads","kind":{"list":{"reference":"*"}},"default":[]},
   {"name":"memory","kind":{"reference":"*"},"nullable":true},

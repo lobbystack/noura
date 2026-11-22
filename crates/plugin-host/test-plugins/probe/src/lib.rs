@@ -1158,6 +1158,8 @@ fn broken(case: &str) -> Vec<Node> {
                     checked: Some(false),
                     warning: None,
                     color: None,
+                    avatar: None,
+                    status: None,
                 }),
                 &[],
             ),
@@ -1226,6 +1228,8 @@ fn card(label: &str) -> NodeKind {
         checked: None,
         warning: None,
         color: None,
+        avatar: None,
+        status: None,
     })
 }
 
@@ -1262,6 +1266,8 @@ fn plain_item(label: &str, checked: Option<bool>) -> Item {
         checked,
         warning: None,
         color: None,
+        avatar: None,
+        status: None,
     }
 }
 
@@ -1272,6 +1278,8 @@ fn check_item(label: &str, checked: Option<bool>, warning: Option<&str>) -> Node
         checked,
         warning: warning.map(Into::into),
         color: None,
+        avatar: None,
+        status: None,
     })
 }
 
@@ -1289,6 +1297,8 @@ fn item(label: &str) -> NodeKind {
         checked: None,
         warning: None,
         color: None,
+        avatar: None,
+        status: None,
     })
 }
 

@@ -10,6 +10,11 @@
         },
         { "name": "provider", "kind": "string", "nullable": true },
         { "name": "model", "kind": "string", "nullable": true },
+        {
+          "name": "effort",
+          "kind": { "enum": ["off", "low", "medium", "high"] },
+          "nullable": true
+        },
         { "name": "tools", "kind": { "list": "string" }, "default": [] },
         { "name": "reads", "kind": { "list": { "reference": "*" } }, "default": [] },
         { "name": "memory", "kind": { "reference": "*" }, "nullable": true },
@@ -42,13 +47,15 @@
     {
       "name": "a full Orb",
       "path": "Orbs/Meetings/Meetings.md",
-      "markdown": "---\nid: orb_01jd8x3k9q2m7v4c6b1n0p5r8t\ntype: orb\navatar: \"🗓\"\ncolor: blue\nprovider: null\nmodel: null\ntools:\n- tasks__create\n- tasks__list\n- noura__*\nreads:\n- '[[Acme launch]]'\nmemory: '[[Memory]]'\ntriggers:\n- event transcription.finished\n- schedule 30 8 * * 1-5\npaused: false\ncreated: 2026-11-21T12:00:00Z\nupdated: 2026-11-21T12:00:00Z\n---\nYou turn meetings into follow-ups.\n",
+      "markdown": "---\nid: orb_01jd8x3k9q2m7v4c6b1n0p5r8t\ntype: orb\navatar: \"🗓\"\ncolor: blue\nprovider: null\nmodel: claude-sonnet-5-5\neffort: high\ntools:\n- tasks__create\n- tasks__list\n- noura__*\nreads:\n- '[[Acme launch]]'\nmemory: '[[Memory]]'\ntriggers:\n- event transcription.finished\n- schedule 30 8 * * 1-5\npaused: false\ncreated: 2026-11-21T12:00:00Z\nupdated: 2026-11-21T12:00:00Z\n---\nYou turn meetings into follow-ups.\n",
       "valid": true,
       "orb": {
         "title": "Meetings",
         "instructions": "You turn meetings into follow-ups.\n",
         "avatar": "🗓",
         "color": "blue",
+        "model": "claude-sonnet-5-5",
+        "effort": "high",
         "tools": ["tasks__create", "tasks__list", "noura__*"],
         "reads": ["Acme launch"],
         "memory": "Memory",
@@ -66,6 +73,8 @@
         "instructions": "",
         "avatar": null,
         "color": null,
+        "model": null,
+        "effort": null,
         "tools": [],
         "reads": [],
         "memory": null,
@@ -83,6 +92,8 @@
         "instructions": "Be brief.",
         "avatar": null,
         "color": null,
+        "model": null,
+        "effort": null,
         "tools": [],
         "reads": [],
         "memory": null,
@@ -131,6 +142,13 @@
       "markdown": "---\nid: orb_01jd8x3k9q2m7v4c6b1n0p5r8x\ntype: orb\ncolor: teal\n---\n",
       "valid": false,
       "problem": { "property": "color", "code": "not_allowed" }
+    },
+    {
+      "name": "an effort outside the list",
+      "path": "Orbs/Bad/Bad.md",
+      "markdown": "---\nid: orb_01jd8x3k9q2m7v4c6b1n0p5r8x\ntype: orb\neffort: max\n---\n",
+      "valid": false,
+      "problem": { "property": "effort", "code": "not_allowed" }
     },
     {
       "name": "reads hold links",
@@ -313,13 +331,14 @@
           "memory": "[[Memory]]",
           "reads": [],
           "tools": [],
+          "effort": null,
           "model": null,
           "provider": null,
           "color": null,
           "avatar": null
         }
       },
-      "markdown": "---\nid: orb_01jd8x3k9q2m7v4c6b1n0p5r8t\ntype: orb\navatar: null\ncolor: null\nprovider: null\nmodel: null\ntools: []\nreads: []\nmemory: '[[Memory]]'\ntriggers: []\npaused: false\ncreated: 2026-11-21T12:00:00Z\nupdated: 2026-11-21T12:00:00Z\n---\n"
+      "markdown": "---\nid: orb_01jd8x3k9q2m7v4c6b1n0p5r8t\ntype: orb\navatar: null\ncolor: null\nprovider: null\nmodel: null\neffort: null\ntools: []\nreads: []\nmemory: '[[Memory]]'\ntriggers: []\npaused: false\ncreated: 2026-11-21T12:00:00Z\nupdated: 2026-11-21T12:00:00Z\n---\n"
     }
   ]
 }

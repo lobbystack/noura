@@ -61,6 +61,7 @@ mod note_windows;
 mod notes;
 mod orb_meetings;
 mod orb_runs;
+mod orb_settings;
 mod orb_storage;
 mod orb_triggers;
 mod outside_changes;

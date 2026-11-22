@@ -243,7 +243,6 @@ fn an_edit_made_elsewhere_shows_on_the_page_and_wins() {
     support::write(&fixture.root, path, renamed.as_bytes());
     ai::wait_until(&mut app, "the new title shows", |app| {
         ai::chat_titles(app) == ["Kitchen garden"]
-            && ai::lines(app).contains(&"Kitchen garden".to_owned())
     });
 
     // It renames the chat again while an answer streams in. The answer
@@ -373,7 +372,6 @@ fn a_stale_index_left_in_place_catches_up_with_chats_changed_while_noura_was_clo
     });
     ai::open_chat(&mut app, &format!("chat_{A}"));
     let lines = ai::lines(&app);
-    assert!(lines.contains(&"Kitchen garden".to_owned()), "{lines:?}");
     assert!(
         lines.contains(&"md: Added elsewhere".to_owned()),
         "{lines:?}"

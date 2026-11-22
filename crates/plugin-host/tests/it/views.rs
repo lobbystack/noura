@@ -6,11 +6,11 @@
 
 use crate::support;
 use plugin_host::{
-    Activity, ActivityState, CalendarMode, Check, Choice, Color, ColumnPress, Composer, DatePicker,
-    Editable, EditableStyle, EmptyState, Event, Field, Form, Heading, HeadingLevel, Icon, Input,
-    Item, Message, MessageAuthor, Move, Naming, Node, NodeKind, PickerOption, PluginError,
-    RunningPlugin, Services, Submission, Target, Value, View, ViewKind, ViewNode, VirtualRow,
-    check_rows,
+    Activity, ActivityState, Avatar, CalendarMode, Check, Choice, Color, ColumnPress, Composer,
+    DatePicker, Editable, EditableStyle, EmptyState, Event, Field, Form, Heading, HeadingLevel,
+    Icon, Input, Item, ItemStatus, Message, MessageAuthor, Move, Naming, Node, NodeKind,
+    PickerOption, Pill, PluginError, RunningPlugin, Services, SidePanel, Submission, Target, Value,
+    View, ViewKind, ViewNode, VirtualRow, check_rows,
 };
 use support::plugins;
 
@@ -244,6 +244,8 @@ fn lists_with_item_menus_and_menu_buttons_become_a_tree() {
         checked: None,
         warning: None,
         color: None,
+        avatar: None,
+        status: None,
     };
     assert_eq!(
         kinds(&beds.children),
@@ -523,6 +525,8 @@ fn a_list_shows_its_selected_item_and_items_carry_checkboxes_and_warnings() {
         checked,
         warning: warning.map(Into::into),
         color: None,
+        avatar: None,
+        status: None,
     };
     let green = ViewKind::Item {
         label: "Mulch".into(),
@@ -530,6 +534,8 @@ fn a_list_shows_its_selected_item_and_items_carry_checkboxes_and_warnings() {
         checked: Some(true),
         warning: None,
         color: Some(Color::Green),
+        avatar: None,
+        status: None,
     };
     assert_eq!(
         kinds(&chores.children),
@@ -563,7 +569,7 @@ fn a_selection_outside_the_list_a_card_checkbox_and_an_unlabeled_name_field_are_
         ),
         (
             "card-with-checkbox",
-            "The card plan holds a checkbox, a warning or a color, which only list items show.",
+            "The card plan holds a checkbox, a warning, a color, an avatar or a status, which only list items show.",
         ),
         (
             "unlabeled-name-field",
@@ -830,6 +836,8 @@ fn a_virtual_list_fetches_only_the_rows_asked_for() {
                 checked: None,
                 warning: None,
                 color: None,
+                avatar: None,
+                status: None,
             }
         }
     );
@@ -849,6 +857,8 @@ fn rows_that_break_the_rules_are_refused_with_a_reason() {
             checked: None,
             warning: None,
             color: None,
+            avatar: None,
+            status: None,
         },
     };
 
@@ -986,9 +996,14 @@ const UNKNOWN_KIND: &str = r#"
     (core instance $i (instantiate $m))
     (type $color' (enum "red" "orange" "yellow" "green" "blue" "purple" "brown" "gray"))
     (export $color "color" (type $color'))
+    (type $avatar' (record (field "text" (option string)) (field "color" (option $color))))
+    (export $avatar "avatar" (type $avatar'))
+    (type $status' (record (field "label" string) (field "color" $color)))
+    (export $status "status" (type $status'))
     (type $item' (record
       (field "label" string) (field "detail" (option string)) (field "checked" (option bool))
-      (field "warning" (option string)) (field "color" (option $color))))
+      (field "warning" (option string)) (field "color" (option $color))
+      (field "avatar" (option $avatar)) (field "status" (option $status))))
     (export $item "item" (type $item'))
     (type $item-list' (record
       (field "label" string) (field "reorder" bool) (field "selected" (option string))
@@ -1031,7 +1046,7 @@ const UNKNOWN_KIND: &str = r#"
       (field "title" string) (field "start" string) (field "end" (option string))
       (field "color" (option $color))))
     (export $calendar-entry "calendar-entry" (type $calendar-entry'))
-    (type $icon' (enum "calendar" "done" "folder" "note" "sparkle" "tasks"))
+    (type $icon' (enum "calendar" "done" "folder" "note" "tasks"))
     (export $icon "icon" (type $icon'))
     (type $heading-level' (enum "page" "section"))
     (export $heading-level "heading-level" (type $heading-level'))
@@ -1071,6 +1086,11 @@ const UNKNOWN_KIND: &str = r#"
       (field "label" string) (field "value" string) (field "send" string)
       (field "stop" (option string))))
     (export $composer "composer" (type $composer'))
+    (type $side-panel' (record (field "label" string) (field "width" u32)))
+    (export $side-panel "side-panel" (type $side-panel'))
+    (type $pill' (record
+      (field "label" string) (field "avatar" (option $avatar)) (field "open" bool)))
+    (export $pill "pill" (type $pill'))
     (type $node-kind' (variant
       (case "panel" (option string)) (case "text" string)
       (case "markdown" string) (case "button" string)
@@ -1080,6 +1100,7 @@ const UNKNOWN_KIND: &str = r#"
       (case "separator") (case "board" string) (case "board-column" string)
       (case "card" $item) (case "calendar" $calendar) (case "entry" $calendar-entry)
       (case "heading" $heading) (case "empty" $empty-state) (case "split" u32)
+      (case "side-panel" $side-panel) (case "avatar" $avatar) (case "pill" $pill)
       (case "editable" $editable) (case "date-picker" $date-picker) (case "picker" $picker)
       (case "conversation" string) (case "message" $message) (case "activity" $activity)
       (case "composer" $composer)))
@@ -1158,6 +1179,147 @@ fn empty(title: &str) -> NodeKind {
         detail: Some("  ".into()),
         icon: Some(Icon::Done),
     })
+}
+
+fn side_panel(width: u32) -> NodeKind {
+    NodeKind::SidePanel(SidePanel {
+        label: "Meetings".into(),
+        width,
+    })
+}
+
+fn orb_avatar(text: Option<&str>) -> Avatar {
+    Avatar {
+        text: text.map(Into::into),
+        color: Some(Color::Blue),
+    }
+}
+
+fn pill(label: &str) -> NodeKind {
+    NodeKind::Pill(Pill {
+        label: label.into(),
+        avatar: Some(orb_avatar(Some("M"))),
+        open: true,
+    })
+}
+
+#[test]
+fn a_pill_heads_the_page_and_a_side_panel_ends_it() {
+    let view = View::from_nodes(vec![
+        node("root", NodeKind::Panel(None), vec![1, 2, 3]),
+        node("pill", pill("Meetings"), vec![]),
+        node("talk", NodeKind::Conversation("Meetings".into()), vec![]),
+        node("side", side_panel(320), vec![4]),
+        node("look", NodeKind::Avatar(orb_avatar(Some("🗓"))), vec![]),
+    ])
+    .expect("the view is valid");
+
+    let root = view.root();
+    assert_eq!(
+        root.children[0].kind,
+        ViewKind::Pill {
+            label: "Meetings".into(),
+            avatar: Some(orb_avatar(Some("M"))),
+            open: true,
+        }
+    );
+    assert_eq!(
+        root.children[2].kind,
+        ViewKind::SidePanel {
+            label: "Meetings".into(),
+            width: 320,
+        }
+    );
+    assert_eq!(
+        root.children[2].children[0].kind,
+        ViewKind::Avatar(orb_avatar(Some("🗓")))
+    );
+}
+
+#[test]
+fn a_side_panel_goes_last_in_the_page_and_an_avatar_holds_a_few_letters() {
+    let refused = |nodes: Vec<Node>| View::from_nodes(nodes).unwrap_err().to_string();
+    assert_eq!(
+        refused(vec![
+            node("root", NodeKind::Panel(None), vec![1, 2]),
+            node("side", side_panel(320), vec![]),
+            node("talk", NodeKind::Conversation("Meetings".into()), vec![]),
+        ]),
+        "The side panel side isn't the last node of the view's own panel."
+    );
+    assert_eq!(
+        refused(vec![
+            node("root", NodeKind::Panel(None), vec![1]),
+            node("box", NodeKind::Panel(None), vec![2]),
+            node("side", side_panel(320), vec![]),
+        ]),
+        "The side panel side isn't the last node of the view's own panel."
+    );
+    assert_eq!(
+        refused(vec![
+            node("root", NodeKind::Panel(None), vec![1]),
+            node("side", side_panel(600), vec![]),
+        ]),
+        "The side panel side is 600 points wide; it must be 240 to 480."
+    );
+    assert_eq!(
+        refused(vec![
+            node("root", NodeKind::Panel(None), vec![1]),
+            node("pill", pill("  "), vec![]),
+        ]),
+        "The pill pill has no label."
+    );
+    assert_eq!(
+        refused(vec![
+            node("root", NodeKind::Panel(None), vec![1]),
+            node(
+                "look",
+                NodeKind::Avatar(orb_avatar(Some("A name far too long for a circle"))),
+                vec![]
+            ),
+        ]),
+        "The avatar of look holds more than an emoji or a few letters."
+    );
+    let mut item = Item {
+        label: "Meetings".into(),
+        detail: None,
+        checked: None,
+        warning: None,
+        color: None,
+        avatar: Some(orb_avatar(None)),
+        status: Some(ItemStatus {
+            label: " ".into(),
+            color: Color::Blue,
+        }),
+    };
+    assert_eq!(
+        refused(vec![
+            node("root", NodeKind::Panel(None), vec![1]),
+            node(
+                "orbs",
+                NodeKind::List(plugin_host::ItemList {
+                    label: "Orbs".into(),
+                    reorder: false,
+                    selected: None,
+                    opens_on_click: true,
+                }),
+                vec![2]
+            ),
+            node("meetings", NodeKind::Item(item.clone()), vec![]),
+        ]),
+        "The item meetings has a status without a label."
+    );
+    item.status = None;
+    assert_eq!(
+        refused(vec![
+            node("root", NodeKind::Panel(None), vec![1]),
+            node("plans", NodeKind::Board("Plans".into()), vec![2]),
+            node("now", NodeKind::BoardColumn("Now".into()), vec![3]),
+            node("meetings", NodeKind::Card(item), vec![]),
+        ]),
+        "The card meetings holds a checkbox, a warning, a color, an avatar or a status, \
+         which only list items show."
+    );
 }
 
 #[test]

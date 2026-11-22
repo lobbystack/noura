@@ -28,6 +28,8 @@ Noura is a local-first workspace for humans and AI. Your work lives in ordinary 
 
 **Default Orb**: The Orb without a file that plain chats belong to. Its tool calls each wait for your answer. _Avoid_: main chat, Noura agent
 
+**Effort**: How hard an Orb's model reasons before it answers: Off, Low, Medium or High. Noura sends it in each provider's own terms. _Avoid_: thinking budget, reasoning level
+
 ### Speech
 
 **Speech**: The part of the kernel that records your microphone and system audio and turns speech into text with models stored on your device. _Avoid_: STT, voice engine

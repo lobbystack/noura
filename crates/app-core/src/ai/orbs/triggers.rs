@@ -581,6 +581,7 @@ impl Ai {
                 orb_id: orb.id.clone(),
                 title: orb.title.clone(),
                 model: orb.model.clone(),
+                effort: orb.effort,
                 rounds: 0,
                 tool_calls: record.tool_calls,
                 log: record.log.lines().map(str::to_owned).collect(),

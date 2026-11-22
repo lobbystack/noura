@@ -16,7 +16,7 @@ use std::{
 };
 
 use app_core::{
-    App, Platform,
+    App, Platform, ViewKind, ViewNode,
     ai_client::{
         AiProviderEventStream, AiProviderStreamEvent, AiStreamer, AiToolCall,
         ResolvedAiStreamRequest, Result,
@@ -32,6 +32,9 @@ use support::{
 };
 
 const MANIFEST: &str = include_str!("../../../plugins/ai/plugin.toml");
+
+/// The default Orb's message box.
+const MESSAGE: &str = "Message Noura";
 
 /// A provider that streams one piece of text, then waits until Noura
 /// cancels the request.
@@ -99,7 +102,7 @@ fn opened() -> Option<Opened> {
     open_page(&mut harness, "AI");
     wait_until(&mut harness, |harness| {
         harness
-            .query_by_role_and_label(Role::Form, "Message")
+            .query_by_role_and_label(Role::Form, MESSAGE)
             .is_some()
     });
     Some(Opened {
@@ -149,17 +152,17 @@ fn wait_until(harness: &mut Ui, mut done: impl FnMut(&Ui) -> bool) {
 /// Write `text` in the message box and press Send.
 fn send(harness: &mut Ui, text: &str) {
     harness
-        .get_by_role_and_label(Role::Form, "Message")
-        .get_by_role_and_label(Role::MultilineTextInput, "Message")
+        .get_by_role_and_label(Role::Form, MESSAGE)
+        .get_by_role_and_label(Role::MultilineTextInput, MESSAGE)
         .focus();
     run(harness);
     harness
-        .get_by_role_and_label(Role::Form, "Message")
-        .get_by_role_and_label(Role::MultilineTextInput, "Message")
+        .get_by_role_and_label(Role::Form, MESSAGE)
+        .get_by_role_and_label(Role::MultilineTextInput, MESSAGE)
         .type_text(text);
     run(harness);
     harness
-        .get_by_role_and_label(Role::Form, "Message")
+        .get_by_role_and_label(Role::Form, MESSAGE)
         .get_by_role_and_label(Role::Button, "Send")
         .click();
     run(harness);
@@ -202,10 +205,10 @@ fn the_answer_streams_in_as_markdown_and_stop_ends_it() {
         texts(yours.query_all(By::new().role(Role::Label))),
         ["When do seeds sprout?"]
     );
-    harness.get_by_role_and_label(Role::Article, "Local, llama3");
+    harness.get_by_role_and_label(Role::Article, "Noura");
     assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
     // Stop takes Send's place in the message box while the answer streams.
-    let form = harness.get_by_role_and_label(Role::Form, "Message");
+    let form = harness.get_by_role_and_label(Role::Form, MESSAGE);
     assert!(form.query_by_role_and_label(Role::Button, "Send").is_none());
 
     form.get_by_role_and_label(Role::Button, "Stop").click();
@@ -215,7 +218,7 @@ fn the_answer_streams_in_as_markdown_and_stop_ends_it() {
     });
     assert!(opened.provider.dropped.load(Ordering::SeqCst));
     let harness = &mut opened.harness;
-    let form = harness.get_by_role_and_label(Role::Form, "Message");
+    let form = harness.get_by_role_and_label(Role::Form, MESSAGE);
     assert!(form.query_by_role_and_label(Role::Button, "Stop").is_none());
     form.get_by_role_and_label(Role::Button, "Send");
     // The partial answer stays.
@@ -223,16 +226,36 @@ fn the_answer_streams_in_as_markdown_and_stop_ends_it() {
 }
 
 #[test]
-fn a_new_chat_shows_its_title_and_the_message_box_with_the_provider() {
+fn an_empty_thread_shows_one_line_and_the_message_box_with_no_icon_or_provider() {
     let Some(mut opened) = opened() else {
         return;
     };
     let harness = &mut opened.harness;
     assert!(harness.query_by_label("How can I help?").is_some());
     assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
-    let form = harness.get_by_role_and_label(Role::Form, "Message");
-    let provider = form.get_by_role_and_label(Role::ComboBox, "Provider");
-    assert_eq!(provider.value().as_deref(), Some("Local"));
+    // The empty state is its line and nothing else: no icon.
+    let view = harness
+        .state()
+        .app()
+        .plugin_view("plugin:ai:ai")
+        .expect("the page shows")
+        .expect("the page draws");
+    let empty = find_kind(view.root(), &|kind| matches!(kind, ViewKind::Empty { .. }))
+        .expect("the empty thread shows its line");
+    assert!(
+        matches!(
+            empty,
+            ViewKind::Empty {
+                icon: None,
+                detail: None,
+                ..
+            }
+        ),
+        "{empty:?}"
+    );
+    // The model lives in the Orb's panel, not in the message box.
+    let form = harness.get_by_role_and_label(Role::Form, MESSAGE);
+    assert!(form.query_by_role(Role::ComboBox).is_none());
     // Send waits until the box holds more than spaces.
     assert!(
         form.get_by_role_and_label(Role::Button, "Send")
@@ -241,13 +264,13 @@ fn a_new_chat_shows_its_title_and_the_message_box_with_the_provider() {
     );
     // The box has the keyboard once you click it, and Enter sends.
     harness
-        .get_by_role_and_label(Role::Form, "Message")
-        .get_by_role_and_label(Role::MultilineTextInput, "Message")
+        .get_by_role_and_label(Role::Form, MESSAGE)
+        .get_by_role_and_label(Role::MultilineTextInput, MESSAGE)
         .focus();
     run(harness);
     harness
-        .get_by_role_and_label(Role::Form, "Message")
-        .get_by_role_and_label(Role::MultilineTextInput, "Message")
+        .get_by_role_and_label(Role::Form, MESSAGE)
+        .get_by_role_and_label(Role::MultilineTextInput, MESSAGE)
         .type_text("Hello");
     run(harness);
     press(harness, Key::Enter);
@@ -260,16 +283,40 @@ fn a_new_chat_shows_its_title_and_the_message_box_with_the_provider() {
     // The box empties once it sends.
     assert_eq!(
         harness
-            .get_by_role_and_label(Role::Form, "Message")
-            .get_by_role_and_label(Role::MultilineTextInput, "Message")
+            .get_by_role_and_label(Role::Form, MESSAGE)
+            .get_by_role_and_label(Role::MultilineTextInput, MESSAGE)
             .value()
             .as_deref(),
         Some("")
     );
 }
 
+/// The first view node under `node` whose kind `wanted` matches.
+fn find_kind(node: &ViewNode, wanted: &dyn Fn(&ViewKind) -> bool) -> Option<ViewKind> {
+    if wanted(&node.kind) {
+        return Some(node.kind.clone());
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_kind(child, wanted))
+}
+
+/// Open the open Orb's side panel from the pill with its name.
+fn open_panel(harness: &mut Ui, name: &str) {
+    let pill = harness.get_by_role_and_label(Role::Button, name);
+    if pill.accesskit_node().data().is_expanded() != Some(true) {
+        pill.click();
+        run(harness);
+    }
+    wait_until(harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::Complementary, name)
+            .is_some()
+    });
+}
+
 #[test]
-fn a_chat_renames_and_expires_from_its_menu_in_the_sidebar() {
+fn a_chat_renames_and_expires_from_its_menu_in_the_default_orbs_panel() {
     let Some(mut opened) = opened() else {
         return;
     };
@@ -279,10 +326,11 @@ fn a_chat_renames_and_expires_from_its_menu_in_the_sidebar() {
         all_labels(harness).contains(&"sprout".to_owned())
     });
     harness
-        .get_by_role_and_label(Role::Form, "Message")
+        .get_by_role_and_label(Role::Form, MESSAGE)
         .get_by_role_and_label(Role::Button, "Stop")
         .click();
     run(harness);
+    open_panel(harness, "Noura");
     let chats = || (Role::ListBox, "Chats");
     // Once the stopped answer is written, the chat stays as the menu saw it.
     wait_until(harness, |harness| {
@@ -321,7 +369,7 @@ fn a_chat_renames_and_expires_from_its_menu_in_the_sidebar() {
         labels_of(harness, chats()) == [renamed.clone()]
     });
 
-    // Remove after 30 days, from a right-click, says so under the title.
+    // Remove after 30 days, from a right-click, says so over the thread.
     harness
         .get_by_role_and_label(chats().0, chats().1)
         .get_by_role_and_label(Role::ListBoxOption, &renamed)
@@ -602,7 +650,7 @@ fn asking_with(arguments: serde_json::Value) -> Option<Tooled> {
     open_page(&mut harness, "AI");
     wait_until(&mut harness, |harness| {
         harness
-            .query_by_role_and_label(Role::Form, "Message")
+            .query_by_role_and_label(Role::Form, MESSAGE)
             .is_some()
     });
     send(&mut harness, "Add a task to water the tomatoes");

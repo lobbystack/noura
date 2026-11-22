@@ -628,6 +628,17 @@ export class MockHost {
 					ai();
 					return providers().map((provider) => ({ ...provider }));
 				},
+				// Each provider's own model, whose reasoning the mock host
+				// can't set.
+				models: () => {
+					ai();
+					return providers().map((provider) => ({
+						provider: provider.id,
+						id: provider.model,
+						name: provider.model,
+						efforts: [],
+					}));
+				},
 				chats: () => {
 					ai();
 					return [];

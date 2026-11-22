@@ -331,8 +331,13 @@ fn chats_come_back_after_a_relaunch_and_continue_with_another_provider() {
     assert_eq!(answers.len(), 2);
     assert!(answers.contains(&(Some(first.clone()), Some("llama3".to_owned()))));
     assert!(answers.contains(&(Some(second.clone()), Some("gpt-test".to_owned()))));
-    assert!(ai::lines(&app).contains(&"Local, llama3".to_owned()));
-    assert!(ai::lines(&app).contains(&"Cloud, gpt-test".to_owned()));
+    // The default Orb's name labels both answers.
+    let lines = ai::lines(&app);
+    assert_eq!(
+        lines.iter().filter(|line| *line == "Noura").count(),
+        2,
+        "{lines:?}"
+    );
 }
 
 #[test]

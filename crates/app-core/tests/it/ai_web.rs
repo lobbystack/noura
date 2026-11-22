@@ -153,6 +153,10 @@ fn search(query: &str) -> Value {
 /// The labels of the list items on the AI page, top to bottom.
 fn items(app: &App) -> Vec<(String, Option<String>)> {
     fn under(node: &ViewNode, found: &mut Vec<(String, Option<String>)>) {
+        // The thread's items, without the chats the side panel lists.
+        if matches!(node.kind, ViewKind::SidePanel { .. }) {
+            return;
+        }
         if let ViewKind::Item { label, detail, .. } = &node.kind {
             found.push((label.clone(), detail.clone()));
         }

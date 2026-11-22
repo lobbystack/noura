@@ -2,7 +2,7 @@
 //! Each call reaches the session's AI service, the same one the AI plugin
 //! reaches through the `ai` interface, so no window holds Orb logic.
 
-use plugin_host::{AiOrb, AiOrbChanges, AiOrbRun, AiRun};
+use plugin_host::{AiModel, AiOrb, AiOrbChanges, AiOrbRun, AiRun};
 
 use super::App;
 use crate::AppError;
@@ -11,6 +11,12 @@ impl App {
     /// The default Orb, then the open workspace's Orbs by title.
     pub fn orbs(&self) -> Result<Vec<AiOrb>, AppError> {
         self.session.ai.orbs().map_err(orb_error)
+    }
+
+    /// The models of the providers you turned on, each provider's own
+    /// first, with the efforts each takes.
+    pub fn ai_models(&self) -> Result<Vec<AiModel>, AppError> {
+        self.session.ai.models().map_err(orb_error)
     }
 
     /// Create an Orb named `title` in `Orbs/<title>/`.

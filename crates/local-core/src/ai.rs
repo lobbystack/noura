@@ -13,7 +13,7 @@ use genai::{
     adapter::AdapterKind,
     chat::{
         ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, ContentPart, MessageContent,
-        StopReason, Tool, ToolCall, ToolResponse,
+        ReasoningEffort, StopReason, Tool, ToolCall, ToolResponse,
     },
     resolver::{AuthData, Endpoint, ServiceTargetResolver},
 };
@@ -120,16 +120,39 @@ pub struct AiTransportMessage {
     pub content: Vec<AiContentPart>,
 }
 
+/// How hard the model reasons before it answers, as the provider's
+/// request names it. Each provider maps these to its own parameter: an
+/// Anthropic model's `output_config.effort` and thinking, OpenAI's
+/// `reasoning_effort` and Gemini's thinking budget or level. `Zero` turns
+/// reasoning off, and `Minimal` asks for the least a model that can't turn
+/// it off allows.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub enum AiReasoning {
+    Zero,
+    Minimal,
+    Low,
+    Medium,
+    High,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct AiStreamInput {
     pub operation_id: String,
+    /// The provider, and the model to ask: the provider's own, or another
+    /// model of the same provider.
     pub model: AiModelRef,
     pub messages: Vec<AiTransportMessage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub tools: Option<Vec<AiToolDefinition>>,
+    /// How hard the model reasons, or none for the provider's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reasoning: Option<AiReasoning>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
@@ -194,10 +217,12 @@ pub struct AiCancelOutcome {
 }
 
 pub struct ResolvedAiStreamRequest {
+    /// The provider, with the model the request asks in its `model`.
     pub provider: AiProviderConfig,
     pub credential: Option<String>,
     pub messages: Vec<AiTransportMessage>,
     pub tools: Vec<AiToolDefinition>,
+    pub reasoning: Option<AiReasoning>,
 }
 
 pub type AiProviderEventStream = Pin<Box<dyn Stream<Item = Result<AiProviderStreamEvent>> + Send>>;
@@ -418,14 +443,13 @@ impl AiFoundation {
             .stream_gate
             .lock()
             .map_err(|_| operation_lock_error("ai_stream"))?;
-        let provider = self.provider(&input.model.provider_id, "ai_stream")?;
+        let mut provider = self.provider(&input.model.provider_id, "ai_stream")?;
         ensure_secure_endpoint(&provider, "ai_stream")?;
+        // A request may ask another model of the provider, as an Orb that
+        // names one does; the provider's key and address stay its own.
         if provider.model != input.model.model {
-            return Err(CoreError::validation(
-                "model_not_found",
-                "The selected model is not configured for this provider",
-                "ai_stream",
-            ));
+            validate_model(&input.model.model, "ai_stream")?;
+            provider.model.clone_from(&input.model.model);
         }
         let credential = provider
             .credential_ref
@@ -446,6 +470,7 @@ impl AiFoundation {
                 credential,
                 messages: input.messages,
                 tools: input.tools.unwrap_or_default(),
+                reasoning: input.reasoning,
             },
             streamer,
         ));
@@ -633,6 +658,7 @@ mod tests {
                 description: Some("Read a workspace file".into()),
                 input_schema: serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}}),
             }]),
+            reasoning: None,
         }
     }
 
@@ -820,6 +846,78 @@ mod tests {
         assert_eq!(error.code, "provider_not_found");
     }
 
+    /// Keeps the model and the reasoning of each request it gets.
+    #[derive(Default)]
+    struct Recording(Mutex<Vec<(String, Option<AiReasoning>)>>);
+
+    impl AiStreamer for Recording {
+        fn stream(
+            &self,
+            request: ResolvedAiStreamRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<AiProviderEventStream>> + Send + '_>> {
+            self.0
+                .lock()
+                .unwrap()
+                .push((request.provider.model.clone(), request.reasoning));
+            Box::pin(async {
+                let stream: AiProviderEventStream = Box::pin(futures::stream::iter(vec![Ok(
+                    AiProviderStreamEvent::Completed {
+                        usage: None,
+                        stop_reason: None,
+                        tool_calls: Vec::new(),
+                    },
+                )]));
+                Ok(stream)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_may_ask_another_model_of_its_provider_and_how_hard_it_reasons() {
+        let root = tempdir().unwrap();
+        let ai = AiFoundation::open(root.path().join("providers.json")).unwrap();
+        ai.save_provider(enabled_provider()).unwrap();
+        let recording = Arc::new(Recording::default());
+        let mut input = stream_input();
+        input.model.model = "other-model".into();
+        input.reasoning = Some(AiReasoning::High);
+        let mut operation = ai.start_stream_with(input, recording.clone()).unwrap();
+        while let Some(frame) = operation.receiver.recv().await {
+            if matches!(frame.event, AiStreamEvent::Completed { .. }) {
+                break;
+            }
+        }
+        assert_eq!(
+            recording.0.lock().unwrap().as_slice(),
+            [("other-model".to_owned(), Some(AiReasoning::High))]
+        );
+        // The provider keeps its own model.
+        assert_eq!(ai.list_providers().unwrap()[0].model, "test-model");
+
+        let mut input = stream_input();
+        input.model.model = "bad\nmodel".into();
+        let Err(error) = ai.start_stream_with(input, recording) else {
+            panic!("a model with a line break should be rejected");
+        };
+        assert_eq!(error.code, "model_invalid");
+    }
+
+    #[test]
+    fn each_reasoning_reaches_genai_as_its_effort() {
+        use genai_streamer::reasoning_effort;
+        let keywords: Vec<String> = [
+            AiReasoning::Zero,
+            AiReasoning::Minimal,
+            AiReasoning::Low,
+            AiReasoning::Medium,
+            AiReasoning::High,
+        ]
+        .into_iter()
+        .map(|reasoning| reasoning_effort(reasoning).to_string())
+        .collect();
+        assert_eq!(keywords, ["zero", "minimal", "low", "medium", "high"]);
+    }
+
     #[test]
     fn export_bindings() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let bindings = concat!(env!("CARGO_MANIFEST_DIR"), "/bindings");
@@ -829,6 +927,7 @@ mod tests {
         AiToolDefinition::export_all_to(bindings)?;
         AiToolCall::export_all_to(bindings)?;
         AiStreamInput::export_all_to(bindings)?;
+        AiReasoning::export_all_to(bindings)?;
         AiStreamFrame::export_all_to(bindings)?;
         AiStreamEvent::export_all_to(bindings)?;
         AiStreamSummary::export_all_to(bindings)?;

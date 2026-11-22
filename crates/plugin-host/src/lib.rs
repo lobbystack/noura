@@ -35,14 +35,15 @@ pub use error::{InstallError, InstallErrorCode};
 pub use host::{Candidate, CodeSource, LoadedPlugin, PluginHost};
 pub use instance::trap_foreign_imports;
 pub use instance::{
-    Activity, ActivityState, AiChat, AiFailure, AiMessage, AiMessageKind, AiMessageStatus, AiOrb,
-    AiOrbChanges, AiOrbRun, AiOrbRunStatus, AiOrbStart, AiOrbState, AiProvider, AiRequest,
-    AiRetention, AiRun, AiRunStatus, AiToolCall, AiToolDefinition, AiToolResult, AiWebPage,
-    AiWebResult, Calendar, CalendarEntry, CalendarMode, Check, Choice, Color, Column, ColumnPress,
-    Command, Composer, DatePicker, Editable, EditableStyle, EmptyState, Event, Field, Form,
-    Heading, HeadingLevel, Icon, InboxSection, Input, Item, ItemList, MenuItem, Message,
-    MessageAuthor, Move, NameField, Naming, Node, NodeKind, ObjectType, Page, Picker, PickerOption,
-    Placement, PluginError, Registration, Services, SettingsSection, SortOrder, Submission, Table,
+    Activity, ActivityState, AiChat, AiEffort, AiFailure, AiMessage, AiMessageKind,
+    AiMessageStatus, AiModel, AiOrb, AiOrbChanges, AiOrbRun, AiOrbRunStatus, AiOrbStart,
+    AiOrbState, AiProvider, AiRequest, AiRetention, AiRun, AiRunStatus, AiToolCall,
+    AiToolDefinition, AiToolResult, AiWebPage, AiWebResult, Avatar, Calendar, CalendarEntry,
+    CalendarMode, Check, Choice, Color, Column, ColumnPress, Command, Composer, DatePicker,
+    Editable, EditableStyle, EmptyState, Event, Field, Form, Heading, HeadingLevel, Icon,
+    InboxSection, Input, Item, ItemList, ItemStatus, MenuItem, Message, MessageAuthor, Move,
+    NameField, Naming, Node, NodeKind, ObjectType, Page, Picker, PickerOption, Pill, Placement,
+    PluginError, Registration, Services, SettingsSection, SidePanel, SortOrder, Submission, Table,
     Target, Tool, Value, VirtualList, VirtualRow,
 };
 pub use instance::{
