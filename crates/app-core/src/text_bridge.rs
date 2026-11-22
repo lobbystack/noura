@@ -285,6 +285,17 @@ impl TextBridge {
             || waiting.refused.values().any(asks_again)
     }
 
+    /// When the next note that stayed out of text mode for now is due
+    /// another try, so the sync thread's wait can end by then.
+    pub fn next_ask_again(&self) -> Option<Instant> {
+        self.waiting()
+            .refused
+            .values()
+            .filter(|(entered, _)| *entered == Entered::NotYet)
+            .map(|(_, at)| *at + ASK_AGAIN)
+            .min()
+    }
+
     /// The note's file changed, so a note that stayed out of text mode
     /// because sync hadn't captured an edit asks again now, and any other
     /// asks at the next edit.

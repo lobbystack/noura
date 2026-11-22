@@ -8,9 +8,10 @@
 //! pulls on any gap or notify, sends a ping every 20 seconds and still
 //! makes one workspace pull a minute; while it is down the device
 //! long-polls that pull and reconnects with jittered backoff between 1 and
-//! 30 seconds. Frames only feed the checks that pulls go through, so a
-//! relay that forges or drops them delays sync and changes nothing the
-//! device accepts.
+//! 30 seconds. Either wait ends by a moment the caller names, such as a
+//! note's next try at text mode. Frames only feed the checks that pulls go
+//! through, so a relay that forges or drops them delays sync and changes
+//! nothing the device accepts.
 
 use std::ops::Range;
 use std::time::Duration;
@@ -279,6 +280,20 @@ impl Live {
         service: &mut SyncService,
         wake: &tokio::sync::Notify,
     ) -> Result<Step, SyncError> {
+        self.step_until(sync, service, wake, None).await
+    }
+
+    /// [`Self::step`], whose wait ends by `until`, such as when a note that
+    /// couldn't enter text mode asks again (§22). Reaching `until` costs no
+    /// request: with the channel up the step stops waiting and returns, and
+    /// with it down the pull waits no longer than that.
+    pub async fn step_until(
+        &mut self,
+        sync: &mut WorkspaceSync,
+        service: &mut SyncService,
+        wake: &tokio::sync::Notify,
+        until: Option<Instant>,
+    ) -> Result<Step, SyncError> {
         if self.channel.is_none() && Instant::now() >= self.retry_at {
             match Channel::open_every(service.client(), sync.workspace(), self.ping_every).await {
                 Ok(channel) => {
@@ -291,12 +306,19 @@ impl Live {
             }
         }
         if self.channel.is_none() {
-            // Down: the pull long-polls, and ends early for a reconnect.
-            let wait = self
-                .retry_at
-                .saturating_duration_since(Instant::now())
-                .as_secs()
-                .clamp(1, u64::from(PULL_WAIT_SECONDS)) as u32;
+            // Down: the pull long-polls, and ends early for a reconnect or
+            // `until`. The wait rounds up to `until`, so the step ends once
+            // it passed rather than a moment before.
+            let now = Instant::now();
+            let mut wait = self.retry_at.saturating_duration_since(now).as_secs();
+            if let Some(until) = until {
+                let left = until
+                    .saturating_duration_since(now)
+                    .as_millis()
+                    .div_ceil(1000);
+                wait = wait.min(u64::try_from(left).unwrap_or(u64::MAX));
+            }
+            let wait = wait.clamp(1, u64::from(PULL_WAIT_SECONDS)) as u32;
             let round = sync.round_until(service, wait, wake).await?;
             return Ok(Step {
                 connected: false,
@@ -336,6 +358,13 @@ impl Live {
             frame = channel.next() => Some(frame),
             () = wake.notified() => None,
             () = tokio::time::sleep_until(self.pull_due) => None,
+            () = tokio::time::sleep_until(until.unwrap_or(self.pull_due)), if until.is_some() => {
+                return Ok(Step {
+                    connected: true,
+                    pulled: false,
+                    applied: 0,
+                });
+            }
             () = tokio::time::sleep_until(tick), if self.next_tick.is_some() => {
                 let connected = self.tick(sync, service).await?;
                 return Ok(Step {
