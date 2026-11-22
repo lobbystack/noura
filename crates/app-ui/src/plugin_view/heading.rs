@@ -24,7 +24,8 @@ fn icon(icon: PluginIcon) -> icons::Icon {
 
 /// A page's or a section's title, with its buttons at its end. A page
 /// heading is the page header: its 16 px semibold title, as a note's
-/// header sets its name, with the detail under it, over a line. A section heading has its icon, its 14 px
+/// header sets its name, with the detail under it, over a line. Its first
+/// button, the page's primary action, sits at the far end. A section heading has its icon, its 14 px
 /// medium title and its detail beside it.
 pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
     let ViewKind::Heading {
@@ -39,7 +40,7 @@ pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
     let palette = Palette::of(ui.ctx());
     let page = *level == HeadingLevel::Page;
     if page {
-        kit.page_detail = detail.is_some();
+        kit.page_heading = true;
     }
     let builder = UiBuilder::new()
         .accessibility_role(Role::Heading)
@@ -100,8 +101,19 @@ pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                // Right to left, so the first child goes last.
-                for (index, child) in node.children.iter().enumerate().rev() {
+                // Right to left. A page's first button is its primary
+                // action, which goes at the far end, after the filters and
+                // the navigation, as macOS and GNOME put it; the others
+                // keep their order before it.
+                let primary = page
+                    && matches!(
+                        node.children.first().map(|child| &child.kind),
+                        Some(ViewKind::Button { .. })
+                    );
+                let rest = usize::from(primary)..node.children.len();
+                let order = primary.then_some(0).into_iter().chain(rest.rev());
+                for index in order {
+                    let child = &node.children[index];
                     match &child.kind {
                         ViewKind::Button { label } => {
                             let look = match (page, index) {

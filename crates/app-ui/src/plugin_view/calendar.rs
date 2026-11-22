@@ -170,14 +170,14 @@ pub(super) fn calendar(
     let builder = UiBuilder::new()
         .accessibility_role(Role::Heading)
         .accessibility_label(heading.as_str());
-    // A page heading that names the period already shows the month, as
-    // the legacy page header did; the grid's own heading then only names
-    // it for screen readers. A day keeps its date over its hours.
-    let titled = kit.page_detail && mode != CalendarMode::Day;
+    // A page heading names the period the page shows, so the grid adds no
+    // title of its own, for the eye or for screen readers. A day keeps its
+    // date over its hours.
+    let titled = kit.page_heading && mode != CalendarMode::Day;
+    let builder = if titled { UiBuilder::new() } else { builder };
     ui.scope_builder(builder, |ui| {
         if titled {
-            let (_, response) = ui.allocate_exact_size(vec2(0.0, 0.0), egui::Sense::hover());
-            response.widget_info(|| egui::WidgetInfo::labeled(Role::Label, true, &heading));
+            ui.allocate_exact_size(vec2(0.0, 0.0), egui::Sense::hover());
         } else {
             ui.label(RichText::new(&heading).font(crate::theme::font(
                 ui.ctx(),
@@ -291,7 +291,7 @@ fn draw(ui: &mut Ui, node: &ViewNode, mode: CalendarMode, grid: &Grid, kit: &mut
     // Under a page header that names the period, the grid starts just
     // under the header's line, over the gaps its unseen title leaves, and
     // leaves the line itself as on every other page.
-    let lift = if bleed > 0.0 && kit.page_detail && mode != CalendarMode::Day {
+    let lift = if bleed > 0.0 && kit.page_heading && mode != CalendarMode::Day {
         2.0 * ui.spacing().item_spacing.y - 1.0
     } else {
         0.0

@@ -362,18 +362,13 @@ fn page() -> Vec<Node> {
     let shown = all.and_then(|all| within(all.entries, &now, first, count));
 
     let mut view = View::panel("root", None);
-    // The heading names the month under the title, with New event, the
-    // mode, then Previous, Today and Next at its end, as the legacy page
-    // header did.
+    // The heading is the month the page shows: the tab and the rail
+    // already say Calendar. Its buttons are the mode, Previous, Today and
+    // Next, then New event at its end.
     let month = focus.strftime("%B %Y").to_string();
-    let heading = view.page_heading(
-        View::ROOT,
-        "title",
-        "Calendar",
-        Some(&month),
-        Some(Icon::Calendar),
-    );
-    // New event comes first, so it stands out, as New task does.
+    let heading = view.page_heading(View::ROOT, "title", &month, None, Some(Icon::Calendar));
+    // New event comes first, so it stands out, as New task does; the
+    // page header puts it at its far end.
     view.button(heading, "new-event", "New event");
     let modes: Vec<(&str, &str)> = Mode::ALL.iter().map(|(_, id, name)| (*id, *name)).collect();
     view.choice_input(heading, "mode", "View", &modes, Some(mode.id()));

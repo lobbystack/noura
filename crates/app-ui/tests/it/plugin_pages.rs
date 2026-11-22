@@ -221,8 +221,9 @@ fn button_rect(harness: &Ui, label: &str) -> egui::Rect {
 }
 
 /// Each page's header is the same header: its buttons sit on one line at
-/// one height, and a control drawn inside the header's row adds no gap of
-/// its own.
+/// one height, its primary action at the far end, after the filters and
+/// the navigation, and a control drawn inside the header's row adds no gap
+/// of its own.
 #[test]
 fn every_page_header_puts_its_buttons_on_the_same_line() {
     let Some(folders) = workspace() else {
@@ -230,10 +231,15 @@ fn every_page_header_puts_its_buttons_on_the_same_line() {
     };
     let mut harness = launch(folders.app_data.path());
     let mut tops = Vec::new();
-    for (page, button) in [
-        ("Tasks", "New task"),
-        ("Calendar", "Today"),
-        ("Projects", "New project"),
+    for (page, button, primary, before) in [
+        ("Tasks", "New task", "New task", &["Filters"][..]),
+        (
+            "Calendar",
+            "Today",
+            "New event",
+            &["Previous month", "Today", "Next month"][..],
+        ),
+        ("Projects", "New project", "New project", &[][..]),
     ] {
         open_page(&mut harness, page);
         wait_until(&mut harness, "the page draws", |harness| {
@@ -241,6 +247,13 @@ fn every_page_header_puts_its_buttons_on_the_same_line() {
         });
         let rect = button_rect(&harness, button);
         tops.push((page, rect.top(), rect.height()));
+        let primary = button_rect(&harness, primary);
+        for other in before {
+            assert!(
+                button_rect(&harness, other).right() < primary.left(),
+                "{other} comes before the primary action on {page}"
+            );
+        }
         if page == "Calendar" {
             // Month, Week and Day sit as far from the arrows as the arrows
             // from Today.

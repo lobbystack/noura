@@ -389,3 +389,75 @@ fn the_title_bar_row_renders_with_each_button_layout() {
         }
     }
 }
+
+const CALENDAR_MANIFEST: &str = include_str!("../../../plugins/calendar/plugin.toml");
+const PROJECTS_MANIFEST: &str = include_str!("../../../plugins/projects/plugin.toml");
+
+/// The plugin pages' headers: Calendar's month in Month, Week and Day,
+/// Tasks and Projects, each with its buttons, in light and dark.
+#[test]
+#[ignore = "draws the screens to PNG files, which needs a GPU"]
+fn the_plugin_page_headers_render() {
+    let built = [
+        ("tasks", TASKS_MANIFEST, "tasks_plugin"),
+        ("calendar", CALENDAR_MANIFEST, "calendar_plugin"),
+        ("projects", PROJECTS_MANIFEST, "projects_plugin"),
+    ]
+    .map(|(id, manifest, name)| (id, manifest, name, plugins::built(name)));
+    if built.iter().any(|(.., component)| component.is_none()) {
+        return;
+    }
+    for theme in [Theme::Light, Theme::Dark] {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let folder = parent.path().join("Studio");
+        create_workspace(app_data.path(), &folder);
+        write_workspace(&folder);
+        for (id, manifest, name, component) in &built {
+            let plugin = plugins::folder(
+                &parent.path().join(id),
+                manifest,
+                &format!("{name}.wasm"),
+                component.as_ref().unwrap(),
+            );
+            plugins::install_and_enable(app_data.path(), &plugin, id);
+        }
+        let system = FakeSystem::new(Platform::Linux);
+        system.set_now("2026-11-22T14:00:00Z");
+        let app = App::launch_with(app_data.path(), system);
+        let mut harness = window(app, theme, Some(linux_controls()));
+        for (page, ready, name) in [
+            ("Calendar", "Today", "calendar-month"),
+            ("Tasks", "Filters", "tasks"),
+            ("Projects", "New project", "projects"),
+        ] {
+            harness
+                .get_by_role_and_label(Role::Navigation, "Pages")
+                .get_by_role_and_label(Role::Link, page)
+                .click();
+            wait_until(&mut harness, |harness| {
+                harness
+                    .query_by_role_and_label(Role::Button, ready)
+                    .is_some()
+            });
+            save(&mut harness, name, theme);
+            if page == "Calendar" {
+                for mode in ["Week", "Day"] {
+                    harness
+                        .get_by_role_and_label(Role::RadioButton, mode)
+                        .click();
+                    settle(&mut harness);
+                    save(
+                        &mut harness,
+                        &format!("calendar-{}", mode.to_lowercase()),
+                        theme,
+                    );
+                }
+                harness
+                    .get_by_role_and_label(Role::RadioButton, "Month")
+                    .click();
+                settle(&mut harness);
+            }
+        }
+    }
+}
