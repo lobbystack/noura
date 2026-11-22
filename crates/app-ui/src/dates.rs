@@ -15,6 +15,7 @@ pub(crate) struct DateNames {
     weekday: DateTimeFormatter<fieldsets::E>,
     weekday_long: DateTimeFormatter<fieldsets::E>,
     day_number: DateTimeFormatter<fieldsets::D>,
+    month_day: DateTimeFormatter<fieldsets::MD>,
     full_date: DateTimeFormatter<fieldsets::YMDE>,
     month: DateTimeFormatter<fieldsets::YM>,
     time: NoCalendarFormatter<fieldsets::T>,
@@ -53,6 +54,7 @@ impl DateNames {
             weekday: DateTimeFormatter::try_new(prefs(), fieldsets::E::short()).ok()?,
             weekday_long: DateTimeFormatter::try_new(prefs(), fieldsets::E::long()).ok()?,
             day_number: DateTimeFormatter::try_new(prefs(), fieldsets::D::short()).ok()?,
+            month_day: DateTimeFormatter::try_new(prefs(), fieldsets::MD::medium()).ok()?,
             full_date: DateTimeFormatter::try_new(prefs(), fieldsets::YMDE::long()).ok()?,
             month: DateTimeFormatter::try_new(prefs(), fieldsets::YM::long()).ok()?,
             time: NoCalendarFormatter::try_new(prefs(), fieldsets::T::hm()).ok()?,
@@ -77,6 +79,12 @@ impl DateNames {
     /// The day of the month, such as `27`.
     pub(crate) fn day_number(&self, date: Date) -> String {
         plain(self.day_number.format(&iso(date)).to_string())
+    }
+
+    /// The day of the month with the month's short name, such as `Nov 1`,
+    /// for the first day of a month in a grid of days.
+    pub(crate) fn month_day(&self, date: Date) -> String {
+        plain(self.month_day.format(&iso(date)).to_string())
     }
 
     /// The whole date with its weekday, such as `Sunday, September 27,

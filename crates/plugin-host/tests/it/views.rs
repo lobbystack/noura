@@ -1048,7 +1048,7 @@ const UNKNOWN_KIND: &str = r#"
     (export $calendar-entry "calendar-entry" (type $calendar-entry'))
     (type $icon' (enum "calendar" "done" "folder" "note" "tasks"))
     (export $icon "icon" (type $icon'))
-    (type $heading-level' (enum "page" "section"))
+    (type $heading-level' (enum "page" "section" "period"))
     (export $heading-level "heading-level" (type $heading-level'))
     (type $heading' (record
       (field "text" string) (field "level" $heading-level)

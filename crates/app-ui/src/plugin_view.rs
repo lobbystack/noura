@@ -163,9 +163,12 @@ struct Kit<'a> {
     /// its placeholder.
     inline: bool,
     /// The page has a heading of its own, which names what the page
-    /// shows, such as the month a calendar shows, so a calendar grid adds
-    /// no title of its own.
+    /// shows, such as the month a calendar shows, so a calendar grid of a
+    /// month or a week adds no title of its own.
     page_heading: bool,
+    /// The page's heading names the period it shows, a day's included, so
+    /// a calendar grid adds no title of its own.
+    page_period: bool,
     /// The node being drawn sits in a conversation, where text is a quiet
     /// line and buttons are small.
     quiet: bool,
@@ -262,7 +265,7 @@ pub(crate) fn has_page_heading(app: &App, page_id: &str) -> bool {
                 matches!(
                     child.kind,
                     ViewKind::Heading {
-                        level: app_core::HeadingLevel::Page,
+                        level: app_core::HeadingLevel::Page | app_core::HeadingLevel::Period,
                         ..
                     } | ViewKind::Pill { .. }
                 )
@@ -358,6 +361,7 @@ fn draw(
         depth: 0,
         inline: false,
         page_heading: false,
+        page_period: false,
         quiet: false,
         side: false,
         anchors: Vec::new(),

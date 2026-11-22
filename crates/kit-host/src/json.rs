@@ -132,6 +132,7 @@ fn kind(kind: &ViewKind) -> Value {
                 "level": match level {
                     HeadingLevel::Page => "page",
                     HeadingLevel::Section => "section",
+                    HeadingLevel::Period => "period",
                 },
                 "detail": detail,
                 "icon": icon.map(icon_name),
