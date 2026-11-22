@@ -362,16 +362,18 @@ fn page() -> Vec<Node> {
     let shown = all.and_then(|all| within(all.entries, &now, first, count));
 
     let mut view = View::panel("root", None);
-    // The title names the period, the month in bold and the year after
-    // it, or the day, with New event, the mode, then Previous, Today and
-    // Next at its end.
+    // The title is the period the page shows, the month in bold and the
+    // year after it, or the day: the tab and the rail already say
+    // Calendar. Its buttons are the mode, Previous, Today and Next, then
+    // New event at its end.
     let period = match mode {
         Mode::Month | Mode::Week => focus.strftime("%B").to_string(),
         Mode::Day => focus.strftime("%B %-d,").to_string(),
     };
     let year = focus.strftime("%Y").to_string();
     let heading = view.period_heading(View::ROOT, "title", &period, Some(&year));
-    // New event comes first, so it stands out, as New task does.
+    // New event comes first, so it stands out, as New task does; the
+    // page header puts it at its far end.
     view.button(heading, "new-event", "New event");
     let modes: Vec<(&str, &str)> = Mode::ALL.iter().map(|(_, id, name)| (*id, *name)).collect();
     view.choice_input(heading, "mode", "View", &modes, Some(mode.id()));

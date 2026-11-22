@@ -24,7 +24,8 @@ fn icon(icon: PluginIcon) -> icons::Icon {
 
 /// A page's or a section's title, with its buttons at its end. A page
 /// heading is the page header: its 16 px semibold title, as a note's
-/// header sets its name, with the detail under it, over a line. A period
+/// header sets its name, with the detail under it, over a line. Its first
+/// button, the page's primary action, sits at the far end. A period
 /// heading is a page header too, its title large with the rest of it, the
 /// detail, after it in regular weight, as a calendar names its month. A
 /// section heading has its icon, its 14 px medium title and its detail
@@ -43,7 +44,7 @@ pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
     let period = *level == HeadingLevel::Period;
     let page = period || *level == HeadingLevel::Page;
     if page {
-        kit.page_detail = detail.is_some();
+        kit.page_heading = true;
         kit.page_period = period;
     }
     let label = match detail {
@@ -169,8 +170,18 @@ pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
 /// right-to-left `ui`.
 fn controls(ui: &mut Ui, node: &ViewNode, page: bool, kit: &mut Kit) {
     ui.spacing_mut().item_spacing.x = 4.0;
-    // Right to left, so the first child goes last.
-    for (index, child) in node.children.iter().enumerate().rev() {
+    // Right to left. A page's first button is its primary action, which
+    // goes at the far end, after the filters and the navigation, as macOS
+    // and GNOME put it; the others keep their order before it.
+    let primary = page
+        && matches!(
+            node.children.first().map(|child| &child.kind),
+            Some(ViewKind::Button { .. })
+        );
+    let rest = usize::from(primary)..node.children.len();
+    let order = primary.then_some(0).into_iter().chain(rest.rev());
+    for index in order {
+        let child = &node.children[index];
         match &child.kind {
             ViewKind::Button { label } => {
                 let look = match (page, index) {

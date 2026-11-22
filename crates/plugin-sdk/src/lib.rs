@@ -634,9 +634,10 @@ impl View {
         self.add(parent, id, NodeKind::Button(label.to_owned()))
     }
 
-    /// Add a page's title, with `detail` under it, such as the period
-    /// the page shows. Buttons you add to it line up at its end, and the
-    /// first one stands out.
+    /// Add a page's title, with `detail` under it. The title names what
+    /// the page shows, such as the period a calendar shows; the tab and
+    /// the rail already name the page. Buttons you add to it line up at
+    /// its end, and the first one stands out at the far end.
     pub fn page_heading(
         &mut self,
         parent: u32,

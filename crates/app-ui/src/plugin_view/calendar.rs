@@ -232,36 +232,23 @@ pub(super) fn calendar(
     let builder = UiBuilder::new()
         .accessibility_role(Role::Heading)
         .accessibility_label(heading.as_str());
-    // A period heading names the period already, so the grid adds no
-    // heading. Under a page heading whose detail names the month, as the
-    // legacy page header did, the grid's own heading only names it for
-    // screen readers, and a day keeps its date over its hours.
-    let unseen = !kit.page_period && kit.page_detail && mode != CalendarMode::Day;
-    if !kit.page_period {
+    // A page heading names the period the page shows, so the grid adds no
+    // title of its own, for the eye or for screen readers. A day keeps its
+    // date over its hours, unless a period heading names the day.
+    let titled = kit.page_period || (kit.page_heading && mode != CalendarMode::Day);
+    if !titled {
         ui.scope_builder(builder, |ui| {
-            if unseen {
-                let (_, response) = ui.allocate_exact_size(vec2(0.0, 0.0), egui::Sense::hover());
-                response.widget_info(|| egui::WidgetInfo::labeled(Role::Label, true, &heading));
-            } else {
-                ui.label(RichText::new(&heading).font(font(
-                    ui.ctx(),
-                    TITLE_SIZE,
-                    Weight::Semibold,
-                )));
-            }
+            ui.label(RichText::new(&heading).font(font(ui.ctx(), TITLE_SIZE, Weight::Semibold)));
         });
     }
     // Under a page header that names the period, the grid starts just
-    // under the header's line, over the gaps above it and its unseen
-    // title, and leaves the line itself as on every other page.
-    let gaps = if kit.page_period {
-        1.0
-    } else if unseen {
-        2.0
+    // under the header's line, over the gap above it, and leaves the line
+    // itself as on every other page.
+    let lift = if titled {
+        ui.spacing().item_spacing.y - 1.0
     } else {
         0.0
     };
-    let lift = (gaps * ui.spacing().item_spacing.y - 1.0).max(0.0);
     let builder = UiBuilder::new()
         .accessibility_role(Role::Grid)
         .accessibility_label(label);

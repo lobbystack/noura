@@ -93,6 +93,10 @@ pub fn builder(position: Option<Pos2>) -> ViewportBuilder {
         .with_fullsize_content_view(true)
         .with_titlebar_shown(false)
         .with_title_shown(false);
+    // On Linux the window has no frame: Noura's title bar row carries the
+    // window's buttons, as GNOME's own apps' header bars do.
+    #[cfg(target_os = "linux")]
+    let builder = builder.with_decorations(false);
     match position {
         Some(position) => builder.with_position(position),
         None => builder,
@@ -164,6 +168,9 @@ pub struct Windows {
     spell_checker: Option<Arc<dyn SpellChecker>>,
     /// The plugins' global shortcuts and the menu bar item.
     speech: Option<crate::speech_shell::SpeechShell>,
+    /// The buttons every window draws in its title bar row, on Linux,
+    /// where windows have no frame; `None` elsewhere.
+    window_controls: Option<Arc<Mutex<app_ui::WindowControls>>>,
 }
 
 /// When a later launch asked, and when Noura last tried.
@@ -220,7 +227,18 @@ impl Windows {
             smoke: None,
             spell_checker: None,
             speech: None,
+            window_controls: None,
         }
+    }
+
+    /// Draw the window buttons `controls` lays out in every window's title
+    /// bar row, for windows with no frame.
+    pub fn with_window_controls(
+        mut self,
+        controls: Option<Arc<Mutex<app_ui::WindowControls>>>,
+    ) -> Self {
+        self.window_controls = controls;
+        self
     }
 
     /// End the app as Quit does when `quit` asks.
@@ -287,7 +305,9 @@ impl Windows {
     /// windows on screen.
     fn show(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame) {
         let ctx = ui.ctx().clone();
+        let controls = current(self.window_controls.as_ref());
         if let Some(first) = &mut self.first {
+            first.set_window_controls(controls);
             first.ui(ui);
             note_focus(&ctx, ViewportId::ROOT, &self.recent, first);
             self.file_drags
@@ -300,7 +320,12 @@ impl Windows {
             return;
         }
         for window in &self.others {
-            window.show(&ctx, &self.recent, &self.file_drags);
+            window.show(
+                &ctx,
+                &self.recent,
+                &self.file_drags,
+                self.window_controls.clone(),
+            );
         }
     }
 
@@ -766,6 +791,7 @@ impl Window {
         ctx: &Context,
         recent: &Arc<Mutex<ViewportId>>,
         file_drags: &Arc<Mutex<HashMap<ViewportId, FileDrag>>>,
+        controls: Option<Arc<Mutex<app_ui::WindowControls>>>,
     ) {
         let state = self.state.clone();
         let recent = recent.clone();
@@ -781,8 +807,12 @@ impl Window {
                 window.close_window();
             }
             crate::window_buttons::place(ui.ctx());
+            window.set_window_controls(current(controls.as_ref()));
             window.ui(ui);
             let ctx = ui.ctx();
+            // A deferred viewport has no winit window to show the window
+            // menu from.
+            let _ = app_ui::take_window_menu_request(ctx, id);
             note_focus(ctx, id, &recent, window);
             file_drags
                 .lock()
@@ -799,6 +829,28 @@ impl Window {
                 ctx.request_repaint_of(ViewportId::ROOT);
             }
         });
+    }
+}
+
+/// The window buttons `controls` lays out now.
+fn current(
+    controls: Option<&Arc<Mutex<app_ui::WindowControls>>>,
+) -> Option<app_ui::WindowControls> {
+    controls.map(|controls| controls.lock().clone())
+}
+
+/// Show the window menu where a right click on the title bar row of the
+/// first window asked for it, as a frame's title bar does.
+fn show_window_menu(ctx: &Context, frame: &eframe::Frame) {
+    let Some(at) = app_ui::take_window_menu_request(ctx, ViewportId::ROOT) else {
+        return;
+    };
+    if let Some(window) = frame.winit_window() {
+        let zoom = ctx.zoom_factor();
+        window.show_window_menu(winit::dpi::LogicalPosition::new(
+            f64::from(at.x * zoom),
+            f64::from(at.y * zoom),
+        ));
     }
 }
 
@@ -842,6 +894,7 @@ impl eframe::App for Windows {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         crate::window_buttons::place(ui.ctx());
         self.show(ui, frame);
+        show_window_menu(ui.ctx(), frame);
         self.report_smoke(ui.ctx());
     }
 

@@ -45,9 +45,7 @@ rfd.workspace = true
 spell-check = { version = "0.3.1", path = "../../crates/spell-check" }
 tracing.workspace = true
 tracing-subscriber.workspace = true
-# GNOME leaves the title bar to the app under Wayland; the Adwaita frame
-# draws it instead of winit's plain fallback.
-winit = { workspace = true, features = ["wayland-csd-adwaita"] }
+winit.workspace = true
 
 # A tree row dragged out of a window becomes a native drag through `drag`.
 # On Linux the crate drags out through GTK, which winit windows don't use.

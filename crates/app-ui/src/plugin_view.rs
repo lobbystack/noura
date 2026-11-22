@@ -162,12 +162,12 @@ struct Kit<'a> {
     /// The input being drawn is a one-line form's field, whose label is
     /// its placeholder.
     inline: bool,
-    /// The page's heading has a detail line, such as the month a
-    /// calendar shows, so a calendar grid of a month or a week adds no
-    /// title of its own.
-    page_detail: bool,
-    /// The page's heading names the period it shows, so a calendar grid
-    /// adds no title of its own.
+    /// The page has a heading of its own, which names what the page
+    /// shows, such as the month a calendar shows, so a calendar grid of a
+    /// month or a week adds no title of its own.
+    page_heading: bool,
+    /// The page's heading names the period it shows, a day's included, so
+    /// a calendar grid adds no title of its own.
     page_period: bool,
     /// The node being drawn sits in a conversation, where text is a quiet
     /// line and buttons are small.
@@ -360,7 +360,7 @@ fn draw(
         entered: false,
         depth: 0,
         inline: false,
-        page_detail: false,
+        page_heading: false,
         page_period: false,
         quiet: false,
         side: false,

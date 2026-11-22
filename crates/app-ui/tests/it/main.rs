@@ -54,4 +54,5 @@ mod tree_operations;
 mod tree_scale;
 mod updates;
 mod web_search;
+mod window_controls;
 mod windows;

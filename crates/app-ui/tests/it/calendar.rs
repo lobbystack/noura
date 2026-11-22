@@ -164,10 +164,20 @@ fn the_page_labels_its_buttons_its_view_choice_and_its_entries() {
         labels(view.get_all_by_role(Role::RadioButton)),
         ["Month", "Week", "Day"]
     );
+    // The page's title is the month it shows, said once; the tab and the
+    // rail say Calendar.
+    let headings = labels(harness.query_all(egui_kittest::kittest::By::new().role(Role::Heading)));
+    assert_eq!(
+        headings
+            .iter()
+            .filter(|heading| *heading == "October 2026")
+            .count(),
+        1,
+        "{headings:?}"
+    );
     assert!(
-        harness
-            .query_by_role_and_label(Role::Heading, "October 2026")
-            .is_some()
+        !headings.iter().any(|heading| heading == "Calendar"),
+        "{headings:?}"
     );
     assert_eq!(
         entries_in(&harness, "Wednesday, October 21, 2026"),
