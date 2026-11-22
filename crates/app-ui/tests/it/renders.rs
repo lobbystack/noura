@@ -24,7 +24,10 @@ use std::{
 use app_core::{App, Platform};
 use app_ui::{NouraUi, WindowControl, WindowControls};
 use egui::{Key, Modifiers, Theme, accesskit::Role};
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT as _, Queryable},
+};
 use support::{FakePicker, FakeSystem, create_workspace, plugins};
 
 type Ui = Harness<'static, NouraUi>;
@@ -677,5 +680,137 @@ fn the_calendar_renders_each_mode_at_two_sizes() {
             harness.set_size(egui::vec2(SIZE[0], SIZE[1]));
             settle(&mut harness);
         }
+    }
+}
+
+/// The Files tab with a folder's files, an empty folder and every tab
+/// closed, then the tab bar with one tab, a preview beside kept tabs and
+/// a full row, in light and dark. Every step is a click, as a person
+/// would take it.
+#[test]
+#[ignore = "draws the screens to PNG files, which needs a GPU"]
+fn the_files_tab_and_the_tab_bar_render() {
+    for theme in [Theme::Light, Theme::Dark] {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let folder = parent.path().join("Studio");
+        create_workspace(app_data.path(), &folder);
+        write_workspace(&folder);
+        std::fs::create_dir_all(folder.join("Archive")).unwrap();
+        let app = App::launch_with(app_data.path(), FakeSystem::new(Platform::Linux));
+        let mut harness = window(app, theme, Some(linux_controls()));
+
+        let rail = |harness: &mut Ui, page: &str, modifiers: Modifiers| {
+            harness
+                .get_by_role_and_label(Role::Navigation, "Pages")
+                .get_by_role_and_label(Role::Link, page)
+                .click_modifiers(modifiers);
+            settle(harness);
+        };
+        rail(&mut harness, "Files", Modifiers::NONE);
+        save(&mut harness, "files-tab", theme);
+        if let Some(list) = harness.query_by_role_and_label(Role::ListBox, "Files") {
+            list.get_by_role_and_label(Role::ListBoxOption, "Archive")
+                .click();
+            settle(&mut harness);
+            save(&mut harness, "files-tab-empty-folder", theme);
+            harness
+                .get_by_role_and_label(Role::Navigation, "Path")
+                .get_by_role_and_label(Role::Button, "Studio")
+                .click();
+            settle(&mut harness);
+        }
+        loop {
+            let close = harness
+                .query_all_by_role(Role::Button)
+                .filter_map(|node| node.accesskit_node().label())
+                .find(|label| label.starts_with("Close "));
+            let Some(close) = close else {
+                break;
+            };
+            harness.get_by_role_and_label(Role::Button, &close).click();
+            settle(&mut harness);
+        }
+        save(&mut harness, "all-tabs-closed", theme);
+
+        let tree = |harness: &mut Ui, name: &str, modifiers: Modifiers| {
+            harness
+                .get_by_role_and_label(Role::TreeItem, name)
+                .click_modifiers(modifiers);
+            settle(harness);
+        };
+        for folder in ["Design", "Journal", "tasks"] {
+            tree(&mut harness, folder, Modifiers::NONE);
+        }
+        tree(&mut harness, "Website relaunch", Modifiers::COMMAND);
+        save(&mut harness, "tabs-one", theme);
+        tree(&mut harness, "Type specimens", Modifiers::COMMAND);
+        tree(&mut harness, "Brand colors", Modifiers::NONE);
+        save(&mut harness, "tabs-preview-and-kept", theme);
+        for name in [
+            "Ideas",
+            "Meeting notes",
+            "2026-11-20",
+            "2026-11-21",
+            "Book the photographer",
+            "Draft the launch email",
+            "Order sample prints",
+            "Pick an analytics tool",
+        ] {
+            tree(&mut harness, name, Modifiers::COMMAND);
+        }
+        save(&mut harness, "tabs-full-row", theme);
+    }
+}
+
+/// Calendar's sidebar with Files in every sidebar off, as at first, and
+/// on, in light and dark.
+#[test]
+#[ignore = "draws the screens to PNG files, which needs a GPU"]
+fn the_calendar_sidebar_renders_with_and_without_files() {
+    let Some(component) = plugins::built("calendar_plugin") else {
+        return;
+    };
+    for theme in [Theme::Light, Theme::Dark] {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let folder = parent.path().join("Studio");
+        create_workspace(app_data.path(), &folder);
+        write_calendar_workspace(&folder);
+        let plugin = plugins::folder(
+            &parent.path().join("calendar"),
+            CALENDAR_MANIFEST,
+            "calendar_plugin.wasm",
+            &component,
+        );
+        plugins::install_and_enable(app_data.path(), &plugin, "calendar");
+        let system = FakeSystem::new(Platform::Linux);
+        system.set_now("2026-11-22T14:00:00Z");
+        let app = App::launch_with(app_data.path(), system);
+        let mut harness = window(app, theme, Some(linux_controls()));
+        harness
+            .get_by_role_and_label(Role::Navigation, "Pages")
+            .get_by_role_and_label(Role::Link, "Calendar")
+            .click();
+        wait_until(&mut harness, |harness| {
+            harness
+                .query_by_role_and_label(Role::Grid, "Calendar")
+                .is_some()
+        });
+        save(&mut harness, "calendar-sidebar", theme);
+        // Turn Files in every sidebar on, where Settings has it.
+        harness
+            .get_by_role_and_label(Role::Button, "Settings")
+            .click();
+        settle(&mut harness);
+        let switch = harness.query_by_role_and_label(Role::Switch, "Files in every sidebar");
+        let Some(switch) = switch else {
+            continue;
+        };
+        switch.click();
+        settle(&mut harness);
+        harness.key_press(egui::Key::Escape);
+        settle(&mut harness);
+        save(&mut harness, "calendar-sidebar-with-files", theme);
     }
 }

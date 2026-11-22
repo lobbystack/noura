@@ -8,6 +8,7 @@ mod ai;
 mod chooser;
 mod common;
 mod dates;
+mod files_page;
 mod finder;
 mod folder_sync;
 pub mod fonts;

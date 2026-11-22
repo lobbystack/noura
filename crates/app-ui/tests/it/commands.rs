@@ -374,8 +374,12 @@ fn on_linux_every_shortcut_runs_from_the_window() {
 
     press(&mut harness, ctrl, Key::Num3);
     assert_eq!(harness.state().app().current_page(), "test-page");
+    // Files opens its own tab, in the page's preview tab.
     press(&mut harness, ctrl, Key::Num2);
     assert_eq!(harness.state().app().current_page(), app_core::FILES_PAGE);
+    assert_eq!(active(&harness).as_deref(), Some("Files"));
+    press(&mut harness, Modifiers::CTRL, Key::Tab);
+    assert_eq!(active(&harness).as_deref(), Some(note.as_str()));
 
     press(&mut harness, ctrl, Key::Backslash);
     assert!(!harness.state().app().layout().sidebar_shown);

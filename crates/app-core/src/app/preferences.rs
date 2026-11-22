@@ -30,6 +30,12 @@ impl App {
         self.change_preferences(|preferences| preferences.spell_check = on);
     }
 
+    /// Show the file tree under every page's own sidebar, or only on the
+    /// Files page.
+    pub fn set_files_in_every_sidebar(&mut self, on: bool) {
+        self.change_preferences(|preferences| preferences.files_in_every_sidebar = on);
+    }
+
     /// Zoom in one level, up to 200%.
     pub fn zoom_in(&mut self) {
         let zoom = self.preferences.zoom_step(1);

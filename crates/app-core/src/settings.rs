@@ -128,7 +128,7 @@ pub(crate) fn section_rank(id: &str) -> Option<usize> {
 pub(crate) fn section_keywords(id: &str) -> &'static str {
     match id {
         settings_section::GENERAL => {
-            "appearance theme dark light system startup login updates version"
+            "appearance theme dark light system startup login updates version sidebar files tree"
         }
         settings_section::EDITOR => "text size font line width spelling spellcheck",
         settings_section::SHORTCUTS => "keys",

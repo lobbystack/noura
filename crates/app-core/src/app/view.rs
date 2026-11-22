@@ -103,15 +103,9 @@ impl App {
         }
     }
 
-    /// Show a rail page. Files shows a document tab; any other page shows
-    /// in its own tab, or opens as `how` says.
+    /// Show a rail page in its own tab, or open it as `how` says. Files is
+    /// a page like the others: its tab lists a folder of the workspace.
     pub fn open_page(&mut self, page_id: &str, how: OpenAs) {
-        if page_id == FILES_PAGE {
-            if self.tabs.show_files() {
-                self.tabs_changed(true);
-            }
-            return;
-        }
         let Some(page) = self.rail.page(page_id) else {
             return;
         };
@@ -160,7 +154,9 @@ impl App {
         }
     }
 
-    /// The rail page the window shows: the active tab's page, or Files.
+    /// The rail page the window shows: the active tab's page, or Files for
+    /// a file's tab, whose sidebar is the file tree, and when no tab is
+    /// open.
     pub fn current_page(&self) -> &str {
         self.tabs
             .active()
@@ -469,6 +465,7 @@ impl App {
             None => (true, true, true),
         };
         self.tree = Some(tree);
+        self.files_changed();
         if shown_changed {
             self.listeners.emit(Change::Tree);
         }
@@ -624,7 +621,7 @@ impl App {
                     });
                     file.map_or(Restored::Gone, |file| Restored::Open(file, tab.preview))
                 }
-                (None, Some(page_id)) if page_id != FILES_PAGE && !page_id.is_empty() => {
+                (None, Some(page_id)) if !page_id.is_empty() => {
                     match self.rail.page(&page_id) {
                         Some(page) => {
                             let content = TabContent::Page {

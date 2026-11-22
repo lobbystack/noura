@@ -269,7 +269,7 @@ fn trashing_the_open_note_saves_its_typing_and_the_next_tab_shows_its_own_text()
     });
     assert!(tab_labels(&harness).is_empty());
     assert_eq!(selected(&harness), None);
-    harness.get_by_label("No file open");
+    harness.get_by_label("No tabs open");
     assert!(
         harness
             .query_by_role_and_label(Role::MultilineTextInput, "Note text")
@@ -423,9 +423,9 @@ fn a_page_that_takes_over_a_preview_tab_keeps_the_note_s_caret_and_scroll() {
             .is_none(),
         "the Inbox took the tab"
     );
+    // Back to the note's own tab: Files has a tab of its own now.
     harness
-        .get_by_role_and_label(Role::Navigation, "Pages")
-        .get_by_role_and_label(Role::Link, "Files")
+        .get_by_role_and_label(Role::Tab, "Long (preview)")
         .click();
     harness.run_steps(6);
 
