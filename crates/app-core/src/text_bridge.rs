@@ -5,6 +5,7 @@
 //! side waits for the other.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -152,6 +153,8 @@ impl CollabDocument for Caught {
 struct Waiting {
     /// Notes a window asked for, which enter text mode.
     opening: Vec<String>,
+    /// Notes the sync thread took from `opening` and hasn't answered yet.
+    answering: Vec<String>,
     /// Notes a window shows, whose documents it takes if they have one.
     attaching: Vec<String>,
     /// Documents that wait for their window, by the path asked for.
@@ -175,6 +178,9 @@ struct Waiting {
 pub struct TextBridge {
     waiting: Mutex<Waiting>,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Whether a sync thread answers the windows' requests: the open
+    /// workspace syncs.
+    served: AtomicBool,
 }
 
 impl std::fmt::Debug for TextBridge {
@@ -253,6 +259,22 @@ impl TextBridge {
         waiting.ready.remove(path)
     }
 
+    /// Whether a sync thread answers the windows' requests from now on.
+    pub fn set_served(&self, served: bool) {
+        self.served.store(served, Ordering::Relaxed);
+    }
+
+    /// Whether the window's request for the document of the note at
+    /// `path` waits for the sync thread's answer. Without a sync thread,
+    /// nothing answers.
+    pub fn answering(&self, path: &str) -> bool {
+        if !self.served.load(Ordering::Relaxed) {
+            return false;
+        }
+        let waiting = self.waiting();
+        waiting.opening.iter().any(|p| p == path) || waiting.answering.iter().any(|p| p == path)
+    }
+
     /// Whether a window waits for the sync thread.
     pub fn has_work(&self) -> bool {
         let waiting = self.waiting();
@@ -261,6 +283,17 @@ impl TextBridge {
             || !waiting.closing.is_empty()
             || !waiting.forgotten.is_empty()
             || waiting.refused.values().any(asks_again)
+    }
+
+    /// When the next note that stayed out of text mode for now is due
+    /// another try, so the sync thread's wait can end by then.
+    pub fn next_ask_again(&self) -> Option<Instant> {
+        self.waiting()
+            .refused
+            .values()
+            .filter(|(entered, _)| *entered == Entered::NotYet)
+            .map(|(_, at)| *at + ASK_AGAIN)
+            .min()
     }
 
     /// The note's file changed, so a note that stayed out of text mode
@@ -368,9 +401,11 @@ impl TextBridge {
                     waiting.closing.push(document.rid);
                 }
             }
+            let opening = std::mem::take(&mut waiting.opening);
+            waiting.answering.clone_from(&opening);
             (
                 std::mem::take(&mut waiting.attaching),
-                std::mem::take(&mut waiting.opening),
+                opening,
                 std::mem::take(&mut waiting.closing),
                 waiting.selections.clone(),
             )
@@ -389,7 +424,8 @@ impl TextBridge {
             }
         }
         for path in opening {
-            self.open_note(sync, path);
+            self.open_note(sync, path.clone());
+            self.waiting().answering.retain(|p| *p != path);
         }
         let left = sync.take_left_notes();
         if !left.is_empty() {

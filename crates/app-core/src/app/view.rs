@@ -513,6 +513,11 @@ impl App {
     /// stays open at its path, so its save says the file is gone and
     /// closing it asks first. Such a note also keeps its tab when another
     /// tab now shows its file, until its edits are on disk.
+    ///
+    /// A tab keeps its stable ID while the file at its path holds none, as
+    /// while another app rewrites the file in place and the watcher reads
+    /// it half written. The tab then follows a move that lands before the
+    /// ID is back, whether or not this window saw the file without it.
     pub(super) fn follow_files(&mut self) {
         let unsaved_tabs = self.unsaved_note_tabs();
         let Some(tree) = &self.tree else {
@@ -525,13 +530,13 @@ impl App {
             .filter(|session| session.is_unsaved())
             .map(NoteSession::relative_path)
             .collect();
-        let followed = self.tabs.follow_files(&unsaved_tabs, |path, id| {
-            let Some(path) = tree.follow(path, id) else {
+        let followed = self.tabs.follow_files(&unsaved_tabs, |shown, id| {
+            let Some(path) = tree.follow(shown, id) else {
                 return unsaved
-                    .contains(&path)
-                    .then(|| (path.to_owned(), id.map(str::to_owned)));
+                    .contains(&shown)
+                    .then(|| (shown.to_owned(), id.map(str::to_owned)));
             };
-            let id = tree.object_id(&path).map(str::to_owned);
+            let id = tree.object_id(&path).or(id).map(str::to_owned);
             Some((path, id))
         });
         self.tabs_followed(followed);

@@ -646,6 +646,28 @@ fn a_note_that_loses_its_id_keeps_its_tab() {
 }
 
 #[test]
+fn a_note_read_half_written_follows_its_id_when_it_moves() {
+    let (_app_data, folder, mut app) = opened(&["A.md"]);
+    let note = managed_note("note_01k00000000000000000000035");
+    write(folder.path(), "Plan.md", &note);
+    app.rescan();
+    app.open_file("Plan.md", OpenAs::Kept);
+
+    // Another app rewrites the note in place, and Noura reads it empty.
+    write(folder.path(), "Plan.md", b"");
+    app.rescan();
+    assert_eq!(paths(&app), ["Plan.md"]);
+
+    // The rest of the write lands, and the note moves before Noura reads
+    // it whole.
+    write(folder.path(), "Plan.md", &note);
+    rename(folder.path(), "Plan.md", "Archive/Plan.md");
+    app.rescan();
+
+    assert_eq!(paths(&app), ["Archive/Plan.md"]);
+}
+
+#[test]
 fn two_tabs_that_end_up_on_one_file_become_one() {
     let (_app_data, folder, mut app) = opened(&["A.md", "C.md"]);
     write(
