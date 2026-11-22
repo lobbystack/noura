@@ -108,6 +108,23 @@ pub fn harness_for(
         .build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), ui)
 }
 
+/// Draw `state` across the whole window, as eframe does. kittest's own
+/// root keeps an 8-point margin around the app.
+pub fn edge_to_edge(ui: &mut egui::Ui, state: &mut NouraUi) {
+    let window = ui.ctx().viewport_rect();
+    let mut root = ui.new_child(egui::UiBuilder::new().max_rect(window));
+    state.ui(&mut root);
+}
+
+/// A window on `platform` drawn edge to edge, as [`edge_to_edge`] does.
+pub fn harness_edge_to_edge(app_data: &Path, platform: Platform) -> Harness<'static, NouraUi> {
+    let app = App::launch_with(app_data, FakeSystem::new(platform));
+    let ui = NouraUi::new(app, Box::new(FakePicker::default()));
+    builder()
+        .allow_missing_glyphs()
+        .build_ui_state(edge_to_edge, ui)
+}
+
 /// A harness of the window's size. The watch thread announces each change
 /// to the files, Noura's own included, a moment after it lands, and the
 /// window draws once more to show it, so a run may take a few more frames

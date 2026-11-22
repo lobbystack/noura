@@ -36,6 +36,7 @@ pub mod theme;
 mod tree;
 mod updates;
 mod web_search;
+mod window_controls;
 mod workspace;
 
 use std::{
@@ -50,10 +51,12 @@ use std::{
 use app_core::{App, Appearance, Area, CommandSource, DragOut, Menu, Screen, TabId};
 use egui::{Event, Id, ThemePreference, ViewportId};
 
+pub use common::take_window_menu_request;
 /// Finds misspelled words for the notes, such as the system's spell
 /// checker.
 pub use editor_egui::SpellChecker;
 pub use rail::{WindowButtons, window_buttons};
+pub use window_controls::{WindowControl, WindowControls};
 
 /// How often a window checks on a running note save while it draws no
 /// frame.
@@ -99,6 +102,9 @@ pub struct NouraUi {
     /// This window's own salt for IDs in egui's memory. Every window draws
     /// with one egui context, so they share that memory.
     window: Id,
+    /// The window's own buttons, for a window the system draws no frame
+    /// around, as on Linux. `None` leaves the buttons to the system.
+    window_controls: Option<WindowControls>,
 }
 
 impl NouraUi {
@@ -121,7 +127,16 @@ impl NouraUi {
             shown_tab: None,
             started: false,
             window: Id::unique(("noura-window", WINDOWS.fetch_add(1, Ordering::Relaxed))),
+            window_controls: None,
         }
+    }
+
+    /// Draw the window's minimize, maximize and close buttons in the title
+    /// bar row, as `controls` lays them out, and resize the window from its
+    /// edges: the window has no frame of its own. `None` leaves both to
+    /// the system's frame.
+    pub fn set_window_controls(&mut self, controls: Option<WindowControls>) {
+        self.window_controls = controls;
     }
 
     /// Check spelling in notes with `checker`, the system's spell checker,
@@ -344,10 +359,25 @@ impl NouraUi {
         // A click on a tab's close button or in the tree can close a note
         // before its fields draw again and report losing the keyboard.
         self.notes.commit_drafts_left(ui.ctx(), &mut self.app);
+        let framed = self.window_controls.is_some();
+        if framed && !matches!(screen, Screen::Workspace) {
+            // Without the workspace's title bar row, the window's top
+            // still moves it, as a title bar does.
+            let viewport = ui.ctx().viewport_rect();
+            let row = egui::Rect::from_min_size(
+                viewport.min,
+                egui::vec2(viewport.width(), common::TITLE_BAR_HEIGHT),
+            );
+            common::title_bar_area(ui, row, "window");
+        }
         match screen {
             Screen::Loading => common::loading(ui),
             Screen::Chooser { problem } => chooser::show(self, ui, problem.as_deref()),
             Screen::Workspace => workspace::show(self, ui),
+        }
+        if let Some(controls) = &self.window_controls {
+            window_controls::show(ui, controls);
+            window_controls::resize_from_edges(ui);
         }
         updates::restart_offer(ui, &mut self.app);
         settings::show(
