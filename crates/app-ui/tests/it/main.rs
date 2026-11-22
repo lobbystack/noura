@@ -37,6 +37,7 @@ mod plugin_releases;
 mod plugins;
 mod projects;
 mod rail;
+mod renders;
 mod restore;
 mod settings;
 mod share;

@@ -23,8 +23,8 @@ fn icon(icon: PluginIcon) -> icons::Icon {
 }
 
 /// A page's or a section's title, with its buttons at its end. A page
-/// heading is the legacy page header: its 14 px semibold title with the
-/// detail under it, over a line. A section heading has its icon, its 14 px
+/// heading is the page header: its 16 px semibold title, as a note's
+/// header sets its name, with the detail under it, over a line. A section heading has its icon, its 14 px
 /// medium title and its detail beside it.
 pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
     let ViewKind::Heading {
@@ -45,7 +45,9 @@ pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
         .accessibility_role(Role::Heading)
         .accessibility_label(text.as_str());
     ui.scope_builder(builder, |ui| {
-        let height = if page { 32.0 } else { 20.0 };
+        // A page header's row fits its title and the detail under it, so
+        // every page's buttons sit at one height.
+        let height = if page { 36.0 } else { 20.0 };
         ui.horizontal(|ui| {
             ui.set_min_height(height);
             ui.spacing_mut().item_spacing.x = 8.0;
@@ -64,7 +66,7 @@ pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             let (size, weight) = if kit.in_popover {
                 (TITLE_SIZE + 2.0, Weight::Semibold)
             } else if page {
-                (BODY_SIZE, Weight::Semibold)
+                (TITLE_SIZE, Weight::Semibold)
             } else {
                 (BODY_SIZE, Weight::Medium)
             };
@@ -131,6 +133,21 @@ pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             ui.add_space(gap.max(0.0));
         }
     });
+}
+
+/// How much farther a section's title sits from the rows above it than
+/// from its own, so each section reads as one group.
+pub(super) const SECTION_GAP: f32 = 8.0;
+
+/// Whether `node` is a section's title in a page or a panel.
+pub(super) fn is_section(node: &ViewNode, kit: &Kit) -> bool {
+    matches!(
+        node.kind,
+        ViewKind::Heading {
+            level: HeadingLevel::Section,
+            ..
+        }
+    ) && !kit.in_popover
 }
 
 /// What an empty page or section shows: its icon in a tile, its title,

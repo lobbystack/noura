@@ -153,9 +153,7 @@ impl<'ast> MdRender {
             NodeValue::CodeBlock(node_code_block) => self.height_code_block(node, node_code_block),
             NodeValue::DescriptionDetails => unimplemented!("extension disabled"),
             NodeValue::DescriptionTerm => unimplemented!("extension disabled"),
-            NodeValue::Heading(NodeHeading { level, setext, .. }) => {
-                self.height_heading(node, *level, *setext)
-            }
+            NodeValue::Heading(NodeHeading { setext, .. }) => self.height_heading(node, *setext),
             NodeValue::HtmlBlock(_) => self.height_html_block(node),
             NodeValue::Paragraph => self.height_paragraph(node),
             NodeValue::TableCell => self.height_table_cell(node),
@@ -343,8 +341,8 @@ impl<'ast> MdRender {
             }
             NodeValue::DescriptionDetails => unimplemented!("extension disabled"),
             NodeValue::DescriptionTerm => unimplemented!("extension disabled"),
-            NodeValue::Heading(NodeHeading { level, setext, .. }) => {
-                self.show_heading(ui, node, top_left, *level, *setext)
+            NodeValue::Heading(NodeHeading { setext, .. }) => {
+                self.show_heading(ui, node, top_left, *setext)
             }
             NodeValue::HtmlBlock(_) => self.show_html_block(ui, node, top_left),
             NodeValue::Paragraph => self.show_paragraph(ui, node, top_left),

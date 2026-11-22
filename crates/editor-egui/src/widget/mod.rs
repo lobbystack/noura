@@ -94,7 +94,11 @@ impl<'ast> MdRender {
             NodeValue::CodeBlock(_) => self.text_format_code_block(parent()),
             NodeValue::DescriptionDetails => unimplemented!("extension disabled"),
             NodeValue::DescriptionTerm => unimplemented!("extension disabled"),
-            NodeValue::Heading(_) => parent_text_format(),
+            // Headings carry their rank in weight as well as size.
+            NodeValue::Heading(_) => Format {
+                bold: true,
+                ..parent_text_format()
+            },
             NodeValue::HtmlBlock(_) => self.text_format_html_block(parent()),
             NodeValue::Paragraph => parent_text_format(),
             NodeValue::TableCell => parent_text_format(),

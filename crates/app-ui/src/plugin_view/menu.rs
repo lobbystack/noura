@@ -5,7 +5,7 @@
 use app_core::{PluginEvent, ViewKind, ViewNode};
 use egui::{
     Align, Button, Event, Key, Layout, Modifiers, Popup, PopupKind, Pos2, Response, Stroke, Ui,
-    accesskit::HasPopup, containers::menu::menu_style,
+    accesskit::HasPopup,
 };
 
 use super::Kit;
@@ -42,7 +42,7 @@ pub(super) fn show(
         .id(response.id.with("menu"))
         .kind(PopupKind::Menu)
         .layout(Layout::top_down_justified(Align::Min))
-        .style(menu_style)
+        .style(crate::theme::menu_style)
         .frame(crate::common::menu_frame(ui.ctx()))
         .open_bool(&mut open)
         .accessible_name(label.clone());
@@ -70,7 +70,7 @@ pub(super) fn show(
                     }
                 }
                 ViewKind::Separator => {
-                    ui.separator();
+                    crate::common::menu_separator(ui);
                 }
                 _ => {}
             }

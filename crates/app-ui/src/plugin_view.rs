@@ -104,11 +104,13 @@ fn split(ui: &mut Ui, node: &ViewNode, first_width: u32, kit: &mut Kit) {
 }
 
 /// A title over a group in the sidebar, as the legacy sidebar's section
-/// labels: 12 px medium in the faded foreground, after a caret.
+/// labels: 12 px medium in the faded foreground, after a caret. It is a
+/// row as tall as the group's and sits right on top of it, so it reads
+/// as the group's title rather than the end of the group above.
 fn sidebar_label(ui: &mut Ui, text: &str) {
     let palette = Palette::of(ui.ctx());
     ui.horizontal(|ui| {
-        ui.set_height(32.0);
+        ui.set_height(crate::tree::ROW_HEIGHT);
         ui.spacing_mut().item_spacing.x = 4.0;
         ui.add_space(8.0);
         let color = palette.foreground.gamma_multiply(0.7);
@@ -124,6 +126,7 @@ fn sidebar_label(ui: &mut Ui, text: &str) {
                 .color(color),
         );
     });
+    ui.add_space(-ui.spacing().item_spacing.y);
 }
 
 /// Where a plugin's view shows.
@@ -469,6 +472,11 @@ fn children(ui: &mut Ui, nodes: &[ViewNode], kit: &mut Kit) {
                         sidebar_label(ui, label);
                     }
                     self::node(ui, &nodes[index], kit);
+                }
+                _ if heading::is_section(&nodes[index], kit) => {
+                    ui.add_space(heading::SECTION_GAP);
+                    self::node(ui, &nodes[index], kit);
+                    ui.add_space(-heading::SECTION_GAP.min(ui.spacing().item_spacing.y));
                 }
                 _ => self::node(ui, &nodes[index], kit),
             }

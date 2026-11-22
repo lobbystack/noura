@@ -700,7 +700,7 @@ pub(crate) fn empty_state_with(
         ui.label(RichText::new(title).font(font(
             ui.ctx(),
             crate::theme::TITLE_SIZE,
-            Weight::Medium,
+            Weight::Semibold,
         )));
         if let Some(text) = text {
             ui.scope(|ui| {
@@ -888,7 +888,7 @@ pub(crate) fn menu_item(
     });
     let height = match &detail {
         Some(detail) => 12.0 + title.size().y + 2.0 + detail.size().y,
-        None => 32.0,
+        None => crate::theme::MENU_ROW,
     };
     let sense = if enabled {
         Sense::click()
@@ -1020,9 +1020,9 @@ pub(crate) fn dialog_frame(ctx: &egui::Context) -> Frame {
 /// The dim behind a legacy dialog.
 pub(crate) const BACKDROP: Color32 = Color32::from_black_alpha(77);
 
-/// A legacy dialog's title: 16 px medium.
+/// A dialog's title: 16 px semibold, so it leads what the dialog says.
 pub(crate) fn dialog_title(ui: &mut Ui, text: &str) -> Response {
-    ui.label(RichText::new(text).font(font(ui.ctx(), crate::theme::TITLE_SIZE, Weight::Medium)))
+    ui.label(RichText::new(text).font(font(ui.ctx(), crate::theme::TITLE_SIZE, Weight::Semibold)))
 }
 
 /// The legacy dialog footer: 24 points under what the dialog says, its

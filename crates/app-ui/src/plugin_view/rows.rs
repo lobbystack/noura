@@ -1133,12 +1133,18 @@ fn paint_row(
         } else {
             crate::theme::Weight::Regular
         };
-        let font = crate::theme::font(ui.ctx(), SUPPORTING_SIZE, weight);
+        // A count is secondary, so it takes the muted color rather than
+        // the weight.
+        let font = crate::theme::font(ui.ctx(), crate::theme::SIDEBAR_SIZE, weight);
         let count = row.detail.as_deref().map(|detail| {
             painter.layout_no_wrap(
                 detail.to_owned(),
-                crate::theme::font(ui.ctx(), SUPPORTING_SIZE, crate::theme::Weight::Medium),
-                palette.foreground,
+                crate::theme::font(
+                    ui.ctx(),
+                    crate::theme::SIDEBAR_SIZE,
+                    crate::theme::Weight::Regular,
+                ),
+                palette.muted_foreground,
             )
         });
         let count_width = count.as_ref().map_or(0.0, |galley| galley.size().x + 12.0)
@@ -1160,7 +1166,7 @@ fn paint_row(
         }
         if let Some(count) = count {
             let at = Align2::RIGHT_CENTER.anchor_size(pos2(end, rect.center().y), count.size());
-            painter.galley(at.min, count, palette.foreground);
+            painter.galley(at.min, count, palette.muted_foreground);
         }
         return;
     }
