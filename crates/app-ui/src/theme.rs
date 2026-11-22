@@ -258,6 +258,18 @@ pub fn font(ctx: &egui::Context, size: f32, weight: Weight) -> FontId {
     FontId::new(size, family)
 }
 
+/// The interface font's drawn italic at `size`, or the upright font when
+/// the interface font has no italic, for text to slant with
+/// [`egui::RichText::italics`].
+pub fn italic_font(ctx: &egui::Context, size: f32) -> (FontId, bool) {
+    let family = FontFamily::Name(crate::fonts::ITALIC_FAMILY.into());
+    if ctx.fonts(|fonts| fonts.definitions().families.contains_key(&family)) {
+        (FontId::new(size, family), true)
+    } else {
+        (FontId::proportional(size), false)
+    }
+}
+
 /// Install the interface font, the light and dark styles, and follow the
 /// system appearance
 /// until the app applies this device's choice. egui's own zoom keys stay

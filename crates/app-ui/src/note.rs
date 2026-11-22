@@ -52,6 +52,11 @@ struct OpenNote {
     name: Option<String>,
     /// Move the keyboard to the name field on the next frame.
     focus_name: bool,
+    /// Whether the text opened with a heading that says the note's name,
+    /// for the name it was checked against. It is checked when the note
+    /// opens and after a rename, never while you type, so the text never
+    /// moves under the caret.
+    heading_repeats_name: Option<(String, bool)>,
     /// The widget to hand the keyboard back to after the editor's first
     /// frame: a note opened from the keyboard, as with Enter in the file
     /// tree, leaves the keyboard where it was. A click puts the caret in
@@ -214,6 +219,7 @@ pub(crate) fn show(
             whole_file,
             name: None,
             focus_name: false,
+            heading_repeats_name: None,
             give_focus_back: if clicked {
                 None
             } else {
@@ -326,7 +332,9 @@ pub(crate) fn show(
         ui.ctx().request_repaint_after(Duration::from_millis(100));
     }
     view.drawn = Some(tab);
-    header(ui, app, note, tab);
+    if shows_name(ui, app, note, tab) {
+        header(ui, app, note, tab);
+    }
     properties_notice(ui, app, tab);
     file_notice(ui, app, tab);
     // As in the legacy app, a note shows no properties beside its text. A
@@ -406,6 +414,30 @@ fn properties_notice(ui: &mut Ui, app: &App, tab: TabId) {
     ui.add_space(8.0);
 }
 
+/// Whether the note's name shows above its text. It doesn't when the text
+/// opens with a heading that says the name, as the tab says it too, so the
+/// name isn't said three times. It shows again for a rename, as with F2
+/// in the text, and while the name has a problem.
+fn shows_name(ui: &Ui, app: &App, note: &mut OpenNote, tab: TabId) -> bool {
+    let Some(session) = app.note(tab) else {
+        return false;
+    };
+    let name = session.name();
+    let repeats = match &note.heading_repeats_name {
+        Some((checked, repeats)) if *checked == name => *repeats,
+        _ => {
+            let repeats = session.heading_repeats_name();
+            note.heading_repeats_name = Some((name, repeats));
+            repeats
+        }
+    };
+    !repeats
+        || note.focus_name
+        || note.name.is_some()
+        || session.name_problem().is_some()
+        || ui.memory(|memory| memory.has_focus(name_field_id(tab)))
+}
+
 /// The note's name, which renames its file: Enter or leaving the field
 /// renames, and Escape keeps the old name.
 fn header(ui: &mut Ui, app: &mut App, note: &mut OpenNote, tab: TabId) {
@@ -416,80 +448,88 @@ fn header(ui: &mut Ui, app: &mut App, note: &mut OpenNote, tab: TabId) {
     let problem = session.name_problem().map(str::to_owned);
     let id = name_field_id(tab);
     let mut draft = note.name.clone().unwrap_or_else(|| shown.clone());
-    // The legacy document header: 48 px tall, the name on one 24 px line
-    // in its middle, then a line across the page.
+    // The name on one 24 px line over the toolbar, whose line closes the
+    // header, starting where the text starts, as the note's title.
     ui.add_space(-12.0);
-    let interact = ui.spacing().interact_size.y;
-    ui.spacing_mut().interact_size.y = 24.0;
-    let response = ui
-        .add(
-            TextEdit::singleline(&mut draft)
-                .id(id)
-                .hint_text("Untitled")
-                .font(crate::theme::font(
-                    ui.ctx(),
-                    TITLE_SIZE,
-                    crate::theme::Weight::Semibold,
-                ))
-                .frame(egui::Frame::NONE)
-                .desired_width(f32::INFINITY),
-        )
-        .accessible_name("File name");
-    ui.spacing_mut().interact_size.y = interact;
-    if response.changed() {
-        note.name = Some(draft);
-    }
-    if note.focus_name {
-        note.focus_name = false;
-        response.request_focus();
-        let mut state = TextEditState::load(ui.ctx(), id).unwrap_or_default();
-        let end = CCursor::new(shown.chars().count());
-        state
-            .cursor
-            .set_char_range(Some(CCursorRange::two(CCursor::new(0), end)));
-        state.store(ui.ctx(), id);
-    }
-    if response.lost_focus() {
-        let (enter, escape) = ui.input(|input| {
-            (
-                input.key_pressed(Key::Enter),
-                input.key_pressed(Key::Escape),
+    let mut rect = ui.available_rect_before_wrap();
+    rect.min.x += text_indent(ui, app, note);
+    ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
+        let interact = ui.spacing().interact_size.y;
+        ui.spacing_mut().interact_size.y = 24.0;
+        let response = ui
+            .add(
+                TextEdit::singleline(&mut draft)
+                    .id(id)
+                    .hint_text("Untitled")
+                    .font(crate::theme::font(
+                        ui.ctx(),
+                        TITLE_SIZE,
+                        crate::theme::Weight::Semibold,
+                    ))
+                    .frame(egui::Frame::NONE)
+                    .margin(egui::Margin::ZERO)
+                    .desired_width(f32::INFINITY),
             )
-        });
-        let typed = note.name.take();
-        if !escape && let Some(typed) = typed {
-            app.rename_note(tab, &typed);
+            .accessible_name("File name");
+        ui.spacing_mut().interact_size.y = interact;
+        if response.changed() {
+            note.name = Some(draft);
         }
-        if enter || escape {
-            // The key ended the field's edit, so the editor, which draws
-            // after this and takes the keyboard now, must not see it too.
-            ui.input_mut(|input| {
-                input.consume_key(Modifiers::NONE, Key::Enter);
-                input.consume_key(Modifiers::NONE, Key::Escape);
+        if note.focus_name {
+            note.focus_name = false;
+            response.request_focus();
+            let mut state = TextEditState::load(ui.ctx(), id).unwrap_or_default();
+            let end = CCursor::new(shown.chars().count());
+            state
+                .cursor
+                .set_char_range(Some(CCursorRange::two(CCursor::new(0), end)));
+            state.store(ui.ctx(), id);
+        }
+        if response.lost_focus() {
+            let (enter, escape) = ui.input(|input| {
+                (
+                    input.key_pressed(Key::Enter),
+                    input.key_pressed(Key::Escape),
+                )
             });
-            note.editor.focus(ui.ctx());
+            let typed = note.name.take();
+            if !escape && let Some(typed) = typed {
+                app.rename_note(tab, &typed);
+            }
+            if enter || escape {
+                // The key ended the field's edit, so the editor, which draws
+                // after this and takes the keyboard now, must not see it too.
+                ui.input_mut(|input| {
+                    input.consume_key(Modifiers::NONE, Key::Enter);
+                    input.consume_key(Modifiers::NONE, Key::Escape);
+                });
+                note.editor.focus(ui.ctx());
+            }
         }
-    }
-    if let Some(problem) = problem {
-        let palette = Palette::of(ui.ctx());
-        ui.scope_builder(UiBuilder::new().accessibility_role(Role::Alert), |ui| {
-            ui.label(
-                RichText::new(problem)
-                    .size(SUPPORTING_SIZE)
-                    .color(palette.destructive),
-            );
-        });
-    }
-    // The legacy document header ends in a line across the whole page.
-    ui.add_space(4.0);
-    let palette = Palette::of(ui.ctx());
-    let y = ui.cursor().top();
-    ui.painter().hline(
-        ui.max_rect().x_range().expand(24.0),
-        y,
-        Stroke::new(1.0, palette.border),
-    );
+        if let Some(problem) = problem {
+            let palette = Palette::of(ui.ctx());
+            ui.scope_builder(UiBuilder::new().accessibility_role(Role::Alert), |ui| {
+                ui.label(
+                    RichText::new(problem)
+                        .size(SUPPORTING_SIZE)
+                        .color(palette.destructive),
+                );
+            });
+        }
+    });
     ui.add_space(8.0);
+}
+
+/// How far right of the note's pane its text starts: the column the line
+/// width setting allows, centered, and the editor's margin inside it.
+fn text_indent(ui: &Ui, app: &App, note: &OpenNote) -> f32 {
+    let available = ui.available_width();
+    let width = app
+        .preferences()
+        .line_width
+        .points()
+        .map_or(available, |points| points.min(available));
+    (available - width) / 2.0 + note.editor.edit.renderer.layout.margin
 }
 
 /// What keeps the note's edits off the disk: another app's edit of the

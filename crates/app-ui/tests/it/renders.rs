@@ -110,7 +110,14 @@ fn write_workspace(folder: &Path) {
         "Meeting notes.md",
         &note('g', "Meeting notes", "Weekly sync."),
     );
-    write("Ideas.md", &note('h', "Ideas", "A list."));
+    write(
+        "Ideas.md",
+        "---\nid: note_01jbcdefghjkmnpqrstvwxyz0h\ntype: note\n\
+         created: 2026-11-02T10:00:00Z\nupdated: 2026-11-20T16:30:00Z\n---\n\
+         A note with no heading shows its name above the text.\n\n\
+         - A quieter empty state for the inbox\n\
+         - Keyboard shortcuts on the welcome screen\n",
+    );
     write(
         "tasks/Send the sitemap to the studio.md",
         &task('a', "status: todo\npriority: high\ndue: 2026-11-18\n"),
@@ -270,6 +277,17 @@ fn the_main_screens_render_in_light_and_dark() {
                 .is_some()
         });
         save(&mut harness, "2-note", theme);
+
+        // A note with no heading shows its name above its text.
+        harness
+            .get_by_role_and_label(Role::TreeItem, "Ideas")
+            .click();
+        settle(&mut harness);
+        save(&mut harness, "2b-note-without-heading", theme);
+        harness
+            .get_by_role_and_label(Role::TreeItem, "Website relaunch")
+            .click();
+        settle(&mut harness);
 
         harness
             .get_by_role_and_label(Role::TreeItem, "Type specimens")

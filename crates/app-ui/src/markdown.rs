@@ -322,7 +322,14 @@ fn draw_runs(ui: &mut Ui, runs: &[Run], size: f32, heading: bool, clicked: &mut 
                 text = text.strong();
             }
             if run.emphasis {
-                text = text.italics();
+                // The drawn italic, where the font has one at this weight;
+                // bold italic slants the semibold.
+                let (italic, drawn) = crate::theme::italic_font(ui.ctx(), size);
+                if drawn && !run.strong && !heading && !run.code {
+                    text = text.font(italic);
+                } else {
+                    text = text.italics();
+                }
             }
             if run.code {
                 text = text.monospace();

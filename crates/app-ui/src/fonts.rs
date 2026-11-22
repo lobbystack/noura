@@ -35,13 +35,28 @@ const UPRIGHT: [(&str, &[u8]); 3] = [
     ),
 ];
 
-/// The italic subsets, which only the note editor draws with: egui slants
-/// the upright font.
-const ITALIC: [&[u8]; 3] = [
-    include_bytes!("../assets/fonts/PublicSans-latin-Italic.ttf"),
-    include_bytes!("../assets/fonts/PublicSans-latin-ext-Italic.ttf"),
-    include_bytes!("../assets/fonts/PublicSans-vietnamese-Italic.ttf"),
+/// The italic subsets: the note editor's, and the interface's
+/// [`ITALIC_FAMILY`], so italic text is the drawn italic rather than the
+/// upright font slanted.
+const ITALIC: [(&str, &[u8]); 3] = [
+    (
+        "public-sans-latin-italic",
+        include_bytes!("../assets/fonts/PublicSans-latin-Italic.ttf"),
+    ),
+    (
+        "public-sans-latin-ext-italic",
+        include_bytes!("../assets/fonts/PublicSans-latin-ext-Italic.ttf"),
+    ),
+    (
+        "public-sans-vietnamese-italic",
+        include_bytes!("../assets/fonts/PublicSans-vietnamese-Italic.ttf"),
+    ),
 ];
+
+/// The name of the font family that holds Public Sans Italic at the
+/// regular weight, with the upright fonts behind it for the glyphs it
+/// lacks.
+pub const ITALIC_FAMILY: &str = "italic";
 
 /// egui's fonts with Public Sans in front of its proportional family, and
 /// the medium and semibold weights as families of their own.
@@ -72,13 +87,29 @@ pub fn definitions() -> FontDefinitions {
         }
     }
     crate::theme::add_weights(&mut fonts, &keys);
+    let mut italic = Vec::new();
+    for (key, bytes) in ITALIC {
+        let mut tweak = egui::FontTweak::default();
+        tweak.coords.push("wght", 400.0);
+        fonts.font_data.insert(
+            key.to_owned(),
+            Arc::new(FontData::from_static(bytes).tweak(tweak)),
+        );
+        italic.push(key.to_owned());
+    }
+    if let Some(upright) = fonts.families.get(&FontFamily::Proportional) {
+        italic.extend(upright.iter().cloned());
+    }
+    fonts
+        .families
+        .insert(FontFamily::Name(ITALIC_FAMILY.into()), italic);
     fonts
 }
 
 /// Every Public Sans face, upright then italic, for the note editor's
 /// font database.
 pub fn editor_faces() -> impl Iterator<Item = &'static [u8]> {
-    UPRIGHT.into_iter().map(|(_, bytes)| bytes).chain(ITALIC)
+    UPRIGHT.into_iter().chain(ITALIC).map(|(_, bytes)| bytes)
 }
 
 #[cfg(test)]
@@ -101,6 +132,10 @@ mod tests {
             fonts
                 .families
                 .contains_key(&FontFamily::Name("semibold".into()))
+        );
+        assert_eq!(
+            fonts.families[&FontFamily::Name(ITALIC_FAMILY.into())][0],
+            "public-sans-latin-italic"
         );
     }
 }

@@ -357,3 +357,30 @@ fn an_outside_edit_keeps_the_caret_and_the_scroll_position() {
         find(editor, &format!("Paragraph {inside}, edited,"))
     ));
 }
+
+/// A blank line after a heading draws in the text's own line rhythm, so
+/// the heading sits nearer its section than the one above, and the line
+/// still takes the caret and typing, byte for byte.
+#[test]
+fn the_blank_line_under_a_heading_is_shorter_and_still_editable() {
+    const NOTE: &str = "## Goals\n\nFirst.\n\nSecond.\n\n## Next\n";
+    let mut harness = harness(NOTE);
+    let (goals, first, second, next) = {
+        let editor = editor(&harness);
+        let at = |needle| drawn_at(editor, needle).unwrap_or_else(|| panic!("{needle} drew"));
+        (at("Goals"), at("First"), at("Second"), at("Next"))
+    };
+    let below = first.top() - goals.bottom();
+    let above = next.top() - second.bottom();
+    assert!(below < above, "{below} under the heading, {above} above it");
+
+    click_at(
+        &mut harness,
+        egui::pos2(first.left() + 2.0, (goals.bottom() + first.top()) / 2.0),
+    );
+    type_text(&mut harness, "x");
+    assert_eq!(
+        editor(&harness).text(),
+        "## Goals\nx\nFirst.\n\nSecond.\n\n## Next\n"
+    );
+}
