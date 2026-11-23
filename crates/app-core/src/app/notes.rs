@@ -124,7 +124,7 @@ impl App {
         if let Some(session) = self.notes.sessions.get(&tab)
             && session.may_enter_text_mode()
         {
-            bridge.open(session.relative_path());
+            bridge.open_from(session.relative_path(), session.loaded_file().as_bytes());
         }
     }
 

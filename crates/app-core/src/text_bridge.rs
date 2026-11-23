@@ -155,6 +155,9 @@ struct Waiting {
     opening: Vec<String>,
     /// Notes the sync thread took from `opening` and hasn't answered yet.
     answering: Vec<String>,
+    /// Each asked note's file as the editor loaded it, before the edit
+    /// that asked, by path.
+    loaded: BTreeMap<String, Vec<u8>>,
     /// Notes a window shows, whose documents it takes if they have one.
     attaching: Vec<String>,
     /// Documents that wait for their window, by the path asked for.
@@ -214,7 +217,25 @@ impl TextBridge {
     /// A note that stayed out of text mode isn't asked for again until
     /// [`Self::ask_again`], or a moment later when it may have changed.
     pub fn open(&self, path: &str) {
+        self.ask(path, None);
+    }
+
+    /// [`Self::open`] from the editor, which loaded the file as `loaded`
+    /// before the edit. The note enters from those bytes when they are its
+    /// base and your save reached the file before the sync thread answered.
+    pub fn open_from(&self, path: &str, loaded: &[u8]) {
+        self.ask(path, Some(loaded));
+    }
+
+    fn ask(&self, path: &str, loaded: Option<&[u8]>) {
         let mut waiting = self.waiting();
+        if let Some(loaded) = loaded {
+            // The first edit's: a save since may have changed the file.
+            waiting
+                .loaded
+                .entry(path.to_owned())
+                .or_insert_with(|| loaded.to_vec());
+        }
         if waiting
             .refused
             .get(path)
@@ -330,6 +351,7 @@ impl TextBridge {
         waiting.opening.retain(|p| p != path);
         waiting.attaching.retain(|p| p != path);
         waiting.refused.remove(path);
+        waiting.loaded.remove(path);
         waiting.forgotten.push(path.to_owned());
         drop(waiting);
         self.wake();
@@ -352,7 +374,12 @@ impl TextBridge {
     /// Hands the note's document to the window that asked, or remembers
     /// why it stays out of text mode.
     fn open_note(&self, sync: &mut WorkspaceSync, path: String) {
-        match sync.open_text_at(&path) {
+        let loaded = self.waiting().loaded.get(&path).cloned();
+        let answer = sync.open_text_at(&path, loaded.as_deref());
+        if matches!(answer, Ok((Entered::Yes | Entered::Never, _))) {
+            self.waiting().loaded.remove(&path);
+        }
+        match answer {
             Ok((Entered::Yes, Some((document, text)))) => {
                 let Some(rid) = sync.rid_at(&path) else {
                     return;

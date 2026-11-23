@@ -561,6 +561,11 @@ impl NoteSession {
         self.body()
     }
 
+    /// The whole file as Noura last read or saved it, line breaks as LF.
+    pub(crate) fn loaded_file(&self) -> &str {
+        &self.base
+    }
+
     /// Whether a change in the editor could put this note in text mode: a
     /// Markdown file whose text the editor holds as the file does.
     pub(crate) fn may_enter_text_mode(&self) -> bool {
