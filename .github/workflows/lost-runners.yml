@@ -1,0 +1,57 @@
+name: Lost runners
+
+# A hosted Windows runner sometimes dies in the middle of a job. GitHub fails
+# the job 45 minutes after the runner's last contact, with "The hosted runner
+# lost communication with the server", and keeps no log (actions/runner#4632).
+# Of the 193 Windows jobs CI ran from 2026-11-01 to 2026-11-23, 2 ended this
+# way, both a few minutes into a cargo build and before any test started.
+#
+# When every failed job of a CI run lost its runner, this workflow runs those
+# jobs again, once. A run with another failure stays failed, as does a run
+# that a newer run of the same branch replaced.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  actions: write
+  checks: read
+
+jobs:
+  rerun:
+    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.run_attempt == 1
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run again the jobs that lost their runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN: ${{ github.event.workflow_run.id }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          EVENT: ${{ github.event.workflow_run.event }}
+        run: |
+          failed="$(gh api --paginate "repos/$GH_REPO/actions/runs/$RUN/jobs?per_page=100" \
+            --jq '.jobs[] | select(.conclusion == "failure") | .id')"
+          lost=0
+          for job in $failed; do
+            messages="$(gh api "repos/$GH_REPO/check-runs/$job/annotations" --jq '.[].message')"
+            if grep -q '^The hosted runner lost communication with the server' <<<"$messages"; then
+              lost=$((lost + 1))
+            else
+              echo "Job $job failed on its own, so run $RUN stays failed."
+              exit 0
+            fi
+          done
+          if [ "$lost" -eq 0 ]; then
+            echo "No job of run $RUN lost its runner."
+            exit 0
+          fi
+          latest="$(gh run list --workflow CI --branch "$BRANCH" --event "$EVENT" --limit 1 \
+            --json databaseId --jq '.[0].databaseId')"
+          if [ "$latest" != "$RUN" ]; then
+            echo "Run $latest replaced run $RUN."
+            exit 0
+          fi
+          echo "::notice::$lost job(s) of run $RUN lost their runner. Running them again."
+          gh run rerun "$RUN" --failed
