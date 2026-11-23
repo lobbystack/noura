@@ -251,41 +251,117 @@ fn closing_a_page_tab_does_not_reopen_it() {
     assert_eq!(app.current_page(), app_core::FILES_PAGE);
 }
 
+/// Files has a tab of its own, as every other page does, and it comes
+/// back after a relaunch.
 #[test]
-fn files_shows_the_document_tab_you_had_before_a_page_took_over() {
-    let (_app_data, _folder, mut app) = opened(&["A.md", "B.md"]);
+fn files_opens_its_own_tab_like_any_page() {
+    let (app_data, _folder, mut app) = opened(&["A.md", "B.md"]);
     with_pages(&mut app);
     app.open_file("A.md", OpenAs::Kept);
     app.open_file("B.md", OpenAs::Kept);
     app.activate_tab(tab_id(&app, "A"));
-    app.open_page("test-alpha", OpenAs::Kept);
-    assert_eq!(app.current_page(), "test-alpha");
 
     app.open_page(app_core::FILES_PAGE, OpenAs::Preview);
-
-    assert_eq!(active(&app).as_deref(), Some("A"));
+    assert_eq!(shown(&app), ["A", "B", "Files (preview)"]);
+    assert_eq!(active(&app).as_deref(), Some("Files"));
     assert_eq!(app.current_page(), app_core::FILES_PAGE);
-    assert_eq!(titles(&app), ["A", "B", "Alpha"]);
+    // A page's preview takes the next page's place.
+    app.open_page("test-alpha", OpenAs::Preview);
+    assert_eq!(shown(&app), ["A", "B", "Alpha (preview)"]);
+    app.open_page(app_core::FILES_PAGE, OpenAs::Kept);
+    assert_eq!(shown(&app), ["A", "B", "Alpha (preview)", "Files"]);
+
+    let app = relaunch(app, app_data.path());
+    assert_eq!(shown(&app), ["A", "B", "Alpha (preview)", "Files"]);
+    assert_eq!(active(&app).as_deref(), Some("Files"));
 }
 
+/// With every tab closed, nothing is active, and the rail shows Files,
+/// whose sidebar is the file tree.
 #[test]
-fn files_falls_back_to_the_last_document_tab_or_to_nothing() {
-    let (_app_data, _folder, mut app) = opened(&["A.md", "B.md"]);
+fn closing_every_tab_leaves_nothing_active() {
+    let (_app_data, _folder, mut app) = opened(&["A.md"]);
     with_pages(&mut app);
     app.open_file("A.md", OpenAs::Kept);
-    app.open_file("B.md", OpenAs::Kept);
-    app.open_page("test-alpha", OpenAs::Kept);
-    app.close_tab(tab_id(&app, "B"));
-    app.activate_tab(tab_id(&app, "Alpha"));
-
-    app.open_page(app_core::FILES_PAGE, OpenAs::Preview);
-    assert_eq!(active(&app).as_deref(), Some("A"));
-
+    app.open_page(app_core::FILES_PAGE, OpenAs::Kept);
+    app.close_tab(tab_id(&app, "Files"));
     app.close_tab(tab_id(&app, "A"));
-    app.open_page(app_core::FILES_PAGE, OpenAs::Preview);
+
     assert_eq!(active(&app), None);
-    assert_eq!(titles(&app), ["Alpha"]);
+    assert!(app.tabs().is_empty());
     assert_eq!(app.current_page(), app_core::FILES_PAGE);
+    assert!(app.sidebar_shows_files());
+}
+
+/// The Files page lists one folder, folders first, then files, with the
+/// folders above it; going into a folder makes it the tree's current row,
+/// and a folder that becomes the tree's current row is the one listed.
+#[test]
+fn the_files_page_lists_a_folder_in_step_with_the_tree() {
+    let (_app_data, folder, mut app) = opened(&["B.md", "a.txt", "Docs/C.md", "Docs/Old/D.md"]);
+    let names = |app: &mut App| -> Vec<String> {
+        app.files_listing()
+            .unwrap()
+            .entries
+            .iter()
+            .map(|entry| entry.name.clone())
+            .collect()
+    };
+    let listing = app.files_listing().unwrap().clone();
+    assert_eq!(listing.folder, "");
+    assert_eq!(names(&mut app), ["Docs", "a.txt", "B"]);
+    assert_eq!(listing.path.len(), 1);
+    assert!(listing.entries.iter().all(|entry| entry.modified.is_some()));
+
+    app.show_files_folder("Docs");
+    let listing = app.files_listing().unwrap().clone();
+    assert_eq!(listing.folder, "Docs");
+    assert_eq!(
+        listing
+            .path
+            .iter()
+            .map(|step| step.relative_path.as_str())
+            .collect::<Vec<_>>(),
+        ["", "Docs"]
+    );
+    assert_eq!(names(&mut app), ["Old", "C"]);
+    let tree = app.tree().unwrap();
+    assert_eq!(tree.focused_folder(), Some("Docs"));
+
+    // A folder the tree moves to is the one listed; a file keeps the list.
+    let tree = app.tree_mut().unwrap();
+    tree.select("Docs/Old");
+    assert_eq!(names(&mut app), ["D"]);
+    let tree = app.tree_mut().unwrap();
+    tree.select("Docs/C.md");
+    assert_eq!(app.files_listing().unwrap().folder, "Docs/Old");
+
+    // An empty folder lists nothing; going up reaches the top.
+    std::fs::create_dir(folder.path().join("Empty")).unwrap();
+    app.rescan();
+    settle(&mut app);
+    app.show_files_folder("Empty");
+    assert!(app.files_listing().unwrap().entries.is_empty());
+    app.show_files_folder("");
+    assert_eq!(app.files_listing().unwrap().folder, "");
+    assert_eq!(app.tree().unwrap().focused(), None);
+    // A path that isn't a folder changes nothing.
+    app.show_files_folder("B.md");
+    assert_eq!(app.files_listing().unwrap().folder, "");
+}
+
+/// A file opened from the Files tab opens beside it: the Files tab, a
+/// preview, is kept rather than replaced.
+#[test]
+fn a_file_opened_from_the_files_tab_keeps_it() {
+    let (_app_data, _folder, mut app) = opened(&["A.md"]);
+    app.open_page(app_core::FILES_PAGE, OpenAs::Preview);
+    assert_eq!(shown(&app), ["Files (preview)"]);
+
+    app.open_from_files("A.md", OpenAs::Preview);
+
+    assert_eq!(shown(&app), ["Files", "A (preview)"]);
+    assert_eq!(active(&app).as_deref(), Some("A"));
 }
 
 #[test]
@@ -643,6 +719,28 @@ fn a_note_that_loses_its_id_keeps_its_tab() {
     app.rescan();
 
     assert_eq!(paths(&app), ["Plan.md"]);
+}
+
+#[test]
+fn a_note_read_half_written_follows_its_id_when_it_moves() {
+    let (_app_data, folder, mut app) = opened(&["A.md"]);
+    let note = managed_note("note_01k00000000000000000000035");
+    write(folder.path(), "Plan.md", &note);
+    app.rescan();
+    app.open_file("Plan.md", OpenAs::Kept);
+
+    // Another app rewrites the note in place, and Noura reads it empty.
+    write(folder.path(), "Plan.md", b"");
+    app.rescan();
+    assert_eq!(paths(&app), ["Plan.md"]);
+
+    // The rest of the write lands, and the note moves before Noura reads
+    // it whole.
+    write(folder.path(), "Plan.md", &note);
+    rename(folder.path(), "Plan.md", "Archive/Plan.md");
+    app.rescan();
+
+    assert_eq!(paths(&app), ["Archive/Plan.md"]);
 }
 
 #[test]

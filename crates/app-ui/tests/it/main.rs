@@ -14,6 +14,7 @@ mod dictation;
 mod egui_link;
 mod file_drops;
 mod file_viewers;
+mod files_page;
 mod finder;
 mod folder_sync;
 mod ignored_files;

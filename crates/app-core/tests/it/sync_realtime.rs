@@ -6,7 +6,8 @@
 //! accepts; policy, key and account chain hints fetch what they name; the
 //! app pings, reconnects with backoff, pulls once a minute while the
 //! channel is up and long-polls while it is down, and catches up after a
-//! dropped connection.
+//! dropped connection; and a note that couldn't enter text mode asks
+//! again 2 seconds on, with the channel up or down.
 
 use crate::sync_support;
 use std::time::Duration;
@@ -571,4 +572,216 @@ async fn hints_fetch_the_policy_keys_and_account_chain() {
         sync_b.policy_revision(),
         sync_a.remote_mut().unwrap().policy_revision()
     );
+}
+
+/// How many requests `proxy` took so far whose path ends with `suffix`.
+fn requests(proxy: &sync_support::Proxy, suffix: &str) -> usize {
+    proxy
+        .requests()
+        .iter()
+        .filter(|r| {
+            r.path
+                .split('?')
+                .next()
+                .unwrap_or_default()
+                .ends_with(suffix)
+        })
+        .count()
+}
+
+/// A step's wait ends by the moment it's given, and with the channel up
+/// that costs no request (§22, §23). With the channel down, the pull waits
+/// no longer than that, even while the reconnect backoff is long.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_step_ends_by_the_moment_it_is_given() {
+    use tokio::time::Instant;
+
+    let mut pair = pair().await;
+    let wake = tokio::sync::Notify::new();
+    let mut live = Live::new(Duration::from_secs(60), Duration::from_secs(20));
+    let step = live
+        .step(&mut pair.sync_a, &mut pair.service, &wake)
+        .await
+        .expect("connects");
+    assert!(step.connected && step.pulled, "it pulls once it connects");
+
+    // Up: the step stops waiting and sends nothing. The channel's first
+    // frames may end a step before then.
+    let before = requests(&pair.proxy, "/pull");
+    let started = Instant::now();
+    let until = started + Duration::from_secs(1);
+    while Instant::now() < until {
+        let step = live
+            .step_until(&mut pair.sync_a, &mut pair.service, &wake, Some(until))
+            .await
+            .expect("a step");
+        assert!(step.connected && !step.pulled, "{step:?}");
+    }
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(5), "{took:?}");
+    assert_eq!(requests(&pair.proxy, "/pull"), before, "no pull");
+
+    // Down, with a backoff of 15 to 30 seconds: the long poll ends by the
+    // moment given instead.
+    pair.proxy.forge(Box::new(|_, path| {
+        path.ends_with("/realtime").then(|| (503, Vec::new()))
+    }));
+    for _ in 0..6 {
+        live.disconnect();
+    }
+    let before = requests(&pair.proxy, "/pull");
+    let started = Instant::now();
+    let until = started + Duration::from_secs(2);
+    let step = live
+        .step_until(&mut pair.sync_a, &mut pair.service, &wake, Some(until))
+        .await
+        .expect("a step");
+    let took = started.elapsed();
+    assert!(!step.connected && step.pulled, "{step:?}");
+    assert!(
+        took >= Duration::from_secs(2) && took < Duration::from_secs(8),
+        "{took:?}"
+    );
+    assert_eq!(
+        requests(&pair.proxy, "/pull"),
+        before + 1,
+        "one pull, which waited"
+    );
+}
+
+/// Makes a file unreadable until the guard goes, as a file another program
+/// holds for a moment can be.
+#[cfg(unix)]
+struct Unreadable(std::path::PathBuf);
+
+#[cfg(unix)]
+impl Unreadable {
+    fn new(path: std::path::PathBuf) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(
+            std::fs::read(&path).is_err(),
+            "the file stays readable: the test can't run as root"
+        );
+        Self(path)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Unreadable {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o644));
+    }
+}
+
+/// The app, as the desktop runs it with the channel up: a note whose
+/// first request to enter text mode gets "not yet" asks again 2 seconds
+/// on, and enters as soon as it can, rather than at the minute's pull
+/// (§22, §23). Here the note can't be read for a moment, which no file
+/// event or frame follows, so only the retry's timer ends the wait.
+#[cfg(unix)]
+#[test]
+fn a_note_refused_while_the_channel_is_up_asks_again_within_seconds() {
+    use app_core::account::live::{ACCOUNT_FILE, LiveAccount};
+    use app_core::account::{AccountBackend, AccountPhase};
+    use app_core::folder_sync::{FolderSyncBackend, FolderSyncPhase};
+    use app_core::sync::account_heads::KEPT_HEADS_FILE;
+    use app_core::sync::device::StoredDevice;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let Pair {
+        server,
+        proxy,
+        laptop,
+        service,
+        a,
+        sync_a,
+        ..
+    } = runtime.block_on(pair());
+    drop((service, sync_a));
+    let state = a.app_data.path().join("sync").join(laptop.id().to_hex());
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::copy(
+        laptop.state.path().join(KEPT_HEADS_FILE),
+        state.join(KEPT_HEADS_FILE),
+    )
+    .unwrap();
+    std::fs::write(
+        a.app_data.path().join(ACCOUNT_FILE),
+        format!(r#"{{"server":"{}"}}"#, proxy.base),
+    )
+    .unwrap();
+    let mut stored = StoredDevice::load(&*laptop.secrets, &server.base)
+        .unwrap()
+        .expect("the laptop's device");
+    stored.server = proxy.base.clone();
+    stored.save(&*laptop.secrets).unwrap();
+    let account = LiveAccount::start(
+        a.app_data.path().to_owned(),
+        laptop.secrets.clone(),
+        Arc::new(|_| Ok(())),
+    );
+    FolderSyncBackend::attach(&account, Some(a.engine.clone()));
+    let bridge = FolderSyncBackend::text_bridge(&account).expect("the bridge");
+
+    let until = |what: &str, limit: Duration, done: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + limit;
+        while !done() {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let channels = || requests(&proxy, "/realtime");
+    until(
+        "the folder syncs on the channel",
+        Duration::from_secs(30),
+        &|| {
+            matches!(
+                AccountBackend::screen(&account).phase,
+                AccountPhase::SignedIn(_)
+            ) && FolderSyncBackend::screen(&account).phase == FolderSyncPhase::On
+                && channels() > 0
+        },
+    );
+
+    // Startup's last rounds come a couple of seconds after the channel
+    // opens. Once nothing goes to the server for 3 seconds, which is
+    // longer than the thread rests between rounds, it waits on the
+    // channel.
+    let seen = std::cell::Cell::new((proxy.requests().len(), Instant::now()));
+    until("the sync thread rests", Duration::from_secs(30), &|| {
+        let count = proxy.requests().len();
+        let (before, since) = seen.get();
+        if count != before {
+            seen.set((count, Instant::now()));
+            return false;
+        }
+        since.elapsed() >= Duration::from_secs(3)
+    });
+    // The note can't be read when you first type in it, so it stays out
+    // of text mode for now. It stays unreadable through the next try, so
+    // that try comes from the sync thread's wait on the channel either way.
+    let text = "# Plan\n";
+    let unreadable = Unreadable::new(a.path("Plan.md"));
+    bridge.open("Plan.md");
+    until("the request is answered", Duration::from_secs(10), &|| {
+        !bridge.answering("Plan.md")
+    });
+    assert!(bridge.take_document("Plan.md", text).is_none(), "refused");
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(bridge.take_document("Plan.md", text).is_none(), "refused");
+
+    // Readable again: the next try enters text mode within seconds.
+    drop(unreadable);
+    until(
+        "the note entered text mode within 10 seconds",
+        Duration::from_secs(10),
+        &|| bridge.take_document("Plan.md", text).is_some(),
+    );
+    assert_eq!(channels(), 1, "the channel stayed up");
+    drop(account);
+    drop(runtime);
 }

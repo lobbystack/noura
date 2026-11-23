@@ -210,65 +210,57 @@ fn open_in_new_tab_cmd_click_and_middle_click_on_a_page_keep_the_current_tab() {
     assert_eq!(selected(&harness).as_deref(), Some("Beta"));
 }
 
+/// Files opens a tab of its own, as every other page does: a click opens
+/// it in the preview tab, and its tab lists the workspace's files.
 #[test]
-fn files_shows_the_document_tab_a_page_took_over_from() {
+fn files_opens_its_own_tab_as_the_other_pages_do() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let mut harness = opened(app_data.path(), &parent.path().join("Garden"));
     harness.get_by_role_and_label(Role::TreeItem, "One").click();
     harness.run();
+    assert_eq!(tabs(&harness), ["One (preview)"]);
+
+    page(&harness, "Files").click();
+    harness.run();
+
+    assert_eq!(tabs(&harness), ["Files (preview)"]);
+    assert_eq!(selected(&harness).as_deref(), Some("Files (preview)"));
+    assert_eq!(current(&harness).as_deref(), Some("Files"));
+    let list = harness.get_by_role_and_label(Role::ListBox, "Files");
+    assert_eq!(
+        list.get_all_by_role(Role::ListBoxOption)
+            .filter_map(|row| row.accesskit_node().label())
+            .collect::<Vec<_>>(),
+        ["One", "Two"]
+    );
+
     page(&harness, "Alpha").click_modifiers(Modifiers::COMMAND);
     harness.run();
-    assert_eq!(selected(&harness).as_deref(), Some("Alpha"));
-
-    page(&harness, "Files").click();
+    assert_eq!(tabs(&harness), ["Files (preview)", "Alpha"]);
+    page(&harness, "Files").click_modifiers(Modifiers::COMMAND);
     harness.run();
-
-    assert_eq!(selected(&harness).as_deref(), Some("One (preview)"));
-    assert_eq!(current(&harness).as_deref(), Some("Files"));
+    assert_eq!(selected(&harness).as_deref(), Some("Files"));
 }
 
-/// The Inbox takes over the note's tab, and Files shows that note's text
-/// again.
+/// A file opened from the Files tab opens in its own tab beside it, and
+/// the Files tab stays.
 #[test]
-fn files_shows_the_note_the_inbox_took_over_from_with_its_text() {
+fn a_file_opened_from_the_files_tab_opens_beside_it() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    let folder = parent.path().join("Garden");
-    let mut harness = opened(app_data.path(), &folder);
-    std::fs::write(folder.join("One.md"), "shown text\n").unwrap();
-    harness.state_mut().app_mut().rescan();
-    settle(&mut harness);
-    harness.get_by_role_and_label(Role::TreeItem, "One").click();
-    harness.run();
-    page(&harness, "Inbox").click_modifiers(Modifiers::COMMAND);
-    harness.run();
-    assert_eq!(selected(&harness).as_deref(), Some("Inbox"));
-    assert!(
-        harness
-            .query_by_role_and_label(Role::TextInput, "File name")
-            .is_none()
-    );
-
+    let mut harness = opened(app_data.path(), &parent.path().join("Garden"));
     page(&harness, "Files").click();
     harness.run();
 
+    harness
+        .get_by_role_and_label(Role::ListBox, "Files")
+        .get_by_role_and_label(Role::ListBoxOption, "One")
+        .click();
+    harness.run();
+
+    assert_eq!(tabs(&harness), ["Files", "One (preview)"]);
     assert_eq!(selected(&harness).as_deref(), Some("One (preview)"));
-    assert_eq!(
-        harness
-            .get_by_role_and_label(Role::TextInput, "File name")
-            .accesskit_node()
-            .value()
-            .as_deref(),
-        Some("One")
-    );
-    assert_eq!(
-        harness
-            .get_by_role_and_label(Role::MultilineTextInput, "Note text")
-            .value()
-            .as_deref(),
-        Some("shown text\n")
-    );
 }
 
 fn focused_page(harness: &Ui) -> Option<String> {

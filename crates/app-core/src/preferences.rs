@@ -140,6 +140,9 @@ pub struct Preferences {
     /// Whether every open note marks misspelled words, where the system
     /// has a spell checker.
     pub spell_check: bool,
+    /// Whether a page with a sidebar of its own, such as Calendar or Tasks,
+    /// shows the file tree under it too. The Files page always does.
+    pub files_in_every_sidebar: bool,
 }
 
 impl Default for Preferences {
@@ -150,6 +153,7 @@ impl Default for Preferences {
             line_width: LineWidth::default(),
             zoom: ACTUAL_SIZE,
             spell_check: true,
+            files_in_every_sidebar: false,
         }
     }
 }
@@ -184,6 +188,7 @@ struct Saved {
     line_width: Value,
     zoom: Value,
     spell_check: Value,
+    files_in_every_sidebar: Value,
 }
 
 impl From<Saved> for Preferences {
@@ -206,12 +211,17 @@ impl From<Saved> for Preferences {
             .find(|level| saved.zoom.as_u64() == Some(u64::from(*level)))
             .unwrap_or(defaults.zoom);
         let spell_check = saved.spell_check.as_bool().unwrap_or(defaults.spell_check);
+        let files_in_every_sidebar = saved
+            .files_in_every_sidebar
+            .as_bool()
+            .unwrap_or(defaults.files_in_every_sidebar);
         Self {
             appearance,
             text_size,
             line_width,
             zoom,
             spell_check,
+            files_in_every_sidebar,
         }
     }
 }
@@ -224,6 +234,7 @@ impl From<&Preferences> for Saved {
             line_width: preferences.line_width.key().into(),
             zoom: preferences.zoom.into(),
             spell_check: preferences.spell_check.into(),
+            files_in_every_sidebar: preferences.files_in_every_sidebar.into(),
         }
     }
 }

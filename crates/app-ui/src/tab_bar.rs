@@ -1,10 +1,17 @@
 //! The tab bar: one tab per open file or page, each with a close button.
 //! `app-core` owns the tabs; this draws them and sends it clicks and keys.
+//!
+//! The active tab is the top of the page under it: the page's own fill,
+//! rounded at the top, open at the bottom, where the row's hairline stops
+//! for it, so tab and page read as one sheet. The other tabs sit on the
+//! row with no box, a faint fill under the pointer and a thin line between
+//! neighbours. Tabs share the row evenly between their narrowest and widest,
+//! and past their narrowest the row scrolls.
 
 use app_core::{App, TabId};
 use egui::{
-    Align2, Event, EventFilter, FontId, Id, Key, Rect, Response, ScrollArea, Sense, Stroke,
-    StrokeKind, TextWrapMode, Ui, UiBuilder, WidgetInfo, WidgetText,
+    Align2, CornerRadius, Event, EventFilter, FontId, Id, Key, Rect, Response, ScrollArea, Sense,
+    Stroke, StrokeKind, TextWrapMode, Ui, UiBuilder, WidgetInfo, WidgetText,
     accesskit::{Action, Role},
     containers::scroll_area::ScrollBarVisibility,
     pos2, vec2,
@@ -14,10 +21,16 @@ use crate::theme::{BODY_SIZE, Palette, radius};
 
 /// The height of the tab bar.
 pub(crate) const BAR_HEIGHT: f32 = 36.0;
-const TAB_HEIGHT: f32 = 28.0;
-/// The widest a tab's name draws before it's cut short.
-const NAME_WIDTH: f32 = 160.0;
+/// The space above a tab: tabs stand on the row's bottom edge.
+const TAB_TOP: f32 = 6.0;
+/// A tab's narrowest and widest. Tabs share the row evenly between them.
+pub(crate) const TAB_MIN_WIDTH: f32 = 160.0;
+pub(crate) const TAB_MAX_WIDTH: f32 = 240.0;
+/// The space before a tab's name and after its close button.
+const TAB_PADDING: f32 = 12.0;
 const CLOSE_SIZE: f32 = 16.0;
+/// The active tab's top corners.
+const TAB_RADIUS: u8 = 8;
 
 /// What the tab bar remembers between frames.
 #[derive(Default)]
@@ -26,6 +39,9 @@ pub(crate) struct TabBarView {
     focus: Option<TabId>,
     /// Give `focus` keyboard focus on the next frame.
     grab: bool,
+    /// The tab that was active last frame: a newly active tab scrolls
+    /// into sight.
+    shown_active: Option<TabId>,
 }
 
 fn tab_id(tab: TabId) -> Id {
@@ -91,8 +107,9 @@ struct Shown {
     preview: bool,
 }
 
-/// Draw the tab bar's tabs in the rest of `ui`'s row.
-pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TabBarView) {
+/// Draw the tab bar's tabs in `ui`'s row, up to `end`. Returns where the
+/// active tab drew, which the row's hairline leaves open.
+pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TabBarView, end: f32) -> Option<Rect> {
     let tabs: Vec<Shown> = app
         .tabs()
         .iter()
@@ -104,7 +121,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TabBarView) {
         .collect();
     if tabs.is_empty() {
         *view = TabBarView::default();
-        return;
+        return None;
     }
     let active = app.active_tab().map(app_core::Tab::id);
     if view
@@ -146,7 +163,12 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TabBarView) {
 
     let mut activate = None;
     let mut keep = None;
+    let mut active_rect = None;
     let palette = Palette::of(ui.ctx());
+    // Tabs share the row evenly, as wide as they may be, and no narrower
+    // than their narrowest: past that, the row scrolls.
+    let row_width = (end - ui.cursor().left()).max(0.0);
+    let width = (row_width / tabs.len() as f32).clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH);
     let builder = UiBuilder::new()
         .accessibility_role(Role::TabList)
         .accessibility_label("Tabs");
@@ -156,14 +178,23 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TabBarView) {
         ui.style_mut().always_scroll_the_only_direction = true;
         ScrollArea::horizontal()
             .id_salt("tab-bar")
+            .max_width(row_width)
             .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    let mut drawn_tabs: Vec<(Rect, bool)> = Vec::with_capacity(tabs.len());
                     for (index, tab) in tabs.iter().enumerate() {
                         let is_tab_stop = tab.id == tab_stop;
-                        let drawn =
-                            draw_tab(ui, tab, Some(tab.id) == active, is_tab_stop, &palette);
+                        let is_active = Some(tab.id) == active;
+                        let drawn = draw_tab(ui, tab, width, is_active, is_tab_stop, &palette);
+                        if is_active {
+                            if view.shown_active != active {
+                                drawn.tab.scroll_to_me(None);
+                            }
+                            active_rect = Some(drawn.rect.intersect(ui.clip_rect()));
+                        }
+                        drawn_tabs.push((drawn.rect, is_active || drawn.hovered));
                         if view.grab && Some(tab.id) == view.focus {
                             drawn.tab.request_focus();
                             drawn.tab.scroll_to_me(None);
@@ -181,10 +212,28 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TabBarView) {
                             }
                         }
                     }
+                    // A thin line between two quiet tabs; none beside the
+                    // active tab or the one under the pointer.
+                    for pair in drawn_tabs.windows(2) {
+                        let [(left, left_lit), (_, right_lit)] = pair else {
+                            continue;
+                        };
+                        if *left_lit || *right_lit {
+                            continue;
+                        }
+                        let x = left.right();
+                        let middle = (left.top() + left.bottom()) / 2.0;
+                        ui.painter().vline(
+                            x,
+                            (middle - 8.0)..=(middle + 8.0),
+                            Stroke::new(1.0, palette.border),
+                        );
+                    }
                 });
             });
     });
     view.grab = false;
+    view.shown_active = active;
 
     if let Some(id) = activate {
         app.activate_tab(id);
@@ -202,16 +251,46 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TabBarView) {
             .map(app_core::Tab::id);
         view.grab = from_keyboard && view.focus.is_some();
     }
+    active_rect
+}
+
+/// Draw the tab row's hairline along `row`'s bottom, open under the active
+/// tab at `active`, so the tab and the page under it read as one sheet.
+pub(crate) fn hairline(ui: &Ui, row: Rect, active: Option<Rect>) {
+    let palette = Palette::of(ui.ctx());
+    let y = row.bottom() - 0.5;
+    let stroke = Stroke::new(1.0, palette.sidebar_border);
+    let painter = ui.ctx().layer_painter(ui.layer_id()).with_clip_rect(row);
+    match active.filter(|tab| tab.width() > 0.0) {
+        Some(tab) => {
+            painter.hline(row.left()..=tab.left(), y, stroke);
+            painter.hline(tab.right()..=row.right(), y, stroke);
+        }
+        None => {
+            painter.hline(row.x_range(), y, stroke);
+        }
+    }
 }
 
 struct DrawnTab {
     tab: Response,
     close: Response,
+    /// Where the tab drew, from its top to the row's bottom.
+    rect: Rect,
+    hovered: bool,
 }
 
-/// One tab: its name, in Public Sans Italic while it's the preview, and a
-/// close button that shows on the active tab and under the pointer.
-fn draw_tab(ui: &mut Ui, tab: &Shown, active: bool, tab_stop: bool, palette: &Palette) -> DrawnTab {
+/// One tab, `width` wide: its name, in Public Sans Italic while it's the
+/// preview, and a close button that shows on the active tab and under the
+/// pointer. The active tab is the page's sheet; another tab has no box.
+fn draw_tab(
+    ui: &mut Ui,
+    tab: &Shown,
+    width: f32,
+    active: bool,
+    tab_stop: bool,
+    palette: &Palette,
+) -> DrawnTab {
     let mut name = egui::RichText::new(&tab.title);
     let mut font = FontId::proportional(BODY_SIZE);
     if tab.preview {
@@ -221,14 +300,16 @@ fn draw_tab(ui: &mut Ui, tab: &Shown, active: bool, tab_stop: bool, palette: &Pa
             name = name.italics();
         }
     }
+    let name_width = (width - TAB_PADDING - 6.0 - CLOSE_SIZE - TAB_PADDING / 2.0).max(0.0);
     let galley = WidgetText::from(name.font(font.clone())).into_galley(
         ui,
         Some(TextWrapMode::Truncate),
-        NAME_WIDTH,
+        name_width,
         font,
     );
-    let size = vec2(10.0 + galley.size().x + 4.0 + CLOSE_SIZE + 4.0, TAB_HEIGHT);
-    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let (slot, _) = ui.allocate_exact_size(vec2(width, BAR_HEIGHT), Sense::hover());
+    // The tab stands on the row's bottom edge.
+    let rect = Rect::from_min_max(pos2(slot.left(), slot.top() + TAB_TOP), slot.max);
     let sense = if tab_stop {
         Sense::click()
     } else {
@@ -248,47 +329,51 @@ fn draw_tab(ui: &mut Ui, tab: &Shown, active: bool, tab_stop: bool, palette: &Pa
     });
     let response = response.on_hover_text(&label);
 
+    let middle = rect.center().y;
     let close_rect = Rect::from_center_size(
-        pos2(rect.right() - 4.0 - CLOSE_SIZE / 2.0, rect.center().y),
+        pos2(rect.right() - TAB_PADDING / 2.0 - CLOSE_SIZE / 2.0, middle),
         vec2(CLOSE_SIZE, CLOSE_SIZE),
     );
     let close = ui.interact(close_rect, id.with("close"), Sense::CLICK);
     let close_label = format!("Close {}", tab.title);
     close.widget_info(|| WidgetInfo::labeled(Role::Button, true, &close_label));
+    let hovered = response.hovered() || close.hovered();
 
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
-        let hovered = response.hovered() || close.hovered();
+        let top = CornerRadius {
+            nw: TAB_RADIUS,
+            ne: TAB_RADIUS,
+            sw: 0,
+            se: 0,
+        };
         if active {
-            // The legacy active tab: the page's fill, a hairline ring and
-            // a faint shadow under it.
-            painter.rect_filled(
-                rect.translate(vec2(0.0, 1.0)),
-                radius(1.0),
-                egui::Color32::from_black_alpha(13),
-            );
-        }
-        if active || hovered {
-            painter.rect_filled(rect, radius(1.0), palette.background);
-        }
-        if active {
-            painter.rect_stroke(
-                rect,
-                radius(1.0),
-                Stroke::new(1.0, palette.border),
-                StrokeKind::Inside,
-            );
+            // The page's own fill, outlined on three sides by the row's
+            // hairline, which stops under the tab.
+            painter.rect_filled(rect, top, palette.background);
+            let outline = Rect::from_min_max(rect.min, rect.max + vec2(0.0, 2.0));
+            painter
+                .with_clip_rect(rect.intersect(ui.clip_rect()))
+                .rect_stroke(
+                    outline,
+                    top,
+                    Stroke::new(1.0, palette.sidebar_border),
+                    StrokeKind::Inside,
+                );
+        } else if hovered {
+            let fill = Rect::from_min_max(rect.min + vec2(2.0, 0.0), rect.max - vec2(2.0, 4.0));
+            painter.rect_filled(fill, radius(0.8), palette.foreground.gamma_multiply(0.06));
         }
         if response.has_focus() {
-            crate::common::focus_ring(painter, rect.shrink(1.0), radius(0.6), palette);
+            crate::common::focus_ring(painter, rect.shrink(2.0), radius(0.6), palette);
         }
         let color = if active || hovered {
             palette.foreground
         } else {
             palette.muted_foreground
         };
-        let text = Align2::LEFT_CENTER
-            .anchor_size(pos2(rect.left() + 10.0, rect.center().y), galley.size());
+        let text =
+            Align2::LEFT_CENTER.anchor_size(pos2(rect.left() + TAB_PADDING, middle), galley.size());
         painter.galley(text.min, galley, color);
         if active || hovered {
             let color = if close.hovered() {
@@ -296,6 +381,13 @@ fn draw_tab(ui: &mut Ui, tab: &Shown, active: bool, tab_stop: bool, palette: &Pa
             } else {
                 palette.muted_foreground.gamma_multiply(0.6)
             };
+            if close.hovered() {
+                painter.rect_filled(
+                    close_rect.expand(2.0),
+                    radius(0.4),
+                    palette.foreground.gamma_multiply(0.08),
+                );
+            }
             let cross = Rect::from_center_size(close_rect.center(), vec2(14.0, 14.0));
             crate::icons::paint(painter, crate::icons::CLOSE, cross, color, false);
         }
@@ -303,5 +395,7 @@ fn draw_tab(ui: &mut Ui, tab: &Shown, active: bool, tab_stop: bool, palette: &Pa
     DrawnTab {
         tab: response,
         close,
+        rect,
+        hovered,
     }
 }

@@ -66,6 +66,8 @@ pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
     Panel::top("tab-bar")
         .resizable(false)
         .exact_size(BAR_HEIGHT)
+        // The bar draws its own hairline, which the active tab interrupts.
+        .show_separator_line(false)
         .frame(
             Frame::new()
                 .fill(palette.sidebar)
@@ -77,11 +79,12 @@ pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
             let rect = ui.max_rect().expand2(vec2(f32::from(TAB_BAR_MARGIN), 0.0));
             common::title_bar_area(ui, rect, "tab-bar");
             // The window's own buttons take the row's end.
-            if end_reach > 0.0 {
-                let end = window.right() - end_reach;
-                ui.set_max_width((end - ui.max_rect().left()).max(0.0));
-            }
-            ui.horizontal_centered(|ui| {
+            let end = if end_reach > 0.0 {
+                window.right() - end_reach
+            } else {
+                ui.max_rect().right()
+            };
+            let active = ui.horizontal_centered(|ui| {
                 // The window's own buttons may take the row's start.
                 let start = window.left() + start_reach - ui.cursor().left();
                 // With the sidebar hidden, its switcher moves here.
@@ -95,8 +98,9 @@ pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
                 } else if start > 0.0 {
                     ui.add_space(start);
                 }
-                tab_bar::show(ui, &mut state.app, &mut state.tab_bar);
+                tab_bar::show(ui, &mut state.app, &mut state.tab_bar, end)
             });
+            tab_bar::hairline(ui, rect, active.inner);
         });
     // A page scrolls edge to edge, so its header's line runs the page's
     // whole width; its contents keep the 24 px margin inside.
@@ -193,8 +197,11 @@ fn sidebar(state: &mut NouraUi, ui: &mut Ui) {
             switcher(state, &mut header_ui);
             ui.add_space(common::TITLE_BAR_HEIGHT);
             Frame::new().inner_margin(Margin::same(8)).show(ui, |ui| {
-                plugin_section(state, ui);
-                tree::show(ui, &mut state.app, &mut state.tree);
+                let files = state.app.sidebar_shows_files();
+                plugin_section(state, ui, files);
+                if files {
+                    tree::show(ui, &mut state.app, &mut state.tree);
+                }
             });
         });
     // Save the width once a resize ends.
@@ -204,10 +211,10 @@ fn sidebar(state: &mut NouraUi, ui: &mut Ui) {
     }
 }
 
-/// The section the plugin page in the active tab adds to the sidebar,
-/// above the file tree, while the page shows. It scrolls on its own once
-/// it is taller than half the sidebar.
-fn plugin_section(state: &mut NouraUi, ui: &mut Ui) {
+/// The section the plugin page in the active tab adds to the sidebar while
+/// the page shows. Above the file tree, when `files` shows it too, it
+/// scrolls on its own once it is taller than half the sidebar.
+fn plugin_section(state: &mut NouraUi, ui: &mut Ui, files: bool) {
     let Some(page_id) = state.app.active_tab().and_then(|tab| match tab.content() {
         TabContent::Page { page_id, .. } if state.app.is_plugin_page(page_id) => {
             Some(page_id.clone())
@@ -225,15 +232,20 @@ fn plugin_section(state: &mut NouraUi, ui: &mut Ui) {
     if empty {
         return;
     }
+    let height = if files {
+        ui.available_height() / 2.0
+    } else {
+        ui.available_height()
+    };
     let drawn = ScrollArea::vertical()
         .id_salt(("plugin-sidebar", &page_id))
-        .max_height(ui.available_height() / 2.0)
+        .max_height(height)
         .auto_shrink([false, true])
         .show(ui, |ui| {
             crate::plugin_view::show_sidebar(ui, &mut state.app, state.window, &page_id)
         })
         .inner;
-    if drawn {
+    if drawn && files {
         ui.separator();
     }
 }
@@ -378,6 +390,9 @@ fn page_content(state: &mut NouraUi, ui: &mut Ui, content: &TabContent, is_inbox
             muted(ui, &file.relative_path);
         }
         TabContent::Page { .. } if is_inbox => inbox::show(ui, &mut state.app, state.window),
+        TabContent::Page { page_id, .. } if page_id == app_core::FILES_PAGE => {
+            crate::files_page::show(ui, &mut state.app);
+        }
         TabContent::Page { title, page_id } => {
             // A plugin page that draws its own heading gets no other.
             let plugin = state.app.is_plugin_page(page_id);
@@ -411,14 +426,10 @@ fn content(state: &mut NouraUi, ui: &mut Ui) {
         .accessibility_label("Document");
     ui.scope_builder(builder, |ui| {
         let Some((id, content, place)) = active else {
+            // With every tab closed, the page says so in one line.
             state.shown_tab = None;
-            ui.add_space((ui.available_height() / 2.0 - 120.0).max(0.0));
-            common::empty_state(
-                ui,
-                Some(crate::icons::NEW_NOTE),
-                "No file open",
-                Some("Pick a file from the sidebar."),
-            );
+            ui.add_space((ui.available_height() / 2.0 - 12.0).max(0.0));
+            ui.vertical_centered(|ui| muted(ui, "No tabs open"));
             return;
         };
         if matches!(content, TabContent::File { .. })
@@ -445,8 +456,15 @@ fn content(state: &mut NouraUi, ui: &mut Ui) {
             scroll = scroll.scroll_offset(vec2(place.scroll[0], place.scroll[1]));
         }
         // A plugin page's header sits in the top 56 px, as the legacy page
-        // header did; other pages keep 24 px all round.
+        // header did, and so does the Files page's path bar; other pages
+        // keep 24 px all round.
         let margin = match &content {
+            TabContent::Page { page_id, .. } if page_id == app_core::FILES_PAGE => Margin {
+                left: 24,
+                right: 24,
+                top: 12,
+                bottom: 24,
+            },
             TabContent::Page { page_id, .. }
                 if state.app.is_plugin_page(page_id)
                     && crate::plugin_view::has_page_heading(&state.app, page_id) =>

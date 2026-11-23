@@ -11,7 +11,8 @@
 //! notify and once a minute, and while the channel is down each round's
 //! pull waits up to [`PULL_WAIT_SECONDS`] for new records. A change in
 //! the workspace's files or something you do ends the wait, so local
-//! changes go out at once (§15).
+//! changes go out at once (§15), and the wait lasts no longer than a note
+//! that couldn't enter text mode takes to ask again (§22).
 //!
 //! [`PULL_WAIT_SECONDS`]: crate::sync::workspace::PULL_WAIT_SECONDS
 
@@ -96,6 +97,10 @@ pub(super) struct Folder {
     /// of sync until then.
     reset_held: bool,
     engine: Option<Arc<WorkspaceEngine>>,
+    /// The workspace's reports since the folder attached. A report that
+    /// lands between rounds, such as your save while the sync thread
+    /// answers the editor, waits here and ends the next round's wait.
+    heard: Option<tokio::sync::broadcast::Receiver<local_core::CoreEvent>>,
     sync: Option<WorkspaceSync>,
     last_error: Option<String>,
     /// What a note's records reported, until its review entry goes.
@@ -340,6 +345,7 @@ impl Folder {
         self.rebuild = false;
         self.not_connected = false;
         self.account_lost = None;
+        self.heard = engine.as_ref().map(|engine| engine.subscribe());
         self.engine = engine;
         self.open(service, store, app_data);
     }
@@ -564,9 +570,11 @@ impl Folder {
         text: &crate::text_bridge::TextBridge,
     ) {
         let Some(service) = service else {
+            text.set_served(false);
             return;
         };
         if self.reset_held {
+            text.set_served(false);
             return;
         }
         self.open(Some(service), store, app_data);
@@ -581,20 +589,26 @@ impl Folder {
                 }
                 Err(error) => {
                     self.last_error = Some(folder_message(&error));
+                    text.set_served(false);
                     return;
                 }
             }
         }
         let Some(sync) = self.sync.as_mut() else {
+            text.set_served(false);
             return;
         };
+        text.set_served(true);
         sync.follow_changes();
         text.serve(sync);
+        // A note that couldn't enter text mode asks again 2 seconds on, so
+        // the wait below ends by then.
+        let ask_again = text.next_ask_again().map(tokio::time::Instant::from_std);
         let result = if sync.paused() {
             sync.capture().map(|_| ())
         } else {
             let live = &mut self.live;
-            let mut events = self.engine.as_ref().map(|engine| engine.subscribe());
+            let events = &mut self.heard;
             let changes = async {
                 loop {
                     match events.as_mut() {
@@ -612,7 +626,9 @@ impl Folder {
             };
             let step = async {
                 if long {
-                    live.step(sync, service, wake).await.map(|_| ())
+                    live.step_until(sync, service, wake, ask_again)
+                        .await
+                        .map(|_| ())
                 } else {
                     sync.round_until(service, 0, wake).await.map(|_| ())
                 }

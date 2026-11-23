@@ -77,14 +77,53 @@ fn a_month_grid_shows_six_weeks_from_sunday() {
     for day in ["Monday, October 19, 2026", "Tuesday, October 20, 2026"] {
         assert_eq!(entries_in(harness, day), ["Retreat, all day"]);
     }
+    // The weeks share the window's height, so a day shows the entries
+    // that fit and how many more it holds. Screen readers reach them all.
+    let wednesday = "Wednesday, October 21, 2026";
     assert_eq!(
-        entries_in(harness, "Wednesday, October 21, 2026"),
+        entries_in(harness, wednesday),
+        [
+            "Retreat, all day",
+            "Standup, 9:00 AM–9:30 AM",
+            "Review, 9:15 AM–10:00 AM",
+            "Deploy, 11:00 PM–12:00 AM",
+            "+3 more",
+        ]
+    );
+    let rect = |harness: &Ui, label: &str| {
+        grid(harness)
+            .get_by_role_and_label(Role::Cell, wednesday)
+            .get_by_label(label)
+            .rect()
+    };
+    // An entry with no room sits at the line that counts it.
+    assert_eq!(
+        rect(harness, "Deploy, 11:00 PM–12:00 AM"),
+        rect(harness, "+3 more")
+    );
+    // The last week reaches the window's bottom, inside the 8 points
+    // kittest keeps around the app.
+    let days = grid(harness)
+        .get_all_by_role(Role::Cell)
+        .collect::<Vec<_>>();
+    let bottom = days.last().unwrap().rect().bottom();
+    assert!((bottom - (700.0 - 8.0)).abs() <= 1.0, "{bottom}");
+    // A press there makes the week tall enough for all of them.
+    press_button(harness, "+3 more");
+    assert_eq!(
+        entries_in(harness, wednesday),
         [
             "Retreat, all day",
             "Standup, 9:00 AM–9:30 AM",
             "Review, 9:15 AM–10:00 AM",
             "Deploy, 11:00 PM–12:00 AM",
         ]
+    );
+    let review = rect(harness, "Review, 9:15 AM–10:00 AM");
+    let deploy = rect(harness, "Deploy, 11:00 PM–12:00 AM");
+    assert!(
+        deploy.top() >= review.bottom(),
+        "{deploy:?} under {review:?}"
     );
     assert_eq!(
         entries_in(harness, "Thursday, October 22, 2026"),
@@ -105,6 +144,95 @@ fn a_month_grid_shows_six_weeks_from_sunday() {
     );
     let days = labels(grid(harness).get_all_by_role(Role::Cell));
     assert_eq!(days[0], "Sunday, November 1, 2026");
+}
+
+#[test]
+fn the_keyboard_reaching_an_entry_with_no_room_makes_its_week_tall_enough() {
+    let Some(kit) = plugins::built("kit_plugin") else {
+        return;
+    };
+    let mut opened = opened(&kit);
+    let harness = &mut opened.harness;
+    open_page(harness, "Calendar");
+    press_button(harness, "Month");
+    let wednesday = "Wednesday, October 21, 2026";
+    let rect = |harness: &Ui, label: &str| {
+        grid(harness)
+            .get_by_role_and_label(Role::Cell, wednesday)
+            .get_by_label(label)
+            .rect()
+    };
+    let week = |harness: &Ui| {
+        grid(harness)
+            .get_all_by_role(Role::Row)
+            .nth(4)
+            .unwrap()
+            .rect()
+    };
+    let before = week(harness);
+
+    grid(harness)
+        .get_by_role_and_label(Role::Cell, wednesday)
+        .get_by_label("Retreat, all day")
+        .click();
+    run(harness);
+    // On through Wednesday's entries to its last, which has no room.
+    for _ in 0..3 {
+        press(harness, Key::ArrowRight);
+    }
+    assert_eq!(
+        focused(harness).as_deref(),
+        Some("Deploy, 11:00 PM–12:00 AM")
+    );
+    run(harness);
+    let review = rect(harness, "Review, 9:15 AM–10:00 AM");
+    let deploy = rect(harness, "Deploy, 11:00 PM–12:00 AM");
+    assert!(
+        deploy.top() >= review.bottom(),
+        "{deploy:?} under {review:?}"
+    );
+    assert!(week(harness).height() > before.height());
+    assert!(
+        grid(harness)
+            .query_by_role_and_label(Role::Button, "+3 more")
+            .is_none()
+    );
+
+    // Another period shows its weeks at their share again.
+    press_button(harness, "Next");
+    press_button(harness, "Previous");
+    assert_eq!(week(harness).height(), before.height());
+}
+
+#[test]
+fn a_weeks_days_and_all_day_row_stay_while_its_hours_scroll_to_the_window_bottom() {
+    let Some(kit) = plugins::built("kit_plugin") else {
+        return;
+    };
+    let mut opened = opened(&kit);
+    let harness = &mut opened.harness;
+    open_page(harness, "Calendar");
+    let header = |harness: &Ui| {
+        grid(harness)
+            .get_by_role_and_label(Role::ColumnHeader, "Sunday, October 18, 2026")
+            .rect()
+    };
+    let all_day = |harness: &Ui| {
+        grid(harness)
+            .get_by_role_and_label(Role::RowHeader, "All day")
+            .rect()
+    };
+    let (header_before, all_day_before) = (header(harness), all_day(harness));
+
+    scroll_to(harness, "Deploy, 11:00 PM–12:00 AM");
+    let deploy = grid(harness)
+        .get_by_label("Deploy, 11:00 PM–12:00 AM")
+        .rect();
+    // The hours end at the window's bottom, inside kittest's 8 points.
+    assert!(deploy.bottom() <= 700.0 - 8.0 + 1.0, "{deploy:?}");
+    assert!(deploy.top() > all_day_before.bottom(), "{deploy:?}");
+    assert_eq!(header(harness), header_before);
+    assert_eq!(all_day(harness), all_day_before);
 }
 
 #[test]

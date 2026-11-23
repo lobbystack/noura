@@ -246,6 +246,54 @@ async fn a_note_with_no_matching_file_operation_waits_outside_text_mode() {
     assert!(document.is_none());
 }
 
+/// The laptop's note entered text mode, and before its first snapshot
+/// reached the desktop, the desktop's save of its first edit landed before
+/// the sync thread answered the editor. The desktop enters from the file
+/// its editor loaded, the same base, so the two first snapshots are one
+/// and both edits merge as text. Sent as a `file` operation, the desktop's
+/// edit would have forked the note for good.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_first_edit_saved_before_the_answer_merges_with_the_other_desktops() {
+    let mut pair = pair().await;
+    let (entered, a) = pair.sync_a.open_text(PLAN).expect("asked");
+    assert_eq!(entered, Entered::Yes);
+    let mut a = a.expect("the document");
+    type_at(&mut a, 0, "Ana ");
+
+    let bridge = TextBridge::default();
+    bridge.open_from(PLAN, b"# Plan\n");
+    pair.b.write(PLAN, b"Ben # Plan\n");
+    bridge.serve(&mut pair.sync_b);
+    let rid = pair.sync_b.rid_at(PLAN).unwrap();
+    assert!(pair.sync_b.in_text_mode(&rid), "the desktop entered");
+
+    for _ in 0..2 {
+        both_rounds(&mut pair).await;
+        pair.sync_a.text_tick(Instant::now()).expect("a tick");
+        pair.sync_b.text_tick(Instant::now()).expect("a tick");
+    }
+    both_rounds(&mut pair).await;
+    assert!(pair.sync_a.conflicts().is_empty());
+    assert!(pair.sync_b.conflicts().is_empty());
+    let file = read(&pair.a, PLAN);
+    assert!(file.contains("Ana ") && file.contains("Ben "), "{file:?}");
+    assert_eq!(read(&pair.b, PLAN), file);
+}
+
+/// Bytes that aren't the base's, such as a file whose line breaks the
+/// editor turned into LF, leave the note to enter once sync sent the edit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_first_edit_saved_from_other_bytes_than_the_base_waits() {
+    let mut pair = pair().await;
+    let bridge = TextBridge::default();
+    bridge.open_from(PLAN, b"# Plan\r\n");
+    pair.a.write(PLAN, b"# Plan edited\n");
+    bridge.serve(&mut pair.sync_a);
+    let rid = pair.sync_a.rid_at(PLAN).unwrap();
+    assert!(!pair.sync_a.in_text_mode(&rid));
+    assert!(bridge.take_document(PLAN, "# Plan edited\n").is_none());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_desktops_that_start_at_once_merge_without_a_conflict() {
     let mut pair = pair().await;

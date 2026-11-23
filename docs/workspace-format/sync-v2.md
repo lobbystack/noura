@@ -1230,6 +1230,8 @@ A device puts a note into text mode when it first sends an edit you made to that
 - its `meta` entries hold the base operation's `path` and, for a managed note, the properties of its frontmatter, each naming the base operation's sequence;
 - the text lineage ID is the first 16 bytes of `BLAKE3(tag(noura.sync.text.lineage) || rid || base || document)`, where `base` is the base operation's digest and `document` the first document's encoded bytes.
 
+The editor's save of that first edit can reach the file before the device enters, so the file matches no live state. The edit is still one you made in the editor: the device enters from the base operation's bytes as the editor loaded them, once they hash to the base's revision, and sends the saved edit as text updates. Sent as a `file` operation, it would conflict with the first snapshot of another device that entered from the same base.
+
 The first snapshot covers the base operation and holds the starting state alone; your edits follow as text updates under the device's own client ID. Identical first snapshots merge to the starting state once. Two devices that start from different states, or build different first documents from one, write different lineages, which conflict as two branches ([§16](#16-conflicts)) instead of sharing item IDs.
 
 ### Updates

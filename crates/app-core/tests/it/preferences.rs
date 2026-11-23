@@ -34,6 +34,7 @@ fn a_new_device_matches_the_system_theme_at_default_text_size_and_full_zoom() {
             line_width: LineWidth::Default,
             zoom: 100,
             spell_check: true,
+            files_in_every_sidebar: false,
         }
     );
     assert_eq!(app.preferences().zoom_factor(), 1.0);
@@ -183,6 +184,7 @@ fn one_unreadable_choice_falls_back_alone() {
             line_width: LineWidth::Narrow,
             zoom: 150,
             spell_check: true,
+            files_in_every_sidebar: false,
         }
     );
 }
@@ -204,6 +206,28 @@ fn turning_spell_check_off_survives_a_relaunch_and_leaves_the_workspace_alone() 
     app.set_spell_check(true);
     let app = relaunch(app, &fixture);
     assert!(app.preferences().spell_check);
+    assert_eq!(workspace_bytes(&fixture), before);
+}
+
+/// Files in every sidebar is this device's choice: it starts off, and
+/// turning it on survives a relaunch in the app data folder, not in the
+/// workspace.
+#[test]
+fn files_in_every_sidebar_starts_off_and_survives_a_relaunch() {
+    let fixture = Fixture::new(&[("Plan.md", b"plan")]);
+    let mut app = fixture.app();
+    let before = workspace_bytes(&fixture);
+    assert!(!app.preferences().files_in_every_sidebar);
+
+    app.set_files_in_every_sidebar(true);
+    let mut app = relaunch(app, &fixture);
+    assert!(app.preferences().files_in_every_sidebar);
+    let saved = std::fs::read_to_string(fixture.app_data.path().join("preferences.json")).unwrap();
+    assert!(saved.contains("\"filesInEverySidebar\": true"), "{saved}");
+
+    app.set_files_in_every_sidebar(false);
+    let app = relaunch(app, &fixture);
+    assert!(!app.preferences().files_in_every_sidebar);
     assert_eq!(workspace_bytes(&fixture), before);
 }
 

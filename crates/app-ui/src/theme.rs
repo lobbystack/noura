@@ -133,6 +133,11 @@ pub const SIDEBAR_SIZE: f32 = 13.0;
 /// one clear place to start reading.
 pub const LARGE_TITLE_SIZE: f32 = 20.0;
 
+/// The title of a page that shows a period, such as a calendar's month:
+/// the period is what the page is about, so it reads first, as a
+/// calendar's month does.
+pub const PERIOD_TITLE_SIZE: f32 = 24.0;
+
 /// The height of a menu's row. Rows sit edge to edge, so the menu's
 /// rhythm is its rows' and nothing between them.
 pub const MENU_ROW: f32 = 28.0;

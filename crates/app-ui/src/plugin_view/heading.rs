@@ -1,7 +1,7 @@
 //! Page and section headings, and what an empty page or section shows.
 
 use app_core::{HeadingLevel, PluginIcon, ViewKind, ViewNode};
-use egui::{Align, Layout, RichText, Sense, Ui, UiBuilder, accesskit::Role, vec2};
+use egui::{Align, Layout, RichText, Sense, Ui, UiBuilder, accesskit::Role, text::LayoutJob, vec2};
 
 use super::{
     Kit,
@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     icons,
-    theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, TITLE_SIZE, Weight, font},
+    theme::{BODY_SIZE, PERIOD_TITLE_SIZE, Palette, SUPPORTING_SIZE, TITLE_SIZE, Weight, font},
 };
 
 fn icon(icon: PluginIcon) -> icons::Icon {
@@ -25,8 +25,11 @@ fn icon(icon: PluginIcon) -> icons::Icon {
 /// A page's or a section's title, with its buttons at its end. A page
 /// heading is the page header: its 16 px semibold title, as a note's
 /// header sets its name, with the detail under it, over a line. Its first
-/// button, the page's primary action, sits at the far end. A section heading has its icon, its 14 px
-/// medium title and its detail beside it.
+/// button, the page's primary action, sits at the far end. A period
+/// heading is a page header too, its title large with the rest of it, the
+/// detail, after it in regular weight, as a calendar names its month. A
+/// section heading has its icon, its 14 px medium title and its detail
+/// beside it.
 pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
     let ViewKind::Heading {
         text,
@@ -38,13 +41,19 @@ pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
         return;
     };
     let palette = Palette::of(ui.ctx());
-    let page = *level == HeadingLevel::Page;
+    let period = *level == HeadingLevel::Period;
+    let page = period || *level == HeadingLevel::Page;
     if page {
         kit.page_heading = true;
+        kit.page_period = period;
     }
+    let label = match detail {
+        Some(detail) if period => format!("{text} {detail}"),
+        _ => text.clone(),
+    };
     let builder = UiBuilder::new()
         .accessibility_role(Role::Heading)
-        .accessibility_label(text.as_str());
+        .accessibility_label(label);
     ui.scope_builder(builder, |ui| {
         // A page header's row fits its title and the detail under it, so
         // every page's buttons sit at one height.
@@ -66,6 +75,8 @@ pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             // editable title.
             let (size, weight) = if kit.in_popover {
                 (TITLE_SIZE + 2.0, Weight::Semibold)
+            } else if period {
+                (PERIOD_TITLE_SIZE, Weight::Semibold)
             } else if page {
                 (TITLE_SIZE, Weight::Semibold)
             } else {
@@ -75,6 +86,44 @@ pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
                 .font(font(ui.ctx(), size, weight))
                 .color(palette.foreground);
             match detail {
+                // A period heading's detail is the rest of its title.
+                Some(detail) if period => {
+                    let mut job = LayoutJob::default();
+                    title.append_to(
+                        &mut job,
+                        ui.style(),
+                        egui::FontSelection::Default,
+                        Align::Center,
+                    );
+                    RichText::new(format!(" {detail}"))
+                        .font(font(ui.ctx(), size, Weight::Regular))
+                        .color(palette.foreground)
+                        .append_to(
+                            &mut job,
+                            ui.style(),
+                            egui::FontSelection::Default,
+                            Align::Center,
+                        );
+                    // The buttons take their room first, from the end, and
+                    // the title shortens to fit what's left in a narrow
+                    // window.
+                    let row = egui::Rect::from_min_size(
+                        ui.cursor().min,
+                        vec2(ui.available_width(), height),
+                    );
+                    let mut end = ui.new_child(
+                        UiBuilder::new()
+                            .max_rect(row)
+                            .layout(Layout::right_to_left(Align::Center)),
+                    );
+                    controls(&mut end, node, page, kit);
+                    let room = row.width() - end.min_rect().width() - 16.0;
+                    ui.scope(|ui| {
+                        ui.set_max_width(room.max(0.0));
+                        ui.add(egui::Label::new(job).truncate());
+                    });
+                    return;
+                }
                 // A page heading's detail goes under its title.
                 Some(detail) if page => {
                     ui.vertical(|ui| {
@@ -100,37 +149,7 @@ pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                // Right to left. A page's first button is its primary
-                // action, which goes at the far end, after the filters and
-                // the navigation, as macOS and GNOME put it; the others
-                // keep their order before it.
-                let primary = page
-                    && matches!(
-                        node.children.first().map(|child| &child.kind),
-                        Some(ViewKind::Button { .. })
-                    );
-                let rest = usize::from(primary)..node.children.len();
-                let order = primary.then_some(0).into_iter().chain(rest.rev());
-                for index in order {
-                    let child = &node.children[index];
-                    match &child.kind {
-                        ViewKind::Button { label } => {
-                            let look = match (page, index) {
-                                (true, 0) => Look::Primary,
-                                (true, _) => Look::Ghost,
-                                (false, _) => Look::Quiet,
-                            };
-                            ui.push_id(&child.id, |ui| {
-                                styled_button(ui, child, label, look, kit);
-                            });
-                        }
-                        ViewKind::Input { .. } => {
-                            ui.push_id(&child.id, |ui| super::form::input(ui, child, kit));
-                        }
-                        _ => {}
-                    }
-                }
+                controls(ui, node, page, kit);
             });
         });
         if page {
@@ -145,6 +164,41 @@ pub(super) fn heading(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             ui.add_space(gap.max(0.0));
         }
     });
+}
+
+/// A heading's buttons and choice inputs, laid out from the end of a
+/// right-to-left `ui`.
+fn controls(ui: &mut Ui, node: &ViewNode, page: bool, kit: &mut Kit) {
+    ui.spacing_mut().item_spacing.x = 4.0;
+    // Right to left. A page's first button is its primary action, which
+    // goes at the far end, after the filters and the navigation, as macOS
+    // and GNOME put it; the others keep their order before it.
+    let primary = page
+        && matches!(
+            node.children.first().map(|child| &child.kind),
+            Some(ViewKind::Button { .. })
+        );
+    let rest = usize::from(primary)..node.children.len();
+    let order = primary.then_some(0).into_iter().chain(rest.rev());
+    for index in order {
+        let child = &node.children[index];
+        match &child.kind {
+            ViewKind::Button { label } => {
+                let look = match (page, index) {
+                    (true, 0) => Look::Primary,
+                    (true, _) => Look::Ghost,
+                    (false, _) => Look::Quiet,
+                };
+                ui.push_id(&child.id, |ui| {
+                    styled_button(ui, child, label, look, kit);
+                });
+            }
+            ViewKind::Input { .. } => {
+                ui.push_id(&child.id, |ui| super::form::input(ui, child, kit));
+            }
+            _ => {}
+        }
+    }
 }
 
 /// How much farther a section's title sits from the rows above it than

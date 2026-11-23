@@ -15,8 +15,11 @@ pub(crate) struct DateNames {
     weekday: DateTimeFormatter<fieldsets::E>,
     weekday_long: DateTimeFormatter<fieldsets::E>,
     day_number: DateTimeFormatter<fieldsets::D>,
+    month_day: DateTimeFormatter<fieldsets::MD>,
     full_date: DateTimeFormatter<fieldsets::YMDE>,
     month: DateTimeFormatter<fieldsets::YM>,
+    day_month: DateTimeFormatter<fieldsets::MD>,
+    date: DateTimeFormatter<fieldsets::YMD>,
     time: NoCalendarFormatter<fieldsets::T>,
     hour: NoCalendarFormatter<fieldsets::T>,
 }
@@ -53,8 +56,11 @@ impl DateNames {
             weekday: DateTimeFormatter::try_new(prefs(), fieldsets::E::short()).ok()?,
             weekday_long: DateTimeFormatter::try_new(prefs(), fieldsets::E::long()).ok()?,
             day_number: DateTimeFormatter::try_new(prefs(), fieldsets::D::short()).ok()?,
+            month_day: DateTimeFormatter::try_new(prefs(), fieldsets::MD::medium()).ok()?,
             full_date: DateTimeFormatter::try_new(prefs(), fieldsets::YMDE::long()).ok()?,
             month: DateTimeFormatter::try_new(prefs(), fieldsets::YM::long()).ok()?,
+            day_month: DateTimeFormatter::try_new(prefs(), fieldsets::MD::medium()).ok()?,
+            date: DateTimeFormatter::try_new(prefs(), fieldsets::YMD::medium()).ok()?,
             time: NoCalendarFormatter::try_new(prefs(), fieldsets::T::hm()).ok()?,
             hour: NoCalendarFormatter::try_new(
                 prefs(),
@@ -79,6 +85,12 @@ impl DateNames {
         plain(self.day_number.format(&iso(date)).to_string())
     }
 
+    /// The day of the month with the month's short name, such as `Nov 1`,
+    /// for the first day of a month in a grid of days.
+    pub(crate) fn month_day(&self, date: Date) -> String {
+        plain(self.month_day.format(&iso(date)).to_string())
+    }
+
     /// The whole date with its weekday, such as `Sunday, September 27,
     /// 2026`.
     pub(crate) fn full_date(&self, date: Date) -> String {
@@ -88,6 +100,19 @@ impl DateNames {
     /// The month and year, such as `September 2026`.
     pub(crate) fn month(&self, date: Date) -> String {
         plain(self.month.format(&iso(date)).to_string())
+    }
+
+    /// When a file last changed, as short as it can be said: the time for
+    /// today, the day and month for this year, such as `Nov 18`, and the
+    /// whole date before that, such as `Nov 18, 2025`.
+    pub(crate) fn changed(&self, at: Date, time: Time, today: Date) -> String {
+        if at == today {
+            self.time(time)
+        } else if at.year() == today.year() {
+            plain(self.day_month.format(&iso(at)).to_string())
+        } else {
+            plain(self.date.format(&iso(at)).to_string())
+        }
     }
 
     /// The time to the minute, such as `9:00 AM`.
@@ -150,6 +175,17 @@ mod tests {
         let french = DateNames::of(Some("fr-CA"));
         assert_eq!(french.time(time(13, 5, 0, 0)), "13 h 05");
         assert_eq!(french.month(date(2026, 10, 21)), "octobre 2026");
+
+        let today = date(2026, 11, 22);
+        assert_eq!(english.changed(today, time(9, 41, 0, 0), today), "9:41 AM");
+        assert_eq!(
+            english.changed(date(2026, 11, 18), time(9, 41, 0, 0), today),
+            "Nov 18"
+        );
+        assert_eq!(
+            english.changed(date(2025, 11, 18), time(9, 41, 0, 0), today),
+            "Nov 18, 2025"
+        );
 
         let unknown = DateNames::of(Some("not a locale"));
         assert_eq!(unknown.weekday(date(2026, 9, 27)), "Sun");

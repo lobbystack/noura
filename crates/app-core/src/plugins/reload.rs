@@ -27,6 +27,19 @@ const WATCH_WAIT: Duration = Duration::from_millis(500);
 pub(super) struct Reload {
     pub(super) id: String,
     pub(super) result: Result<Candidate, InstallError>,
+    /// The stop flag of the watcher that read it. A watcher can read its
+    /// folder after it was told to stop, as when the plugin moved to
+    /// another folder, so a reload from a stopped watcher is stale.
+    stop: Arc<AtomicBool>,
+}
+
+impl Reload {
+    /// Whether the watcher that read this has stopped since. A watcher
+    /// started in its place reads its own folder when it starts, so
+    /// nothing is lost by dropping this.
+    pub(super) fn is_stale(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
 }
 
 /// Stops its reload watcher when dropped.
@@ -152,6 +165,7 @@ impl ReloadWatcher {
             let reload = Reload {
                 id: self.id.clone(),
                 result,
+                stop: self.stop.clone(),
             };
             if self.sender.send(reload).is_err() {
                 return;

@@ -5,6 +5,7 @@
 //! side waits for the other.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -152,6 +153,11 @@ impl CollabDocument for Caught {
 struct Waiting {
     /// Notes a window asked for, which enter text mode.
     opening: Vec<String>,
+    /// Notes the sync thread took from `opening` and hasn't answered yet.
+    answering: Vec<String>,
+    /// Each asked note's file as the editor loaded it, before the edit
+    /// that asked, by path.
+    loaded: BTreeMap<String, Vec<u8>>,
     /// Notes a window shows, whose documents it takes if they have one.
     attaching: Vec<String>,
     /// Documents that wait for their window, by the path asked for.
@@ -175,6 +181,9 @@ struct Waiting {
 pub struct TextBridge {
     waiting: Mutex<Waiting>,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Whether a sync thread answers the windows' requests: the open
+    /// workspace syncs.
+    served: AtomicBool,
 }
 
 impl std::fmt::Debug for TextBridge {
@@ -208,7 +217,25 @@ impl TextBridge {
     /// A note that stayed out of text mode isn't asked for again until
     /// [`Self::ask_again`], or a moment later when it may have changed.
     pub fn open(&self, path: &str) {
+        self.ask(path, None);
+    }
+
+    /// [`Self::open`] from the editor, which loaded the file as `loaded`
+    /// before the edit. The note enters from those bytes when they are its
+    /// base and your save reached the file before the sync thread answered.
+    pub fn open_from(&self, path: &str, loaded: &[u8]) {
+        self.ask(path, Some(loaded));
+    }
+
+    fn ask(&self, path: &str, loaded: Option<&[u8]>) {
         let mut waiting = self.waiting();
+        if let Some(loaded) = loaded {
+            // The first edit's: a save since may have changed the file.
+            waiting
+                .loaded
+                .entry(path.to_owned())
+                .or_insert_with(|| loaded.to_vec());
+        }
         if waiting
             .refused
             .get(path)
@@ -253,6 +280,22 @@ impl TextBridge {
         waiting.ready.remove(path)
     }
 
+    /// Whether a sync thread answers the windows' requests from now on.
+    pub fn set_served(&self, served: bool) {
+        self.served.store(served, Ordering::Relaxed);
+    }
+
+    /// Whether the window's request for the document of the note at
+    /// `path` waits for the sync thread's answer. Without a sync thread,
+    /// nothing answers.
+    pub fn answering(&self, path: &str) -> bool {
+        if !self.served.load(Ordering::Relaxed) {
+            return false;
+        }
+        let waiting = self.waiting();
+        waiting.opening.iter().any(|p| p == path) || waiting.answering.iter().any(|p| p == path)
+    }
+
     /// Whether a window waits for the sync thread.
     pub fn has_work(&self) -> bool {
         let waiting = self.waiting();
@@ -261,6 +304,17 @@ impl TextBridge {
             || !waiting.closing.is_empty()
             || !waiting.forgotten.is_empty()
             || waiting.refused.values().any(asks_again)
+    }
+
+    /// When the next note that stayed out of text mode for now is due
+    /// another try, so the sync thread's wait can end by then.
+    pub fn next_ask_again(&self) -> Option<Instant> {
+        self.waiting()
+            .refused
+            .values()
+            .filter(|(entered, _)| *entered == Entered::NotYet)
+            .map(|(_, at)| *at + ASK_AGAIN)
+            .min()
     }
 
     /// The note's file changed, so a note that stayed out of text mode
@@ -297,6 +351,7 @@ impl TextBridge {
         waiting.opening.retain(|p| p != path);
         waiting.attaching.retain(|p| p != path);
         waiting.refused.remove(path);
+        waiting.loaded.remove(path);
         waiting.forgotten.push(path.to_owned());
         drop(waiting);
         self.wake();
@@ -319,7 +374,12 @@ impl TextBridge {
     /// Hands the note's document to the window that asked, or remembers
     /// why it stays out of text mode.
     fn open_note(&self, sync: &mut WorkspaceSync, path: String) {
-        match sync.open_text_at(&path) {
+        let loaded = self.waiting().loaded.get(&path).cloned();
+        let answer = sync.open_text_at(&path, loaded.as_deref());
+        if matches!(answer, Ok((Entered::Yes | Entered::Never, _))) {
+            self.waiting().loaded.remove(&path);
+        }
+        match answer {
             Ok((Entered::Yes, Some((document, text)))) => {
                 let Some(rid) = sync.rid_at(&path) else {
                     return;
@@ -368,9 +428,11 @@ impl TextBridge {
                     waiting.closing.push(document.rid);
                 }
             }
+            let opening = std::mem::take(&mut waiting.opening);
+            waiting.answering.clone_from(&opening);
             (
                 std::mem::take(&mut waiting.attaching),
-                std::mem::take(&mut waiting.opening),
+                opening,
                 std::mem::take(&mut waiting.closing),
                 waiting.selections.clone(),
             )
@@ -389,7 +451,8 @@ impl TextBridge {
             }
         }
         for path in opening {
-            self.open_note(sync, path);
+            self.open_note(sync, path.clone());
+            self.waiting().answering.retain(|p| *p != path);
         }
         let left = sync.take_left_notes();
         if !left.is_empty() {

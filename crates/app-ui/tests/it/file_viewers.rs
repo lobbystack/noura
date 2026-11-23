@@ -281,10 +281,12 @@ fn a_search_from_the_field_moves_between_matches() {
         harness.query_by_label("of 3").is_some()
     });
 
+    // The field searches as you type and shows the first match. An Enter
+    // before the matches arrive would find none to move to, and one after
+    // them moves on, so the test waits for them before it presses Enter.
     let field = harness.get_by_role_and_label(Role::TextInput, "Search PDF");
     field.focus();
     field.type_text("apple");
-    harness.key_press(Key::Enter);
     let deadline = Instant::now() + Duration::from_secs(30);
     while harness.query_by_label("1 of 3").is_none() {
         if Instant::now() >= deadline {

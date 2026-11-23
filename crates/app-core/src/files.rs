@@ -400,6 +400,50 @@ impl FileTree {
         self.focused
     }
 
+    /// No row is current, as after going up to the top of the workspace
+    /// from the Files page.
+    pub fn clear_focus(&mut self) {
+        self.focused = None;
+    }
+
+    /// The folder at the current row, if the current row is a folder.
+    pub fn focused_folder(&self) -> Option<&str> {
+        let row = self.rows.get(self.focused?)?;
+        (row.kind == EntryKind::Folder).then_some(row.relative_path.as_str())
+    }
+
+    /// The items in the folder at `relative_path` (`""` is the top of the
+    /// workspace), folders first, then files, in the tree's order, each at
+    /// depth 0. `None` when the tree has no such folder.
+    pub fn children(&self, relative_path: &str) -> Option<Vec<TreeRow>> {
+        let children = if relative_path.is_empty() {
+            &self.top
+        } else {
+            let node = &self.nodes[*self.by_path.get(relative_path)?];
+            if node.kind != EntryKind::Folder {
+                return None;
+            }
+            &node.children
+        };
+        Some(
+            children
+                .iter()
+                .map(|index| {
+                    let node = &self.nodes[*index];
+                    TreeRow {
+                        name: node.shown.clone(),
+                        relative_path: node.relative_path.clone(),
+                        kind: node.kind,
+                        depth: 0,
+                        expanded: (node.kind == EntryKind::Folder)
+                            .then(|| self.expanded.contains(index)),
+                        not_downloaded: node.not_downloaded,
+                    }
+                })
+                .collect(),
+        )
+    }
+
     /// The visible row showing `relative_path`.
     pub fn find_row(&self, relative_path: &str) -> Option<usize> {
         self.rows
@@ -904,6 +948,50 @@ impl Workspace {
         }
         Ok(OpenedFile::at(relative_path))
     }
+
+    /// When the file or folder at `relative_path` last changed on disk, or
+    /// `None` when it can't be read.
+    pub(crate) fn modified(&self, relative_path: &str) -> Option<jiff::Timestamp> {
+        let path = self
+            .engine()
+            .resolve_managed_path(relative_path, "file_modified")
+            .ok()?;
+        let modified = std::fs::symlink_metadata(path).ok()?.modified().ok()?;
+        jiff::Timestamp::try_from(modified).ok()
+    }
+}
+
+/// What the Files page lists: one folder's items, and the folders above
+/// it, from the top of the workspace down.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FilesListing {
+    /// The folder listed: `""` is the top of the workspace.
+    pub folder: String,
+    /// The folders from the top of the workspace down to the one listed,
+    /// each with the name it shows: the workspace's name, then each folder.
+    pub path: Vec<FolderStep>,
+    /// The folder's items, folders first, then files.
+    pub entries: Vec<FilesEntry>,
+}
+
+/// A folder on the way down to the listed one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderStep {
+    pub name: String,
+    pub relative_path: String,
+}
+
+/// One item the Files page lists.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FilesEntry {
+    /// The name the tree shows: Markdown files appear without `.md`.
+    pub name: String,
+    pub relative_path: String,
+    pub kind: EntryKind,
+    /// When it last changed on disk.
+    pub modified: Option<jiff::Timestamp>,
+    /// It lives only in cloud storage and isn't on this device yet.
+    pub not_downloaded: bool,
 }
 
 /// Whether iCloud keeps `.Name.icloud` in place of the missing `Name`, as

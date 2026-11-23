@@ -1067,22 +1067,24 @@ impl WorkspaceSync {
         &mut self,
         path: &str,
     ) -> Result<(Entered, Option<SandboxDocument>), SyncError> {
-        let (entered, document) = self.open_text_at(path)?;
+        let (entered, document) = self.open_text_at(path, None)?;
         Ok((entered, document.map(|(document, _)| document)))
     }
 
     /// [`Self::open_text`], with the text the editor's side of the document
     /// starts from: the changes it holds apply to that text, whatever the
-    /// document merged since.
+    /// document merged since. `loaded` is the file as the editor loaded
+    /// it, before the edit that asks: see [`Self::enter_text`].
     pub(crate) fn open_text_at(
         &mut self,
         path: &str,
+        loaded: Option<&[u8]>,
     ) -> Result<(Entered, Option<(SandboxDocument, String)>), SyncError> {
         let Some(rid) = self.rid_at(path) else {
             return Ok((Entered::NotYet, None));
         };
         if !self.in_text_mode(&rid) {
-            let entered = self.enter_text(rid)?;
+            let entered = self.enter_text(rid, loaded)?;
             if entered != Entered::Yes {
                 return Ok((entered, None));
             }
@@ -1161,7 +1163,14 @@ impl WorkspaceSync {
 
     /// Puts the note in text mode (§22, Entering text mode): a
     /// `text_snapshot` derived from the base operation alone.
-    fn enter_text(&mut self, rid: Id) -> Result<Entered, SyncError> {
+    ///
+    /// The file may hold the edit that asks, unsent, because the editor's
+    /// save landed before this answer. Sent as a `file` operation, that
+    /// edit would conflict for good with the first snapshot of another
+    /// device that entered from the same base. So when `loaded`, the file
+    /// as the editor loaded it, holds the base operation's bytes, the note
+    /// enters from those, and capturing the file sends the edit as text.
+    fn enter_text(&mut self, rid: Id, loaded: Option<&[u8]>) -> Result<Entered, SyncError> {
         let Some(object) = self.state.objects.get(&rid) else {
             return Ok(Entered::NotYet);
         };
@@ -1181,14 +1190,31 @@ impl WorkspaceSync {
         if content.delete || content.revision != local.revision {
             return Ok(Entered::NotYet);
         }
-        if self.live_states(&rid) != [base] || self.holds_its_file(&rid) {
+        if self.live_states(&rid) != [base] {
+            return Ok(Entered::NotYet);
+        }
+        let unsent = self.holds_its_file(&rid);
+        // A held version waits for your choice, and a file that went away
+        // holds no edit to send as text.
+        let from_editor = loaded.filter(|loaded| {
+            unsent
+                && !object.delete_again
+                && !self.state.held.contains_key(&rid)
+                && hash(loaded) == local.revision
+                && super::stat(self.engine.root(), &local.path).is_some()
+        });
+        if unsent && from_editor.is_none() {
             return Ok(Entered::NotYet);
         }
         if !self.can_write_note(&rid) {
             return Ok(Entered::NotYet);
         }
-        let Some(bytes) = self.engine.read_synced(&local.path).map_err(core)? else {
-            return Ok(Entered::NotYet);
+        let bytes = match from_editor {
+            Some(loaded) => loaded.to_vec(),
+            None => match self.engine.read_synced(&local.path).map_err(core)? {
+                Some(bytes) => bytes,
+                None => return Ok(Entered::NotYet),
+            },
         };
         let (properties, body) = match note_parts(&local.path, &bytes) {
             NoteParts::Managed { properties, body } => (properties, body),

@@ -46,6 +46,14 @@ impl FolderSyncBackend for Bridged {
 /// A workspace holding `Plan.md` with `text`, open in a window whose sync
 /// thread the test plays.
 fn opened(app_data: &Path, folder: &Path, text: &str) -> (Ui, Arc<TextBridge>) {
+    let (harness, bridge) = opened_unserved(app_data, folder, text);
+    bridge.set_served(true);
+    (harness, bridge)
+}
+
+/// [`opened`], with no sync thread to answer, as when the workspace
+/// doesn't sync.
+fn opened_unserved(app_data: &Path, folder: &Path, text: &str) -> (Ui, Arc<TextBridge>) {
     create_workspace(app_data, folder);
     std::fs::write(folder.join("Plan.md"), text).unwrap();
     let backend = Arc::new(Bridged::default());
@@ -114,6 +122,8 @@ fn enter(harness: &mut Ui, bridge: &TextBridge) -> app_core::text_bridge::TestNo
 /// yet: the note stays outside text mode.
 fn wait_for_a_document(harness: &mut Ui, bridge: &TextBridge) {
     type_in(harness, "x");
+    // The sync thread takes the request at once.
+    bridge.take_opening_for_testing();
     let until = Instant::now() + Duration::from_secs(5);
     while is_unsaved(harness) && Instant::now() < until {
         harness.run_steps(1);
@@ -123,7 +133,74 @@ fn wait_for_a_document(harness: &mut Ui, bridge: &TextBridge) {
     bridge.deliver_for_testing("Plan.md", document);
     harness.run_steps(3);
     assert!(!in_text_mode(harness));
-    bridge.take_opening_for_testing();
+}
+
+/// Draws the window for `how_long`.
+fn draw_for(harness: &mut Ui, how_long: Duration) {
+    let until = Instant::now() + how_long;
+    while Instant::now() < until {
+        harness.run_steps(1);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A save that landed before the sync thread answered would send the edit
+/// as a `file` operation, which conflicts with a document another device
+/// starts at the same time (sync-v2.md §22).
+#[test]
+fn a_first_edit_saves_once_the_sync_thread_answers() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let (mut harness, bridge) = opened(app_data.path(), &folder, "# Plan\n");
+    let before = Instant::now();
+    type_in(&mut harness, "x");
+    let typed = shown(&harness);
+
+    // A pause in typing doesn't save while the request waits.
+    let due = harness
+        .state()
+        .app()
+        .next_note_save()
+        .expect("a save waits");
+    assert!(due >= before + app_core::SAVE_AT_LEAST_EVERY);
+
+    // The sync thread answers without a document.
+    assert!(
+        bridge
+            .take_opening_for_testing()
+            .iter()
+            .any(|path| path == "Plan.md")
+    );
+    wait_for_file(&folder, &typed, &mut harness);
+}
+
+#[test]
+fn a_first_edit_saves_when_the_sync_thread_never_answers() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let (mut harness, _bridge) = opened(app_data.path(), &folder, "# Plan\n");
+    type_in(&mut harness, "x");
+    let typed = shown(&harness);
+
+    draw_for(&mut harness, app_core::SAVE_AT_LEAST_EVERY);
+    wait_for_file(&folder, &typed, &mut harness);
+}
+
+#[test]
+fn without_a_sync_thread_a_pause_in_typing_saves() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let (mut harness, _bridge) = opened_unserved(app_data.path(), &folder, "# Plan\n");
+    let before = Instant::now();
+    type_in(&mut harness, "x");
+    let typed = shown(&harness);
+
+    let due = harness.state().app().next_note_save();
+    assert!(due.is_none_or(|due| due < before + app_core::SAVE_AT_LEAST_EVERY));
+    wait_for_file(&folder, &typed, &mut harness);
 }
 
 fn wait_for_file(folder: &Path, text: &str, harness: &mut Ui) {
