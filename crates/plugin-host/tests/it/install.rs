@@ -3,7 +3,7 @@
 //! never accepts code compiled elsewhere.
 
 use crate::support;
-use plugin_host::{CodeSource, InstallErrorCode, PluginHost, Services};
+use plugin_host::{CodeSource, InstallErrorCode, PluginError, PluginHost, Services};
 use support::plugins::{self, HELLO_MANIFEST};
 
 struct Setup {
@@ -396,6 +396,54 @@ fn bytes_that_arent_a_component_fail_to_install() {
         .expect("refused");
 
     assert_eq!(error.code, InstallErrorCode::NotAComponent);
+}
+
+#[test]
+fn a_candidate_starts_once_and_leaves_the_library_empty() {
+    let Some(hello) = plugins::built("hello_plugin") else {
+        return;
+    };
+    let setup = Setup::new();
+    plugins::write_folder(
+        setup.folder.path(),
+        HELLO_MANIFEST,
+        "hello_plugin.wasm",
+        &hello,
+    );
+    let host = setup.host();
+    let candidate = host.inspect(setup.folder.path()).unwrap();
+
+    host.try_start(&candidate).expect("the plugin starts");
+
+    assert_eq!(setup.library_files(), Vec::<String>::new());
+    assert_eq!(host.installed_ids(), Vec::<String>::new());
+}
+
+#[test]
+fn a_component_whose_start_code_traps_compiles_and_fails_to_start() {
+    let setup = Setup::new();
+    let component = wat::parse_str(
+        r#"(component
+             (core module $m
+               (func $start unreachable)
+               (start $start))
+             (core instance (instantiate $m)))"#,
+    )
+    .unwrap();
+    plugins::write_folder(
+        setup.folder.path(),
+        HELLO_MANIFEST,
+        "hello_plugin.wasm",
+        &component,
+    );
+    let host = setup.host();
+    let candidate = host
+        .inspect(setup.folder.path())
+        .expect("the component compiles");
+
+    let error = host.try_start(&candidate).expect_err("the start fails");
+
+    assert!(matches!(error, PluginError::Instantiate(_)), "{error:?}");
 }
 
 #[test]

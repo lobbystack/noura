@@ -3,7 +3,8 @@
 //! `--smoke` opens the first window, prints what this copy found about
 //! itself once that window's first frame is on screen, and quits. CI runs
 //! it from each installed package. A copy that lacks a plugin it should
-//! ship says which and fails without opening a window.
+//! ship, or can't start one or the collaboration sandbox, says which and
+//! fails without opening a window.
 //!
 //! `mcp --workspace <folder>` serves that workspace to an AI tool over
 //! stdio instead, with `noura-mcp`. It opens no window and doesn't count as
@@ -199,10 +200,10 @@ fn main() -> ExitCode {
     let smoke = std::env::args_os()
         .skip(1)
         .any(|argument| argument == "--smoke");
-    let smoke = match smoke.then(licenses::shipped_plugins_line).transpose() {
-        Ok(plugins) => plugins,
-        Err(missing) => {
-            println!("{missing}");
+    let smoke = match smoke.then(smoke_checks).transpose() {
+        Ok(checks) => checks,
+        Err(failed) => {
+            println!("{failed}");
             return ExitCode::FAILURE;
         }
     };
@@ -234,6 +235,17 @@ fn end_process(code: u8) {
 
 #[cfg(not(windows))]
 fn end_process(_code: u8) {}
+
+/// The smoke run's lines about the code this copy runs in Wasmtime: the
+/// plugins it ships, each started once, and the collaboration sandbox. A
+/// macOS signature that doesn't let Wasmtime's code run ends the process
+/// here.
+fn smoke_checks() -> Result<String, String> {
+    let plugins = licenses::shipped_plugins_line()?;
+    app_core::check_collab_sandbox()
+        .map_err(|error| format!("{plugins}\nCollaboration sandbox: failed ({error})"))?;
+    Ok(format!("{plugins}\nCollaboration sandbox: runs"))
+}
 
 /// Ends a smoke run that draws no window, which would otherwise wait
 /// forever and report nothing.
@@ -271,8 +283,8 @@ fn shortcut_argument() -> Result<Option<String>, String> {
     Ok(None)
 }
 
-/// Run the app. `smoke` is the plugins line of a smoke run's report, and
-/// `shortcut` a shortcut to run, as `--toggle-dictation` asks.
+/// Run the app. `smoke` is the plugin and sandbox lines of a smoke run's
+/// report, and `shortcut` a shortcut to run, as `--toggle-dictation` asks.
 fn run_app(smoke: Option<String>, shortcut: Option<String>) -> eframe::Result {
     let launched = Instant::now();
     let app_data = app_core::default_app_data_dir();
@@ -368,8 +380,8 @@ fn run_app(smoke: Option<String>, shortcut: Option<String>) -> eframe::Result {
                     .quitting_on(quit)
                     .checking_spelling_with(spelling::system_spell_checker())
                     .with_window_controls(controls);
-                if let Some(plugins) = &smoke {
-                    windows = windows.smoke_test(smoke_report(plugins, &updates));
+                if let Some(checks) = &smoke {
+                    windows = windows.smoke_test(smoke_report(checks, &updates));
                 }
                 windows.install_menu_bar(creation);
                 Ok(Box::new(windows))
@@ -443,7 +455,7 @@ fn set_up_updates(
     }
 }
 
-fn smoke_report(plugins: &str, updates: &Result<(), String>) -> String {
+fn smoke_report(checks: &str, updates: &Result<(), String>) -> String {
     let licenses = match licenses::bundled_licenses() {
         None => "missing".to_owned(),
         // The Open Font License travels with Public Sans, which the
@@ -458,7 +470,7 @@ fn smoke_report(plugins: &str, updates: &Result<(), String>) -> String {
         Err(reason) => format!("off ({reason})"),
     };
     format!(
-        "Noura {} drew its first window.\nThird-party licenses: {licenses}\n{plugins}\nUpdates: {updates}",
+        "Noura {} drew its first window.\nThird-party licenses: {licenses}\n{checks}\nUpdates: {updates}",
         env!("CARGO_PKG_VERSION")
     )
 }

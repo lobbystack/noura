@@ -96,6 +96,8 @@ tokio.workspace = true
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect"] }
 # A test reads every log line to check that a PDF's password stays out.
 tracing-subscriber.workspace = true
+# Writes a component that fails to start for the shipped plugins check.
+wat = "1.262.0"
 # Writes plugin release archives for the install tests.
 zip.workspace = true
 

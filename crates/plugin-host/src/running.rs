@@ -304,6 +304,12 @@ impl RunningPlugin {
         })
     }
 
+    /// Start the plugin's store now, when it has none, instead of on its
+    /// first call.
+    pub(crate) fn start_store(&self) -> Result<(), PluginError> {
+        self.call(|_| Ok(()))
+    }
+
     /// A call that nothing else waits for: it takes its turn however long
     /// the plugin's other calls take.
     fn call<R>(

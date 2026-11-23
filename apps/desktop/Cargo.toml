@@ -104,8 +104,7 @@ objc2-app-kit = { workspace = true, features = ["std", "NSApplication", "NSEvent
 objc2-foundation = { workspace = true, features = ["std", "NSGeometry", "NSString"] }
 
 # cargo-packager reads this. scripts/package-desktop.sh builds the binary and
-# the plugins, generates the license list and runs cargo-packager. The release workflow
-# adds the macOS signing identity at build time.
+# the plugins, generates the license list and runs cargo-packager.
 [package.metadata.packager]
 product-name = "Noura"
 identifier = "org.noura.desktop"
@@ -129,8 +128,15 @@ resources = [
 ]
 
 # The layered macOS icon in icons/Assets.car, which the plist names.
+#
+# cargo-packager signs the app with the hardened runtime and these
+# entitlements. "-" signs ad hoc, as a release without Apple credentials
+# does, so CI tests that signature. The release workflow puts the Developer
+# ID in its place when one is configured.
 [package.metadata.packager.macos]
 info-plist-path = "packaging/Info.plist"
+signing-identity = "-"
+entitlements = "packaging/Entitlements.plist"
 
 # The AppImage takes Wayland and xkbcommon from the system. The host's Mesa
 # drivers load into the app and need the host's libwayland-client: with the

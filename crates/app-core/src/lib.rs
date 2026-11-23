@@ -197,3 +197,16 @@ pub fn default_app_data_dir() -> Option<std::path::PathBuf> {
     directories::ProjectDirs::from("org", "noura", "Noura")
         .map(|dirs| dirs.data_local_dir().to_owned())
 }
+
+/// Whether this process runs the collaboration sandbox: it compiles the
+/// pinned guest and has it write a note's first document. Each package's
+/// smoke run checks this, since the system decides whether a process may
+/// run the code Wasmtime compiles.
+pub fn check_collab_sandbox() -> Result<(), String> {
+    let sandbox = collab_sandbox::Sandbox::new(collab_sandbox::Backend::Cranelift)
+        .map_err(|error| error.to_string())?;
+    sandbox
+        .first_document("Noura")
+        .map(drop)
+        .map_err(|error| error.to_string())
+}

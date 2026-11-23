@@ -24,7 +24,8 @@ use wasmtime::Engine;
 use wasmtime::component::Component;
 
 use crate::{
-    Archive, Capability, InstallError, InstallErrorCode, PluginManifest, RunningPlugin, Services,
+    Archive, Capability, InstallError, InstallErrorCode, PluginError, PluginManifest,
+    RunningPlugin, Services,
     archive::MAX_COMPONENT_BYTES,
     manifest::read_manifest_bytes,
     runtime::{self, Backend, EpochTicker, Limits},
@@ -451,6 +452,22 @@ impl PluginHost {
             approved,
             services,
         ))
+    }
+
+    /// Start `candidate`'s component once, in a store of its own with no
+    /// capabilities and no services, then drop it. Its start code runs, as
+    /// before a plugin's first call; none of its exports do.
+    pub fn try_start(&self, candidate: &Candidate) -> Result<(), PluginError> {
+        RunningPlugin::new(
+            candidate.manifest.clone(),
+            candidate.component.clone(),
+            self.engine.clone(),
+            self.epochs.clone(),
+            self.limits,
+            &[],
+            Services::default(),
+        )
+        .start_store()
     }
 
     fn is_installed(&self, id: &str) -> bool {

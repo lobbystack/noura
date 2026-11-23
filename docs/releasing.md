@@ -33,6 +33,10 @@ To sign and notarize the macOS app with an Apple Developer ID, add these secrets
 
 Without these secrets, the workflow signs the app ad hoc, and macOS asks each person to approve it in **System Settings** > **Privacy & Security** on first launch. If you set some of the six secrets but not all, the build stops and names the missing ones.
 
+Every macOS package gets the hardened runtime and the entitlements in `apps/desktop/packaging/Entitlements.plist`: a Developer ID release, an ad hoc release, and the ad hoc package `scripts/package-desktop.sh` builds on your computer.
+
+Plugins and the collaboration sandbox run code that Wasmtime compiles while Noura runs, and macOS kills the app the first time that code runs unless the signature carries `com.apple.security.cs.allow-unsigned-executable-memory`. `com.apple.security.cs.allow-jit` alone doesn't work, because Wasmtime doesn't map its code with `MAP_JIT`. The notary service accepts hardened runtime exceptions such as this one.
+
 ### Sign the Windows installer
 
 The updater key signs update bundles, not installers. Windows shows a SmartScreen warning for `Noura-Windows.msi` until you sign it with an Authenticode code signing certificate. cargo-packager's `windows` settings accept a certificate thumbprint or a signing command.
@@ -84,7 +88,7 @@ rustup target add wasm32-wasip2
 
 Then run `scripts/package-desktop.sh` from the repository root. It writes the license list, builds the app and the plugins that ship with it in release mode, and packages them for your operating system. The packages land in `target/release`. On macOS, `--universal` builds one app for Apple silicon and Intel instead, which needs the `aarch64-apple-darwin` and `x86_64-apple-darwin` Rust targets.
 
-To check the result, run `scripts/check-desktop-packages.sh`. It installs or mounts each package and launches the installed app with `--smoke`, which opens the first window, prints a short report, and quits. If the app lacks a plugin it should ship, or can’t compile one, `--smoke` names the plugin and exits with an error before it opens a window. On Linux, run it under `xvfb-run` when you have no display.
+To check the result, run `scripts/check-desktop-packages.sh`. It installs or mounts each package and launches the installed app with `--smoke`, which starts each plugin and the collaboration sandbox once, opens the first window, prints a short report, and quits. If the app lacks a plugin it should ship, or can’t compile or start one, `--smoke` names the plugin and exits with an error before it opens a window. On macOS the script first checks that the app's signature uses the hardened runtime and carries the entitlement above. On Linux, run it under `xvfb-run` when you have no display.
 
 Set `CARGO_PACKAGER_SIGN_PRIVATE_KEY` to a key file or key, and `CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD` to its password, to sign each package for the updater. cargo-packager then writes a `.sig` file beside each package.
 
@@ -128,7 +132,7 @@ On Linux, only the AppImage updates itself. The `.deb` package runs without the 
 
 ## Release checks in CI
 
-The `packages` job in `.github/workflows/ci.yml` runs on every push and pull request. On macOS, Windows, and Ubuntu 22.04, it builds each package, signs it with a throwaway updater key, and runs `scripts/check-desktop-packages.sh`. The check fails unless each installed app draws its first window, finds its license list and holds every plugin that ships with Noura. It also checks that the `.dmg`, the `.msi` and the AppImage update themselves and the `.deb` doesn't.
+The `packages` job in `.github/workflows/ci.yml` runs on every push and pull request. On macOS, Windows, and Ubuntu 22.04, it builds each package, signs it with a throwaway updater key, and runs `scripts/check-desktop-packages.sh`. The check fails unless each installed app draws its first window, finds its license list, starts every plugin that ships with Noura and runs the collaboration sandbox. It also checks that the `.dmg`, the `.msi` and the AppImage update themselves and the `.deb` doesn't. The macOS app in CI has the ad hoc signature and entitlements of a release without Apple secrets, so a signature that stops plugins from running fails CI before a release does.
 
 The desktop crate's tests run the real updater against a feed served on a local port. They check that it accepts a bundle signed with the expected key and rejects a changed bundle or another key's signature.
 

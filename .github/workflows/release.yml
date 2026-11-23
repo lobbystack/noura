@@ -188,16 +188,22 @@ jobs:
             echo "::error::Set all six Apple secrets or none. Missing: ${missing[*]}"
             exit 1
           fi
-          # cargo-packager reads the signing identity from its config. "-"
-          # signs ad hoc. Escape it as a TOML string.
-          identity="${APPLE_SIGNING_IDENTITY:--}"
-          identity="${identity//\\/\\\\}"
-          identity="${identity//\"/\\\"}"
-          # The manifest has the table already, for the icon's plist.
-          IDENTITY="$identity" perl -pi -e \
-            's/^\[package\.metadata\.packager\.macos\]\n/$&signing-identity = "$ENV{IDENTITY}"\n/' \
-            apps/desktop/Cargo.toml
-          grep -q '^signing-identity = ' apps/desktop/Cargo.toml
+          # cargo-packager reads the signing identity from its config, which
+          # signs ad hoc ("-") with the hardened runtime and the app's
+          # entitlements. The Developer ID replaces "-" and keeps the rest.
+          # Escape it as a TOML string.
+          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            identity="${APPLE_SIGNING_IDENTITY//\\/\\\\}"
+            identity="${identity//\"/\\\"}"
+            IDENTITY="$identity" perl -pi -e \
+              's/^signing-identity = .*$/signing-identity = "$ENV{IDENTITY}"/' \
+              apps/desktop/Cargo.toml
+          fi
+          if [ "$(grep -c '^signing-identity = ' apps/desktop/Cargo.toml)" -ne 1 ] ||
+            ! grep -q '^entitlements = ' apps/desktop/Cargo.toml; then
+            echo "::error::apps/desktop/Cargo.toml must name one signing identity and the entitlements."
+            exit 1
+          fi
       # scripts/package-desktop.sh builds the plugins each package ships.
       # cargo-packager signs and notarizes the app, then signs every package
       # for the updater and writes a .sig beside each one.
