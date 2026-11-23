@@ -97,6 +97,10 @@ pub(super) struct Folder {
     /// of sync until then.
     reset_held: bool,
     engine: Option<Arc<WorkspaceEngine>>,
+    /// The workspace's reports since the folder attached. A report that
+    /// lands between rounds, such as your save while the sync thread
+    /// answers the editor, waits here and ends the next round's wait.
+    heard: Option<tokio::sync::broadcast::Receiver<local_core::CoreEvent>>,
     sync: Option<WorkspaceSync>,
     last_error: Option<String>,
     /// What a note's records reported, until its review entry goes.
@@ -341,6 +345,7 @@ impl Folder {
         self.rebuild = false;
         self.not_connected = false;
         self.account_lost = None;
+        self.heard = engine.as_ref().map(|engine| engine.subscribe());
         self.engine = engine;
         self.open(service, store, app_data);
     }
@@ -603,7 +608,7 @@ impl Folder {
             sync.capture().map(|_| ())
         } else {
             let live = &mut self.live;
-            let mut events = self.engine.as_ref().map(|engine| engine.subscribe());
+            let events = &mut self.heard;
             let changes = async {
                 loop {
                     match events.as_mut() {
