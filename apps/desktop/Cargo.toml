@@ -111,7 +111,8 @@ product-name = "Noura"
 identifier = "org.noura.desktop"
 publisher = "Noura"
 category = "Productivity"
-license-file = "../../LICENSE"
+# No license-file: cargo-packager would show it as a click-through agreement
+# when the DMG opens and in the MSI. The license ships as a resource instead.
 icons = [
     "icons/32x32.png",
     "icons/64x64.png",
@@ -121,6 +122,7 @@ icons = [
     "icons/icon.ico",
 ]
 resources = [
+    { src = "../../LICENSE", target = "LICENSE" },
     { src = "packaging/THIRD_PARTY_LICENSES.html", target = "THIRD_PARTY_LICENSES.html" },
     { src = "icons/Assets.car", target = "Assets.car" },
     { src = "packaging/plugins", target = "plugins" },
