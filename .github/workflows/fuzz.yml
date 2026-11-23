@@ -36,6 +36,11 @@ jobs:
       # Without a sanitizer, cargo-fuzz builds on the stable toolchain.
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --version 0.13.2 --locked
+      # A build that fails here fails the job, where in the loop below it
+      # would count as a crash. The runs reuse this build.
+      - name: Build the targets
+        working-directory: crates/collab-sandbox
+        run: cargo fuzz build --sanitizer none
       - name: Run each target
         id: run
         shell: bash
