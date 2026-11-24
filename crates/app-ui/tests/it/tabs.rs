@@ -463,6 +463,71 @@ fn the_sidebar_s_edge_resizes_it_in_the_title_bar_row() {
     assert!(widened > 30.0, "the sidebar widened by {widened}");
 }
 
+/// Where each textured mesh of the last frame drew: the icons, here.
+fn textured_meshes(harness: &Ui) -> Vec<egui::Rect> {
+    fn visit(shape: &egui::Shape, found: &mut Vec<egui::Rect>) {
+        match shape {
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    visit(shape, found);
+                }
+            }
+            egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
+                found.push(mesh.calc_bounds());
+            }
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for clipped in &harness.output().shapes {
+        visit(&clipped.shape, &mut found);
+    }
+    found
+}
+
+/// At two pixels a point, every icon starts on a screen pixel, the close
+/// buttons of tabs a fractional width wide included, so each of an icon's
+/// pixels covers one screen pixel.
+#[test]
+fn icons_sit_on_the_pixel_grid() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = opened(app_data.path(), &parent.path().join("Garden"));
+    harness.set_pixels_per_point(2.0);
+    for name in ["Alpha", "Beta", "Gamma"] {
+        double_click(&mut harness, name);
+    }
+    let tab = harness.get_by_role_and_label(Role::Tab, "Beta").rect();
+    harness.hover_at(tab.center());
+    harness.run();
+    assert!(
+        tab.left().fract() != 0.0,
+        "the tabs need a fractional width: {tab:?}"
+    );
+
+    let icons = textured_meshes(&harness);
+    let tabs: Vec<egui::Rect> = ["Alpha", "Beta", "Gamma"]
+        .iter()
+        .map(|name| harness.get_by_role_and_label(Role::Tab, name).rect())
+        .collect();
+    let close_icons = icons
+        .iter()
+        .filter(|icon| tabs.iter().any(|tab| tab.contains_rect(**icon)))
+        .count();
+    assert_eq!(close_icons, 2, "the active and the hovered tab: {icons:?}");
+    let off_grid: Vec<_> = icons
+        .iter()
+        .filter(|icon| {
+            let on_grid = |value: f32| ((value * 2.0) - (value * 2.0).round()).abs() < 0.01;
+            !(on_grid(icon.min.x) && on_grid(icon.min.y))
+        })
+        .collect();
+    assert!(
+        off_grid.is_empty(),
+        "icons off the pixel grid: {off_grid:?}"
+    );
+}
+
 /// Open `name`'s row menu with a right-click and choose `item`.
 fn choose_from_row_menu(harness: &mut Ui, name: &str, item: &str) {
     row(harness, name).click_secondary();
