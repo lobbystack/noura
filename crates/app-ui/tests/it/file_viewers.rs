@@ -1122,12 +1122,13 @@ fn an_image_too_large_for_a_texture_draws_scaled_down_to_fit() {
             harness.query_by_role_and_label(Role::Image, name).is_some()
         });
         let shown = harness.get_by_role_and_label(Role::Image, name).rect();
-        // It keeps its shape: 900 to 1, fit to the tab.
+        // It keeps its shape, 900 to 1, fit to the tab, and at least a
+        // pixel across.
         let (long, short) = (
             shown.width().max(shown.height()),
             shown.width().min(shown.height()),
         );
-        assert!(long > 400.0 && short < 1.0, "{name} drew at {shown:?}");
+        assert!(long > 400.0 && short <= 1.0, "{name} drew at {shown:?}");
     }
     let max_side = harness.ctx.input(|input| input.max_texture_side);
     let textures = harness.ctx.tex_manager();

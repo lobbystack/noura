@@ -18,6 +18,7 @@ mod files_page;
 mod finder;
 mod folder_sync;
 mod ignored_files;
+mod image_tab;
 mod inbox;
 mod members;
 mod note;

@@ -440,7 +440,7 @@ fn content(state: &mut NouraUi, ui: &mut Ui) {
         };
         if matches!(content, TabContent::File { .. })
             && (crate::pdf_view::show(ui, &mut state.app, &mut state.pdfs, state.window, id)
-                || crate::image_view::show(ui, &state.app, &mut state.images, id)
+                || crate::image_view::show(ui, &mut state.app, &mut state.images, id)
                 || crate::note::show(ui, &mut state.app, &mut state.notes, state.window, id))
         {
             state.shown_tab = Some(id);
