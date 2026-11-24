@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- cargo-packager signs the app with the hardened runtime. Plugins
+	     and the collaboration sandbox run in Wasmtime, which writes
+	     Cranelift's code to anonymous memory and then maps it executable,
+	     without MAP_JIT. Without this exception macOS kills the process
+	     the first time that code runs. allow-jit alone doesn't help,
+	     since it covers MAP_JIT memory only.
+	     scripts/check-desktop-packages.sh fails a package that lacks it. -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+</dict>
+</plist>

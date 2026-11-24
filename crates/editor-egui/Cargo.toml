@@ -7,7 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 comrak.workspace = true
-editor-core = { version = "0.3.1", path = "../editor-core" }
+editor-core = { version = "0.3.2", path = "../editor-core" }
 egui.workspace = true
 egui-wgpu.workspace = true
 glyphon.workspace = true
@@ -25,10 +25,10 @@ proptest.workspace = true
 rand.workspace = true
 serde_json.workspace = true
 # The typing benchmark also replays with the system spell checker on.
-spell-check = { version = "0.3.1", path = "../spell-check" }
+spell-check = { version = "0.3.2", path = "../spell-check" }
 tempfile.workspace = true
 # The byte-identity tests open and save notes the way Noura does.
-workspace-format = { version = "0.3.1", path = "../workspace-format" }
+workspace-format = { version = "0.3.2", path = "../workspace-format" }
 
 # Replays recorded keystrokes on the 1 MB note and reports the
 # keystroke-to-frame time.

@@ -262,9 +262,11 @@ pub struct ShippedProblem {
 }
 
 /// Whether `folder`, a package's plugins folder if it has one, holds every
-/// plugin in [`SHIPPED_PLUGINS`] in a form Noura installs: the right
-/// manifest and a component that compiles. Nothing is written and none of
-/// their code runs. Returns one problem per plugin that fails.
+/// plugin in [`SHIPPED_PLUGINS`] in a form Noura installs and runs: the
+/// right manifest, a component that compiles, and a start in a store with
+/// no capabilities, which runs the code Wasmtime compiled from it. Nothing
+/// is written, and no export runs. Returns one problem per plugin that
+/// fails.
 pub fn check_shipped_plugins(folder: Option<&Path>) -> Vec<ShippedProblem> {
     let problems = |reason: &str| {
         SHIPPED_PLUGINS
@@ -288,8 +290,13 @@ pub fn check_shipped_plugins(folder: Option<&Path>) -> Vec<ShippedProblem> {
         .iter()
         .filter_map(|&(id, name)| {
             let reason = match host.inspect(&folder.join(id)) {
-                Ok(candidate) if candidate.manifest().id == id => return None,
-                Ok(candidate) => format!("its folder holds {}", candidate.manifest().id),
+                Ok(candidate) if candidate.manifest().id != id => {
+                    format!("its folder holds {}", candidate.manifest().id)
+                }
+                Ok(candidate) => match host.try_start(&candidate) {
+                    Ok(()) => return None,
+                    Err(error) => error.to_string(),
+                },
                 Err(error) => error.message,
             };
             Some(ShippedProblem { name, reason })

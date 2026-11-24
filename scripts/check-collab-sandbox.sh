@@ -6,8 +6,12 @@
 #   module, the fixture and the spec change with it;
 # - features: the guest's yrs resolves with no feature on, neither
 #   `small-client`, which crates/local-core keeps for its v1 sync code, nor
-#   `sync` (§3);
+#   `sync` (§3), both in the module's build and in the fuzz crate's native
+#   build of the guest;
 # - guest: the guest's own unit tests pass natively;
+# - fuzz: the fuzz crate's targets type-check with `--cfg fuzzing`, as
+#   cargo-fuzz builds them, so a change that breaks the scheduled fuzz job
+#   fails here first;
 # - audit: the crates the guest's own lockfile picks, which ship inside the
 #   module, pass the workspace's advisory and license policy, and the fuzz
 #   crate's pass its advisories (it never ships, so its libFuzzer's NCSA
@@ -28,7 +32,7 @@ cd "$(dirname "$0")/.."
 repo="$PWD"
 checks=("$@")
 if [ "${#checks[@]}" -eq 0 ]; then
-  checks=(module features guest audit backends release)
+  checks=(module features guest fuzz audit backends release)
 fi
 
 module=crates/collab-sandbox/guest/collab_sandbox_guest.wasm
@@ -67,6 +71,31 @@ for check in "${checks[@]}"; do
           fail=1
           ;;
       esac
+      # The fuzz crate builds the guest through crates/collab-sandbox/fuzz/guest,
+      # whose yrs must be the guest's patched copy, kept apart from the
+      # crates.io yrs that local-core turns features on in.
+      resolved="$(
+        cd crates/collab-sandbox/fuzz &&
+          cargo tree --locked --package collab-sandbox-guest --edges normal --depth 1 \
+            --prefix none --format '{p} [{f}]' | grep '^yrs ' || true
+      )"
+      case "$resolved" in
+        "yrs v0.26.0 ("*"/crates/collab-sandbox-guest/vendor/yrs) []")
+          ;;
+        *)
+          echo "error: the fuzz build's guest must use the guest's yrs with no feature on, found: $resolved"
+          fail=1
+          ;;
+      esac
+      ;;
+    fuzz)
+      # A check, not cargo-fuzz's instrumented release build: it catches
+      # type and feature errors without building Wasmtime optimized.
+      if ! (cd crates/collab-sandbox/fuzz && RUSTFLAGS='--cfg fuzzing' cargo check --locked \
+        --quiet --bins --target-dir "$repo/target/collab-sandbox-fuzz-check"); then
+        echo "error: the fuzz targets don't build, so the scheduled fuzz job would fail"
+        fail=1
+      fi
       ;;
     guest)
       if ! (cd crates/collab-sandbox-guest && cargo test --locked --quiet \

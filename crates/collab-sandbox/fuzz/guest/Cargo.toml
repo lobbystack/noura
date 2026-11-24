@@ -1,0 +1,29 @@
+# The guest crate's source, crates/collab-sandbox-guest/src, as a second
+# package that the fuzz targets build natively with the yrs the module has:
+# the guest's patched copy with no feature on.
+#
+# The fuzz targets can't depend on the guest crate itself. Its yrs comes from
+# crates.io and needs the fuzz crate's [patch.crates-io] to reach the patched
+# copy, and the patch also sends crates/local-core's yrs there, through
+# collab-sandbox and plugin-host. Cargo then builds one yrs for both, with
+# local-core's `small-client` and `sync` on, which isn't the guest the module
+# runs, and with `sync` the guest doesn't compile. Here the guest's yrs is a
+# path dependency, a package of its own, and local-core keeps the crates.io
+# yrs it has in the workspace.
+#
+# Keep the dependencies in step with crates/collab-sandbox-guest/Cargo.toml.
+# `scripts/check-collab-sandbox.sh fuzz` checks that the targets build and
+# that this yrs has no feature on.
+[package]
+name = "collab-sandbox-guest"
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+path = "../../../collab-sandbox-guest/src/lib.rs"
+
+[dependencies]
+sync-protocol = { path = "../../../sync-protocol" }
+yrs = { path = "../../../collab-sandbox-guest/vendor/yrs", default-features = false }

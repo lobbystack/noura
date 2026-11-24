@@ -1063,7 +1063,7 @@ dependencies = [
 
 [[package]]
 name = "collab-sandbox"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "blake3",
  "editor-core",
@@ -1089,7 +1089,7 @@ name = "collab-sandbox-guest"
 version = "0.2.0"
 dependencies = [
  "sync-protocol",
- "yrs",
+ "yrs 0.26.0",
 ]
 
 [[package]]
@@ -1865,7 +1865,7 @@ dependencies = [
 
 [[package]]
 name = "editor-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "arborium",
  "comrak",
@@ -1999,6 +1999,9 @@ name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
+dependencies = [
+ "getrandom 0.4.3",
+]
 
 [[package]]
 name = "fiat-crypto"
@@ -3217,7 +3220,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "local-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "aes-gcm",
  "age",
@@ -3265,7 +3268,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "workspace-format",
  "x25519-dalek 2.0.1",
- "yrs",
+ "yrs 0.26.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "zeroize",
 ]
 
@@ -3826,7 +3829,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "plugin-host"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "blake3",
  "jiff",
@@ -5117,7 +5120,7 @@ dependencies = [
 
 [[package]]
 name = "sync-key-envelope"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -6498,7 +6501,7 @@ dependencies = [
 
 [[package]]
 name = "workspace-format"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "blake3",
  "croner",
@@ -6581,6 +6584,24 @@ dependencies = [
 [[package]]
 name = "yrs"
 version = "0.26.0"
+dependencies = [
+ "arc-swap",
+ "async-lock",
+ "async-trait",
+ "dashmap",
+ "fastrand",
+ "serde",
+ "serde_json",
+ "smallstr",
+ "smallvec",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "yrs"
+version = "0.26.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89512f2d869f9947e1c58d57ef86c8f4ca1b1e8ccf24d6e1ff8c7cdbd67d54df"
 dependencies = [
  "arc-swap",
  "async-lock",

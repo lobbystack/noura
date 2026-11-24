@@ -2,8 +2,10 @@
 //! a real workspace folder and app data: what they open, and in which
 //! window, commands in the command palette, Inbox sections, pages in
 //! Settings and tools; the capabilities, hosts and targets you revoke; the
-//! plugins that ship with Noura; and plugins that loop, outgrow their
-//! memory or keep failing, which stop without holding up a window.
+//! plugins that ship with Noura, and the checks each package's smoke run
+//! makes on them and on the collaboration sandbox; and plugins that loop,
+//! outgrow their memory or keep failing, which stop without holding up a
+//! window.
 
 use crate::support;
 use std::time::{Duration, Instant};
@@ -729,6 +731,40 @@ fn a_package_that_lacks_a_plugin_or_breaks_one_fails_the_check() {
         "{problems:?}"
     );
     assert_eq!(problems[3].reason, "its folder holds projects");
+}
+
+#[test]
+fn a_shipped_plugin_that_compiles_and_fails_to_start_fails_the_check() {
+    let Some(shipped) = shipped_with_first_party_plugins() else {
+        return;
+    };
+    let traps = wat::parse_str(
+        r#"(component
+             (core module $m
+               (func $start unreachable)
+               (start $start))
+             (core instance (instantiate $m)))"#,
+    )
+    .unwrap();
+    std::fs::write(
+        shipped.path().join("dictation/dictation_plugin.wasm"),
+        traps,
+    )
+    .unwrap();
+
+    let problems = check_shipped_plugins(Some(shipped.path()));
+
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert_eq!(problems[0].name, "Dictation");
+    assert!(
+        problems[0].reason.starts_with("the plugin failed to start"),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn the_collaboration_sandbox_runs_for_the_smoke_check() {
+    assert_eq!(app_core::check_collab_sandbox(), Ok(()));
 }
 
 #[test]

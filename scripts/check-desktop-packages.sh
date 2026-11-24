@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Install or mount each package scripts/package-desktop.sh built, launch the
 # installed app with --smoke and check what it reports: its first window,
-# the bundled license list, the plugins it ships, and whether it updates
-# itself. --smoke itself fails when a plugin is missing.
+# the bundled license list, the plugins it ships, the collaboration
+# sandbox, and whether it updates itself. --smoke itself fails when a
+# plugin is missing, or when a plugin or the sandbox doesn't start, which
+# runs the code Wasmtime compiles. On macOS the app must first be signed
+# with the hardened runtime and the entitlement that lets that code run.
 #
 # macOS mounts the .dmg and copies the app out, Windows installs the .msi,
 # and Linux installs the .deb and runs the AppImage. Linux needs a display:
@@ -102,6 +105,10 @@ check() {
     echo "::error::$name doesn't ship every plugin that comes with Noura."
     exit 1
   }
+  grep -q "^Collaboration sandbox: runs$" <<<"$report" || {
+    echo "::error::$name can't run the collaboration sandbox."
+    exit 1
+  }
   grep -q "^Updates: $updates" <<<"$report" || {
     echo "::error::$name should have updates $updates."
     exit 1
@@ -125,6 +132,24 @@ case "$(uname -s)" in
       echo "::error::$(basename "$dmg") doesn't ship the layered app icon."
       exit 1
     fi
+    # macOS kills a hardened app the first time code Wasmtime compiled
+    # runs, unless the signature carries this entitlement. A copy signed
+    # without the hardened runtime would pass the smoke run and hide that,
+    # so each architecture needs both.
+    entitlement=com.apple.security.cs.allow-unsigned-executable-memory
+    for arch in $(lipo -archs "$contents/MacOS/noura"); do
+      signature="$(codesign -dv --arch "$arch" "$work/Applications/Noura.app" 2>&1 || true)"
+      if ! grep -q 'flags=0x[0-9a-f]*([^)]*runtime' <<<"$signature"; then
+        echo "::error::$(basename "$dmg") holds an app ($arch) not signed with the hardened runtime."
+        exit 1
+      fi
+      codesign -d --arch "$arch" --entitlements - --xml "$work/Applications/Noura.app" \
+        > "$work/entitlements-$arch.plist" 2> /dev/null || true
+      if [ "$(/usr/libexec/PlistBuddy -c "Print :$entitlement" "$work/entitlements-$arch.plist" 2> /dev/null)" != true ]; then
+        echo "::error::$(basename "$dmg") holds an app ($arch) without $entitlement, so its plugins can't run."
+        exit 1
+      fi
+    done
     check "$(basename "$dmg")" on "$work/Applications/Noura.app/Contents/MacOS/noura"
     ;;
   MINGW* | MSYS* | CYGWIN*)

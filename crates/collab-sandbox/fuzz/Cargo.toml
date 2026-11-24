@@ -11,13 +11,10 @@ cargo-fuzz = true
 [dependencies]
 collab-sandbox = { path = ".." }
 # The guest's own code, built natively so libFuzzer sees its coverage:
-# a panic here is a trap in the sandbox.
-collab-sandbox-guest = { path = "../../collab-sandbox-guest" }
+# a panic here is a trap in the sandbox. guest/Cargo.toml says why it
+# builds through a manifest of its own.
+collab-sandbox-guest = { path = "guest" }
 libfuzzer-sys = "0.4.10"
-
-# The guest's patched yrs, as the guest crate itself patches it.
-[patch.crates-io]
-yrs = { path = "../../collab-sandbox-guest/vendor/yrs" }
 
 # The fuzz targets build outside the Noura workspace, like the guest
 # module, so its builds and lockfile never see libFuzzer.
