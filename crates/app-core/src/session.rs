@@ -481,6 +481,14 @@ impl Session {
             .any(|window| window.listeners.is_some())
     }
 
+    /// Whether a window other than `key` still shows this session.
+    pub(crate) fn others_open(&self, key: WindowKey) -> bool {
+        self.lock()
+            .windows
+            .iter()
+            .any(|window| window.key != key && window.listeners.is_some())
+    }
+
     /// Close the window. Its view state leaves the saved windows while
     /// another window stays open. The last window's stays, so it comes
     /// back at the next launch as when Noura quits.

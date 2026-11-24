@@ -49,9 +49,59 @@ fn close_tab_closes_the_active_tab() {
     assert_eq!(active(&app).as_deref(), Some("A"));
     run(&mut app, command_id::CLOSE_TAB);
     assert!(app.tabs().is_empty());
-    // With no tab open, it does nothing.
+    assert!(!app.is_closed());
+    // With no tab open, it closes the window, as in Safari and Chrome.
     run(&mut app, command_id::CLOSE_TAB);
+    assert!(app.is_closed());
+}
+
+#[test]
+fn where_the_app_stays_open_the_last_window_hides_and_a_menu_item_shows_it_again() {
+    let fixture = Fixture::new(&[("A.md", b"a"), ("B.md", b"b")]);
+    let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));
+    app.hide_when_last_closes(true);
+    app.open_file("A.md", OpenAs::Kept);
+    app.open_file("B.md", OpenAs::Kept);
+    let start = Instant::now();
+    let at = |seconds| start + Duration::from_secs(seconds);
+    let cmd_w = KeyPress::new(Key::W).with_cmd();
+
+    // Another window is open: this one closes for real.
+    let mut other = app.new_window().unwrap();
+    other.close_window();
+    assert!(other.is_closed());
+
+    assert!(app.press_key(&cmd_w, None, at(1)));
+    assert!(app.press_key(&cmd_w, None, at(2)));
     assert!(app.tabs().is_empty());
+    assert!(app.press_key(&cmd_w, None, at(3)));
+    assert!(app.is_hidden());
+    assert!(!app.is_closed(), "the workspace stays open");
+    // Close Tab and Close Window from the menu leave it hidden.
+    assert!(!app.run_command(command_id::CLOSE_TAB, CommandSource::Menu, at(4)));
+    assert!(app.is_hidden());
+
+    // New Window shows it, with no tabs, and opens no other window.
+    assert!(app.run_command(command_id::NEW_WINDOW, CommandSource::Menu, at(5)));
+    assert!(!app.is_hidden());
+    assert!(app.take_opened_windows().is_empty());
+    assert!(app.tabs().is_empty());
+    // Its tabs wait for Reopen Closed Tab.
+    run(&mut app, command_id::REOPEN_CLOSED_TAB);
+    run(&mut app, command_id::REOPEN_CLOSED_TAB);
+    let titles: Vec<&str> = app.tabs().iter().map(|tab| tab.title()).collect();
+    assert_eq!(titles, ["A", "B"]);
+
+    // Closed by its button, it hides too, and New Note shows it again.
+    app.close_window();
+    assert!(app.is_hidden());
+    assert!(app.run_command(command_id::NEW_NOTE, CommandSource::Menu, at(6)));
+    assert!(!app.is_hidden());
+    assert!(document(&app).is_some());
+    // Quit doesn't show it.
+    app.close_window();
+    assert!(app.run_command(command_id::QUIT, CommandSource::Menu, at(7)));
+    assert!(app.is_hidden());
 }
 
 #[test]

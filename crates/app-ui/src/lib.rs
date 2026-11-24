@@ -250,6 +250,12 @@ impl NouraUi {
         self.app.is_closed()
     }
 
+    /// Whether this window closed as the last one and hides until it
+    /// shows again, as on macOS. See [`App::hide_when_last_closes`].
+    pub fn is_hidden(&self) -> bool {
+        self.app.is_hidden()
+    }
+
     /// Whether Quit ran in this window. The desktop then lets every
     /// window go at once, and they all come back at the next launch.
     pub fn is_quitting(&self) -> bool {

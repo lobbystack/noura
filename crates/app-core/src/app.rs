@@ -257,6 +257,12 @@ pub struct App {
     /// types' schemas.
     types_seen: u64,
     closed: bool,
+    /// The last window hides instead of closing, as on macOS, where the
+    /// app stays open without windows. The desktop shell asks for this.
+    hides_when_last: bool,
+    /// The last window closed and hides until it shows again, with no
+    /// tabs.
+    hidden: bool,
     /// Windows this one opened for its workspace's other saved windows,
     /// until the client takes them.
     opened_windows: Vec<App>,
@@ -405,6 +411,8 @@ impl App {
             plugin_acts_seen: 0,
             types_seen: 0,
             closed: false,
+            hides_when_last: false,
+            hidden: false,
             opened_windows: Vec::new(),
             service: session.service.clone(),
             system: session.system.clone(),
@@ -511,6 +519,7 @@ impl App {
         // pending changes, the login item and the packaged license list
         // serve every window.
         window.registry = self.registry.copy();
+        window.hides_when_last = self.hides_when_last;
         window.settings_sections = self.settings_sections.clone();
         window.inbox_sections = self.inbox_sections.clone();
         window.pending_saves = self.pending_saves.clone();
@@ -530,10 +539,53 @@ impl App {
     /// launch, unless it was the last window open: then it comes back, as
     /// when Noura quits.
     pub fn close_window(&mut self) {
-        if self.closed {
+        if self.closed || self.hidden {
             return;
         }
         self.leave(notes::Leave::CloseWindow);
+    }
+
+    /// Make Close Window on the last window open close its tabs and hide
+    /// it instead, keeping the workspace open, as macOS apps such as
+    /// Safari and Preview stay open with no window. The desktop shell asks
+    /// for this where it can show the window again, from the Dock.
+    /// Windows this one opens do the same.
+    pub fn hide_when_last_closes(&mut self, hide: bool) {
+        self.hides_when_last = hide;
+    }
+
+    /// Whether the last window hides instead of closing, as
+    /// [`App::hide_when_last_closes`] asked.
+    pub fn hides_when_last(&self) -> bool {
+        self.hides_when_last
+    }
+
+    /// Whether this window closed as the last one and hides, with no
+    /// tabs, until [`App::show_window`].
+    pub fn is_hidden(&self) -> bool {
+        self.hidden
+    }
+
+    /// Show this window again after it hid as the last one, as clicking
+    /// Noura in the Dock does. It shows with no tabs, as a new window
+    /// does; Reopen Closed Tab brings back the ones it had.
+    pub fn show_window(&mut self) {
+        if self.hidden {
+            self.hidden = false;
+            self.listeners.emit(Change::Window);
+        }
+    }
+
+    /// Close this window's tabs, which Reopen Closed Tab can bring back,
+    /// and hide it: its notes are on disk.
+    fn hide_window_now(&mut self) {
+        while let Some(id) = self.tabs.list().first().map(Tab::id) {
+            self.close_tab_now(id);
+        }
+        self.close_palette();
+        self.close_settings();
+        self.hidden = true;
+        self.listeners.emit(Change::Window);
     }
 
     /// You used this window: what a shortcut, a menu bar item or a
@@ -549,6 +601,10 @@ impl App {
     /// Close this window now: its notes are on disk.
     fn close_window_now(&mut self) {
         if self.closed {
+            return;
+        }
+        if self.hides_when_last && !self.session.others_open(self.key) {
+            self.hide_window_now();
             return;
         }
         self.closed = true;

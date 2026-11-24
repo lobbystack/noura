@@ -15,6 +15,7 @@
 // a pipe, so the smoke run's report does too.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod dock;
 mod file_drag;
 mod instance;
 mod licenses;

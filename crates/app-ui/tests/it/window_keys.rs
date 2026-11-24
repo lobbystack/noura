@@ -155,3 +155,16 @@ fn cmd_shift_t_reopens_closed_tabs_one_after_another_in_their_places() {
     assert_eq!(active(&harness).as_deref(), Some("Beta"));
     assert!(harness.query_by_role_and_label(Role::Tab, "Beta").is_some());
 }
+
+#[test]
+fn cmd_w_with_no_tab_left_closes_the_window() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = mac_window(app_data.path(), &parent.path().join("Keys"), &["Alpha.md"]);
+
+    press(&mut harness, CMD, Key::W);
+    assert!(titles(&harness).is_empty());
+    assert!(!harness.state().is_closed());
+    press(&mut harness, CMD, Key::W);
+    assert!(harness.state().is_closed(), "Cmd+W closes the empty window");
+}

@@ -149,9 +149,20 @@ impl App {
     pub fn run_command(&mut self, id: &str, source: CommandSource, at: Instant) -> bool {
         // A key or a menu item reaches what covers the window first. The
         // palette and buttons can't be used while something covers them.
-        let covered = matches!(source, CommandSource::Key | CommandSource::Menu)
-            .then(|| self.overlay())
-            .flatten();
+        let from_keys = matches!(source, CommandSource::Key | CommandSource::Menu);
+        if self.hidden && from_keys && id != command_id::QUIT {
+            // The window hid as the last one, and a menu item shows it
+            // again first, as on macOS. Shown, it is the new window, and
+            // it has no tab to close.
+            if [command_id::CLOSE_TAB, command_id::CLOSE_WINDOW].contains(&id) {
+                return false;
+            }
+            self.show_window();
+            if id == command_id::NEW_WINDOW {
+                return true;
+            }
+        }
+        let covered = from_keys.then(|| self.overlay()).flatten();
         if id.starts_with(COMMAND_PREFIX) {
             if covered.is_some() {
                 return false;
@@ -335,9 +346,13 @@ impl App {
         }
     }
 
+    /// Close the active tab, or the window once no tab is open, as Cmd+W
+    /// does in Safari and Chrome.
     fn close_active_tab(&mut self) {
-        if let Some(id) = self.tabs.active().map(Tab::id) {
-            self.close_tab(id);
+        match self.tabs.active().map(Tab::id) {
+            Some(id) => self.close_tab(id),
+            None if self.tabs.list().is_empty() => self.close_window(),
+            None => {}
         }
     }
 

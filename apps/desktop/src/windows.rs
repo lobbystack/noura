@@ -4,9 +4,12 @@
 //!
 //! eframe quits when the root viewport closes, so closing the first
 //! window while others stay open hides the root viewport instead, and it
-//! keeps hosting the others. Closing the last window quits, and so does
-//! Quit, which keeps every window for the next launch. A window closes
-//! once its notes are saved, and Quit waits for every window's notes.
+//! keeps hosting the others. On Windows and Linux closing the last window
+//! quits, and so does Quit, which keeps every window for the next launch.
+//! On macOS Noura stays open without windows, as Safari and Preview do:
+//! the last window closes its tabs and hides, and the Dock, a later launch
+//! or a menu item shows it again. A window closes once its notes are
+//! saved, and Quit waits for every window's notes.
 //!
 //! The shell around the windows lives here too: the native menu bar,
 //! whose choices go to the window that had focus last, the Edit items'
@@ -35,6 +38,10 @@ use crate::{
     instance::Instance,
     menu::{Choice, EditInput},
 };
+
+/// Whether Noura stays open once its last window closes, as macOS apps
+/// do. Elsewhere closing the last window quits.
+const KEEPS_RUNNING: bool = cfg!(target_os = "macos");
 
 /// How far each new window sits from the window that opened it.
 const CASCADE: f32 = 28.0;
@@ -134,6 +141,8 @@ pub struct Windows {
     /// The root viewport hides once the first window closed while others
     /// stay open.
     root_hidden: bool,
+    /// The first window closed as the last one and hides, as on macOS.
+    first_hidden: bool,
     /// Quit ran: the root viewport may close with every window open.
     quitting: bool,
     /// Quit ran, the root viewport's close went through, or the last
@@ -183,6 +192,8 @@ struct Forward {
 struct Window {
     id: ViewportId,
     builder: ViewportBuilder,
+    /// The window closed as the last one and hides, as on macOS.
+    hidden: bool,
     /// eframe draws a deferred viewport on its own schedule, so the state
     /// sits behind a lock.
     state: Arc<Mutex<WindowState>>,
@@ -205,10 +216,13 @@ impl Windows {
         picker: impl Fn() -> Box<dyn FolderPicker> + 'static,
     ) -> Self {
         let (choice_sender, choices) = channel();
+        let mut first = first;
+        first.hide_when_last_closes(KEEPS_RUNNING);
         Self {
             first: Some(NouraUi::new(first, picker())),
             others: Vec::new(),
             root_hidden: false,
+            first_hidden: false,
             quitting: false,
             ending: false,
             recent: Arc::new(Mutex::new(ViewportId::ROOT)),
@@ -241,6 +255,17 @@ impl Windows {
         self
     }
 
+    /// Keep running once the last window closes, hiding it, or quit then.
+    /// macOS keeps running and the other platforms quit unless this says
+    /// otherwise.
+    #[cfg(test)]
+    fn keeping_running_without_windows(mut self, keep: bool) -> Self {
+        if let Some(first) = &mut self.first {
+            first.app_mut().hide_when_last_closes(keep);
+        }
+        self
+    }
+
     /// End the app as Quit does when `quit` asks.
     pub fn quitting_on(mut self, quit: QuitRequest) -> Self {
         self.quit_request = quit;
@@ -266,6 +291,7 @@ impl Windows {
     /// Send menu choices to the windows, and on macOS and Windows show the
     /// menu bar.
     pub fn install_menu_bar(&mut self, cc: &eframe::CreationContext<'_>) {
+        crate::dock::listen(&cc.egui_ctx);
         let sender = self.choice_sender.clone();
         let ctx = cc.egui_ctx.clone();
         let woken = ctx.clone();
@@ -361,6 +387,7 @@ impl Windows {
             }
             open
         });
+        self.follow_hidden(ctx);
         let mut cascade = 0.0;
         for (app, origin) in opened {
             cascade += CASCADE;
@@ -381,6 +408,35 @@ impl Windows {
         true
     }
 
+    /// Hide each window that closed as the last one, and show it again
+    /// once it no longer hides.
+    fn follow_hidden(&mut self, ctx: &Context) {
+        let show = |ctx: &Context, id: ViewportId, hidden: bool| {
+            ctx.send_viewport_cmd_to(id, ViewportCommand::Visible(!hidden));
+            if !hidden {
+                ctx.send_viewport_cmd_to(id, ViewportCommand::Focus);
+            }
+        };
+        let first_hidden = self.first.as_ref().is_some_and(NouraUi::is_hidden);
+        if first_hidden != self.first_hidden {
+            self.first_hidden = first_hidden;
+            self.root_hidden = first_hidden;
+            show(ctx, ViewportId::ROOT, first_hidden);
+        }
+        for window in &mut self.others {
+            let hidden = window
+                .state
+                .lock()
+                .ui
+                .as_ref()
+                .is_some_and(NouraUi::is_hidden);
+            if hidden != window.hidden {
+                window.hidden = hidden;
+                show(ctx, window.id, hidden);
+            }
+        }
+    }
+
     fn add(&mut self, app: App, position: Option<Pos2>) {
         let id = ViewportId::from_hash_of(("noura window", self.next_id));
         self.next_id += 1;
@@ -389,6 +445,7 @@ impl Windows {
         self.others.push(Window {
             id,
             builder: builder(position),
+            hidden: false,
             state: Arc::new(Mutex::new(WindowState {
                 ui: Some(ui),
                 opened: Vec::new(),
@@ -432,10 +489,9 @@ impl Windows {
             ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Visible(false));
             self.root_hidden = true;
         } else if requested(ViewportId::ROOT) {
-            let first_waits = self
-                .first
-                .as_ref()
-                .is_some_and(NouraUi::must_save_before_closing);
+            let first_waits = self.first.as_ref().is_some_and(|first| {
+                first.must_save_before_closing() || first.app().hides_when_last()
+            });
             if !self.quitting && !self.ending && (!self.others.is_empty() || first_waits) {
                 ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::CancelClose);
                 if let Some(first) = &mut self.first {
@@ -686,9 +742,19 @@ impl Windows {
         }
     }
 
-    /// Bring the first window back from the menu bar, where closing it hid
-    /// it.
+    /// Bring back a window that hid: the first window from the menu bar,
+    /// where closing it hid it, or the window that closed as the last one,
+    /// as on macOS.
     fn show_hidden(&mut self, ctx: &Context) {
+        if let Some(first) = &mut self.first {
+            first.app_mut().show_window();
+        }
+        for window in &self.others {
+            if let Some(ui) = &mut window.state.lock().ui {
+                ui.app_mut().show_window();
+            }
+        }
+        self.follow_hidden(ctx);
         if self.root_hidden && self.first.is_some() {
             self.root_hidden = false;
             ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Visible(true));
@@ -698,11 +764,11 @@ impl Windows {
 
     fn come_forward(&mut self, ctx: &Context) {
         let now = Instant::now();
-        if self
+        let launched = self
             .instance
             .as_ref()
-            .is_some_and(Instance::take_activation)
-        {
+            .is_some_and(Instance::take_activation);
+        if launched || crate::dock::take_reopen() {
             self.show_hidden(ctx);
             self.forward = Some(Forward {
                 asked: now,
@@ -976,6 +1042,18 @@ mod tests {
         }))
     }
 
+    /// Windows that quit once the last one closes, as on Windows and
+    /// Linux, or keep running, as on macOS.
+    fn harness_keeping_running(
+        app_data: &std::path::Path,
+        keep: bool,
+    ) -> Harness<'static, Windows> {
+        harness_of(
+            Windows::new(App::launch(app_data), None, || Box::new(NoFolder))
+                .keeping_running_without_windows(keep),
+        )
+    }
+
     fn harness_of(windows: Windows) -> Harness<'static, Windows> {
         let mut harness = Harness::builder()
             .with_size([1400.0, 900.0])
@@ -1117,7 +1195,7 @@ mod tests {
     #[test]
     fn closing_the_first_window_hides_it_and_keeps_the_others_until_the_last_closes() {
         let app_data = workspace();
-        let mut harness = harness(app_data.path());
+        let mut harness = harness_keeping_running(app_data.path(), false);
         open_new_window(&mut harness);
 
         let commands = close_first_window(&mut harness);
@@ -1138,14 +1216,92 @@ mod tests {
     }
 
     #[test]
-    fn closing_the_only_window_quits() {
+    fn on_windows_and_linux_closing_the_only_window_quits() {
         let app_data = workspace();
-        let mut harness = harness(app_data.path());
+        let mut harness = harness_keeping_running(app_data.path(), false);
 
         let commands = close_first_window(&mut harness);
 
         assert!(commands.contains(&ViewportCommand::Close));
         assert!(!commands.contains(&ViewportCommand::Visible(false)));
+    }
+
+    #[test]
+    fn on_windows_and_linux_cmd_w_with_no_tab_left_closes_the_window_and_quits() {
+        let app_data = workspace();
+        let mut harness = harness_keeping_running(app_data.path(), false);
+        assert!(
+            harness
+                .state()
+                .first
+                .as_ref()
+                .unwrap()
+                .app()
+                .tabs()
+                .is_empty()
+        );
+
+        let commands = press(&mut harness, Modifiers::NONE, Key::W);
+
+        assert!(commands.contains(&ViewportCommand::Close));
+    }
+
+    #[test]
+    fn on_macos_the_last_window_hides_and_the_dock_shows_it_again() {
+        let app_data = workspace();
+        let mut harness = harness_keeping_running(app_data.path(), true);
+        let first = |harness: &Harness<'static, Windows>| -> bool {
+            harness.state().first.as_ref().unwrap().is_hidden()
+        };
+
+        // Cmd+W with no tab left closes the window, which hides.
+        let commands = press(&mut harness, Modifiers::NONE, Key::W);
+        assert!(commands.contains(&ViewportCommand::Visible(false)));
+        assert!(!commands.contains(&ViewportCommand::Close));
+        assert!(first(&harness));
+        assert!(!harness.state().ending, "Noura keeps running");
+
+        // A click on the Dock icon shows it again.
+        crate::dock::ask_reopen();
+        harness.step();
+        assert!(!first(&harness));
+        let commands = root_commands(&harness);
+        assert!(commands.contains(&ViewportCommand::Visible(true)));
+        assert!(commands.contains(&ViewportCommand::Focus));
+
+        // Its close button hides it too, and New Window from the menu
+        // shows it, opening no other window.
+        let commands = logic_pass(&mut harness, &[(ViewportId::ROOT, closing())]);
+        assert!(cancels_close(&commands));
+        assert!(first(&harness));
+        choose(&mut harness, command_id::NEW_WINDOW);
+        assert!(!first(&harness));
+        assert!(harness.state().others.is_empty());
+
+        // With another window open, the first one closes for real, and the
+        // other one hides once it is the last.
+        open_new_window(&mut harness);
+        *harness.state().recent.lock() = ViewportId::ROOT;
+        choose(&mut harness, command_id::CLOSE_WINDOW);
+        assert!(harness.state().first.is_none());
+        let second = harness.state().others[0].id;
+        second_window(&harness)
+            .lock()
+            .ui
+            .as_mut()
+            .unwrap()
+            .close_window();
+        harness.step();
+        assert!(!root_commands(&harness).contains(&ViewportCommand::Close));
+        assert_eq!(harness.state().others.len(), 1);
+        assert!(harness.state().others[0].hidden);
+        assert!(
+            harness
+                .output()
+                .viewport_output
+                .get(&second)
+                .is_some_and(|output| output.commands.contains(&ViewportCommand::Visible(false)))
+        );
     }
 
     /// Run a pass as eframe does while every window is minimized or
@@ -1502,15 +1658,19 @@ mod tests {
         assert_eq!(running.len(), 1, "one launch runs");
     }
 
-    /// Closing the only window ends the app, so a request that waits then
-    /// gets no answer, and its launch runs once the copy is gone.
+    /// Closing the only window ends the app on Windows and Linux, so a
+    /// request that waits then gets no answer, and its launch runs once the
+    /// copy is gone.
     #[test]
     fn a_launch_while_the_only_window_closes_runs_once_it_is_gone() {
         let app_data = workspace();
         let Ok(Claim::First(instance)) = crate::instance::claim(app_data.path()) else {
             panic!("nothing else runs on this app data folder");
         };
-        let mut harness = harness_with(app_data.path(), Some(instance));
+        let windows = Windows::new(App::launch(app_data.path()), Some(instance), || {
+            Box::new(NoFolder)
+        });
+        let mut harness = harness_of(windows.keeping_running_without_windows(false));
         let later = launch(app_data.path());
         wait_until_asked(&harness);
 
@@ -1707,7 +1867,7 @@ mod tests {
     #[test]
     fn closing_the_only_window_waits_for_its_note() {
         let app_data = workspace_with_note();
-        let mut harness = harness(app_data.path());
+        let mut harness = harness_keeping_running(app_data.path(), false);
         type_in_plan(harness.state_mut().first.as_mut().unwrap());
         let lock = hold_writes(&harness, app_data.path());
 
