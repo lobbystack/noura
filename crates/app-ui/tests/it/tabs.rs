@@ -234,6 +234,127 @@ fn the_keyboard_moves_between_tabs_activates_and_closes_them() {
     assert_eq!(focused_tab(&harness).as_deref(), Some("Gamma"));
 }
 
+/// Whether the last frame asked to move the window, as a drag on the title
+/// bar does.
+fn moves_window(harness: &Ui) -> bool {
+    harness.output().viewport_output.values().any(|viewport| {
+        viewport
+            .commands
+            .iter()
+            .any(|command| matches!(command, egui::ViewportCommand::StartDrag))
+    })
+}
+
+/// Drag from `from` to `to` in steps, as a mouse does, and run
+/// `before_drop` before letting go. Returns whether any frame asked to
+/// move the window.
+fn drag(
+    harness: &mut Ui,
+    from: egui::Pos2,
+    to: egui::Pos2,
+    before_drop: impl FnOnce(&mut Ui),
+) -> bool {
+    let mut moved_window = false;
+    harness.hover_at(from);
+    harness.step();
+    harness.drag_at(from);
+    harness.step();
+    moved_window |= moves_window(harness);
+    for step in 1..=4 {
+        harness.hover_at(from + (to - from) * (step as f32 / 4.0));
+        harness.step();
+        moved_window |= moves_window(harness);
+    }
+    before_drop(harness);
+    harness.drop_at(to);
+    harness.step();
+    moved_window |= moves_window(harness);
+    harness.run();
+    moved_window
+}
+
+/// The tab row is the window's title bar. A tab drags to a new place
+/// without moving the window; the row's empty part and the strip above
+/// the sidebar still move it, and a click and the close button still work.
+#[test]
+fn dragging_a_tab_reorders_the_tabs_and_leaves_the_window_in_place() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = opened(app_data.path(), &parent.path().join("Garden"));
+    // Wide enough for the row to end in an empty part.
+    harness.set_size(egui::vec2(1300.0, 700.0));
+    for name in ["Alpha", "Beta", "Gamma"] {
+        double_click(&mut harness, name);
+    }
+    // A point in the first quarter of the tab `name`, and one in its
+    // last quarter.
+    let near_start = |harness: &Ui, name: &str| {
+        let rect = harness.get_by_role_and_label(Role::Tab, name).rect();
+        rect.left_center() + egui::vec2(rect.width() / 4.0, 0.0)
+    };
+    let near_end = |harness: &Ui, name: &str| {
+        let rect = harness.get_by_role_and_label(Role::Tab, name).rect();
+        rect.right_center() - egui::vec2(rect.width() / 4.0, 0.0)
+    };
+
+    let (from, to) = (near_start(&harness, "Alpha"), near_end(&harness, "Gamma"));
+    let moved_window = drag(&mut harness, from, to, |_| {});
+    assert!(!moved_window, "dragging a tab moved the window");
+    assert_eq!(tabs(&harness), ["Beta", "Gamma", "Alpha"]);
+    assert_eq!(selected(&harness).as_deref(), Some("Gamma"));
+
+    let (from, to) = (near_start(&harness, "Alpha"), near_start(&harness, "Beta"));
+    let moved_window = drag(&mut harness, from, to, |_| {});
+    assert!(!moved_window, "dragging a tab moved the window");
+    assert_eq!(tabs(&harness), ["Alpha", "Beta", "Gamma"]);
+
+    // Escape cancels a drag.
+    let (from, to) = (near_start(&harness, "Alpha"), near_end(&harness, "Gamma"));
+    drag(&mut harness, from, to, |harness| {
+        harness.key_press(Key::Escape);
+        harness.step();
+    });
+    assert_eq!(tabs(&harness), ["Alpha", "Beta", "Gamma"]);
+
+    // The empty row after the last tab takes a dropped tab, and dragging
+    // it moves the window.
+    let gamma = harness.get_by_role_and_label(Role::Tab, "Gamma").rect();
+    let empty = egui::pos2(gamma.right() + 80.0, gamma.center().y);
+    let from = near_start(&harness, "Beta");
+    drag(&mut harness, from, empty, |_| {});
+    assert_eq!(tabs(&harness), ["Alpha", "Gamma", "Beta"]);
+    let moved_window = drag(&mut harness, empty, empty + egui::vec2(60.0, 0.0), |_| {});
+    assert!(
+        moved_window,
+        "the row's empty part no longer moves the window"
+    );
+    assert_eq!(tabs(&harness), ["Alpha", "Gamma", "Beta"]);
+
+    let switcher = harness
+        .get_by_role_and_label(Role::Button, "Workspace: Garden")
+        .rect();
+    let above_switcher = switcher.center_top() - egui::vec2(0.0, 2.0);
+    let moved_window = drag(
+        &mut harness,
+        above_switcher,
+        above_switcher + egui::vec2(60.0, 0.0),
+        |_| {},
+    );
+    assert!(
+        moved_window,
+        "the strip above the sidebar no longer moves the window"
+    );
+
+    harness.get_by_role_and_label(Role::Tab, "Alpha").click();
+    harness.run();
+    assert_eq!(selected(&harness).as_deref(), Some("Alpha"));
+    harness
+        .get_by_role_and_label(Role::Button, "Close Gamma")
+        .click();
+    harness.run();
+    assert_eq!(tabs(&harness), ["Alpha", "Beta"]);
+}
+
 /// Open `name`'s row menu with a right-click and choose `item`.
 fn choose_from_row_menu(harness: &mut Ui, name: &str, item: &str) {
     row(harness, name).click_secondary();

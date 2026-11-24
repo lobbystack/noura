@@ -105,6 +105,37 @@ fn closing_a_tab_in_the_background_keeps_the_active_tab() {
     assert_eq!(active(&app).as_deref(), Some("B"));
 }
 
+#[test]
+fn a_moved_tab_keeps_its_new_place_through_a_relaunch() {
+    let (app_data, _folder, mut app) = opened(&["A.md", "B.md", "C.md", "D.md"]);
+    for file in ["A.md", "B.md", "C.md"] {
+        app.open_file(file, OpenAs::Kept);
+    }
+    app.open_file("D.md", OpenAs::Preview);
+    app.activate_tab(tab_id(&app, "B"));
+
+    app.move_tab(tab_id(&app, "A"), 2);
+    assert_eq!(shown(&app), ["B", "C", "A", "D (preview)"]);
+    app.move_tab(tab_id(&app, "D"), 0);
+    assert_eq!(shown(&app), ["D (preview)", "B", "C", "A"]);
+    // Past the end puts the tab last.
+    app.move_tab(tab_id(&app, "B"), 9);
+    assert_eq!(shown(&app), ["D (preview)", "C", "A", "B"]);
+    assert_eq!(active(&app).as_deref(), Some("B"));
+    // A closed tab's ID moves nothing.
+    let gone = tab_id(&app, "C");
+    app.close_tab(gone);
+    app.move_tab(gone, 0);
+    assert_eq!(shown(&app), ["D (preview)", "A", "B"]);
+
+    let mut app = relaunch(app, app_data.path());
+    assert_eq!(shown(&app), ["D (preview)", "A", "B"]);
+    assert_eq!(active(&app).as_deref(), Some("B"));
+    // The preview, moved, is still the one the next preview replaces.
+    app.open_file("C.md", OpenAs::Preview);
+    assert_eq!(shown(&app), ["C (preview)", "A", "B"]);
+}
+
 /// Each tab's title, with "(preview)" after the preview tab's.
 fn shown(app: &App) -> Vec<String> {
     app.tabs()

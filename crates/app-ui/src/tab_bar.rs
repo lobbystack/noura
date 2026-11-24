@@ -7,11 +7,17 @@
 //! row with no box, a faint fill under the pointer and a thin line between
 //! neighbours. Tabs share the row evenly between their narrowest and widest,
 //! and past their narrowest the row scrolls.
+//!
+//! You reorder tabs by dragging them. The row is also the window's title
+//! bar, whose empty part moves the window, so a tab takes its own drags:
+//! a tab that only took clicks would leave the drag to the title bar under
+//! it, and the window would move.
 
 use app_core::{App, TabId};
 use egui::{
-    Align2, CornerRadius, Event, EventFilter, FontId, Id, Key, Rect, Response, ScrollArea, Sense,
-    Stroke, StrokeKind, TextWrapMode, Ui, UiBuilder, WidgetInfo, WidgetText,
+    Align2, CornerRadius, DragAndDrop, Event, EventFilter, FontId, Id, Key, Rect, Response,
+    ScrollArea, Sense, Stroke, StrokeKind, TextWrapMode, Ui, UiBuilder, ViewportId, WidgetInfo,
+    WidgetText,
     accesskit::{Action, Role},
     containers::scroll_area::ScrollBarVisibility,
     pos2, vec2,
@@ -46,6 +52,16 @@ pub(crate) struct TabBarView {
 
 fn tab_id(tab: TabId) -> Id {
     Id::unique(("tab", tab))
+}
+
+/// The tab you're dragging to a new place, as egui's drag-and-drop
+/// payload. egui drops the payload when you press Escape.
+struct Dragged {
+    /// The window the drag started in. Windows share the payload, and each
+    /// numbers its own tabs.
+    viewport: ViewportId,
+    id: TabId,
+    from: usize,
 }
 
 /// Whether one of the tabs has keyboard focus.
@@ -163,12 +179,23 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TabBarView, end: f32) 
 
     let mut activate = None;
     let mut keep = None;
+    let mut moved = None;
     let mut active_rect = None;
     let palette = Palette::of(ui.ctx());
     // Tabs share the row evenly, as wide as they may be, and no narrower
     // than their narrowest: past that, the row scrolls.
     let row_width = (end - ui.cursor().left()).max(0.0);
     let width = (row_width / tabs.len() as f32).clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH);
+    // A dragged tab drops anywhere along the row, the empty part after
+    // the last tab included.
+    let drop_zone = Rect::from_x_y_ranges(ui.cursor().left()..=end, ui.max_rect().y_range());
+    let viewport = ui.ctx().viewport_id();
+    let dragged = DragAndDrop::payload::<Dragged>(ui.ctx()).filter(|dragged| {
+        dragged.viewport == viewport
+            && tabs
+                .get(dragged.from)
+                .is_some_and(|tab| tab.id == dragged.id)
+    });
     let builder = UiBuilder::new()
         .accessibility_role(Role::TabList)
         .accessibility_label("Tabs");
@@ -187,7 +214,17 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TabBarView, end: f32) 
                     for (index, tab) in tabs.iter().enumerate() {
                         let is_tab_stop = tab.id == tab_stop;
                         let is_active = Some(tab.id) == active;
-                        let drawn = draw_tab(ui, tab, width, is_active, is_tab_stop, &palette);
+                        let look = Look {
+                            active: is_active,
+                            tab_stop: is_tab_stop,
+                            dragging: dragged.as_ref().is_some_and(|d| d.id == tab.id),
+                        };
+                        let drawn = draw_tab(ui, tab, width, look, &palette);
+                        drawn.tab.dnd_set_drag_payload(Dragged {
+                            viewport,
+                            id: tab.id,
+                            from: index,
+                        });
                         if is_active {
                             if view.shown_active != active {
                                 drawn.tab.scroll_to_me(None);
@@ -229,6 +266,10 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TabBarView, end: f32) 
                             Stroke::new(1.0, palette.border),
                         );
                     }
+                    if let Some(dragged) = &dragged {
+                        let rects: Vec<Rect> = drawn_tabs.iter().map(|(rect, _)| *rect).collect();
+                        moved = drop_dragged(ui, dragged, &rects, drop_zone, &palette);
+                    }
                 });
             });
     });
@@ -237,6 +278,9 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TabBarView, end: f32) 
 
     if let Some(id) = activate {
         app.activate_tab(id);
+    }
+    if let Some((id, index)) = moved {
+        app.move_tab(id, index);
     }
     if let Some(id) = keep {
         app.keep_tab(id);
@@ -272,6 +316,43 @@ pub(crate) fn hairline(ui: &Ui, row: Rect, active: Option<Rect>) {
     }
 }
 
+/// While a tab is dragged over the row, mark the gap it would drop into
+/// with a line, and on release return the tab and its new index. `tabs`
+/// is where each tab drew. A gap beside the dragged tab moves nothing and
+/// shows no line.
+fn drop_dragged(
+    ui: &Ui,
+    dragged: &Dragged,
+    tabs: &[Rect],
+    drop_zone: Rect,
+    palette: &Palette,
+) -> Option<(TabId, usize)> {
+    let pointer = ui.input(|input| input.pointer.latest_pos())?;
+    if !drop_zone.contains(pointer) {
+        return None;
+    }
+    // The gap after every tab whose middle is left of the pointer.
+    let gap = tabs.iter().filter(|tab| tab.center().x < pointer.x).count();
+    if gap == dragged.from || gap == dragged.from + 1 {
+        return None;
+    }
+    let first = tabs.first()?;
+    let x = match gap {
+        0 => first.left(),
+        _ => tabs.get(gap - 1)?.right(),
+    };
+    let clip = ui.clip_rect();
+    ui.painter().vline(
+        x.clamp(clip.left() + 1.0, clip.right() - 1.0),
+        (first.top() + 4.0)..=(first.bottom() - 4.0),
+        Stroke::new(2.0, palette.primary),
+    );
+    // The gap counts the dragged tab; its new index doesn't.
+    let to = if gap > dragged.from { gap - 1 } else { gap };
+    ui.input(|input| input.pointer.any_released())
+        .then_some((dragged.id, to))
+}
+
 struct DrawnTab {
     tab: Response,
     close: Response,
@@ -280,17 +361,26 @@ struct DrawnTab {
     hovered: bool,
 }
 
+/// How a tab draws, besides its name.
+#[derive(Clone, Copy)]
+struct Look {
+    active: bool,
+    /// The one tab Tab focus reaches.
+    tab_stop: bool,
+    /// You're dragging the tab to a new place.
+    dragging: bool,
+}
+
 /// One tab, `width` wide: its name, in Public Sans Italic while it's the
 /// preview, and a close button that shows on the active tab and under the
 /// pointer. The active tab is the page's sheet; another tab has no box.
-fn draw_tab(
-    ui: &mut Ui,
-    tab: &Shown,
-    width: f32,
-    active: bool,
-    tab_stop: bool,
-    palette: &Palette,
-) -> DrawnTab {
+/// Its name fades while you drag it.
+fn draw_tab(ui: &mut Ui, tab: &Shown, width: f32, look: Look, palette: &Palette) -> DrawnTab {
+    let Look {
+        active,
+        tab_stop,
+        dragging,
+    } = look;
     let mut name = egui::RichText::new(&tab.title);
     let mut font = FontId::proportional(BODY_SIZE);
     if tab.preview {
@@ -310,10 +400,12 @@ fn draw_tab(
     let (slot, _) = ui.allocate_exact_size(vec2(width, BAR_HEIGHT), Sense::hover());
     // The tab stands on the row's bottom edge.
     let rect = Rect::from_min_max(pos2(slot.left(), slot.top() + TAB_TOP), slot.max);
+    // The tab takes its drags, which reorder the tabs, so the title bar
+    // under it doesn't move the window.
     let sense = if tab_stop {
-        Sense::click()
+        Sense::click_and_drag()
     } else {
-        Sense::CLICK
+        Sense::CLICK | Sense::DRAG
     };
     let id = tab_id(tab.id);
     let label = if tab.preview {
@@ -367,11 +459,14 @@ fn draw_tab(
         if response.has_focus() {
             crate::common::focus_ring(painter, rect.shrink(2.0), radius(0.6), palette);
         }
-        let color = if active || hovered {
+        let mut color = if active || hovered {
             palette.foreground
         } else {
             palette.muted_foreground
         };
+        if dragging {
+            color = color.gamma_multiply(0.4);
+        }
         let text =
             Align2::LEFT_CENTER.anchor_size(pos2(rect.left() + TAB_PADDING, middle), galley.size());
         painter.galley(text.min, galley, color);

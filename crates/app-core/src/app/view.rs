@@ -197,6 +197,15 @@ impl App {
         }
     }
 
+    /// Put the tab `id` at `index` among the tabs, or last when `index` is
+    /// past the end, as dragging it does. The order comes back with the
+    /// workspace, as the tabs do.
+    pub fn move_tab(&mut self, id: TabId, index: usize) {
+        if self.tabs.move_to(id, index) {
+            self.tabs_changed(false);
+        }
+    }
+
     /// Close a tab. Closing the active tab shows the tab that takes its
     /// place; closing the last one leaves nothing open. A note's tab saves
     /// first, and stays open while the save runs or after it failed, until

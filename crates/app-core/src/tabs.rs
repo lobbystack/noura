@@ -506,6 +506,22 @@ impl Tabs {
             .collect()
     }
 
+    /// Put the tab `id` at `index`, or last when `index` is past the end.
+    /// The tab stays what it was: kept or the preview, active or not.
+    /// Returns whether the order changed.
+    pub(crate) fn move_to(&mut self, id: TabId, index: usize) -> bool {
+        let Some(from) = self.tabs.iter().position(|tab| tab.id == id) else {
+            return false;
+        };
+        let to = index.min(self.tabs.len() - 1);
+        if from == to {
+            return false;
+        }
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        true
+    }
+
     /// Close a tab. Closing the active tab activates the tab that takes
     /// its place, or the one before it at the end; closing the last tab
     /// leaves nothing active. Returns whether the tab was open.
