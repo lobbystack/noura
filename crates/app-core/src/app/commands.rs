@@ -5,9 +5,9 @@ use std::{sync::Arc, time::Instant};
 
 use super::{App, Change, SearchScope};
 use crate::{
-    Area, Command, CommandSource, KeyPress, Menu, MenuName, Platform, ShortcutEntry, ShortcutGroup,
-    Tab,
-    commands::{Run, area_keys, command_id},
+    Area, Command, CommandSource, KeyPress, Menu, MenuName, Overlay, Platform, ShortcutEntry,
+    ShortcutGroup, Tab,
+    commands::{Covered, Run, area_keys, command_id},
     layout::FILES_SECTION,
     menus,
     plugins::COMMAND_PREFIX,
@@ -140,7 +140,15 @@ impl App {
     /// it ran: nothing runs for an unknown ID, or for the second report of
     /// a key press that the menu and the window both report.
     pub fn run_command(&mut self, id: &str, source: CommandSource, at: Instant) -> bool {
+        // A key or a menu item reaches what covers the window first. The
+        // palette and buttons can't be used while something covers them.
+        let covered = matches!(source, CommandSource::Key | CommandSource::Menu)
+            .then(|| self.overlay())
+            .flatten();
         if id.starts_with(COMMAND_PREFIX) {
+            if covered.is_some() {
+                return false;
+            }
             // The plugin runs it on its own thread and draws its views
             // again; the window shows them once they arrive.
             let ran = self.session.plugins().run_command(id, self.key);
@@ -155,8 +163,53 @@ impl App {
         if !self.registry.is_new_run(id, source, at) {
             return false;
         }
-        run(self);
-        true
+        match covered.map(|overlay| overlay.takes(id)) {
+            None | Some(Covered::Runs) => {
+                run(self);
+                true
+            }
+            Some(Covered::Closes) => {
+                self.close_overlay();
+                true
+            }
+            Some(Covered::Waits) => false,
+        }
+    }
+
+    /// What covers the window now, the one on top: a dialog that asks
+    /// something, search or Settings. Keys and menu items that act on the
+    /// window's tabs and files don't reach past it.
+    pub fn overlay(&self) -> Option<Overlay> {
+        let asking = self.unsaved_prompt().is_some()
+            || self.share_screen().open
+            || self.ai_tool_prompt().is_some()
+            || self.plugin_install.is_some();
+        if asking {
+            return Some(Overlay::Dialog);
+        }
+        if self.palette.is_some() {
+            return Some(Overlay::Palette);
+        }
+        if self.settings.is_some() {
+            return Some(Overlay::Settings);
+        }
+        let reviewing = self
+            .tabs
+            .active()
+            .and_then(|tab| self.note(tab.id()))
+            .and_then(|note| note.conflict())
+            .is_some_and(|conflict| conflict.is_reviewing());
+        (self.pending_trash.is_some() || reviewing).then_some(Overlay::Dialog)
+    }
+
+    /// Close search or Settings, as Close Tab does while it covers the
+    /// window.
+    fn close_overlay(&mut self) {
+        match self.overlay() {
+            Some(Overlay::Palette) => self.close_palette(),
+            Some(Overlay::Settings) => self.close_settings(),
+            Some(Overlay::Dialog) | None => {}
+        }
     }
 
     /// The command a key press runs while `focus` has the keyboard: a

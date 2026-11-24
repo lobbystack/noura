@@ -4,8 +4,8 @@ use crate::support;
 use std::time::{Duration, Instant};
 
 use app_core::{
-    App, Area, CommandSource, FILES_SECTION, Key, KeyPress, OpenAs, PdfZoom, Platform, command_id,
-    settings_section,
+    App, Area, CommandSource, FILES_SECTION, Key, KeyPress, OpenAs, Overlay, PdfZoom, Platform,
+    command_id, settings_section,
 };
 use support::{FakeSystem, Fixture, document};
 
@@ -70,6 +70,113 @@ fn close_tab_pressed_twice_quickly_closes_two_tabs() {
     let titles: Vec<&str> = app.tabs().iter().map(|tab| tab.title()).collect();
     assert_eq!(titles, ["One"]);
     assert_eq!(document(&app).as_deref(), Some("One.md"));
+}
+
+#[test]
+fn close_tab_closes_settings_or_search_and_not_the_tab_under_them() {
+    let fixture = Fixture::new(&[("A.md", b"a"), ("B.md", b"b")]);
+    let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));
+    app.open_file("A.md", OpenAs::Kept);
+    app.open_file("B.md", OpenAs::Kept);
+    let cmd = |key| KeyPress::new(key).with_cmd();
+    let start = Instant::now();
+    let at = |seconds| start + Duration::from_secs(seconds);
+    let titles = |app: &App| -> Vec<String> {
+        app.tabs()
+            .iter()
+            .map(|tab| tab.title().to_owned())
+            .collect()
+    };
+
+    app.open_settings();
+    assert_eq!(app.overlay(), Some(Overlay::Settings));
+    assert!(app.press_key(&cmd(Key::W), None, at(1)));
+    assert!(app.settings().is_none());
+    assert_eq!(titles(&app), ["A", "B"]);
+
+    // The menu's report of the same press closes nothing more.
+    app.toggle_palette();
+    assert_eq!(app.overlay(), Some(Overlay::Palette));
+    assert!(app.press_key(&cmd(Key::W), Some(Area::Writing), at(2)));
+    assert!(!app.run_command(
+        command_id::CLOSE_TAB,
+        CommandSource::Menu,
+        at(2) + Duration::from_millis(20)
+    ));
+    assert_eq!(app.palette(), None);
+    assert_eq!(titles(&app), ["A", "B"]);
+    // File > Close Tab chosen while Settings shows closes Settings too.
+    app.open_settings();
+    assert!(app.run_command(command_id::CLOSE_TAB, CommandSource::Menu, at(3)));
+    assert!(app.settings().is_none());
+    assert_eq!(titles(&app), ["A", "B"]);
+    // With nothing over them, Close Tab closes the tab again.
+    assert!(app.press_key(&cmd(Key::W), None, at(4)));
+    assert_eq!(titles(&app), ["A"]);
+}
+
+#[test]
+fn keys_for_the_tabs_and_files_wait_while_settings_search_or_a_dialog_covers_them() {
+    let fixture = Fixture::new(&[("A.md", b"a"), ("B.md", b"b"), ("Folder/C.md", b"c")]);
+    let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));
+    app.open_file("A.md", OpenAs::Kept);
+    app.open_file("B.md", OpenAs::Kept);
+    let cmd = |key| KeyPress::new(key).with_cmd();
+    let mut at = Instant::now();
+    let mut press = |app: &mut App, press: KeyPress| {
+        at += Duration::from_secs(1);
+        app.press_key(&press, None, at);
+    };
+    let unchanged = |app: &App| {
+        let titles: Vec<&str> = app.tabs().iter().map(|tab| tab.title()).collect();
+        assert_eq!(titles, ["A", "B"]);
+        assert_eq!(active(app).as_deref(), Some("B"));
+        assert!(app.layout().sidebar_shown);
+        assert_eq!(app.renaming(), None);
+    };
+
+    app.open_settings();
+    for key in [
+        cmd(Key::N),
+        cmd(Key::Backslash),
+        cmd(Key::CloseBracket).with_shift(),
+        KeyPress::new(Key::Tab).with_ctrl(),
+        KeyPress::new(Key::F2),
+        cmd(Key::K),
+    ] {
+        press(&mut app, key);
+        unchanged(&app);
+        assert_eq!(app.overlay(), Some(Overlay::Settings), "{key:?}");
+    }
+    // Settings' own commands and zoom still work.
+    press(&mut app, cmd(Key::Equals));
+    assert_eq!(app.preferences().zoom, 110);
+    app.close_settings();
+
+    app.toggle_palette();
+    press(&mut app, cmd(Key::N));
+    press(&mut app, cmd(Key::Comma));
+    unchanged(&app);
+    assert!(
+        app.settings().is_none(),
+        "Settings doesn't open under search"
+    );
+    // Search's own keys change its filter.
+    press(&mut app, cmd(Key::O));
+    assert_eq!(app.overlay(), Some(Overlay::Palette));
+    app.close_palette();
+
+    // A dialog that asks something waits for its answer: Close Tab and
+    // Close Window do nothing.
+    app.request_trash("Folder");
+    assert_eq!(app.overlay(), Some(Overlay::Dialog));
+    press(&mut app, cmd(Key::W));
+    press(&mut app, cmd(Key::W).with_shift());
+    unchanged(&app);
+    assert!(!app.is_closed());
+    assert!(app.pending_trash().is_some());
+    app.cancel_trash();
+    assert_eq!(app.overlay(), None);
 }
 
 #[test]

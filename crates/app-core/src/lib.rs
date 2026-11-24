@@ -88,7 +88,8 @@ pub use app::{
 };
 pub use calendar_grid::{GridDay, GridEntry, Segment, Span, grid_days, lay_out};
 pub use commands::{
-    Area, Command, CommandSource, ShortcutEntry, ShortcutGroup, command_id, default_shortcuts,
+    Area, Command, CommandSource, Overlay, ShortcutEntry, ShortcutGroup, command_id,
+    default_shortcuts,
 };
 pub use diagnostics::{LOG_FILE, log_folder};
 pub use error::AppError;

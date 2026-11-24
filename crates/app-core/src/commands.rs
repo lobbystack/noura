@@ -93,6 +93,53 @@ impl Area {
     }
 }
 
+/// What covers the window: search, Settings or a dialog. While one shows,
+/// the keys and menu items that act on the window's tabs and files don't
+/// reach past it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Overlay {
+    /// Search. Close Tab closes it, as closing a panel does in Safari and
+    /// VS Code.
+    Palette,
+    /// Settings. Close Tab closes it, as Close closes the Settings window
+    /// of a macOS app.
+    Settings,
+    /// A dialog that asks something, which only its buttons answer. As
+    /// while a macOS sheet asks, Close Tab and Close Window wait.
+    Dialog,
+}
+
+/// What a command does while an overlay covers the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Covered {
+    Runs,
+    /// Close the overlay instead.
+    Closes,
+    /// Nothing: the command would act on what the overlay covers.
+    Waits,
+}
+
+impl Overlay {
+    /// What the command `id` does while this overlay covers the window.
+    pub(crate) fn takes(self, id: &str) -> Covered {
+        use command_id::*;
+        // Quit, zoom and another window don't act on what's covered.
+        if [QUIT, ZOOM_IN, ZOOM_OUT, ZOOM_RESET, NEW_WINDOW].contains(&id) {
+            return Covered::Runs;
+        }
+        match self {
+            Self::Dialog => Covered::Waits,
+            _ if id == CLOSE_TAB => Covered::Closes,
+            _ if id == CLOSE_WINDOW => Covered::Runs,
+            // Search's own keys switch its filter or close it.
+            Self::Palette if [COMMAND_PALETTE, QUICK_OPEN, SEARCH].contains(&id) => Covered::Runs,
+            // These show a section of Settings.
+            Self::Settings if [SETTINGS, ABOUT, KEYBOARD_SHORTCUTS].contains(&id) => Covered::Runs,
+            Self::Palette | Self::Settings => Covered::Waits,
+        }
+    }
+}
+
 /// Something you can run from its shortcut, the command palette or a
 /// menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
