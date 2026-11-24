@@ -109,6 +109,8 @@ fn code(key: Key) -> Option<Code> {
         Key::ArrowDown => Code::ArrowDown,
         Key::ArrowLeft => Code::ArrowLeft,
         Key::ArrowRight => Code::ArrowRight,
+        Key::PageUp => Code::PageUp,
+        Key::PageDown => Code::PageDown,
         Key::Comma => Code::Comma,
         Key::Period => Code::Period,
         Key::Minus => Code::Minus,
@@ -118,7 +120,7 @@ fn code(key: Key) -> Option<Code> {
         Key::OpenBracket => Code::BracketLeft,
         Key::CloseBracket => Code::BracketRight,
         Key::Menu => Code::ContextMenu,
-        Key::Letters => return None,
+        Key::Letters | Key::OneToEight => return None,
     })
 }
 
@@ -551,6 +553,17 @@ mod tests {
             (Shortcut::command(Key::Plus), "CmdOrCtrl+Equal"),
             (Shortcut::ctrl(Key::Tab), "Control+Tab"),
             (Shortcut::new(Key::F2), "F2"),
+            // A page's keys on macOS and elsewhere, and Next Tab's.
+            (
+                Shortcut::command(Key::Num2).with_ctrl(),
+                "CmdOrCtrl+Control+Digit2",
+            ),
+            (Shortcut::new(Key::Num2).with_alt(), "Alt+Digit2"),
+            (Shortcut::ctrl(Key::PageDown), "Control+PageDown"),
+            (
+                Shortcut::command(Key::ArrowRight).with_alt(),
+                "CmdOrCtrl+Alt+ArrowRight",
+            ),
         ];
         for (shortcut, expected) in cases {
             assert_eq!(accelerator(&shortcut), Some(parse(expected)), "{expected}");

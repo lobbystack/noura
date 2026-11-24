@@ -122,6 +122,26 @@ fn registering_a_command_with_a_taken_shortcut_fails() {
         );
     }
 
+    // So do the tabs' and the pages' keys on every platform.
+    for taken in [
+        Shortcut::command(Key::Num1),
+        Shortcut::command(Key::Num9),
+        Shortcut::command(Key::Num3).with_ctrl(),
+        Shortcut::new(Key::Num3).with_alt(),
+        Shortcut::ctrl(Key::PageDown),
+        Shortcut::command(Key::ArrowLeft).with_alt(),
+    ] {
+        let (command, runs) = counting("test.count", "Count");
+        let command = command.with_shortcuts([taken]);
+        assert_eq!(
+            register_counting(&mut app, command, &runs)
+                .unwrap_err()
+                .code,
+            "shortcut_taken",
+            "{taken:?}"
+        );
+    }
+
     let (command, runs) = counting("test.count", "Count");
     let free = command.with_shortcuts([Shortcut::command(Key::J)]);
     register_counting(&mut app, free, &runs).unwrap();
@@ -201,17 +221,15 @@ fn the_default_keymap_keeps_today_s_keys() {
         }
     }
 
-    // Features that register later get their keys from the keymap.
+    // The keymap names each kernel command's keys.
     let shortcut = Shortcut::command;
-    assert_eq!(default_shortcuts(QUICK_OPEN), [shortcut(Key::O)]);
-    assert_eq!(default_shortcuts(SEARCH), [shortcut(Key::F).with_shift()]);
-    assert_eq!(
-        default_shortcuts(ZOOM_IN),
-        [shortcut(Key::Plus), shortcut(Key::Equals)]
-    );
-    assert_eq!(default_shortcuts(ZOOM_OUT), [shortcut(Key::Minus)]);
-    assert_eq!(default_shortcuts(ZOOM_RESET), [shortcut(Key::Num0)]);
-    assert_eq!(default_shortcuts(SETTINGS), [shortcut(Key::Comma)]);
+    let keys = |id| default_shortcuts(id, Platform::MacOs);
+    assert_eq!(keys(QUICK_OPEN), [shortcut(Key::O)]);
+    assert_eq!(keys(SEARCH), [shortcut(Key::F).with_shift()]);
+    assert_eq!(keys(ZOOM_IN), [shortcut(Key::Plus), shortcut(Key::Equals)]);
+    assert_eq!(keys(ZOOM_OUT), [shortcut(Key::Minus)]);
+    assert_eq!(keys(ZOOM_RESET), [shortcut(Key::Num0)]);
+    assert_eq!(keys(SETTINGS), [shortcut(Key::Comma)]);
     // Find belongs to the open note or PDF, not to the app.
     let fixture = Fixture::new(&[]);
     let app = fixture.app_with(FakeSystem::on(Platform::MacOs));
@@ -219,24 +237,31 @@ fn the_default_keymap_keeps_today_s_keys() {
 }
 
 #[test]
-fn mod_1_shows_the_inbox_mod_2_files_and_mod_3_to_9_the_other_pages_in_rail_order() {
+fn ctrl_cmd_1_shows_the_inbox_2_files_and_3_to_9_the_other_pages_in_rail_order() {
     let fixture = Fixture::new(&[]);
     let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));
     let plugins = [
         "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight",
     ];
-    // The Inbox is the kernel's page, so it has Mod-1 without registering.
+    // The Inbox is the kernel's page, so it has ⌃⌘1 without registering.
     for title in plugins {
         app.register_page(&title.to_lowercase(), title);
     }
 
-    let shown_by =
-        |app: &App, digit: usize| command_for(app, KeyPress::new(Key::DIGITS[digit]).with_cmd());
+    let shown_by = |app: &App, digit: usize| {
+        command_for(
+            app,
+            KeyPress::new(Key::DIGITS[digit]).with_cmd().with_ctrl(),
+        )
+    };
     let go_to = |page: &str| Some(format!("{}{page}", command_id::GO_TO_PAGE));
     assert_eq!(shown_by(&app, 1), go_to(INBOX_PAGE));
     assert_eq!(shown_by(&app, 2), go_to(FILES_PAGE));
     assert_eq!(shown_by(&app, 3), go_to("one"));
     assert_eq!(shown_by(&app, 9), go_to("seven"));
+    // ⌥⌘ and a digit makes a heading in a note, and ⌥⌘8 is macOS's zoom.
+    let option = KeyPress::new(Key::Num1).with_cmd().with_alt();
+    assert_eq!(command_for(&app, option), None);
     // The eighth plugin page has no key left, but the palette lists it.
     let eight = app
         .commands()
@@ -254,6 +279,67 @@ fn mod_1_shows_the_inbox_mod_2_files_and_mod_3_to_9_the_other_pages_in_rail_orde
     let two = go_to("two").unwrap();
     assert!(app.run_command(&two, CommandSource::Key, Instant::now()));
     assert_eq!(app.current_page(), "two");
+
+    // On Windows and Linux, Alt and the digit show the page.
+    for platform in [Platform::Windows, Platform::Linux] {
+        let fixture = Fixture::new(&[]);
+        let app = fixture.app_with(FakeSystem::on(platform));
+        let alt = |key| KeyPress::new(key).with_alt();
+        assert_eq!(command_for(&app, alt(Key::Num1)), go_to(INBOX_PAGE));
+        assert_eq!(command_for(&app, alt(Key::Num2)), go_to(FILES_PAGE));
+    }
+}
+
+#[test]
+fn mod_1_to_8_show_that_tab_mod_9_the_last_and_the_arrows_or_page_keys_the_next() {
+    for platform in [Platform::MacOs, Platform::Windows, Platform::Linux] {
+        let fixture = Fixture::new(&[
+            ("A.md", b"a"),
+            ("B.md", b"b"),
+            ("C.md", b"c"),
+            ("D.md", b"d"),
+        ]);
+        let mut app = fixture.app_with(FakeSystem::on(platform));
+        for path in ["A.md", "B.md", "C.md", "D.md"] {
+            app.open_file(path, app_core::OpenAs::Kept);
+        }
+        let mut at = Instant::now();
+        let mut press = |app: &mut App, press: KeyPress| {
+            at += Duration::from_secs(1);
+            assert!(app.press_key(&press, None, at), "{press:?} on {platform:?}");
+            app.active_tab().map(|tab| tab.title().to_owned()).unwrap()
+        };
+        assert_eq!(press(&mut app, with_mod(platform, Key::Num1)), "A");
+        assert_eq!(press(&mut app, with_mod(platform, Key::Num3)), "C");
+        assert_eq!(press(&mut app, with_mod(platform, Key::Num9)), "D");
+        // Past the open tabs, Mod and a digit do nothing.
+        assert_eq!(press(&mut app, with_mod(platform, Key::Num8)), "D");
+        let (next, previous) = match platform {
+            Platform::MacOs => (
+                KeyPress::new(Key::ArrowRight).with_cmd().with_alt(),
+                KeyPress::new(Key::ArrowLeft).with_cmd().with_alt(),
+            ),
+            _ => (
+                KeyPress::new(Key::PageDown).with_ctrl(),
+                KeyPress::new(Key::PageUp).with_ctrl(),
+            ),
+        };
+        assert_eq!(press(&mut app, next), "A");
+        assert_eq!(press(&mut app, previous), "D");
+        assert_eq!(press(&mut app, previous), "C");
+        // They work while a text field or a note has the keyboard too.
+        for focus in [Some(Area::Writing), Some(Area::Note)] {
+            assert_eq!(
+                app.command_for_key(&with_mod(platform, Key::Num2), focus)
+                    .as_deref(),
+                Some("go-to-tab:2")
+            );
+            assert_eq!(
+                app.command_for_key(&next, focus).as_deref(),
+                Some(command_id::NEXT_TAB)
+            );
+        }
+    }
 }
 
 #[test]
@@ -497,8 +583,17 @@ fn the_shortcuts_list_groups_every_shortcut_by_area() {
         entry(Area::Anywhere, "Next Tab"),
         Some(vec![
             Shortcut::command(Key::CloseBracket).with_shift(),
-            Shortcut::ctrl(Key::Tab)
+            Shortcut::ctrl(Key::Tab),
+            Shortcut::command(Key::ArrowRight).with_alt()
         ])
+    );
+    assert_eq!(
+        entry(Area::Anywhere, "Go to a tab by its number"),
+        Some(vec![Shortcut::command(Key::OneToEight)])
+    );
+    assert_eq!(
+        entry(Area::Anywhere, "Go to the last tab"),
+        Some(vec![Shortcut::command(Key::Num9)])
     );
     assert_eq!(
         entry(Area::Anywhere, "Count"),

@@ -372,13 +372,24 @@ fn on_linux_every_shortcut_runs_from_the_window() {
     press(&mut harness, ctrl, Key::W);
     assert_eq!(active(&harness).as_deref(), Some(note.as_str()));
 
-    press(&mut harness, ctrl, Key::Num3);
+    // Alt and a number show a rail page.
+    press(&mut harness, Modifiers::ALT, Key::Num3);
     assert_eq!(harness.state().app().current_page(), "test-page");
     // Files opens its own tab, in the page's preview tab.
-    press(&mut harness, ctrl, Key::Num2);
+    press(&mut harness, Modifiers::ALT, Key::Num2);
     assert_eq!(harness.state().app().current_page(), app_core::FILES_PAGE);
     assert_eq!(active(&harness).as_deref(), Some("Files"));
     press(&mut harness, Modifiers::CTRL, Key::Tab);
+    assert_eq!(active(&harness).as_deref(), Some(note.as_str()));
+    // Ctrl and a number show a tab by its place, Ctrl+9 the last one, and
+    // Ctrl+Page Up and Page Down the tab before or after, as in Chrome.
+    press(&mut harness, ctrl, Key::Num9);
+    assert_eq!(active(&harness).as_deref(), Some("Files"));
+    press(&mut harness, ctrl, Key::Num1);
+    assert_eq!(active(&harness).as_deref(), Some(note.as_str()));
+    press(&mut harness, ctrl, Key::PageDown);
+    assert_eq!(active(&harness).as_deref(), Some("Files"));
+    press(&mut harness, ctrl, Key::PageUp);
     assert_eq!(active(&harness).as_deref(), Some(note.as_str()));
 
     press(&mut harness, ctrl, Key::Backslash);
@@ -502,7 +513,10 @@ fn the_shortcuts_page_lists_every_shortcut_by_area() {
     }
     for (label, keys) in [
         ("New Note", "Ctrl+N"),
-        ("Next Tab", "Ctrl+Shift+] or Ctrl+Tab"),
+        ("Next Tab", "Ctrl+Shift+] or Ctrl+Tab or Ctrl+Page Down"),
+        ("Go to a tab by its number", "Ctrl+1–8"),
+        ("Go to the last tab", "Ctrl+9"),
+        ("Go to Files", "Alt+2"),
         ("Toggle Sidebar", "Ctrl+\\"),
         ("Rename File", "F2"),
         ("Close a dialog", "Escape"),

@@ -7,7 +7,7 @@ use super::{App, Change, SearchScope};
 use crate::{
     Area, Command, CommandSource, KeyPress, Menu, MenuName, Overlay, Platform, ShortcutEntry,
     ShortcutGroup, Tab,
-    commands::{Covered, Run, area_keys, command_id},
+    commands::{Covered, Run, area_keys, command_id, default_shortcuts},
     layout::FILES_SECTION,
     menus,
     plugins::COMMAND_PREFIX,
@@ -97,8 +97,10 @@ impl App {
             ),
             (QUIT, quit, Arc::new(App::request_quit)),
         ];
+        let platform = self.platform();
         for (id, label, run) in kernel {
-            let mut command = Command::new(id, label, Area::Anywhere);
+            let mut command = Command::new(id, label, Area::Anywhere)
+                .with_shortcuts(default_shortcuts(id, platform));
             if id == NEW_WINDOW {
                 command = command.in_menu(MenuName::File);
             }
@@ -112,7 +114,7 @@ impl App {
     /// then one Go to command per rail page, then the commands running
     /// plugins add, which have no shortcuts.
     pub fn commands(&self) -> Vec<Command> {
-        let mut commands = self.registry.list(&self.rail.ordered());
+        let mut commands = self.registry.list(&self.rail.ordered(), self.platform());
         commands.extend(
             self.session
                 .plugins()
@@ -303,6 +305,20 @@ impl App {
         };
         let id = tabs[next].id();
         self.activate_tab(id);
+    }
+
+    /// Show the tab at place `number`, counting from 1, or the last tab
+    /// with `None`, as Mod-1 to Mod-9 do. Nothing happens when fewer tabs
+    /// are open.
+    pub fn show_tab_number(&mut self, number: Option<usize>) {
+        let tabs = self.tabs.list();
+        let tab = match number {
+            Some(number) => number.checked_sub(1).and_then(|index| tabs.get(index)),
+            None => tabs.last(),
+        };
+        if let Some(id) = tab.map(Tab::id) {
+            self.activate_tab(id);
+        }
     }
 
     /// New Window: open another window on the open workspace, which

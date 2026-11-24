@@ -66,6 +66,8 @@ pub enum Key {
     ArrowDown,
     ArrowLeft,
     ArrowRight,
+    PageUp,
+    PageDown,
     Comma,
     Period,
     Minus,
@@ -82,6 +84,10 @@ pub enum Key {
     /// Any letter, as when you type a name to jump to it. Lists of
     /// shortcuts show it as A–Z; no key press matches it.
     Letters,
+    /// Any number key from 1 to 8, as in Mod-1 to Mod-8 for the first
+    /// eight tabs. Lists of shortcuts show it as 1–8; no key press matches
+    /// it.
+    OneToEight,
 }
 
 impl Key {
@@ -184,6 +190,12 @@ impl Shortcut {
     /// The same shortcut with Option or Alt.
     pub const fn with_alt(self) -> Self {
         Self { alt: true, ..self }
+    }
+
+    /// The same shortcut with Control, on every platform. With Mod on
+    /// macOS that makes ⌃⌘.
+    pub const fn with_ctrl(self) -> Self {
+        Self { ctrl: true, ..self }
     }
 
     /// Whether the ⌘ key and the Control key are down for this shortcut

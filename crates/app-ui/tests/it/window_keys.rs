@@ -96,3 +96,38 @@ fn cmd_w_closes_settings_or_search_and_leaves_the_tab_under_it() {
     assert_eq!(active(&harness).as_deref(), Some("Beta"));
     assert!(dialog(&harness, "Settings"));
 }
+
+#[test]
+fn cmd_1_to_8_show_that_tab_cmd_9_the_last_and_ctrl_cmd_a_digit_a_page() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = mac_window(
+        app_data.path(),
+        &parent.path().join("Keys"),
+        &["Alpha.md", "Beta.md", "Gamma.md"],
+    );
+    assert_eq!(active(&harness).as_deref(), Some("Gamma"));
+
+    press(&mut harness, CMD, Key::Num1);
+    assert_eq!(active(&harness).as_deref(), Some("Alpha"));
+    press(&mut harness, CMD, Key::Num2);
+    assert_eq!(active(&harness).as_deref(), Some("Beta"));
+    press(&mut harness, CMD, Key::Num9);
+    assert_eq!(active(&harness).as_deref(), Some("Gamma"));
+    assert_eq!(harness.state().app().current_page(), app_core::FILES_PAGE);
+    // ⌥⌘← and ⌥⌘→ go to the tab before and after, as in Chrome.
+    let option = CMD.plus(Modifiers::ALT);
+    press(&mut harness, option, Key::ArrowLeft);
+    assert_eq!(active(&harness).as_deref(), Some("Beta"));
+    press(&mut harness, option, Key::ArrowRight);
+    press(&mut harness, option, Key::ArrowRight);
+    assert_eq!(active(&harness).as_deref(), Some("Alpha"));
+    // ⇧⌘[ still works.
+    press(&mut harness, CMD.plus(Modifiers::SHIFT), Key::OpenBracket);
+    assert_eq!(active(&harness).as_deref(), Some("Gamma"));
+
+    // ⌃⌘1 shows the Inbox, in a tab of its own.
+    press(&mut harness, CMD.plus(Modifiers::CTRL), Key::Num1);
+    assert_eq!(harness.state().app().current_page(), app_core::INBOX_PAGE);
+    assert_eq!(titles(&harness).len(), 4);
+}
