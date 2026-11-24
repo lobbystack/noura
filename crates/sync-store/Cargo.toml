@@ -16,7 +16,7 @@ hashlink.workspace = true
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 # Verifies recovery proofs (§12).
-sync-key-envelope = { version = "0.3.1", path = "../sync-key-envelope" }
+sync-key-envelope = { version = "0.3.2", path = "../sync-key-envelope" }
 sync-protocol = { version = "0.2.0", path = "../sync-protocol" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "macros"] }

@@ -13,4 +13,4 @@ crate-type = ["cdylib"]
 [dependencies]
 # Moves the calendar page's period by a month, a week or a day.
 jiff = { version = "0.2", default-features = false, features = ["std"] }
-plugin-sdk = { version = "0.3.1", path = "../../../plugin-sdk" }
+plugin-sdk = { version = "0.3.2", path = "../../../plugin-sdk" }
