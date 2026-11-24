@@ -727,6 +727,95 @@ fn a_pdf_embedded_in_a_note_shows_its_page_and_opens_in_a_tab_at_that_page() {
     );
 }
 
+/// The textures a note's PDF embeds uploaded: each one's size in pixels.
+fn embed_textures(harness: &Ui) -> Vec<[usize; 2]> {
+    let textures = harness.ctx.tex_manager();
+    let textures = textures.read();
+    textures
+        .allocated()
+        .filter(|(_, meta)| meta.name == "pdf-embed-tile")
+        .map(|(_, meta)| meta.size)
+        .collect()
+}
+
+#[test]
+fn a_tall_page_embedded_in_a_note_draws_a_texture_pixel_for_each_screen_pixel_on_a_2x_screen() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    create_workspace(app_data.path(), &folder);
+    std::fs::write(folder.join("tall.pdf"), pdf("tall.pdf")).unwrap();
+    std::fs::write(
+        folder.join("Saved page.md"),
+        "# Saved page\n\nThe article, as saved.\n\n![[tall.pdf]]\n\nAfter the page.\n",
+    )
+    .unwrap();
+    let app = App::launch_with(app_data.path(), FakeSystem::new(Platform::current()));
+    let ui = NouraUi::new(app, Box::new(FakePicker::default()));
+    let mut harness = support::builder()
+        .with_pixels_per_point(2.0)
+        .allow_missing_glyphs()
+        .build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), ui);
+    settle(&mut harness);
+
+    open(&mut harness, "Saved page");
+    wait_until(&mut harness, "the embed's tiles upload", |harness| {
+        !embed_textures(harness).is_empty()
+    });
+    harness.run_steps(2);
+
+    // The page lays out as wide as an A4 page would in the view, far
+    // taller than the view, rather than shrinking to fit it.
+    let view = harness.ctx.viewport_rect();
+    let embed = harness
+        .get_by_role_and_label(Role::Image, "tall.pdf")
+        .rect();
+    assert!(embed.width() > 300.0, "{embed:?}");
+    let shape = embed.height() / embed.width();
+    assert!((shape - 14000.0 / 612.0).abs() < 0.01, "{embed:?}");
+    assert!(embed.height() > 10.0 * view.height(), "{embed:?}");
+    let textures = embed_textures(&harness);
+    for [width, height] in &textures {
+        // Two texture pixels across each point, as the screen has.
+        let across = *width as f32 / embed.width();
+        assert!((across - 2.0).abs() < 0.01, "{width} pixels for {embed:?}");
+        assert!(*height <= TILE_HEIGHT as usize);
+    }
+    // Only the tiles in view upload.
+    assert!(textures.len() <= 3, "{textures:?}");
+
+    // Scroll the note far down the page: the textures stay a few, and
+    // `app-core` keeps the tiles near the view alone.
+    let middle = egui::pos2(view.center().x, view.center().y + 100.0);
+    for _ in 0..30 {
+        wheel_at(&mut harness, middle, -400.0, 1);
+    }
+    // The note scrolled to the end of the page, thousands of points down.
+    let embed = harness
+        .get_by_role_and_label(Role::Image, "tall.pdf")
+        .rect();
+    assert!(embed.top() < -5000.0, "{embed:?}");
+    assert!(embed.bottom() > 0.0, "{embed:?}");
+    wait_until(&mut harness, "the tiles far down upload", |harness| {
+        let embed = harness
+            .get_by_role_and_label(Role::Image, "tall.pdf")
+            .rect();
+        let textures = embed_textures(harness);
+        !textures.is_empty()
+            && textures
+                .iter()
+                .all(|[width, _]| (*width as f32 / embed.width() - 2.0).abs() < 0.01)
+    });
+    harness.run_steps(4);
+    assert!(embed_textures(&harness).len() <= 3);
+    let tab = active(&harness);
+    let links = harness.state().app().note_links(tab).unwrap();
+    let bytes = links.pdf_embed_tile_bytes_for_testing();
+    // Five views of the page, 2 pixels a point, at most.
+    let five_views = 5.0 * view.height() * 2.0 * embed.width() * 2.0 * 4.0;
+    assert!(bytes as f32 <= five_views, "{bytes} bytes");
+}
+
 #[test]
 fn an_embed_of_a_locked_pdf_says_so_and_opens_in_a_tab_that_asks_for_the_password() {
     let app_data = tempfile::tempdir().unwrap();

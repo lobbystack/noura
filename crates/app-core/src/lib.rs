@@ -43,6 +43,7 @@ mod notes;
 mod objects;
 mod operations;
 mod pdf;
+mod pdf_embed;
 mod plugin_inputs;
 mod plugin_objects;
 mod plugins;
@@ -103,8 +104,8 @@ pub use keys::{Key, KeyPress, Shortcut};
 pub use layout::{FILES_SECTION, Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
 pub use links::{
     EMBED_PREVIEW_CHARS, IMAGE_EXTENSIONS, ImageVersion, LINK_SUGGESTION_LIMIT, LinkSuggestion,
-    MAX_IMAGE_BYTES, NoteEmbed, NoteEmbedState, NoteImage, NoteLinks, PdfEmbedState,
-    is_external_link, is_image, is_remote_image,
+    MAX_IMAGE_BYTES, NoteEmbed, NoteEmbedState, NoteImage, NoteLinks, is_external_link, is_image,
+    is_remote_image,
 };
 #[cfg(feature = "test-hooks")]
 pub use local_core::WatchFault;
@@ -152,6 +153,7 @@ pub use pdf::{
 };
 #[cfg(feature = "test-hooks")]
 pub use pdf::{PdfDrawFailure, PdfRenderHold};
+pub use pdf_embed::{MAX_EMBED_TILE_BYTES, PdfEmbedArea, PdfEmbedState, PdfEmbedViewer};
 /// A stand-in for GitHub's release servers, for
 /// [`App::set_plugin_release_transport`].
 #[cfg(feature = "test-hooks")]

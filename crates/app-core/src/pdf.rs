@@ -77,23 +77,22 @@ const TILES_PER_PASS: usize = 4;
 
 /// How far past each side of the view a tab draws its pages before they
 /// show, in heights and widths of the view.
-const DRAW_AHEAD: f32 = 1.0;
+pub(crate) const DRAW_AHEAD: f32 = 1.0;
 
 /// How far past each side of the view a tab keeps the tiles it drew, in
 /// heights and widths of the view.
-const KEEP_AHEAD: f32 = 2.0;
+pub(crate) const KEEP_AHEAD: f32 = 2.0;
 
 /// The most bytes of tiles a tab keeps beside the tiles that show.
 pub const MAX_TILE_BYTES: usize = 256 * 1024 * 1024;
 
 /// The most tiles a tab asks its thread for at once.
-const MAX_ASKED_TILES: usize = 256;
+pub(crate) const MAX_ASKED_TILES: usize = 256;
 
 /// The most thumbnails a tab keeps.
 pub const MAX_THUMBNAILS: usize = 240;
 
-/// The widest or tallest Noura draws an embed's page or a thumbnail, in
-/// pixels. A page zoomed past it draws at this size and stretches.
+/// The widest or tallest Noura draws a thumbnail, in pixels.
 const MAX_SIDE: f32 = 4096.0;
 
 /// The most pixels a tab draws a page on a side, at any zoom.
@@ -102,7 +101,9 @@ const MAX_PAGE_PIXELS: f64 = 4_194_304.0;
 /// The message for a PDF with no pages.
 const NO_PAGES: &str = "This PDF has no pages.";
 
-/// How wide an embed in a note draws its page, in pixels.
+/// How wide an embed in a note lays out its page, in pixels: as wide as
+/// an image this many pixels wide, so 600 points on a screen with two
+/// pixels a point, or narrower to fit the note.
 pub const EMBED_WIDTH: f32 = 1200.0;
 
 /// How a PDF tab stands.
@@ -180,7 +181,7 @@ pub struct PdfTileKey {
 }
 
 impl PdfTileKey {
-    fn new(page: usize, density: f32, column: u32, row: u32) -> Self {
+    pub(crate) fn new(page: usize, density: f32, column: u32, row: u32) -> Self {
         Self {
             page,
             density: density.to_bits(),
@@ -195,7 +196,7 @@ impl PdfTileKey {
     }
 
     /// Every key of the page `page`, in key order.
-    fn of_page(page: usize) -> RangeInclusive<Self> {
+    pub(crate) fn of_page(page: usize) -> RangeInclusive<Self> {
         let first = Self {
             page,
             density: 0,
@@ -296,17 +297,17 @@ impl Anchor {
 /// A rectangle of a tab's laid-out pages, in points from their top-left
 /// corner.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct Zone {
-    left: f32,
-    top: f32,
-    right: f32,
-    bottom: f32,
+pub(crate) struct Zone {
+    pub(crate) left: f32,
+    pub(crate) top: f32,
+    pub(crate) right: f32,
+    pub(crate) bottom: f32,
 }
 
 impl Zone {
     /// `area`, grown by `margin` times its width on each side and its
     /// height above and below.
-    fn around(area: &PdfArea, margin: f32) -> Self {
+    pub(crate) fn around(area: &PdfArea, margin: f32) -> Self {
         let (across, down) = (area.width * margin, area.height * margin);
         Self {
             left: area.left - across,
@@ -316,7 +317,7 @@ impl Zone {
         }
     }
 
-    fn overlaps(&self, other: &Self) -> bool {
+    pub(crate) fn overlaps(&self, other: &Self) -> bool {
         self.left < other.right
             && other.left < self.right
             && self.top < other.bottom
@@ -324,7 +325,7 @@ impl Zone {
     }
 
     /// How far `other` lies from this zone's middle, in points.
-    fn distance_from_middle(&self, other: &Self) -> f32 {
+    pub(crate) fn distance_from_middle(&self, other: &Self) -> f32 {
         let x = (self.left + self.right) / 2.0;
         let y = (self.top + self.bottom) / 2.0;
         let across = (other.left - x).max(x - other.right).max(0.0);
@@ -731,7 +732,7 @@ fn partition(count: usize, before: impl Fn(usize) -> bool) -> usize {
 
 /// The pixels per point that draw a page at `scale` on a screen with
 /// `pixels_per_point`, within a sane range.
-fn density_of(scale: f32, pixels_per_point: f32) -> f32 {
+pub(crate) fn density_of(scale: f32, pixels_per_point: f32) -> f32 {
     let density = scale * pixels_per_point;
     if density.is_finite() && density > 0.0 {
         density.clamp(1.0 / 64.0, 64.0)
@@ -743,7 +744,7 @@ fn density_of(scale: f32, pixels_per_point: f32) -> f32 {
 /// The size in pixels of a page `size` points large drawn at `density`
 /// pixels per point: at least a pixel on each side. A side a hair past a
 /// whole number of pixels, from rounding, takes that number.
-fn page_pixels(size: [f32; 2], density: f32) -> [u32; 2] {
+pub(crate) fn page_pixels(size: [f32; 2], density: f32) -> [u32; 2] {
     size.map(|side| {
         (f64::from(side.max(0.0)) * f64::from(density) - 1e-3)
             .ceil()
@@ -753,7 +754,7 @@ fn page_pixels(size: [f32; 2], density: f32) -> [u32; 2] {
 
 /// The pixels the tile at `column` and `row` covers in a page `pixels`
 /// large: its left, top, width and height. `None` past the page.
-fn tile_pixels(pixels: [u32; 2], column: u32, row: u32) -> Option<[u32; 4]> {
+pub(crate) fn tile_pixels(pixels: [u32; 2], column: u32, row: u32) -> Option<[u32; 4]> {
     let x = column.checked_mul(TILE_WIDTH)?;
     let y = row.checked_mul(TILE_HEIGHT)?;
     (x < pixels[0] && y < pixels[1]).then(|| {
@@ -859,7 +860,7 @@ impl Drop for PdfDrawFailure {
     }
 }
 
-enum Request {
+pub(crate) enum Request {
     Unlock(Zeroizing<String>),
     /// Draw these tiles, most wanted first, in place of those asked for
     /// before.
@@ -880,7 +881,7 @@ enum Request {
     Moved(String),
 }
 
-enum Answer {
+pub(crate) enum Answer {
     Opened {
         pages: Vec<[f32; 2]>,
     },
@@ -962,30 +963,19 @@ impl PdfSession {
     /// Start the tab's thread, which reads the PDF again. When it can't
     /// start, the tab fails, and Try again starts it again.
     fn start(&mut self) {
-        let (requests, receive_requests) = channel();
-        let (send_answers, answers) = channel();
-        let worker = Worker {
-            engine: self.engine.clone(),
-            path: self.view.path.clone(),
-            requests: receive_requests,
-            pending: Vec::new(),
-            tiles: VecDeque::new(),
-            answers: send_answers,
-            wake: self.wake.clone(),
-            gate: self.gate.clone(),
-        };
-        self.requests = requests;
-        self.answers = answers;
         self.asked.clear();
         self.asked_thumbnails.clear();
-        let spawned = std::thread::Builder::new()
-            .name("pdf".into())
-            .spawn(move || worker.run());
-        if let Err(error) = spawned {
-            tracing::error!(%error, "could not start a PDF thread");
-            self.view.state = PdfState::Failed {
-                message: "Noura couldn't open this PDF.".to_owned(),
-            };
+        match start_worker(&self.engine, &self.view.path, &self.wake, &self.gate) {
+            Ok((requests, answers)) => {
+                self.requests = requests;
+                self.answers = answers;
+            }
+            Err(error) => {
+                tracing::error!(%error, "could not start a PDF thread");
+                self.view.state = PdfState::Failed {
+                    message: "Noura couldn't open this PDF.".to_owned(),
+                };
+            }
         }
     }
 
@@ -1453,6 +1443,34 @@ impl PdfSession {
         path.clone_into(&mut self.view.path);
         self.send(Request::Moved(path.to_owned()));
     }
+}
+
+/// Start a thread that reads the PDF at `path` and serves the requests
+/// sent through the returned sender, answering through the returned
+/// receiver. `wake` runs with each answer. The thread stops once the
+/// sender drops.
+pub(crate) fn start_worker(
+    engine: &Arc<WorkspaceEngine>,
+    path: &str,
+    wake: &Arc<dyn Fn() + Send + Sync>,
+    gate: &RenderGate,
+) -> std::io::Result<(Sender<Request>, Receiver<Answer>)> {
+    let (requests, receive_requests) = channel();
+    let (send_answers, answers) = channel();
+    let worker = Worker {
+        engine: engine.clone(),
+        path: path.to_owned(),
+        requests: receive_requests,
+        pending: Vec::new(),
+        tiles: VecDeque::new(),
+        answers: send_answers,
+        wake: wake.clone(),
+        gate: gate.clone(),
+    };
+    std::thread::Builder::new()
+        .name("pdf".into())
+        .spawn(move || worker.run())?;
+    Ok((requests, answers))
 }
 
 /// What reading a PDF found.
@@ -1928,34 +1946,6 @@ fn draw_region<'a>(
         },
     );
     Some(pixmap)
-}
-
-/// Read the PDF at `path` and draw the page a link or embed names in
-/// `asked`, `width` pixels wide: page 1 for none, the last page for one
-/// past the end. `None` when the PDF can't open without a password, or
-/// can't open at all.
-pub(crate) fn draw_page_once(
-    engine: &WorkspaceEngine,
-    path: &str,
-    asked: Option<u32>,
-    width: f32,
-) -> Result<PdfPicture, EmbedProblem> {
-    let pdf = match read_pdf(engine, path, None) {
-        Read::Open(pdf) => pdf,
-        Read::Locked => return Err(EmbedProblem::Locked),
-        Read::Failed(_) => return Err(EmbedProblem::Unreadable),
-    };
-    let number = page_to_open(asked, pdf.pages().len());
-    let page = pdf
-        .pages()
-        .get(number - 1)
-        .ok_or(EmbedProblem::Unreadable)?;
-    let (page_width, page_height) = page.render_dimensions();
-    // hayro rounds the page's size in pixels down, so half a pixel more
-    // keeps it `width` wide.
-    let density = ((width + 0.5) / page_width.max(1.0)).min(MAX_SIDE / page_height.max(1.0));
-    let cache = RenderCache::new();
-    draw(page, &cache, number, density).ok_or(EmbedProblem::Unreadable)
 }
 
 /// Why an embed of a PDF shows no page.

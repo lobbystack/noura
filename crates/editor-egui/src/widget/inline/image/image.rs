@@ -20,6 +20,10 @@ use editor_core::links::node_link_url;
 /// embedding app can't find.
 const MISSING_IMAGE_SIZE: f32 = 48.0;
 
+/// The tallest a document's page is for its width and still fits the
+/// view as an image does: an A4 page's height over its width.
+const PAGE_FIT_SHAPE: f32 = std::f32::consts::SQRT_2;
+
 /// The button a remote image draws until you load it.
 pub const LOAD_IMAGE: &str = "Load image";
 /// The button a remote image draws after its load failed.
@@ -76,7 +80,9 @@ impl<'ast> MdRender {
     /// when the embedding app can't find it.
     pub fn embed_texture_size(&self, url: &str) -> (Vec2, EmbedKind) {
         match self.embeds.state(url) {
-            EmbedState::Loading(size) | EmbedState::Loaded(size) => (size, EmbedKind::Image),
+            EmbedState::Loading(size) | EmbedState::Loaded(size) | EmbedState::Page(size) => {
+                (size, EmbedKind::Image)
+            }
             EmbedState::NotFound | EmbedState::NotLoaded | EmbedState::Failed => (
                 Vec2::splat(MISSING_IMAGE_SIZE) * self.ctx.pixels_per_point(),
                 EmbedKind::Missing,
@@ -137,6 +143,26 @@ impl<'ast> MdRender {
         Vec2::new(width, height)
     }
 
+    /// The size the embed of `url` lays out at in a block `width` points
+    /// wide, with the dimensions `requested` written in the note.
+    pub fn embed_size(&self, url: &str, width: f32, requested: ImageDims) -> Vec2 {
+        match self.embeds.state(url) {
+            EmbedState::Page(size) => self.page_size(size, width, requested),
+            _ => self.image_size(self.embed_texture_size(url).0, width, requested),
+        }
+    }
+
+    /// The size a document's page `size` pixels large lays out at, as
+    /// [`EmbedState::Page`] says. A height written in the note lays it out
+    /// as an image.
+    pub fn page_size(&self, size: Vec2, width: f32, requested: ImageDims) -> Vec2 {
+        if size.y <= size.x * PAGE_FIT_SHAPE || requested.height.is_some() || size.x <= 0.0 {
+            return self.image_size(size, width, requested);
+        }
+        let fitted = self.image_size(Vec2::new(size.x, size.x * PAGE_FIT_SHAPE), width, requested);
+        Vec2::new(fitted.x, fitted.x * size.y / size.x)
+    }
+
     /// Logical-point size an `Image` node will render at, constrained
     /// by its block's width and any Obsidian `|WxH` hint. `None` if
     /// `node` isn't an `Image`, has no leaf-block ancestor, or
@@ -151,8 +177,7 @@ impl<'ast> MdRender {
             .skip(1)
             .find(|a| a.data.borrow().value.is_leaf_block())?;
         let width = self.width(block_ancestor);
-        let (texture_size, _) = self.embed_texture_size(&url);
-        let size = self.image_size(texture_size, width, self.image_dims(node));
+        let size = self.embed_size(&url, width, self.image_dims(node));
         (size.x > 0.0 && size.y > 0.0).then_some(size)
     }
 

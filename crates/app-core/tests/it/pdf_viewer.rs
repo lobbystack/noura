@@ -10,8 +10,9 @@ use std::{
 };
 
 use app_core::{
-    App, EMBED_WIDTH, EmbedProblem, MAX_THUMBNAILS, MAX_TILE_BYTES, OpenAs, PAGE_GAP, PdfArea,
-    PdfEmbedState, PdfState, PdfView, PdfZoom, TILE_HEIGHT, TILE_WIDTH, TabId,
+    App, EmbedProblem, MAX_EMBED_TILE_BYTES, MAX_THUMBNAILS, MAX_TILE_BYTES, NoteLinks, OpenAs,
+    PAGE_GAP, PdfArea, PdfEmbedArea, PdfEmbedState, PdfEmbedViewer, PdfState, PdfTile, PdfView,
+    PdfZoom, TILE_HEIGHT, TILE_WIDTH, TabId,
 };
 use support::{Fixture, open_from_tree};
 
@@ -322,11 +323,18 @@ fn a_page_thinner_than_a_pixel_still_draws_a_pixel_wide_in_its_tab_thumbnail_and
     }
 
     let note = open_from_tree(&mut app, "Slivers.md");
+    let links = app.note_links(note).unwrap();
+    let viewer = links.pdf_embed_viewer(|| {});
     for target in ["slivers.pdf", "slivers.pdf#page=2", "slivers.pdf#page=3"] {
-        let PdfEmbedState::Drawn(picture) = embed(&mut app, note, target) else {
-            panic!("{target} didn't draw");
+        let PdfEmbedState::Page { size, .. } = embed(&mut app, note, target) else {
+            panic!("{target} didn't open");
         };
-        assert_drawn(&picture, target);
+        // The top of the page, at its own size on a 2x screen.
+        let tiles = embed_tiles(&links, &viewer, target, 2.0, 0.0, size[1].min(700.0));
+        assert!(!tiles.is_empty(), "{target}");
+        for tile in &tiles {
+            assert_drawn(&tile.picture, target);
+        }
     }
 }
 
@@ -672,15 +680,15 @@ fn a_link_with_a_page_number_opens_the_pdf_at_that_page_and_leaves_the_note_alon
     assert_eq!(fixture.read("Reading.md"), READING);
 }
 
-/// Ask the note in `note` about its embed of `target` until the page
-/// draws or the embed finds a problem.
+/// Ask the note in `note` about its embed of `target` until the PDF opens
+/// or the embed finds a problem.
 fn embed(app: &mut App, note: TabId, target: &str) -> PdfEmbedState {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         app.poll();
         let links = app.note_links(note).unwrap();
-        match links.pdf_embed(target, || {}) {
-            Some(PdfEmbedState::Drawing) => {}
+        match links.pdf_embed(target) {
+            Some(PdfEmbedState::Opening) => {}
             Some(state) => return state,
             None => panic!("{target} names no PDF"),
         }
@@ -707,8 +715,8 @@ fn an_embed_of_a_pdf_shows_the_page_its_fragment_names_and_leaves_the_note_alone
         Some(("Docs/text.pdf".to_owned(), Some(2)))
     );
     assert_eq!(links.pdf_link("Reading"), None);
-    assert!(links.pdf_embed("Missing.pdf", || {}).is_none());
-    assert!(links.pdf_embed("Reading", || {}).is_none());
+    assert!(links.pdf_embed("Missing.pdf").is_none());
+    assert!(links.pdf_embed("Reading").is_none());
 
     for (target, expected) in [
         ("text.pdf#page=2", 2),
@@ -717,11 +725,14 @@ fn an_embed_of_a_pdf_shows_the_page_its_fragment_names_and_leaves_the_note_alone
         ("text.pdf#page=99999999999", 3),
         ("text.pdf#page=nope", 1),
     ] {
-        let PdfEmbedState::Drawn(picture) = embed(&mut app, note, target) else {
-            panic!("{target} didn't draw");
-        };
-        assert_eq!(picture.page, expected, "{target}");
-        assert_eq!(picture.width, EMBED_WIDTH as u32, "{target}");
+        assert_eq!(
+            embed(&mut app, note, target),
+            PdfEmbedState::Page {
+                number: expected,
+                size: [612.0, 792.0]
+            },
+            "{target}"
+        );
     }
     assert_eq!(
         embed(&mut app, note, "locked.pdf"),
@@ -733,14 +744,158 @@ fn an_embed_of_a_pdf_shows_the_page_its_fragment_names_and_leaves_the_note_alone
     wait_until(&mut app, "the embed draws the new file", |app| {
         let links = app.note_links(note).unwrap();
         matches!(
-            links.pdf_embed("text.pdf#page=40", || {}),
-            Some(PdfEmbedState::Drawn(picture)) if picture.page == 40
+            links.pdf_embed("text.pdf#page=40"),
+            Some(PdfEmbedState::Page { number: 40, .. })
         )
     });
 
     app.close_tab(note);
     support::settle_saves(&mut app);
     assert_eq!(fixture.read("Reading.md"), READING);
+}
+
+/// Show the part of the page the embed of `target` names from `top` down,
+/// `height` points of the page tall and as wide as it, drawn at `density`
+/// pixels a point, frame after frame until the tiles that show have drawn
+/// at that density. Returns the tiles kept of the page.
+fn embed_tiles(
+    links: &NoteLinks,
+    viewer: &PdfEmbedViewer,
+    target: &str,
+    density: f32,
+    top: f32,
+    height: f32,
+) -> Vec<PdfTile> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let Some(PdfEmbedState::Page { size, .. }) = links.pdf_embed(target) else {
+        panic!("{target} isn't open");
+    };
+    let area = PdfEmbedArea {
+        left: 0.0,
+        top,
+        width: size[0],
+        height,
+        density,
+    };
+    loop {
+        let tiles = links.pdf_embed_tiles(target, viewer, area);
+        viewer.frame_done();
+        // The rows of tiles that cover the part that shows.
+        let pixels = (size[1] * density - 1e-3).ceil().max(1.0);
+        let first = ((top * density).max(0.0) / TILE_HEIGHT as f32).floor() as u32;
+        let end = (((top + height) * density).min(pixels) / TILE_HEIGHT as f32).ceil() as u32;
+        let drawn = (first..end).all(|row| {
+            tiles.iter().any(|tile| {
+                tile.key.row == row && tile.key.density().to_bits() == density.to_bits()
+            })
+        });
+        if drawn {
+            return tiles;
+        }
+        assert!(Instant::now() < deadline, "{target} never drew at {top}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// A note that embeds the tall page twice, as a web page saved as PDF.
+const SAVED_PAGE: &[u8] = b"# Saved page\n\n![[tall.pdf]]\n\n![[tall.pdf#page=1]]\n";
+
+#[test]
+fn an_embedded_tall_page_draws_a_pixel_for_each_of_a_2x_screens_where_it_shows() {
+    let fixture = Fixture::new(&[
+        ("tall.pdf", &pdf("tall.pdf")),
+        ("Saved page.md", SAVED_PAGE),
+    ]);
+    let mut app = fixture.app();
+    let note = open_from_tree(&mut app, "Saved page.md");
+    assert_eq!(
+        embed(&mut app, note, "tall.pdf"),
+        PdfEmbedState::Page {
+            number: 1,
+            size: [612.0, 14000.0]
+        }
+    );
+    let links = app.note_links(note).unwrap();
+    let viewer = links.pdf_embed_viewer(|| {});
+
+    // The embed shows 422 points wide on a screen with two pixels a
+    // point, so the page draws 844 pixels wide, as a tab that showed it
+    // 422 points wide would, however tall the page is. 700 points of the
+    // view are 1,016 points of the page.
+    let density = 2.0 * 422.0 / 612.0;
+    let tiles = embed_tiles(&links, &viewer, "tall.pdf", density, 0.0, 1016.0);
+    let sharp: Vec<&PdfTile> = tiles
+        .iter()
+        .filter(|tile| tile.key.density().to_bits() == density.to_bits())
+        .collect();
+    assert!(!sharp.is_empty());
+    for tile in &sharp {
+        assert_eq!(tile.picture.width, 844);
+        assert!(tile.picture.height <= TILE_HEIGHT);
+    }
+    // Only the tiles near the view drew: a few of the page's 12 rows.
+    assert!(sharp.len() <= 4, "{} tiles", sharp.len());
+
+    // Both embeds of the page share one thread, which reads the PDF once.
+    assert_eq!(links.pdf_embed_threads_for_testing(), 1);
+    assert!(links.pdf_embed("tall.pdf#page=1").is_some());
+    assert_eq!(links.pdf_embed_threads_for_testing(), 1);
+}
+
+#[test]
+fn an_embed_scrolled_far_down_keeps_only_the_tiles_near_the_view() {
+    let fixture = Fixture::new(&[
+        ("tall.pdf", &pdf("tall.pdf")),
+        ("Saved page.md", SAVED_PAGE),
+    ]);
+    let mut app = fixture.app();
+    let note = open_from_tree(&mut app, "Saved page.md");
+    embed(&mut app, note, "tall.pdf");
+    let links = app.note_links(note).unwrap();
+    let viewer = links.pdf_embed_viewer(|| {});
+    // The page as it shows 612 points wide on a 1x screen, 612 pixels
+    // wide, in a view 700 points tall.
+    let density = 1.0;
+    let height = 700.0;
+
+    // Scroll down the page a view at a time to near its end.
+    let mut top = 0.0;
+    let mut most = 0;
+    while top < 13000.0 {
+        embed_tiles(&links, &viewer, "tall.pdf", density, top, height);
+        // The frame after the tiles drew keeps those near the view.
+        let area = PdfEmbedArea {
+            left: 0.0,
+            top,
+            width: 612.0,
+            height,
+            density,
+        };
+        let tiles = links.pdf_embed_tiles("tall.pdf", &viewer, area);
+        viewer.frame_done();
+        most = most.max(links.pdf_embed_tile_bytes_for_testing());
+        // Nothing past two views above or below what shows stays.
+        for tile in &tiles {
+            let tile_top = tile.y as f32 / tile.key.density();
+            let tile_bottom = tile_top + tile.picture.height as f32 / tile.key.density();
+            assert!(tile_bottom > top - 2.0 * height, "{top}: {:?}", tile.key);
+            assert!(tile_top < top + 3.0 * height, "{top}: {:?}", tile.key);
+        }
+        top += height;
+    }
+    // The tiles of five views at most, and a row of tiles past each end,
+    // each 612 pixels wide: about 9 MB.
+    let row = 612 * TILE_HEIGHT as usize * 4;
+    let bound = (5.0 * height * density) as usize * 612 * 4 + 2 * row;
+    assert!(most <= bound, "{most} bytes, past {bound}");
+    assert!(most <= MAX_EMBED_TILE_BYTES);
+
+    // Once no viewer shows the embed, as when its note closes, its tiles
+    // and its thread go.
+    assert_eq!(links.pdf_embed_threads_for_testing(), 1);
+    drop(viewer);
+    assert_eq!(links.pdf_embed_tile_bytes_for_testing(), 0);
+    assert_eq!(links.pdf_embed_threads_for_testing(), 0);
 }
 
 #[test]

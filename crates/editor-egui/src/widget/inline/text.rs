@@ -197,12 +197,11 @@ impl<'ast> MdRender {
             .ancestors()
             .skip(1)
             .find(|ancestor| ancestor.data.borrow().value.is_leaf_block())?;
-        let (texture_size, _) = self.embed_texture_size(target);
         let requested = editor_core::images::ImageDims {
             width: width.map(|width| width as f32),
             height: None,
         };
-        let size = self.image_size(texture_size, self.width(block), requested);
+        let size = self.embed_size(target, self.width(block), requested);
         (size.x > 0.0 && size.y > 0.0 && !self.disable_images).then_some(size)
     }
 

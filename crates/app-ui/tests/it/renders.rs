@@ -460,6 +460,112 @@ fn a_tall_pdf_page_renders_at_the_screens_density() {
     }
 }
 
+/// A note that embeds the page 612 by 14,000 points, at two pixels a
+/// point: the window, the top of the embed at one window pixel per screen
+/// pixel, and the size of each texture the embed drew against the size it
+/// shows at.
+#[test]
+#[ignore = "draws the screens to PNG files, which needs a GPU"]
+fn a_tall_pdf_page_embedded_in_a_note_renders_at_the_screens_density() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Reading");
+    create_workspace(app_data.path(), &folder);
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../app-core/tests/fixtures/pdf");
+    std::fs::copy(fixture.join("tall.pdf"), folder.join("tall.pdf")).unwrap();
+    std::fs::write(
+        folder.join("Saved page.md"),
+        note(
+            'a',
+            "Saved page",
+            "The article, as saved.\n\n![[tall.pdf]]\n",
+        ),
+    )
+    .unwrap();
+    let app = App::launch_with(app_data.path(), FakeSystem::new(Platform::Linux));
+    let mut harness = window(app, Theme::Light, Some(linux_controls()));
+    // The desktop app's GPU limit, past kittest's 2048.
+    harness.input_mut().max_texture_side = Some(8192);
+
+    harness
+        .get_by_role_and_label(Role::TreeItem, "Saved page")
+        .click();
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::Button, "Open tall.pdf in a tab")
+            .is_some()
+    });
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(50));
+        harness.step();
+    }
+    settle(&mut harness);
+    save(&mut harness, "8-pdf-embed-tall", Theme::Light);
+    let embed = harness
+        .get_by_role_and_label(Role::Image, "tall.pdf")
+        .rect();
+    let shown = embed.intersect(harness.ctx.viewport_rect());
+    let top = egui::Rect::from_min_size(shown.min, egui::vec2(shown.width().min(400.0), 160.0));
+    save_part(&mut harness, "8-pdf-embed-tall-top", top);
+    eprintln!(
+        "embed shows at {:?}, {} by {} points, {} pixels a point",
+        embed.min,
+        embed.width(),
+        embed.height(),
+        scale()
+    );
+    for (name, [width, height]) in pdf_textures(&harness) {
+        eprintln!(
+            "texture {name}: {width} by {height} pixels, {:.3} pixels a point across",
+            width as f32 / embed.width()
+        );
+    }
+
+    // Scroll the note thousands of points down the page.
+    let view = harness.ctx.viewport_rect();
+    harness.hover_at(egui::pos2(view.center().x, view.center().y + 100.0));
+    for _ in 0..12 {
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -500.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
+            modifiers: Modifiers::NONE,
+        });
+        harness.step();
+    }
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(50));
+        harness.step();
+    }
+    settle(&mut harness);
+    save(&mut harness, "8-pdf-embed-tall-far", Theme::Light);
+    let embed = harness
+        .get_by_role_and_label(Role::Image, "tall.pdf")
+        .rect();
+    let shown = embed.intersect(harness.ctx.viewport_rect());
+    let part = egui::Rect::from_min_size(shown.min, egui::vec2(shown.width().min(400.0), 160.0));
+    save_part(&mut harness, "8-pdf-embed-tall-far-part", part);
+    eprintln!(
+        "far down: embed shows at {:?}, {} by {} points",
+        embed.min,
+        embed.width(),
+        embed.height()
+    );
+    for (name, [width, height]) in pdf_textures(&harness) {
+        eprintln!(
+            "far down: texture {name}: {width} by {height} pixels, {:.3} pixels a point across",
+            width as f32 / embed.width()
+        );
+    }
+    let tab = harness.state().app().active_tab().unwrap().id();
+    let links = harness.state().app().note_links(tab).unwrap();
+    eprintln!(
+        "far down: app-core keeps {} bytes of embed tiles",
+        links.pdf_embed_tile_bytes_for_testing()
+    );
+}
+
 /// The title bar row of a Linux window with each button layout GNOME
 /// offers: its default, the owner's, every button, and buttons at the
 /// start.

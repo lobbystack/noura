@@ -15,6 +15,12 @@ pub enum EmbedState {
     Loading(Vec2),
     /// Loaded, at this size in pixels.
     Loaded(Vec2),
+    /// A document's page, at this size in pixels. A page no taller than
+    /// an A4 page for its width lays out as an image of that size does. A
+    /// taller one lays out as wide as an A4 page would, and its height
+    /// follows its shape past the bottom of the view, so a web page saved
+    /// as one long page reads at the width of a paper one.
+    Page(Vec2),
     /// Nothing to show: the URL names nothing the app has, or loading it
     /// failed. The editor draws a broken-image marker in its place and
     /// never asks `show` to paint it.
