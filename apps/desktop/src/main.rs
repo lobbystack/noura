@@ -31,6 +31,7 @@ mod notifier;
 mod speech_shell;
 mod spelling;
 mod system;
+mod title_bar;
 mod updates;
 mod window_buttons;
 // Only Linux windows draw their own buttons from the desktop's layout.

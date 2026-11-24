@@ -893,6 +893,7 @@ impl eframe::App for Windows {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         crate::window_buttons::place(ui.ctx());
+        crate::title_bar::claim_mouse_downs(frame);
         self.show(ui, frame);
         show_window_menu(ui.ctx(), frame);
         self.report_smoke(ui.ctx());
