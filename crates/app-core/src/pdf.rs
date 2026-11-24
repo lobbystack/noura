@@ -7,9 +7,17 @@
 //! and wipes its own copy once hayro has tried it. Copies that hayro makes
 //! while it tries one, or that a client's text field leaves behind, are
 //! freed without being wiped.
+//!
+//! A tab lays its pages out one under the other, and its client scrolls
+//! through them and says which part shows. The tab draws the pages near
+//! that part in tiles of at most [`TILE_WIDTH`] by [`TILE_HEIGHT`] pixels,
+//! at the pixels per point of the client's screen, and forgets the tiles
+//! far from it. A page of any height draws as sharp as a short one, and a
+//! PDF of any length holds about as many tiles as fill a few screens.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
+    ops::{Range, RangeInclusive},
     panic::AssertUnwindSafe,
     sync::{
         Arc, Condvar, Mutex, PoisonError,
@@ -30,7 +38,7 @@ use hayro::{
         interpret_page,
     },
     kurbo::{Affine, BezPath, Point, Rect},
-    vello_cpu::color::palette::css::WHITE,
+    vello_cpu::{self, Pixmap, RenderContext, color::palette::css::WHITE},
 };
 use local_core::WorkspaceEngine;
 use zeroize::Zeroizing;
@@ -49,9 +57,47 @@ pub const ZOOM_STEPS: [f32; 16] = [
 /// How wide a thumbnail draws a page, in points.
 pub const THUMBNAIL_WIDTH: f32 = 100.0;
 
-/// The widest or tallest Noura draws a page, in pixels. A page zoomed past
-/// it draws at this size and stretches.
+/// How tall a thumbnail draws a page at most, in points. A taller page's
+/// thumbnail narrows to keep its shape.
+pub const THUMBNAIL_MAX_HEIGHT: f32 = 2.0 * THUMBNAIL_WIDTH;
+
+/// The space above each page of a tab and below the last, in points.
+pub const PAGE_GAP: f32 = 12.0;
+
+/// The widest a tile of a page is, in pixels. A page wider than this at
+/// its zoom draws in columns of tiles.
+pub const TILE_WIDTH: u32 = 2048;
+
+/// The tallest a tile of a page is, in pixels.
+pub const TILE_HEIGHT: u32 = 1024;
+
+/// How many tiles, one under the other, a tab's thread draws in one pass,
+/// which reads the page once for all of them.
+const TILES_PER_PASS: usize = 4;
+
+/// How far past each side of the view a tab draws its pages before they
+/// show, in heights and widths of the view.
+const DRAW_AHEAD: f32 = 1.0;
+
+/// How far past each side of the view a tab keeps the tiles it drew, in
+/// heights and widths of the view.
+const KEEP_AHEAD: f32 = 2.0;
+
+/// The most bytes of tiles a tab keeps beside the tiles that show.
+pub const MAX_TILE_BYTES: usize = 256 * 1024 * 1024;
+
+/// The most tiles a tab asks its thread for at once.
+const MAX_ASKED_TILES: usize = 256;
+
+/// The most thumbnails a tab keeps.
+pub const MAX_THUMBNAILS: usize = 240;
+
+/// The widest or tallest Noura draws an embed's page or a thumbnail, in
+/// pixels. A page zoomed past it draws at this size and stretches.
 const MAX_SIDE: f32 = 4096.0;
+
+/// The most pixels a tab draws a page on a side, at any zoom.
+const MAX_PAGE_PIXELS: f64 = 4_194_304.0;
 
 /// The message for a PDF with no pages.
 const NO_PAGES: &str = "This PDF has no pages.";
@@ -81,13 +127,13 @@ pub enum PdfState {
 /// How large a PDF tab draws its pages.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PdfZoom {
-    /// As wide as the tab.
+    /// The widest page as wide as the tab.
     FitWidth,
     /// At this scale of the page's own size, one of [`ZOOM_STEPS`].
     Scale(f32),
 }
 
-/// A page drawn to pixels, on a white background.
+/// A page, or a part of one, drawn to pixels on a white background.
 #[derive(Clone)]
 pub struct PdfPicture {
     /// The page's number, from 1.
@@ -121,17 +167,186 @@ impl std::fmt::Debug for PdfPicture {
     }
 }
 
+/// Which tile of a page a drawing is: the page, the pixels per point the
+/// page draws at, and the tile's column and row in the page's grid of
+/// [`TILE_WIDTH`] by [`TILE_HEIGHT`] tiles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PdfTileKey {
+    /// The page's number, from 1.
+    pub page: usize,
+    density: u32,
+    pub column: u32,
+    pub row: u32,
+}
+
+impl PdfTileKey {
+    fn new(page: usize, density: f32, column: u32, row: u32) -> Self {
+        Self {
+            page,
+            density: density.to_bits(),
+            column,
+            row,
+        }
+    }
+
+    /// The pixels per point the tile draws its page at.
+    pub fn density(&self) -> f32 {
+        f32::from_bits(self.density)
+    }
+
+    /// Every key of the page `page`, in key order.
+    fn of_page(page: usize) -> RangeInclusive<Self> {
+        let first = Self {
+            page,
+            density: 0,
+            column: 0,
+            row: 0,
+        };
+        first..=Self {
+            density: u32::MAX,
+            column: u32::MAX,
+            row: u32::MAX,
+            ..first
+        }
+    }
+}
+
+/// A tile of a page, drawn.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PdfTile {
+    pub key: PdfTileKey,
+    /// Where the tile's top-left pixel lies in the whole page drawn at the
+    /// key's density: pixels across, then down.
+    pub x: u32,
+    pub y: u32,
+    pub picture: PdfPicture,
+}
+
+/// The part of a PDF tab's pages that shows, in points from the top-left
+/// corner of the pages as [`PdfView::page_rect`] lays them out.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PdfArea {
+    pub left: f32,
+    pub top: f32,
+    pub width: f32,
+    pub height: f32,
+    /// The [`PdfJump::seq`] of the newest jump the client made, 0 for none.
+    pub jump: u64,
+}
+
+impl PdfArea {
+    /// The area with a finite place and at least a point each way.
+    fn sanitized(self) -> Self {
+        let finite = |value: f32, otherwise: f32| {
+            if value.is_finite() { value } else { otherwise }
+        };
+        Self {
+            left: finite(self.left, 0.0).max(0.0),
+            top: finite(self.top, 0.0).max(0.0),
+            width: finite(self.width, 1.0).max(1.0),
+            height: finite(self.height, 1.0).max(1.0),
+            jump: self.jump,
+        }
+    }
+}
+
+/// Where a PDF tab's client scrolls its pages to, once: to a page you
+/// picked or a link named, to a match, or to keep what shows in place as
+/// the zoom changes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PdfJump {
+    /// Differs for each jump. The client hands back the newest it made in
+    /// [`PdfArea::jump`].
+    pub seq: u64,
+    /// How far to scroll down from the top of the pages, in points.
+    pub top: f32,
+    /// How far to scroll across from their left, in points, or `None` to
+    /// leave the scroll across alone.
+    pub left: Option<f32>,
+}
+
+/// A place in a tab's pages for a jump to bring into view.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Anchor {
+    page: usize,
+    /// How far down the page the place is, in the page's own points.
+    down: f32,
+    /// How far below the view's top the place lands, in points.
+    at: f32,
+    /// Where the middle of the view lands across the pages, as a share of
+    /// their width. `None` leaves the scroll across alone.
+    across: Option<f32>,
+    /// The page's top stays in view when the place is near it.
+    keep_top: bool,
+}
+
+impl Anchor {
+    /// The top of the page `page`, a gap below the view's top.
+    fn top_of(page: usize) -> Self {
+        Self {
+            page,
+            down: 0.0,
+            at: PAGE_GAP,
+            across: None,
+            keep_top: true,
+        }
+    }
+}
+
+/// A rectangle of a tab's laid-out pages, in points from their top-left
+/// corner.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Zone {
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+}
+
+impl Zone {
+    /// `area`, grown by `margin` times its width on each side and its
+    /// height above and below.
+    fn around(area: &PdfArea, margin: f32) -> Self {
+        let (across, down) = (area.width * margin, area.height * margin);
+        Self {
+            left: area.left - across,
+            top: area.top - down,
+            right: area.left + area.width + across,
+            bottom: area.top + area.height + down,
+        }
+    }
+
+    fn overlaps(&self, other: &Self) -> bool {
+        self.left < other.right
+            && other.left < self.right
+            && self.top < other.bottom
+            && other.top < self.bottom
+    }
+
+    /// How far `other` lies from this zone's middle, in points.
+    fn distance_from_middle(&self, other: &Self) -> f32 {
+        let x = (self.left + self.right) / 2.0;
+        let y = (self.top + self.bottom) / 2.0;
+        let across = (other.left - x).max(x - other.right).max(0.0);
+        let down = (other.top - y).max(y - other.bottom).max(0.0);
+        across.hypot(down)
+    }
+}
+
 /// One place a search found its text.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PdfMatch {
     /// The page's number, from 1.
     pub page: usize,
     /// The line the match is on.
     pub snippet: String,
+    /// How far down the page that line's text starts, in the page's own
+    /// points.
+    pub top: f32,
 }
 
 /// A PDF tab's search.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct PdfSearch {
     /// What you searched for.
     pub query: String,
@@ -143,24 +358,43 @@ pub struct PdfSearch {
     pub searching: bool,
 }
 
-/// What a PDF tab shows: the PDF's pages, where you are in them and how
-/// large they draw, its thumbnails and its search.
+/// What a PDF tab shows: the PDF's pages laid out one under the other,
+/// where you are in them, how large they draw and the tiles drawn so far,
+/// its thumbnails and its search.
 #[derive(Debug, Clone)]
 pub struct PdfView {
     path: String,
     state: PdfState,
     /// Each page's size in points, as it draws, rotation included.
     pages: Vec<[f32; 2]>,
+    /// The heights of the pages before each page, added up, and of every
+    /// page last.
+    heights: Vec<f64>,
+    /// The widest page's width, in points.
+    widest: f32,
     page: usize,
     zoom: PdfZoom,
-    /// How wide the tab draws the page, in points, as its client said.
+    /// How wide the tab draws its pages at most, in points, as its client
+    /// said.
     width: Option<f32>,
+    /// The pixels per point of the client's screen.
+    pixels_per_point: f32,
+    /// What the client showed last.
+    area: Option<PdfArea>,
     thumbnails_shown: bool,
-    picture: Option<PdfPicture>,
+    tiles: BTreeMap<PdfTileKey, PdfTile>,
+    /// How many bytes of pixels `tiles` holds.
+    tile_bytes: usize,
+    /// The tiles whose newest drawing failed.
+    undrawn: BTreeSet<PdfTileKey>,
     thumbnails: HashMap<usize, PdfPicture>,
     search: PdfSearch,
-    /// The page whose newest drawing failed.
-    undrawn: Option<usize>,
+    /// The jump the client hasn't made yet, and its number.
+    jump: Option<(u64, Anchor)>,
+    /// The view's top where the last jump landed. Its page stays the one
+    /// that shows until you scroll away from there, as when the end of
+    /// the pages keeps a short last page from reaching the view's top.
+    landed: Option<f32>,
 }
 
 impl PdfView {
@@ -169,15 +403,34 @@ impl PdfView {
             path: path.to_owned(),
             state: PdfState::Opening,
             pages: Vec::new(),
+            heights: vec![0.0],
+            widest: 0.0,
             page: 1,
             zoom: PdfZoom::FitWidth,
             width: None,
+            pixels_per_point: 1.0,
+            area: None,
             thumbnails_shown: false,
-            picture: None,
+            tiles: BTreeMap::new(),
+            tile_bytes: 0,
+            undrawn: BTreeSet::new(),
             thumbnails: HashMap::new(),
             search: PdfSearch::default(),
-            undrawn: None,
+            jump: None,
+            landed: None,
         }
+    }
+
+    fn set_pages(&mut self, pages: Vec<[f32; 2]>) {
+        let mut total = 0.0;
+        self.heights = std::iter::once(0.0)
+            .chain(pages.iter().map(|[_, height]| {
+                total += f64::from(height.max(0.0));
+                total
+            }))
+            .collect();
+        self.widest = pages.iter().map(|[width, _]| *width).fold(0.0, f32::max);
+        self.pages = pages;
     }
 
     /// The PDF's workspace path.
@@ -194,7 +447,8 @@ impl PdfView {
         self.pages.len()
     }
 
-    /// The page that shows, from 1.
+    /// The page that shows, from 1: the one at the middle of the view, or
+    /// the one you last went to until you scroll.
     pub fn page(&self) -> usize {
         self.page
     }
@@ -211,34 +465,163 @@ impl PdfView {
         self.zoom
     }
 
-    /// The scale the page draws at: the zoom's, or for Fit width, the
-    /// tab's width over the page's.
+    /// The scale the pages draw at: the zoom's, or for Fit width, the
+    /// tab's width over the widest page's.
     pub fn scale(&self) -> f32 {
         match self.zoom {
             PdfZoom::Scale(scale) => scale,
-            PdfZoom::FitWidth => {
-                let page_width = self.page_size(self.page).map_or(0.0, |size| size[0]);
-                match self.width {
-                    Some(width) if page_width > 0.0 => {
-                        (width / page_width).clamp(ZOOM_STEPS[0], ZOOM_STEPS[ZOOM_STEPS.len() - 1])
-                    }
-                    _ => 1.0,
+            PdfZoom::FitWidth => match self.width {
+                Some(width) if self.widest > 0.0 => {
+                    (width / self.widest).clamp(ZOOM_STEPS[0], ZOOM_STEPS[ZOOM_STEPS.len() - 1])
                 }
-            }
+                _ => 1.0,
+            },
         }
     }
 
-    /// The newest drawing of a page this tab asked for. It may show
-    /// another page or another size than the tab shows now, until the
-    /// drawing it asked for since arrives.
-    pub fn picture(&self) -> Option<&PdfPicture> {
-        self.picture.as_ref()
+    /// The pixels per point of the client's screen, as it said.
+    pub fn pixels_per_point(&self) -> f32 {
+        self.pixels_per_point
     }
 
-    /// Whether the newest drawing of the page that shows failed, so no
-    /// picture of it is coming.
-    pub fn page_failed(&self) -> bool {
-        self.undrawn == Some(self.page)
+    /// The pixels per point the tab draws its pages at: the scale times
+    /// the screen's pixels per point, so a page draws a pixel for each of
+    /// the screen's.
+    pub fn density(&self) -> f32 {
+        density_of(self.scale(), self.pixels_per_point)
+    }
+
+    /// The size of the laid-out pages in points: as wide as the widest
+    /// page or the tab, with a gap each side, and as tall as the pages
+    /// with a gap above each and below the last.
+    pub fn content_size(&self) -> [f32; 2] {
+        let gaps = f64::from(PAGE_GAP) * (self.pages.len() as f64 + 1.0);
+        let pages = self.heights.last().copied().unwrap_or(0.0) * f64::from(self.scale());
+        [self.column_width(), (gaps + pages) as f32]
+    }
+
+    fn column_width(&self) -> f32 {
+        let pages = self.widest * self.scale() + 2.0 * PAGE_GAP;
+        self.width
+            .map_or(pages, |width| pages.max(width + 2.0 * PAGE_GAP))
+    }
+
+    /// How far down the laid-out pages the page `page` starts, in points.
+    fn page_top(&self, page: usize) -> f64 {
+        let index = page.saturating_sub(1).min(self.pages.len());
+        let above = self.heights.get(index).copied().unwrap_or(0.0);
+        f64::from(PAGE_GAP) * (index as f64 + 1.0) + above * f64::from(self.scale())
+    }
+
+    fn page_bottom(&self, page: usize) -> f64 {
+        let height = self.page_size(page).map_or(0.0, |size| size[1]);
+        self.page_top(page) + f64::from(height * self.scale())
+    }
+
+    /// Where the page `page` lays out, in points from the top-left corner
+    /// of the pages: its left, top, width and height at the zoom. Pages
+    /// line up on the middle of the widest.
+    pub fn page_rect(&self, page: usize) -> Option<[f32; 4]> {
+        let [width, height] = self.page_size(page)?;
+        let scale = self.scale();
+        Some([
+            (self.column_width() - width * scale) / 2.0,
+            self.page_top(page) as f32,
+            width * scale,
+            height * scale,
+        ])
+    }
+
+    /// The pages that lie wholly or in part between `top` and `bottom`
+    /// points down the laid-out pages, by number.
+    pub fn pages_between(&self, top: f32, bottom: f32) -> Range<usize> {
+        let count = self.pages.len();
+        let first = partition(count, |index| self.page_bottom(index + 1) <= f64::from(top));
+        let end = partition(count, |index| self.page_top(index + 1) < f64::from(bottom));
+        first + 1..end.max(first) + 1
+    }
+
+    /// The page at `down` points down the laid-out pages. Each page takes
+    /// half the gap above it and half the gap below.
+    fn page_at(&self, down: f32) -> usize {
+        let half = f64::from(PAGE_GAP / 2.0);
+        let index = partition(self.pages.len(), |index| {
+            self.page_bottom(index + 1) + half <= f64::from(down)
+        });
+        (index + 1).min(self.pages.len().max(1))
+    }
+
+    /// The tiles of the page `page` the tab keeps, in key order. Those
+    /// drawn at another density, for another zoom or screen, stay until
+    /// the tiles at the newest one cover the part of the page that shows.
+    pub fn tiles(&self, page: usize) -> impl Iterator<Item = &PdfTile> {
+        self.tiles
+            .range(PdfTileKey::of_page(page))
+            .map(|(_, tile)| tile)
+    }
+
+    /// The tile `key`, while the tab keeps it.
+    pub fn tile(&self, key: &PdfTileKey) -> Option<&PdfTile> {
+        self.tiles.get(key)
+    }
+
+    /// How many tiles the tab keeps.
+    pub fn tile_count(&self) -> usize {
+        self.tiles.len()
+    }
+
+    /// How many bytes of pixels the tab's tiles hold.
+    pub fn tile_bytes(&self) -> usize {
+        self.tile_bytes
+    }
+
+    /// Whether the newest drawing of a tile of the page `page`, at the
+    /// newest density, failed.
+    pub fn page_failed(&self, page: usize) -> bool {
+        let density = self.density().to_bits();
+        self.undrawn
+            .range(PdfTileKey::of_page(page))
+            .any(|key| key.density == density)
+    }
+
+    /// Where the client should scroll to, until it says it did.
+    pub fn jump(&self) -> Option<PdfJump> {
+        let (seq, anchor) = self.jump?;
+        let page = anchor.page.clamp(1, self.pages.len().max(1));
+        let page_top = self.page_top(page);
+        let mut top =
+            page_top + f64::from(anchor.down) * f64::from(self.scale()) - f64::from(anchor.at);
+        if anchor.keep_top {
+            top = top.max(page_top - f64::from(PAGE_GAP));
+        }
+        let width = self.area.map_or(0.0, |area| area.width);
+        let left = anchor
+            .across
+            .map(|across| (across * self.column_width() - width / 2.0).max(0.0));
+        Some(PdfJump {
+            seq,
+            top: top.max(0.0) as f32,
+            left,
+        })
+    }
+
+    /// The place at the middle of the view, to keep there across a change
+    /// of zoom.
+    fn middle(&self) -> Option<Anchor> {
+        let area = self.area?;
+        if self.pages.is_empty() {
+            return None;
+        }
+        let middle = area.top + area.height / 2.0;
+        let page = self.page_at(middle);
+        let down = (f64::from(middle) - self.page_top(page)) / f64::from(self.scale());
+        Some(Anchor {
+            page,
+            down: down as f32,
+            at: area.height / 2.0,
+            across: Some((area.left + area.width / 2.0) / self.column_width()),
+            keep_top: false,
+        })
     }
 
     pub fn thumbnails_shown(&self) -> bool {
@@ -259,14 +642,128 @@ impl PdfView {
         &self.search
     }
 
-    /// The pixels per point the page that shows draws at, for a screen
-    /// with `pixels_per_point`, kept within [`MAX_SIDE`].
-    fn density(&self, page: usize, scale: f32, pixels_per_point: f32) -> f32 {
+    /// The pixels per point the thumbnail of the page `page` draws at on
+    /// a screen with `pixels_per_point`: [`THUMBNAIL_WIDTH`] wide, or
+    /// [`THUMBNAIL_MAX_HEIGHT`] tall for a tall page, within [`MAX_SIDE`].
+    fn thumbnail_density(&self, page: usize, pixels_per_point: f32) -> f32 {
         let [width, height] = self.page_size(page).unwrap_or([1.0, 1.0]);
-        let wanted = scale * pixels_per_point;
+        let scale = (THUMBNAIL_WIDTH / width.max(1.0)).min(THUMBNAIL_MAX_HEIGHT / height.max(1.0));
         let largest = MAX_SIDE / width.max(height).max(1.0);
-        wanted.min(largest).max(0.01)
+        (scale * pixels_per_point).min(largest).max(0.01)
     }
+
+    /// Where the tile `key` lays out, in points from the top-left corner
+    /// of the pages, at the zoom. `None` past its page.
+    fn key_zone(&self, key: &PdfTileKey) -> Option<Zone> {
+        let size = self.page_size(key.page)?;
+        let [left, top, _, _] = self.page_rect(key.page)?;
+        let [x, y, width, height] =
+            tile_pixels(page_pixels(size, key.density()), key.column, key.row)?;
+        let points = self.scale() / key.density();
+        Some(Zone {
+            left: left + x as f32 * points,
+            top: top + y as f32 * points,
+            right: left + (x + width) as f32 * points,
+            bottom: top + (y + height) as f32 * points,
+        })
+    }
+
+    /// The tiles of the page `page`, at the newest density, that cover
+    /// `zone`, row by row.
+    fn tiles_over(&self, page: usize, zone: &Zone) -> Vec<PdfTileKey> {
+        let (Some(size), Some([left, top, _, _])) = (self.page_size(page), self.page_rect(page))
+        else {
+            return Vec::new();
+        };
+        let density = self.density();
+        let pixels = page_pixels(size, density);
+        let per_point = density / self.scale();
+        let span = |from: f32, to: f32, origin: f32, tile: u32, count: u32| {
+            let clamp = |value: f32| {
+                if value.is_nan() {
+                    0
+                } else {
+                    value.clamp(0.0, count as f32) as u32
+                }
+            };
+            let first = ((from - origin) * per_point / tile as f32).floor();
+            let end = ((to - origin) * per_point / tile as f32).ceil();
+            clamp(first)..clamp(end)
+        };
+        let columns = span(
+            zone.left,
+            zone.right,
+            left,
+            TILE_WIDTH,
+            pixels[0].div_ceil(TILE_WIDTH),
+        );
+        let rows = span(
+            zone.top,
+            zone.bottom,
+            top,
+            TILE_HEIGHT,
+            pixels[1].div_ceil(TILE_HEIGHT),
+        );
+        rows.flat_map(|row| {
+            columns
+                .clone()
+                .map(move |column| PdfTileKey::new(page, density, column, row))
+        })
+        .collect()
+    }
+}
+
+/// How many of the indices below `count` come before the first for which
+/// `before` fails, for a `before` that holds for the first few and for
+/// none after.
+fn partition(count: usize, before: impl Fn(usize) -> bool) -> usize {
+    let (mut low, mut high) = (0, count);
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if before(middle) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    low
+}
+
+/// The pixels per point that draw a page at `scale` on a screen with
+/// `pixels_per_point`, within a sane range.
+fn density_of(scale: f32, pixels_per_point: f32) -> f32 {
+    let density = scale * pixels_per_point;
+    if density.is_finite() && density > 0.0 {
+        density.clamp(1.0 / 64.0, 64.0)
+    } else {
+        1.0
+    }
+}
+
+/// The size in pixels of a page `size` points large drawn at `density`
+/// pixels per point: at least a pixel on each side. A side a hair past a
+/// whole number of pixels, from rounding, takes that number.
+fn page_pixels(size: [f32; 2], density: f32) -> [u32; 2] {
+    size.map(|side| {
+        (f64::from(side.max(0.0)) * f64::from(density) - 1e-3)
+            .ceil()
+            .clamp(1.0, MAX_PAGE_PIXELS) as u32
+    })
+}
+
+/// The pixels the tile at `column` and `row` covers in a page `pixels`
+/// large: its left, top, width and height. `None` past the page.
+fn tile_pixels(pixels: [u32; 2], column: u32, row: u32) -> Option<[u32; 4]> {
+    let x = column.checked_mul(TILE_WIDTH)?;
+    let y = row.checked_mul(TILE_HEIGHT)?;
+    (x < pixels[0] && y < pixels[1]).then(|| {
+        [
+            x,
+            y,
+            (pixels[0] - x).min(TILE_WIDTH),
+            (pixels[1] - y).min(TILE_HEIGHT),
+        ]
+    })
 }
 
 /// The page a link's or an embed's `#page=` fragment names, as written:
@@ -299,9 +796,9 @@ pub(crate) fn is_pdf(path: &str) -> bool {
         .is_some_and(|(stem, extension)| !stem.is_empty() && extension.eq_ignore_ascii_case("pdf"))
 }
 
-/// Holds every PDF thread before it draws a page, or makes each drawing
-/// fail, so tests can watch the window keep drawing while a page renders
-/// and see what a page that can't be drawn shows.
+/// Holds every PDF thread before it draws, or makes each drawing fail, so
+/// tests can watch the window keep drawing while a page renders and see
+/// what a page that can't be drawn shows.
 #[derive(Clone, Default)]
 pub(crate) struct RenderGate(Arc<Gate>);
 
@@ -340,7 +837,7 @@ impl RenderGate {
     }
 }
 
-/// Holds every PDF thread before it draws a page, until dropped.
+/// Holds every PDF thread before it draws, until dropped.
 #[cfg(feature = "test-hooks")]
 pub struct PdfRenderHold(pub(crate) RenderGate);
 
@@ -351,7 +848,7 @@ impl Drop for PdfRenderHold {
     }
 }
 
-/// Makes every drawing of a page fail, until dropped.
+/// Makes every drawing of a page or thumbnail fail, until dropped.
 #[cfg(feature = "test-hooks")]
 pub struct PdfDrawFailure(pub(crate) RenderGate);
 
@@ -362,17 +859,12 @@ impl Drop for PdfDrawFailure {
     }
 }
 
-/// Which drawing of a page a thread makes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    Page,
-    Thumbnail,
-}
-
 enum Request {
     Unlock(Zeroizing<String>),
-    Render {
-        kind: Kind,
+    /// Draw these tiles, most wanted first, in place of those asked for
+    /// before.
+    Tiles(Vec<PdfTileKey>),
+    Thumbnail {
         page: usize,
         density: f32,
     },
@@ -398,15 +890,10 @@ enum Answer {
     Failed {
         message: String,
     },
-    Rendered {
-        kind: Kind,
-        picture: PdfPicture,
-    },
-    /// The page `page` couldn't be drawn.
-    NotDrawn {
-        kind: Kind,
-        page: usize,
-    },
+    Tile(PdfTile),
+    /// The tile couldn't be drawn.
+    TileFailed(PdfTileKey),
+    Thumbnail(PdfPicture),
     Searched {
         generation: u64,
         matches: Vec<PdfMatch>,
@@ -416,15 +903,25 @@ enum Answer {
 /// Counts the pictures drawn so far.
 static PICTURES: AtomicU64 = AtomicU64::new(0);
 
+fn next_generation() -> u64 {
+    PICTURES.fetch_add(1, Ordering::Relaxed)
+}
+
 /// One PDF tab: what it shows, and its thread.
 pub(crate) struct PdfSession {
     view: PdfView,
     requests: Sender<Request>,
     answers: Receiver<Answer>,
-    /// The drawing of the page last asked for: the page and the density.
-    asked: Option<(usize, f32)>,
+    /// The tiles in the newest list the thread took that it hasn't drawn.
+    asked: HashSet<PdfTileKey>,
     asked_thumbnails: HashSet<usize>,
+    /// When the thumbnails panel last wanted each thumbnail, as a count of
+    /// wants.
+    thumbnail_wants: HashMap<usize, u64>,
+    wants: u64,
     search_generation: u64,
+    /// Counts the jumps so far.
+    jumps: u64,
     /// The page a link asked for before the page count was known.
     pending_page: Option<Option<u32>>,
     /// What another thread needs, should this one stop.
@@ -447,9 +944,12 @@ impl PdfSession {
             view: PdfView::new(path),
             requests,
             answers,
-            asked: None,
+            asked: HashSet::new(),
             asked_thumbnails: HashSet::new(),
+            thumbnail_wants: HashMap::new(),
+            wants: 0,
             search_generation: 0,
+            jumps: 0,
             pending_page: None,
             engine,
             wake,
@@ -469,13 +969,14 @@ impl PdfSession {
             path: self.view.path.clone(),
             requests: receive_requests,
             pending: Vec::new(),
+            tiles: VecDeque::new(),
             answers: send_answers,
             wake: self.wake.clone(),
             gate: self.gate.clone(),
         };
         self.requests = requests;
         self.answers = answers;
-        self.asked = None;
+        self.asked.clear();
         self.asked_thumbnails.clear();
         let spawned = std::thread::Builder::new()
             .name("pdf".into())
@@ -520,49 +1021,69 @@ impl PdfSession {
         }
     }
 
+    /// Forget every drawing, as when the file changes or locks.
+    fn forget_drawings(&mut self) {
+        self.view.tiles.clear();
+        self.view.tile_bytes = 0;
+        self.view.undrawn.clear();
+        self.view.thumbnails.clear();
+        self.asked.clear();
+        self.asked_thumbnails.clear();
+        self.thumbnail_wants.clear();
+    }
+
     fn apply(&mut self, answer: Answer) {
         match answer {
             Answer::Opened { pages } => {
                 let count = pages.len();
-                self.view.pages = pages;
+                self.view.set_pages(pages);
                 self.view.state = PdfState::Ready;
-                self.view.page = match self.pending_page.take() {
-                    Some(asked) => page_to_open(asked, count),
-                    None => self.view.page.clamp(1, count.max(1)),
-                };
                 // A new file draws again from scratch.
-                self.view.picture = None;
-                self.view.thumbnails.clear();
-                self.view.undrawn = None;
-                self.asked = None;
-                self.asked_thumbnails.clear();
+                self.forget_drawings();
+                self.view.landed = None;
+                match self.pending_page.take() {
+                    Some(asked) => {
+                        self.go_to(page_to_open(asked, count));
+                    }
+                    None => self.view.page = self.view.page.clamp(1, count.max(1)),
+                }
                 let query = std::mem::take(&mut self.view.search.query);
                 self.search(&query);
             }
             Answer::Locked { wrong } => {
                 self.view.state = PdfState::Locked { wrong };
-                self.view.picture = None;
-                self.view.thumbnails.clear();
+                self.forget_drawings();
             }
             Answer::Failed { message } => {
                 self.view.state = PdfState::Failed { message };
-                self.view.picture = None;
-                self.view.thumbnails.clear();
+                self.forget_drawings();
             }
-            Answer::Rendered { kind, picture } => match kind {
-                Kind::Page => {
-                    self.view.undrawn = None;
-                    self.view.picture = Some(picture);
+            Answer::Tile(tile) => {
+                self.asked.remove(&tile.key);
+                // A tile drawn for an older zoom, or for a place you
+                // scrolled far from since, is too late to help.
+                let near = self.view.area.is_none_or(|area| {
+                    self.view
+                        .key_zone(&tile.key)
+                        .is_some_and(|zone| Zone::around(&area, KEEP_AHEAD).overlaps(&zone))
+                });
+                if near && tile.key.density == self.view.density().to_bits() {
+                    self.view.undrawn.remove(&tile.key);
+                    self.view.tile_bytes += tile.picture.rgba.len();
+                    if let Some(old) = self.view.tiles.insert(tile.key, tile) {
+                        self.view.tile_bytes -= old.picture.rgba.len();
+                    }
                 }
-                Kind::Thumbnail => {
-                    self.view.thumbnails.insert(picture.page, picture);
+            }
+            Answer::TileFailed(key) => {
+                self.asked.remove(&key);
+                if key.density == self.view.density().to_bits() {
+                    self.view.undrawn.insert(key);
                 }
-            },
-            // A thumbnail that can't be drawn stays a blank page.
-            Answer::NotDrawn { kind, page } => {
-                if kind == Kind::Page {
-                    self.view.undrawn = Some(page);
-                }
+            }
+            Answer::Thumbnail(picture) => {
+                self.view.thumbnails.insert(picture.page, picture);
+                self.trim_thumbnails();
             }
             Answer::Searched {
                 generation,
@@ -571,7 +1092,7 @@ impl PdfSession {
                 self.view.search.searching = false;
                 self.view.search.current = (!matches.is_empty()).then_some(0);
                 if let Some(first) = matches.first() {
-                    self.view.page = first.page;
+                    self.show_match(&first.clone());
                 }
                 self.view.search.matches = matches;
             }
@@ -579,36 +1100,72 @@ impl PdfSession {
         }
     }
 
-    /// Show the page `page`, or the nearest page there is.
+    /// Have the client scroll so `anchor` shows.
+    fn jump_to(&mut self, anchor: Anchor) {
+        self.jumps += 1;
+        self.view.jump = Some((self.jumps, anchor));
+        self.view.landed = None;
+    }
+
+    /// Scroll to the top of the page `page`, or of the nearest page there
+    /// is.
     pub(crate) fn go_to(&mut self, page: usize) -> bool {
         if self.view.state != PdfState::Ready {
             return false;
         }
         let page = page.clamp(1, self.view.page_count().max(1));
-        let changed = page != self.view.page;
         self.view.page = page;
-        changed
+        self.jump_to(Anchor::top_of(page));
+        true
     }
 
-    /// Show the page a link named, once the page count is known.
+    /// Scroll to the page a link named, once the page count is known.
     pub(crate) fn go_to_link_page(&mut self, asked: Option<u32>) {
         if self.view.state == PdfState::Ready {
-            self.view.page = page_to_open(asked, self.view.page_count());
+            self.go_to(page_to_open(asked, self.view.page_count()));
         } else {
             self.pending_page = Some(asked);
         }
     }
 
-    pub(crate) fn step_page(&mut self, forward: bool) -> bool {
-        let page = if forward {
-            self.view.page.saturating_add(1)
-        } else {
-            self.view.page.saturating_sub(1)
-        };
-        self.go_to(page)
+    /// Scroll to the line with `found`, a third of the way down the view,
+    /// or to its page's top when the line is near it.
+    fn show_match(&mut self, found: &PdfMatch) {
+        let at = self
+            .view
+            .area
+            .map_or(PAGE_GAP, |area| (area.height / 3.0).max(PAGE_GAP));
+        self.view.page = found.page;
+        self.jump_to(Anchor {
+            page: found.page,
+            down: found.top,
+            at,
+            across: None,
+            keep_top: true,
+        });
     }
 
-    /// Zoom one step in or out from the scale the page draws at.
+    /// Change the zoom to `zoom`, keeping what shows at the middle of the
+    /// view there.
+    fn set_zoom(&mut self, zoom: PdfZoom) -> bool {
+        if zoom == self.view.zoom {
+            return false;
+        }
+        // A jump the client hasn't made yet keeps its place instead.
+        let anchor = self
+            .view
+            .jump
+            .map(|(_, anchor)| anchor)
+            .or_else(|| self.view.middle());
+        self.view.zoom = zoom;
+        if let Some(anchor) = anchor {
+            self.view.page = anchor.page;
+            self.jump_to(anchor);
+        }
+        true
+    }
+
+    /// Zoom one step in or out from the scale the pages draw at.
     pub(crate) fn zoom(&mut self, zoom_in: bool) -> bool {
         let current = self.view.scale();
         let next = if zoom_in {
@@ -625,61 +1182,206 @@ impl PdfSession {
                 .find(|step| *step < current - 0.001)
                 .unwrap_or(ZOOM_STEPS[0])
         };
-        let zoom = PdfZoom::Scale(next);
-        let changed = zoom != self.view.zoom;
-        self.view.zoom = zoom;
-        changed
+        self.set_zoom(PdfZoom::Scale(next))
     }
 
     pub(crate) fn fit_width(&mut self) -> bool {
-        let changed = self.view.zoom != PdfZoom::FitWidth;
-        self.view.zoom = PdfZoom::FitWidth;
-        changed
+        self.set_zoom(PdfZoom::FitWidth)
     }
 
-    /// The tab draws the page `width` points wide at most, on a screen
-    /// with `pixels_per_point`: ask for the drawing it needs.
+    /// The tab draws its pages `width` points wide at most, on a screen
+    /// with `pixels_per_point`. At Fit width, a new width scales the
+    /// pages, and what shows at the middle of the view stays there.
     pub(crate) fn size(&mut self, width: f32, pixels_per_point: f32) {
-        if width.is_finite() && width > 0.0 {
+        if width.is_finite() && width > 0.0 && self.view.width != Some(width) {
+            let anchor = if self.view.zoom == PdfZoom::FitWidth {
+                self.view
+                    .jump
+                    .map(|(_, anchor)| anchor)
+                    .or_else(|| self.view.middle())
+            } else {
+                None
+            };
             self.view.width = Some(width);
+            if let Some(anchor) = anchor {
+                self.jump_to(anchor);
+            }
         }
-        if self.view.state != PdfState::Ready {
+        if pixels_per_point.is_finite() && pixels_per_point > 0.0 {
+            self.view.pixels_per_point = pixels_per_point;
+        }
+    }
+
+    /// The client shows `area` of the pages: follow the page that shows,
+    /// draw the tiles that show and those near them, and forget those far
+    /// from them.
+    pub(crate) fn show_area(&mut self, area: PdfArea) {
+        if self.view.state != PdfState::Ready || self.view.pages.is_empty() {
             return;
         }
-        let page = self.view.page;
-        let density = self.view.density(page, self.view.scale(), pixels_per_point);
-        let same = self
-            .asked
-            .is_some_and(|(asked, at)| asked == page && (at - density).abs() < 0.01 * at);
-        if !same {
-            self.asked = Some((page, density));
-            self.view.undrawn = None;
-            self.send(Request::Render {
-                kind: Kind::Page,
-                page,
-                density,
-            });
+        let area = area.sanitized();
+        self.view.area = Some(area);
+        if let Some((seq, anchor)) = self.view.jump {
+            // Until the client makes the jump, what it shows is about to
+            // change.
+            if area.jump != seq {
+                return;
+            }
+            self.view.page = anchor.page.clamp(1, self.view.page_count());
+            self.view.jump = None;
+            self.view.landed = Some(area.top);
+        } else if !self
+            .view
+            .landed
+            .is_some_and(|top| (top - area.top).abs() < 0.5)
+        {
+            self.view.landed = None;
+            self.view.page = self.view.page_at(area.top + area.height / 2.0);
+        }
+        self.update_tiles(&area);
+    }
+
+    fn forget_tile(&mut self, key: &PdfTileKey) {
+        if let Some(tile) = self.view.tiles.remove(key) {
+            self.view.tile_bytes -= tile.picture.rgba.len();
+        }
+    }
+
+    /// Forget the tiles far from `area`, and ask the thread for those that
+    /// show or soon will, from the middle of the view out.
+    fn update_tiles(&mut self, area: &PdfArea) {
+        let density = self.view.density().to_bits();
+        let shown = Zone::around(area, 0.0);
+        let ahead = Zone::around(area, DRAW_AHEAD);
+        let keep = Zone::around(area, KEEP_AHEAD);
+        let view = &self.view;
+
+        // A tile drawn at another density stays while its page shows and
+        // the newest density's tiles don't cover what shows of it yet.
+        let covered: HashSet<usize> = view
+            .pages_between(shown.top, shown.bottom)
+            .filter(|page| {
+                view.tiles_over(*page, &shown)
+                    .iter()
+                    .all(|key| view.tiles.contains_key(key))
+            })
+            .collect();
+        let forget: Vec<PdfTileKey> = view
+            .tiles
+            .keys()
+            .filter(|key| {
+                let Some(zone) = view.key_zone(key) else {
+                    return true;
+                };
+                !keep.overlaps(&zone)
+                    || (key.density != density
+                        && (!shown.overlaps(&zone) || covered.contains(&key.page)))
+            })
+            .copied()
+            .collect();
+        // A tile whose drawing failed is tried again once it went out of
+        // reach or the density changed.
+        let retry: Vec<PdfTileKey> = view
+            .undrawn
+            .iter()
+            .filter(|key| {
+                key.density != density
+                    || !view.key_zone(key).is_some_and(|zone| keep.overlaps(&zone))
+            })
+            .copied()
+            .collect();
+        for key in &forget {
+            self.forget_tile(key);
+        }
+        for key in &retry {
+            self.view.undrawn.remove(key);
+        }
+
+        // Past the most bytes, the tiles that don't show go, farthest
+        // first.
+        if self.view.tile_bytes > MAX_TILE_BYTES {
+            let mut far: Vec<(f32, PdfTileKey)> = self
+                .view
+                .tiles
+                .keys()
+                .filter_map(|key| {
+                    let zone = self.view.key_zone(key)?;
+                    (!shown.overlaps(&zone)).then(|| (shown.distance_from_middle(&zone), *key))
+                })
+                .collect();
+            far.sort_by(|a, b| b.0.total_cmp(&a.0));
+            for (_, key) in far {
+                if self.view.tile_bytes <= MAX_TILE_BYTES {
+                    break;
+                }
+                self.forget_tile(&key);
+            }
+        }
+
+        let view = &self.view;
+        let mut wanted: Vec<(bool, f32, PdfTileKey)> = Vec::new();
+        for page in view.pages_between(ahead.top, ahead.bottom) {
+            for key in view.tiles_over(page, &ahead) {
+                if view.tiles.contains_key(&key) || view.undrawn.contains(&key) {
+                    continue;
+                }
+                if let Some(zone) = view.key_zone(&key) {
+                    wanted.push((
+                        !shown.overlaps(&zone),
+                        shown.distance_from_middle(&zone),
+                        key,
+                    ));
+                }
+            }
+            // Thousands of pages a pixel tall can't all draw at once.
+            if wanted.len() >= 4 * MAX_ASKED_TILES {
+                break;
+            }
+        }
+        wanted.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        wanted.truncate(MAX_ASKED_TILES);
+        let keys: HashSet<PdfTileKey> = wanted.iter().map(|(_, _, key)| *key).collect();
+        if keys != self.asked {
+            self.send(Request::Tiles(
+                wanted.into_iter().map(|(_, _, key)| key).collect(),
+            ));
+            self.asked = keys;
         }
     }
 
     /// Draw the thumbnail of the page `page`, for a screen with
-    /// `pixels_per_point`, unless it's drawn or asked for already.
+    /// `pixels_per_point`, unless it's drawn or asked for already. Past
+    /// [`MAX_THUMBNAILS`], the thumbnails wanted longest ago go.
     pub(crate) fn want_thumbnail(&mut self, page: usize, pixels_per_point: f32) {
-        if self.view.state != PdfState::Ready
-            || self.view.page_size(page).is_none()
-            || !self.asked_thumbnails.insert(page)
-        {
+        if self.view.state != PdfState::Ready || self.view.page_size(page).is_none() {
             return;
         }
-        let width = self.view.page_size(page).map_or(1.0, |size| size[0]);
-        let density = self
-            .view
-            .density(page, THUMBNAIL_WIDTH / width.max(1.0), pixels_per_point);
-        self.send(Request::Render {
-            kind: Kind::Thumbnail,
-            page,
-            density,
-        });
+        self.wants += 1;
+        self.thumbnail_wants.insert(page, self.wants);
+        if self.asked_thumbnails.insert(page) {
+            let density = self.view.thumbnail_density(page, pixels_per_point);
+            self.send(Request::Thumbnail { page, density });
+        }
+        self.trim_thumbnails();
+    }
+
+    /// Past [`MAX_THUMBNAILS`], forget the thumbnails wanted longest ago.
+    fn trim_thumbnails(&mut self) {
+        while self.view.thumbnails.len() > MAX_THUMBNAILS {
+            let wants = &self.thumbnail_wants;
+            let Some(oldest) = self
+                .view
+                .thumbnails
+                .keys()
+                .min_by_key(|page| wants.get(page).copied().unwrap_or(0))
+                .copied()
+            else {
+                break;
+            };
+            self.view.thumbnails.remove(&oldest);
+            self.asked_thumbnails.remove(&oldest);
+            self.thumbnail_wants.remove(&oldest);
+        }
     }
 
     pub(crate) fn toggle_thumbnails(&mut self) {
@@ -726,7 +1428,8 @@ impl PdfSession {
             (Some(current), false) => (current + count - 1) % count,
         };
         self.view.search.current = Some(current);
-        self.view.page = self.view.search.matches[current].page;
+        let found = self.view.search.matches[current].clone();
+        self.show_match(&found);
         true
     }
 
@@ -768,11 +1471,20 @@ struct Worker {
     engine: Arc<WorkspaceEngine>,
     path: String,
     requests: Receiver<Request>,
-    /// Requests taken from the channel and not handled yet.
+    /// Requests taken from the channel and not handled yet, but tiles.
     pending: Vec<Request>,
+    /// The tiles to draw, most wanted first.
+    tiles: VecDeque<PdfTileKey>,
     answers: Sender<Answer>,
     wake: Arc<dyn Fn() + Send + Sync>,
     gate: RenderGate,
+}
+
+/// What a thread does next.
+enum Job {
+    Request(Request),
+    /// Draw the most wanted tile.
+    Tiles,
 }
 
 /// What a thread does after it served an open PDF or waited on one that
@@ -834,54 +1546,12 @@ impl Worker {
         self.engine.file_version(&self.path).ok()
     }
 
-    /// The next request: a waiting one first, by priority, or the next to
-    /// arrive. `None` once the tab closed.
-    fn next(&mut self) -> Option<Request> {
-        self.pending.extend(self.requests.try_iter());
-        if self.pending.is_empty() {
-            let request = self.requests.recv().ok()?;
-            self.pending.push(request);
-            self.pending.extend(self.requests.try_iter());
+    /// Take `request` in: a list of tiles replaces the one before it.
+    fn receive(&mut self, request: Request) {
+        match request {
+            Request::Tiles(tiles) => self.tiles = tiles.into(),
+            request => self.pending.push(request),
         }
-        // Only the newest drawing of the page and the newest search count.
-        let newest_page = self.pending.iter().rposition(|request| {
-            matches!(
-                request,
-                Request::Render {
-                    kind: Kind::Page,
-                    ..
-                }
-            )
-        });
-        let newest_search = self
-            .pending
-            .iter()
-            .rposition(|request| matches!(request, Request::Search { .. }));
-        let mut index = 0;
-        self.pending.retain(|request| {
-            let keep = match request {
-                Request::Render {
-                    kind: Kind::Page, ..
-                } => Some(index) == newest_page,
-                Request::Search { .. } => Some(index) == newest_search,
-                _ => true,
-            };
-            index += 1;
-            keep
-        });
-        let rank = |request: &Request| match request {
-            Request::Unlock(_) | Request::Check | Request::Retry | Request::Moved(_) => 0,
-            Request::Render {
-                kind: Kind::Page, ..
-            } => 1,
-            Request::Search { .. } => 2,
-            Request::Render {
-                kind: Kind::Thumbnail,
-                ..
-            } => 3,
-        };
-        let first = (0..self.pending.len()).min_by_key(|index| rank(&self.pending[*index]))?;
-        Some(self.pending.remove(first))
     }
 
     /// Take the requests waiting in the channel. `false` once the session
@@ -889,52 +1559,114 @@ impl Worker {
     fn take_waiting(&mut self) -> bool {
         loop {
             match self.requests.try_recv() {
-                Ok(request) => self.pending.push(request),
+                Ok(request) => self.receive(request),
                 Err(TryRecvError::Empty) => return true,
                 Err(TryRecvError::Disconnected) => return false,
             }
         }
     }
 
-    /// Take the newest drawing of the page waiting, and drop the older
-    /// ones.
-    fn take_newest_page(&mut self) -> Option<Request> {
-        let is_page = |request: &Request| {
-            matches!(
-                request,
-                Request::Render {
-                    kind: Kind::Page,
-                    ..
-                }
-            )
+    /// The next job: unlocking, checking the file and following a move
+    /// first, then the tiles, the newest search, and the thumbnails.
+    /// `None` once the tab closed.
+    fn next(&mut self) -> Option<Job> {
+        if !self.take_waiting() {
+            return None;
+        }
+        while self.pending.is_empty() && self.tiles.is_empty() {
+            let request = self.requests.recv().ok()?;
+            self.receive(request);
+            if !self.take_waiting() {
+                return None;
+            }
+        }
+        // Only the newest search counts.
+        if let Some(newest) = self
+            .pending
+            .iter()
+            .rposition(|request| matches!(request, Request::Search { .. }))
+        {
+            let mut index = 0;
+            self.pending.retain(|request| {
+                let keep = index == newest || !matches!(request, Request::Search { .. });
+                index += 1;
+                keep
+            });
+        }
+        let rank = |request: &Request| match request {
+            Request::Unlock(_) | Request::Check | Request::Retry | Request::Moved(_) => 0,
+            Request::Tiles(_) => 1,
+            Request::Search { .. } => 2,
+            Request::Thumbnail { .. } => 3,
         };
-        let newest = self.pending.iter().rposition(is_page)?;
-        let request = self.pending.remove(newest);
-        self.pending.retain(|request| !is_page(request));
-        Some(request)
+        let first = (0..self.pending.len()).min_by_key(|index| rank(&self.pending[*index]));
+        match first {
+            Some(index) if rank(&self.pending[index]) == 0 || self.tiles.is_empty() => {
+                Some(Job::Request(self.pending.remove(index)))
+            }
+            _ => Some(Job::Tiles),
+        }
     }
 
-    /// Draw page `page` of `pdf` at `density` pixels per point, and answer
-    /// with the picture or that it couldn't be drawn.
-    fn render<'a>(
-        &self,
-        pdf: &'a Pdf,
-        cache: &RenderCache<'a>,
-        kind: Kind,
-        page: usize,
-        density: f32,
-    ) {
-        let shown = page.checked_sub(1).and_then(|index| pdf.pages().get(index));
+    /// Draw the most wanted tile, with the wanted tiles above and below it
+    /// in its column, up to [`TILES_PER_PASS`], in one pass over the page,
+    /// and answer with each tile or that it couldn't be drawn.
+    fn draw_tiles<'a>(&mut self, pdf: &'a Pdf, cache: &RenderCache<'a>) {
+        let Some(first) = self.tiles.pop_front() else {
+            return;
+        };
+        let mut rows = first.row..first.row + 1;
+        while rows.len() < TILES_PER_PASS {
+            let next = self.tiles.iter().position(|key| {
+                key.page == first.page
+                    && key.density == first.density
+                    && key.column == first.column
+                    && (key.row == rows.end || key.row + 1 == rows.start)
+            });
+            let Some(key) = next.and_then(|index| self.tiles.remove(index)) else {
+                break;
+            };
+            if key.row == rows.end {
+                rows.end += 1;
+            } else {
+                rows.start -= 1;
+            }
+        }
+        let keys: Vec<PdfTileKey> = rows.map(|row| PdfTileKey { row, ..first }).collect();
+        let page = first
+            .page
+            .checked_sub(1)
+            .and_then(|index| pdf.pages().get(index));
         self.gate.wait();
-        let drawn = shown
+        let drawn = page
             .filter(|_| !self.gate.failing())
-            .and_then(|shown| draw(shown, cache, page, density));
+            .and_then(|page| draw_rows(page, cache, &keys));
         match drawn {
-            Some(picture) => self.answer(Answer::Rendered { kind, picture }),
+            Some(tiles) => {
+                for tile in tiles {
+                    self.answer(Answer::Tile(tile));
+                }
+            }
             None => {
                 tracing::warn!("a PDF page couldn't be drawn");
-                self.answer(Answer::NotDrawn { kind, page });
+                for key in keys {
+                    self.answer(Answer::TileFailed(key));
+                }
             }
+        }
+    }
+
+    /// Draw the thumbnail of page `page` of `pdf` at `density` pixels per
+    /// point. A thumbnail that can't be drawn stays a blank page.
+    fn draw_thumbnail<'a>(&self, pdf: &'a Pdf, cache: &RenderCache<'a>, page: usize, density: f32) {
+        let shown = page.checked_sub(1).and_then(|index| pdf.pages().get(index));
+        self.gate.wait();
+        match shown
+            .filter(|_| !self.gate.failing())
+            .and_then(|shown| draw(shown, cache, page, density))
+        {
+            Some(picture) => self.answer(Answer::Thumbnail(picture)),
+            None => tracing::warn!("a PDF thumbnail couldn't be drawn"),
         }
     }
 
@@ -949,11 +1681,14 @@ impl Worker {
         loop {
             match self.next() {
                 None => return Next::Stop,
-                Some(Request::Unlock(password)) => return Next::Read(Some(password)),
-                Some(Request::Retry) => return Next::Read(None),
-                Some(Request::Check) if self.changed(stamp) => return Next::Read(None),
-                Some(Request::Moved(path)) => self.path = path,
-                Some(_) => {}
+                Some(Job::Tiles) => self.tiles.clear(),
+                Some(Job::Request(Request::Unlock(password))) => return Next::Read(Some(password)),
+                Some(Job::Request(Request::Retry)) => return Next::Read(None),
+                Some(Job::Request(Request::Check)) if self.changed(stamp) => {
+                    return Next::Read(None);
+                }
+                Some(Job::Request(Request::Moved(path))) => self.path = path,
+                Some(Job::Request(_)) => {}
             }
         }
     }
@@ -966,12 +1701,11 @@ impl Worker {
         loop {
             match self.next() {
                 None => return Next::Stop,
-                Some(Request::Render {
-                    kind,
-                    page,
-                    density,
-                }) => self.render(pdf, &cache, kind, page, density),
-                Some(Request::Search { generation, query }) => {
+                Some(Job::Tiles) => self.draw_tiles(pdf, &cache),
+                Some(Job::Request(Request::Thumbnail { page, density })) => {
+                    self.draw_thumbnail(pdf, &cache, page, density);
+                }
+                Some(Job::Request(Request::Search { generation, query })) => {
                     let mut matches = Vec::new();
                     let needle = fold(&query);
                     for (index, page) in pdf.pages().iter().enumerate() {
@@ -987,15 +1721,12 @@ impl Worker {
                         {
                             break;
                         }
-                        // The page you're looking at draws before the
-                        // search goes on.
-                        if let Some(Request::Render {
-                            kind,
-                            page: shown,
-                            density,
-                        }) = self.take_newest_page()
-                        {
-                            self.render(pdf, &cache, kind, shown, density);
+                        // The pages in view draw before the search goes on.
+                        while !self.tiles.is_empty() {
+                            self.draw_tiles(pdf, &cache);
+                            if !self.take_waiting() {
+                                return Next::Stop;
+                            }
                         }
                         let lines = texts[index].get_or_insert_with(|| page_text(page));
                         matches.extend(find(lines, &needle, index + 1));
@@ -1005,11 +1736,11 @@ impl Worker {
                         matches,
                     });
                 }
-                Some(Request::Check | Request::Retry) if self.changed(stamp) => {
+                Some(Job::Request(Request::Check | Request::Retry)) if self.changed(stamp) => {
                     return Next::Read(None);
                 }
-                Some(Request::Moved(path)) => self.path = path,
-                Some(_) => {}
+                Some(Job::Request(Request::Moved(path))) => self.path = path,
+                Some(Job::Request(_)) => {}
             }
         }
     }
@@ -1070,9 +1801,9 @@ fn side_scale(side: f32, density: f32) -> f32 {
     }
 }
 
-/// Draw `page`, number `number`, at `density` pixels per point, or on a
-/// side that would draw less than a pixel, one pixel. `None` when hayro
-/// fails.
+/// Draw `page`, number `number`, whole at `density` pixels per point, or
+/// on a side that would draw less than a pixel, one pixel, within
+/// [`MAX_SIDE`]. `None` when hayro fails.
 fn draw<'a>(
     page: &'a Page<'a>,
     cache: &RenderCache<'a>,
@@ -1103,8 +1834,100 @@ fn draw<'a>(
         width: u32::from(drawn.width()),
         height: u32::from(drawn.height()),
         rgba: Arc::from(drawn.data_as_u8_slice()),
-        generation: PICTURES.fetch_add(1, Ordering::Relaxed),
+        generation: next_generation(),
     })
+}
+
+/// Draw the tiles `keys`, one column of a page's tiles from top to bottom,
+/// in one pass over `page`. `None` when hayro fails or a key lies past the
+/// page.
+fn draw_rows<'a>(
+    page: &'a Page<'a>,
+    cache: &RenderCache<'a>,
+    keys: &[PdfTileKey],
+) -> Option<Vec<PdfTile>> {
+    let first = keys.first()?;
+    let density = first.density();
+    let (width, height) = page.render_dimensions();
+    let pixels = page_pixels([width, height], density);
+    let rects = keys
+        .iter()
+        .map(|key| tile_pixels(pixels, key.column, key.row))
+        .collect::<Option<Vec<_>>>()?;
+    let [x, y, width, _] = rects[0];
+    let height = rects.iter().map(|rect| rect[3]).sum();
+    let pixmap = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        draw_region(page, cache, density, [x, y, width, height])
+    }))
+    .ok()??;
+    let bytes = pixmap.data_as_u8_slice();
+    let row = width as usize * 4;
+    if bytes.len() != row * height as usize {
+        return None;
+    }
+    let mut start = 0;
+    Some(
+        keys.iter()
+            .zip(&rects)
+            .map(|(key, [x, y, width, height])| {
+                let end = start + row * *height as usize;
+                let rgba = Arc::from(&bytes[start..end]);
+                start = end;
+                PdfTile {
+                    key: *key,
+                    x: *x,
+                    y: *y,
+                    picture: PdfPicture {
+                        page: key.page,
+                        width: *width,
+                        height: *height,
+                        rgba,
+                        generation: next_generation(),
+                    },
+                }
+            })
+            .collect(),
+    )
+}
+
+/// Draw the pixels `[x, y, width, height]` of `page` drawn whole at
+/// `density` pixels per point, on white. `None` for a region no pixmap can
+/// hold.
+fn draw_region<'a>(
+    page: &'a Page<'a>,
+    cache: &RenderCache<'a>,
+    density: f32,
+    [x, y, width, height]: [u32; 4],
+) -> Option<Pixmap> {
+    let (Ok(width), Ok(height)) = (u16::try_from(width), u16::try_from(height)) else {
+        return None;
+    };
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let mut context = RenderContext::new(width, height);
+    let transform = Affine::translate((-f64::from(x), -f64::from(y)))
+        * Affine::scale(f64::from(density))
+        * page.initial_transform(true).to_kurbo();
+    hayro::render_into(
+        page,
+        cache,
+        &InterpreterSettings::default(),
+        &RenderSettings::default(),
+        &mut context,
+        transform,
+    );
+    context.flush();
+    let mut pixmap = Pixmap::new(width, height);
+    context.render_with(
+        &mut pixmap,
+        &mut vello_cpu::Resources::default(),
+        vello_cpu::RasterizerSettings {
+            target_init: vello_cpu::TargetInit::Clear(WHITE),
+            ..Default::default()
+        },
+    );
+    Some(pixmap)
 }
 
 /// Read the PDF at `path` and draw the page a link or embed names in
@@ -1148,6 +1971,9 @@ pub enum EmbedProblem {
 #[derive(Debug, Clone, Default)]
 struct Line {
     text: String,
+    /// How far down the page the line's first glyph reaches, in the
+    /// page's own points.
+    top: f32,
 }
 
 /// Text folded for search: lowercase, one character for each of the
@@ -1194,8 +2020,12 @@ fn find(lines: &[Line], needle: &[char], page: usize) -> Vec<PdfMatch> {
     let mut start = 0;
     while start + needle.len() <= folded.len() {
         if folded[start..start + needle.len()] == *needle {
-            let snippet = lines[line_of[start]].text.trim().to_owned();
-            found.push(PdfMatch { page, snippet });
+            let line = &lines[line_of[start]];
+            found.push(PdfMatch {
+                page,
+                snippet: line.text.trim().to_owned(),
+                top: line.top,
+            });
             start += needle.len();
         } else {
             start += 1;
@@ -1263,7 +2093,12 @@ impl TextDevice {
                     line.text.push(' ');
                 }
             }
-            _ => self.lines.push(Line::default()),
+            _ => self.lines.push(Line {
+                text: String::new(),
+                // The page's own space runs down from its top, and a
+                // glyph reaches its size above its baseline.
+                top: (origin.y - size).max(0.0) as f32,
+            }),
         }
         if let Some(line) = self.lines.last_mut() {
             line.text.push_str(&text);
@@ -1311,8 +2146,9 @@ mod tests {
     use local_core::WorkspaceEngine;
 
     use super::{
-        Line, MAX_SIDE, PdfSession, PdfState, PdfView, RenderGate, damaged, find, fold, is_pdf,
-        page_in_link, page_to_open, side_scale,
+        Line, MAX_SIDE, PAGE_GAP, PdfArea, PdfSession, PdfState, PdfView, RenderGate, TILE_HEIGHT,
+        Zone, damaged, find, fold, is_pdf, page_in_link, page_pixels, page_to_open, side_scale,
+        tile_pixels,
     };
 
     #[test]
@@ -1405,6 +2241,120 @@ mod tests {
     /// while.
     const LARGE: &[u8] = include_bytes!("../tests/fixtures/pdf/large.pdf");
 
+    const TEXT: &[u8] = include_bytes!("../tests/fixtures/pdf/text.pdf");
+
+    /// Show `height` points of the session's pages from `top` down, in a
+    /// view as wide as the tab, after the jump the view asks for, if any.
+    fn show(session: &mut PdfSession, top: f32, height: f32) {
+        let jump = session.view().jump();
+        let width = session.view().content_size()[0];
+        session.show_area(PdfArea {
+            left: 0.0,
+            top: jump.map_or(top, |jump| jump.top),
+            width,
+            height,
+            jump: jump.map_or(0, |jump| jump.seq),
+        });
+    }
+
+    /// A view of pages `sizes` laid out in a tab with room for pages
+    /// `width` points wide.
+    fn laid_out(sizes: &[[f32; 2]], width: f32) -> PdfView {
+        let mut view = PdfView::new("doc.pdf");
+        view.set_pages(sizes.to_vec());
+        view.state = PdfState::Ready;
+        view.width = Some(width);
+        view
+    }
+
+    #[test]
+    fn pages_lay_out_one_under_the_other_lined_up_on_their_middles() {
+        let view = laid_out(&[[612.0, 792.0], [792.0, 612.0], [612.0, 14000.0]], 396.0);
+        // Fit width fits the widest page, 792 points, in 396.
+        assert_eq!(view.scale(), 0.5);
+        let column = 396.0 + 2.0 * PAGE_GAP;
+        let middle = (column - 306.0) / 2.0;
+        assert_eq!(view.page_rect(1), Some([middle, PAGE_GAP, 306.0, 396.0]));
+        assert_eq!(
+            view.page_rect(2),
+            Some([PAGE_GAP, 2.0 * PAGE_GAP + 396.0, 396.0, 306.0])
+        );
+        assert_eq!(
+            view.page_rect(3),
+            Some([middle, 3.0 * PAGE_GAP + 702.0, 306.0, 7000.0])
+        );
+        assert_eq!(view.page_rect(4), None);
+        assert_eq!(view.content_size(), [column, 4.0 * PAGE_GAP + 7702.0]);
+    }
+
+    #[test]
+    fn the_pages_between_two_heights_are_those_any_part_of_which_lies_there() {
+        // At full size, page n spans 12 + 112 (n - 1) to 100 points below.
+        let view = laid_out(&[[100.0, 100.0]; 5], 100.0);
+        assert_eq!(view.scale(), 1.0);
+        assert_eq!(view.pages_between(0.0, 12.0), 1..1, "the gap above page 1");
+        assert_eq!(view.pages_between(0.0, 13.0), 1..2);
+        assert_eq!(view.pages_between(112.0, 124.5), 2..3);
+        assert_eq!(view.pages_between(50.0, 600.0), 1..6);
+        assert_eq!(view.pages_between(1000.0, 2000.0), 6..6);
+        // The page at a height takes half of each gap beside it.
+        assert_eq!(view.page_at(0.0), 1);
+        assert_eq!(view.page_at(117.9), 1);
+        assert_eq!(view.page_at(118.0), 2);
+        assert_eq!(view.page_at(10_000.0), 5);
+    }
+
+    #[test]
+    fn a_page_draws_in_tiles_at_most_the_largest_and_at_least_a_pixel() {
+        assert_eq!(page_pixels([612.0, 14000.0], 2.0), [1224, 28000]);
+        assert_eq!(page_pixels([612.0, 792.0], 2.745), [1680, 2175]);
+        // 612 points at 2 × 840 / 612 pixels a point fill 840 points of a
+        // 2x screen, which f32 rounds to a hair over 1,680 pixels.
+        assert_eq!(page_pixels([612.0, 14000.0], 2.0 * 840.0 / 612.0)[0], 1680);
+        assert_eq!(page_pixels([1.0, 1.0], 0.25), [1, 1]);
+        assert_eq!(page_pixels([14400.0, 0.0], 64.0), [921_600, 1]);
+        let tall = [1224, 28000];
+        assert_eq!(tile_pixels(tall, 0, 0), Some([0, 0, 1224, TILE_HEIGHT]));
+        assert_eq!(tile_pixels(tall, 0, 27), Some([0, 27_648, 1224, 352]));
+        assert_eq!(tile_pixels(tall, 0, 28), None);
+        assert_eq!(tile_pixels(tall, 1, 0), None);
+        assert_eq!(tile_pixels([5000, 10], 2, 0), Some([4096, 0, 904, 10]));
+        assert_eq!(tile_pixels([5000, 10], u32::MAX, 0), None);
+    }
+
+    #[test]
+    fn the_tiles_over_a_zone_draw_a_pixel_for_each_of_the_screens() {
+        let mut view = laid_out(&[[612.0, 14000.0]], 612.0);
+        view.pixels_per_point = 2.0;
+        assert_eq!(view.density(), 2.0);
+        // 700 points from 5,000 points down the page are pixels 10,000 to
+        // 11,400: rows 9 to 11.
+        let area = PdfArea {
+            left: 0.0,
+            top: PAGE_GAP + 5000.0,
+            width: 636.0,
+            height: 700.0,
+            jump: 0,
+        };
+        let keys = view.tiles_over(1, &Zone::around(&area, 0.0));
+        let places: Vec<(u32, u32)> = keys.iter().map(|key| (key.column, key.row)).collect();
+        assert_eq!(places, [(0, 9), (0, 10), (0, 11)]);
+        assert_eq!(
+            view.key_zone(&keys[0]),
+            Some(Zone {
+                left: PAGE_GAP,
+                top: PAGE_GAP + 9.0 * 512.0,
+                right: PAGE_GAP + 612.0,
+                bottom: PAGE_GAP + 10.0 * 512.0,
+            })
+        );
+        assert!(
+            view.tiles_over(1, &Zone::around(&area, 0.0))
+                .iter()
+                .all(|key| key.density() == 2.0)
+        );
+    }
+
     #[test]
     fn the_page_draws_while_a_long_search_runs() {
         let (mut session, _folders) = session("large.pdf", LARGE);
@@ -1417,13 +2367,13 @@ mod tests {
 
         session.go_to(5);
         session.size(612.0, 1.0);
+        show(&mut session, 0.0, 700.0);
 
         wait_until(&mut session, "page 5 draws", |view| {
-            view.picture().is_some_and(|picture| picture.page == 5)
+            view.tiles(5).next().is_some()
         });
         assert!(session.view().search().searching, "the search ended first");
     }
-
     #[test]
     fn a_search_stops_when_its_tab_closes() {
         let (mut session, _folders) = session("large.pdf", LARGE);
@@ -1446,8 +2396,7 @@ mod tests {
 
     #[test]
     fn try_again_starts_a_new_thread_when_the_tabs_thread_stopped() {
-        let (mut session, _folders) =
-            session("text.pdf", include_bytes!("../tests/fixtures/pdf/text.pdf"));
+        let (mut session, _folders) = session("text.pdf", TEXT);
         wait_until(&mut session, "the PDF opens", |view| {
             view.state() == &PdfState::Ready
         });
@@ -1470,38 +2419,42 @@ mod tests {
         assert_eq!(session.view().page_count(), 3);
         assert_eq!(session.view().page(), 3, "the page you were on stays");
         session.size(612.0, 1.0);
+        show(&mut session, 0.0, 700.0);
+        assert_eq!(session.view().page(), 3);
         wait_until(&mut session, "the page draws", |view| {
-            view.picture().is_some()
+            view.tiles(3).next().is_some()
         });
     }
 
     #[test]
-    fn a_page_that_cant_be_drawn_says_so_and_draws_when_asked_again() {
-        let (mut session, _folders) =
-            session("text.pdf", include_bytes!("../tests/fixtures/pdf/text.pdf"));
+    fn a_page_that_cant_be_drawn_says_so_and_draws_again_at_another_zoom() {
+        let (mut session, _folders) = session("text.pdf", TEXT);
         wait_until(&mut session, "the PDF opens", |view| {
             view.state() == &PdfState::Ready
         });
         session.gate.fail(true);
         session.size(612.0, 1.0);
-        assert!(!session.view().page_failed());
-        wait_until(&mut session, "the drawing fails", PdfView::page_failed);
-        assert!(session.view().picture().is_none());
+        show(&mut session, 0.0, 700.0);
+        assert!(!session.view().page_failed(1));
+        wait_until(&mut session, "the drawing fails", |view| {
+            view.page_failed(1)
+        });
+        assert!(session.view().tiles(1).next().is_none());
 
+        // Showing the same place again asks for nothing, so a page that
+        // can't be drawn doesn't keep the thread busy.
         session.gate.fail(false);
-        session.step_page(true);
-        assert!(!session.view().page_failed(), "page 2 hasn't failed");
-        session.size(612.0, 1.0);
-        wait_until(&mut session, "page 2 draws", |view| {
-            view.picture().is_some_and(|picture| picture.page == 2)
-        });
-        session.step_page(false);
-        session.size(612.0, 1.0);
-        assert!(!session.view().page_failed(), "page 1 draws again");
+        show(&mut session, 0.0, 700.0);
+        assert!(session.asked.is_empty());
+        assert!(session.view().page_failed(1));
+
+        session.zoom(true);
+        assert!(!session.view().page_failed(1), "a new zoom tries again");
+        show(&mut session, 0.0, 700.0);
         wait_until(&mut session, "page 1 draws", |view| {
-            view.picture().is_some_and(|picture| picture.page == 1)
+            view.tiles(1).next().is_some()
         });
-        assert!(!session.view().page_failed());
+        assert!(!session.view().page_failed(1));
     }
 
     #[test]
@@ -1518,20 +2471,28 @@ mod tests {
         let lines = [
             Line {
                 text: "The quick  brown".to_owned(),
+                top: 60.0,
             },
             Line {
                 text: "Fox. QUICK fox".to_owned(),
+                top: 76.0,
             },
         ];
         let found = find(&lines, &fold("brown fox"), 4);
         assert_eq!(found.len(), 1);
         assert_eq!(
-            (found[0].page, found[0].snippet.as_str()),
-            (4, "The quick  brown")
+            (found[0].page, found[0].snippet.as_str(), found[0].top),
+            (4, "The quick  brown", 60.0)
         );
         let found = find(&lines, &fold("Quick"), 4);
-        let snippets: Vec<&str> = found.iter().map(|found| found.snippet.as_str()).collect();
-        assert_eq!(snippets, ["The quick  brown", "Fox. QUICK fox"]);
+        let snippets: Vec<(&str, f32)> = found
+            .iter()
+            .map(|found| (found.snippet.as_str(), found.top))
+            .collect();
+        assert_eq!(
+            snippets,
+            [("The quick  brown", 60.0), ("Fox. QUICK fox", 76.0)]
+        );
         assert!(find(&lines, &fold("   "), 4).is_empty());
     }
 }

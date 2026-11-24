@@ -1,6 +1,7 @@
-//! The file viewers through AccessKit: a PDF tab's toolbar, page and
-//! thumbnails, its password form, a PDF embedded in a note, and the
-//! image tab, each by its label and from the keyboard.
+//! The file viewers through AccessKit: a PDF tab's toolbar, its pages as
+//! they scroll and the textures they draw, its thumbnails and password
+//! form, a PDF embedded in a note, and the image tab, each by its label
+//! and from the keyboard.
 
 use crate::support;
 use std::{
@@ -9,7 +10,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use app_core::{PdfState, PdfZoom, Platform, TabId};
+use app_core::{App, PAGE_GAP, PdfState, PdfZoom, Platform, TILE_HEIGHT, TabId};
+use app_ui::NouraUi;
 use egui::{Event, Key, Modifiers, PointerButton, accesskit::Role};
 use egui_kittest::{Harness, kittest::Queryable};
 use support::{FakePicker, FakeSystem, create_workspace, harness_with, settle};
@@ -113,8 +115,68 @@ fn shows_page(harness: &Ui, label: &str) -> bool {
         .is_some()
 }
 
+/// The drawn page labelled `label` shows with its top a gap below the top
+/// of the pages' view, under the toolbar.
+fn shows_page_at_top(harness: &Ui, label: &str) -> bool {
+    let Some(page) = harness.query_by_role_and_label(Role::Image, label) else {
+        return false;
+    };
+    let view = harness
+        .get_by_role_and_label(Role::ScrollView, "Pages")
+        .rect();
+    // The gap above each page.
+    (page.rect().top() - view.top() - PAGE_GAP).abs() < 1.0
+}
+
+/// The numbers of the drawn pages that show.
+fn pages_shown(harness: &Ui) -> Vec<usize> {
+    let count = harness
+        .state()
+        .app()
+        .pdf(active(harness))
+        .unwrap()
+        .page_count();
+    (1..=count)
+        .filter(|page| shows_page(harness, &format!("Page {page} of {count}")))
+        .collect()
+}
+
+/// Turn the mouse wheel over the pages `steps` times, `delta` points each.
+fn wheel(harness: &mut Ui, delta: f32, steps: usize) {
+    harness.hover_at(egui::pos2(600.0, 400.0));
+    harness.run_steps(2);
+    for _ in 0..steps {
+        harness.event(Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, delta),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
+            modifiers: Modifiers::NONE,
+        });
+        harness.step();
+    }
+    harness.run_steps(4);
+}
+
+/// Press `key` in a frame of its own, then let the pages settle.
+fn press(harness: &mut Ui, key: Key) {
+    harness.key_press(key);
+    harness.run_steps(4);
+}
+
+/// The textures the pages' tiles uploaded: each one's size in pixels.
+fn tile_textures(harness: &Ui) -> Vec<[usize; 2]> {
+    let textures = harness.ctx.tex_manager();
+    let textures = textures.read();
+    textures
+        .allocated()
+        .filter(|(_, meta)| meta.name == "pdf-tile")
+        .map(|(_, meta)| meta.size)
+        .collect()
+}
+
 #[test]
-fn a_large_pdf_shows_its_page_count_and_the_window_keeps_drawing_while_the_page_renders() {
+fn a_large_pdf_keeps_the_window_drawing_while_its_pages_render() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let mut harness = workspace(
@@ -125,11 +187,11 @@ fn a_large_pdf_shows_its_page_count_and_the_window_keeps_drawing_while_the_page_
     let hold = harness.state().app().hold_pdf_rendering_for_testing();
 
     open(&mut harness, "large.pdf");
-    wait_until(&mut harness, "the page count shows", |harness| {
-        harness.query_by_label("of 400").is_some()
-    });
     // The page renders on the PDF's own thread, which the test holds: the
     // window keeps drawing frames meanwhile and says the page is coming.
+    wait_until(&mut harness, "the first page says it renders", |harness| {
+        harness.query_by_label("Rendering page 1\u{2026}").is_some()
+    });
     for _ in 0..20 {
         let started = Instant::now();
         harness.step();
@@ -138,7 +200,6 @@ fn a_large_pdf_shows_its_page_count_and_the_window_keeps_drawing_while_the_page_
             "a frame stalled"
         );
     }
-    harness.get_by_label("Rendering page 1\u{2026}");
     assert!(!shows_page(&harness, "Page 1 of 400"));
 
     drop(hold);
@@ -167,18 +228,18 @@ fn a_page_that_cant_be_drawn_says_so_in_place_of_the_page() {
     assert!(harness.query_by_label("Rendering page 1\u{2026}").is_none());
     assert!(!shows_page(&harness, "Page 1 of 3"));
 
-    // Another page asks for its drawing again.
+    // Another zoom asks for its drawing again.
     drop(failing);
     harness
-        .get_by_role_and_label(Role::Button, "Next page")
+        .get_by_role_and_label(Role::Button, "Zoom in")
         .click();
-    wait_until(&mut harness, "page 2 draws", |harness| {
-        shows_page(harness, "Page 2 of 3")
+    wait_until(&mut harness, "page 1 draws", |harness| {
+        shows_page(harness, "Page 1 of 3")
     });
 }
 
 #[test]
-fn the_toolbar_moves_through_pages_and_zooms_from_the_keyboard_and_the_tab_keeps_its_place() {
+fn the_pages_scroll_with_the_wheel_and_the_keyboard_and_the_toolbar_has_no_page_switcher() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let mut harness = workspace(
@@ -197,8 +258,6 @@ fn the_toolbar_moves_through_pages_and_zooms_from_the_keyboard_and_the_tab_keeps
     harness.get_by_role_and_label(Role::Toolbar, "PDF navigation");
     for label in [
         "Thumbnails",
-        "Previous page",
-        "Next page",
         "Zoom out",
         "Zoom in",
         "Fit width",
@@ -207,28 +266,39 @@ fn the_toolbar_moves_through_pages_and_zooms_from_the_keyboard_and_the_tab_keeps
     ] {
         harness.get_by_role_and_label(Role::Button, label);
     }
+    for label in ["Previous page", "Next page"] {
+        assert!(
+            harness
+                .query_by_role_and_label(Role::Button, label)
+                .is_none()
+        );
+    }
+    assert!(harness.query_by_label("Page number").is_none());
+    assert!(harness.query_by_label("of 3").is_none());
 
-    harness
-        .get_by_role_and_label(Role::Button, "Next page")
-        .focus();
-    harness.run_steps(2);
-    harness.key_press(Key::Enter);
-    harness.run_steps(2);
+    // The wheel scrolls from one page into the next.
+    wheel(&mut harness, -300.0, 4);
     assert_eq!(page(&harness), 2);
-    wait_until(&mut harness, "the second page draws", |harness| {
+    wait_until(&mut harness, "page 2 draws", |harness| {
         shows_page(harness, "Page 2 of 3")
     });
+    assert!(pages_shown(&harness).contains(&2));
 
-    let field = harness.get_by_role_and_label(Role::TextInput, "Page number");
-    field.focus();
+    // With the pages clicked, so no control has the keyboard, the keys
+    // scroll them: End to the end, Home to the start, Page Down down.
+    click_at(&mut harness, egui::pos2(600.0, 400.0));
     harness.run_steps(2);
-    harness.key_press_modifiers(egui::Modifiers::COMMAND, Key::A);
-    harness
-        .get_by_role_and_label(Role::TextInput, "Page number")
-        .type_text("3");
-    harness.key_press(Key::Enter);
-    harness.run_steps(2);
+    press(&mut harness, Key::End);
     assert_eq!(page(&harness), 3);
+    wait_until(&mut harness, "page 3 draws", |harness| {
+        shows_page(harness, "Page 3 of 3")
+    });
+    press(&mut harness, Key::Home);
+    assert_eq!(page(&harness), 1);
+    assert!(shows_page_at_top(&harness, "Page 1 of 3"));
+    press(&mut harness, Key::PageDown);
+    press(&mut harness, Key::PageDown);
+    assert_eq!(page(&harness), 2);
 
     harness
         .get_by_role_and_label(Role::Button, "Zoom in")
@@ -238,6 +308,10 @@ fn the_toolbar_moves_through_pages_and_zooms_from_the_keyboard_and_the_tab_keeps
     harness.run_steps(2);
     let zoom = harness.state().app().pdf(tab).unwrap().zoom();
     assert!(matches!(zoom, PdfZoom::Scale(_)), "{zoom:?}");
+    // The keys leave the pages alone while a control has the keyboard.
+    press(&mut harness, Key::End);
+    assert_eq!(page(&harness), 2);
+    let place = page(&harness);
 
     harness
         .get_by_role_and_label(Role::TreeItem, "Plan")
@@ -247,15 +321,9 @@ fn the_toolbar_moves_through_pages_and_zooms_from_the_keyboard_and_the_tab_keeps
     harness.get_by_role_and_label(Role::Tab, "text.pdf").click();
     harness.run_steps(4);
     assert_eq!(active(&harness), tab);
-    assert_eq!(page(&harness), 3);
+    assert_eq!(page(&harness), place);
     assert_eq!(harness.state().app().pdf(tab).unwrap().zoom(), zoom);
-    assert_eq!(
-        harness
-            .get_by_role_and_label(Role::TextInput, "Page number")
-            .value()
-            .as_deref(),
-        Some("3")
-    );
+    assert!(pages_shown(&harness).contains(&place));
 
     harness
         .get_by_role_and_label(Role::Button, "Fit width")
@@ -268,7 +336,7 @@ fn the_toolbar_moves_through_pages_and_zooms_from_the_keyboard_and_the_tab_keeps
 }
 
 #[test]
-fn a_search_from_the_field_moves_between_matches() {
+fn a_search_from_the_field_scrolls_between_matches() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let mut harness = workspace(
@@ -278,7 +346,7 @@ fn a_search_from_the_field_moves_between_matches() {
     );
     open(&mut harness, "text.pdf");
     wait_until(&mut harness, "the PDF opens", |harness| {
-        harness.query_by_label("of 3").is_some()
+        shows_page(harness, "Page 1 of 3")
     });
 
     // The field searches as you type and shows the first match. An Enter
@@ -306,15 +374,21 @@ fn a_search_from_the_field_moves_between_matches() {
     harness.run_steps(2);
     assert_eq!(page(&harness), 3);
     harness.get_by_label("2 of 3");
+    wait_until(&mut harness, "page 3 draws", |harness| {
+        shows_page(harness, "Page 3 of 3")
+    });
     harness
         .get_by_role_and_label(Role::Button, "Previous match")
         .click();
     harness.run_steps(2);
     assert_eq!(page(&harness), 1);
+    wait_until(&mut harness, "page 1 draws at the top", |harness| {
+        shows_page_at_top(harness, "Page 1 of 3")
+    });
 }
 
 #[test]
-fn the_thumbnails_panel_lists_one_button_per_page_and_opens_the_page_you_pick() {
+fn the_thumbnails_panel_lists_one_button_per_page_and_scrolls_to_the_page_you_pick() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let mut harness = workspace(
@@ -324,7 +398,7 @@ fn the_thumbnails_panel_lists_one_button_per_page_and_opens_the_page_you_pick() 
     );
     open(&mut harness, "text.pdf");
     wait_until(&mut harness, "the PDF opens", |harness| {
-        harness.query_by_label("of 3").is_some()
+        shows_page(harness, "Page 1 of 3")
     });
     assert!(harness.query_by_label("Page thumbnails").is_none());
 
@@ -354,6 +428,89 @@ fn the_thumbnails_panel_lists_one_button_per_page_and_opens_the_page_you_pick() 
         .click();
     harness.run_steps(2);
     assert_eq!(page(&harness), 2);
+    wait_until(&mut harness, "page 2 draws at the top", |harness| {
+        shows_page_at_top(harness, "Page 2 of 3")
+    });
+}
+
+#[test]
+fn a_tall_page_draws_a_texture_pixel_for_each_screen_pixel_on_a_2x_screen() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    create_workspace(app_data.path(), &folder);
+    std::fs::write(folder.join("tall.pdf"), pdf("tall.pdf")).unwrap();
+    let app = App::launch_with(app_data.path(), FakeSystem::new(Platform::current()));
+    let ui = NouraUi::new(app, Box::new(FakePicker::default()));
+    let mut harness = support::builder()
+        .with_pixels_per_point(2.0)
+        .allow_missing_glyphs()
+        .build_ui_state(|ui, state: &mut NouraUi| state.ui(ui), ui);
+    settle(&mut harness);
+
+    open(&mut harness, "tall.pdf");
+    let tab = active(&harness);
+    wait_until(&mut harness, "what shows draws", |harness| {
+        let app = harness.state().app();
+        let pdf = app.pdf(tab).unwrap();
+        shows_page(harness, "Page 1 of 2")
+            && pdf
+                .tiles(1)
+                .filter(|tile| tile.key.density() == pdf.density())
+                .count()
+                >= 2
+    });
+    harness.run_steps(2);
+
+    // The page shows hundreds of points wide and 14,000 × its scale tall.
+    let page = harness
+        .get_by_role_and_label(Role::Image, "Page 1 of 2")
+        .rect();
+    assert!(page.width() > 400.0, "{page:?}");
+    let textures = tile_textures(&harness);
+    assert!(!textures.is_empty());
+    for [width, height] in &textures {
+        // Two texture pixels across each point, as the screen has.
+        let across = *width as f32 / page.width();
+        assert!((across - 2.0).abs() < 0.01, "{width} pixels for {page:?}");
+        assert!(*height <= TILE_HEIGHT as usize);
+    }
+    // Only the tiles near the view upload, a few of the page's 30 rows.
+    assert!(textures.len() <= 4, "{textures:?}");
+}
+
+#[test]
+fn a_long_pdf_draws_only_the_pages_near_the_view() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = workspace(
+        app_data.path(),
+        &parent.path().join("Garden"),
+        &[("large.pdf", &pdf("large.pdf"))],
+    );
+    open(&mut harness, "large.pdf");
+    let tab = active(&harness);
+    wait_until(&mut harness, "the first page draws", |harness| {
+        shows_page(harness, "Page 1 of 400")
+    });
+
+    click_at(&mut harness, egui::pos2(600.0, 400.0));
+    harness.run_steps(2);
+    press(&mut harness, Key::End);
+    assert_eq!(page(&harness), 400);
+    wait_until(&mut harness, "the last page draws", |harness| {
+        shows_page(harness, "Page 400 of 400")
+    });
+    harness.run_steps(2);
+    let shown = pages_shown(&harness);
+    assert!(shown.iter().all(|page| *page >= 398), "{shown:?}");
+    let app = harness.state().app();
+    let pdf = app.pdf(tab).unwrap();
+    let kept: Vec<usize> = (1..=400)
+        .filter(|page| pdf.tiles(*page).next().is_some())
+        .collect();
+    assert!(kept.iter().all(|page| *page >= 390), "{kept:?}");
+    assert!(tile_textures(&harness).len() <= 8);
 }
 
 #[test]
@@ -398,8 +555,9 @@ fn a_locked_pdf_asks_for_its_password_and_says_when_its_wrong() {
     wait_until(&mut harness, "the PDF opens", |harness| {
         harness.state().app().pdf(tab).unwrap().state() == &PdfState::Ready
     });
-    harness.run_steps(2);
-    harness.get_by_label("of 2");
+    wait_until(&mut harness, "the first page draws", |harness| {
+        shows_page(harness, "Page 1 of 2")
+    });
 }
 
 #[test]
@@ -461,8 +619,9 @@ fn a_pdf_embedded_in_a_note_shows_its_page_and_opens_in_a_tab_at_that_page() {
     let tab = active(&harness);
     assert_ne!(tab, note_tab);
     wait_until(&mut harness, "the PDF opens at page 2", |harness| {
-        shows_page(harness, "Page 2 of 3")
+        shows_page_at_top(harness, "Page 2 of 3")
     });
+    assert_eq!(page(&harness), 2);
     assert_eq!(
         std::fs::read_to_string(folder.join("Reading.md")).unwrap(),
         note
@@ -516,11 +675,8 @@ fn an_embed_of_a_locked_pdf_says_so_and_opens_in_a_tab_that_asks_for_the_passwor
 fn a_click_on_a_page_link_in_a_note_opens_the_pdf_at_that_page() {
     let note = "See [the summary](Docs/text.pdf#page=2), [the end](text.pdf#page=9) \
                 and [the start](text.pdf#page=x).\n";
-    for (needle, label) in [
-        ("the summary", "Page 2 of 3"),
-        ("the end", "Page 3 of 3"),
-        ("the start", "Page 1 of 3"),
-    ] {
+    for (needle, number) in [("the summary", 2), ("the end", 3), ("the start", 1)] {
+        let label = &format!("Page {number} of 3");
         let app_data = tempfile::tempdir().unwrap();
         let parent = tempfile::tempdir().unwrap();
         let folder = parent.path().join("Garden");
@@ -555,7 +711,11 @@ fn a_click_on_a_page_link_in_a_note_opens_the_pdf_at_that_page() {
             Some("Docs/text.pdf"),
             "{needle:?}"
         );
-        wait_until(&mut harness, label, |harness| shows_page(harness, label));
+        // The PDF opens scrolled to the page's top.
+        wait_until(&mut harness, label, |harness| {
+            shows_page_at_top(harness, label)
+        });
+        assert_eq!(page(&harness), number, "{needle:?}");
         assert_eq!(
             std::fs::read_to_string(folder.join("Reading.md")).unwrap(),
             note

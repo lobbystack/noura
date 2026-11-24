@@ -430,6 +430,34 @@ fn a_tall_pdf_page_renders_at_the_screens_density() {
             width as f32 / page.width()
         );
     }
+
+    // Find scrolls 12,800 points down the page to line 800.
+    let field = harness.get_by_role_and_label(Role::TextInput, "Search PDF");
+    field.focus();
+    field.type_text("needle");
+    wait_until(&mut harness, |harness| {
+        harness.query_by_label("1 of 1").is_some()
+    });
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(50));
+        harness.step();
+    }
+    settle(&mut harness);
+    save(&mut harness, "7-pdf-tall-needle", Theme::Light);
+    let pages = harness
+        .get_by_role_and_label(Role::ScrollView, "Pages")
+        .rect();
+    let line = egui::Rect::from_min_size(
+        pages.min + egui::vec2(0.0, pages.height() / 3.0 - 40.0),
+        egui::vec2(pages.width().min(400.0), 120.0),
+    );
+    save_part(&mut harness, "7-pdf-tall-needle-line", line);
+    for (name, [width, height]) in pdf_textures(&harness) {
+        eprintln!(
+            "after find: texture {name}: {width} by {height} pixels, {:.3} pixels a point across",
+            width as f32 / page.width()
+        );
+    }
 }
 
 /// The title bar row of a Linux window with each button layout GNOME

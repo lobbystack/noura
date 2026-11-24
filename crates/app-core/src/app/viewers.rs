@@ -31,18 +31,10 @@ impl App {
         }
     }
 
-    /// Show the page `page` of the PDF in `tab`, from 1, or the nearest
-    /// page it has, as the page number field does.
+    /// Scroll the PDF in `tab` to the top of the page `page`, from 1, or
+    /// of the nearest page it has, as a thumbnail does.
     pub fn pdf_go_to(&mut self, tab: TabId, page: usize) {
         self.change_pdf(tab, |session| session.go_to(page));
-    }
-
-    pub fn pdf_next_page(&mut self, tab: TabId) {
-        self.change_pdf(tab, |session| session.step_page(true));
-    }
-
-    pub fn pdf_previous_page(&mut self, tab: TabId) {
-        self.change_pdf(tab, |session| session.step_page(false));
     }
 
     /// Draw the PDF in `tab` one zoom step larger.
@@ -60,12 +52,22 @@ impl App {
         self.change_pdf(tab, PdfSession::fit_width);
     }
 
-    /// The PDF tab `tab` draws its page at most `width` points wide, on a
-    /// screen with `pixels_per_point`. Its client says so each frame, and
-    /// the page draws again on the PDF's thread when it needs to.
+    /// The PDF tab `tab` draws its pages at most `width` points wide, on a
+    /// screen with `pixels_per_point`. Its client says so each frame,
+    /// before it lays the pages out.
     pub fn size_pdf(&mut self, tab: TabId, width: f32, pixels_per_point: f32) {
         if let Some(session) = self.viewers.pdfs.get_mut(&tab) {
             session.size(width, pixels_per_point);
+        }
+    }
+
+    /// The PDF tab `tab` shows `area` of its pages. Its client says so
+    /// each frame, once it scrolled. The page that shows follows the
+    /// scroll, the tiles that show and those near them draw on the PDF's
+    /// thread, and the tiles far from them go.
+    pub fn show_pdf_area(&mut self, tab: TabId, area: crate::PdfArea) {
+        if let Some(session) = self.viewers.pdfs.get_mut(&tab) {
+            session.show_area(area);
         }
     }
 
@@ -136,8 +138,8 @@ impl App {
         crate::pdf::PdfDrawFailure(self.viewers.gate.clone())
     }
 
-    /// Open the PDF at `relative_path` as `how` says, at the page `page`
-    /// names: page 1 for none, the last page for one past the end.
+    /// Open the PDF at `relative_path` as `how` says, scrolled to the page
+    /// `page` names: page 1 for none, the last page for one past the end.
     pub fn open_pdf_page(&mut self, relative_path: &str, page: Option<u32>, how: OpenAs) {
         self.open_file(relative_path, how);
         let Some(tab) = self

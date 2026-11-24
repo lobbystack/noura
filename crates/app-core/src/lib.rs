@@ -146,8 +146,9 @@ pub use notes::{
 pub use objects::ObjectRef;
 pub use operations::Imported;
 pub use pdf::{
-    EMBED_WIDTH, EmbedProblem, MAX_PDF_BYTES, PdfMatch, PdfPicture, PdfSearch, PdfState, PdfView,
-    PdfZoom, THUMBNAIL_WIDTH, ZOOM_STEPS,
+    EMBED_WIDTH, EmbedProblem, MAX_PDF_BYTES, MAX_THUMBNAILS, MAX_TILE_BYTES, PAGE_GAP, PdfArea,
+    PdfJump, PdfMatch, PdfPicture, PdfSearch, PdfState, PdfTile, PdfTileKey, PdfView, PdfZoom,
+    THUMBNAIL_MAX_HEIGHT, THUMBNAIL_WIDTH, TILE_HEIGHT, TILE_WIDTH, ZOOM_STEPS,
 };
 #[cfg(feature = "test-hooks")]
 pub use pdf::{PdfDrawFailure, PdfRenderHold};

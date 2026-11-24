@@ -1,16 +1,21 @@
-//! The PDF tab: a toolbar that pages through the PDF, zooms it and
-//! searches it, the thumbnails panel, the page itself, and the password
-//! form of a locked PDF. `app-core` reads, draws and searches the PDF on
-//! the PDF's own thread; this view uploads what it draws and tells it how
-//! wide the tab shows the page.
+//! The PDF tab: a toolbar that zooms and searches the PDF, the thumbnails
+//! panel, the pages one under the other in a scroll area, and the password
+//! form of a locked PDF. `app-core` reads, lays out, draws and searches the
+//! PDF on the PDF's own thread; this view uploads the tiles it draws, puts
+//! each where its pixels meet the screen's, and tells it how wide the tab
+//! is and which part of the pages shows.
 
 use std::collections::HashMap;
 
-use app_core::{App, PdfPicture, PdfState, PdfView, THUMBNAIL_WIDTH, TabId};
+use app_core::{
+    App, PAGE_GAP, PdfArea, PdfPicture, PdfState, PdfTileKey, PdfView, THUMBNAIL_MAX_HEIGHT,
+    THUMBNAIL_WIDTH, TabId,
+};
 use egui::{
-    Align, Button, ColorImage, Frame, Id, Key, Layout, Margin, Panel, RichText, ScrollArea, Sense,
-    Spinner, Stroke, TextEdit, TextureHandle, TextureOptions, Ui, UiBuilder, Vec2, accesskit::Role,
-    load::SizedTexture, text_edit::TextEditState, vec2,
+    Align, Button, Color32, ColorImage, EventFilter, Frame, Id, Key, Layout, Margin, Modifiers,
+    Panel, Pos2, Rect, RichText, ScrollArea, Sense, Spinner, Stroke, StrokeKind, TextEdit,
+    TextureHandle, TextureOptions, Ui, UiBuilder, Vec2, WidgetInfo, accesskit::Role,
+    emath::GuiRounding, load::SizedTexture, pos2, text_edit::TextEditState, vec2,
 };
 use zeroize::Zeroize;
 
@@ -22,8 +27,11 @@ use crate::{
 /// How wide the thumbnails panel is, in points.
 const THUMBNAILS_WIDTH: f32 = THUMBNAIL_WIDTH + 32.0;
 
-/// The space around the page, in points.
-const PAGE_MARGIN: f32 = 16.0;
+/// How far an arrow key scrolls the pages, in points.
+const LINE_SCROLL: f32 = 40.0;
+
+/// How much of the view Page Up, Page Down and Space scroll.
+const PAGE_SCROLL: f32 = 0.9;
 
 /// What each PDF tab keeps on this side: its fields and the pictures it
 /// uploaded.
@@ -42,8 +50,6 @@ const PASSWORD_ROOM: usize = PASSWORD_CHARS * 4;
 
 #[derive(Default)]
 struct PdfTab {
-    /// What the page number field holds while you type in it.
-    page_field: Option<String>,
     /// What the search field holds.
     search: String,
     /// What the password field holds, until you unlock. It's wiped when
@@ -51,9 +57,15 @@ struct PdfTab {
     password: String,
     /// The password field took the keyboard since the form showed.
     password_focused: bool,
-    /// The page's picture as uploaded, by its generation.
-    page: Option<(u64, TextureHandle)>,
+    /// The tiles as uploaded, each with its picture's generation.
+    tiles: HashMap<PdfTileKey, Option<(u64, TextureHandle)>>,
     thumbnails: HashMap<usize, Option<(u64, TextureHandle)>>,
+    /// The newest jump the pages made.
+    jumped: u64,
+    /// Where the pages were scrolled to, and the size of the part that
+    /// showed, last frame.
+    offset: Vec2,
+    shown: Vec2,
 }
 
 impl Drop for PdfTab {
@@ -73,8 +85,6 @@ impl PdfViews {
 /// What you did in the tab this frame, for after it draws.
 enum Action {
     ToggleThumbnails,
-    PreviousPage,
-    NextPage,
     GoTo(usize),
     ZoomIn,
     ZoomOut,
@@ -84,8 +94,8 @@ enum Action {
     PreviousMatch,
     Unlock,
     Retry,
-    /// The page shows this many points wide, at these pixels per point.
-    Size(f32, f32),
+    /// The part of the pages that showed.
+    Shown(PdfArea),
     Thumbnail(usize, f32),
 }
 
@@ -126,12 +136,18 @@ pub(crate) fn show(
             });
         }
         PdfState::Ready => {
-            toolbar(ui, pdf, view, window, tab, &mut actions);
+            toolbar(ui, pdf, view, &mut actions);
             ui.add_space(8.0);
             if pdf.thumbnails_shown() {
                 thumbnails(ui, pdf, view, tab, &mut actions);
             }
-            page(ui, pdf, view, tab, &mut actions);
+            // The pages lay out for the width that's left, before they
+            // draw.
+            let width = (ui.available_width() - 2.0 * PAGE_GAP).max(1.0);
+            app.size_pdf(tab, width, ui.ctx().pixels_per_point());
+            if let Some(pdf) = app.pdf(tab) {
+                pages(ui, pdf, view, tab, &mut actions);
+            }
         }
     }
     for action in actions {
@@ -143,8 +159,6 @@ pub(crate) fn show(
 fn apply(ui: &Ui, app: &mut App, view: &mut PdfTab, window: Id, tab: TabId, action: Action) {
     match action {
         Action::ToggleThumbnails => app.pdf_toggle_thumbnails(tab),
-        Action::PreviousPage => app.pdf_previous_page(tab),
-        Action::NextPage => app.pdf_next_page(tab),
         Action::GoTo(page) => app.pdf_go_to(tab, page),
         Action::ZoomIn => app.pdf_zoom_in(tab),
         Action::ZoomOut => app.pdf_zoom_out(tab),
@@ -163,7 +177,7 @@ fn apply(ui: &Ui, app: &mut App, view: &mut PdfTab, window: Id, tab: TabId, acti
             app.pdf_unlock(tab, password);
         }
         Action::Retry => app.retry_pdf(tab),
-        Action::Size(width, pixels_per_point) => app.size_pdf(tab, width, pixels_per_point),
+        Action::Shown(area) => app.show_pdf_area(tab, area),
         Action::Thumbnail(page, pixels_per_point) => {
             app.want_pdf_thumbnail(tab, page, pixels_per_point);
         }
@@ -262,17 +276,8 @@ fn chevron_button(ui: &mut Ui, up: bool, label: &str, enabled: bool) -> egui::Re
     response
 }
 
-/// Page through, zoom and search the PDF.
-fn toolbar(
-    ui: &mut Ui,
-    pdf: &PdfView,
-    view: &mut PdfTab,
-    window: Id,
-    tab: TabId,
-    actions: &mut Vec<Action>,
-) {
-    let page = pdf.page();
-    let count = pdf.page_count();
+/// Zoom and search the PDF.
+fn toolbar(ui: &mut Ui, pdf: &PdfView, view: &mut PdfTab, actions: &mut Vec<Action>) {
     let builder = UiBuilder::new()
         .accessibility_role(Role::Toolbar)
         .accessibility_label("PDF navigation");
@@ -285,16 +290,6 @@ fn toolbar(
             {
                 actions.push(Action::ToggleThumbnails);
             }
-            ui.horizontal(|ui| {
-                if icon_button(ui, "\u{2039}", "Previous page", page > 1).clicked() {
-                    actions.push(Action::PreviousPage);
-                }
-                page_field(ui, view, window.with(("pdf-page", tab)), page, actions);
-                ui.label(format!("of {count}"));
-                if icon_button(ui, "\u{203a}", "Next page", page < count).clicked() {
-                    actions.push(Action::NextPage);
-                }
-            });
             ui.horizontal(|ui| {
                 if icon_button(ui, "\u{2212}", "Zoom out", true).clicked() {
                     actions.push(Action::ZoomOut);
@@ -310,29 +305,6 @@ fn toolbar(
             ui.horizontal(|ui| search(ui, pdf, view, actions));
         });
     });
-}
-
-/// The page number field: Enter or leaving it shows the page typed, and
-/// anything but a number puts the page back.
-fn page_field(ui: &mut Ui, view: &mut PdfTab, id: Id, page: usize, actions: &mut Vec<Action>) {
-    let mut text = view.page_field.clone().unwrap_or_else(|| page.to_string());
-    let response = ui
-        .add(
-            TextEdit::singleline(&mut text)
-                .id(id)
-                .desired_width(36.0)
-                .align(egui::Align2::CENTER_CENTER),
-        )
-        .accessible_name("Page number");
-    if response.changed() {
-        view.page_field = Some(text.clone());
-    }
-    if response.lost_focus() {
-        if let Ok(number) = text.trim().parse::<usize>() {
-            actions.push(Action::GoTo(number));
-        }
-        view.page_field = None;
-    }
 }
 
 /// The search field, the buttons that move between matches and how many
@@ -419,8 +391,8 @@ fn fit_within(size: [f32; 2], bounds: Vec2) -> Vec2 {
     vec2((width * scale).max(1.0), (height * scale).max(1.0))
 }
 
-/// One thumbnail per page, in a panel beside the page. Picking one shows
-/// its page.
+/// One thumbnail per page, in a panel beside the pages. Picking one
+/// scrolls to its page.
 fn thumbnails(
     ui: &mut Ui,
     pdf: &PdfView,
@@ -437,9 +409,12 @@ fn thumbnails(
     // shape.
     let [first_width, first_height] = size_of(1);
     let box_height = (THUMBNAIL_WIDTH * first_height / first_width.max(1.0))
-        .clamp(THUMBNAIL_WIDTH / 2.0, THUMBNAIL_WIDTH * 2.0);
+        .clamp(THUMBNAIL_WIDTH / 2.0, THUMBNAIL_MAX_HEIGHT);
     let bounds = vec2(THUMBNAIL_WIDTH, box_height);
     let row = box_height + 24.0;
+    // The panel forgets the thumbnails `app-core` no longer keeps.
+    view.thumbnails
+        .retain(|page, _| pdf.thumbnail(*page).is_some());
     Panel::left(("pdf-thumbnails", tab))
         .resizable(false)
         .exact_size(THUMBNAILS_WIDTH)
@@ -466,12 +441,12 @@ fn thumbnails(
                                 node.set_role(Role::Button);
                                 node.set_selected(current);
                             });
-                            let frame = egui::Rect::from_center_size(
+                            let frame = Rect::from_center_size(
                                 rect.center_top() + vec2(0.0, 4.0 + box_height / 2.0),
                                 size,
                             );
                             let painter = ui.painter();
-                            painter.rect_filled(frame, radius(0.25), egui::Color32::WHITE);
+                            painter.rect_filled(frame, radius(0.25), Color32::WHITE);
                             let slot = view.thumbnails.entry(page).or_default();
                             if let Some(texture) = pdf
                                 .thumbnail(page)
@@ -485,14 +460,9 @@ fn thumbnails(
                             } else {
                                 Stroke::new(1.0, palette.border)
                             };
-                            painter.rect_stroke(
-                                frame,
-                                radius(0.25),
-                                stroke,
-                                egui::StrokeKind::Outside,
-                            );
+                            painter.rect_stroke(frame, radius(0.25), stroke, StrokeKind::Outside);
                             painter.text(
-                                egui::pos2(rect.center().x, rect.top() + box_height + 8.0),
+                                pos2(rect.center().x, rect.top() + box_height + 8.0),
                                 egui::Align2::CENTER_TOP,
                                 page.to_string(),
                                 egui::FontId::proportional(12.0),
@@ -507,68 +477,203 @@ fn thumbnails(
         });
 }
 
-/// The page that shows, at the zoom's size, in a scroll area. Until its
-/// picture arrives, a blank page says it's rendering, or that it couldn't
-/// be drawn.
-fn page(ui: &mut Ui, pdf: &PdfView, view: &mut PdfTab, tab: TabId, actions: &mut Vec<Action>) {
-    let number = pdf.page();
-    let count = pdf.page_count();
-    let [width, height] = pdf.page_size(number).unwrap_or([612.0, 792.0]);
-    let available = (ui.available_width() - 2.0 * PAGE_MARGIN).max(1.0);
-    actions.push(Action::Size(available, ui.ctx().pixels_per_point()));
-    let scale = pdf.scale();
-    let size = vec2(width * scale, height * scale);
-    let picture = pdf.picture().filter(|picture| picture.page == number);
-    let failed = pdf.page_failed();
-    ScrollArea::both()
-        .id_salt(("pdf-page", tab))
-        .auto_shrink(false)
-        .show(ui, |ui| {
-            ui.with_layout(Layout::top_down(Align::Center), |ui| {
-                ui.add_space(PAGE_MARGIN);
-                let label = format!("Page {number} of {count}");
-                let texture =
-                    picture.and_then(|picture| upload(ui, &mut view.page, picture, "pdf-page"));
-                match texture {
-                    Some(texture) => {
-                        ui.add(
-                            egui::Image::from_texture(SizedTexture::new(texture.id(), size))
-                                .alt_text(label),
-                        );
-                    }
-                    None => blank_page(ui, size, number, failed || picture.is_some()),
-                }
-                ui.add_space(PAGE_MARGIN);
-            });
-        });
+/// How the keyboard scrolls the pages.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum KeyScroll {
+    By(f32),
+    Top,
+    Bottom,
 }
 
-/// A white page of `size` that says page `number` is rendering, or with
-/// `failed`, that it couldn't be drawn.
-fn blank_page(ui: &mut Ui, size: Vec2, number: usize, failed: bool) {
-    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+/// How the keys pressed this frame scroll the pages, while the pages
+/// `pages` or nothing has the keyboard: a line with the arrows, most of
+/// the view with Page Up, Page Down and Space, to either end with Home and
+/// End. Takes the keys it uses.
+fn key_scroll(ui: &Ui, pages: Id, shown: f32) -> Option<KeyScroll> {
+    if ui.memory(|memory| memory.focused().is_some_and(|focused| focused != pages)) {
+        return None;
+    }
+    let page = shown * PAGE_SCROLL;
+    ui.input_mut(|input| {
+        let mut scroll = None;
+        // Shift-Space first, which Space alone would take.
+        for (modifiers, key, by) in [
+            (Modifiers::SHIFT, Key::Space, KeyScroll::By(-page)),
+            (Modifiers::NONE, Key::Space, KeyScroll::By(page)),
+            (Modifiers::NONE, Key::PageDown, KeyScroll::By(page)),
+            (Modifiers::NONE, Key::PageUp, KeyScroll::By(-page)),
+            (Modifiers::NONE, Key::ArrowDown, KeyScroll::By(LINE_SCROLL)),
+            (Modifiers::NONE, Key::ArrowUp, KeyScroll::By(-LINE_SCROLL)),
+            (Modifiers::NONE, Key::Home, KeyScroll::Top),
+            (Modifiers::NONE, Key::End, KeyScroll::Bottom),
+        ] {
+            if input.consume_key(modifiers, key) {
+                scroll = Some(by);
+            }
+        }
+        scroll
+    })
+}
+
+/// The pages one under the other in a scroll area, as `app-core` lays
+/// them out. Only the pages that show draw. Each page draws its tiles at
+/// one of their pixels to each of the screen's, over tiles drawn for an
+/// older zoom until the new ones arrive; a page with none yet says it's
+/// rendering, or that it couldn't be drawn.
+fn pages(ui: &mut Ui, pdf: &PdfView, view: &mut PdfTab, tab: TabId, actions: &mut Vec<Action>) {
+    let pixels_per_point = ui.ctx().pixels_per_point();
+    let [width, height] = pdf.content_size();
+    // A click on the pages gives them the keyboard, arrows included.
+    let pages_id = ui.make_persistent_id(("pdf-pages-surface", tab));
+    ui.memory_mut(|memory| {
+        memory.set_focus_lock_filter(
+            pages_id,
+            EventFilter {
+                vertical_arrows: true,
+                ..EventFilter::default()
+            },
+        );
+    });
+    let jump = pdf.jump().filter(|jump| jump.seq != view.jumped);
+    let mut offset = view.offset;
+    if let Some(jump) = jump {
+        offset.y = jump.top;
+        if let Some(left) = jump.left {
+            offset.x = left;
+        }
+    } else if let Some(scroll) = key_scroll(ui, pages_id, view.shown.y) {
+        offset.y = match scroll {
+            KeyScroll::By(by) => offset.y + by,
+            KeyScroll::Top => 0.0,
+            KeyScroll::Bottom => height,
+        };
+    }
+    let mut area = ScrollArea::both()
+        .id_salt(("pdf-pages", tab))
+        .auto_shrink(false)
+        .content_margin(0.0);
+    if offset != view.offset {
+        // No further than the pages reach, which would bounce back.
+        let reach = (vec2(width, height) - view.shown).max(Vec2::ZERO);
+        area = area.scroll_offset(offset.clamp(Vec2::ZERO, reach));
+    }
+    let output = area.show_viewport(ui, |ui, viewport| {
+        ui.set_min_size(vec2(width, height));
+        let surface = ui.interact(ui.clip_rect(), pages_id, Sense::click());
+        surface.widget_info(|| {
+            let mut info = WidgetInfo::new(Role::ScrollView);
+            info.label = Some("Pages".to_owned());
+            info
+        });
+        if surface.clicked() {
+            surface.request_focus();
+        }
+        let origin = ui.max_rect().min;
+        for page in pdf.pages_between(viewport.min.y, viewport.max.y) {
+            draw_page(ui, pdf, view, origin, page, pixels_per_point);
+        }
+    });
+    if let Some(jump) = jump {
+        view.jumped = jump.seq;
+    }
+    view.offset = output.state.clamped_offset();
+    view.shown = output.inner_rect.size();
+    // Textures go with the tiles `app-core` forgot.
+    view.tiles.retain(|key, _| pdf.tile(key).is_some());
+    actions.push(Action::Shown(PdfArea {
+        left: view.offset.x,
+        top: view.offset.y,
+        width: view.shown.x,
+        height: view.shown.y,
+        jump: view.jumped,
+    }));
+}
+
+/// Draw the page `page`, whose layout starts at `origin`, on a screen with
+/// `pixels_per_point`.
+fn draw_page(
+    ui: &mut Ui,
+    pdf: &PdfView,
+    view: &mut PdfTab,
+    origin: Pos2,
+    page: usize,
+    pixels_per_point: f32,
+) {
+    let Some([left, top, width, height]) = pdf.page_rect(page) else {
+        return;
+    };
+    // The page's corner sits on a pixel, so each of its tiles' pixels
+    // falls on one of the screen's.
+    let corner = (origin + vec2(left, top)).round_to_pixels(pixels_per_point);
+    let rect = Rect::from_min_size(corner, vec2(width, height));
+    let clip = ui.clip_rect();
+    let painter = ui.painter().clone();
+    painter.rect_filled(rect, 0.0, Color32::WHITE);
+    let density = pdf.density();
+    let mut drawn = false;
+    for newest in [false, true] {
+        for tile in pdf
+            .tiles(page)
+            .filter(|tile| (tile.key.density() == density) == newest)
+        {
+            drawn = true;
+            let points = if newest {
+                1.0 / pixels_per_point
+            } else {
+                pdf.scale() / tile.key.density()
+            };
+            let place = Rect::from_min_size(
+                corner + vec2(tile.x as f32, tile.y as f32) * points,
+                vec2(tile.picture.width as f32, tile.picture.height as f32) * points,
+            );
+            if !clip.intersects(place) {
+                continue;
+            }
+            let slot = view.tiles.entry(tile.key).or_default();
+            if let Some(texture) = upload(ui, slot, &tile.picture, "pdf-tile") {
+                painter.image(
+                    texture.id(),
+                    place,
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+        }
+    }
     let palette = Palette::of(ui.ctx());
-    ui.painter()
-        .rect_filled(rect, radius(0.25), egui::Color32::WHITE);
-    ui.painter().rect_stroke(
+    painter.rect_stroke(
         rect,
-        radius(0.25),
+        0.0,
         Stroke::new(1.0, palette.border),
-        egui::StrokeKind::Outside,
+        StrokeKind::Outside,
     );
+    let count = pdf.page_count();
+    let response = ui.interact(rect, ui.scope_id().with(("pdf-page", page)), Sense::hover());
+    if drawn {
+        response.widget_info(|| {
+            let mut info = WidgetInfo::new(Role::Image);
+            info.label = Some(format!("Page {page} of {count}"));
+            info
+        });
+        return;
+    }
+    let shows = rect.intersect(clip);
+    if shows.height() < 40.0 || shows.width() < 40.0 {
+        return;
+    }
     let builder = UiBuilder::new()
-        .max_rect(rect)
+        .max_rect(shows)
         .layout(Layout::top_down(Align::Center))
         .accessibility_role(Role::Status);
     ui.scope_builder(builder, |ui| {
-        ui.add_space((rect.height() / 3.0).min(120.0));
-        let text = if failed {
-            format!("Noura couldn\u{2019}t draw page {number}.")
+        ui.add_space((shows.height() / 3.0).min(120.0));
+        let text = if pdf.page_failed(page) {
+            format!("Noura couldn\u{2019}t draw page {page}.")
         } else {
             ui.add(Spinner::new().size(16.0));
-            format!("Rendering page {number}\u{2026}")
+            format!("Rendering page {page}\u{2026}")
         };
-        ui.label(RichText::new(text).color(egui::Color32::from_gray(90)));
+        ui.label(RichText::new(text).color(Color32::from_gray(90)));
     });
 }
 
